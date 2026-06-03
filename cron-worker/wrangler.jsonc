@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "slate-cron",
+  "main": "index.ts",
+  "account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+  "compatibility_date": "2025-08-01",
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "triggers": {
+    "crons": ["* * * * *", "*/5 * * * *", "*/15 * * * *"]
+  },
+  "vars": {
+    "SLATE_URL": "https://slate.trypennie.dev"
+  }
+}

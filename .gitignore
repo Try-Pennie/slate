@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Cloudflare / OpenNext
+.open-next/
+.wrangler/
+.dev.vars
+
+# extra secrets safety
+.cf-secrets.json
+*-key.json
+service-account*.json

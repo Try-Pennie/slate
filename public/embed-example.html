@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slate embed test</title>
+    <style>
+      body {
+        font: 15px/1.5 system-ui, sans-serif;
+        max-width: 760px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Landing page (embed test)</h1>
+    <p>Inline booker for bucket <code>411</code>:</p>
+    <div id="slate"></div>
+
+    <script src="/widget.js"></script>
+    <script>
+      // Mirrors the real URL shape: /booking/{salesforceId}?xbc={code}&...prefill
+      Slate.inline({
+        selector: "#slate",
+        url:
+          "/booking/a04Ui00000HnjwfIAB?xbc=411" +
+          "&name=Kristina+Kelly&email=kristinakelly17%40gmail.com" +
+          "&phone=%2B1%28203%29561-5295&loanPurpose=debt_consolidation" +
+          "&loanRequest=160000&estimatedPmt=2400&active=true",
+        onBooking: function (b) {
+          console.log("Booking complete:", b);
+        },
+      });
+
+      // Floating popup variant:
+      // Slate.popup({ url: "/booking/a04Ui00000HnjwfIAB?xbc=411", text: "Book a call" });
+    </script>
+  </body>
+</html>
