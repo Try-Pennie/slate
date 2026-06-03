@@ -1,0 +1,45 @@
+name: CI
+
+# Run on every push and every pull request.
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: |
+          node --experimental-strip-types scripts/test-compute.ts
+          node --experimental-strip-types scripts/test-match.ts
+          node --experimental-strip-types scripts/test-regal.ts
+
+      - name: Build (Cloudflare / OpenNext)
+        run: pnpm cf:build
+        env:
+          # Build-time NEXT_PUBLIC_* inlining only — no real secrets needed.
+          NEXT_PUBLIC_APP_URL: https://slate.trypennie.dev
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_placeholder
+          NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
