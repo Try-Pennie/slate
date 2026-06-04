@@ -21,6 +21,12 @@ import type {
   User,
   WebhookEvent,
 } from "@/lib/db/types";
+import {
+  bookingWindow,
+  busyBlockFor,
+  selectAgent,
+  type AssignResult,
+} from "@/lib/booking/core";
 
 export class SlotUnavailableError extends Error {
   constructor() {
@@ -38,15 +44,11 @@ export interface CreateBookingInput {
   prefill: Record<string, string>;
 }
 
-interface AssignResult {
-  userId: string;
-  email: string;
-}
-
 /**
  * Verify-on-book: walk the round-robin candidate order and do ONE live Google
  * free/busy check per candidate (not all N up front), impersonating each
  * agent's calendar via domain-wide delegation. First confirmed-free agent wins.
+ * Selection core is `selectAgent` (pure/tested); this wires it to DB + Google.
  */
 async function assignAgent(
   bucket: Bucket,
@@ -60,14 +62,13 @@ async function assignAgent(
     Date.parse(startIso),
   );
 
-  for (const userId of candidates) {
-    const agent = await getUser(userId);
-    if (!agent.email) continue;
-    if (await isFree(agent.email, startIso, endIso)) {
-      return { userId, email: agent.email };
-    }
-  }
-  throw new SlotUnavailableError();
+  const result = await selectAgent(
+    candidates,
+    async (userId) => (await getUser(userId)).email,
+    (email) => isFree(email, startIso, endIso),
+  );
+  if (!result) throw new SlotUnavailableError();
+  return result;
 }
 
 async function getUser(userId: string): Promise<User> {
@@ -137,10 +138,10 @@ export async function createBooking(
   if (!resolved) throw new Error("Unknown booking bucket");
   const { bucket, eventType } = resolved;
 
-  const startIso = new Date(input.startIso).toISOString();
-  const endIso = new Date(
-    Date.parse(startIso) + eventType.duration_min * 60_000,
-  ).toISOString();
+  const { startIso, endIso } = bookingWindow(
+    input.startIso,
+    eventType.duration_min,
+  );
 
   const { userId, email } = await assignAgent(
     bucket,
@@ -202,13 +203,9 @@ export async function createBooking(
   const booking = bookingRow as Booking;
 
   // Write-through: the cache reflects this booking immediately.
-  await db.from("busy_blocks").insert({
-    user_id: userId,
-    starts_at: startIso,
-    ends_at: endIso,
-    source: "slate",
-    booking_id: booking.id,
-  });
+  await db
+    .from("busy_blocks")
+    .insert(busyBlockFor(userId, startIso, endIso, booking.id));
 
   // Advance the round-robin pointer.
   await db
@@ -258,10 +255,10 @@ export async function rescheduleBooking(
     throw new Error("This booking can no longer be changed");
   }
 
-  const startIso = new Date(newStartIso).toISOString();
-  const endIso = new Date(
-    Date.parse(startIso) + eventType.duration_min * 60_000,
-  ).toISOString();
+  const { startIso, endIso } = bookingWindow(
+    newStartIso,
+    eventType.duration_min,
+  );
 
   const db = supabaseAdmin();
   const currentEmail = booking.agent_email;
@@ -323,13 +320,9 @@ export async function rescheduleBooking(
 
   // Move the write-through busy block.
   await db.from("busy_blocks").delete().eq("booking_id", booking.id);
-  await db.from("busy_blocks").insert({
-    user_id: assigned,
-    starts_at: startIso,
-    ends_at: endIso,
-    source: "slate",
-    booking_id: booking.id,
-  });
+  await db
+    .from("busy_blocks")
+    .insert(busyBlockFor(assigned, startIso, endIso, booking.id));
 
   if (movedAgents) {
     await db
