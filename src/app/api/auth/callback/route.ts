@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
 
   // Calendar is reachable via domain-wide delegation (by email), so warm the
   // cache + watch channel for this user regardless of OAuth token.
-  await ensureWatch(slateUser.id).catch(() => {});
+  await ensureWatch(slateUser.id); // never throws; returns a status
   await runIncrementalSync(slateUser.id).catch(() => {});
 
   // Admins manage everything; agents land on their own availability page.

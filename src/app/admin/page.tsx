@@ -23,6 +23,14 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+/** Bookable agents with a live (non-expired) Google push watch channel. */
+function liveWatchCount(agents: User[]): number {
+  const now = Date.now();
+  return agents.filter(
+    (u) => u.watch_expiration && Date.parse(u.watch_expiration) > now,
+  ).length;
+}
+
 const labelCls = "block text-xs font-medium text-neutral-500";
 const inputCls =
   "mt-1 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm";
@@ -70,6 +78,14 @@ export default async function AdminPage({
   const buckets = (bucketsRes.data ?? []) as Bucket[];
   const members = (membersRes.data ?? []) as BucketMember[];
   const webhook = webhookRes.data as WebhookEndpoint | null;
+
+  // Push health: how many bookable agents have a live (non-expired) Google
+  // watch channel. A shortfall means external calendar edits for those agents
+  // only reach the cache via the 1-min cron backstop, not push.
+  const bookableAgents = users.filter((u) => u.bookable);
+  const watchedCount = liveWatchCount(bookableAgents);
+  const pushHealthy =
+    bookableAgents.length > 0 && watchedCount === bookableAgents.length;
 
   const visibleAgents = users.filter((u) => {
     if (bookableOnly && !u.bookable) return false;
@@ -159,12 +175,29 @@ export default async function AdminPage({
       {/* Agents + working hours */}
       <section className={cardCls}>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">
-            Agents{" "}
-            <span className="font-normal text-neutral-400">
-              ({users.filter((u) => u.bookable).length} bookable / {users.length})
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold">
+              Agents{" "}
+              <span className="font-normal text-neutral-400">
+                ({bookableAgents.length} bookable / {users.length})
+              </span>
+            </h2>
+            <span
+              className="inline-flex items-center gap-1.5 text-xs text-neutral-500"
+              title="Bookable agents with a live Google Calendar push watch channel. A shortfall means those agents rely on the 1-min cron backstop instead of push."
+            >
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  pushHealthy
+                    ? "bg-green-500"
+                    : watchedCount > 0
+                      ? "bg-amber-500"
+                      : "bg-neutral-300"
+                }`}
+              />
+              push {watchedCount}/{bookableAgents.length} watched
             </span>
-          </h2>
+          </div>
           <form action={syncSalesforceNow}>
             <button className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:border-neutral-500">
               Sync from Salesforce

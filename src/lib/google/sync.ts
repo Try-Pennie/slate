@@ -107,37 +107,57 @@ export async function runIncrementalSync(userId: string): Promise<number> {
   return result.events.length;
 }
 
-/** Registers/renews a push watch channel (skips on non-public-HTTPS app URLs). */
-export async function ensureWatch(userId: string): Promise<void> {
+/** Outcome of an ensureWatch attempt — never throws, so callers can surface it. */
+export type WatchResult =
+  | { status: "skipped"; reason: string }
+  | { status: "current"; expiration: string | null }
+  | { status: "renewed"; expiration: string | null }
+  | { status: "error"; error: string };
+
+/**
+ * Registers/renews a push watch channel (skips on non-public-HTTPS app URLs).
+ * Returns a status instead of throwing so the cron/admin can report whether
+ * push is actually live rather than failing silently.
+ */
+export async function ensureWatch(userId: string): Promise<WatchResult> {
   const pushUrl = googlePushUrl();
-  if (!pushUrl.startsWith("https://") || pushUrl.includes("localhost")) return;
+  if (!pushUrl.startsWith("https://") || pushUrl.includes("localhost")) {
+    return { status: "skipped", reason: "non-public-https-app-url" };
+  }
 
   const agent = await loadAgent(userId);
-  if (!agent?.email) return;
+  if (!agent?.email) return { status: "skipped", reason: "no-agent-email" };
 
   const expiresSoon =
     !agent.watch_expiration ||
     Date.parse(agent.watch_expiration) - Date.now() < WATCH_RENEW_THRESHOLD_MS;
-  if (!expiresSoon) return;
-
-  if (agent.watch_channel_id && agent.watch_resource_id) {
-    try {
-      await stopChannel(agent.email, agent.watch_channel_id, agent.watch_resource_id);
-    } catch {
-      // already gone
-    }
+  if (!expiresSoon) {
+    return { status: "current", expiration: agent.watch_expiration };
   }
 
-  const channelId = nanoid();
-  const { resourceId, expiration } = await watchCalendar(agent.email, channelId);
-  await supabaseAdmin()
-    .from("users")
-    .update({
-      watch_channel_id: channelId,
-      watch_resource_id: resourceId,
-      watch_expiration: expiration,
-    })
-    .eq("id", userId);
+  try {
+    if (agent.watch_channel_id && agent.watch_resource_id) {
+      try {
+        await stopChannel(agent.email, agent.watch_channel_id, agent.watch_resource_id);
+      } catch {
+        // already gone
+      }
+    }
+
+    const channelId = nanoid();
+    const { resourceId, expiration } = await watchCalendar(agent.email, channelId);
+    await supabaseAdmin()
+      .from("users")
+      .update({
+        watch_channel_id: channelId,
+        watch_resource_id: resourceId,
+        watch_expiration: expiration,
+      })
+      .eq("id", userId);
+    return { status: "renewed", expiration };
+  } catch (err) {
+    return { status: "error", error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** Resolves a Google push channelId back to the owning user. */

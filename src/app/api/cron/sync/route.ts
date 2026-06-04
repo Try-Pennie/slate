@@ -21,16 +21,28 @@ export async function GET(req: NextRequest) {
     .eq("bookable", true);
 
   const userIds = (data ?? []).map((r) => (r as { id: string }).id);
-  const results: { userId: string; synced?: number; error?: string }[] = [];
+  const results: {
+    userId: string;
+    watch: string;
+    watchError?: string;
+    synced?: number;
+    error?: string;
+  }[] = [];
   for (const userId of userIds) {
-    await ensureWatch(userId).catch(() => {});
+    const watch = await ensureWatch(userId);
+    const row: (typeof results)[number] = {
+      userId,
+      watch: watch.status,
+      ...(watch.status === "error" ? { watchError: watch.error } : {}),
+    };
     try {
-      const n = await runIncrementalSync(userId);
-      results.push({ userId, synced: n });
+      row.synced = await runIncrementalSync(userId);
     } catch (err) {
-      results.push({ userId, error: err instanceof Error ? err.message : String(err) });
+      row.error = err instanceof Error ? err.message : String(err);
     }
+    results.push(row);
   }
 
-  return NextResponse.json({ agents: userIds.length, results });
+  const watchErrors = results.filter((r) => r.watch === "error").length;
+  return NextResponse.json({ agents: userIds.length, watchErrors, results });
 }
