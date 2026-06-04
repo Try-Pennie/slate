@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { googleChannelToken } from "@/lib/env";
-import { runIncrementalSync, userIdForChannel } from "@/lib/google/sync";
+import { syncByChannel } from "@/lib/google/sync";
 
 export const dynamic = "force-dynamic";
 
@@ -21,11 +21,8 @@ export async function POST(req: NextRequest) {
 
   const channelId = req.headers.get("x-goog-channel-id");
   if (channelId) {
-    const userId = await userIdForChannel(channelId);
-    if (userId) {
-      // Don't block Google's delivery on the sync.
-      runIncrementalSync(userId).catch(() => {});
-    }
+    // Sync just the pinged calendar; don't block Google's delivery on it.
+    syncByChannel(channelId).catch(() => {});
   }
 
   return new NextResponse(null, { status: 200 });

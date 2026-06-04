@@ -52,34 +52,78 @@ async function ok(res: Response, label: string): Promise<Response> {
   return res;
 }
 
-/** Live free/busy for one agent — used only for verify-on-book. */
+/** Minimal calendarList entry (only the fields the calendar filter needs). */
+export interface CalendarListEntry {
+  id?: string;
+  accessRole?: string;
+  primary?: boolean;
+  selected?: boolean;
+  deleted?: boolean;
+  summary?: string;
+}
+
+/** Lists the calendars the impersonated agent can see (for busy aggregation). */
+export async function listCalendars(email: string): Promise<CalendarListEntry[]> {
+  const entries: CalendarListEntry[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({ maxResults: "250", showHidden: "true" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const res = await ok(
+      await gfetch(email, `${BASE}/users/me/calendarList?${params.toString()}`),
+      "calendarList.list",
+    );
+    const data = (await res.json()) as {
+      items?: CalendarListEntry[];
+      nextPageToken?: string;
+    };
+    entries.push(...(data.items ?? []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return entries;
+}
+
+/**
+ * Live free/busy across one or more of an agent's calendars — verify-on-book.
+ * Busy on ANY calendar makes the agent unavailable.
+ */
 export async function freeBusy(
   email: string,
   timeMin: string,
   timeMax: string,
+  calendarIds: string[],
 ): Promise<Interval[]> {
+  if (calendarIds.length === 0) return [];
   const res = await ok(
     await gfetch(email, `${BASE}/freeBusy`, {
       method: "POST",
-      body: JSON.stringify({ timeMin, timeMax, items: [{ id: CAL }] }),
+      body: JSON.stringify({
+        timeMin,
+        timeMax,
+        items: calendarIds.map((id) => ({ id })),
+      }),
     }),
     "freeBusy",
   );
   const data = (await res.json()) as {
     calendars?: Record<string, { busy?: { start?: string; end?: string }[] }>;
   };
-  const busy = data.calendars?.[CAL]?.busy ?? [];
-  return busy
-    .filter((b): b is Interval => !!b.start && !!b.end)
-    .map((b) => ({ start: b.start, end: b.end }));
+  const out: Interval[] = [];
+  for (const cal of Object.values(data.calendars ?? {})) {
+    for (const b of cal.busy ?? []) {
+      if (b.start && b.end) out.push({ start: b.start, end: b.end });
+    }
+  }
+  return out;
 }
 
 export async function isFree(
   email: string,
   start: string,
   end: string,
+  calendarIds: string[],
 ): Promise<boolean> {
-  const busy = await freeBusy(email, start, end);
+  const busy = await freeBusy(email, start, end, calendarIds);
   const s = Date.parse(start);
   const e = Date.parse(end);
   return !busy.some((b) => Date.parse(b.start) < e && Date.parse(b.end) > s);
@@ -155,10 +199,11 @@ export async function deleteEvent(email: string, eventId: string): Promise<void>
 
 export async function watchCalendar(
   email: string,
+  calendarId: string,
   channelId: string,
 ): Promise<{ resourceId: string | null; expiration: string | null }> {
   const res = await ok(
-    await gfetch(email, `${BASE}/calendars/${CAL}/events/watch`, {
+    await gfetch(email, `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/watch`, {
       method: "POST",
       body: JSON.stringify({
         id: channelId,
@@ -200,6 +245,7 @@ export interface SyncResult {
  */
 export async function syncEvents(
   email: string,
+  calendarId: string,
   syncToken: string | null,
   timeMinForBootstrap: string,
 ): Promise<SyncResult> {
@@ -221,7 +267,7 @@ export async function syncEvents(
 
     const res = await gfetch(
       email,
-      `${BASE}/calendars/${CAL}/events?${params.toString()}`,
+      `${BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`,
     );
     if (res.status === 410) throw new SyncTokenExpired();
     await ok(res, "events.list");

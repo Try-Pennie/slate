@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { liveWatchCount } from "@/lib/google/watch-health";
 import {
   createBucket,
   createEventType,
@@ -24,10 +23,19 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-// Wraps the pure counter with the current clock at module scope — calling
-// Date.now() directly in the component render trips react-hooks/purity.
-function watchedNow(agents: User[]): number {
-  return liveWatchCount(agents, Date.now());
+// User ids with at least one live (non-expired) calendar watch. At module
+// scope so the Date.now() call doesn't trip react-hooks/purity in render.
+function liveWatchedUserIds(
+  rows: { user_id: string; watch_expiration: string | null }[],
+): Set<string> {
+  const now = Date.now();
+  const set = new Set<string>();
+  for (const r of rows) {
+    if (r.watch_expiration && Date.parse(r.watch_expiration) > now) {
+      set.add(r.user_id);
+    }
+  }
+  return set;
 }
 
 const labelCls = "block text-xs font-medium text-neutral-500";
@@ -56,7 +64,7 @@ export default async function AdminPage({
   }
 
   const db = supabaseAdmin();
-  const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes] =
+  const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes] =
     await Promise.all([
       db.from("users").select("*").eq("org_id", me.org_id),
       db.from("event_types").select("*").eq("org_id", me.org_id),
@@ -69,6 +77,7 @@ export default async function AdminPage({
         .limit(1)
         .maybeSingle(),
       db.from("organizations").select("*").eq("id", me.org_id).single(),
+      db.from("agent_calendars").select("user_id, watch_expiration"),
     ]);
 
   const org = orgRes.data as Organization;
@@ -78,11 +87,14 @@ export default async function AdminPage({
   const members = (membersRes.data ?? []) as BucketMember[];
   const webhook = webhookRes.data as WebhookEndpoint | null;
 
-  // Push health: how many bookable agents have a live (non-expired) Google
-  // watch channel. A shortfall means external calendar edits for those agents
-  // only reach the cache via the 1-min cron backstop, not push.
+  // Push health: how many bookable agents have at least one live Google watch
+  // channel across their calendars. A shortfall means external calendar edits
+  // for those agents only reach the cache via the cron backstop, not push.
+  const watchedUserIds = liveWatchedUserIds(
+    (calsRes.data ?? []) as { user_id: string; watch_expiration: string | null }[],
+  );
   const bookableAgents = users.filter((u) => u.bookable);
-  const watchedCount = watchedNow(bookableAgents);
+  const watchedCount = bookableAgents.filter((u) => watchedUserIds.has(u.id)).length;
   const pushHealthy =
     bookableAgents.length > 0 && watchedCount === bookableAgents.length;
 

@@ -130,7 +130,20 @@ export interface BusyBlock {
   ends_at: string;
   source: BusySource;
   gcal_event_id: string | null;
+  calendar_id: string | null;
   booking_id: string | null;
+  created_at: string;
+}
+
+/** Per-calendar Google sync + push state for an agent (one row per calendar). */
+export interface AgentCalendar {
+  id: string;
+  user_id: string;
+  calendar_id: string;
+  sync_token: string | null;
+  watch_channel_id: string | null;
+  watch_resource_id: string | null;
+  watch_expiration: string | null;
   created_at: string;
 }
 

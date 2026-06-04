@@ -13,6 +13,22 @@ import {
 } from "@/lib/google/calendar";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import type { Booking, Bucket, EventType, User } from "@/lib/db/types";
+
+/** Calendar ids whose busy blocks an agent, looked up by their email. */
+async function calendarIdsForEmail(email: string): Promise<string[]> {
+  const db = supabaseAdmin();
+  const { data: user } = await db
+    .from("users")
+    .select("id")
+    .eq("email", email)
+    .maybeSingle();
+  if (!user) return [];
+  const { data } = await db
+    .from("agent_calendars")
+    .select("calendar_id")
+    .eq("user_id", (user as { id: string }).id);
+  return (data ?? []).map((r) => (r as { calendar_id: string }).calendar_id);
+}
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
   BookingContext,
@@ -33,7 +49,12 @@ function realDeps(): BookingDeps {
   return {
     resolveBucketByCode,
     roundRobinCandidates,
-    isFree,
+    // Verify-on-book checks ALL the agent's calendars (falls back to primary
+    // before the first sync has populated agent_calendars).
+    isFree: async (email, startIso, endIso) => {
+      const ids = await calendarIdsForEmail(email);
+      return isFree(email, startIso, endIso, ids.length ? ids : ["primary"]);
+    },
     createEvent,
     deleteEvent,
     updateEventTime,

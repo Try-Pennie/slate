@@ -4,6 +4,7 @@
  * are optional). Replace with `supabase gen types typescript` once linked.
  */
 import type {
+  AgentCalendar,
   AlertState,
   AvailabilityRule,
   AvailabilitySchedule,
@@ -45,6 +46,7 @@ export interface Database {
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;
+      agent_calendars: Table<AgentCalendar>;
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

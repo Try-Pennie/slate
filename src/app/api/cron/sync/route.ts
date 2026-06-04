@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
-import { ensureWatch, runIncrementalSync } from "@/lib/google/sync";
+import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
 import { shouldSendAlert, formatWatchLapseAlert } from "@/lib/notify/alerts";
 
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
     error?: string;
   }[] = [];
   for (const userId of userIds) {
-    const watch = await ensureWatch(userId);
+    const watch = await ensureWatches(userId);
     const row: (typeof results)[number] = {
       userId,
       watch: watch.status,
