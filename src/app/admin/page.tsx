@@ -183,7 +183,7 @@ export default async function AdminPage({
             </h2>
             <span
               className="inline-flex items-center gap-1.5 text-xs text-neutral-500"
-              title="Bookable agents with a live Google Calendar push watch channel. A shortfall means those agents rely on the 1-min cron backstop instead of push."
+              title="Bookable agents with a live Google Calendar push watch channel. A shortfall means those agents rely on the backup cron sync instead of push."
             >
               <span
                 className={`inline-block h-2 w-2 rounded-full ${
@@ -373,7 +373,7 @@ export default async function AdminPage({
                     }
                     className={inputCls}
                   >
-                    <option value="">—</option>
+                    <option value="">Not set</option>
                     <option value="true">Yes</option>
                     <option value="false">No</option>
                   </select>
@@ -387,7 +387,7 @@ export default async function AdminPage({
           {visibleAgents.length === 0 && (
             <p className="text-sm text-neutral-400">
               {users.length === 0
-                ? "No agents yet — sync from Salesforce or sign in."
+                ? "No agents yet. Sync from Salesforce or sign in."
                 : "No agents match your search."}
             </p>
           )}
@@ -507,7 +507,7 @@ export default async function AdminPage({
           Slate POSTs booking.* events here. <strong>Regal</strong> format sends
           the Regal event shape with your API key as the Authorization header;{" "}
           <strong>Generic</strong> sends a signed <code>{"{event,data}"}</code>{" "}
-          body (good for webhook.site / Cadence).
+          body (good for webhook.site).
         </p>
         {webhook && (
           <p className="mb-3 text-xs text-neutral-600">

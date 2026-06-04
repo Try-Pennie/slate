@@ -22,7 +22,7 @@ export function formatWatchLapseAlert(
   return (
     `Slate: ${watchErrors} of ${totalAgents} bookable agent calendar ` +
     `watch${watchErrors === 1 ? "" : "es"} failed to renew. Google push may be ` +
-    `degraded — availability is falling back to the 1-min cron sync. ` +
-    `Check the admin page (push N/M watched).`
+    `degraded, so availability is falling back to the backup cron sync. ` +
+    `Check the admin page for push status.`
   );
 }

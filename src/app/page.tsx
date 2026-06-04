@@ -5,8 +5,8 @@ export default function Home() {
     <main className="flex min-h-full flex-1 flex-col items-center justify-center gap-6 p-8 text-center">
       <h1 className="text-3xl font-semibold tracking-tight">Slate</h1>
       <p className="max-w-md text-sm text-neutral-500">
-        Availability-aware booking for Pennie — round-robin scheduling, Google
-        Calendar sync, an embeddable widget, and webhooks for Regal/Cadence.
+        Availability aware booking for Pennie. Round robin scheduling, Google
+        Calendar sync, an embeddable widget, and webhooks for Regal.
       </p>
       <div className="flex gap-3">
         <Link

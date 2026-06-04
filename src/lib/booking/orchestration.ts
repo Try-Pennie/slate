@@ -258,7 +258,7 @@ export async function createBooking(
 
   const gcalEventId = await deps.createEvent(email, {
     summary: `${eventType.name}${
-      input.attendee.name ? ` — ${input.attendee.name}` : ""
+      input.attendee.name ? ` with ${input.attendee.name}` : ""
     }`,
     description: phone
       ? `Booked via Slate. Phone: ${phone}`
@@ -362,7 +362,7 @@ export async function rescheduleBooking(
     }
     const newEventId = await deps.createEvent(next.email, {
       summary: `${eventType.name}${
-        booking.attendee_name ? ` — ${booking.attendee_name}` : ""
+        booking.attendee_name ? ` with ${booking.attendee_name}` : ""
       }`,
       start: startIso,
       end: endIso,

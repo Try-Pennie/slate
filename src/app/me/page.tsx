@@ -56,7 +56,7 @@ export default async function MePage() {
 
       {rules.length === 0 && (
         <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
-          <span>You have no working hours set — you won&apos;t get bookings.</span>
+          <span>You have no working hours set, so you won&apos;t get bookings.</span>
           <form action={useMyDefaultHours}>
             <button className={btnCls}>Use default hours</button>
           </form>
