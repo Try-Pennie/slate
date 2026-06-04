@@ -5,6 +5,7 @@ import { toE164 } from "../phone.ts";
 import {
   bookingWindow,
   busyBlockFor,
+  idempotencyKeyFor,
   selectAgent,
   type AssignResult,
   type BusyBlockInsert,
@@ -41,6 +42,8 @@ export interface CreateBookingInput {
   salesforceId?: string | null;
   attendee: { name?: string; email?: string; phone?: string };
   prefill: Record<string, string>;
+  /** Optional caller-supplied key; falls back to a derived bucket+slot+attendee key. */
+  idempotencyKey?: string;
 }
 
 export interface BookingResult {
@@ -76,6 +79,7 @@ export type BookingInsert = {
   prefill: Record<string, string>;
   gcal_event_id: string;
   manage_token: string;
+  idempotency_key: string | null;
 };
 
 /**
@@ -115,6 +119,7 @@ export interface BookingDeps {
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
+  findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
@@ -202,10 +207,33 @@ async function fire(
   );
 }
 
+function manageUrl(deps: BookingDeps, token: string): string {
+  return `${deps.appBaseUrl()}/booking/manage/${token}`;
+}
+
 export async function createBooking(
   input: CreateBookingInput,
   deps: BookingDeps,
 ): Promise<BookingResult> {
+  const idempotencyKey =
+    input.idempotencyKey ??
+    idempotencyKeyFor({
+      bucketCode: input.bucketCode,
+      startIso: input.startIso,
+      email: input.attendee.email,
+      phone: input.attendee.phone,
+      salesforceId: input.salesforceId,
+    });
+
+  // Fast path: a double-click / retry of the same submit returns the existing
+  // active booking instead of creating a second one (+ a second gcal event).
+  if (idempotencyKey) {
+    const existing = await deps.findBookingByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
+    }
+  }
+
   const resolved = await deps.resolveBucketByCode(input.bucketCode);
   if (!resolved) throw new Error("Unknown booking bucket");
   const { bucket, eventType } = resolved;
@@ -261,13 +289,24 @@ export async function createBooking(
     prefill: input.prefill,
     gcal_event_id: gcalEventId,
     manage_token: manageToken,
+    idempotency_key: idempotencyKey,
   });
 
   if (!inserted.ok) {
     // Roll back the calendar event so we don't orphan a hold.
     await deps.deleteEvent(email, gcalEventId).catch(() => {});
-    // A unique-slot conflict means another booking won this agent+slot race.
-    if (inserted.conflict) throw new SlotUnavailableError();
+    if (inserted.conflict) {
+      // Either a concurrent duplicate of THIS submit won the idempotency race
+      // (return their booking), or a different attendee took the slot first
+      // (genuinely unavailable). Disambiguate by the idempotency key.
+      if (idempotencyKey) {
+        const winner = await deps.findBookingByIdempotencyKey(idempotencyKey);
+        if (winner) {
+          return { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) };
+        }
+      }
+      throw new SlotUnavailableError();
+    }
     throw new Error("Failed to persist booking");
   }
   const booking = inserted.booking;
@@ -277,10 +316,7 @@ export async function createBooking(
 
   await fire(deps, "booking.created", booking, bucket, eventType);
 
-  return {
-    booking,
-    manageUrl: `${deps.appBaseUrl()}/booking/manage/${manageToken}`,
-  };
+  return { booking, manageUrl: manageUrl(deps, manageToken) };
 }
 
 export async function rescheduleBooking(
@@ -364,10 +400,7 @@ export async function rescheduleBooking(
   };
   await fire(deps, "booking.rescheduled", updated, bucket, eventType);
 
-  return {
-    booking: updated,
-    manageUrl: `${deps.appBaseUrl()}/booking/manage/${token}`,
-  };
+  return { booking: updated, manageUrl: manageUrl(deps, token) };
 }
 
 export async function cancelBooking(

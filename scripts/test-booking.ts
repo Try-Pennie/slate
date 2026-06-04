@@ -4,6 +4,7 @@
 import {
   bookingWindow,
   busyBlockFor,
+  idempotencyKeyFor,
   selectAgent,
 } from "../src/lib/booking/core.ts";
 
@@ -41,6 +42,36 @@ assert(
       booking_id: "bk1",
     }),
   "write-through block has the expected shape (source=slate)",
+);
+
+// --- idempotencyKeyFor ---
+const k1 = idempotencyKeyFor({
+  bucketCode: "411",
+  startIso: "2026-06-08T13:00:00.000Z",
+  email: "K@X.com",
+  phone: "+1 203 561 5295",
+  salesforceId: "sf1",
+});
+const k2 = idempotencyKeyFor({
+  bucketCode: "411",
+  startIso: "2026-06-08T13:00:00.000Z",
+  email: "k@x.com ",
+  phone: "+12035615295",
+  salesforceId: "sf1",
+});
+assert(k1 !== null && k1 === k2, "idempotency key stable across email case + phone whitespace");
+assert(
+  idempotencyKeyFor({ bucketCode: "411", startIso: "2026-06-08T14:00:00.000Z", phone: "+12035615295" }) !==
+    idempotencyKeyFor({ bucketCode: "411", startIso: "2026-06-08T13:00:00.000Z", phone: "+12035615295" }),
+  "different slot yields a different key",
+);
+assert(
+  idempotencyKeyFor({ bucketCode: "411", startIso: "2026-06-08T13:00:00.000Z" }) === null,
+  "no attendee identity yields null (no dedup)",
+);
+assert(
+  idempotencyKeyFor({ bucketCode: "411", startIso: "2026-06-08T13:00:00.000Z", salesforceId: "sf1" }) !== null,
+  "salesforceId alone is enough identity",
 );
 
 // --- selectAgent (verify-on-book) ---

@@ -148,6 +148,7 @@ export interface Booking {
   prefill: Record<string, string>;
   gcal_event_id: string | null;
   manage_token: string;
+  idempotency_key: string | null;
   created_at: string;
   updated_at: string;
 }

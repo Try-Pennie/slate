@@ -74,6 +74,8 @@ interface FakeOpts {
   freeEmails?: Set<string>;
   insertBookingFails?: boolean;
   insertBookingConflict?: boolean;
+  existingByKey?: Booking | null; // idempotency hit on the pre-check
+  conflictWinner?: Booking | null; // booking found by key AFTER an insert conflict
   existing?: BookingContext | null;
   pastDue?: BookingContext[];
 }
@@ -90,6 +92,7 @@ function makeDeps(opts: FakeOpts) {
     webhooks: [] as { event: string }[],
   };
   let seq = 0;
+  let insertAttempted = false;
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   const deps: BookingDeps = {
     resolveBucketByCode: async () => ({ bucket, eventType }),
@@ -109,7 +112,13 @@ function makeDeps(opts: FakeOpts) {
       calls.updateEventTime.push({ id });
     },
     getUser: async (id) => users[id],
+    // Before any insert: idempotency pre-check (existingByKey). After an insert
+    // conflict: the key-winner lookup (conflictWinner). Lets one fake model the
+    // "nobody yet → race → winner found" sequence.
+    findBookingByIdempotencyKey: async () =>
+      (insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null,
     insertBooking: async (row) => {
+      insertAttempted = true;
       if (opts.insertBookingConflict) return { ok: false, conflict: true };
       if (opts.insertBookingFails) return { ok: false, conflict: false };
       return { ok: true, booking: { ...row, id: "bk-new" } as unknown as Booking };
@@ -202,6 +211,44 @@ async function run() {
       "create-conflict: rolls back the calendar event",
     );
     assert(calls.insertBusyBlock.length === 0 && calls.webhooks.length === 0, "create-conflict: no busy block / webhook");
+  }
+
+  // --- idempotency: double-submit returns the existing booking (fast path) ---
+  {
+    const existing = makeBooking({ id: "bk-existing", manage_token: "tok-existing" });
+    const { deps, calls } = makeDeps({ existingByKey: existing });
+    const res = await createBooking(input, deps);
+    assert(res.booking.id === "bk-existing", "idempotency: returns the existing booking on replay");
+    assert(
+      res.manageUrl === "https://slate.test/booking/manage/tok-existing",
+      "idempotency: manage URL points at the existing booking",
+    );
+    assert(calls.createEvent.length === 0, "idempotency: no calendar event created on replay");
+    assert(
+      calls.insertBusyBlock.length === 0 && calls.webhooks.length === 0,
+      "idempotency: no insert / busy block / webhook on replay",
+    );
+  }
+
+  // --- idempotency: concurrent duplicate loses the insert race, gets the winner ---
+  {
+    const winner = makeBooking({ id: "bk-winner", manage_token: "tok-winner" });
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      insertBookingConflict: true,
+      conflictWinner: winner, // not visible at pre-check, found after the conflict
+    });
+    const res = await createBooking(input, deps);
+    assert(res.booking.id === "bk-winner", "idempotency race: returns the winning booking, not an error");
+    assert(
+      res.manageUrl === "https://slate.test/booking/manage/tok-winner",
+      "idempotency race: manage URL points at the winner",
+    );
+    assert(
+      calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
+      "idempotency race: the loser's calendar event was rolled back",
+    );
   }
 
   // --- createBooking: verify-on-book walks past busy A to free B ---

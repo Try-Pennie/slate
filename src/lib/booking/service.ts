@@ -50,6 +50,18 @@ function realDeps(): BookingDeps {
       return data as User;
     },
 
+    findBookingByIdempotencyKey: async (key) => {
+      // Active only — matches the partial unique index, so a cancelled booking
+      // never blocks (or gets returned for) a fresh rebook of the same slot.
+      const { data } = await supabaseAdmin()
+        .from("bookings")
+        .select("*")
+        .eq("idempotency_key", key)
+        .in("status", ["confirmed", "rescheduled"])
+        .maybeSingle();
+      return (data as Booking | null) ?? null;
+    },
+
     insertBooking: async (row) => {
       const { data, error } = await supabaseAdmin()
         .from("bookings")

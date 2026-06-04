@@ -16,6 +16,28 @@ export function bookingWindow(
   return { startIso: start, endIso: end };
 }
 
+/**
+ * Stable idempotency key for a booking submission: same bucket + slot + attendee
+ * identity → same key, so a double-clicked/retried submit dedupes to one booking.
+ * Returns null when there's NO identity (no email/phone/salesforceId) — without
+ * an identity we can't safely dedupe (two different anonymous people booking the
+ * same slot must not collapse), so the active-slot unique index is the only guard.
+ */
+export function idempotencyKeyFor(parts: {
+  bucketCode: string;
+  startIso: string;
+  email?: string;
+  phone?: string;
+  salesforceId?: string | null;
+}): string | null {
+  const email = parts.email?.trim().toLowerCase() ?? "";
+  const phone = parts.phone?.replace(/\s+/g, "") ?? "";
+  const sf = parts.salesforceId ?? "";
+  if (!email && !phone && !sf) return null;
+  const start = new Date(parts.startIso).toISOString();
+  return [parts.bucketCode, start, email, phone, sf].join("|");
+}
+
 export interface AssignResult {
   userId: string;
   email: string;
