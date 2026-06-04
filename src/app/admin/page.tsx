@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { liveWatchCount } from "@/lib/google/watch-health";
 import {
   createBucket,
   createEventType,
@@ -23,12 +24,10 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-/** Bookable agents with a live (non-expired) Google push watch channel. */
-function liveWatchCount(agents: User[]): number {
-  const now = Date.now();
-  return agents.filter(
-    (u) => u.watch_expiration && Date.parse(u.watch_expiration) > now,
-  ).length;
+// Wraps the pure counter with the current clock at module scope — calling
+// Date.now() directly in the component render trips react-hooks/purity.
+function watchedNow(agents: User[]): number {
+  return liveWatchCount(agents, Date.now());
 }
 
 const labelCls = "block text-xs font-medium text-neutral-500";
@@ -83,7 +82,7 @@ export default async function AdminPage({
   // watch channel. A shortfall means external calendar edits for those agents
   // only reach the cache via the 1-min cron backstop, not push.
   const bookableAgents = users.filter((u) => u.bookable);
-  const watchedCount = liveWatchCount(bookableAgents);
+  const watchedCount = watchedNow(bookableAgents);
   const pushHealthy =
     bookableAgents.length > 0 && watchedCount === bookableAgents.length;
 

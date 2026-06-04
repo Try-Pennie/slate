@@ -30,10 +30,7 @@ jobs:
         run: pnpm lint
 
       - name: Unit tests
-        run: |
-          node --experimental-strip-types scripts/test-compute.ts
-          node --experimental-strip-types scripts/test-match.ts
-          node --experimental-strip-types scripts/test-regal.ts
+        run: pnpm test
 
       - name: Build (Cloudflare / OpenNext)
         run: pnpm cf:build
