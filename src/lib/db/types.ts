@@ -118,6 +118,11 @@ export interface AvailabilityRule {
   end_minute: number;
 }
 
+export interface AlertState {
+  key: string;
+  last_sent_at: string;
+}
+
 export interface BusyBlock {
   id: string;
   user_id: string;

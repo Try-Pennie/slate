@@ -63,5 +63,10 @@ export const cronSecret = (): string => requireEnv("CRON_SECRET");
 export const googleChannelToken = (): string =>
   requireEnv("GOOGLE_CHANNEL_TOKEN");
 
+// Slack notifier (optional). Empty = notifications are no-ops.
+export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
+export const slackAlertsChannel = (): string =>
+  process.env.SLACK_ALERTS_CHANNEL ?? "";
+
 export const googleRedirectUri = (): string => `${appUrl()}/api/auth/google/callback`;
 export const googlePushUrl = (): string => `${appUrl()}/api/google/push`;
