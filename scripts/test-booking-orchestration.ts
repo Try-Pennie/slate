@@ -73,6 +73,7 @@ interface FakeOpts {
   candidates?: string[];
   freeEmails?: Set<string>;
   insertBookingFails?: boolean;
+  insertBookingConflict?: boolean;
   existing?: BookingContext | null;
   pastDue?: BookingContext[];
 }
@@ -86,7 +87,6 @@ function makeDeps(opts: FakeOpts) {
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
-    advanceRR: [] as { userId: string }[],
     webhooks: [] as { event: string }[],
   };
   let seq = 0;
@@ -109,8 +109,11 @@ function makeDeps(opts: FakeOpts) {
       calls.updateEventTime.push({ id });
     },
     getUser: async (id) => users[id],
-    insertBooking: async (row) =>
-      opts.insertBookingFails ? null : ({ ...row, id: "bk-new" } as unknown as Booking),
+    insertBooking: async (row) => {
+      if (opts.insertBookingConflict) return { ok: false, conflict: true };
+      if (opts.insertBookingFails) return { ok: false, conflict: false };
+      return { ok: true, booking: { ...row, id: "bk-new" } as unknown as Booking };
+    },
     insertBusyBlock: async (block) => {
       calls.insertBusyBlock.push(block);
     },
@@ -119,9 +122,6 @@ function makeDeps(opts: FakeOpts) {
     },
     updateBooking: async (id, patch) => {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
-    },
-    advanceRoundRobin: async (_bucketId, userId) => {
-      calls.advanceRR.push({ userId });
     },
     loadBookingContext: async () => opts.existing ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
@@ -156,7 +156,6 @@ async function run() {
         calls.insertBusyBlock[0].ends_at === "2026-06-08T13:30:00.000Z",
       "create: busy block spans the booked slot (30m)",
     );
-    assert(calls.advanceRR.length === 1 && calls.advanceRR[0].userId === "a", "create: RR pointer advanced to booked agent");
     assert(calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created", "create: fires booking.created");
     assert(calls.deleteEvent.length === 0, "create: no rollback on success");
   }
@@ -181,8 +180,28 @@ async function run() {
       "create-fail: rolls back the created calendar event",
     );
     assert(calls.insertBusyBlock.length === 0, "create-fail: no busy block written");
-    assert(calls.advanceRR.length === 0, "create-fail: RR not advanced");
     assert(calls.webhooks.length === 0, "create-fail: no webhook fired");
+  }
+
+  // --- createBooking: unique-slot conflict (verify-on-book race loser) ---
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      insertBookingConflict: true,
+    });
+    let err: unknown;
+    try {
+      await createBooking(input, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err instanceof SlotUnavailableError, "create-conflict: unique-slot conflict throws SlotUnavailableError");
+    assert(
+      calls.createEvent.length === 1 && calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-1",
+      "create-conflict: rolls back the calendar event",
+    );
+    assert(calls.insertBusyBlock.length === 0 && calls.webhooks.length === 0, "create-conflict: no busy block / webhook");
   }
 
   // --- createBooking: verify-on-book walks past busy A to free B ---
@@ -191,7 +210,6 @@ async function run() {
     const res = await createBooking(input, deps);
     assert(res.booking.assigned_user_id === "b", "create: skips busy A, books free B");
     assert(calls.isFree.length === 2, "create: checked A then B (one free-check each)");
-    assert(calls.advanceRR[0].userId === "b", "create: RR advanced to B");
   }
 
   // --- createBooking: no free candidate ---
@@ -217,7 +235,6 @@ async function run() {
       "reschedule(same agent): moves the existing event in place",
     );
     assert(calls.createEvent.length === 0 && calls.deleteEvent.length === 0, "reschedule(same agent): no new/old event churn");
-    assert(calls.advanceRR.length === 0, "reschedule(same agent): RR pointer NOT advanced");
     assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reschedule: busy block moved");
     assert(res.booking.status === "rescheduled" && res.booking.starts_at === "2026-06-09T14:00:00.000Z", "reschedule: status + new start applied");
     assert(calls.webhooks[0].event === "booking.rescheduled", "reschedule: fires booking.rescheduled");
@@ -232,7 +249,6 @@ async function run() {
     assert(calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-old", "reschedule(reassign): old event deleted");
     assert(calls.createEvent.length === 1, "reschedule(reassign): new event created for B");
     assert(calls.updateEventTime.length === 0, "reschedule(reassign): no in-place move");
-    assert(calls.advanceRR.length === 1 && calls.advanceRR[0].userId === "b", "reschedule(reassign): RR advanced to B");
   }
 
   // --- reschedule: terminal states / not found ---

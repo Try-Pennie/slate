@@ -78,6 +78,15 @@ export type BookingInsert = {
   manage_token: string;
 };
 
+/**
+ * insertBooking outcome. `conflict` means the active-slot unique index rejected
+ * the row (23505) — another booking won the verify-on-book race for this
+ * agent+slot; the caller turns it into SlotUnavailableError.
+ */
+export type InsertBookingResult =
+  | { ok: true; booking: Booking }
+  | { ok: false; conflict: boolean };
+
 export type BookingUpdate = {
   starts_at?: string;
   ends_at?: string;
@@ -106,11 +115,10 @@ export interface BookingDeps {
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
-  insertBooking(row: BookingInsert): Promise<Booking | null>;
+  insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
-  advanceRoundRobin(bucketId: string, userId: string): Promise<void>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
@@ -235,7 +243,7 @@ export async function createBooking(
   });
 
   const manageToken = deps.newManageToken();
-  const booking = await deps.insertBooking({
+  const inserted = await deps.insertBooking({
     org_id: bucket.org_id,
     bucket_id: bucket.id,
     event_type_id: eventType.id,
@@ -255,17 +263,17 @@ export async function createBooking(
     manage_token: manageToken,
   });
 
-  if (!booking) {
+  if (!inserted.ok) {
     // Roll back the calendar event so we don't orphan a hold.
     await deps.deleteEvent(email, gcalEventId).catch(() => {});
+    // A unique-slot conflict means another booking won this agent+slot race.
+    if (inserted.conflict) throw new SlotUnavailableError();
     throw new Error("Failed to persist booking");
   }
+  const booking = inserted.booking;
 
   // Write-through: the cache reflects this booking immediately.
   await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
-
-  // Advance the round-robin pointer.
-  await deps.advanceRoundRobin(bucket.id, userId);
 
   await fire(deps, "booking.created", booking, bucket, eventType);
 
@@ -298,7 +306,6 @@ export async function rescheduleBooking(
   let assigned: string | null = booking.assigned_user_id;
   let agentName = booking.agent_name;
   let agentEmail = booking.agent_email;
-  let movedAgents = false;
   if (currentEmail && (await deps.isFree(currentEmail, startIso, endIso))) {
     await deps.updateEventTime(
       currentEmail,
@@ -311,7 +318,6 @@ export async function rescheduleBooking(
     // Reassign via round-robin; create a fresh event, drop the old one.
     const next = await assignAgent(deps, bucket, eventType, startIso, endIso);
     assigned = next.userId;
-    movedAgents = true;
     const newAgent = await deps.getUser(next.userId);
     agentName = newAgent.name;
     agentEmail = newAgent.email;
@@ -346,10 +352,6 @@ export async function rescheduleBooking(
   // Move the write-through busy block.
   await deps.deleteBusyBlocksForBooking(booking.id);
   await deps.insertBusyBlock(busyBlockFor(assigned, startIso, endIso, booking.id));
-
-  if (movedAgents) {
-    await deps.advanceRoundRobin(bucket.id, assigned);
-  }
 
   const updated = {
     ...booking,

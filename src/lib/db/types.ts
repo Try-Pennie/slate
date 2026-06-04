@@ -89,7 +89,6 @@ export interface Bucket {
   name: string;
   event_type_id: string;
   assignment: "round_robin";
-  rr_last_assigned_user_id: string | null;
   criteria: Criteria;
   created_at: string;
 }

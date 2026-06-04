@@ -57,10 +57,13 @@ function realDeps(): BookingDeps {
         .select("*")
         .single();
       if (error || !data) {
-        console.error("insertBooking failed:", error?.message);
-        return null;
+        // 23505 = unique_violation: the active-slot index rejected a racing
+        // double-book. Surface it as a conflict (→ SlotUnavailableError).
+        const conflict = error?.code === "23505";
+        if (!conflict) console.error("insertBooking failed:", error?.message);
+        return { ok: false, conflict };
       }
-      return data as Booking;
+      return { ok: true, booking: data as Booking };
     },
 
     insertBusyBlock: async (block) => {
@@ -76,13 +79,6 @@ function realDeps(): BookingDeps {
 
     updateBooking: async (bookingId, patch) => {
       await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
-    },
-
-    advanceRoundRobin: async (bucketId, userId) => {
-      await supabaseAdmin()
-        .from("buckets")
-        .update({ rr_last_assigned_user_id: userId })
-        .eq("id", bucketId);
     },
 
     loadBookingContext: async (token) => {

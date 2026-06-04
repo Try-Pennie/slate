@@ -5,6 +5,7 @@ import {
   type MemberAvailability,
 } from "@/lib/availability/compute";
 import { matchesCriteria } from "@/lib/availability/match";
+import { orderByLeastRecentlyBooked } from "@/lib/availability/roundrobin";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
 
 /**
@@ -175,8 +176,10 @@ export async function getBucketSlots(
 
 /**
  * Round-robin candidate order for a specific slot: the cached-free members,
- * rotated so the agent after `rrLastUserId` is tried first. Verify-on-book then
- * confirms with a single live Google check before committing.
+ * ordered least-recently-booked first (the agent booked longest ago, or never,
+ * is tried first). Verify-on-book then confirms with a single live Google check
+ * before committing. No mutable pointer — fair under concurrency and immune to
+ * the reschedule double-count the old `rr_last_assigned_user_id` rotation had.
  */
 export async function roundRobinCandidates(
   bucket: Bucket,
@@ -205,11 +208,21 @@ export async function roundRobinCandidates(
     },
     startMs,
   );
+  if (free.length <= 1) return free;
 
-  // Rotate so the member after the last-assigned is first (even RR distribution).
-  const lastIdx = bucket.rr_last_assigned_user_id
-    ? free.indexOf(bucket.rr_last_assigned_user_id)
-    : -1;
-  if (lastIdx === -1) return free;
-  return [...free.slice(lastIdx + 1), ...free.slice(0, lastIdx + 1)];
+  // Newest active booking per free agent → least-recently-booked goes first.
+  const { data } = await supabaseAdmin()
+    .from("bookings")
+    .select("assigned_user_id, created_at")
+    .in("assigned_user_id", free)
+    .in("status", ["confirmed", "rescheduled", "completed"]);
+
+  const lastBookedAtMs: Record<string, number | null> = {};
+  for (const r of (data ?? []) as { assigned_user_id: string; created_at: string }[]) {
+    const t = Date.parse(r.created_at);
+    const prev = lastBookedAtMs[r.assigned_user_id];
+    if (prev == null || t > prev) lastBookedAtMs[r.assigned_user_id] = t;
+  }
+
+  return orderByLeastRecentlyBooked(free, lastBookedAtMs);
 }
