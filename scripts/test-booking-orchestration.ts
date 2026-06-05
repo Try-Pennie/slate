@@ -386,6 +386,11 @@ async function run() {
       !!patch && patch.allow_double_book === true && patch.assigned_user_id === "b",
       "reassign: marks allow_double_book and the new agent",
     );
+    assert(
+      patch?.routing_trace?.reassignments?.[0]?.from === "a" &&
+        patch?.routing_trace?.reassignments?.[0]?.to === "b",
+      "reassign: records the override in routing_trace",
+    );
     assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reassign: busy block moved to the owner");
     assert(calls.webhooks.some((w) => w.event === "booking.rescheduled"), "reassign: fires booking.rescheduled");
   }

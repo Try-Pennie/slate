@@ -181,6 +181,8 @@ export interface RoutingTrace {
   considered: string[];
   chosen_user_id: string;
   fallback_applied: boolean;
+  /** Manual overrides via the reassign API, in order (contact-owner stickiness). */
+  reassignments?: { from: string | null; to: string; at: string }[];
 }
 
 export type WebhookFormat = "generic" | "regal";

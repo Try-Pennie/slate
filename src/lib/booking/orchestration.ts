@@ -102,6 +102,7 @@ export type BookingUpdate = {
   status?: Booking["status"];
   gcal_event_id?: string | null;
   allow_double_book?: boolean;
+  routing_trace?: RoutingTrace | null;
 };
 
 export interface BookingContext {
@@ -463,6 +464,26 @@ export async function reassignBooking(
     attendeeName: booking.attendee_name ?? undefined,
   });
 
+  // Record the override on the trace so the viewer can show who reassigned whom.
+  const reassignment = {
+    from: booking.assigned_user_id,
+    to: agent.id,
+    at: new Date().toISOString(),
+  };
+  const nextTrace: RoutingTrace = booking.routing_trace
+    ? {
+        ...booking.routing_trace,
+        reassignments: [...(booking.routing_trace.reassignments ?? []), reassignment],
+      }
+    : {
+        bucket_code: bucket.code,
+        bucket_id: bucket.id,
+        considered: [],
+        chosen_user_id: booking.assigned_user_id ?? "",
+        fallback_applied: false,
+        reassignments: [reassignment],
+      };
+
   await deps.updateBooking(booking.id, {
     assigned_user_id: agent.id,
     agent_name: agent.name,
@@ -470,6 +491,7 @@ export async function reassignBooking(
     gcal_event_id: newEventId,
     status: "rescheduled",
     allow_double_book: true,
+    routing_trace: nextTrace,
   });
 
   await deps.deleteBusyBlocksForBooking(booking.id);
@@ -485,6 +507,7 @@ export async function reassignBooking(
     gcal_event_id: newEventId,
     status: "rescheduled" as const,
     allow_double_book: true,
+    routing_trace: nextTrace,
   };
   await fire(deps, "booking.rescheduled", updated, bucket, eventType);
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };

@@ -17,14 +17,26 @@ import {
   useDefaultHours,
 } from "@/app/admin/actions";
 import type {
+  Booking,
   Bucket,
   BucketMember,
   Criteria,
   EventType,
   Organization,
+  RoutingTrace,
   User,
   WebhookEndpoint,
 } from "@/lib/db/types";
+
+type TraceRow = Pick<
+  Booking,
+  | "id"
+  | "attendee_name"
+  | "attendee_email"
+  | "attendee_phone"
+  | "starts_at"
+  | "assigned_user_id"
+> & { routing_trace: RoutingTrace | null };
 
 export const dynamic = "force-dynamic";
 
@@ -226,7 +238,7 @@ export default async function AdminPage({
   }
 
   const db = supabaseAdmin();
-  const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes] =
+  const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes, recentRes] =
     await Promise.all([
       db.from("users").select("*").eq("org_id", me.org_id),
       db.from("event_types").select("*").eq("org_id", me.org_id),
@@ -240,6 +252,14 @@ export default async function AdminPage({
         .maybeSingle(),
       db.from("organizations").select("*").eq("id", me.org_id).single(),
       db.from("agent_calendars").select("user_id, watch_expiration"),
+      db
+        .from("bookings")
+        .select(
+          "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, routing_trace",
+        )
+        .eq("org_id", me.org_id)
+        .order("created_at", { ascending: false })
+        .limit(25),
     ]);
 
   const org = orgRes.data as Organization;
@@ -250,6 +270,12 @@ export default async function AdminPage({
   // Routing editor offers only attribute keys/values that exist on agents.
   const attrCatalog = deriveAttributeCatalog(users.map((u) => u.attributes));
   const webhook = webhookRes.data as WebhookEndpoint | null;
+
+  // Routing trace viewer: recent bookings + how each one routed.
+  const recent = (recentRes.data ?? []) as TraceRow[];
+  const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
+  const nameOf = (id: string | null) =>
+    id ? (agentName.get(id) ?? id.slice(0, 8)) : "unassigned";
 
   // Push health: how many bookable agents have at least one live Google watch
   // channel across their calendars. A shortfall means external calendar edits
@@ -645,6 +671,71 @@ export default async function AdminPage({
             catalog={attrCatalog}
           />
         </div>
+      </section>
+
+      {/* Recent routing (trace viewer) */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Recent routing</h2>
+        <p className="mb-3 text-xs text-neutral-500">
+          How the last {recent.length} bookings routed: agents considered, who
+          was chosen, whether the fallback fired, and any manual reassignments.
+        </p>
+        {recent.length === 0 ? (
+          <p className="text-sm text-neutral-500">No bookings yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-neutral-500">
+                <tr>
+                  <th className="py-1 pr-3 font-medium">When</th>
+                  <th className="py-1 pr-3 font-medium">Lead</th>
+                  <th className="py-1 pr-3 font-medium">Bucket</th>
+                  <th className="py-1 pr-3 font-medium">Routed to</th>
+                  <th className="py-1 font-medium">Trace</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((b) => {
+                  const t = b.routing_trace;
+                  const lead =
+                    b.attendee_name || b.attendee_email || b.attendee_phone || "(none)";
+                  return (
+                    <tr key={b.id} className="border-t border-neutral-100 align-top">
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-neutral-600">
+                        {new Date(b.starts_at).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="py-1.5 pr-3">{lead}</td>
+                      <td className="py-1.5 pr-3 text-neutral-600">{t?.bucket_code ?? "?"}</td>
+                      <td className="py-1.5 pr-3 font-medium">{nameOf(b.assigned_user_id)}</td>
+                      <td className="py-1.5 text-neutral-500">
+                        {t ? (
+                          <div className="space-y-0.5">
+                            <div>
+                              {t.considered.length} considered
+                              {t.fallback_applied ? " · fallback used" : ""}
+                            </div>
+                            {(t.reassignments ?? []).map((r, i) => (
+                              <div key={i} className="text-amber-600">
+                                reassigned {nameOf(r.from)} → {nameOf(r.to)}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          "no trace"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       {/* Reassign API key */}
