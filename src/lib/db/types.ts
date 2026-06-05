@@ -90,6 +90,8 @@ export interface Bucket {
   event_type_id: string;
   assignment: "round_robin";
   criteria: Criteria;
+  /** Optional cal.com routing-form UUID this bucket maps to (drop-in swap, #15). */
+  routing_form_id: string | null;
   created_at: string;
 }
 

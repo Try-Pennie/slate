@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import {
   createBucket,
   createEventType,
@@ -10,11 +11,13 @@ import {
   setWebhookEndpoint,
   setWorkingHours,
   syncSalesforceNow,
+  updateBucket,
   useDefaultHours,
 } from "@/app/admin/actions";
 import type {
   Bucket,
   BucketMember,
+  Criteria,
   EventType,
   Organization,
   User,
@@ -44,6 +47,131 @@ const inputCls =
 const cardCls = "rounded-lg border border-neutral-200 p-5";
 const btnCls =
   "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800";
+
+/** Checkbox grid of routable attribute keys/values, derived from live agents. */
+function CriteriaEditor({
+  catalog,
+  current,
+}: {
+  catalog: Record<string, string[]>;
+  current: Criteria;
+}) {
+  const keys = Object.keys(catalog);
+  if (keys.length === 0) {
+    return (
+      <p className="mt-1 text-xs text-neutral-400">
+        No agent attributes synced yet — sync from Salesforce to route by attribute.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-1 space-y-2">
+      {keys.map((key) => {
+        const cur = current[key];
+        const selected = new Set(
+          (Array.isArray(cur) ? cur : cur != null ? [cur] : []).map(String),
+        );
+        return (
+          <div key={key} className="flex flex-wrap items-center gap-2">
+            <code className="rounded bg-neutral-100 px-1 text-xs">{key}</code>
+            {catalog[key].map((v) => (
+              <label key={v} className="flex items-center gap-1 text-xs">
+                <input
+                  type="checkbox"
+                  name={`crit_${key}`}
+                  value={v}
+                  defaultChecked={selected.has(v)}
+                />
+                {v}
+              </label>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Create/edit form for one bucket (shared between the list rows and "new"). */
+function BucketForm({
+  bucket,
+  eventTypes,
+  users,
+  memberIds,
+  catalog,
+}: {
+  bucket?: Bucket;
+  eventTypes: EventType[];
+  users: User[];
+  memberIds: Set<string>;
+  catalog: Record<string, string[]>;
+}) {
+  const editing = !!bucket;
+  return (
+    <form
+      action={editing ? updateBucket : createBucket}
+      className="space-y-3 rounded-md border border-neutral-200 p-3"
+    >
+      {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className={labelCls}>Code (xbc)</label>
+          <input name="code" defaultValue={bucket?.code ?? ""} className={`${inputCls} w-28`} required />
+        </div>
+        <div>
+          <label className={labelCls}>Name</label>
+          <input name="name" defaultValue={bucket?.name ?? ""} className={inputCls} required />
+        </div>
+        <div>
+          <label className={labelCls}>Event type</label>
+          <select
+            name="event_type_id"
+            defaultValue={bucket?.event_type_id ?? ""}
+            className={inputCls}
+            required
+          >
+            {eventTypes.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={labelCls}>Cal routing form id (optional)</label>
+          <input
+            name="routing_form_id"
+            defaultValue={bucket?.routing_form_id ?? ""}
+            className={`${inputCls} w-44`}
+          />
+        </div>
+      </div>
+      <div>
+        <span className={labelCls}>
+          Route to agents matching every group below (any value within a group)
+        </span>
+        <CriteriaEditor catalog={catalog} current={bucket?.criteria ?? {}} />
+      </div>
+      <div>
+        <label className={labelCls}>Manual members (optional)</label>
+        <div className="mt-1 flex flex-wrap gap-3">
+          {users.map((u) => (
+            <label key={u.id} className="flex items-center gap-1 text-sm">
+              <input
+                type="checkbox"
+                name="members"
+                value={u.id}
+                defaultChecked={memberIds.has(u.id)}
+              />
+              {u.name ?? u.email}
+            </label>
+          ))}
+        </div>
+      </div>
+      <button className={btnCls}>{editing ? "Save bucket" : "Create bucket"}</button>
+    </form>
+  );
+}
 
 export default async function AdminPage({
   searchParams,
@@ -85,6 +213,8 @@ export default async function AdminPage({
   const eventTypes = (eventTypesRes.data ?? []) as EventType[];
   const buckets = (bucketsRes.data ?? []) as Bucket[];
   const members = (membersRes.data ?? []) as BucketMember[];
+  // Routing editor offers only attribute keys/values that exist on agents.
+  const attrCatalog = deriveAttributeCatalog(users.map((u) => u.attributes));
   const webhook = webhookRes.data as WebhookEndpoint | null;
 
   // Push health: how many bookable agents have at least one live Google watch
@@ -446,70 +576,41 @@ export default async function AdminPage({
 
       {/* Buckets */}
       <section className={cardCls}>
-        <h2 className="mb-4 text-sm font-semibold">Buckets (round-robin pools)</h2>
-        <ul className="mb-4 space-y-1 text-sm">
-          {buckets.map((b) => {
-            const count = members.filter((m) => m.bucket_id === b.id).length;
-            const et = eventTypes.find((e) => e.id === b.event_type_id);
-            return (
-              <li key={b.id} className="text-neutral-700">
-                <code className="rounded bg-neutral-100 px-1">{b.code}</code>{" "}
-                {b.name} · {et?.name ?? "?"} · {count} manual
-                {Object.keys(b.criteria ?? {}).length
-                  ? ` · routes: ${Object.entries(b.criteria)
-                      .map(([k, v]) => `${k}=${v}`)
-                      .join(", ")}`
-                  : ""}
-              </li>
-            );
-          })}
-          {buckets.length === 0 && <li className="text-neutral-400">None yet.</li>}
-        </ul>
-        <form action={createBucket} className="space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <Field name="code" label="Code (xbc)" defaultValue="411" small />
-            <Field name="name" label="Name" defaultValue="Debt consolidation" />
-            <div>
-              <label className={labelCls}>Event type</label>
-              <select name="event_type_id" className={inputCls} required>
-                {eventTypes.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-end gap-3">
-            <Field name="crit_debt_team" label="Route: debt team" defaultValue="" small />
-            <Field name="crit_backend_service" label="Route: backend" defaultValue="" small />
-            <Field name="crit_role" label="Route: role" defaultValue="" small />
-            <div>
-              <label className={labelCls}>Route: legal elig.</label>
-              <select name="crit_legal_eligible" defaultValue="" className={inputCls}>
-                <option value="">any</option>
-                <option value="true">Yes</option>
-                <option value="false">No</option>
-              </select>
-            </div>
-          </div>
-          <p className="text-xs text-neutral-400">
-            Routing matches agents by attribute (e.g. debt team{" "}
-            <code>ultra_high</code>). Leave blank to pick members manually below.
-          </p>
-          <div>
-            <label className={labelCls}>Members (optional manual additions)</label>
-            <div className="mt-1 flex flex-wrap gap-3">
-              {users.map((u) => (
-                <label key={u.id} className="flex items-center gap-1 text-sm">
-                  <input type="checkbox" name="members" value={u.id} />
-                  {u.name ?? u.email}
-                </label>
-              ))}
-            </div>
-          </div>
-          <button className={btnCls}>Create bucket</button>
-        </form>
+        <h2 className="mb-1 text-sm font-semibold">Buckets (round-robin pools)</h2>
+        <p className="mb-4 text-xs text-neutral-400">
+          Edit routing live — changes apply without a deploy. Routing matches
+          agents by attribute; leave all groups empty to pick members manually.
+        </p>
+        <div className="space-y-4">
+          {buckets.map((b) => (
+            <BucketForm
+              key={b.id}
+              bucket={b}
+              eventTypes={eventTypes}
+              users={users}
+              memberIds={
+                new Set(
+                  members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
+                )
+              }
+              catalog={attrCatalog}
+            />
+          ))}
+          {buckets.length === 0 && (
+            <p className="text-sm text-neutral-400">None yet.</p>
+          )}
+        </div>
+        <div className="mt-6">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+            New bucket
+          </h3>
+          <BucketForm
+            eventTypes={eventTypes}
+            users={users}
+            memberIds={new Set()}
+            catalog={attrCatalog}
+          />
+        </div>
       </section>
 
       {/* Webhooks */}

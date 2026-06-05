@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { currentUser, requireAdmin } from "@/lib/auth";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
-import type { Attributes } from "@/lib/db/types";
+import type { Attributes, Criteria } from "@/lib/db/types";
 
 /** Replaces a user's weekly schedule (one schedule row + its rules). */
 async function replaceUserSchedule(
@@ -137,18 +137,39 @@ export async function createEventType(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
-const ROUTING_KEYS = ["debt_team", "backend_service", "role", "legal_eligible"];
+/**
+ * Routing criteria from the editor's dynamic `crit_<key>` checkboxes. Any key
+ * is allowed (no hardcoded list), so new attribute dimensions need no deploy;
+ * the admin UI offers only keys/values that exist on agents (see catalog.ts).
+ * Repeated `crit_<key>` values become an array (matchesCriteria intersects).
+ */
+function criteriaFromForm(form: FormData): Criteria {
+  const out: Record<string, string[]> = {};
+  for (const [k, v] of form.entries()) {
+    if (!k.startsWith("crit_") || typeof v !== "string") continue;
+    const val = v.trim();
+    if (!val) continue;
+    (out[k.slice(5)] ??= []).push(val);
+  }
+  return out;
+}
+
+async function replaceBucketMembers(
+  bucketId: string,
+  memberIds: string[],
+): Promise<void> {
+  const db = supabaseAdmin();
+  await db.from("bucket_members").delete().eq("bucket_id", bucketId);
+  if (memberIds.length) {
+    await db
+      .from("bucket_members")
+      .insert(memberIds.map((user_id) => ({ bucket_id: bucketId, user_id })));
+  }
+}
 
 export async function createBucket(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const memberIds = form.getAll("members").map(String).filter(Boolean);
-
-  // Build attribute criteria from any filled routing fields (blank = not filtered).
-  const criteria: Record<string, string> = {};
-  for (const key of ROUTING_KEYS) {
-    const v = String(form.get(`crit_${key}`) ?? "").trim();
-    if (v) criteria[key] = v;
-  }
 
   const { data: bucket, error } = await supabaseAdmin()
     .from("buckets")
@@ -157,19 +178,35 @@ export async function createBucket(form: FormData): Promise<void> {
       code: String(form.get("code") ?? "").trim(),
       name: String(form.get("name") ?? "").trim(),
       event_type_id: String(form.get("event_type_id") ?? ""),
-      criteria,
+      criteria: criteriaFromForm(form),
+      routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
     })
     .select("id")
     .single();
 
   if (!error && bucket && memberIds.length) {
-    await supabaseAdmin().from("bucket_members").insert(
-      memberIds.map((user_id) => ({
-        bucket_id: (bucket as { id: string }).id,
-        user_id,
-      })),
-    );
+    await replaceBucketMembers((bucket as { id: string }).id, memberIds);
   }
+  revalidatePath("/admin");
+}
+
+export async function updateBucket(form: FormData): Promise<void> {
+  await requireAdmin();
+  const id = String(form.get("bucket_id") ?? "");
+  if (!id) return;
+
+  await supabaseAdmin()
+    .from("buckets")
+    .update({
+      code: String(form.get("code") ?? "").trim(),
+      name: String(form.get("name") ?? "").trim(),
+      event_type_id: String(form.get("event_type_id") ?? ""),
+      criteria: criteriaFromForm(form),
+      routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
+    })
+    .eq("id", id);
+
+  await replaceBucketMembers(id, form.getAll("members").map(String).filter(Boolean));
   revalidatePath("/admin");
 }
 
