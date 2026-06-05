@@ -7,7 +7,7 @@ import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
  */
 
 const SCOPE =
-  "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy";
+  "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.readonly";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
 // In-memory token cache per impersonated email (tokens last ~1h).
