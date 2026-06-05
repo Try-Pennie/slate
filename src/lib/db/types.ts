@@ -44,11 +44,6 @@ export interface User {
   attributes: Attributes;
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
-  // Per-agent calendar sync state (calendar access itself is via delegation).
-  sync_token: string | null;
-  watch_channel_id: string | null;
-  watch_resource_id: string | null;
-  watch_expiration: string | null;
   created_at: string;
 }
 

@@ -71,5 +71,4 @@ export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>
   process.env.SLACK_ALERTS_CHANNEL ?? "";
 
-export const googleRedirectUri = (): string => `${appUrl()}/api/auth/google/callback`;
 export const googlePushUrl = (): string => `${appUrl()}/api/google/push`;
