@@ -2,8 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
-import { postSlack, slackConfigured } from "@/lib/notify/slack";
-import { shouldSendAlert, formatWatchLapseAlert } from "@/lib/notify/alerts";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { formatWatchLapseAlert } from "@/lib/notify/alerts";
 
 export const dynamic = "force-dynamic";
 
@@ -11,23 +11,12 @@ const WATCH_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // don't re-alert within 30 min
 
 /** Post a throttled Slack alert when watch renewals are failing. */
 async function alertWatchLapse(watchErrors: number, totalAgents: number): Promise<void> {
-  if (watchErrors === 0 || !slackConfigured()) return;
-  const db = supabaseAdmin();
-  const { data: state } = await db
-    .from("alert_state")
-    .select("last_sent_at")
-    .eq("key", "watch_lapse")
-    .maybeSingle();
-  const lastSentAtMs = state
-    ? Date.parse((state as { last_sent_at: string }).last_sent_at)
-    : null;
-  if (!shouldSendAlert(lastSentAtMs, Date.now(), WATCH_ALERT_COOLDOWN_MS)) return;
-
-  await postSlack({ text: formatWatchLapseAlert(watchErrors, totalAgents) });
-  // Stamp regardless of delivery result so a flaky Slack can't be spammed.
-  await db
-    .from("alert_state")
-    .upsert({ key: "watch_lapse", last_sent_at: new Date().toISOString() }, { onConflict: "key" });
+  if (watchErrors === 0) return;
+  await sendThrottledAlert(
+    "watch_lapse",
+    WATCH_ALERT_COOLDOWN_MS,
+    formatWatchLapseAlert(watchErrors, totalAgents),
+  );
 }
 
 /**
