@@ -43,7 +43,7 @@
     (listeners[action] || []).forEach(function (cb) {
       try {
         cb({ detail: { type: action, data: payload } });
-      } catch (e) {
+      } catch {
         /* a subscriber throwing must not break delivery to others */
       }
     });

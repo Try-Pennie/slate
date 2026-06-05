@@ -31,6 +31,7 @@ export async function GET(req: NextRequest) {
     bucket: { code: result.bucket.code, name: result.bucket.name },
     eventType: {
       name: result.eventType.name,
+      description: result.eventType.description,
       durationMin: result.eventType.duration_min,
     },
     slots: result.slots,
