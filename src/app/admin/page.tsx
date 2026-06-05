@@ -3,6 +3,7 @@ import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { matchesCriteria } from "@/lib/availability/match";
+import { appUrl, reassignApiKey } from "@/lib/env";
 import {
   createBucket,
   createEventType,
@@ -644,6 +645,22 @@ export default async function AdminPage({
             catalog={attrCatalog}
           />
         </div>
+      </section>
+
+      {/* Reassign API key */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Reassign API</h2>
+        <p className="mb-3 text-xs text-neutral-500">
+          Force a booking onto a specific owning advisor (the contact owner
+          override). Send <code>POST {appUrl()}/api/bookings/reassign</code> with
+          a bearer token and a JSON body of <code>bookingId</code> and{" "}
+          <code>agentEmail</code>.
+        </p>
+        <label className={labelCls}>Authorization key (Bearer)</label>
+        <code className="mt-1 block overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs">
+          {reassignApiKey() ||
+            "not configured (set REASSIGN_API_KEY on the worker)"}
+        </code>
       </section>
 
       {/* Webhooks */}
