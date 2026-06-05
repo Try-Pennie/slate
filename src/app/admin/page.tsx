@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
+import { matchesCriteria } from "@/lib/availability/match";
 import {
   createBucket,
   createEventType,
@@ -107,12 +108,29 @@ function BucketForm({
   catalog: Record<string, string[]>;
 }) {
   const editing = !!bucket;
+  const eligibleCount = users.filter(
+    (u) =>
+      u.bookable &&
+      (memberIds.has(u.id) || matchesCriteria(u.attributes, bucket?.criteria ?? {})),
+  ).length;
   return (
     <form
       action={editing ? updateBucket : createBucket}
       className="space-y-3 rounded-md border border-neutral-200 p-3"
     >
       {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
+      {editing && (
+        <p
+          className={`text-xs ${eligibleCount === 0 ? "text-amber-600" : "text-neutral-400"}`}
+        >
+          {eligibleCount} eligible agent{eligibleCount === 1 ? "" : "s"}
+          {eligibleCount === 0
+            ? bucket.fallback_user_id
+              ? " (using fallback agent)"
+              : " (no fallback set, bookings will fail)"
+            : ""}
+        </p>
+      )}
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <label className={labelCls}>Code (xbc)</label>
@@ -144,6 +162,21 @@ function BucketForm({
             defaultValue={bucket?.routing_form_id ?? ""}
             className={`${inputCls} w-44`}
           />
+        </div>
+        <div>
+          <label className={labelCls}>Fallback agent (when none match)</label>
+          <select
+            name="fallback_user_id"
+            defaultValue={bucket?.fallback_user_id ?? ""}
+            className={inputCls}
+          >
+            <option value="">None</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name ?? u.email}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
       <div>

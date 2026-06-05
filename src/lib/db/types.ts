@@ -92,6 +92,8 @@ export interface Bucket {
   criteria: Criteria;
   /** Optional cal.com routing-form UUID this bucket maps to (drop-in swap, #15). */
   routing_form_id: string | null;
+  /** Agent to route to when no agent matches the bucket's criteria/members. */
+  fallback_user_id: string | null;
   created_at: string;
 }
 
@@ -169,8 +171,19 @@ export interface Booking {
   gcal_event_id: string | null;
   manage_token: string;
   idempotency_key: string | null;
+  routing_trace: RoutingTrace | null;
   created_at: string;
   updated_at: string;
+}
+
+/** How a booking routed (for troubleshooting). Stored on bookings.routing_trace. */
+export interface RoutingTrace {
+  bucket_code: string;
+  bucket_id: string;
+  /** Free + least-recently-booked-ordered candidate ids that were considered. */
+  considered: string[];
+  chosen_user_id: string;
+  fallback_applied: boolean;
 }
 
 export type WebhookFormat = "generic" | "regal";

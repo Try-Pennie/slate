@@ -15,6 +15,7 @@ import type {
   Booking,
   Bucket,
   EventType,
+  RoutingTrace,
   User,
   WebhookEvent,
 } from "@/lib/db/types";
@@ -80,6 +81,7 @@ export type BookingInsert = {
   gcal_event_id: string;
   manage_token: string;
   idempotency_key: string | null;
+  routing_trace: RoutingTrace;
 };
 
 /**
@@ -143,7 +145,7 @@ async function assignAgent(
   eventType: EventType,
   startIso: string,
   endIso: string,
-): Promise<AssignResult> {
+): Promise<AssignResult & { candidates: string[] }> {
   const candidates = await deps.roundRobinCandidates(
     bucket,
     eventType,
@@ -156,7 +158,7 @@ async function assignAgent(
     (email) => deps.isFree(email, startIso, endIso),
   );
   if (!result) throw new SlotUnavailableError();
-  return result;
+  return { ...result, candidates };
 }
 
 function webhookPayload(
@@ -243,7 +245,7 @@ export async function createBooking(
     eventType.duration_min,
   );
 
-  const { userId, email } = await assignAgent(
+  const { userId, email, candidates } = await assignAgent(
     deps,
     bucket,
     eventType,
@@ -290,6 +292,17 @@ export async function createBooking(
     gcal_event_id: gcalEventId,
     manage_token: manageToken,
     idempotency_key: idempotencyKey,
+    routing_trace: {
+      bucket_code: input.bucketCode,
+      bucket_id: bucket.id,
+      considered: candidates,
+      chosen_user_id: userId,
+      // True when the only agent(s) considered were the bucket's fallback.
+      fallback_applied:
+        bucket.fallback_user_id != null &&
+        candidates.length > 0 &&
+        candidates.every((id) => id === bucket.fallback_user_id),
+    },
   });
 
   if (!inserted.ok) {

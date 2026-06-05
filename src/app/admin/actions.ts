@@ -180,6 +180,7 @@ export async function createBucket(form: FormData): Promise<void> {
       event_type_id: String(form.get("event_type_id") ?? ""),
       criteria: criteriaFromForm(form),
       routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
+      fallback_user_id: String(form.get("fallback_user_id") ?? "") || null,
     })
     .select("id")
     .single();
@@ -203,6 +204,7 @@ export async function updateBucket(form: FormData): Promise<void> {
       event_type_id: String(form.get("event_type_id") ?? ""),
       criteria: criteriaFromForm(form),
       routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
+      fallback_user_id: String(form.get("fallback_user_id") ?? "") || null,
     })
     .eq("id", id);
 

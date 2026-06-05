@@ -9,6 +9,20 @@
  * same order. The caller supplies each candidate's last-booked timestamp
  * (newest active booking's `created_at`, in ms); missing/null means never booked.
  */
+/**
+ * Apply a bucket's fallback: if the matched pool is non-empty use it; otherwise
+ * route to the fallback agent when one is set (the cal "default route" analog).
+ * `fallbackApplied` records which branch was taken (for the routing trace).
+ */
+export function applyFallback(
+  matched: string[],
+  fallbackUserId: string | null,
+): { ids: string[]; fallbackApplied: boolean } {
+  if (matched.length > 0) return { ids: matched, fallbackApplied: false };
+  if (fallbackUserId) return { ids: [fallbackUserId], fallbackApplied: true };
+  return { ids: [], fallbackApplied: false };
+}
+
 export function orderByLeastRecentlyBooked(
   candidateIds: string[],
   lastBookedAtMs: Record<string, number | null>,

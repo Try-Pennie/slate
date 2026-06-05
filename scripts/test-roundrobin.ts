@@ -1,6 +1,9 @@
 // Sanity test for least-recently-booked round-robin ordering.
 // Run: node --experimental-strip-types scripts/test-roundrobin.ts
-import { orderByLeastRecentlyBooked } from "../src/lib/availability/roundrobin.ts";
+import {
+  orderByLeastRecentlyBooked,
+  applyFallback,
+} from "../src/lib/availability/roundrobin.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -57,6 +60,20 @@ assert(eq(orderByLeastRecentlyBooked(["solo"], {}), ["solo"]), "single candidate
 const input = ["a", "b"];
 orderByLeastRecentlyBooked(input, { a: 2, b: 1 });
 assert(eq(input, ["a", "b"]), "input array is not mutated");
+
+// --- applyFallback ---
+assert(
+  JSON.stringify(applyFallback(["a", "b"], "f")) === JSON.stringify({ ids: ["a", "b"], fallbackApplied: false }),
+  "non-empty matched pool is used as-is (no fallback)",
+);
+assert(
+  JSON.stringify(applyFallback([], "f")) === JSON.stringify({ ids: ["f"], fallbackApplied: true }),
+  "empty pool with a fallback routes to the fallback agent",
+);
+assert(
+  JSON.stringify(applyFallback([], null)) === JSON.stringify({ ids: [], fallbackApplied: false }),
+  "empty pool with no fallback stays empty",
+);
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

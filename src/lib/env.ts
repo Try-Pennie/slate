@@ -63,6 +63,9 @@ export const cronSecret = (): string => requireEnv("CRON_SECRET");
 export const googleChannelToken = (): string =>
   requireEnv("GOOGLE_CHANNEL_TOKEN");
 
+// Bearer key for the internal routing API (POST /api/routing). Empty = disabled.
+export const routingApiKey = (): string => process.env.ROUTING_API_KEY ?? "";
+
 // Slack notifier (optional). Empty = notifications are no-ops.
 export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>

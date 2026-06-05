@@ -5,7 +5,10 @@ import {
   type MemberAvailability,
 } from "@/lib/availability/compute";
 import { matchesCriteria } from "@/lib/availability/match";
-import { orderByLeastRecentlyBooked } from "@/lib/availability/roundrobin";
+import {
+  applyFallback,
+  orderByLeastRecentlyBooked,
+} from "@/lib/availability/roundrobin";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
 
 /**
@@ -44,6 +47,18 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
     .map((a) => (a as { id: string }).id);
 }
 
+/**
+ * The agents eligible for a bucket, with the fallback applied: the matched pool
+ * (manual ∪ attribute), or — when that's empty and the bucket has a
+ * `fallback_user_id` — just the fallback agent. `fallbackApplied` flags which.
+ */
+export async function eligibleAgentIds(
+  bucket: Bucket,
+): Promise<{ ids: string[]; fallbackApplied: boolean }> {
+  const matched = await resolveBucketAgentIds(bucket);
+  return applyFallback(matched, bucket.fallback_user_id);
+}
+
 export interface ResolvedBucket {
   bucket: Bucket;
   eventType: EventType;
@@ -79,7 +94,7 @@ export async function loadMembersAvailability(
 ): Promise<MemberAvailability[]> {
   const db = supabaseAdmin();
 
-  const userIds = await resolveBucketAgentIds(bucket);
+  const { ids: userIds } = await eligibleAgentIds(bucket);
   if (userIds.length === 0) return [];
 
   const [schedulesRes, busyRes, bookingsRes] = await Promise.all([
@@ -225,4 +240,52 @@ export async function roundRobinCandidates(
   }
 
   return orderByLeastRecentlyBooked(free, lastBookedAtMs);
+}
+
+/** Order agents least-recently-booked first (newest active booking's created_at). */
+async function rankByLeastRecentlyBooked(ids: string[]): Promise<string[]> {
+  if (ids.length <= 1) return ids;
+  const { data } = await supabaseAdmin()
+    .from("bookings")
+    .select("assigned_user_id, created_at")
+    .in("assigned_user_id", ids)
+    .in("status", ["confirmed", "rescheduled", "completed"]);
+
+  const lastBookedAtMs: Record<string, number | null> = {};
+  for (const r of (data ?? []) as { assigned_user_id: string; created_at: string }[]) {
+    const t = Date.parse(r.created_at);
+    const prev = lastBookedAtMs[r.assigned_user_id];
+    if (prev == null || t > prev) lastBookedAtMs[r.assigned_user_id] = t;
+  }
+  return orderByLeastRecentlyBooked(ids, lastBookedAtMs);
+}
+
+export interface RoutingResolution {
+  bucket: Bucket;
+  eventType: EventType;
+  eligibleIds: string[];
+  fallbackApplied: boolean;
+  routedAgentId: string | null;
+}
+
+/**
+ * Resolve routing for a bucket code (xbc) WITHOUT a calendar check: the eligible
+ * agents (fallback applied), ordered least-recently-booked, plus the top pick.
+ * Powers the standalone routing API; the booking flow still verifies on book.
+ */
+export async function resolveRouting(
+  code: string,
+): Promise<RoutingResolution | null> {
+  const resolved = await resolveBucketByCode(code);
+  if (!resolved) return null;
+  const { bucket, eventType } = resolved;
+  const { ids, fallbackApplied } = await eligibleAgentIds(bucket);
+  const ordered = await rankByLeastRecentlyBooked(ids);
+  return {
+    bucket,
+    eventType,
+    eligibleIds: ordered,
+    fallbackApplied,
+    routedAgentId: ordered[0] ?? null,
+  };
 }
