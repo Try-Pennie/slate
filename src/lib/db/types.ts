@@ -200,6 +200,16 @@ export interface WebhookEndpoint {
   created_at: string;
 }
 
+export interface AuditEntry {
+  id: string;
+  org_id: string;
+  actor_id: string | null;
+  action: string;
+  target_id: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface WebhookDelivery {
   id: string;
   endpoint_id: string;

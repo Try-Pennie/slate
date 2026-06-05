@@ -7,13 +7,17 @@ import { currentUser, requireAdmin, requireManager } from "@/lib/auth";
 import { canManageUser, canChangeRole, isRole } from "@/lib/auth/roles";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { resendDelivery } from "@/lib/webhooks/emit";
+import { recordAudit, type AuditAction } from "@/lib/audit";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
  * guard: a manager can edit agents but not peers/admins). Returns the actor.
  */
-async function requireManageAgent(userId: string): Promise<User> {
+async function requireManageAgent(
+  userId: string,
+  action: AuditAction,
+): Promise<User> {
   const actor = await requireManager();
   const { data } = await supabaseAdmin()
     .from("users")
@@ -24,6 +28,7 @@ async function requireManageAgent(userId: string): Promise<User> {
   if (!canManageUser(actor.role, targetRole, actor.id === userId)) {
     throw new Error("Not authorized");
   }
+  await recordAudit({ orgId: actor.org_id, actorId: actor.id, action, targetId: userId });
   return actor;
 }
 
@@ -235,7 +240,7 @@ export async function updateBucket(form: FormData): Promise<void> {
 export async function setWorkingHours(form: FormData): Promise<void> {
   const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
-  await requireManageAgent(userId);
+  await requireManageAgent(userId, "agent.hours");
   const timezone = String(form.get("timezone") ?? "America/New_York");
   const startMinute = toMinutes(String(form.get("start") ?? "09:00"));
   const endMinute = toMinutes(String(form.get("end") ?? "17:00"));
@@ -299,7 +304,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
-  const actor = await requireManageAgent(userId);
+  const actor = await requireManageAgent(userId, "agent.use_default_hours");
 
   const { data: org } = await db
     .from("organizations")
@@ -345,7 +350,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
 export async function setBookable(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
-  await requireManageAgent(userId);
+  await requireManageAgent(userId, "agent.bookable");
   await supabaseAdmin()
     .from("users")
     .update({ bookable: form.get("bookable") === "true" })
@@ -355,7 +360,7 @@ export async function setBookable(form: FormData): Promise<void> {
 
 /** Admin-only: change a user's tier (agent/manager/admin). Guards last-admin. */
 export async function setUserRole(form: FormData): Promise<void> {
-  await requireAdmin();
+  const admin = await requireAdmin();
   const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
   const next = String(form.get("role") ?? "");
@@ -378,6 +383,13 @@ export async function setUserRole(form: FormData): Promise<void> {
   }
 
   await db.from("users").update({ role: next }).eq("id", userId);
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "role.set",
+    targetId: userId,
+    details: { from: current, to: next },
+  });
   revalidatePath("/admin");
 }
 
@@ -393,7 +405,7 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
 export async function setAgentAttributes(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
-  await requireManageAgent(userId);
+  await requireManageAgent(userId, "agent.attributes");
 
   const attributes: Attributes = {};
   // debt_team is multi-valued (comma-separated -> array).

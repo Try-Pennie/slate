@@ -20,6 +20,7 @@ import {
 } from "@/app/admin/actions";
 import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
 import type {
+  AuditEntry,
   Booking,
   Bucket,
   BucketMember,
@@ -36,6 +37,14 @@ type DeliveryRow = Pick<
   WebhookDelivery,
   "id" | "endpoint_id" | "event" | "status" | "attempts" | "last_response" | "created_at"
 >;
+
+const AUDIT_LABEL: Record<string, string> = {
+  "role.set": "changed role",
+  "agent.hours": "set hours",
+  "agent.use_default_hours": "applied default hours",
+  "agent.bookable": "set bookable",
+  "agent.attributes": "set attributes",
+};
 
 type TraceRow = Pick<
   Booking,
@@ -310,6 +319,18 @@ export default async function AdminPage({
         .limit(25);
       deliveries = (dels ?? []) as DeliveryRow[];
     }
+  }
+
+  // Audit log (admin only): recent privileged actions.
+  let auditEntries: AuditEntry[] = [];
+  if (isAdmin) {
+    const { data } = await db
+      .from("audit_log")
+      .select("*")
+      .eq("org_id", me.org_id)
+      .order("created_at", { ascending: false })
+      .limit(25);
+    auditEntries = (data ?? []) as AuditEntry[];
   }
 
   // Push health: how many bookable agents have at least one live Google watch
@@ -940,6 +961,56 @@ export default async function AdminPage({
                             Resend
                           </button>
                         </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Audit log (admin only) */}
+      {isAdmin && (
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Audit log</h2>
+          <p className="mb-3 text-xs text-neutral-500">
+            The last {auditEntries.length} privileged actions (role changes and
+            agent edits).
+          </p>
+          {auditEntries.length === 0 ? (
+            <p className="text-sm text-neutral-500">No activity yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-neutral-500">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">When</th>
+                    <th className="py-1 pr-3 font-medium">Who</th>
+                    <th className="py-1 pr-3 font-medium">Action</th>
+                    <th className="py-1 pr-3 font-medium">Target</th>
+                    <th className="py-1 font-medium">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditEntries.map((a) => (
+                    <tr key={a.id} className="border-t border-neutral-100 align-top">
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-neutral-600">
+                        {new Date(a.created_at).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="py-1.5 pr-3">{nameOf(a.actor_id)}</td>
+                      <td className="py-1.5 pr-3">{AUDIT_LABEL[a.action] ?? a.action}</td>
+                      <td className="py-1.5 pr-3">{nameOf(a.target_id)}</td>
+                      <td className="py-1.5 text-neutral-500">
+                        {a.action === "role.set"
+                          ? `${String(a.details.from)} → ${String(a.details.to)}`
+                          : ""}
                       </td>
                     </tr>
                   ))}

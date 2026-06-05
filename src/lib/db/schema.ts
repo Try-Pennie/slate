@@ -6,6 +6,7 @@
 import type {
   AgentCalendar,
   AlertState,
+  AuditEntry,
   AvailabilityRule,
   AvailabilitySchedule,
   Booking,
@@ -47,6 +48,7 @@ export interface Database {
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;
       agent_calendars: Table<AgentCalendar>;
+      audit_log: Table<AuditEntry>;
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
