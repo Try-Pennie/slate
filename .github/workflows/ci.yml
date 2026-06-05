@@ -36,7 +36,7 @@ jobs:
         run: pnpm cf:build
         env:
           # Build-time NEXT_PUBLIC_* inlining only; no real secrets needed.
-          NEXT_PUBLIC_APP_URL: https://slate.trypennie.dev
+          NEXT_PUBLIC_APP_URL: https://slate.trypennie.app
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_placeholder
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
@@ -92,7 +92,7 @@ jobs:
       - name: Deploy (Cloudflare / OpenNext)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          NEXT_PUBLIC_APP_URL: https://slate.trypennie.dev
+          NEXT_PUBLIC_APP_URL: https://slate.trypennie.app
           NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
