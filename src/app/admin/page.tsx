@@ -61,7 +61,7 @@ function CriteriaEditor({
   if (keys.length === 0) {
     return (
       <p className="mt-1 text-xs text-neutral-400">
-        No agent attributes synced yet — sync from Salesforce to route by attribute.
+        No agent attributes synced yet. Sync from Salesforce to route by attribute.
       </p>
     );
   }
@@ -611,7 +611,7 @@ export default async function AdminPage({
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Buckets (round-robin pools)</h2>
         <p className="mb-4 text-xs text-neutral-400">
-          Edit routing live — changes apply without a deploy. Routing matches
+          Edit routing live. Changes apply without a deploy. Routing matches
           agents by attribute; leave all groups empty to pick members manually.
         </p>
         <div className="space-y-4">
