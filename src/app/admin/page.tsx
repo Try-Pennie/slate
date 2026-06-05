@@ -10,12 +10,14 @@ import {
   setAgentAttributes,
   setBookable,
   setOrgDefaultHours,
+  setUserRole,
   setWebhookEndpoint,
   setWorkingHours,
   syncSalesforceNow,
   updateBucket,
   useDefaultHours,
 } from "@/app/admin/actions";
+import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
 import type {
   Booking,
   Bucket,
@@ -229,13 +231,15 @@ export default async function AdminPage({
   const bookableOnly = sp.bookable === "1";
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (me.role !== "admin") {
+  if (!canManageAgents(me.role)) {
     return (
       <main className="p-8 text-sm text-neutral-500">
-        You need an admin account to manage Slate.
+        You need a manager or admin account to manage Slate.
       </main>
     );
   }
+  // Managers manage the agent roster; only admins see org/app config.
+  const isAdmin = canEditOrgSettings(me.role);
 
   const db = supabaseAdmin();
   const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes, recentRes] =
@@ -311,7 +315,8 @@ export default async function AdminPage({
         </a>
       </header>
 
-      {/* Org default working hours */}
+      {/* Org default working hours (admin only) */}
+      {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Default working hours</h2>
         <p className="mb-3 text-xs text-neutral-500">
@@ -372,6 +377,7 @@ export default async function AdminPage({
           <button className={btnCls}>Save default</button>
         </form>
       </section>
+      )}
 
       {/* Agents + working hours */}
       <section className={cardCls}>
@@ -399,11 +405,13 @@ export default async function AdminPage({
               push {watchedCount}/{bookableAgents.length} watched
             </span>
           </div>
-          <form action={syncSalesforceNow}>
-            <button className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:border-neutral-500">
-              Sync from Salesforce
-            </button>
-          </form>
+          {isAdmin && (
+            <form action={syncSalesforceNow}>
+              <button className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:border-neutral-500">
+                Sync from Salesforce
+              </button>
+            </form>
+          )}
         </div>
         <form method="get" className="mb-4 flex items-center gap-3">
           <input
@@ -447,6 +455,25 @@ export default async function AdminPage({
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
+                  {isAdmin && (
+                    <form action={setUserRole} className="flex items-center gap-1">
+                      <input type="hidden" name="user_id" value={u.id} />
+                      <select
+                        name="role"
+                        defaultValue={u.role}
+                        className="rounded-md border border-neutral-200 px-1.5 py-1 text-xs"
+                      >
+                        {ROLES.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:border-neutral-400">
+                        Set role
+                      </button>
+                    </form>
+                  )}
                   <form action={useDefaultHours}>
                     <input type="hidden" name="user_id" value={u.id} />
                     <button className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:border-neutral-400">
@@ -596,7 +623,8 @@ export default async function AdminPage({
         </div>
       </section>
 
-      {/* Event types */}
+      {/* Event types (admin only) */}
+      {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-4 text-sm font-semibold">Event types</h2>
         <ul className="mb-4 space-y-1 text-sm">
@@ -633,8 +661,10 @@ export default async function AdminPage({
           <button className={btnCls}>Add event type</button>
         </form>
       </section>
+      )}
 
-      {/* Buckets */}
+      {/* Buckets (admin only) */}
+      {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Buckets (round-robin pools)</h2>
         <p className="mb-4 text-xs text-neutral-400">
@@ -672,6 +702,7 @@ export default async function AdminPage({
           />
         </div>
       </section>
+      )}
 
       {/* Recent routing (trace viewer) */}
       <section className={cardCls}>
@@ -738,7 +769,8 @@ export default async function AdminPage({
         )}
       </section>
 
-      {/* Reassign API key */}
+      {/* Reassign API key (admin only) */}
+      {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Reassign API</h2>
         <p className="mb-3 text-xs text-neutral-500">
@@ -753,8 +785,10 @@ export default async function AdminPage({
             "not configured (set REASSIGN_API_KEY on the worker)"}
         </code>
       </section>
+      )}
 
-      {/* Webhooks */}
+      {/* Webhooks (admin only) */}
+      {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Webhook endpoint</h2>
         <p className="mb-3 text-xs text-neutral-500">
@@ -810,6 +844,7 @@ export default async function AdminPage({
           <button className={btnCls}>Save</button>
         </form>
       </section>
+      )}
     </main>
   );
 }

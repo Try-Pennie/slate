@@ -3,7 +3,7 @@
  * (Swap for `supabase gen types typescript` output once a project is linked.)
  */
 
-export type Role = "admin" | "agent";
+export type Role = "admin" | "manager" | "agent";
 export type BusySource = "slate" | "gcal";
 export type BookingStatus =
   | "confirmed"

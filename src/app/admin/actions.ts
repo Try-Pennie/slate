@@ -3,9 +3,28 @@
 import { revalidatePath } from "next/cache";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { currentUser, requireAdmin } from "@/lib/auth";
+import { currentUser, requireAdmin, requireManager } from "@/lib/auth";
+import { canManageUser, canChangeRole, isRole } from "@/lib/auth/roles";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
-import type { Attributes, Criteria } from "@/lib/db/types";
+import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
+
+/**
+ * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
+ * guard: a manager can edit agents but not peers/admins). Returns the actor.
+ */
+async function requireManageAgent(userId: string): Promise<User> {
+  const actor = await requireManager();
+  const { data } = await supabaseAdmin()
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+  const targetRole = (data as { role: Role } | null)?.role ?? "agent";
+  if (!canManageUser(actor.role, targetRole, actor.id === userId)) {
+    throw new Error("Not authorized");
+  }
+  return actor;
+}
 
 /** Replaces a user's weekly schedule (one schedule row + its rules). */
 async function replaceUserSchedule(
@@ -213,9 +232,9 @@ export async function updateBucket(form: FormData): Promise<void> {
 }
 
 export async function setWorkingHours(form: FormData): Promise<void> {
-  await requireAdmin();
   const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
+  await requireManageAgent(userId);
   const timezone = String(form.get("timezone") ?? "America/New_York");
   const startMinute = toMinutes(String(form.get("start") ?? "09:00"));
   const endMinute = toMinutes(String(form.get("end") ?? "17:00"));
@@ -276,17 +295,17 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
 
 /** Applies the org default schedule to one agent (keeps their tz if already set). */
 export async function useDefaultHours(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
   const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
+  const actor = await requireManageAgent(userId);
 
   const { data: org } = await db
     .from("organizations")
     .select(
       "default_timezone, default_start_minute, default_end_minute, default_weekdays",
     )
-    .eq("id", admin.org_id)
+    .eq("id", actor.org_id)
     .single();
   const o = org as {
     default_timezone: string;
@@ -323,9 +342,9 @@ export async function useDefaultHours(form: FormData): Promise<void> {
 }
 
 export async function setBookable(form: FormData): Promise<void> {
-  await requireAdmin();
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
+  await requireManageAgent(userId);
   await supabaseAdmin()
     .from("users")
     .update({ bookable: form.get("bookable") === "true" })
@@ -333,10 +352,38 @@ export async function setBookable(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
-export async function setAgentAttributes(form: FormData): Promise<void> {
+/** Admin-only: change a user's tier (agent/manager/admin). Guards last-admin. */
+export async function setUserRole(form: FormData): Promise<void> {
   await requireAdmin();
+  const db = supabaseAdmin();
+  const userId = String(form.get("user_id") ?? "");
+  const next = String(form.get("role") ?? "");
+  if (!userId || !isRole(next)) return;
+
+  const { data: target } = await db
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+  const current = (target as { role: Role } | null)?.role;
+  if (!current) return;
+
+  const { count } = await db
+    .from("users")
+    .select("id", { count: "exact", head: true })
+    .eq("role", "admin");
+  if (!canChangeRole(current, next, count ?? 0)) {
+    throw new Error("Cannot remove the last admin");
+  }
+
+  await db.from("users").update({ role: next }).eq("id", userId);
+  revalidatePath("/admin");
+}
+
+export async function setAgentAttributes(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
+  await requireManageAgent(userId);
 
   const attributes: Attributes = {};
   // debt_team is multi-valued (comma-separated -> array).

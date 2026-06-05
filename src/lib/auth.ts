@@ -1,6 +1,7 @@
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import type { User } from "@/lib/db/types";
+import { atLeast } from "@/lib/auth/roles";
+import type { Role, User } from "@/lib/db/types";
 
 /**
  * Resolves the signed-in Supabase auth user to a Slate `users` row (with org +
@@ -23,10 +24,14 @@ export async function currentUser(): Promise<User | null> {
   return (data as User | null) ?? null;
 }
 
-export async function requireAdmin(): Promise<User> {
+/** Resolves the signed-in user and asserts they hold at least `min` rank. */
+export async function requireRole(min: Role): Promise<User> {
   const user = await currentUser();
-  if (!user || user.role !== "admin") {
+  if (!user || !atLeast(user.role, min)) {
     throw new Error("Not authorized");
   }
   return user;
 }
+
+export const requireManager = (): Promise<User> => requireRole("manager");
+export const requireAdmin = (): Promise<User> => requireRole("admin");

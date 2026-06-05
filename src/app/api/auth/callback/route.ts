@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
+import { canManageAgents } from "@/lib/auth/roles";
 import { appUrl } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest) {
   await ensureWatches(slateUser.id); // never throws; returns a status
   await runIncrementalSync(slateUser.id).catch(() => {});
 
-  // Admins manage everything; agents land on their own availability page.
-  const dest = slateUser.role === "admin" ? "/admin" : "/me";
+  // Managers + admins get the admin console; agents land on their own page.
+  const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";
   return NextResponse.redirect(`${appUrl()}${dest}`);
 }
