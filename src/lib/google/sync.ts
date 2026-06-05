@@ -9,11 +9,13 @@ import {
   type GoogleEvent,
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
+import { eventWindow, isBusyEvent, staleBlockIds } from "@/lib/google/sync-core";
 import { googlePushUrl } from "@/lib/env";
 import type { AgentCalendar } from "@/lib/db/types";
 
 const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-const WATCH_RENEW_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+// Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
+const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
 
 async function loadAgentEmail(userId: string): Promise<string | null> {
   const { data } = await supabaseAdmin()
@@ -32,18 +34,6 @@ async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
   return (data ?? []) as AgentCalendar[];
 }
 
-function eventWindow(
-  ev: GoogleEvent,
-): { start: string; end: string } | null {
-  const start = ev.start?.dateTime ?? ev.start?.date;
-  const end = ev.end?.dateTime ?? ev.end?.date;
-  if (!start || !end) return null;
-  return {
-    start: ev.start?.dateTime ? start : `${start}T00:00:00.000Z`,
-    end: ev.end?.dateTime ? end : `${end}T00:00:00.000Z`,
-  };
-}
-
 /** Upsert/delete gcal-sourced busy blocks for a batch of events on one calendar. */
 async function applyEvents(
   userId: string,
@@ -53,13 +43,7 @@ async function applyEvents(
   const db = supabaseAdmin();
   for (const ev of events) {
     if (!ev.id) continue;
-    const win = eventWindow(ev);
-    const isBusy =
-      ev.status !== "cancelled" &&
-      ev.transparency !== "transparent" &&
-      win !== null;
-
-    if (!isBusy) {
+    if (!isBusyEvent(ev)) {
       await db
         .from("busy_blocks")
         .delete()
@@ -67,17 +51,48 @@ async function applyEvents(
         .eq("gcal_event_id", ev.id);
       continue;
     }
+    const win = eventWindow(ev)!;
     await db.from("busy_blocks").upsert(
       {
         user_id: userId,
         gcal_event_id: ev.id,
         calendar_id: calendarId,
         source: "gcal",
-        starts_at: win!.start,
-        ends_at: win!.end,
+        starts_at: win.start,
+        ends_at: win.end,
       },
       { onConflict: "user_id,gcal_event_id" },
     );
+  }
+}
+
+/**
+ * After a FULL resync, drop cached gcal blocks for this calendar whose event no
+ * longer exists. Incremental syncs carry per-event cancellations, but a full
+ * resync (bootstrap or expired token) just returns the current set, so events
+ * deleted while the token was stale would otherwise linger and over-block.
+ */
+async function purgeVanished(
+  userId: string,
+  calendarId: string,
+  events: GoogleEvent[],
+): Promise<void> {
+  const db = supabaseAdmin();
+  const seen = new Set(
+    events.filter((e) => e.id && isBusyEvent(e)).map((e) => e.id as string),
+  );
+  const { data } = await db
+    .from("busy_blocks")
+    .select("id, gcal_event_id")
+    .eq("user_id", userId)
+    .eq("calendar_id", calendarId)
+    .eq("source", "gcal");
+  const stale = staleBlockIds(
+    (data ?? []) as { id: string; gcal_event_id: string | null }[],
+    seen,
+  );
+  if (stale.length) {
+    await db.from("busy_blocks").delete().in("id", stale);
   }
 }
 
@@ -88,10 +103,12 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
   ).toISOString();
 
   let result;
+  let full = !cal.sync_token; // bootstrap (no token) is a full sync
   try {
     result = await syncEvents(email, cal.calendar_id, cal.sync_token, bootstrapMin);
   } catch (err: unknown) {
     if (err instanceof SyncTokenExpired) {
+      full = true;
       result = await syncEvents(email, cal.calendar_id, null, bootstrapMin);
     } else {
       throw err;
@@ -99,6 +116,7 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
   }
 
   await applyEvents(cal.user_id, cal.calendar_id, result.events);
+  if (full) await purgeVanished(cal.user_id, cal.calendar_id, result.events);
 
   if (result.nextSyncToken) {
     await supabaseAdmin()
@@ -186,6 +204,13 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       if (c.watch_channel_id && c.watch_resource_id) {
         await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch(() => {});
       }
+      // Drop cached busy blocks for a calendar the agent no longer has, so a
+      // removed calendar can't keep over-blocking their availability.
+      await db
+        .from("busy_blocks")
+        .delete()
+        .eq("user_id", userId)
+        .eq("calendar_id", c.calendar_id);
       await db.from("agent_calendars").delete().eq("id", c.id);
     }
 
