@@ -69,3 +69,36 @@ jobs:
             echo "::error::Committed migrations are not applied to the remote DB. Run: supabase db push"
             exit 1
           fi
+
+  # Deploy to the slate Worker on every push to main, after ci passes. Skips
+  # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy
+  # locally in the meantime. The NEXT_PUBLIC_* values are public (inlined into
+  # the client bundle); set the publishable key as a repo variable.
+  deploy:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Deploy (Cloudflare / OpenNext)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NEXT_PUBLIC_APP_URL: https://slate.trypennie.dev
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN not set; skipping deploy. Run 'pnpm cf:deploy' locally, or add the secret to enable auto-deploy."
+            exit 0
+          fi
+          pnpm cf:deploy
