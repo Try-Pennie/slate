@@ -135,6 +135,36 @@ function realDeps(): BookingDeps {
       };
     },
 
+    loadBookingById: async (bookingId) => {
+      const db = supabaseAdmin();
+      const { data: booking } = await db
+        .from("bookings")
+        .select("*")
+        .eq("id", bookingId)
+        .maybeSingle();
+      if (!booking) return null;
+
+      const b = booking as Booking;
+      const [{ data: bucket }, { data: eventType }] = await Promise.all([
+        db.from("buckets").select("*").eq("id", b.bucket_id).single(),
+        db.from("event_types").select("*").eq("id", b.event_type_id).single(),
+      ]);
+      return {
+        booking: b,
+        bucket: bucket as Bucket,
+        eventType: eventType as EventType,
+      };
+    },
+
+    getAgentByEmail: async (email) => {
+      const { data } = await supabaseAdmin()
+        .from("users")
+        .select("*")
+        .eq("email", email)
+        .maybeSingle();
+      return (data as User | null) ?? null;
+    },
+
     loadPastBookingsToComplete: async () => {
       const db = supabaseAdmin();
       const nowIso = new Date().toISOString();
@@ -175,6 +205,13 @@ export function rescheduleBooking(
 
 export function cancelBooking(token: string): Promise<void> {
   return orchestration.cancelBooking(token, realDeps());
+}
+
+export function reassignBooking(
+  bookingId: string,
+  agentEmail: string,
+): Promise<BookingResult> {
+  return orchestration.reassignBooking(bookingId, agentEmail, realDeps());
 }
 
 export function completePastBookings(): Promise<number> {

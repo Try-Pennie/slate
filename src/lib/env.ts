@@ -63,6 +63,9 @@ export const cronSecret = (): string => requireEnv("CRON_SECRET");
 export const googleChannelToken = (): string =>
   requireEnv("GOOGLE_CHANNEL_TOKEN");
 
+// Bearer key for the agent-reassign API (POST /api/bookings/reassign). Empty = disabled.
+export const reassignApiKey = (): string => process.env.REASSIGN_API_KEY ?? "";
+
 // Slack notifier (optional). Empty = notifications are no-ops.
 export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>

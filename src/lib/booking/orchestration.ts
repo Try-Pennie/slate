@@ -101,6 +101,7 @@ export type BookingUpdate = {
   agent_email?: string | null;
   status?: Booking["status"];
   gcal_event_id?: string | null;
+  allow_double_book?: boolean;
 };
 
 export interface BookingContext {
@@ -127,6 +128,8 @@ export interface BookingDeps {
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
+  loadBookingById(bookingId: string): Promise<BookingContext | null>;
+  getAgentByEmail(email: string): Promise<User | null>;
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
   emitWebhook(orgId: string, event: WebhookEvent, payload: BookingEventPayload): Promise<void>;
@@ -414,6 +417,77 @@ export async function rescheduleBooking(
   await fire(deps, "booking.rescheduled", updated, bucket, eventType);
 
   return { booking: updated, manageUrl: manageUrl(deps, token) };
+}
+
+/**
+ * Reassign a booking to a specific owning agent (the contact-owner override,
+ * #9). The caller (an upstream automation) has already decided this lead should
+ * stick to this agent, so this is FORCED: the agent is booked at the same time
+ * even if busy. It's the ONLY path that double-books — the booking is marked
+ * `allow_double_book` so the active-slot unique index lets it stack. Throws
+ * "Booking not found" / "Agent not found or not bookable" for the caller to map.
+ */
+export async function reassignBooking(
+  bookingId: string,
+  agentEmail: string,
+  deps: BookingDeps,
+): Promise<BookingResult> {
+  const ctx = await deps.loadBookingById(bookingId);
+  if (!ctx) throw new Error("Booking not found");
+  const { booking, bucket, eventType } = ctx;
+  if (booking.status === "cancelled" || booking.status === "completed") {
+    throw new Error("This booking can no longer be changed");
+  }
+
+  const agent = await deps.getAgentByEmail(agentEmail);
+  if (!agent || !agent.bookable || !agent.email) {
+    throw new Error("Agent not found or not bookable");
+  }
+  if (agent.id === booking.assigned_user_id) {
+    return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
+  }
+
+  // Move the calendar event to the owning agent at the same time. No free check:
+  // this path intentionally double-books, gated only by `allow_double_book`.
+  if (booking.agent_email && booking.gcal_event_id) {
+    await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
+  }
+  const newEventId = await deps.createEvent(agent.email, {
+    summary: `${eventType.name}${
+      booking.attendee_name ? ` with ${booking.attendee_name}` : ""
+    }`,
+    start: booking.starts_at,
+    end: booking.ends_at,
+    timezone: booking.timezone,
+    attendeeEmail: booking.attendee_email ?? undefined,
+    attendeeName: booking.attendee_name ?? undefined,
+  });
+
+  await deps.updateBooking(booking.id, {
+    assigned_user_id: agent.id,
+    agent_name: agent.name,
+    agent_email: agent.email,
+    gcal_event_id: newEventId,
+    status: "rescheduled",
+    allow_double_book: true,
+  });
+
+  await deps.deleteBusyBlocksForBooking(booking.id);
+  await deps.insertBusyBlock(
+    busyBlockFor(agent.id, booking.starts_at, booking.ends_at, booking.id),
+  );
+
+  const updated = {
+    ...booking,
+    assigned_user_id: agent.id,
+    agent_name: agent.name,
+    agent_email: agent.email,
+    gcal_event_id: newEventId,
+    status: "rescheduled" as const,
+    allow_double_book: true,
+  };
+  await fire(deps, "booking.rescheduled", updated, bucket, eventType);
+  return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };
 }
 
 export async function cancelBooking(

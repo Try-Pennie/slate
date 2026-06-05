@@ -172,6 +172,8 @@ export interface Booking {
   manage_token: string;
   idempotency_key: string | null;
   routing_trace: RoutingTrace | null;
+  /** Set ONLY by the reassign API to stack a consult onto a busy owning agent. */
+  allow_double_book: boolean;
   created_at: string;
   updated_at: string;
 }

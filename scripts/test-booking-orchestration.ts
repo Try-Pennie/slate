@@ -8,6 +8,7 @@ import {
   rescheduleBooking,
   cancelBooking,
   completePastBookings,
+  reassignBooking,
   SlotUnavailableError,
   type BookingDeps,
   type BookingContext,
@@ -77,6 +78,8 @@ interface FakeOpts {
   existingByKey?: Booking | null; // idempotency hit on the pre-check
   conflictWinner?: Booking | null; // booking found by key AFTER an insert conflict
   existing?: BookingContext | null;
+  bookingById?: BookingContext | null; // loadBookingById (reassign)
+  agentByEmail?: User | null; // getAgentByEmail (reassign)
   pastDue?: BookingContext[];
 }
 
@@ -133,6 +136,8 @@ function makeDeps(opts: FakeOpts) {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
     },
     loadBookingContext: async () => opts.existing ?? null,
+    loadBookingById: async () => opts.bookingById ?? null,
+    getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
     emitWebhook: async (_orgId, event) => {
       calls.webhooks.push({ event });
@@ -362,6 +367,63 @@ async function run() {
 
     const { deps: dEmpty } = makeDeps({ pastDue: [] });
     assert((await completePastBookings(dEmpty)) === 0, "complete: zero when nothing is due");
+  }
+
+  // --- reassign: force a booking onto an owning agent (double-book allowed) ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType }; // assigned to "a"@a@x.com
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
+    const res = await reassignBooking("bk1", "b@x.com", deps);
+    assert(
+      res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
+      "reassign: booking moved to the owning agent",
+    );
+    assert(calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-old", "reassign: old agent's event removed");
+    assert(calls.createEvent.length === 1, "reassign: event created on the owning agent");
+    const patch = calls.updateBooking.find((u) => u.id === "bk1")?.patch;
+    assert(
+      !!patch && patch.allow_double_book === true && patch.assigned_user_id === "b",
+      "reassign: marks allow_double_book and the new agent",
+    );
+    assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reassign: busy block moved to the owner");
+    assert(calls.webhooks.some((w) => w.event === "booking.rescheduled"), "reassign: fires booking.rescheduled");
+  }
+
+  // --- reassign: unknown / offboarded agent is rejected ---
+  {
+    const { deps } = makeDeps({ bookingById: { booking: makeBooking({}), bucket, eventType }, agentByEmail: null });
+    let threw = false;
+    try {
+      await reassignBooking("bk1", "ghost@x.com", deps);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "reassign: rejects an unknown/offboarded agent");
+  }
+
+  // --- reassign: booking not found ---
+  {
+    const { deps } = makeDeps({ bookingById: null });
+    let threw = false;
+    try {
+      await reassignBooking("nope", "b@x.com", deps);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "reassign: throws when the booking is not found");
+  }
+
+  // --- reassign: already the owning agent is a no-op ---
+  {
+    const ctx = { booking: makeBooking({ assigned_user_id: "b", agent_email: "b@x.com" }), bucket, eventType };
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
+    await reassignBooking("bk1", "b@x.com", deps);
+    assert(
+      calls.createEvent.length === 0 && calls.updateBooking.length === 0 && calls.webhooks.length === 0,
+      "reassign: no-op when already the owning agent",
+    );
   }
 }
 
