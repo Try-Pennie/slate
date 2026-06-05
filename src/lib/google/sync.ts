@@ -189,7 +189,16 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
   try {
     const db = supabaseAdmin();
     // Reconcile the stored calendar set with what the agent actually has.
-    const wanted = selectableCalendarIds(await listCalendars(email));
+    // calendarList.list needs the calendar.readonly scope; if the domain-wide
+    // delegation doesn't grant it yet (403), fall back to just the primary
+    // calendar (works with calendar.events) so sync keeps running. Full
+    // multi-calendar activates automatically once the scope is granted.
+    let wanted: string[];
+    try {
+      wanted = selectableCalendarIds(await listCalendars(email));
+    } catch {
+      wanted = ["primary"];
+    }
     const wantedSet = new Set(wanted);
     const haveSet = new Set(existing.map((c) => c.calendar_id));
 
