@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Slate embed test</title>
+    <title>Slate embed test (cal-compatible)</title>
     <style>
       body {
         font: 15px/1.5 system-ui, sans-serif;
@@ -11,30 +11,83 @@
         margin: 40px auto;
         padding: 0 16px;
       }
+      button.cta {
+        background: #171717;
+        color: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 12px 20px;
+        font: 600 14px system-ui;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
-    <h1>Landing page (embed test)</h1>
-    <p>Inline booker for bucket <code>411</code>:</p>
-    <div id="slate"></div>
+    <h1>Landing page (cal-compatible embed test)</h1>
+    <p>
+      The loader snippet and trigger below are identical to a cal.com embed.
+      Swapping cal for Slate is just the script src plus the
+      <code>origin</code>.
+    </p>
 
-    <script src="/widget.js"></script>
+    <!-- Standard cal embed loader snippet, pointed at Slate's widget.js -->
     <script>
-      // Mirrors the real URL shape: /booking/{salesforceId}?xbc={code}&...prefill
-      Slate.inline({
-        selector: "#slate",
-        url:
-          "/booking/a04Ui00000HnjwfIAB?xbc=411" +
-          "&name=Kristina+Kelly&email=kristinakelly17%40gmail.com" +
-          "&phone=%2B1%28203%29561-5295&loanPurpose=debt_consolidation" +
-          "&loanRequest=160000&estimatedPmt=2400&active=true",
-        onBooking: function (b) {
-          console.log("Booking complete:", b);
+      (function (C, A, L) {
+        let p = function (a, ar) {
+          a.q.push(ar);
+        };
+        let d = C.document;
+        C.Cal =
+          C.Cal ||
+          function () {
+            let cal = C.Cal;
+            let ar = arguments;
+            if (!cal.loaded) {
+              cal.ns = {};
+              cal.q = cal.q || [];
+              d.head.appendChild(d.createElement("script")).src = A;
+              cal.loaded = true;
+            }
+            if (ar[0] === L) {
+              const api = function () {
+                p(api, arguments);
+              };
+              const namespace = ar[1];
+              api.q = api.q || [];
+              if (typeof namespace === "string") {
+                cal.ns[namespace] = cal.ns[namespace] || api;
+                p(cal.ns[namespace], ar);
+                p(cal, ["initNamespace", namespace]);
+              } else p(cal, ar);
+              return;
+            }
+            p(cal, ar);
+          };
+      })(window, "/widget.js", "init");
+
+      Cal("init", "review", { origin: window.location.origin });
+      Cal.ns["review"]("ui", { layout: "month_view" });
+      Cal("on", {
+        action: "bookingSuccessful",
+        callback: function (e) {
+          console.log("Booking complete:", e.detail.data);
         },
       });
 
-      // Floating popup variant:
-      // Slate.popup({ url: "/booking/a04Ui00000HnjwfIAB?xbc=411", text: "Book a call" });
+      // For the trypennie drop-in, links are `router?form=<UUID>` and the page
+      // query (xbc, external_id, name, ...) is forwarded by setting
+      //   window.Cal.config.forwardQueryParams = true;
+      // Here the link carries its params directly so the demo is self-contained.
     </script>
+
+    <p>Inline trigger for bucket <code>411</code>:</p>
+    <button
+      class="cta"
+      data-cal-link="book?xbc=411&external_id=a04Ui00000HnjwfIAB&name=Kristina+Kelly&email=kristinakelly17%40gmail.com&phone=%2B12035615295&loanPurpose=debt_consolidation&loanRequest=160000&estimatedPmt=2400&active=true"
+      data-cal-namespace="review"
+      data-cal-config='{"layout":"month_view"}'
+    >
+      Schedule your call
+    </button>
   </body>
 </html>

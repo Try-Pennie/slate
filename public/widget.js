@@ -1,77 +1,146 @@
 /**
- * Slate embed SDK (Cal.com-style). Injects an iframe pointing at a Slate
- * booking URL and wires up auto-resize + booking callbacks via postMessage.
+ * Slate embed SDK — a drop-in replacement for the cal.com embed (`embed.js`).
  *
- * Usage (inline):
- *   <div id="slate"></div>
- *   <script src="https://YOUR-SLATE/widget.js"></script>
- *   <script>
- *     Slate.inline({
- *       selector: "#slate",
- *       url: "https://YOUR-SLATE/booking/SF_ID?xbc=411&name=...&email=...",
- *       onBooking: (b) => console.log("booked", b),
- *     });
- *   </script>
+ * It implements the same `Cal()` API surface the cal embed snippet expects, so
+ * an existing cal integration swaps to Slate by changing only (1) the script
+ * src to this file and (2) the `origin` passed to Cal("init", …). Supported:
  *
- * Usage (popup):
- *   Slate.popup({ url: "...", text: "Book a call" });
+ *   Cal("init", "<namespace>", { origin });   // per-namespace origin
+ *   Cal.ns["<ns>"]("ui", { ... });             // accepted (Slate styles itself)
+ *   Cal.ns["<ns>"]("prerender", { ... });      // no-op (Slate is cache-first)
+ *   Cal("on", { action: "bookingSuccessful", callback });
+ *   window.Cal.config.forwardQueryParams = true;
+ *   <button data-cal-link="router?form=…" data-cal-namespace="review"
+ *           data-cal-config='{"layout":"month_view"}'>Book</button>
+ *
+ * Routing is by the `xbc` query param (the bucket code); the external record id
+ * is read from `external_id`. `data-cal-link` clicks open a modal iframe at
+ * `<origin>/book?…` carrying the link's own query plus, when
+ * forwardQueryParams is set, the host page's query.
  */
 (function () {
   "use strict";
 
-  function withEmbed(url) {
-    var u = new URL(url, window.location.href);
-    u.searchParams.set("embed", "1");
-    return u.toString();
+  var prior = window.Cal;
+  var priorNs = prior && prior.ns ? prior.ns : {};
+  var queuedGlobal = prior && prior.q ? prior.q.slice() : [];
+
+  var namespaces = {}; // ns -> { origin, ui }
+  var listeners = {}; // action -> [callback]
+  var activeIframe = null;
+
+  function ensureNs(ns) {
+    return (namespaces[ns] = namespaces[ns] || { origin: "", ui: {} });
   }
 
-  function makeIframe(url) {
-    var iframe = document.createElement("iframe");
-    iframe.src = withEmbed(url);
-    iframe.style.width = "100%";
-    iframe.style.border = "0";
-    iframe.style.minHeight = "480px";
-    iframe.setAttribute("title", "Slate booking");
-    iframe.allow = "fullscreen";
-    return iframe;
+  function on(action, cb) {
+    if (action && typeof cb === "function") {
+      (listeners[action] = listeners[action] || []).push(cb);
+    }
   }
 
-  function listen(iframe, onBooking) {
-    window.addEventListener("message", function (e) {
-      var data = e.data || {};
-      if (data.type === "slate:resize" && typeof data.height === "number") {
-        iframe.style.height = data.height + "px";
-      }
-      if (data.type === "slate:booking" && typeof onBooking === "function") {
-        onBooking(data.booking, data);
+  function emit(action, payload) {
+    (listeners[action] || []).forEach(function (cb) {
+      try {
+        cb({ detail: { type: action, data: payload } });
+      } catch (e) {
+        /* a subscriber throwing must not break delivery to others */
       }
     });
   }
 
-  function inline(opts) {
-    var target =
-      typeof opts.selector === "string"
-        ? document.querySelector(opts.selector)
-        : opts.selector;
-    if (!target) throw new Error("Slate.inline: target not found");
-    var iframe = makeIframe(opts.url);
-    target.appendChild(iframe);
-    listen(iframe, opts.onBooking);
-    return iframe;
+  // Process one `Cal.ns[ns](...)` command: [method, ...args].
+  function handleNsCommand(ns, args) {
+    var method = args[0];
+    var n = ensureNs(ns);
+    if (method === "init") {
+      var initOpts = args[2] || args[1] || {};
+      if (initOpts && initOpts.origin) n.origin = initOpts.origin;
+    } else if (method === "ui") {
+      n.ui = args[1] || {};
+    } else if (method === "on") {
+      var o = args[1] || {};
+      on(o.action, o.callback);
+    }
+    // "prerender" and anything else: accepted, no-op (kept API-compatible).
   }
 
-  function popup(opts) {
-    var btn = document.createElement("button");
-    btn.textContent = opts.text || "Book a call";
-    btn.style.cssText =
-      "position:fixed;right:24px;bottom:24px;z-index:2147483646;" +
-      "background:#171717;color:#fff;border:0;border-radius:9999px;" +
-      "padding:14px 22px;font:600 14px system-ui;cursor:pointer;" +
-      "box-shadow:0 6px 24px rgba(0,0,0,.2)";
+  function registerNs(ns) {
+    if (!realCal.ns[ns]) {
+      realCal.ns[ns] = function () {
+        handleNsCommand(ns, Array.prototype.slice.call(arguments));
+      };
+    }
+    ensureNs(ns);
+  }
 
+  // Process one global `Cal(...)` command.
+  function handleGlobalCommand(args) {
+    var method = args[0];
+    if (method === "init") {
+      if (typeof args[1] === "string") {
+        registerNs(args[1]);
+        handleNsCommand(args[1], args);
+      } else {
+        var opts = args[1] || {};
+        if (opts.origin) ensureNs("").origin = opts.origin;
+      }
+    } else if (method === "on") {
+      var o = args[1] || {};
+      on(o.action, o.callback);
+    }
+    // "initNamespace" and others: no-op.
+  }
+
+  function realCal() {
+    handleGlobalCommand(Array.prototype.slice.call(arguments));
+  }
+  realCal.ns = {};
+  realCal.config = (prior && prior.config) || {};
+  realCal.loaded = true;
+
+  // Drain everything the loader stub queued before this script loaded.
+  Object.keys(priorNs).forEach(function (ns) {
+    registerNs(ns);
+    var q = priorNs[ns] && priorNs[ns].q ? priorNs[ns].q : [];
+    q.forEach(function (args) {
+      handleNsCommand(ns, args);
+    });
+  });
+  queuedGlobal.forEach(handleGlobalCommand);
+
+  window.Cal = realCal;
+
+  // --- link → Slate booking URL --------------------------------------------
+
+  function originFor(ns) {
+    var n = namespaces[ns] || namespaces[""] || {};
+    return (n.origin || window.location.origin).replace(/\/$/, "");
+  }
+
+  function bookingUrl(link, ns) {
+    var params = new URLSearchParams();
+    var q = link.indexOf("?");
+    if (q >= 0) {
+      new URLSearchParams(link.slice(q + 1)).forEach(function (v, k) {
+        params.set(k, v);
+      });
+    }
+    if (realCal.config && realCal.config.forwardQueryParams) {
+      new URLSearchParams(window.location.search).forEach(function (v, k) {
+        params.set(k, v);
+      });
+    }
+    params.set("embed", "1");
+    return originFor(ns) + "/book?" + params.toString();
+  }
+
+  // --- modal ----------------------------------------------------------------
+
+  function openModal(link, ns) {
     var overlay = document.createElement("div");
     overlay.style.cssText =
-      "position:fixed;inset:0;z-index:2147483647;display:none;" +
+      "position:fixed;inset:0;z-index:2147483647;display:flex;" +
       "align-items:center;justify-content:center;background:rgba(0,0,0,.5)";
 
     var modal = document.createElement("div");
@@ -84,32 +153,47 @@
     close.setAttribute("aria-label", "Close");
     close.style.cssText =
       "position:absolute;top:8px;right:12px;border:0;background:transparent;" +
-      "font-size:24px;line-height:1;cursor:pointer;color:#666";
+      "font-size:24px;line-height:1;cursor:pointer;color:#666;z-index:1";
 
-    var iframe = makeIframe(opts.url);
-    iframe.style.minHeight = "560px";
+    var iframe = document.createElement("iframe");
+    iframe.src = bookingUrl(link, ns);
+    iframe.style.cssText = "width:100%;border:0;min-height:560px";
+    iframe.setAttribute("title", "Slate booking");
+    iframe.allow = "fullscreen";
 
-    modal.appendChild(close);
-    modal.appendChild(iframe);
-    overlay.appendChild(modal);
-    listen(iframe, opts.onBooking);
-
-    function show() {
-      overlay.style.display = "flex";
-    }
     function hide() {
-      overlay.style.display = "none";
+      overlay.remove();
+      if (activeIframe === iframe) activeIframe = null;
     }
-    btn.addEventListener("click", show);
     close.addEventListener("click", hide);
     overlay.addEventListener("click", function (e) {
       if (e.target === overlay) hide();
     });
 
-    document.body.appendChild(btn);
+    modal.appendChild(close);
+    modal.appendChild(iframe);
+    overlay.appendChild(modal);
     document.body.appendChild(overlay);
-    return { show: show, hide: hide };
+    activeIframe = iframe;
   }
 
-  window.Slate = { inline: inline, popup: popup };
+  // Delegated so dynamically-added triggers work too.
+  document.addEventListener("click", function (e) {
+    var el = e.target && e.target.closest && e.target.closest("[data-cal-link]");
+    if (!el) return;
+    e.preventDefault();
+    openModal(
+      el.getAttribute("data-cal-link") || "",
+      el.getAttribute("data-cal-namespace") || "",
+    );
+  });
+
+  window.addEventListener("message", function (e) {
+    var d = e.data || {};
+    if (d.type === "slate:resize" && typeof d.height === "number" && activeIframe) {
+      activeIframe.style.height = d.height + "px";
+    } else if (d.type === "slate:bookingSuccessful") {
+      emit("bookingSuccessful", d.data);
+    }
+  });
 })();

@@ -54,6 +54,33 @@ function timeLabel(iso: string, timeZone: string) {
   }).format(new Date(iso));
 }
 
+/** Layout-matched placeholder shown while availability loads. */
+function SlotsSkeleton() {
+  return (
+    <div
+      className="grid grid-cols-1 gap-6 sm:grid-cols-[160px_1fr]"
+      aria-hidden="true"
+    >
+      <div className="flex gap-2 overflow-hidden sm:flex-col">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div
+            key={i}
+            className="h-9 min-w-24 shrink-0 animate-pulse rounded-md bg-neutral-100 sm:w-full"
+          />
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <div
+            key={i}
+            className="h-9 animate-pulse rounded-md bg-neutral-100"
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Booker({
   bucketCode,
   salesforceId,
@@ -146,8 +173,9 @@ export default function Booker({
       const data = await res.json();
       setConfirmed({ start: data.startsAt });
       if (embedded) {
+        // Host page subscribes via Cal("on", { action: "bookingSuccessful" }).
         window.parent.postMessage(
-          { type: "slate:booking", booking: data, salesforceId },
+          { type: "slate:bookingSuccessful", data: { booking: data, salesforceId } },
           "*",
         );
       }
@@ -192,7 +220,7 @@ export default function Booker({
       </header>
 
       {loading ? (
-        <p className="text-sm text-neutral-400">Loading availability…</p>
+        <SlotsSkeleton />
       ) : days.length === 0 ? (
         <p className="text-sm text-neutral-500">
           No times are currently available. Please check back soon.
