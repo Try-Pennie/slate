@@ -7,6 +7,7 @@ import { appUrl, reassignApiKey } from "@/lib/env";
 import {
   createBucket,
   createEventType,
+  resendWebhookDelivery,
   setAgentAttributes,
   setBookable,
   setOrgDefaultHours,
@@ -27,8 +28,14 @@ import type {
   Organization,
   RoutingTrace,
   User,
+  WebhookDelivery,
   WebhookEndpoint,
 } from "@/lib/db/types";
+
+type DeliveryRow = Pick<
+  WebhookDelivery,
+  "id" | "endpoint_id" | "event" | "status" | "attempts" | "last_response" | "created_at"
+>;
 
 type TraceRow = Pick<
   Booking,
@@ -280,6 +287,30 @@ export default async function AdminPage({
   const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
   const nameOf = (id: string | null) =>
     id ? (agentName.get(id) ?? id.slice(0, 8)) : "unassigned";
+
+  // Webhook delivery log (admin only): recent attempts across the org's endpoints.
+  let deliveries: DeliveryRow[] = [];
+  const endpointUrl = new Map<string, string>();
+  if (isAdmin) {
+    const { data: eps } = await db
+      .from("webhook_endpoints")
+      .select("id, url")
+      .eq("org_id", me.org_id);
+    const epList = (eps ?? []) as { id: string; url: string }[];
+    for (const e of epList) endpointUrl.set(e.id, e.url);
+    if (epList.length) {
+      const { data: dels } = await db
+        .from("webhook_deliveries")
+        .select("id, endpoint_id, event, status, attempts, last_response, created_at")
+        .in(
+          "endpoint_id",
+          epList.map((e) => e.id),
+        )
+        .order("created_at", { ascending: false })
+        .limit(25);
+      deliveries = (dels ?? []) as DeliveryRow[];
+    }
+  }
 
   // Push health: how many bookable agents have at least one live Google watch
   // channel across their calendars. A shortfall means external calendar edits
@@ -844,6 +875,79 @@ export default async function AdminPage({
           <button className={btnCls}>Save</button>
         </form>
       </section>
+      )}
+
+      {/* Webhook deliveries (admin only) */}
+      {isAdmin && (
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Webhook deliveries</h2>
+          <p className="mb-3 text-xs text-neutral-500">
+            The last {deliveries.length} delivery attempts. Resend re-fires one
+            immediately.
+          </p>
+          {deliveries.length === 0 ? (
+            <p className="text-sm text-neutral-500">No deliveries yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-neutral-500">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">When</th>
+                    <th className="py-1 pr-3 font-medium">Event</th>
+                    <th className="py-1 pr-3 font-medium">Endpoint</th>
+                    <th className="py-1 pr-3 font-medium">Status</th>
+                    <th className="py-1 pr-3 font-medium">Tries</th>
+                    <th className="py-1 font-medium" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {deliveries.map((d) => (
+                    <tr key={d.id} className="border-t border-neutral-100 align-top">
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-neutral-600">
+                        {new Date(d.created_at).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="py-1.5 pr-3">{d.event}</td>
+                      <td
+                        className="max-w-[160px] truncate py-1.5 pr-3 text-neutral-500"
+                        title={endpointUrl.get(d.endpoint_id) ?? ""}
+                      >
+                        {endpointUrl.get(d.endpoint_id) ?? "?"}
+                      </td>
+                      <td className="py-1.5 pr-3">
+                        <span
+                          title={d.last_response ?? ""}
+                          className={`rounded px-1.5 py-0.5 ${
+                            d.status === "success"
+                              ? "bg-green-100 text-green-700"
+                              : d.status === "failed"
+                                ? "bg-red-100 text-red-700"
+                                : "bg-amber-100 text-amber-700"
+                          }`}
+                        >
+                          {d.status}
+                        </span>
+                      </td>
+                      <td className="py-1.5 pr-3 text-neutral-600">{d.attempts}</td>
+                      <td className="py-1.5">
+                        <form action={resendWebhookDelivery}>
+                          <input type="hidden" name="delivery_id" value={d.id} />
+                          <button className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:border-neutral-400">
+                            Resend
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       )}
     </main>
   );

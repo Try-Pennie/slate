@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { currentUser, requireAdmin, requireManager } from "@/lib/auth";
 import { canManageUser, canChangeRole, isRole } from "@/lib/auth/roles";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
+import { resendDelivery } from "@/lib/webhooks/emit";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
 /**
@@ -377,6 +378,15 @@ export async function setUserRole(form: FormData): Promise<void> {
   }
 
   await db.from("users").update({ role: next }).eq("id", userId);
+  revalidatePath("/admin");
+}
+
+/** Admin-only: re-fire a webhook delivery from the delivery log. */
+export async function resendWebhookDelivery(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const deliveryId = String(form.get("delivery_id") ?? "");
+  if (!deliveryId) return;
+  await resendDelivery(deliveryId, admin.org_id);
   revalidatePath("/admin");
 }
 

@@ -170,3 +170,35 @@ export async function retryFailedDeliveries(): Promise<number> {
   }
   return retried;
 }
+
+/**
+ * Manual resend of one delivery from the admin log: re-fires it immediately
+ * (ignoring the retry cap). Scoped to `orgId` so an admin can only resend their
+ * own org's deliveries.
+ */
+export async function resendDelivery(deliveryId: string, orgId: string): Promise<void> {
+  const db = supabaseAdmin();
+  const { data: d } = await db
+    .from("webhook_deliveries")
+    .select("id, endpoint_id, event, payload, attempts")
+    .eq("id", deliveryId)
+    .maybeSingle();
+  if (!d) return;
+  const row = d as unknown as {
+    id: string;
+    endpoint_id: string;
+    event: WebhookEvent;
+    payload: BookingEventPayload;
+    attempts: number;
+  };
+
+  const { data: endpoint } = await db
+    .from("webhook_endpoints")
+    .select("*")
+    .eq("id", row.endpoint_id)
+    .eq("org_id", orgId)
+    .maybeSingle();
+  if (!endpoint) return;
+
+  await send(endpoint as WebhookEndpoint, row.id, row.event, row.payload, row.attempts + 1);
+}
