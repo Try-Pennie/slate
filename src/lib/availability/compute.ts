@@ -32,6 +32,23 @@ export interface SlotComputeInput {
 
 const MIN = 60_000;
 
+/**
+ * Wall-clock time `minutes` after local midnight on `day`, DST-correct. Uses
+ * `.set` (wall clock) rather than `.plus({minutes})` (exact duration): on a DST
+ * transition day, adding duration from midnight would shift the working-hours
+ * window by the offset delta (e.g. 9:00 -> 10:00 on spring-forward). 1440 (24:00)
+ * maps to the next local midnight.
+ */
+function timeOnDay(day: DateTime, minutes: number): DateTime {
+  if (minutes >= 1440) return day.plus({ days: 1 }).startOf("day");
+  return day.set({
+    hour: Math.floor(minutes / 60),
+    minute: minutes % 60,
+    second: 0,
+    millisecond: 0,
+  });
+}
+
 function overlaps(
   busy: { start: number; end: number }[],
   start: number,
@@ -84,8 +101,8 @@ function memberOpenStarts(
 
     if (!capped) {
       for (const rule of rulesByDay.get(day.weekday) ?? []) {
-        const windowStart = day.plus({ minutes: rule.start_minute });
-        const windowEnd = day.plus({ minutes: rule.end_minute });
+        const windowStart = timeOnDay(day, rule.start_minute);
+        const windowEnd = timeOnDay(day, rule.end_minute);
 
         let slot = windowStart;
         while (slot.plus({ minutes: input.durationMin }) <= windowEnd) {
