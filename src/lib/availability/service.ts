@@ -159,6 +159,7 @@ export async function loadMembersAvailability(
 export interface BucketSlots {
   bucket: Bucket;
   eventType: EventType;
+  orgName: string;
   slots: string[];
 }
 
@@ -171,6 +172,12 @@ export async function getBucketSlots(
   const resolved = await resolveBucketByCode(code);
   if (!resolved) return null;
   const { bucket, eventType } = resolved;
+
+  const { data: org } = await supabaseAdmin()
+    .from("organizations")
+    .select("name")
+    .eq("id", bucket.org_id)
+    .maybeSingle();
 
   const members = await loadMembersAvailability(bucket, from, to);
   const slots = computeBucketSlots({
@@ -186,7 +193,12 @@ export async function getBucketSlots(
     nowMs: Date.now(),
   });
 
-  return { bucket, eventType, slots };
+  return {
+    bucket,
+    eventType,
+    orgName: (org as { name: string } | null)?.name ?? "",
+    slots,
+  };
 }
 
 /**

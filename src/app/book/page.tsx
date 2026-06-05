@@ -52,6 +52,8 @@ export default async function BookEntry({
       }}
       prefill={prefill}
       embedded={first(sp, "embed") === "1"}
+      theme={first(sp, "theme") === "light" ? "light" : "dark"}
+      brandColor={first(sp, "brand") || undefined}
     />
   );
 }

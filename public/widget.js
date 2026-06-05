@@ -131,6 +131,10 @@
         params.set(k, v);
       });
     }
+    // Forward the namespace's ui config so the booker matches the host page.
+    var ui = (namespaces[ns] || namespaces[""] || {}).ui || {};
+    if (ui.theme) params.set("theme", ui.theme);
+    if (ui.brandColor) params.set("brand", ui.brandColor);
     params.set("embed", "1");
     return originFor(ns) + "/book?" + params.toString();
   }

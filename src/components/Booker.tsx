@@ -16,10 +16,15 @@ interface BookerProps {
   prefill: Record<string, string>;
   /** True when rendered inside the embed iframe (drives postMessage to host). */
   embedded?: boolean;
+  /** Palette, from the embed `ui` config. Defaults to dark. */
+  theme?: "light" | "dark";
+  /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
+  brandColor?: string;
 }
 
 interface AvailabilityResponse {
   bucket: { code: string; name: string };
+  orgName: string;
   eventType: { name: string; description: string | null; durationMin: number };
   slots: string[];
 }
@@ -30,6 +35,61 @@ const localZone = () =>
     : "America/New_York";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Avatar initials from the org name: "Pennie" -> "PE", "Acme Co" -> "AC". */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "•";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+const PALETTE = {
+  dark: {
+    shell: "border-neutral-800 bg-neutral-950 text-neutral-200",
+    border: "border-neutral-800",
+    title: "text-white",
+    muted: "text-neutral-400",
+    faint: "text-neutral-500",
+    body: "text-neutral-300",
+    avatar: "bg-neutral-800 text-neutral-200",
+    dayOn: "text-neutral-100 hover:bg-neutral-800",
+    dayOff: "cursor-default text-neutral-700",
+    daySelected: "bg-neutral-800",
+    ring: "ring-white",
+    slot: "border-neutral-800 bg-neutral-900 text-neutral-100 hover:border-neutral-600",
+    input: "border-neutral-700 bg-neutral-900 text-neutral-100 placeholder-neutral-500",
+    toggleBorder: "border-neutral-800",
+    toggleOn: "bg-neutral-800 text-white",
+    toggleOff: "text-neutral-400",
+    navHover: "hover:bg-neutral-800",
+    skeleton: "bg-neutral-900",
+    confirm: "bg-white text-neutral-900 hover:bg-neutral-200",
+    backHover: "hover:text-neutral-200",
+  },
+  light: {
+    shell: "border-neutral-200 bg-white text-neutral-700",
+    border: "border-neutral-200",
+    title: "text-neutral-900",
+    muted: "text-neutral-500",
+    faint: "text-neutral-400",
+    body: "text-neutral-600",
+    avatar: "bg-neutral-100 text-neutral-700",
+    dayOn: "text-neutral-900 hover:bg-neutral-100",
+    dayOff: "cursor-default text-neutral-300",
+    daySelected: "bg-neutral-100",
+    ring: "ring-neutral-900",
+    slot: "border-neutral-200 bg-white text-neutral-900 hover:border-neutral-400",
+    input: "border-neutral-300 bg-white text-neutral-900 placeholder-neutral-400",
+    toggleBorder: "border-neutral-200",
+    toggleOn: "bg-neutral-100 text-neutral-900",
+    toggleOff: "text-neutral-400",
+    navHover: "hover:bg-neutral-100",
+    skeleton: "bg-neutral-100",
+    confirm: "bg-neutral-900 text-white hover:bg-neutral-700",
+    backHover: "hover:text-neutral-700",
+  },
+};
 
 function ClockIcon() {
   return (
@@ -61,9 +121,17 @@ export default function Booker({
   attendee: initialAttendee,
   prefill,
   embedded = false,
+  theme = "dark",
+  brandColor,
 }: BookerProps) {
   const zone = useMemo(() => localZone(), []);
   const today = useMemo(() => DateTime.now().setZone(zone).startOf("day"), [zone]);
+  const c = PALETTE[theme];
+  // Brand accent overrides (inline, since the hex is dynamic). Undefined = keep
+  // the palette default (emerald dots, themed ring/confirm).
+  const dotStyle = brandColor ? { backgroundColor: brandColor } : undefined;
+  const ringStyle = brandColor ? { boxShadow: `inset 0 0 0 1.5px ${brandColor}` } : undefined;
+  const confirmStyle = brandColor ? { backgroundColor: brandColor, color: "#fff" } : undefined;
 
   const [month, setMonth] = useState(() => today.startOf("month"));
   const [meta, setMeta] = useState<AvailabilityResponse | null>(null);
@@ -190,19 +258,18 @@ export default function Booker({
     setSubmitting(false);
   }
 
-  const shell =
-    "mx-auto max-w-4xl overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 text-neutral-200";
+  const shell = `mx-auto max-w-4xl overflow-hidden rounded-2xl border ${c.shell}`;
 
   if (confirmed) {
     return (
       <div ref={rootRef} className={shell}>
         <div className="p-10 text-center">
-          <h2 className="text-lg font-semibold text-white">You&apos;re booked</h2>
-          <p className="mt-2 text-sm text-neutral-400">
+          <h2 className={`text-lg font-semibold ${c.title}`}>You&apos;re booked</h2>
+          <p className={`mt-2 text-sm ${c.muted}`}>
             {DateTime.fromISO(confirmed.start).setZone(zone).toFormat("cccc, LLL d")} at{" "}
             {fmtTime(confirmed.start)}
           </p>
-          <p className="mt-1 text-xs text-neutral-500">
+          <p className={`mt-1 text-xs ${c.faint}`}>
             A calendar invite is on its way to {attendee.email || "your email"}.
           </p>
         </div>
@@ -216,34 +283,37 @@ export default function Booker({
     <div ref={rootRef} className={shell}>
       <div className="grid grid-cols-1 md:grid-cols-[260px_1fr_240px]">
         {/* Event panel */}
-        <aside className="border-b border-neutral-800 p-6 md:border-b-0 md:border-r">
-          <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-full bg-neutral-800 text-xs font-semibold text-neutral-200">
-            PE
+        <aside className={`border-b p-6 ${c.border} md:border-b-0 md:border-r`}>
+          <div
+            className={`mb-4 flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold ${c.avatar}`}
+            style={confirmStyle}
+          >
+            {meta ? initials(meta.orgName) : ""}
           </div>
-          <p className="text-xs font-medium text-neutral-400">{meta?.bucket.name ?? ""}</p>
-          <h1 className="mt-1 text-xl font-semibold leading-snug text-white">
+          <p className={`text-xs font-medium ${c.muted}`}>{meta?.bucket.name ?? ""}</p>
+          <h1 className={`mt-1 text-xl font-semibold leading-snug ${c.title}`}>
             {meta?.eventType.name ?? "Book a call"}
           </h1>
           {meta?.eventType.description && (
-            <p className="mt-3 text-sm leading-relaxed text-neutral-400">
+            <p className={`mt-3 text-sm leading-relaxed ${c.muted}`}>
               {meta.eventType.description}
             </p>
           )}
-          <div className="mt-5 space-y-2 text-sm text-neutral-300">
+          <div className={`mt-5 space-y-2 text-sm ${c.body}`}>
             <div className="flex items-center gap-2">
-              <span className="text-neutral-500">
+              <span className={c.faint}>
                 <ClockIcon />
               </span>
               {meta ? `${meta.eventType.durationMin}m` : ""}
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-neutral-500">
+              <span className={c.faint}>
                 <PhoneIcon />
               </span>
               {attendee.phone || "Attendee phone number"}
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-neutral-500">
+              <span className={c.faint}>
                 <GlobeIcon />
               </span>
               {zone.replace(/_/g, " ")}
@@ -252,11 +322,11 @@ export default function Booker({
         </aside>
 
         {/* Calendar */}
-        <section className="border-b border-neutral-800 p-6 md:border-b-0">
+        <section className={`border-b p-6 ${c.border} md:border-b-0`}>
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white">
+            <h2 className={`text-sm font-semibold ${c.title}`}>
               {month.toFormat("LLLL")}{" "}
-              <span className="font-normal text-neutral-500">{month.toFormat("yyyy")}</span>
+              <span className={`font-normal ${c.faint}`}>{month.toFormat("yyyy")}</span>
             </h2>
             <div className="flex gap-1">
               <button
@@ -268,7 +338,7 @@ export default function Booker({
                   setSelectedDay(null);
                   setSelectedSlot(null);
                 }}
-                className="rounded p-1 text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
+                className={`rounded p-1 ${c.muted} ${c.navHover} disabled:opacity-30`}
               >
                 ‹
               </button>
@@ -280,14 +350,14 @@ export default function Booker({
                   setSelectedDay(null);
                   setSelectedSlot(null);
                 }}
-                className="rounded p-1 text-neutral-400 hover:bg-neutral-800"
+                className={`rounded p-1 ${c.muted} ${c.navHover}`}
               >
                 ›
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-7 gap-1 text-center text-[11px] uppercase tracking-wide text-neutral-500">
+          <div className={`grid grid-cols-7 gap-1 text-center text-[11px] uppercase tracking-wide ${c.faint}`}>
             {WEEKDAYS.map((d) => (
               <div key={d} className="py-1">
                 {d}
@@ -309,17 +379,21 @@ export default function Booker({
                     setSelectedDay(key);
                     setSelectedSlot(null);
                   }}
+                  style={isSelected ? ringStyle : undefined}
                   className={[
                     "relative aspect-square rounded-md text-sm",
-                    has
-                      ? "text-neutral-100 hover:bg-neutral-800"
-                      : "cursor-default text-neutral-700",
-                    isSelected ? "bg-neutral-800 ring-1 ring-white" : "",
+                    has ? c.dayOn : c.dayOff,
+                    isSelected
+                      ? `${c.daySelected} ${brandColor ? "" : `ring-1 ${c.ring}`}`
+                      : "",
                   ].join(" ")}
                 >
                   {cell.day}
                   {isToday && (
-                    <span className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-emerald-500" />
+                    <span
+                      className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-emerald-500"
+                      style={dotStyle}
+                    />
                   )}
                 </button>
               );
@@ -333,17 +407,17 @@ export default function Booker({
             <div className="space-y-3">
               <button
                 onClick={() => setSelectedSlot(null)}
-                className="text-xs text-neutral-400 hover:text-neutral-200"
+                className={`text-xs ${c.muted} ${c.backHover}`}
               >
                 ‹ Back
               </button>
-              <p className="text-sm font-semibold text-white">
+              <p className={`text-sm font-semibold ${c.title}`}>
                 {selectedDate?.toFormat("ccc d")} · {fmtTime(selectedSlot)}
               </p>
               {(["name", "email", "phone"] as const).map((field) => (
                 <input
                   key={field}
-                  className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-500"
+                  className={`w-full rounded-md border px-3 py-2 text-sm ${c.input}`}
                   placeholder={field[0].toUpperCase() + field.slice(1)}
                   type={field === "email" ? "email" : "text"}
                   value={attendee[field]}
@@ -352,11 +426,12 @@ export default function Booker({
                   }
                 />
               ))}
-              {error && <p className="text-sm text-red-400">{error}</p>}
+              {error && <p className="text-sm text-red-500">{error}</p>}
               <button
                 onClick={submit}
                 disabled={submitting}
-                className="w-full rounded-md bg-white px-4 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200 disabled:opacity-60"
+                style={confirmStyle}
+                className={`w-full rounded-md px-4 py-2.5 text-sm font-medium ${c.confirm} disabled:opacity-60`}
               >
                 {submitting ? "Booking…" : "Confirm"}
               </button>
@@ -364,22 +439,22 @@ export default function Booker({
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between">
-                <p className="text-sm font-semibold text-white">
+                <p className={`text-sm font-semibold ${c.title}`}>
                   {selectedDate ? (
                     <>
                       {selectedDate.toFormat("ccc")}{" "}
-                      <span className="text-neutral-500">{selectedDate.toFormat("dd")}</span>
+                      <span className={c.faint}>{selectedDate.toFormat("dd")}</span>
                     </>
                   ) : (
                     "Pick a day"
                   )}
                 </p>
-                <div className="flex rounded-md border border-neutral-800 text-xs">
+                <div className={`flex rounded-md border text-xs ${c.toggleBorder}`}>
                   {[true, false].map((is12) => (
                     <button
                       key={String(is12)}
                       onClick={() => setHour12(is12)}
-                      className={`px-2 py-1 ${hour12 === is12 ? "bg-neutral-800 text-white" : "text-neutral-400"}`}
+                      className={`px-2 py-1 ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
                     >
                       {is12 ? "12h" : "24h"}
                     </button>
@@ -389,18 +464,21 @@ export default function Booker({
               <div className="-mr-2 flex-1 space-y-2 overflow-y-auto pr-2">
                 {loading ? (
                   Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="h-10 animate-pulse rounded-lg bg-neutral-900" />
+                    <div key={i} className={`h-10 animate-pulse rounded-lg ${c.skeleton}`} />
                   ))
                 ) : daySlots.length === 0 ? (
-                  <p className="text-sm text-neutral-500">No times available.</p>
+                  <p className={`text-sm ${c.faint}`}>No times available.</p>
                 ) : (
                   daySlots.map((iso) => (
                     <button
                       key={iso}
                       onClick={() => setSelectedSlot(iso)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2.5 text-left text-sm text-neutral-100 hover:border-neutral-600"
+                      className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm ${c.slot}`}
                     >
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      <span
+                        className="h-1.5 w-1.5 rounded-full bg-emerald-500"
+                        style={dotStyle}
+                      />
                       {fmtTime(iso)}
                     </button>
                   ))

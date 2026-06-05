@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     bucket: { code: result.bucket.code, name: result.bucket.name },
+    orgName: result.orgName,
     eventType: {
       name: result.eventType.name,
       description: result.eventType.description,
