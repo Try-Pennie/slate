@@ -8,6 +8,26 @@ interface ManageBookingProps {
   startsAt: string;
   status: string;
   eventName: string;
+  /** Presentational only; scopes the Pennie tokens via data-theme. */
+  theme?: "light" | "dark";
+}
+
+function AlertIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v5.5" strokeLinecap="round" />
+      <path d="M12 16.5h.01" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 const tz = () =>
@@ -41,6 +61,7 @@ export default function ManageBooking({
   startsAt,
   status: initialStatus,
   eventName,
+  theme = "light",
 }: ManageBookingProps) {
   const timeZone = useMemo(() => tz(), []);
   const [start, setStart] = useState(startsAt);
@@ -90,59 +111,72 @@ export default function ManageBooking({
   }
 
   return (
-    <div className="mx-auto max-w-xl p-6">
-      <h1 className="text-lg font-semibold tracking-tight">{eventName}</h1>
-      <p className="mt-1 text-sm text-neutral-600">
-        {status === "cancelled" ? (
-          <span className="text-red-600">This booking is cancelled.</span>
-        ) : (
-          <>
-            {fmt(start, timeZone)}{" "}
-            <span className="text-neutral-400">({timeZone})</span>
-          </>
-        )}
-      </p>
+    <div data-theme={theme} className="min-h-dvh bg-bg p-6 text-fg">
+      <div className="mx-auto max-w-xl">
+        <h1 className="text-lg font-semibold tracking-tight text-fg">{eventName}</h1>
+        <p className="mt-1 text-sm text-fg-muted">
+          {status === "cancelled" ? (
+            <span className="text-[var(--error)]">This booking is cancelled.</span>
+          ) : (
+            <>
+              <span className="tabular-nums text-fg">{fmt(start, timeZone)}</span>{" "}
+              <span className="text-fg-muted">({timeZone})</span>
+            </>
+          )}
+        </p>
 
-      {!done && (
-        <div className="mt-6 flex gap-3">
-          <button
-            onClick={() => setRescheduling((v) => !v)}
-            className="rounded-md border border-neutral-300 px-4 py-2 text-sm hover:border-neutral-500"
-          >
-            {rescheduling ? "Close" : "Reschedule"}
-          </button>
-          <button
-            onClick={cancel}
-            disabled={busy}
-            className="rounded-md border border-red-200 px-4 py-2 text-sm text-red-600 hover:border-red-400 disabled:opacity-60"
-          >
-            Cancel booking
-          </button>
-        </div>
-      )}
-
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-
-      {rescheduling && !done && (
-        <div className="mt-6 border-t border-neutral-200 pt-6">
-          <p className="mb-3 text-sm font-medium">Pick a new time</p>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {slots.slice(0, 30).map((iso) => (
-              <button
-                key={iso}
-                disabled={busy}
-                onClick={() => reschedule(iso)}
-                className="rounded-md border border-neutral-200 px-2 py-2 text-xs hover:border-neutral-500 disabled:opacity-60"
-              >
-                {timeLabel(iso, timeZone)}
-              </button>
-            ))}
-            {slots.length === 0 && (
-              <p className="text-sm text-neutral-400">No times available.</p>
-            )}
+        {!done && (
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              onClick={() => setRescheduling((v) => !v)}
+              className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm"
+            >
+              {rescheduling ? "Close" : "Reschedule"}
+            </button>
+            <button
+              onClick={cancel}
+              disabled={busy}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-[var(--error)] px-5 text-sm font-semibold text-[var(--error)] transition-colors hover:bg-[rgba(196,61,61,0.06)] disabled:opacity-60"
+            >
+              <XIcon />
+              Cancel booking
+            </button>
           </div>
-        </div>
-      )}
+        )}
+
+        {error && (
+          <p
+            role="alert"
+            className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]"
+          >
+            <span className="mt-0.5 shrink-0">
+              <AlertIcon />
+            </span>
+            {error}
+          </p>
+        )}
+
+        {rescheduling && !done && (
+          <div className="mt-6 border-t border-border pt-6">
+            <p className="mb-3 text-sm font-semibold text-fg">Pick a new time</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {slots.slice(0, 30).map((iso) => (
+                <button
+                  key={iso}
+                  disabled={busy}
+                  onClick={() => reschedule(iso)}
+                  className="min-h-11 rounded-md border border-border bg-surface px-2 py-2 text-sm tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
+                >
+                  {timeLabel(iso, timeZone)}
+                </button>
+              ))}
+              {slots.length === 0 && (
+                <p className="text-sm text-fg-muted">No times left, pick another.</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

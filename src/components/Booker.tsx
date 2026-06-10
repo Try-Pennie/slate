@@ -3,6 +3,8 @@
 import { DateTime } from "luxon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
+
 interface Attendee {
   name: string;
   email: string;
@@ -16,7 +18,7 @@ interface BookerProps {
   prefill: Record<string, string>;
   /** True when rendered inside the embed iframe (drives postMessage to host). */
   embedded?: boolean;
-  /** Palette, from the embed `ui` config. Defaults to dark. */
+  /** Palette, from the embed `ui` config. Defaults to light. */
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
   brandColor?: string;
@@ -44,50 +46,57 @@ function initials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+/**
+ * Pennie token-driven palette. Both keys lean on the semantic vars
+ * (--bg/--surface/--fg/--border), which `data-theme` on the Booker root
+ * flips per theme; only the wash/skeleton values differ per key.
+ */
 const PALETTE = {
   dark: {
-    shell: "border-neutral-800 bg-neutral-950 text-neutral-200",
-    border: "border-neutral-800",
-    title: "text-white",
-    muted: "text-neutral-400",
-    faint: "text-neutral-500",
-    body: "text-neutral-300",
-    avatar: "bg-neutral-800 text-neutral-200",
-    dayOn: "text-neutral-100 hover:bg-neutral-800",
-    dayOff: "cursor-default text-neutral-700",
-    daySelected: "bg-neutral-800",
-    ring: "ring-white",
-    slot: "border-neutral-800 bg-neutral-900 text-neutral-100 hover:border-neutral-600",
-    input: "border-neutral-700 bg-neutral-900 text-neutral-100 placeholder-neutral-500",
-    toggleBorder: "border-neutral-800",
-    toggleOn: "bg-neutral-800 text-white",
-    toggleOff: "text-neutral-400",
-    navHover: "hover:bg-neutral-800",
-    skeleton: "bg-neutral-900",
-    confirm: "bg-white text-neutral-900 hover:bg-neutral-200",
-    backHover: "hover:text-neutral-200",
+    shell: "bg-surface text-fg",
+    border: "border-border",
+    title: "text-fg",
+    muted: "text-fg-muted",
+    faint: "text-fg-muted",
+    body: "text-fg",
+    avatar: "bg-accent/20 text-fg",
+    dayOn: "text-fg hover:bg-fg/10",
+    dayOff: "cursor-default text-fg-muted opacity-50",
+    daySelected: "bg-accent/20",
+    ring: "ring-accent",
+    slot: "border-border bg-surface text-fg hover:border-fg/45",
+    input:
+      "bg-surface text-fg placeholder:text-fg-muted shadow-[inset_0_0_0_1px_var(--border)]",
+    toggleBorder: "border-border",
+    toggleOn: "bg-accent/20 text-fg",
+    toggleOff: "text-fg-muted",
+    navHover: "hover:bg-fg/10",
+    skeleton: "bg-fg/10",
+    confirm: "bg-accent text-fg-on-sky hover:bg-accent-hover",
+    backHover: "hover:text-fg",
   },
   light: {
-    shell: "border-neutral-200 bg-white text-neutral-700",
-    border: "border-neutral-200",
-    title: "text-neutral-900",
-    muted: "text-neutral-500",
-    faint: "text-neutral-400",
-    body: "text-neutral-600",
-    avatar: "bg-neutral-100 text-neutral-700",
-    dayOn: "text-neutral-900 hover:bg-neutral-100",
-    dayOff: "cursor-default text-neutral-300",
-    daySelected: "bg-neutral-100",
-    ring: "ring-neutral-900",
-    slot: "border-neutral-200 bg-white text-neutral-900 hover:border-neutral-400",
-    input: "border-neutral-300 bg-white text-neutral-900 placeholder-neutral-400",
-    toggleBorder: "border-neutral-200",
-    toggleOn: "bg-neutral-100 text-neutral-900",
-    toggleOff: "text-neutral-400",
-    navHover: "hover:bg-neutral-100",
-    skeleton: "bg-neutral-100",
-    confirm: "bg-neutral-900 text-white hover:bg-neutral-700",
-    backHover: "hover:text-neutral-700",
+    shell: "bg-surface text-fg",
+    border: "border-border",
+    title: "text-fg",
+    muted: "text-fg-muted",
+    faint: "text-fg-muted",
+    body: "text-fg",
+    avatar: "bg-pennie-sky-soft text-fg",
+    dayOn: "text-fg hover:bg-pennie-sky-soft",
+    dayOff: "cursor-default text-fg-muted opacity-50",
+    daySelected: "bg-pennie-sky-soft",
+    ring: "ring-accent",
+    slot: "border-border bg-surface text-fg hover:border-fg/45",
+    input:
+      "bg-surface text-fg placeholder:text-fg-muted shadow-[inset_0_0_0_1px_var(--border)]",
+    toggleBorder: "border-border",
+    toggleOn: "bg-pennie-sky-soft text-fg",
+    toggleOff: "text-fg-muted",
+    navHover: "hover:bg-[rgba(52,52,52,0.04)]",
+    skeleton: "bg-[var(--pennie-wild-sand)]",
+    confirm: "bg-accent text-fg-on-sky hover:bg-accent-hover",
+    backHover: "hover:text-fg",
   },
 };
 
@@ -106,6 +115,15 @@ function PhoneIcon() {
     </svg>
   );
 }
+function AlertIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v5.5" strokeLinecap="round" />
+      <path d="M12 16.5h.01" strokeLinecap="round" />
+    </svg>
+  );
+}
 function GlobeIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -121,17 +139,20 @@ export default function Booker({
   attendee: initialAttendee,
   prefill,
   embedded = false,
-  theme = "dark",
+  theme = "light",
   brandColor,
 }: BookerProps) {
   const zone = useMemo(() => localZone(), []);
   const today = useMemo(() => DateTime.now().setZone(zone).startOf("day"), [zone]);
   const c = PALETTE[theme];
   // Brand accent overrides (inline, since the hex is dynamic). Undefined = keep
-  // the palette default (emerald dots, themed ring/confirm).
+  // the palette default (green dots, themed ring/confirm).
   const dotStyle = brandColor ? { backgroundColor: brandColor } : undefined;
   const ringStyle = brandColor ? { boxShadow: `inset 0 0 0 1.5px ${brandColor}` } : undefined;
-  const confirmStyle = brandColor ? { backgroundColor: brandColor, color: "#fff" } : undefined;
+  // Label stays graphite via --fg-on-sky: white-on-sky fails AA (1.69:1).
+  const confirmStyle = brandColor
+    ? { backgroundColor: brandColor, color: "var(--fg-on-sky)" }
+    : undefined;
 
   const [month, setMonth] = useState(() => today.startOf("month"));
   const [meta, setMeta] = useState<AvailabilityResponse | null>(null);
@@ -144,6 +165,12 @@ export default function Booker({
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<{ start: string } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const confirmedHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  // a11y: move focus to the confirmation heading so the success is announced.
+  useEffect(() => {
+    if (confirmed) confirmedHeadingRef.current?.focus();
+  }, [confirmed]);
 
   const loadSlots = useCallback(async () => {
     const monthStart = month.startOf("month");
@@ -258,19 +285,54 @@ export default function Booker({
     setSubmitting(false);
   }
 
-  const shell = `mx-auto max-w-4xl overflow-hidden rounded-2xl border ${c.shell}`;
+  const shell = `mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
 
   if (confirmed) {
+    const confirmedDay = DateTime.fromISO(confirmed.start)
+      .setZone(zone)
+      .toFormat("cccc, LLL d");
+    const confirmedTime = fmtTime(confirmed.start);
+    const zoneLabel = zone.replace(/_/g, " ");
     return (
-      <div ref={rootRef} className={shell}>
-        <div className="p-10 text-center">
-          <h2 className={`text-lg font-semibold ${c.title}`}>You&apos;re booked</h2>
+      <div ref={rootRef} data-theme={theme} className={shell}>
+        {/* Entrance animates opacity/transform only: a height animation would
+            jitter the embed iframe via the ResizeObserver above. */}
+        <div className="pn-confirm-enter p-10 text-center">
+          {embedded ? (
+            <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-pennie-sky-soft text-[var(--accent)]">
+              <CheckBadgeIcon width={32} height={32} />
+            </span>
+          ) : (
+            <div className="mx-auto flex max-w-72 items-center justify-center rounded-xl bg-pennie-sky-soft px-6 py-5">
+              {/* Plain <img>: OpenNext on Cloudflare has no image loader configured. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/brand/pic-1-coins.png"
+                alt=""
+                aria-hidden="true"
+                width={144}
+                height={144}
+                className="h-36 w-36 object-contain"
+              />
+            </div>
+          )}
+          <h2
+            ref={confirmedHeadingRef}
+            tabIndex={-1}
+            className={`mt-6 text-[length:var(--fs-h4)] font-semibold leading-snug outline-none ${c.title}`}
+          >
+            You&apos;re all set
+          </h2>
           <p className={`mt-2 text-sm ${c.muted}`}>
-            {DateTime.fromISO(confirmed.start).setZone(zone).toFormat("cccc, LLL d")} at{" "}
-            {fmtTime(confirmed.start)}
+            {confirmedDay} at <span className="tabular-nums">{confirmedTime}</span> (
+            {zoneLabel})
           </p>
           <p className={`mt-1 text-xs ${c.faint}`}>
             A calendar invite is on its way to {attendee.email || "your email"}.
+          </p>
+          <p role="status" className="sr-only">
+            Booked. {confirmedDay} at {confirmedTime} {zoneLabel}. A calendar invite
+            is on its way.
           </p>
         </div>
       </div>
@@ -279,8 +341,24 @@ export default function Booker({
 
   const selectedDate = activeDay ? DateTime.fromISO(activeDay).setZone(zone) : null;
 
+  // Rose error notice; rendered in whichever right-column branch is active
+  // (the 409 race resets selectedSlot, so the message must show on the slot list too).
+  // Plain rose text per the DS forms recipe: rose on the 12% wash is only 4.33:1 (AA fail).
+  const errorAlert = error ? (
+    <p
+      id="booker-error"
+      role="alert"
+      className="flex items-start gap-2 text-sm text-[var(--error)]"
+    >
+      <span className="mt-0.5 shrink-0">
+        <AlertIcon />
+      </span>
+      {error}
+    </p>
+  ) : null;
+
   return (
-    <div ref={rootRef} className={shell}>
+    <div ref={rootRef} data-theme={theme} className={shell}>
       <div className="grid grid-cols-1 md:grid-cols-[260px_1fr_240px]">
         {/* Event panel */}
         <aside className={`border-b p-6 ${c.border} md:border-b-0 md:border-r`}>
@@ -338,7 +416,7 @@ export default function Booker({
                   setSelectedDay(null);
                   setSelectedSlot(null);
                 }}
-                className={`rounded p-1 ${c.muted} ${c.navHover} disabled:opacity-30`}
+                className={`inline-flex h-11 w-11 items-center justify-center rounded-md text-lg ${c.muted} ${c.navHover} disabled:opacity-30`}
               >
                 ‹
               </button>
@@ -350,14 +428,14 @@ export default function Booker({
                   setSelectedDay(null);
                   setSelectedSlot(null);
                 }}
-                className={`rounded p-1 ${c.muted} ${c.navHover}`}
+                className={`inline-flex h-11 w-11 items-center justify-center rounded-md text-lg ${c.muted} ${c.navHover}`}
               >
                 ›
               </button>
             </div>
           </div>
 
-          <div className={`grid grid-cols-7 gap-1 text-center text-[11px] uppercase tracking-wide ${c.faint}`}>
+          <div className={`grid grid-cols-7 gap-1 text-center text-xs uppercase tracking-wide ${c.faint}`}>
             {WEEKDAYS.map((d) => (
               <div key={d} className="py-1">
                 {d}
@@ -379,19 +457,22 @@ export default function Booker({
                     setSelectedDay(key);
                     setSelectedSlot(null);
                   }}
+                  aria-label={`${cell.toFormat("cccc, LLLL d")}${isToday ? ", today" : ""}`}
+                  aria-pressed={isSelected}
+                  aria-current={isToday ? "date" : undefined}
                   style={isSelected ? ringStyle : undefined}
                   className={[
-                    "relative aspect-square rounded-md text-sm",
+                    "relative aspect-square min-h-[44px] rounded-sm text-sm tabular-nums",
                     has ? c.dayOn : c.dayOff,
                     isSelected
-                      ? `${c.daySelected} ${brandColor ? "" : `ring-1 ${c.ring}`}`
+                      ? `font-semibold ${c.daySelected} ${brandColor ? "" : `ring-1 ${c.ring}`}`
                       : "",
                   ].join(" ")}
                 >
                   {cell.day}
                   {isToday && (
                     <span
-                      className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-emerald-500"
+                      className="absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-pennie-green"
                       style={dotStyle}
                     />
                   )}
@@ -401,13 +482,14 @@ export default function Booker({
           </div>
         </section>
 
-        {/* Times / booking form */}
-        <section className="flex max-h-[420px] flex-col p-6">
+        {/* Times / booking form (the 420px cap is for the scrolling slot list only) */}
+        <section className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}`}>
           {selectedSlot ? (
             <div className="space-y-3">
               <button
                 onClick={() => setSelectedSlot(null)}
-                className={`text-xs ${c.muted} ${c.backHover}`}
+                aria-label="Back to time selection"
+                className={`inline-flex min-h-9 items-center text-xs ${c.muted} ${c.backHover}`}
               >
                 ‹ Back
               </button>
@@ -415,31 +497,45 @@ export default function Booker({
                 {selectedDate?.toFormat("ccc d")} · {fmtTime(selectedSlot)}
               </p>
               {(["name", "email", "phone"] as const).map((field) => (
-                <input
-                  key={field}
-                  className={`w-full rounded-md border px-3 py-2 text-sm ${c.input}`}
-                  placeholder={field[0].toUpperCase() + field.slice(1)}
-                  type={field === "email" ? "email" : "text"}
-                  value={attendee[field]}
-                  onChange={(e) =>
-                    setAttendee((a) => ({ ...a, [field]: e.target.value }))
-                  }
-                />
+                <div key={field}>
+                  <label htmlFor={`booker-${field}`} className="sr-only">
+                    {field[0].toUpperCase() + field.slice(1)}
+                  </label>
+                  <input
+                    id={`booker-${field}`}
+                    className={`min-h-12 w-full rounded-sm px-4 text-base ${c.input}`}
+                    placeholder={field[0].toUpperCase() + field.slice(1)}
+                    type={
+                      field === "email" ? "email" : field === "phone" ? "tel" : "text"
+                    }
+                    autoComplete={field === "phone" ? "tel" : field}
+                    inputMode={
+                      field === "email" ? "email" : field === "phone" ? "tel" : undefined
+                    }
+                    value={attendee[field]}
+                    onChange={(e) =>
+                      setAttendee((a) => ({ ...a, [field]: e.target.value }))
+                    }
+                  />
+                </div>
               ))}
-              {error && <p className="text-sm text-red-500">{error}</p>}
+              {errorAlert}
               <button
                 onClick={submit}
                 disabled={submitting}
                 style={confirmStyle}
-                className={`w-full rounded-md px-4 py-2.5 text-sm font-medium ${c.confirm} disabled:opacity-60`}
+                className={`group inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-4 text-base font-semibold ${c.confirm} active:translate-y-px disabled:opacity-60`}
               >
-                {submitting ? "Booking…" : "Confirm"}
+                {submitting ? "Booking your call…" : "Confirm booking"}
+                {!submitting && (
+                  <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
+                )}
               </button>
             </div>
           ) : (
             <>
-              <div className="mb-3 flex items-center justify-between">
-                <p className={`text-sm font-semibold ${c.title}`}>
+              <div className="mb-1 flex items-center justify-between">
+                <p className={`text-sm font-semibold tabular-nums ${c.title}`}>
                   {selectedDate ? (
                     <>
                       {selectedDate.toFormat("ccc")}{" "}
@@ -449,34 +545,43 @@ export default function Booker({
                     "Pick a day"
                   )}
                 </p>
-                <div className={`flex rounded-md border text-xs ${c.toggleBorder}`}>
+                <div className={`inline-flex overflow-hidden rounded-md border text-xs ${c.toggleBorder}`}>
                   {[true, false].map((is12) => (
                     <button
                       key={String(is12)}
                       onClick={() => setHour12(is12)}
-                      className={`px-2 py-1 ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
+                      aria-pressed={hour12 === is12}
+                      className={`min-h-9 px-3 tabular-nums ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
                     >
                       {is12 ? "12h" : "24h"}
                     </button>
                   ))}
                 </div>
               </div>
+              <p className={`mb-3 flex items-center gap-1.5 text-xs ${c.faint}`}>
+                <GlobeIcon />
+                <span>
+                  <span className="sr-only">Timezone: </span>
+                  {zone.replace(/_/g, " ")}
+                </span>
+              </p>
+              {errorAlert && <div className="mb-3">{errorAlert}</div>}
               <div className="-mr-2 flex-1 space-y-2 overflow-y-auto pr-2">
                 {loading ? (
                   Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className={`h-10 animate-pulse rounded-lg ${c.skeleton}`} />
+                    <div key={i} className={`h-11 animate-pulse rounded-md ${c.skeleton}`} />
                   ))
                 ) : daySlots.length === 0 ? (
-                  <p className={`text-sm ${c.faint}`}>No times available.</p>
+                  <p className={`text-sm ${c.faint}`}>No times left that day, pick another.</p>
                 ) : (
                   daySlots.map((iso) => (
                     <button
                       key={iso}
                       onClick={() => setSelectedSlot(iso)}
-                      className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm ${c.slot}`}
+                      className={`flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
                     >
                       <span
-                        className="h-1.5 w-1.5 rounded-full bg-emerald-500"
+                        className="h-1.5 w-1.5 rounded-full bg-pennie-green"
                         style={dotStyle}
                       />
                       {fmtTime(iso)}

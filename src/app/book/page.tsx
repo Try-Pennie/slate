@@ -4,6 +4,10 @@ export const dynamic = "force-dynamic";
 
 type SP = Record<string, string | string[] | undefined>;
 
+/** Canonical --pennie-sky; the embed explicitly passes it as the default
+ *  brandColor (D14). A host can still override via the `brand` param. */
+const PENNIE_SKY = "#82D0FF";
+
 function first(sp: SP, key: string): string {
   const v = sp[key];
   return (Array.isArray(v) ? v[0] : v) ?? "";
@@ -25,8 +29,10 @@ export default async function BookEntry({
   const bucketCode = first(sp, "xbc");
   if (!bucketCode) {
     return (
-      <main className="p-8 text-sm text-neutral-500">
-        This booking link is missing its configuration (no <code>xbc</code>).
+      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
+        <p className="max-w-md text-sm text-fg-muted">
+          This booking link is missing its configuration (no <code>xbc</code>).
+        </p>
       </main>
     );
   }
@@ -41,19 +47,23 @@ export default async function BookEntry({
     prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
   }
 
+  const embedded = first(sp, "embed") === "1";
+
   return (
-    <Booker
-      bucketCode={bucketCode}
-      salesforceId={first(sp, "external_id") || null}
-      attendee={{
-        name: first(sp, "name"),
-        email: first(sp, "email"),
-        phone,
-      }}
-      prefill={prefill}
-      embedded={first(sp, "embed") === "1"}
-      theme={first(sp, "theme") === "light" ? "light" : "dark"}
-      brandColor={first(sp, "brand") || undefined}
-    />
+    <main>
+      <Booker
+        bucketCode={bucketCode}
+        salesforceId={first(sp, "external_id") || null}
+        attendee={{
+          name: first(sp, "name"),
+          email: first(sp, "email"),
+          phone,
+        }}
+        prefill={prefill}
+        embedded={embedded}
+        theme={first(sp, "theme") === "dark" ? "dark" : "light"}
+        brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
+      />
+    </main>
   );
 }

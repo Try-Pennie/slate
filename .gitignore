@@ -49,3 +49,6 @@ next-env.d.ts
 .cf-secrets.json
 *-key.json
 service-account*.json
+
+# local browser-profile artifacts
+/.playwright-mcp/
