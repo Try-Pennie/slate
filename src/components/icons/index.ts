@@ -1,0 +1,8 @@
+export { ArrowRightIcon } from "./ArrowRightIcon";
+export { ChevronRightIcon } from "./ChevronRightIcon";
+export { CheckIcon } from "./CheckIcon";
+export { CheckBadgeIcon } from "./CheckBadgeIcon";
+export { SmileIcon } from "./SmileIcon";
+export { PlusIcon } from "./PlusIcon";
+export { MinusIcon } from "./MinusIcon";
+export { PhoneIcon } from "./PhoneIcon";
