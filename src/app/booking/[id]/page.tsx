@@ -27,8 +27,10 @@ export default async function BookingPage({
   const bucketCode = first(sp, "xbc");
   if (!bucketCode) {
     return (
-      <main className="p-8 text-sm text-neutral-500">
-        This booking link is missing its configuration (no <code>xbc</code>).
+      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
+        <p className="max-w-md text-sm text-fg-muted">
+          This booking link is missing its configuration (no <code>xbc</code>).
+        </p>
       </main>
     );
   }
@@ -44,16 +46,18 @@ export default async function BookingPage({
   }
 
   return (
-    <Booker
-      bucketCode={bucketCode}
-      salesforceId={id}
-      attendee={{
-        name: first(sp, "name"),
-        email: first(sp, "email"),
-        phone,
-      }}
-      prefill={prefill}
-      embedded={first(sp, "embed") === "1"}
-    />
+    <main>
+      <Booker
+        bucketCode={bucketCode}
+        salesforceId={id}
+        attendee={{
+          name: first(sp, "name"),
+          email: first(sp, "email"),
+          phone,
+        }}
+        prefill={prefill}
+        embedded={first(sp, "embed") === "1"}
+      />
+    </main>
   );
 }

@@ -13,8 +13,10 @@ export default async function ManagePage({
 
   if (!found) {
     return (
-      <main className="p-8 text-sm text-neutral-500">
-        We couldn&apos;t find that booking.
+      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
+        <p className="text-sm text-fg-muted">
+          We couldn&apos;t find that booking.
+        </p>
       </main>
     );
   }
