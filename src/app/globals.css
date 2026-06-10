@@ -1,26 +1,368 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Layer A — raw token plumbing (plain :root, NOT @theme)
+   Ported from the Pennie Design System colors_and_type.css.
+   Raw var(--…) and the .pn-* classes resolve identically to
+   the DS previews. The @font-face block is intentionally NOT
+   ported — fonts come from next/font/local (Task 1.3).
+   ============================================================ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* ---------------- Brand core (canonical) ---------------- */
+  --pennie-white:       rgb(255, 255, 255); /* Primary text on dark bg; surface */
+  --pennie-beige:       rgb(249, 246, 240); /* Main background; secondary text on dark */
+  --pennie-graphite:    rgb(52, 52, 52);    /* Primary text */
+  --pennie-navy:        rgb(29, 33, 47);    /* Secondary background */
+
+  /* ---- Legacy aliases (kept so existing files keep rendering) ---- */
+  --pennie-cream:       var(--pennie-beige);
+  --pennie-cream-2:     rgb(248, 245, 239); /* secondary cream */
+  --pennie-cream-3:     rgb(240, 237, 230); /* warmer cream */
+  --pennie-ink:         var(--pennie-navy);
+  --pennie-ink-2:       rgb(52, 55, 68);    /* elevated navy */
+  --pennie-charcoal:    var(--pennie-graphite);
+  --pennie-charcoal-2:  rgb(31, 31, 31);    /* deeper text */
+
+  /* ---------------- Additional (neutrals) ---------------- */
+  --pennie-mercury:     rgb(227, 227, 229); /* Stroke, outlines */
+  --pennie-wild-sand:   rgb(245, 245, 247); /* Additional surface background */
+
+  /* ---------------- Accents ---------------- */
+  --pennie-sky:         rgb(130, 208, 255); /* primary action blue */
+  --pennie-sky-soft:    rgb(236, 248, 255); /* sky wash */
+  --pennie-sky-deep:    rgb(67, 159, 225);  /* hover / deep sky */
+  --pennie-sky-2:       rgb(115, 162, 255); /* periwinkle variant */
+  --pennie-blue:        rgb(72, 108, 202);  /* deep brand blue */
+
+  --pennie-yellow:      rgb(255, 208, 115); /* mustard accent */
+  --pennie-yellow-2:    rgb(255, 150, 111); /* peach variant */
+
+  --pennie-mint:        rgb(134, 231, 179); /* mint accent */
+  --pennie-green:       rgb(85, 207, 144);  /* secondary green */
+  --pennie-green-deep:  rgb(0, 182, 122);   /* success deep */
+  --pennie-green-wash:  rgb(240, 249, 241); /* green wash bg */
+
+  /* ---- Error / rose (S1 — DS has no rose token; downstream
+     error states + the Task 4.3 contrast guard depend on one) ---- */
+  --pennie-rose:        rgb(196, 61, 61);   /* #C43D3D — error base (4.77:1 on beige, 5.14:1 on white) */
+
+  /* ---------------- Neutrals ---------------- */
+  --pennie-muted:       rgb(106, 106, 112); /* muted text */
+  --pennie-line:        var(--pennie-mercury);   /* alias → Mercury */
+  --pennie-line-2:      var(--pennie-wild-sand); /* alias → Wild Sand */
+  --pennie-line-3:      rgb(246, 246, 246); /* footer text on dark */
+
+  /* ---------------- Semantic ---------------- */
+  --bg:                 var(--pennie-beige);
+  --bg-alt:             var(--pennie-cream-2);
+  --bg-ink:             var(--pennie-navy);
+  --surface:            var(--pennie-white);
+  --surface-elevated:   var(--pennie-white);
+
+  --fg:                 var(--pennie-graphite);
+  --fg-strong:          var(--pennie-charcoal-2);
+  --fg-muted:           var(--pennie-muted);
+  --fg-on-ink:          var(--pennie-beige);
+  --fg-on-sky:          var(--pennie-graphite);
+
+  --border:             rgba(52, 52, 52, 0.16);
+  --border-soft:        var(--pennie-line);
+  --border-ink:         rgba(246, 246, 246, 0.2);
+
+  --accent:             var(--pennie-sky);
+  --accent-hover:       #6dc5f7; /* sky-hover, graphite-on-it = 6.51:1 (D17) */
+  --accent-press:       var(--pennie-sky-deep);
+
+  /* Error semantics (S1) */
+  --error:              var(--pennie-rose);
+  --error-bg:           rgba(196, 61, 61, 0.12); /* 12% rose tint — soft error wash */
+
+  /* Focus (S3): decorative sky glow + theme-aware contrast-carrying line */
+  --focus-ring:         rgba(130, 208, 255, 0.45); /* decorative sky glow */
+  --focus-ring-line:    var(--fg); /* graphite outline on light (~11.5:1); flipped to sky on navy */
+
+  /* ---------------- Radii (private names; mapped in @theme inline) ---------------- */
+  --pn-radius-xs:  4px;
+  --pn-radius-sm:  8px;
+  --pn-radius-md:  10px;
+  --pn-radius-lg:  12px;
+  --pn-radius-xl:  16px;
+  --pn-radius-pill: 999px;
+
+  /* Public aliases so .pn-* classes stay byte-faithful to the DS */
+  --radius-xs:   var(--pn-radius-xs);
+  --radius-sm:   var(--pn-radius-sm);
+  --radius-md:   var(--pn-radius-md);
+  --radius-lg:   var(--pn-radius-lg);
+  --radius-xl:   var(--pn-radius-xl);
+  --radius-pill: var(--pn-radius-pill);
+
+  /* ---------------- Shadows (private names; mapped in @theme inline) ---------------- */
+  --pn-shadow-xs: 0 0 0.858px rgba(0,0,0,0.04),
+                  0 1.7px 5.1px rgba(0,0,0,0.04),
+                  0 8.6px 17.2px rgba(0,0,0,0.04);
+  --pn-shadow-sm: 0 1px 2px rgba(48,47,45,0.05),
+                  0 4px 10px rgba(48,47,45,0.03);
+  --pn-shadow-md: 0 4px 16px 0 rgba(52,52,52,0.08);  /* menu / popover */
+  --pn-shadow-lg: 0 8px 16px rgba(48,47,45,0.08),
+                  0 32px 64px rgba(48,47,45,0.08);
+  --pn-shadow-pop: 0 12px 32px rgba(29,33,47,0.18);
+
+  /* Public aliases so .pn-* classes stay byte-faithful to the DS */
+  --shadow-xs:  var(--pn-shadow-xs);
+  --shadow-sm:  var(--pn-shadow-sm);
+  --shadow-md:  var(--pn-shadow-md);
+  --shadow-lg:  var(--pn-shadow-lg);
+  --shadow-pop: var(--pn-shadow-pop);
+
+  /* ---------------- Spacing ---------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 10px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 32px;
+  --space-9: 40px;
+  --space-10: 56px;
+  --space-11: 64px;
+  --space-12: 80px;
+  --space-13: 104px;
+  --space-14: 120px;
+  --space-15: 148px;
+
+  /* ---------------- Type ---------------- */
+  /* --font-pp-mori is defined by next/font/local (Task 1.3).
+     Until then the fallback stack renders gracefully. */
+  --font-sans: var(--font-pp-mori), -apple-system, BlinkMacSystemFont,
+               'Segoe UI', system-ui, sans-serif;
+  --font-display: var(--font-sans);
+
+  /* Weights. PP Mori ships 200/400/600; 700 is aliased to 600.
+     We don't use Medium at all. */
+  --fw-extralight: 200;
+  --fw-regular: 400;
+  --fw-semibold: 600;
+  --fw-bold: 600;
+
+  /* Scale (from Figma usage frequency) */
+  --fs-display: 50px;   /* hero */
+  --fs-h1:      40px;
+  --fs-h2:      32px;
+  --fs-h3:      26px;
+  --fs-h4:      22px;
+  --fs-lead:    20px;   /* lead / section intro */
+  --fs-body:    16px;
+  --fs-small:   14px;
+  --fs-xs:      12px;
+
+  --lh-tight:   1.0;
+  --lh-snug:    1.1;
+  --lh-normal:  1.2;
+  --lh-relaxed: 1.3;
+  --lh-loose:   1.5;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ---------------- Dark scope — flip SEMANTIC vars only ----------------
+   accent / accent-hover / focus-ring (sky) stay the same. */
+[data-theme="dark"] {
+  --bg:               var(--pennie-navy);
+  --surface:          var(--pennie-ink-2);
+  --surface-elevated: var(--pennie-ink-2);
+  --fg:               var(--pennie-beige);
+  --fg-muted:         var(--pennie-line-3);
+  --border:           var(--border-ink);
+  --focus-ring-line:  var(--accent); /* S3: sky outline on navy (graphite stays light-only) */
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Dark variant for utilities: drive `dark:` off the data attribute, not the OS. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ---------------- Base ---------------- */
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-loose);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Never synthesize bold / italic — we only ship the weights we designed for. */
+  font-synthesis: none;
+}
+
+/* ---------------- Semantic type ---------------- */
+.pn-display,
+h1.pn-display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-display);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--tracking-tight);
+  color: var(--fg);
+  text-wrap: pretty;
+}
+.pn-h1 { font-weight: var(--fw-bold); font-size: var(--fs-h1); line-height: var(--lh-snug); letter-spacing: var(--tracking-tight); }
+.pn-h2 { font-weight: var(--fw-bold); font-size: var(--fs-h2); line-height: var(--lh-snug); }
+.pn-h3 { font-weight: var(--fw-bold); font-size: var(--fs-h3); line-height: var(--lh-snug); }
+.pn-h4 { font-weight: var(--fw-bold); font-size: var(--fs-h4); line-height: var(--lh-snug); }
+.pn-lead { font-weight: var(--fw-regular); font-size: var(--fs-lead); line-height: var(--lh-relaxed); color: var(--fg); }
+.pn-body { font-weight: var(--fw-regular); font-size: var(--fs-body); line-height: var(--lh-loose); color: var(--fg); }
+.pn-body-bold { font-weight: var(--fw-bold); font-size: var(--fs-body); line-height: var(--lh-tight); color: var(--fg); }
+.pn-small { font-size: var(--fs-small); line-height: var(--lh-normal); color: var(--fg); }
+.pn-small-bold { font-size: var(--fs-small); line-height: var(--lh-tight); font-weight: var(--fw-bold); color: var(--fg); }
+.pn-eyebrow {
+  font-size: var(--fs-small); font-weight: var(--fw-bold);
+  text-transform: none; letter-spacing: 0; color: var(--fg-muted);
+}
+
+/* ---------------- Buttons (base recipe) ---------------- */
+.pn-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font-sans);
+  font-weight: var(--fw-bold);
+  border: 0;
+  cursor: pointer;
+  transition: background .15s ease, transform .1s ease, border-color .15s ease, box-shadow .15s ease;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--fg);
+}
+.pn-btn:active { transform: translateY(1px); }
+/* S3: contrast-carrying outline + decorative sky glow (replaces the DS sky-only ring) */
+.pn-btn:focus-visible {
+  outline: 2px solid var(--focus-ring-line);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+}
+
+.pn-btn--big {
+  height: 56px;
+  padding: 0 24px;
+  border-radius: var(--radius-xl);
+  font-size: var(--fs-body);
+}
+.pn-btn--small {
+  height: 40px;
+  padding: 0 20px;
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-small);
+}
+
+.pn-btn--primary {
+  background: var(--accent);
+  color: var(--fg);
+}
+.pn-btn--primary:hover { background: var(--accent-hover); }
+
+.pn-btn--additional {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+.pn-btn--additional:hover { background: rgba(52,52,52,0.04); }
+
+.pn-btn--link {
+  background: transparent; padding: 0; height: auto;
+  color: var(--fg);
+}
+
+/* ---------------- Card recipe ---------------- */
+.pn-card {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-5);
+}
+
+/* ---------------- Theme-aware focus (S3) ----------------
+   The outline carries the 3:1 contrast (graphite on light, sky on navy);
+   the sky box-shadow is purely decorative. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring-line);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+}
+
+/* ---------------- Visually-hidden utility (S7) ---------------- */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------- Reduced-motion guard (S9) ----------------
+   After the base/.pn-* styles so it wins the cascade. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ============================================================
+   Layer B — @theme inline mapping (utilities).
+   `inline` is load-bearing: utilities re-resolve through the
+   live cascade so light/dark theming works.
+   ============================================================ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-alt: var(--bg-alt);
+  --color-bg-ink: var(--bg-ink);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-on-ink: var(--fg-on-ink);
+  --color-fg-on-sky: var(--fg-on-sky);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-press: var(--accent-press);
+  --color-error: var(--error);
+  --color-error-bg: var(--error-bg);
+  --color-focus-ring: var(--focus-ring);
+
+  /* raw brand colors for illustration accents */
+  --color-pennie-sky: var(--pennie-sky);
+  --color-pennie-sky-soft: var(--pennie-sky-soft);
+  --color-pennie-navy: var(--pennie-navy);
+  --color-pennie-beige: var(--pennie-beige);
+  --color-pennie-graphite: var(--pennie-graphite);
+  --color-pennie-yellow: var(--pennie-yellow);
+  --color-pennie-mint: var(--pennie-mint);
+  --color-pennie-green: var(--pennie-green);
+  --color-pennie-blue: var(--pennie-blue);
+  --color-pennie-rose: var(--pennie-rose);
+
+  --radius-xs: var(--pn-radius-xs);
+  --radius-sm: var(--pn-radius-sm);
+  --radius-md: var(--pn-radius-md);
+  --radius-lg: var(--pn-radius-lg);
+  --radius-xl: var(--pn-radius-xl);
+  --radius-pill: var(--pn-radius-pill);
+
+  --shadow-xs: var(--pn-shadow-xs);
+  --shadow-sm: var(--pn-shadow-sm);
+  --shadow-md: var(--pn-shadow-md);
+  --shadow-lg: var(--pn-shadow-lg);
+  --shadow-pop: var(--pn-shadow-pop);
+
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
 }
