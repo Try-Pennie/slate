@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
+import { acquireLock, releaseLock } from "@/lib/locks";
+import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatWatchLapseAlert } from "@/lib/notify/alerts";
 
@@ -28,37 +30,48 @@ export async function GET(req: NextRequest) {
     return new NextResponse("unauthorized", { status: 401 });
   }
 
-  // Sync calendars for bookable agents (calendar access is via delegation).
-  const { data } = await supabaseAdmin()
-    .from("users")
-    .select("id")
-    .eq("bookable", true);
-
-  const userIds = (data ?? []).map((r) => (r as { id: string }).id);
-  const results: {
-    userId: string;
-    watch: string;
-    watchError?: string;
-    synced?: number;
-    error?: string;
-  }[] = [];
-  for (const userId of userIds) {
-    const watch = await ensureWatches(userId);
-    const row: (typeof results)[number] = {
-      userId,
-      watch: watch.status,
-      ...(watch.status === "error" ? { watchError: watch.error } : {}),
-    };
-    try {
-      row.synced = await runIncrementalSync(userId);
-    } catch (err) {
-      row.error = err instanceof Error ? err.message : String(err);
-    }
-    results.push(row);
+  // A slow pass (full resync) can outlive the 1-minute cadence; overlapping
+  // invocations would re-sync every calendar in parallel for nothing (#30).
+  const lock = await acquireLock("cron_sync", CRON_LOCK_TTL_MS);
+  if (!lock) {
+    return NextResponse.json({ skipped: "overlapping-run" });
   }
 
-  const watchErrors = results.filter((r) => r.watch === "error").length;
-  await alertWatchLapse(watchErrors, userIds.length);
+  try {
+    // Sync calendars for bookable agents (calendar access is via delegation).
+    const { data } = await supabaseAdmin()
+      .from("users")
+      .select("id")
+      .eq("bookable", true);
 
-  return NextResponse.json({ agents: userIds.length, watchErrors, results });
+    const userIds = (data ?? []).map((r) => (r as { id: string }).id);
+    const results: {
+      userId: string;
+      watch: string;
+      watchError?: string;
+      synced?: number;
+      error?: string;
+    }[] = [];
+    for (const userId of userIds) {
+      const watch = await ensureWatches(userId);
+      const row: (typeof results)[number] = {
+        userId,
+        watch: watch.status,
+        ...(watch.status === "error" ? { watchError: watch.error } : {}),
+      };
+      try {
+        row.synced = await runIncrementalSync(userId);
+      } catch (err) {
+        row.error = err instanceof Error ? err.message : String(err);
+      }
+      results.push(row);
+    }
+
+    const watchErrors = results.filter((r) => r.watch === "error").length;
+    await alertWatchLapse(watchErrors, userIds.length);
+
+    return NextResponse.json({ agents: userIds.length, watchErrors, results });
+  } finally {
+    await releaseLock("cron_sync", lock);
+  }
 }
