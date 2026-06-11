@@ -10,6 +10,12 @@ import {
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
 import { eventWindow, isBusyEvent, staleBlockIds } from "@/lib/google/sync-core";
+import {
+  claimWindow,
+  shouldRerun,
+  CALENDAR_CLAIM_TTL_MS,
+  MAX_SYNC_PASSES,
+} from "@/lib/google/sync-coalesce";
 import { googlePushUrl } from "@/lib/env";
 import type { AgentCalendar } from "@/lib/db/types";
 
@@ -146,18 +152,70 @@ export async function runIncrementalSync(userId: string): Promise<number> {
   return n;
 }
 
-/** Sync just the calendar whose push channel pinged us (the webhook hot path). */
-export async function syncByChannel(channelId: string): Promise<void> {
-  const { data } = await supabaseAdmin()
+/**
+ * Sync the calendar whose push channel pinged us (the webhook hot path),
+ * coalescing concurrent pings (#30): every ping sets sync_pending, but only
+ * the request that wins the sync_claimed_at claim actually syncs - it keeps
+ * re-running while new pings land mid-pass (bounded; the 1-minute cron
+ * backstop owns anything past the bound), then releases its claim. Losers
+ * return immediately knowing the holder will pick their changes up.
+ */
+export async function syncByChannel(
+  channelId: string,
+): Promise<"synced" | "coalesced" | "unknown-channel"> {
+  const db = supabaseAdmin();
+  const { data } = await db
     .from("agent_calendars")
     .select("*")
     .eq("watch_channel_id", channelId)
     .maybeSingle();
   const cal = data as AgentCalendar | null;
-  if (!cal) return;
+  if (!cal) return "unknown-channel";
+
+  // Flag the new changes BEFORE trying to claim, so a holder mid-pass is
+  // guaranteed to either see the flag or lose nothing (the cron backstops).
+  await db.from("agent_calendars").update({ sync_pending: true }).eq("id", cal.id);
+
+  const { claimIso, staleBeforeIso } = claimWindow(Date.now(), CALENDAR_CLAIM_TTL_MS);
+  const { data: claimed } = await db
+    .from("agent_calendars")
+    .update({ sync_claimed_at: claimIso })
+    .eq("id", cal.id)
+    .or(`sync_claimed_at.is.null,sync_claimed_at.lt.${staleBeforeIso}`)
+    .select("id");
+  if (!claimed?.length) return "coalesced";
+
   const email = await loadAgentEmail(cal.user_id);
-  if (!email) return;
-  await syncCalendar(email, cal);
+  try {
+    if (!email) return "synced";
+    for (let pass = 1; pass <= MAX_SYNC_PASSES; pass++) {
+      await db.from("agent_calendars").update({ sync_pending: false }).eq("id", cal.id);
+      const { data: fresh } = await db
+        .from("agent_calendars")
+        .select("*")
+        .eq("id", cal.id)
+        .maybeSingle();
+      if (!fresh) break;
+      await syncCalendar(email, fresh as AgentCalendar);
+      const { data: after } = await db
+        .from("agent_calendars")
+        .select("sync_pending")
+        .eq("id", cal.id)
+        .maybeSingle();
+      const pendingAgain = Boolean(
+        (after as { sync_pending?: boolean } | null)?.sync_pending,
+      );
+      if (!shouldRerun(pendingAgain, pass)) break;
+    }
+  } finally {
+    // Release only OUR claim - after the TTL another request may hold a newer one.
+    await db
+      .from("agent_calendars")
+      .update({ sync_claimed_at: null })
+      .eq("id", cal.id)
+      .eq("sync_claimed_at", claimIso);
+  }
+  return "synced";
 }
 
 /** The calendar ids whose busy time blocks an agent (their stored watched set). */

@@ -16,6 +16,7 @@ import type {
   EventType,
   GoogleCredentials,
   Organization,
+  SyncLock,
   User,
   WebhookDelivery,
   WebhookEndpoint,
@@ -49,6 +50,7 @@ export interface Database {
       alert_state: Table<AlertState>;
       agent_calendars: Table<AgentCalendar>;
       audit_log: Table<AuditEntry>;
+      sync_locks: Table<SyncLock>;
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
