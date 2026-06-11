@@ -1,0 +1,1 @@
+"{\"url\":\"http://localhost:3000/admin\",\"theme\":\"dark\",\"primaryBtnColor\":\"rgb(52, 52, 52)\",\"violations\":[],\"passes\":28,\"incomplete\":[{\"id\":\"color-contrast\",\"count\":1}]}"
