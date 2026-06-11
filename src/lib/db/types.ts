@@ -122,6 +122,12 @@ export interface AlertState {
   last_sent_at: string;
 }
 
+/** Cross-request lock row (#30); a claim is stale after its TTL. */
+export interface SyncLock {
+  key: string;
+  claimed_at: string;
+}
+
 export interface BusyBlock {
   id: string;
   user_id: string;
@@ -143,6 +149,10 @@ export interface AgentCalendar {
   watch_channel_id: string | null;
   watch_resource_id: string | null;
   watch_expiration: string | null;
+  /** Changes arrived while another request held the sync claim (#30). */
+  sync_pending: boolean;
+  /** Per-calendar sync claim; stale after CALENDAR_CLAIM_TTL_MS. */
+  sync_claimed_at: string | null;
   created_at: string;
 }
 
