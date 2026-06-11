@@ -227,6 +227,19 @@ export default function Booker({
     return () => ro.disconnect();
   }, [embedded, meta, activeDay, selectedSlot, confirmed]);
 
+  // Keydowns inside the iframe never reach the host page, so relay Escape
+  // for the host's modal chrome to close on (widget.js listens for it).
+  useEffect(() => {
+    if (!embedded) return;
+    const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        window.parent.postMessage({ type: "slate:escape" }, "*");
+      }
+    };
+    document.addEventListener("keydown", onKeydown);
+    return () => document.removeEventListener("keydown", onKeydown);
+  }, [embedded]);
+
   const monthCells = useMemo(() => {
     const start = month.startOf("month");
     const lead = start.weekday % 7; // Sunday-first column index
