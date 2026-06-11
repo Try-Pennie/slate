@@ -3,24 +3,29 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
 import { canManageAgents } from "@/lib/auth/roles";
-import { appUrl } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
 /**
  * OAuth callback for Supabase Google SSO (admin login). Exchanges the code for
  * a session, provisions the Slate user, and warms their calendar cache.
+ *
+ * Redirects use the REQUEST origin, not NEXT_PUBLIC_APP_URL: the session
+ * cookies are set on the host that served this callback, so bouncing to the
+ * canonical app URL from a different host (local dev) would strand the
+ * fresh session on an origin the user never lands on (#40).
  */
 export async function GET(req: NextRequest) {
+  const origin = req.nextUrl.origin;
   const code = req.nextUrl.searchParams.get("code");
   if (!code) {
-    return NextResponse.redirect(`${appUrl()}/login?error=missing_code`);
+    return NextResponse.redirect(`${origin}/login?error=missing_code`);
   }
 
   const supabase = await supabaseServer();
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   if (error || !data.session) {
-    return NextResponse.redirect(`${appUrl()}/login?error=exchange_failed`);
+    return NextResponse.redirect(`${origin}/login?error=exchange_failed`);
   }
 
   const { user } = data.session;
@@ -40,5 +45,5 @@ export async function GET(req: NextRequest) {
 
   // Managers + admins get the admin console; agents land on their own page.
   const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";
-  return NextResponse.redirect(`${appUrl()}${dest}`);
+  return NextResponse.redirect(`${origin}${dest}`);
 }
