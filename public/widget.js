@@ -28,6 +28,7 @@
   var namespaces = {}; // ns -> { origin, ui }
   var listeners = {}; // action -> [callback]
   var activeIframe = null;
+  var activeModalHide = null;
 
   function ensureNs(ns) {
     return (namespaces[ns] = namespaces[ns] || { origin: "", ui: {} });
@@ -277,6 +278,7 @@
       });
       inerted = [];
       if (activeIframe === iframe) activeIframe = null;
+      if (activeModalHide === hide) activeModalHide = null;
       if (trigger && typeof trigger.focus === "function") {
         try {
           trigger.focus();
@@ -337,6 +339,7 @@
     });
 
     activeIframe = iframe;
+    activeModalHide = hide;
     close.focus();
   }
 
@@ -358,6 +361,15 @@
       activeIframe.style.height = d.height + "px";
     } else if (d.type === "slate:bookingSuccessful") {
       emit("bookingSuccessful", d.data);
+    } else if (
+      d.type === "slate:escape" &&
+      activeModalHide &&
+      activeIframe &&
+      e.source === activeIframe.contentWindow
+    ) {
+      // Escape pressed inside the booking iframe (its keydowns never reach
+      // this document); close the modal exactly like a host-side Escape.
+      activeModalHide();
     }
   });
 })();
