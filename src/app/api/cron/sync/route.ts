@@ -5,11 +5,54 @@ import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { formatWatchLapseAlert } from "@/lib/notify/alerts";
+import {
+  formatSyncFailureAlert,
+  formatWatchLapseAlert,
+  isConsecutiveFailure,
+} from "@/lib/notify/alerts";
 
 export const dynamic = "force-dynamic";
 
 const WATCH_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // don't re-alert within 30 min
+
+/**
+ * Alert when calendar sync errors on CONSECUTIVE passes (#43). The streak
+ * counter rides the #31 rate_limit_hit function: each failing pass bumps the
+ * key inside a 10-minute window, a clean pass deletes it, and the second
+ * consecutive bump (count > max of 1) trips the throttled Slack alert - so a
+ * one-off Google blip stays quiet.
+ */
+const SYNC_STREAK_KEY = "cron_sync_failures";
+const SYNC_STREAK_WINDOW_S = 600;
+const SYNC_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+async function alertSyncFailures(
+  failed: { error?: string }[],
+  totalAgents: number,
+): Promise<void> {
+  const db = supabaseAdmin();
+  if (failed.length === 0) {
+    await db.from("rate_limits").delete().eq("key", SYNC_STREAK_KEY);
+    return;
+  }
+  const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
+    p_key: SYNC_STREAK_KEY,
+    p_window_seconds: SYNC_STREAK_WINDOW_S,
+    p_max: 1,
+  });
+  if (error) {
+    console.error(`sync-failure streak tracking failed: ${error.message}`);
+    return;
+  }
+  // rate_limit_hit returns false once the count exceeds 1 in the window,
+  // i.e. from the second consecutive failing pass onward.
+  if (!isConsecutiveFailure(underLimit === false ? 2 : 1)) return;
+  await sendThrottledAlert(
+    "sync_failures",
+    SYNC_ALERT_COOLDOWN_MS,
+    formatSyncFailureAlert(failed.length, totalAgents, failed[0]?.error ?? null),
+  );
+}
 
 /** Post a throttled Slack alert when watch renewals are failing. */
 async function alertWatchLapse(watchErrors: number, totalAgents: number): Promise<void> {
@@ -69,6 +112,7 @@ export async function GET(req: NextRequest) {
 
     const watchErrors = results.filter((r) => r.watch === "error").length;
     await alertWatchLapse(watchErrors, userIds.length);
+    await alertSyncFailures(results.filter((r) => r.error), userIds.length);
 
     return NextResponse.json({ agents: userIds.length, watchErrors, results });
   } finally {
