@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
 import { acquireLock, releaseLock } from "@/lib/locks";
-import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
+import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import {
   formatSyncFailureAlert,
@@ -88,11 +88,15 @@ export async function GET(req: NextRequest) {
       .eq("bookable", true);
 
     const userIds = (data ?? []).map((r) => (r as { id: string }).id);
+    // One budget for the whole tick (#44): work past it resumes next minute
+    // via the per-calendar sync tokens instead of breaching Worker limits.
+    const deadlineMs = Date.now() + SYNC_TICK_BUDGET_MS;
     const results: {
       userId: string;
       watch: string;
       watchError?: string;
       synced?: number;
+      truncated?: boolean;
       error?: string;
     }[] = [];
     for (const userId of userIds) {
@@ -103,7 +107,9 @@ export async function GET(req: NextRequest) {
         ...(watch.status === "error" ? { watchError: watch.error } : {}),
       };
       try {
-        row.synced = await runIncrementalSync(userId);
+        const sync = await runIncrementalSync(userId, deadlineMs);
+        row.synced = sync.events;
+        if (sync.truncated) row.truncated = true;
       } catch (err) {
         row.error = err instanceof Error ? err.message : String(err);
       }
@@ -114,7 +120,8 @@ export async function GET(req: NextRequest) {
     await alertWatchLapse(watchErrors, userIds.length);
     await alertSyncFailures(results.filter((r) => r.error), userIds.length);
 
-    return NextResponse.json({ agents: userIds.length, watchErrors, results });
+    const truncated = results.some((r) => r.truncated);
+    return NextResponse.json({ agents: userIds.length, watchErrors, truncated, results });
   } finally {
     await releaseLock("cron_sync", lock);
   }

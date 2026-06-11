@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
+import { SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { canManageAgents } from "@/lib/auth/roles";
 
 export const dynamic = "force-dynamic";
@@ -41,7 +42,9 @@ export async function GET(req: NextRequest) {
   // Calendar is reachable via domain-wide delegation (by email), so warm the
   // cache + watch channel for this user regardless of OAuth token.
   await ensureWatches(slateUser.id); // never throws; returns a status
-  await runIncrementalSync(slateUser.id).catch(() => {});
+  // Budgeted (#44): a fleet bootstrap must not hang the login redirect; the
+  // cron resumes any remainder within a minute.
+  await runIncrementalSync(slateUser.id, Date.now() + SYNC_TICK_BUDGET_MS).catch(() => {});
 
   // Managers + admins get the admin console; agents land on their own page.
   const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";

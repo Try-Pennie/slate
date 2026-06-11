@@ -12,6 +12,8 @@ import { selectableCalendarIds } from "@/lib/google/calendar-select";
 import { eventWindow, isBusyEvent, staleBlockIds } from "@/lib/google/sync-core";
 import {
   claimWindow,
+  orderCalendarsForSync,
+  pastDeadline,
   shouldRerun,
   CALENDAR_CLAIM_TTL_MS,
   MAX_SYNC_PASSES,
@@ -142,14 +144,27 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
   return result.events.length;
 }
 
-/** Pulls calendar changes into busy_blocks across ALL of an agent's calendars. */
-export async function runIncrementalSync(userId: string): Promise<number> {
+/**
+ * Pulls calendar changes into busy_blocks across an agent's calendars.
+ * `deadlineMs` (#44) stops STARTING new calendars once the tick budget is
+ * spent - incrementals run first, bootstraps last - and reports truncation;
+ * sync tokens make the next invocation resume where this one stopped.
+ */
+export async function runIncrementalSync(
+  userId: string,
+  deadlineMs: number | null = null,
+): Promise<{ events: number; truncated: boolean }> {
   const email = await loadAgentEmail(userId);
-  if (!email) return 0;
-  const cals = await loadAgentCalendars(userId);
-  let n = 0;
-  for (const cal of cals) n += await syncCalendar(email, cal);
-  return n;
+  if (!email) return { events: 0, truncated: false };
+  const cals = orderCalendarsForSync(await loadAgentCalendars(userId));
+  let events = 0;
+  for (let i = 0; i < cals.length; i++) {
+    if (pastDeadline(Date.now(), deadlineMs)) {
+      return { events, truncated: true };
+    }
+    events += await syncCalendar(email, cals[i]);
+  }
+  return { events, truncated: false };
 }
 
 /**

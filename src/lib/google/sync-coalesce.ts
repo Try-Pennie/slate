@@ -38,3 +38,29 @@ export function shouldRerun(
 ): boolean {
   return pendingAgain && passesDone < maxPasses;
 }
+
+/**
+ * Per-tick work budget (#44): a cron invocation stops STARTING new calendar
+ * syncs once the budget elapses (per-calendar granularity - one oversized
+ * bootstrap can still finish its calendar). Sync tokens make the next tick
+ * resume for free, so a fleet-wide resync drains across ticks instead of
+ * blowing Cloudflare Worker execution limits.
+ */
+export const SYNC_TICK_BUDGET_MS = 25_000;
+
+export function pastDeadline(nowMs: number, deadlineMs: number | null): boolean {
+  return deadlineMs !== null && nowMs >= deadlineMs;
+}
+
+/**
+ * Cheap incrementals (token present) first, expensive bootstraps (no token)
+ * last: a long bootstrap then consumes the tail of the budget instead of
+ * starving every working calendar's freshness. Stable within each group.
+ */
+export function orderCalendarsForSync<T extends { sync_token: string | null }>(
+  cals: T[],
+): T[] {
+  return [...cals].sort(
+    (a, b) => Number(a.sync_token === null) - Number(b.sync_token === null),
+  );
+}
