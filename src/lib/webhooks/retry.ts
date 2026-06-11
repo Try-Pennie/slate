@@ -21,3 +21,16 @@ export function isDueForRetry(
   if (attempts >= WEBHOOK_MAX_ATTEMPTS) return false;
   return nowMs - lastAttemptMs >= webhookBackoffMs(attempts);
 }
+
+/**
+ * Dead-lettered: the cron sweep has given up (failed with attempts
+ * exhausted). These are what batch replay (#33) targets - anything under the
+ * cap is still owned by the automatic retry loop.
+ */
+export function isDeadLettered(
+  status: string,
+  attempts: number,
+  maxAttempts: number = WEBHOOK_MAX_ATTEMPTS,
+): boolean {
+  return status === "failed" && attempts >= maxAttempts;
+}
