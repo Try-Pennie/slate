@@ -4,6 +4,7 @@ import { DateTime } from "luxon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
+import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 
 interface Attendee {
   name: string;
@@ -161,6 +162,7 @@ export default function Booker({
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [hour12, setHour12] = useState(true);
   const [attendee, setAttendee] = useState<Attendee>(initialAttendee);
+  const [fieldErrors, setFieldErrors] = useState<AttendeeErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<{ start: string } | null>(null);
@@ -246,6 +248,15 @@ export default function Booker({
 
   async function submit() {
     if (!selectedSlot) return;
+
+    const errors = validateAttendee(attendee);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      const first = (["name", "email", "phone"] as const).find((f) => errors[f]);
+      if (first) document.getElementById(`booker-${first}`)?.focus();
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     const res = await fetch("/api/bookings", {
@@ -257,9 +268,9 @@ export default function Booker({
         timezone: zone,
         salesforceId,
         attendee: {
-          name: attendee.name || undefined,
-          email: attendee.email || undefined,
-          phone: attendee.phone || undefined,
+          name: attendee.name.trim(),
+          email: attendee.email.trim(),
+          phone: attendee.phone.trim(),
         },
         prefill,
       }),
@@ -280,6 +291,7 @@ export default function Booker({
       await loadSlots();
     } else {
       const data = await res.json().catch(() => ({}));
+      if (data.fieldErrors) setFieldErrors(data.fieldErrors as AttendeeErrors);
       setError(data.error ?? "Something went wrong. Please try again.");
     }
     setSubmitting(false);
@@ -512,11 +524,27 @@ export default function Booker({
                     inputMode={
                       field === "email" ? "email" : field === "phone" ? "tel" : undefined
                     }
-                    value={attendee[field]}
-                    onChange={(e) =>
-                      setAttendee((a) => ({ ...a, [field]: e.target.value }))
+                    aria-required="true"
+                    aria-invalid={fieldErrors[field] ? true : undefined}
+                    aria-describedby={
+                      fieldErrors[field] ? `booker-${field}-error` : undefined
                     }
+                    value={attendee[field]}
+                    onChange={(e) => {
+                      setAttendee((a) => ({ ...a, [field]: e.target.value }));
+                      setFieldErrors((f) =>
+                        f[field] ? { ...f, [field]: undefined } : f,
+                      );
+                    }}
                   />
+                  {fieldErrors[field] && (
+                    <p
+                      id={`booker-${field}-error`}
+                      className="mt-1 text-sm text-[var(--error)]"
+                    >
+                      {fieldErrors[field]}
+                    </p>
+                  )}
                 </div>
               ))}
               {errorAlert}
