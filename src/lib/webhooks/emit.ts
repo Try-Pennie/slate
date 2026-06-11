@@ -1,6 +1,5 @@
-import { createHmac } from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { buildRegalEvent } from "@/lib/webhooks/regal";
+import { buildRequest } from "@/lib/webhooks/wire";
 import { WEBHOOK_MAX_ATTEMPTS, isDueForRetry } from "@/lib/webhooks/retry";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
@@ -8,43 +7,6 @@ import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 
 const WEBHOOK_TIMEOUT_MS = 5000;
 const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
-
-function sign(secret: string, body: string): string {
-  return "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
-}
-
-/**
- * Produces the wire request for an endpoint based on its format:
- *  - 'regal'   -> Regal event shape + Authorization header
- *  - 'generic' -> {event, data} body + HMAC signature over `timestamp.body`
- *                 (with x-slate-timestamp) so subscribers can reject replays
- */
-function buildRequest(
-  endpoint: WebhookEndpoint,
-  event: WebhookEvent,
-  payload: BookingEventPayload,
-): { body: string; headers: Record<string, string> } {
-  if (endpoint.format === "regal") {
-    return {
-      body: JSON.stringify(buildRegalEvent(event, payload)),
-      headers: {
-        "content-type": "application/json",
-        authorization: endpoint.auth_header ?? "",
-      },
-    };
-  }
-  const timestamp = new Date().toISOString();
-  const body = JSON.stringify({ event, data: payload });
-  return {
-    body,
-    headers: {
-      "content-type": "application/json",
-      "x-slate-event": event,
-      "x-slate-timestamp": timestamp,
-      "x-slate-signature": sign(endpoint.secret, `${timestamp}.${body}`),
-    },
-  };
-}
 
 async function send(
   endpoint: WebhookEndpoint,
@@ -54,7 +16,7 @@ async function send(
   attempt: number,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { body, headers } = buildRequest(endpoint, event, payload);
+  const { body, headers } = buildRequest(endpoint, deliveryId, event, payload);
 
   let ok = false;
   let lastResponse = "";
