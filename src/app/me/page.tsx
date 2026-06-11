@@ -2,14 +2,12 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
+import { AppHeader } from "@/components/AppHeader";
+import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
+import { Pill } from "@/components/ui/Pill";
+import { InfoIcon } from "@/components/icons";
 
 export const dynamic = "force-dynamic";
-
-const labelCls = "block text-xs font-medium text-neutral-500";
-const inputCls =
-  "mt-1 rounded-md border border-neutral-300 px-2 py-1.5 text-sm";
-const btnCls =
-  "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800";
 
 function minutesToTime(m: number): string {
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
@@ -43,29 +41,38 @@ export default async function MePage() {
   const end = rules[0]?.end_minute ?? 1020;
 
   return (
-    <main className="mx-auto max-w-xl space-y-6 p-8">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight">Your availability</h1>
-        <p className="text-sm text-neutral-500">
-          {me.name ?? me.email} ·{" "}
-          <span className={me.bookable ? "text-green-600" : "text-neutral-400"}>
+    <>
+    <AppHeader email={me.email} active="me" />
+    <main className="mx-auto w-full min-w-0 max-w-xl space-y-6 p-8">
+      <div>
+        <h1 className="pn-h3">Your availability</h1>
+        <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+          <span>{me.name ?? me.email}</span>
+          <Pill variant={me.bookable ? "status-ok" : "outline"}>
             {me.bookable ? "Bookable" : "Not bookable yet"}
-          </span>
+          </Pill>
         </p>
-      </header>
+      </div>
 
       {rules.length === 0 && (
-        <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
-          <span>You have no working hours set, so you won&apos;t get bookings.</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
+          <span className="flex items-center gap-2.5">
+            <InfoIcon
+              width={20}
+              height={20}
+              className="shrink-0 text-pennie-blue dark:text-pennie-sky"
+            />
+            You have no working hours set, so you won&apos;t get bookings.
+          </span>
           <form action={useMyDefaultHours}>
             <button className={btnCls}>Use default hours</button>
           </form>
         </div>
       )}
 
-      <section className="rounded-lg border border-neutral-200 p-5">
+      <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
-        <p className="mb-4 text-xs text-neutral-500">
+        <p className="mb-4 text-xs text-fg-muted">
           Set your home timezone and weekly hours. Leads always see times in their
           own timezone.
         </p>
@@ -74,6 +81,7 @@ export default async function MePage() {
             <label className={labelCls}>Your timezone</label>
             <input
               name="timezone"
+              aria-label="Your timezone"
               defaultValue={sched?.timezone ?? "America/New_York"}
               className={`${inputCls} w-48`}
             />
@@ -90,12 +98,13 @@ export default async function MePage() {
             ].map(([d, lbl]) => (
               <label
                 key={d}
-                className="flex flex-col items-center text-[10px] text-neutral-500"
+                className="flex flex-col items-center text-xs text-fg-muted"
               >
                 {lbl}
                 <input
                   type="checkbox"
                   name={`day_${d}`}
+                  className="accent-pennie-sky"
                   defaultChecked={
                     rules.length ? days.has(Number(d)) : Number(d) <= 5
                   }
@@ -108,6 +117,7 @@ export default async function MePage() {
             <input
               name="start"
               type="time"
+              aria-label="Start"
               defaultValue={minutesToTime(start)}
               className={inputCls}
             />
@@ -117,6 +127,7 @@ export default async function MePage() {
             <input
               name="end"
               type="time"
+              aria-label="End"
               defaultValue={minutesToTime(end)}
               className={inputCls}
             />
@@ -124,15 +135,16 @@ export default async function MePage() {
           <button className={btnCls}>Save</button>
         </form>
         <form action={useMyDefaultHours} className="mt-3">
-          <button className="text-xs text-neutral-500 underline">
+          <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
             Reset to company default hours
           </button>
         </form>
       </section>
 
-      <p className="text-xs text-neutral-400">
+      <p className="text-sm text-fg-muted">
         Your manager controls whether you&apos;re bookable and which teams you&apos;re on.
       </p>
     </main>
+    </>
   );
 }

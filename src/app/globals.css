@@ -261,7 +261,9 @@ h1.pn-display {
 
 .pn-btn--primary {
   background: var(--accent);
-  color: var(--fg);
+  /* --fg-on-sky stays graphite in BOTH themes: var(--fg) flips to beige in dark,
+     which fails AA on the sky fill (1.56:1). D17: CTA label is always graphite. */
+  color: var(--fg-on-sky);
 }
 .pn-btn--primary:hover { background: var(--accent-hover); }
 

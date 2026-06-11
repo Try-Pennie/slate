@@ -19,6 +19,9 @@ import {
   useDefaultHours,
 } from "@/app/admin/actions";
 import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
+import { AppHeader } from "@/components/AppHeader";
+import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { Pill } from "@/components/ui/Pill";
 import type {
   AuditEntry,
   Booking,
@@ -73,13 +76,6 @@ function liveWatchedUserIds(
   return set;
 }
 
-const labelCls = "block text-xs font-medium text-neutral-500";
-const inputCls =
-  "mt-1 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm";
-const cardCls = "rounded-lg border border-neutral-200 p-5";
-const btnCls =
-  "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800";
-
 /** Checkbox grid of routable attribute keys/values, derived from live agents. */
 function CriteriaEditor({
   catalog,
@@ -91,7 +87,7 @@ function CriteriaEditor({
   const keys = Object.keys(catalog);
   if (keys.length === 0) {
     return (
-      <p className="mt-1 text-xs text-neutral-400">
+      <p className="mt-1 text-xs text-fg-muted">
         No agent attributes synced yet. Sync from Salesforce to route by attribute.
       </p>
     );
@@ -105,7 +101,7 @@ function CriteriaEditor({
         );
         return (
           <div key={key} className="flex flex-wrap items-center gap-2">
-            <code className="rounded bg-neutral-100 px-1 text-xs">{key}</code>
+            <code className="rounded-xs bg-[var(--pennie-wild-sand)] px-1 text-xs dark:bg-fg/10">{key}</code>
             {catalog[key].map((v) => (
               <label key={v} className="flex items-center gap-1 text-xs">
                 <input
@@ -113,6 +109,7 @@ function CriteriaEditor({
                   name={`crit_${key}`}
                   value={v}
                   defaultChecked={selected.has(v)}
+                  className="accent-pennie-sky"
                 />
                 {v}
               </label>
@@ -147,12 +144,18 @@ function BucketForm({
   return (
     <form
       action={editing ? updateBucket : createBucket}
-      className="space-y-3 rounded-md border border-neutral-200 p-3"
+      className="space-y-3 rounded-md border border-border p-3"
     >
       {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
       {editing && (
         <p
-          className={`text-xs ${eligibleCount === 0 ? "text-amber-600" : "text-neutral-400"}`}
+          className={`text-xs ${
+            eligibleCount === 0
+              ? bucket.fallback_user_id
+                ? "text-fg-muted"
+                : "text-[var(--error)]"
+              : "text-fg-muted"
+          }`}
         >
           {eligibleCount} eligible agent{eligibleCount === 1 ? "" : "s"}
           {eligibleCount === 0
@@ -165,16 +168,17 @@ function BucketForm({
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <label className={labelCls}>Code (xbc)</label>
-          <input name="code" defaultValue={bucket?.code ?? ""} className={`${inputCls} w-28`} required />
+          <input name="code" aria-label="Code (xbc)" defaultValue={bucket?.code ?? ""} className={`${inputCls} w-28`} required />
         </div>
         <div>
           <label className={labelCls}>Name</label>
-          <input name="name" defaultValue={bucket?.name ?? ""} className={inputCls} required />
+          <input name="name" aria-label="Name" defaultValue={bucket?.name ?? ""} className={inputCls} required />
         </div>
         <div>
           <label className={labelCls}>Event type</label>
           <select
             name="event_type_id"
+            aria-label="Event type"
             defaultValue={bucket?.event_type_id ?? ""}
             className={inputCls}
             required
@@ -190,6 +194,7 @@ function BucketForm({
           <label className={labelCls}>Cal routing form id (optional)</label>
           <input
             name="routing_form_id"
+            aria-label="Cal routing form id (optional)"
             defaultValue={bucket?.routing_form_id ?? ""}
             className={`${inputCls} w-44`}
           />
@@ -198,6 +203,7 @@ function BucketForm({
           <label className={labelCls}>Fallback agent (when none match)</label>
           <select
             name="fallback_user_id"
+            aria-label="Fallback agent (when none match)"
             defaultValue={bucket?.fallback_user_id ?? ""}
             className={inputCls}
           >
@@ -226,6 +232,7 @@ function BucketForm({
                 name="members"
                 value={u.id}
                 defaultChecked={memberIds.has(u.id)}
+                className="accent-pennie-sky"
               />
               {u.name ?? u.email}
             </label>
@@ -249,7 +256,7 @@ export default async function AdminPage({
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) {
     return (
-      <main className="p-8 text-sm text-neutral-500">
+      <main className="p-8 text-sm text-fg-muted">
         You need a manager or admin account to manage Slate.
       </main>
     );
@@ -356,22 +363,16 @@ export default async function AdminPage({
   });
 
   return (
-    <main className="mx-auto max-w-4xl space-y-8 p-8">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Slate admin</h1>
-          <p className="text-sm text-neutral-500">{me.email}</p>
-        </div>
-        <a href="/login" className={btnCls}>
-          Connect / reconnect Google
-        </a>
-      </header>
+    <>
+    <AppHeader email={me.email} role={me.role} active="admin" />
+    <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
+      <h1 className="text-xl font-semibold tracking-tight">Slate admin</h1>
 
       {/* Org default working hours (admin only) */}
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Default working hours</h2>
-        <p className="mb-3 text-xs text-neutral-500">
+        <p className="mb-3 text-xs text-fg-muted">
           Applied when you click <strong>Use default hours</strong> on an agent.
           Each agent keeps their own home timezone; leads always see times in
           their own timezone.
@@ -381,6 +382,7 @@ export default async function AdminPage({
             <label className={labelCls}>Timezone</label>
             <input
               name="default_timezone"
+              aria-label="Timezone"
               defaultValue={org.default_timezone}
               className={`${inputCls} w-44`}
             />
@@ -397,13 +399,14 @@ export default async function AdminPage({
             ].map(([d, lbl]) => (
               <label
                 key={d}
-                className="flex flex-col items-center text-[10px] text-neutral-500"
+                className="flex flex-col items-center text-xs text-fg-muted"
               >
                 {lbl}
                 <input
                   type="checkbox"
                   name={`dday_${d}`}
                   defaultChecked={org.default_weekdays.includes(Number(d))}
+                  className="accent-pennie-sky"
                 />
               </label>
             ))}
@@ -413,6 +416,7 @@ export default async function AdminPage({
             <input
               name="default_start"
               type="time"
+              aria-label="Start"
               defaultValue={minutesToTime(org.default_start_minute)}
               className={inputCls}
             />
@@ -422,6 +426,7 @@ export default async function AdminPage({
             <input
               name="default_end"
               type="time"
+              aria-label="End"
               defaultValue={minutesToTime(org.default_end_minute)}
               className={inputCls}
             />
@@ -437,21 +442,21 @@ export default async function AdminPage({
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold">
               Agents{" "}
-              <span className="font-normal text-neutral-400">
+              <span className="font-normal text-fg-muted tabular-nums">
                 ({bookableAgents.length} bookable / {users.length})
               </span>
             </h2>
             <span
-              className="inline-flex items-center gap-1.5 text-xs text-neutral-500"
+              className="inline-flex items-center gap-1.5 text-xs text-fg-muted tabular-nums"
               title="Bookable agents with a live Google Calendar push watch channel. A shortfall means those agents rely on the backup cron sync instead of push."
             >
               <span
                 className={`inline-block h-2 w-2 rounded-full ${
                   pushHealthy
-                    ? "bg-green-500"
+                    ? "bg-pennie-green"
                     : watchedCount > 0
-                      ? "bg-amber-500"
-                      : "bg-neutral-300"
+                      ? "bg-pennie-yellow"
+                      : "bg-[var(--pennie-mercury)]"
                 }`}
               />
               push {watchedCount}/{bookableAgents.length} watched
@@ -459,7 +464,7 @@ export default async function AdminPage({
           </div>
           {isAdmin && (
             <form action={syncSalesforceNow}>
-              <button className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:border-neutral-500">
+              <button className={btnSecondaryCls}>
                 Sync from Salesforce
               </button>
             </form>
@@ -472,48 +477,56 @@ export default async function AdminPage({
             placeholder="Search name, email, team…"
             className={`${inputCls} w-64`}
           />
-          <label className="flex items-center gap-1 text-xs text-neutral-500">
+          <label className="flex items-center gap-1 text-xs text-fg-muted">
             <input
               type="checkbox"
               name="bookable"
               value="1"
               defaultChecked={bookableOnly}
+              className="accent-pennie-sky"
             />
             bookable only
           </label>
-          <button className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:border-neutral-500">
+          <button className={btnSecondaryCls}>
             Search
           </button>
           {(query || bookableOnly) && (
-            <a href="/admin" className="text-xs text-neutral-400 underline">
+            <a
+              href="/admin"
+              className="text-xs text-pennie-blue underline dark:text-pennie-sky"
+            >
               clear
             </a>
           )}
-          <span className="text-xs text-neutral-400">
+          <span className="text-xs text-fg-muted tabular-nums">
             showing {visibleAgents.length} of {users.length}
           </span>
         </form>
         <div className="space-y-5">
           {visibleAgents.map((u) => (
-            <div key={u.id} className="border-t border-neutral-100 pt-4 first:border-0 first:pt-0">
-              <div className="flex items-center justify-between">
-                <div className="text-sm">
-                  <span className="font-medium">{u.name ?? u.email}</span>{" "}
-                  <span className="text-neutral-400">
-                    · {attrToText(u.attributes?.role) || u.role}
-                    {attrToText(u.attributes?.debt_team)
-                      ? ` · ${attrToText(u.attributes?.debt_team)}`
-                      : ""}
+            <div key={u.id} className="border-t border-border pt-4 first:border-0 first:pt-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-semibold">{u.name ?? u.email}</span>
+                  <Pill variant={`role-${u.role}`}>{u.role}</Pill>
+                  <span className="text-xs text-fg-muted">
+                    {[
+                      attrToText(u.attributes?.role),
+                      attrToText(u.attributes?.debt_team),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {isAdmin && (
                     <form action={setUserRole} className="flex items-center gap-1">
                       <input type="hidden" name="user_id" value={u.id} />
                       <select
                         name="role"
+                        aria-label={`Role for ${u.name ?? u.email}`}
                         defaultValue={u.role}
-                        className="rounded-md border border-neutral-200 px-1.5 py-1 text-xs"
+                        className="rounded-sm border border-border bg-surface px-1.5 py-1 text-xs text-fg"
                       >
                         {ROLES.map((r) => (
                           <option key={r} value={r}>
@@ -521,14 +534,14 @@ export default async function AdminPage({
                           </option>
                         ))}
                       </select>
-                      <button className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:border-neutral-400">
+                      <button className={btnSecondaryCls}>
                         Set role
                       </button>
                     </form>
                   )}
                   <form action={useDefaultHours}>
                     <input type="hidden" name="user_id" value={u.id} />
-                    <button className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:border-neutral-400">
+                    <button className={btnSecondaryCls}>
                       Use default hours
                     </button>
                   </form>
@@ -540,10 +553,10 @@ export default async function AdminPage({
                       value={u.bookable ? "false" : "true"}
                     />
                     <button
-                      className={`rounded-md border px-2 py-1 text-xs ${
+                      className={`inline-flex h-6 items-center rounded-pill border px-2 text-[13px] font-semibold leading-none ${
                         u.bookable
-                          ? "border-green-300 text-green-700"
-                          : "border-neutral-300 text-neutral-500"
+                          ? "border-transparent bg-[var(--pennie-green-wash)] text-pennie-graphite"
+                          : "border-[var(--pennie-mercury)] text-fg-muted"
                       }`}
                     >
                       {u.bookable ? "Bookable ✓" : "Not bookable"}
@@ -562,6 +575,7 @@ export default async function AdminPage({
                   <label className={labelCls}>Timezone (agent home tz)</label>
                   <input
                     name="timezone"
+                    aria-label="Timezone (agent home tz)"
                     defaultValue={org.default_timezone}
                     className={`${inputCls} w-44`}
                   />
@@ -578,13 +592,14 @@ export default async function AdminPage({
                   ].map(([d, lbl]) => (
                     <label
                       key={d}
-                      className="flex flex-col items-center text-[10px] text-neutral-500"
+                      className="flex flex-col items-center text-xs text-fg-muted"
                     >
                       {lbl}
                       <input
                         type="checkbox"
                         name={`day_${d}`}
                         defaultChecked={Number(d) <= 5}
+                        className="accent-pennie-sky"
                       />
                     </label>
                   ))}
@@ -594,6 +609,7 @@ export default async function AdminPage({
                   <input
                     name="start"
                     type="time"
+                    aria-label="Start"
                     defaultValue="09:00"
                     className={inputCls}
                   />
@@ -603,6 +619,7 @@ export default async function AdminPage({
                   <input
                     name="end"
                     type="time"
+                    aria-label="End"
                     defaultValue="17:00"
                     className={inputCls}
                   />
@@ -645,6 +662,7 @@ export default async function AdminPage({
                   <label className={labelCls}>Legal eligible</label>
                   <select
                     name="legal_eligible"
+                    aria-label="Legal eligible"
                     defaultValue={
                       u.attributes?.legal_eligible === true
                         ? "true"
@@ -666,7 +684,7 @@ export default async function AdminPage({
             </div>
           ))}
           {visibleAgents.length === 0 && (
-            <p className="text-sm text-neutral-400">
+            <p className="text-sm text-fg-muted">
               {users.length === 0
                 ? "No agents yet. Sync from Salesforce or sign in."
                 : "No agents match your search."}
@@ -681,14 +699,14 @@ export default async function AdminPage({
         <h2 className="mb-4 text-sm font-semibold">Event types</h2>
         <ul className="mb-4 space-y-1 text-sm">
           {eventTypes.map((e) => (
-            <li key={e.id} className="text-neutral-700">
+            <li key={e.id} className="text-fg tabular-nums">
               {e.name} · {e.duration_min}m · {e.min_notice_min}m notice ·{" "}
               {e.slot_interval_min}m grid
               {e.daily_cap ? ` · cap ${e.daily_cap}/day` : ""}
             </li>
           ))}
           {eventTypes.length === 0 && (
-            <li className="text-neutral-400">None yet.</li>
+            <li className="text-fg-muted">None yet.</li>
           )}
         </ul>
         <form action={createEventType} className="space-y-3">
@@ -719,7 +737,7 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Buckets (round-robin pools)</h2>
-        <p className="mb-4 text-xs text-neutral-400">
+        <p className="mb-4 text-xs text-fg-muted">
           Edit routing live. Changes apply without a deploy. Routing matches
           agents by attribute; leave all groups empty to pick members manually.
         </p>
@@ -739,11 +757,11 @@ export default async function AdminPage({
             />
           ))}
           {buckets.length === 0 && (
-            <p className="text-sm text-neutral-400">None yet.</p>
+            <p className="text-sm text-fg-muted">None yet.</p>
           )}
         </div>
         <div className="mt-6">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">
             New bucket
           </h3>
           <BucketForm
@@ -759,22 +777,22 @@ export default async function AdminPage({
       {/* Recent routing (trace viewer) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Recent routing</h2>
-        <p className="mb-3 text-xs text-neutral-500">
+        <p className="mb-3 text-xs text-fg-muted">
           How the last {recent.length} bookings routed: agents considered, who
           was chosen, whether the fallback fired, and any manual reassignments.
         </p>
         {recent.length === 0 ? (
-          <p className="text-sm text-neutral-500">No bookings yet.</p>
+          <p className="text-sm text-fg-muted">No bookings yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="text-neutral-500">
+              <thead className="text-fg-muted">
                 <tr>
-                  <th className="py-1 pr-3 font-medium">When</th>
-                  <th className="py-1 pr-3 font-medium">Lead</th>
-                  <th className="py-1 pr-3 font-medium">Bucket</th>
-                  <th className="py-1 pr-3 font-medium">Routed to</th>
-                  <th className="py-1 font-medium">Trace</th>
+                  <th className="py-1 pr-3 font-semibold">When</th>
+                  <th className="py-1 pr-3 font-semibold">Lead</th>
+                  <th className="py-1 pr-3 font-semibold">Bucket</th>
+                  <th className="py-1 pr-3 font-semibold">Routed to</th>
+                  <th className="py-1 font-semibold">Trace</th>
                 </tr>
               </thead>
               <tbody>
@@ -783,8 +801,8 @@ export default async function AdminPage({
                   const lead =
                     b.attendee_name || b.attendee_email || b.attendee_phone || "(none)";
                   return (
-                    <tr key={b.id} className="border-t border-neutral-100 align-top">
-                      <td className="whitespace-nowrap py-1.5 pr-3 text-neutral-600">
+                    <tr key={b.id} className="border-t border-border align-top">
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
                         {new Date(b.starts_at).toLocaleString("en-US", {
                           month: "short",
                           day: "numeric",
@@ -793,9 +811,9 @@ export default async function AdminPage({
                         })}
                       </td>
                       <td className="py-1.5 pr-3">{lead}</td>
-                      <td className="py-1.5 pr-3 text-neutral-600">{t?.bucket_code ?? "?"}</td>
-                      <td className="py-1.5 pr-3 font-medium">{nameOf(b.assigned_user_id)}</td>
-                      <td className="py-1.5 text-neutral-500">
+                      <td className="py-1.5 pr-3 text-fg-muted">{t?.bucket_code ?? "?"}</td>
+                      <td className="py-1.5 pr-3 font-semibold">{nameOf(b.assigned_user_id)}</td>
+                      <td className="py-1.5 text-fg-muted">
                         {t ? (
                           <div className="space-y-0.5">
                             <div>
@@ -803,7 +821,7 @@ export default async function AdminPage({
                               {t.fallback_applied ? " · fallback used" : ""}
                             </div>
                             {(t.reassignments ?? []).map((r, i) => (
-                              <div key={i} className="text-amber-600">
+                              <div key={i} className="text-pennie-blue dark:text-pennie-sky">
                                 reassigned {nameOf(r.from)} → {nameOf(r.to)}
                               </div>
                             ))}
@@ -825,14 +843,14 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Reassign API</h2>
-        <p className="mb-3 text-xs text-neutral-500">
+        <p className="mb-3 text-xs text-fg-muted">
           Force a booking onto a specific owning advisor (the contact owner
-          override). Send <code>POST {appUrl()}/api/bookings/reassign</code> with
+          override). Send <code className="break-all">POST {appUrl()}/api/bookings/reassign</code> with
           a bearer token and a JSON body of <code>bookingId</code> and{" "}
           <code>agentEmail</code>.
         </p>
         <label className={labelCls}>Authorization key (Bearer)</label>
-        <code className="mt-1 block overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs">
+        <code className="mt-1 block break-all rounded-sm bg-[var(--pennie-wild-sand)] px-3 py-2 text-xs dark:bg-fg/10">
           {reassignApiKey() ||
             "not configured (set REASSIGN_API_KEY on the worker)"}
         </code>
@@ -843,15 +861,15 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Webhook endpoint</h2>
-        <p className="mb-3 text-xs text-neutral-500">
+        <p className="mb-3 text-xs text-fg-muted">
           Slate POSTs booking.* events here. <strong>Regal</strong> format sends
           the Regal event shape with your API key as the Authorization header;{" "}
           <strong>Generic</strong> sends a signed <code>{"{event,data}"}</code>{" "}
           body (good for webhook.site).
         </p>
         {webhook && (
-          <p className="mb-3 text-xs text-neutral-600">
-            Current: <code>{webhook.url}</code> · {webhook.format} ·{" "}
+          <p className="mb-3 text-xs text-fg-muted">
+            Current: <code className="break-all">{webhook.url}</code> · {webhook.format} ·{" "}
             {webhook.format === "regal"
               ? webhook.auth_header
                 ? "API key stored"
@@ -874,6 +892,7 @@ export default async function AdminPage({
               <label className={labelCls}>Format</label>
               <select
                 name="format"
+                aria-label="Format"
                 defaultValue={webhook?.format ?? "regal"}
                 className={inputCls}
               >
@@ -902,29 +921,29 @@ export default async function AdminPage({
       {isAdmin && (
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Webhook deliveries</h2>
-          <p className="mb-3 text-xs text-neutral-500">
+          <p className="mb-3 text-xs text-fg-muted">
             The last {deliveries.length} delivery attempts. Resend re-fires one
             immediately.
           </p>
           {deliveries.length === 0 ? (
-            <p className="text-sm text-neutral-500">No deliveries yet.</p>
+            <p className="text-sm text-fg-muted">No deliveries yet.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="text-neutral-500">
+                <thead className="text-fg-muted">
                   <tr>
-                    <th className="py-1 pr-3 font-medium">When</th>
-                    <th className="py-1 pr-3 font-medium">Event</th>
-                    <th className="py-1 pr-3 font-medium">Endpoint</th>
-                    <th className="py-1 pr-3 font-medium">Status</th>
-                    <th className="py-1 pr-3 font-medium">Tries</th>
-                    <th className="py-1 font-medium" />
+                    <th className="py-1 pr-3 font-semibold">When</th>
+                    <th className="py-1 pr-3 font-semibold">Event</th>
+                    <th className="py-1 pr-3 font-semibold">Endpoint</th>
+                    <th className="py-1 pr-3 font-semibold">Status</th>
+                    <th className="py-1 pr-3 font-semibold">Tries</th>
+                    <th className="py-1 font-semibold" />
                   </tr>
                 </thead>
                 <tbody>
                   {deliveries.map((d) => (
-                    <tr key={d.id} className="border-t border-neutral-100 align-top">
-                      <td className="whitespace-nowrap py-1.5 pr-3 text-neutral-600">
+                    <tr key={d.id} className="border-t border-border align-top">
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
                         {new Date(d.created_at).toLocaleString("en-US", {
                           month: "short",
                           day: "numeric",
@@ -934,30 +953,30 @@ export default async function AdminPage({
                       </td>
                       <td className="py-1.5 pr-3">{d.event}</td>
                       <td
-                        className="max-w-[160px] truncate py-1.5 pr-3 text-neutral-500"
+                        className="max-w-[160px] truncate py-1.5 pr-3 text-fg-muted"
                         title={endpointUrl.get(d.endpoint_id) ?? ""}
                       >
                         {endpointUrl.get(d.endpoint_id) ?? "?"}
                       </td>
                       <td className="py-1.5 pr-3">
-                        <span
+                        <Pill
                           title={d.last_response ?? ""}
-                          className={`rounded px-1.5 py-0.5 ${
+                          variant={
                             d.status === "success"
-                              ? "bg-green-100 text-green-700"
+                              ? "status-ok"
                               : d.status === "failed"
-                                ? "bg-red-100 text-red-700"
-                                : "bg-amber-100 text-amber-700"
-                          }`}
+                                ? "status-error"
+                                : "status-pending"
+                          }
                         >
                           {d.status}
-                        </span>
+                        </Pill>
                       </td>
-                      <td className="py-1.5 pr-3 text-neutral-600">{d.attempts}</td>
+                      <td className="py-1.5 pr-3 text-fg-muted tabular-nums">{d.attempts}</td>
                       <td className="py-1.5">
                         <form action={resendWebhookDelivery}>
                           <input type="hidden" name="delivery_id" value={d.id} />
-                          <button className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:border-neutral-400">
+                          <button className={btnSecondaryCls}>
                             Resend
                           </button>
                         </form>
@@ -975,28 +994,28 @@ export default async function AdminPage({
       {isAdmin && (
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Audit log</h2>
-          <p className="mb-3 text-xs text-neutral-500">
+          <p className="mb-3 text-xs text-fg-muted">
             The last {auditEntries.length} privileged actions (role changes and
             agent edits).
           </p>
           {auditEntries.length === 0 ? (
-            <p className="text-sm text-neutral-500">No activity yet.</p>
+            <p className="text-sm text-fg-muted">No activity yet.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="text-neutral-500">
+                <thead className="text-fg-muted">
                   <tr>
-                    <th className="py-1 pr-3 font-medium">When</th>
-                    <th className="py-1 pr-3 font-medium">Who</th>
-                    <th className="py-1 pr-3 font-medium">Action</th>
-                    <th className="py-1 pr-3 font-medium">Target</th>
-                    <th className="py-1 font-medium">Details</th>
+                    <th className="py-1 pr-3 font-semibold">When</th>
+                    <th className="py-1 pr-3 font-semibold">Who</th>
+                    <th className="py-1 pr-3 font-semibold">Action</th>
+                    <th className="py-1 pr-3 font-semibold">Target</th>
+                    <th className="py-1 font-semibold">Details</th>
                   </tr>
                 </thead>
                 <tbody>
                   {auditEntries.map((a) => (
-                    <tr key={a.id} className="border-t border-neutral-100 align-top">
-                      <td className="whitespace-nowrap py-1.5 pr-3 text-neutral-600">
+                    <tr key={a.id} className="border-t border-border align-top">
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
                         {new Date(a.created_at).toLocaleString("en-US", {
                           month: "short",
                           day: "numeric",
@@ -1007,7 +1026,7 @@ export default async function AdminPage({
                       <td className="py-1.5 pr-3">{nameOf(a.actor_id)}</td>
                       <td className="py-1.5 pr-3">{AUDIT_LABEL[a.action] ?? a.action}</td>
                       <td className="py-1.5 pr-3">{nameOf(a.target_id)}</td>
-                      <td className="py-1.5 text-neutral-500">
+                      <td className="py-1.5 text-fg-muted">
                         {a.action === "role.set"
                           ? `${String(a.details.from)} → ${String(a.details.to)}`
                           : ""}
@@ -1021,6 +1040,7 @@ export default async function AdminPage({
         </section>
       )}
     </main>
+    </>
   );
 }
 
@@ -1049,15 +1069,14 @@ function Field({
 }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-neutral-500">
+      <label className={labelCls}>
         {label}
       </label>
       <input
         name={name}
+        aria-label={label}
         defaultValue={defaultValue}
-        className={`mt-1 rounded-md border border-neutral-300 px-2 py-1.5 text-sm ${
-          small ? "w-24" : "w-48"
-        }`}
+        className={`${inputCls} ${small ? "w-24" : "w-48"}`}
       />
     </div>
   );

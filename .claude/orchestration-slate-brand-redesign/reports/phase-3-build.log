@@ -1,0 +1,49 @@
+
+> slate@0.1.0 build /Users/danhankins-wright/Documents/Slate
+> next build
+
+▲ Next.js 16.2.7 (Turbopack)
+- Environments: .env.local
+
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+  Creating an optimized production build ...
+✓ Compiled successfully in 1285ms
+  Running TypeScript ...
+  Finished TypeScript in 1891ms ...
+  Collecting page data using 13 workers ...
+  Generating static pages using 13 workers (0/6) ...
+  Generating static pages using 13 workers (1/6) 
+  Generating static pages using 13 workers (2/6) 
+  Generating static pages using 13 workers (4/6) 
+✓ Generating static pages using 13 workers (6/6) in 152ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /admin
+├ ƒ /api/auth/callback
+├ ƒ /api/availability
+├ ƒ /api/bookings
+├ ƒ /api/bookings/[token]/cancel
+├ ƒ /api/bookings/[token]/reschedule
+├ ƒ /api/bookings/reassign
+├ ƒ /api/cron/complete
+├ ƒ /api/cron/salesforce
+├ ƒ /api/cron/sync
+├ ƒ /api/google/push
+├ ƒ /api/routing
+├ ○ /apple-icon
+├ ƒ /book
+├ ƒ /booking/[id]
+├ ƒ /booking/manage/[token]
+├ ○ /icon.svg
+├ ○ /login
+└ ƒ /me
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase/browser";
+import { ArrowRightIcon } from "@/components/icons";
 
 const CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
@@ -30,21 +31,64 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-full flex-1 items-center justify-center p-8">
-      <div className="w-full max-w-sm space-y-6 text-center">
-        <h1 className="text-2xl font-semibold tracking-tight">Slate</h1>
-        <p className="text-sm text-neutral-500">
-          Sign in with your Pennie Google account to manage buckets, agents, and
-          availability.
-        </p>
-        <button
-          onClick={signIn}
-          disabled={loading}
-          className="w-full rounded-md bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-60"
+    <main className="grid min-h-dvh flex-1 grid-rows-[auto_1fr] bg-bg lg:grid-cols-2 lg:grid-rows-1">
+      <section className="hidden flex-col gap-6 bg-pennie-navy p-8 sm:flex lg:justify-between lg:p-12">
+        {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
+        <img
+          src="/brand/logo-pennie-cream.svg"
+          alt="Pennie"
+          className="h-[22px] w-auto self-start"
+        />
+        <div className="max-w-md">
+          <p className="pn-h2 hidden text-pennie-beige lg:block">
+            Welcome back.
+          </p>
+          <p className="text-lg leading-relaxed text-pennie-beige/80 lg:mt-4 lg:text-xl">
+            Manage your availability and let the right calls find you.
+          </p>
+        </div>
+        <div
+          aria-hidden="true"
+          className="hidden max-w-2xs -rotate-3 self-start rounded-sm bg-pennie-yellow px-5 py-4 shadow-sm lg:block"
         >
-          {loading ? "Redirecting…" : "Continue with Google"}
-        </button>
-      </div>
+          <p className="text-sm font-semibold text-pennie-graphite">
+            Leads always see times in their own timezone.
+          </p>
+        </div>
+      </section>
+      <section className="flex items-center justify-center p-6 sm:p-10">
+        <div className="w-full max-w-sm rounded-xl bg-surface p-8 shadow-xs">
+          <div className="mb-8 sm:hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
+            <img
+              src="/brand/logo-pennie-charcoal.svg"
+              alt="Pennie"
+              className="h-[22px] w-auto dark:hidden"
+            />
+            {/* eslint-disable-next-line @next/next/no-img-element -- cream variant for the dark theme */}
+            <img
+              src="/brand/logo-pennie-cream.svg"
+              alt="Pennie"
+              className="hidden h-[22px] w-auto dark:block"
+            />
+          </div>
+          <h1 className="pn-h3">Sign in to Slate</h1>
+          <p className="mt-2 text-sm text-fg-muted">
+            Sign in with your Pennie Google account to manage your calendar and
+            availability.
+          </p>
+          <button
+            onClick={signIn}
+            disabled={loading}
+            className="group mt-8 inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 text-base font-semibold text-fg-on-sky hover:bg-accent-hover active:translate-y-px disabled:opacity-60"
+          >
+            {loading ? "Redirecting…" : "Continue with Google"}
+            {!loading && (
+              <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
+            )}
+          </button>
+        </div>
+      </section>
     </main>
   );
 }
