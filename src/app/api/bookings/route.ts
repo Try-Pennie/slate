@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { createBooking, SlotUnavailableError } from "@/lib/booking/service";
 import { validateAttendee } from "@/lib/attendee";
+import { allowRequest, clientIp, BOOKING_RATE_RULES } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,13 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  if (!(await allowRequest(clientIp(req.headers), BOOKING_RATE_RULES))) {
+    return NextResponse.json(
+      { error: "Too many booking attempts from your network. Please try again in a few minutes." },
+      { status: 429 },
+    );
+  }
+
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
