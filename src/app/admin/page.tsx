@@ -7,6 +7,7 @@ import { appUrl, reassignApiKey } from "@/lib/env";
 import {
   createBucket,
   createEventType,
+  replayFailedWebhooks,
   resendWebhookDelivery,
   setAgentAttributes,
   setBookable,
@@ -925,6 +926,27 @@ export default async function AdminPage({
             The last {deliveries.length} delivery attempts. Resend re-fires one
             immediately.
           </p>
+          <form
+            action={replayFailedWebhooks}
+            className="mb-3 flex flex-wrap items-center gap-2"
+          >
+            <label htmlFor="replay-hours" className="text-xs text-fg-muted">
+              Replay every failed delivery from the last
+            </label>
+            <select
+              id="replay-hours"
+              name="hours"
+              defaultValue="24"
+              className={`${inputCls} w-auto`}
+            >
+              <option value="2">2 hours</option>
+              <option value="6">6 hours</option>
+              <option value="24">24 hours</option>
+              <option value="72">3 days</option>
+              <option value="168">7 days</option>
+            </select>
+            <button className={btnSecondaryCls}>Replay failed deliveries</button>
+          </form>
           {deliveries.length === 0 ? (
             <p className="text-sm text-fg-muted">No deliveries yet.</p>
           ) : (

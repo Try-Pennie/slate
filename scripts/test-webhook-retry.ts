@@ -3,6 +3,7 @@
 import {
   WEBHOOK_MAX_ATTEMPTS,
   webhookBackoffMs,
+  isDeadLettered,
   isDueForRetry,
 } from "../src/lib/webhooks/retry.ts";
 
@@ -28,6 +29,22 @@ assert(
   !isDueForRetry(WEBHOOK_MAX_ATTEMPTS, now - 60 * M, now),
   "exhausted attempts are never due (dead-lettered)",
 );
+
+// --- isDeadLettered (batch replay targeting, #33) ---
+assert(
+  isDeadLettered("failed", WEBHOOK_MAX_ATTEMPTS),
+  "failed with attempts exhausted is dead-lettered",
+);
+assert(
+  isDeadLettered("failed", WEBHOOK_MAX_ATTEMPTS + 1),
+  "manual resends past the cap stay dead-lettered if they fail again",
+);
+assert(
+  !isDeadLettered("failed", WEBHOOK_MAX_ATTEMPTS - 1),
+  "failed under the cap is NOT dead-lettered (cron still owns it)",
+);
+assert(!isDeadLettered("pending", WEBHOOK_MAX_ATTEMPTS), "pending is never dead-lettered");
+assert(!isDeadLettered("success", WEBHOOK_MAX_ATTEMPTS), "success is never dead-lettered");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
