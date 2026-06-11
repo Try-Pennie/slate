@@ -18,6 +18,16 @@ export const BOOKING_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * Availability endpoint policy (#56): looser than bookings - the Booker
+ * legitimately refetches on every month navigation - but it still caps the
+ * compute a single IP can demand (member loads + slot computation per call).
+ */
+export const AVAILABILITY_RATE_RULES: RateLimitRule[] = [
+  { prefix: "avail:m", windowSeconds: 60, max: 30 },
+  { prefix: "avail:h", windowSeconds: 3600, max: 400 },
+];
+
+/**
  * The client IP for rate-limit keying. Cloudflare sets cf-connecting-ip on
  * every request; x-forwarded-for's FIRST hop is the client elsewhere (dev).
  */

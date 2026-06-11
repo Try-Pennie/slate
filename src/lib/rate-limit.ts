@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
-export { clientIp, BOOKING_RATE_RULES } from "@/lib/rate-limit-core";
+export { clientIp, AVAILABILITY_RATE_RULES, BOOKING_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 
 /**
