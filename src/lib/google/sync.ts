@@ -44,15 +44,21 @@ async function applyEvents(
   for (const ev of events) {
     if (!ev.id) continue;
     if (!isBusyEvent(ev)) {
-      await db
+      const { error } = await db
         .from("busy_blocks")
         .delete()
         .eq("user_id", userId)
         .eq("gcal_event_id", ev.id);
+      if (error) {
+        throw new Error(`busy_blocks delete failed (${ev.id}): ${error.message}`);
+      }
       continue;
     }
     const win = eventWindow(ev)!;
-    await db.from("busy_blocks").upsert(
+    // Throw on failure so syncCalendar never advances the sync token past an
+    // event it failed to record - a swallowed error here loses the event for
+    // good (the delta is consumed) and the cache silently drifts from Google.
+    const { error } = await db.from("busy_blocks").upsert(
       {
         user_id: userId,
         gcal_event_id: ev.id,
@@ -63,6 +69,9 @@ async function applyEvents(
       },
       { onConflict: "user_id,gcal_event_id" },
     );
+    if (error) {
+      throw new Error(`busy_blocks upsert failed (${ev.id}): ${error.message}`);
+    }
   }
 }
 
