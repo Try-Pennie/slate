@@ -26,3 +26,26 @@ export function formatWatchLapseAlert(
     `Check the admin page for push status.`
   );
 }
+
+/** First error string from a cron sync pass, for the alert body. */
+export function formatSyncFailureAlert(
+  syncErrors: number,
+  totalAgents: number,
+  firstError: string | null,
+): string {
+  return (
+    `Slate: calendar sync failed for ${syncErrors} of ${totalAgents} bookable ` +
+    `agent${syncErrors === 1 ? "" : "s"} on consecutive cron passes. The ` +
+    `availability cache may be drifting from Google.` +
+    (firstError ? ` First error: ${firstError.slice(0, 300)}` : "")
+  );
+}
+
+/**
+ * Alert only on a CONSECUTIVE failure (#43): the caller bumps a counter per
+ * failing pass (cleared on success); the first failure stays quiet so a
+ * transient Google blip never pages anyone.
+ */
+export function isConsecutiveFailure(failuresInWindow: number): boolean {
+  return failuresInWindow >= 2;
+}

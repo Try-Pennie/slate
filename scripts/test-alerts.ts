@@ -1,6 +1,11 @@
 // Sanity test for pure alert helpers (throttle + formatting).
 // Run: node --experimental-strip-types scripts/test-alerts.ts
-import { shouldSendAlert, formatWatchLapseAlert } from "../src/lib/notify/alerts.ts";
+import {
+  shouldSendAlert,
+  formatWatchLapseAlert,
+  formatSyncFailureAlert,
+  isConsecutiveFailure,
+} from "../src/lib/notify/alerts.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -25,6 +30,26 @@ assert(
 assert(
   formatWatchLapseAlert(2, 5).includes("2 of 5") && formatWatchLapseAlert(2, 5).includes("watches failed"),
   "plural phrasing for multiple failures",
+);
+
+
+// --- sync-failure alerting (#43) ---
+assert(!isConsecutiveFailure(0), "no failures -> no alert");
+assert(!isConsecutiveFailure(1), "a single failing pass stays quiet (transient blip)");
+assert(isConsecutiveFailure(2), "second consecutive failing pass alerts");
+assert(isConsecutiveFailure(5), "longer streaks keep alerting (throttle handles spam)");
+
+const syncMsg = formatSyncFailureAlert(2, 7, "freeBusy failed: 503");
+assert(syncMsg.includes("2 of 7"), "sync alert includes the failure count");
+assert(syncMsg.includes("consecutive"), "sync alert says it is a streak");
+assert(syncMsg.includes("freeBusy failed: 503"), "sync alert carries the first error");
+assert(
+  formatSyncFailureAlert(1, 7, null).includes("1 of 7 bookable agent on"),
+  "singular agent copy + no error suffix when absent",
+);
+assert(
+  formatSyncFailureAlert(2, 7, "x".repeat(500)).length < 500,
+  "error detail is truncated",
 );
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
