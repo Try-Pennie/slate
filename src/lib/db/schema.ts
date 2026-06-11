@@ -16,6 +16,7 @@ import type {
   EventType,
   GoogleCredentials,
   Organization,
+  RateLimit,
   SyncLock,
   User,
   WebhookDelivery,
@@ -51,9 +52,15 @@ export interface Database {
       agent_calendars: Table<AgentCalendar>;
       audit_log: Table<AuditEntry>;
       sync_locks: Table<SyncLock>;
+      rate_limits: Table<RateLimit>;
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      rate_limit_hit: {
+        Args: { p_key: string; p_window_seconds: number; p_max: number };
+        Returns: boolean;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

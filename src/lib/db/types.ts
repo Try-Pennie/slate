@@ -128,6 +128,13 @@ export interface SyncLock {
   claimed_at: string;
 }
 
+/** Fixed-window rate-limit counter (#31); one row per key, reset in place. */
+export interface RateLimit {
+  key: string;
+  window_start: string;
+  count: number;
+}
+
 export interface BusyBlock {
   id: string;
   user_id: string;
