@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { buildRequest } from "@/lib/webhooks/wire";
-import { WEBHOOK_MAX_ATTEMPTS, isDueForRetry } from "@/lib/webhooks/retry";
+import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webhooks/retry";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
@@ -163,4 +163,58 @@ export async function resendDelivery(deliveryId: string, orgId: string): Promise
   if (!endpoint) return;
 
   await send(endpoint as WebhookEndpoint, row.id, row.event, row.payload, row.attempts + 1);
+}
+
+/**
+ * Batch replay for incident recovery (#33): re-fires every dead-lettered
+ * delivery (failed, attempts exhausted - the cron still owns anything under
+ * the cap) for the org's active endpoints within the time window. Returns how
+ * many deliveries were re-fired; each keeps its row id, so receivers can
+ * still dedupe on x-slate-delivery-id.
+ */
+export async function replayDeadLetteredDeliveries(
+  orgId: string,
+  sinceIso: string,
+  endpointId?: string,
+): Promise<number> {
+  const db = supabaseAdmin();
+
+  let endpointQuery = db
+    .from("webhook_endpoints")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("active", true);
+  if (endpointId) endpointQuery = endpointQuery.eq("id", endpointId);
+  const { data: endpoints } = await endpointQuery;
+  const byId = new Map(
+    ((endpoints ?? []) as WebhookEndpoint[]).map((e) => [e.id, e]),
+  );
+  if (byId.size === 0) return 0;
+
+  const { data: rows } = await db
+    .from("webhook_deliveries")
+    .select("id, endpoint_id, event, payload, attempts, status")
+    .in("endpoint_id", [...byId.keys()])
+    .eq("status", "failed")
+    .gte("attempts", WEBHOOK_MAX_ATTEMPTS)
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: true })
+    .limit(200);
+
+  let replayed = 0;
+  for (const r of (rows ?? []) as unknown as {
+    id: string;
+    endpoint_id: string;
+    event: WebhookEvent;
+    payload: BookingEventPayload;
+    attempts: number;
+    status: string;
+  }[]) {
+    if (!isDeadLettered(r.status, r.attempts)) continue;
+    const endpoint = byId.get(r.endpoint_id);
+    if (!endpoint) continue;
+    await send(endpoint, r.id, r.event, r.payload, r.attempts + 1);
+    replayed++;
+  }
+  return replayed;
 }

@@ -6,7 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { currentUser, requireAdmin, requireManager } from "@/lib/auth";
 import { canManageUser, canChangeRole, isRole } from "@/lib/auth/roles";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
-import { resendDelivery } from "@/lib/webhooks/emit";
+import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
@@ -399,6 +399,18 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
   const deliveryId = String(form.get("delivery_id") ?? "");
   if (!deliveryId) return;
   await resendDelivery(deliveryId, admin.org_id);
+  revalidatePath("/admin");
+}
+
+/**
+ * Admin-only: batch replay of dead-lettered deliveries after a receiver
+ * outage (#33). Window is clamped to 1 hour - 7 days.
+ */
+export async function replayFailedWebhooks(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const hours = Math.min(Math.max(Number(form.get("hours")) || 24, 1), 168);
+  const sinceIso = new Date(Date.now() - hours * 3_600_000).toISOString();
+  await replayDeadLetteredDeliveries(admin.org_id, sinceIso);
   revalidatePath("/admin");
 }
 
