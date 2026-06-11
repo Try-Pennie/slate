@@ -12,7 +12,10 @@ import {
   updateEventTime,
 } from "@/lib/google/calendar";
 import { emitWebhook } from "@/lib/webhooks/emit";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { Booking, Bucket, EventType, User } from "@/lib/db/types";
+
+const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** Calendar ids whose busy blocks an agent, looked up by their email. */
 async function calendarIdsForEmail(email: string): Promise<string[]> {
@@ -99,15 +102,46 @@ function realDeps(): BookingDeps {
       return { ok: true, booking: data as Booking };
     },
 
+    // The booking/cancel itself already succeeded when these run, so a cache
+    // write failure must not fail the request - but it cannot stay silent
+    // either (#34): a missed insert lets the embed keep offering a booked
+    // slot until sync mirrors the Google event (~1 min); a missed delete
+    // leaves phantom busy forever (slate rows have no gcal event to reconcile
+    // against). Retry once, then log + throttled Slack alert.
     insertBusyBlock: async (block) => {
-      await supabaseAdmin().from("busy_blocks").insert(block);
+      let { error } = await supabaseAdmin().from("busy_blocks").insert(block);
+      if (error) {
+        ({ error } = await supabaseAdmin().from("busy_blocks").insert(block));
+      }
+      if (error) {
+        console.error(
+          `busy_blocks write-through insert failed for booking ${block.booking_id}: ${error.message}`,
+        );
+        await sendThrottledAlert(
+          "busy_block_write_through",
+          CACHE_ALERT_COOLDOWN_MS,
+          `Slate: busy_blocks write-through INSERT failed for booking ${block.booking_id} (${error.message}). The slot may show as free in the embed until the next sync pass.`,
+        ).catch(() => {});
+      }
     },
 
     deleteBusyBlocksForBooking: async (bookingId) => {
-      await supabaseAdmin()
-        .from("busy_blocks")
-        .delete()
-        .eq("booking_id", bookingId);
+      const del = () =>
+        supabaseAdmin().from("busy_blocks").delete().eq("booking_id", bookingId);
+      let { error } = await del();
+      if (error) {
+        ({ error } = await del());
+      }
+      if (error) {
+        console.error(
+          `busy_blocks write-through delete failed for booking ${bookingId}: ${error.message}`,
+        );
+        await sendThrottledAlert(
+          "busy_block_write_through",
+          CACHE_ALERT_COOLDOWN_MS,
+          `Slate: busy_blocks DELETE failed for booking ${bookingId} (${error.message}). The cancelled slot will keep showing as busy until cleaned up.`,
+        ).catch(() => {});
+      }
     },
 
     updateBooking: async (bookingId, patch) => {
