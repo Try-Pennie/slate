@@ -198,6 +198,14 @@ html, body {
   font-synthesis: none;
 }
 
+/* ---------------- Ported .pn-* recipes (#39) ----------------
+   In @layer components so Tailwind utilities (the `utilities` layer, declared
+   later) can override them at call sites - composing `.pn-lead text-fg-muted`
+   now works. DELIBERATELY UNLAYERED below this block: the :focus-visible
+   recipes, .sr-only, and the reduced-motion guard, which must keep beating
+   layered utilities (see #39 discussion). */
+@layer components {
+
 /* ---------------- Semantic type ---------------- */
 .pn-display,
 h1.pn-display {
@@ -239,12 +247,6 @@ h1.pn-display {
   color: var(--fg);
 }
 .pn-btn:active { transform: translateY(1px); }
-/* S3: contrast-carrying outline + decorative sky glow (replaces the DS sky-only ring) */
-.pn-btn:focus-visible {
-  outline: 2px solid var(--focus-ring-line);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
-}
 
 .pn-btn--big {
   height: 56px;
@@ -287,10 +289,19 @@ h1.pn-display {
   padding: var(--space-5);
 }
 
+} /* end @layer components */
+
 /* ---------------- Theme-aware focus (S3) ----------------
+   UNLAYERED on purpose (#39): the ring must beat layered utilities.
    The outline carries the 3:1 contrast (graphite on light, sky on navy);
    the sky box-shadow is purely decorative. */
 :focus-visible {
+  outline: 2px solid var(--focus-ring-line);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+}
+/* S3: same recipe on .pn-btn explicitly (kept with its sibling, unlayered) */
+.pn-btn:focus-visible {
   outline: 2px solid var(--focus-ring-line);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
