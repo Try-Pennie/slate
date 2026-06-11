@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
+import { labelColorFor } from "@/lib/brand-label";
 
 interface Attendee {
   name: string;
@@ -150,9 +151,10 @@ export default function Booker({
   // the palette default (green dots, themed ring/confirm).
   const dotStyle = brandColor ? { backgroundColor: brandColor } : undefined;
   const ringStyle = brandColor ? { boxShadow: `inset 0 0 0 1.5px ${brandColor}` } : undefined;
-  // Label stays graphite via --fg-on-sky: white-on-sky fails AA (1.69:1).
+  // Label picked by luminance: graphite for light brands (sky 7.36:1), beige
+  // for dark ones (a graphite label on navy would be 1.5:1).
   const confirmStyle = brandColor
-    ? { backgroundColor: brandColor, color: "var(--fg-on-sky)" }
+    ? { backgroundColor: brandColor, color: labelColorFor(brandColor) }
     : undefined;
 
   const [month, setMonth] = useState(() => today.startOf("month"));
