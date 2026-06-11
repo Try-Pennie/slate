@@ -545,13 +545,13 @@ export default function Booker({
                     "Pick a day"
                   )}
                 </p>
-                <div className={`inline-flex overflow-hidden rounded-md border text-xs ${c.toggleBorder}`}>
+                <div className={`inline-flex rounded-md border text-xs ${c.toggleBorder}`}>
                   {[true, false].map((is12) => (
                     <button
                       key={String(is12)}
                       onClick={() => setHour12(is12)}
                       aria-pressed={hour12 === is12}
-                      className={`min-h-9 px-3 tabular-nums ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
+                      className={`min-h-9 px-3 tabular-nums ${is12 ? "rounded-l-[9px]" : "rounded-r-[9px]"} ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
                     >
                       {is12 ? "12h" : "24h"}
                     </button>
@@ -566,7 +566,7 @@ export default function Booker({
                 </span>
               </p>
               {errorAlert && <div className="mb-3">{errorAlert}</div>}
-              <div className="-mr-2 flex-1 space-y-2 overflow-y-auto pr-2">
+              <div className="-mx-2 -my-1 flex-1 space-y-2 overflow-y-auto px-2 py-1">
                 {loading ? (
                   Array.from({ length: 6 }).map((_, i) => (
                     <div key={i} className={`h-11 animate-pulse rounded-md ${c.skeleton}`} />
