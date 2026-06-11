@@ -1,0 +1,11 @@
+{
+  "surface": "/embed-example.html (host page, widget.js modal OPEN)",
+  "task": "4.2",
+  "date": "2026-06-11",
+  "axeVersion": "4.10.2",
+  "runOnly": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "violations": [],
+  "passes": 19,
+  "incomplete": ["color-contrast"],
+  "note": "0 violations with the dialog open. Rules of record all pass: dialog name (aria-label='Book a call'), aria-required-attr, aria-allowed-attr, button-name (close), frame-title ('Slate booking'), aria-hidden-focus (background uses inert, not aria-hidden). The single 'incomplete' is axe's standard undeterminable color-contrast over the scrim/iframe boundary, not a failure."
+}

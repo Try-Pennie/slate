@@ -141,44 +141,203 @@
 
   // --- modal ----------------------------------------------------------------
 
-  function openModal(link, ns) {
+  // One-time host <style>: spinner keyframes, mobile full-screen override
+  // (!important beats the inline desktop sizing, so a rotate/resize after
+  // open still applies), and a reduced-motion kill switch.
+  function ensureChromeStyle() {
+    if (document.getElementById("slate-widget-css")) return;
+    var style = document.createElement("style");
+    style.id = "slate-widget-css";
+    style.textContent =
+      "@keyframes slate-spin{to{transform:rotate(360deg)}}" +
+      "@media (max-width:640px){.slate-widget-modal{width:100%!important;" +
+      "height:100vh!important;height:100dvh!important;max-height:none!important;" +
+      "border-radius:0!important;box-shadow:none!important}}" +
+      "@media (prefers-reduced-motion:reduce){.slate-widget-modal," +
+      ".slate-widget-modal *{animation:none!important;transition:none!important}}" +
+      // Hostile-host defense: a class rule out-specifies a host
+      // `* { font-family:... !important }` reset, so the chrome's typography
+      // holds even when inline (non-important) resets would lose the cascade.
+      ".slate-widget-modal{font-size:16px!important}" +
+      ".slate-widget-modal,.slate-widget-modal *{font-family:'PP Mori'," +
+      "-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif" +
+      "!important;letter-spacing:normal!important}";
+    document.head.appendChild(style);
+  }
+
+  function openModal(link, ns, trigger) {
+    ensureChromeStyle();
+    var reduceMotion =
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
     var overlay = document.createElement("div");
     overlay.style.cssText =
       "position:fixed;inset:0;z-index:2147483647;display:flex;" +
-      "align-items:center;justify-content:center;background:rgba(0,0,0,.5)";
+      "align-items:center;justify-content:center;background:rgba(29,33,47,0.55)";
 
     var modal = document.createElement("div");
+    modal.className = "slate-widget-modal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-label", "Book a call");
     modal.style.cssText =
-      "background:#fff;border-radius:12px;width:min(720px,92vw);" +
-      "max-height:90vh;overflow:auto;position:relative";
+      "background:#fff;border-radius:16px;width:min(720px,92vw);" +
+      "max-height:90vh;max-height:90dvh;overflow:auto;position:relative;" +
+      "box-shadow:0 12px 32px rgba(29,33,47,0.18);" +
+      "box-sizing:border-box;font-family:'PP Mori',-apple-system," +
+      "BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;" +
+      "color:rgb(52,52,52);line-height:1.5;text-align:left;letter-spacing:normal";
 
     var close = document.createElement("button");
     close.textContent = "×";
     close.setAttribute("aria-label", "Close");
     close.style.cssText =
-      "position:absolute;top:8px;right:12px;border:0;background:transparent;" +
-      "font-size:24px;line-height:1;cursor:pointer;color:#666;z-index:1";
+      "position:absolute;top:2px;right:2px;border:0;background:transparent;" +
+      "width:44px;height:44px;display:flex;align-items:center;" +
+      "justify-content:center;border-radius:12px;" +
+      "font-size:24px;line-height:1;cursor:pointer;color:rgb(106,106,112);" +
+      "z-index:1;box-sizing:border-box;margin:0;padding:0;" +
+      "letter-spacing:normal;text-align:center;font-family:'PP Mori'," +
+      "-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif";
+    close.addEventListener("mouseenter", function () {
+      close.style.color = "rgb(52,52,52)";
+    });
+    close.addEventListener("mouseleave", function () {
+      close.style.color = "rgb(106,106,112)";
+    });
+    // Theme-aware focus recipe (literal: the modal chrome is always white) -
+    // graphite outline carries the 3:1 contrast; the sky glow is decorative.
+    close.addEventListener("focus", function () {
+      close.style.outline = "2px solid rgb(52,52,52)";
+      close.style.outlineOffset = "2px";
+      close.style.boxShadow = "0 0 0 4px rgba(130,208,255,0.45)";
+      close.style.color = "rgb(52,52,52)";
+    });
+    close.addEventListener("blur", function () {
+      close.style.outline = "";
+      close.style.outlineOffset = "";
+      close.style.boxShadow = "";
+      close.style.color = "rgb(106,106,112)";
+    });
+
+    // Branded loading state on the white surface, removed on iframe load.
+    var loader = document.createElement("div");
+    loader.setAttribute("role", "status");
+    loader.setAttribute("aria-label", "Loading");
+    loader.style.cssText =
+      "position:absolute;inset:0;display:flex;align-items:center;" +
+      "justify-content:center;background:#fff;border-radius:inherit;" +
+      "box-sizing:border-box;margin:0;padding:0";
+    if (reduceMotion) {
+      loader.textContent = "Loading…";
+      loader.style.color = "rgb(106,106,112)";
+      loader.style.fontSize = "14px";
+    } else {
+      var spinner = document.createElement("div");
+      spinner.style.cssText =
+        "width:36px;height:36px;border-radius:50%;box-sizing:border-box;" +
+        "border:3px solid rgba(130,208,255,0.35);border-top-color:#82D0FF;" +
+        "animation:slate-spin .8s linear infinite";
+      loader.appendChild(spinner);
+    }
 
     var iframe = document.createElement("iframe");
     iframe.src = bookingUrl(link, ns);
-    iframe.style.cssText = "width:100%;border:0;min-height:560px";
+    iframe.style.cssText =
+      "width:100%;border:0;min-height:560px;opacity:0" +
+      (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
     iframe.setAttribute("title", "Slate booking");
     iframe.allow = "fullscreen";
+    iframe.addEventListener("load", function () {
+      if (loader.parentNode) loader.parentNode.removeChild(loader);
+      iframe.style.opacity = "1";
+    });
+
+    // Forward-tab sentinel: focus leaving the iframe's last element lands
+    // here and wraps back to the close button (host-side trap boundary).
+    var sentinel = document.createElement("div");
+    sentinel.tabIndex = 0;
+    sentinel.style.cssText =
+      "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none";
+    sentinel.addEventListener("focus", function () {
+      close.focus();
+    });
+
+    var prevOverflow = document.body.style.overflow;
+    var inerted = [];
 
     function hide() {
+      document.removeEventListener("keydown", onKeydown, true);
       overlay.remove();
+      document.body.style.overflow = prevOverflow;
+      inerted.forEach(function (el) {
+        if (typeof el.inert === "boolean") el.inert = false;
+        else el.removeAttribute("aria-hidden");
+      });
+      inerted = [];
       if (activeIframe === iframe) activeIframe = null;
+      if (trigger && typeof trigger.focus === "function") {
+        try {
+          trigger.focus();
+        } catch {
+          /* trigger may have left the DOM; closing still succeeds */
+        }
+      }
     }
+
+    function onKeydown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hide();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      if (e.shiftKey && document.activeElement === close) {
+        e.preventDefault();
+        iframe.focus();
+      } else if (!e.shiftKey && document.activeElement === iframe) {
+        e.preventDefault();
+        close.focus();
+      } else if (
+        !document.activeElement ||
+        document.activeElement === document.body
+      ) {
+        e.preventDefault();
+        close.focus();
+      }
+    }
+
     close.addEventListener("click", hide);
     overlay.addEventListener("click", function (e) {
       if (e.target === overlay) hide();
     });
+    document.addEventListener("keydown", onKeydown, true);
 
     modal.appendChild(close);
     modal.appendChild(iframe);
+    modal.appendChild(loader);
+    modal.appendChild(sentinel);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+
+    // Scroll lock + background inert while the dialog is open.
+    document.body.style.overflow = "hidden";
+    Array.prototype.forEach.call(document.body.children, function (child) {
+      if (child === overlay) return;
+      if (typeof child.inert === "boolean") {
+        if (!child.inert) {
+          child.inert = true;
+          inerted.push(child);
+        }
+      } else if (!child.hasAttribute("aria-hidden")) {
+        child.setAttribute("aria-hidden", "true");
+        inerted.push(child);
+      }
+    });
+
     activeIframe = iframe;
+    close.focus();
   }
 
   // Delegated so dynamically-added triggers work too.
@@ -189,6 +348,7 @@
     openModal(
       el.getAttribute("data-cal-link") || "",
       el.getAttribute("data-cal-namespace") || "",
+      el,
     );
   });
 

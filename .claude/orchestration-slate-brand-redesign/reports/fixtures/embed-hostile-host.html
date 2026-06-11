@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slate embed HOSTILE host test</title>
+    <style>
+      /* Hostile host CSS per slate-embed-contract skill checklist item 8 */
+      * {
+        font-family: "Comic Sans MS", cursive !important;
+        box-sizing: content-box;
+        letter-spacing: 3px;
+        text-align: center;
+      }
+      html {
+        font-size: 22px;
+        line-height: 2.4;
+        color: #ff00ff;
+      }
+      button {
+        all: unset;
+      }
+      body {
+        max-width: 760px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+      button.cta {
+        background: #171717;
+        color: #fff;
+        border-radius: 8px;
+        padding: 12px 20px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Hostile landing page (isolation test)</h1>
+    <p>Aggressive resets: Comic Sans !important everywhere, content-box, button all:unset, loud inherited type.</p>
+
+    <script>
+      (function (C, A, L) {
+        let p = function (a, ar) {
+          a.q.push(ar);
+        };
+        let d = C.document;
+        C.Cal =
+          C.Cal ||
+          function () {
+            let cal = C.Cal;
+            let ar = arguments;
+            if (!cal.loaded) {
+              cal.ns = {};
+              cal.q = cal.q || [];
+              d.head.appendChild(d.createElement("script")).src = A;
+              cal.loaded = true;
+            }
+            if (ar[0] === L) {
+              const api = function () {
+                p(api, arguments);
+              };
+              const namespace = ar[1];
+              api.q = api.q || [];
+              if (typeof namespace === "string") {
+                cal.ns[namespace] = cal.ns[namespace] || api;
+                p(cal.ns[namespace], ar);
+                p(cal, ["initNamespace", namespace]);
+              } else p(cal, ar);
+              return;
+            }
+            p(cal, ar);
+          };
+      })(window, "http://localhost:3000/widget.js", "init");
+
+      Cal("init", "review", { origin: "http://localhost:3000" });
+      Cal.ns["review"]("ui", { layout: "month_view" });
+      Cal("on", {
+        action: "bookingSuccessful",
+        callback: function (e) {
+          console.log("Booking complete:", e.detail.data);
+        },
+      });
+    </script>
+
+    <p>Inline trigger for bucket <code>411</code>:</p>
+    <button
+      class="cta"
+      data-cal-link="book?xbc=411&external_id=a04Ui00000HnjwfIAB&name=Kristina+Kelly&email=kristinakelly17%40gmail.com&phone=%2B12035615295&loanPurpose=debt_consolidation&loanRequest=160000&estimatedPmt=2400&active=true"
+      data-cal-namespace="review"
+      data-cal-config='{"layout":"month_view"}'
+    >
+      Schedule your call
+    </button>
+  </body>
+</html>

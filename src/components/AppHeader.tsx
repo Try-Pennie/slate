@@ -23,7 +23,7 @@ function NavTab({
     <Link
       href={href}
       aria-current={current ? "page" : undefined}
-      className={`flex min-h-11 items-center ${
+      className={`flex min-h-11 min-w-11 items-center ${
         current
           ? "pn-small-bold"
           : "text-sm text-fg-muted transition-colors hover:text-fg"
