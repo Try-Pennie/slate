@@ -19,7 +19,7 @@ import {
   retryOooAction,
 } from "@/app/admin/ooo/actions";
 import { AppHeader } from "@/components/AppHeader";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
 
@@ -33,6 +33,24 @@ const STATUS_PILL: Record<OooStatus, PillVariant> = {
 };
 
 const HISTORY_DAYS = 90;
+
+const fieldBaseCls =
+  "h-[44px] rounded-sm border border-border bg-surface px-3 text-fg placeholder:text-fg-muted";
+
+/** One metric cell inside the navy insights band. */
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="px-5 py-4">
+      <dt className="text-xs font-semibold text-pennie-beige/60">{label}</dt>
+      <dd className="mt-1 text-xl font-semibold tabular-nums text-pennie-beige">
+        {value}
+        {sub && (
+          <span className="text-sm font-normal text-pennie-beige/60"> {sub}</span>
+        )}
+      </dd>
+    </div>
+  );
+}
 
 // Module scope so the Date.now() calls don't trip react-hooks/purity in render.
 function historySinceIso(): string {
@@ -133,6 +151,26 @@ export default async function OooQueuePage({
   const insights = buildInsights(roster, scopedRequests, orgZone);
   const company = isAdmin ? companyApprovalStats(allRequests) : null;
   const breakdown = isAdmin ? managerBreakdown(allRequests) : null;
+  const stats: { label: string; value: string; sub?: string }[] = [
+    {
+      label: "Approval rate",
+      value: `${insights.stats.rate}%`,
+      sub: `of ${insights.stats.total}`,
+    },
+    {
+      label: "Median notice",
+      value: String(insights.advanceNotice),
+      sub: insights.advanceNotice === 1 ? "day" : "days",
+    },
+    { label: "Busiest month", value: insights.busiest },
+    company
+      ? {
+          label: "Median mgr approval",
+          value: `${company.rate}%`,
+          sub: `of ${company.managerCount}`,
+        }
+      : { label: "Awaiting you", value: String(pending.length) },
+  ];
   const nameOf = (id: string | null) => {
     const u = users.find((x) => x.id === id);
     return u ? (u.name ?? u.email) : "unknown";
@@ -182,213 +220,207 @@ export default async function OooQueuePage({
         role={me.role}
         active="ooo"
         themePreference={me.theme_preference}
+        userId={me.id}
+        bookable={me.bookable}
+        avatarUrl={me.avatar_url}
       />
-      <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
-        <div>
-          <h1 className="pn-h3">Time off</h1>
-          <p className="mt-1 text-sm text-fg-muted">
+      <main className="mx-auto w-full min-w-0 max-w-4xl space-y-10 px-6 py-10 sm:px-8">
+        {/* Navy header carrying the actionable status: how many wait on you. */}
+        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
+          <p className="pn-eyebrow text-pennie-sky">Time off</p>
+          <h1 className="pn-h2 mt-2 text-pennie-beige">
+            {pending.length === 0
+              ? "You're all caught up."
+              : `${pending.length} waiting on you`}
+          </h1>
+          <p className="mt-2 text-pennie-beige/75">
             {isAdmin
-              ? "Requests across the whole team."
+              ? "Requests across the team."
               : "Requests from your reports."}
           </p>
-        </div>
+        </section>
 
         {sp.msg && (
           <div
             role="alert"
-            className="rounded-md border border-[var(--error)] p-4 text-sm text-error"
+            className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
           >
             {sp.msg}
           </div>
         )}
 
-        <section className={cardCls}>
-          <h2 className="mb-4 text-sm font-semibold">
-            Waiting for review{pending.length > 0 && ` (${pending.length})`}
-          </h2>
-          {pending.length === 0 && (
-            <p className="text-sm text-fg-muted">
-              No requests waiting. New ones will show up here and in Slack.
+        {/* Pending queue — the work surface */}
+        <section>
+          <p className="pn-eyebrow text-fg-muted">
+            Waiting for review
+            {pending.length > 0 && (
+              <span className="tabular-nums"> ({pending.length})</span>
+            )}
+          </p>
+          {pending.length === 0 ? (
+            <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
+              Nothing waiting. New requests show up here and in Slack.
             </p>
-          )}
-          <div className="space-y-5">
-            {pending.map((r) => {
-              const conflicts = overlapsFor(r);
-              const highlighted = sp.request === r.id;
-              return (
-                <div
-                  key={r.id}
-                  id={`request-${r.id}`}
-                  className={`border-t border-border pt-4 first:border-0 first:pt-0 ${
-                    highlighted
-                      ? "rounded-md outline-2 outline-offset-8 outline-[var(--focus-ring)]"
-                      : ""
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-semibold">{nameOf(r.user_id)}</span>
-                    <span>{whenOf(r)}</span>
-                  </div>
-                  <p className="mt-1 text-sm text-fg-muted">
-                    Reason: {r.reason}
-                    {r.notes ? ` · Notes: ${r.notes}` : ""}
-                  </p>
-                  {conflicts.length > 0 && (
-                    <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-                      <Pill variant="status-error">
-                        {conflicts.length} booked{" "}
-                        {conflicts.length === 1 ? "meeting" : "meetings"}
-                      </Pill>
-                      <span className="text-fg-muted">
-                        {conflicts
-                          .slice(0, 3)
-                          .map((b) =>
-                            formatWhenLine(
-                              b.starts_at,
-                              b.ends_at,
-                              r.display_tz_id,
-                              r.display_tz_label,
-                            ),
-                          )
-                          .join("; ")}
-                        {conflicts.length > 3 &&
-                          ` and ${conflicts.length - 3} more`}
-                        . Approving will not move them; rebook first.
+          ) : (
+            <ul className="mt-3 divide-y divide-border overflow-hidden rounded-md bg-surface shadow-xs">
+              {pending.map((r) => {
+                const conflicts = overlapsFor(r);
+                return (
+                  <li
+                    key={r.id}
+                    id={`request-${r.id}`}
+                    className={`p-5 ${
+                      sp.request === r.id
+                        ? "outline-2 -outline-offset-2 outline-[var(--focus-ring)]"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="font-semibold text-fg">
+                        {nameOf(r.user_id)}
                       </span>
+                      <span className="tabular-nums text-sm text-fg-muted">
+                        {whenOf(r)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-fg-muted">
+                      {r.reason}
+                      {r.notes ? ` · ${r.notes}` : ""}
                     </p>
-                  )}
-                  <div className="mt-3 flex flex-wrap items-end gap-3">
-                    <form action={approveOooAction}>
-                      <input type="hidden" name="request_id" value={r.id} />
-                      <button className={btnCls}>Approve time off</button>
-                    </form>
-                    <form
-                      action={rejectOooAction}
-                      className="flex flex-wrap items-end gap-2"
-                    >
-                      <input type="hidden" name="request_id" value={r.id} />
-                      <div>
-                        <label className={labelCls}>
-                          Note to {nameOf(r.user_id)}
-                        </label>
+                    {conflicts.length > 0 && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                        <Pill variant="status-error">
+                          {conflicts.length} booked{" "}
+                          {conflicts.length === 1 ? "meeting" : "meetings"}
+                        </Pill>
+                        <span className="text-fg-muted">
+                          {conflicts
+                            .slice(0, 3)
+                            .map((b) =>
+                              formatWhenLine(
+                                b.starts_at,
+                                b.ends_at,
+                                r.display_tz_id,
+                                r.display_tz_label,
+                              ),
+                            )
+                            .join("; ")}
+                          {conflicts.length > 3 &&
+                            ` and ${conflicts.length - 3} more`}
+                          . Approving won&apos;t move them; rebook first.
+                        </span>
+                      </p>
+                    )}
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <form action={approveOooAction}>
+                        <input type="hidden" name="request_id" value={r.id} />
+                        <button className={btnCls}>Approve</button>
+                      </form>
+                      <form
+                        action={rejectOooAction}
+                        className="flex flex-1 flex-wrap items-center gap-2"
+                      >
+                        <input type="hidden" name="request_id" value={r.id} />
                         <input
                           name="rejection_note"
-                          aria-label={`Rejection note for ${nameOf(r.user_id)}`}
-                          placeholder="Why this week does not work"
-                          className={`${inputCls} w-64`}
+                          aria-label={`Note to ${nameOf(r.user_id)} if you decline`}
+                          placeholder="Add a note (optional)"
+                          className={`${fieldBaseCls} min-w-0 flex-1`}
                         />
-                      </div>
-                      <button className={btnSecondaryCls}>Decline</button>
-                    </form>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className={cardCls}>
-          <h2 className="mb-4 text-sm font-semibold">
-            Recent decisions (last {HISTORY_DAYS} days)
-          </h2>
-          {history.length === 0 && (
-            <p className="text-sm text-fg-muted">Nothing decided yet.</p>
-          )}
-          <div className="space-y-4">
-            {history.map((r) => {
-              const failures = failedEffects(r);
-              return (
-                <div
-                  key={r.id}
-                  id={`request-${r.id}`}
-                  className={`flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 first:border-0 first:pt-0 ${
-                    sp.request === r.id
-                      ? "rounded-md outline-2 outline-offset-8 outline-[var(--focus-ring)]"
-                      : ""
-                  }`}
-                >
-                  <div className="min-w-0 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold">{nameOf(r.user_id)}</span>
-                      <span>{whenOf(r)}</span>
-                      <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
-                      {r.status === "approved" && failures.length > 0 && (
-                        <Pill
-                          variant="status-error"
-                          title={failures.map(([k, v]) => `${k}: ${v}`).join("\n")}
-                        >
-                          calendar updates incomplete
-                        </Pill>
-                      )}
+                        <button className={btnSecondaryCls}>Decline</button>
+                      </form>
                     </div>
-                    <p className="mt-0.5 text-xs text-fg-muted">
-                      {r.reason}
-                      {r.rejection_note ? ` · Note: ${r.rejection_note}` : ""}
-                      {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
-                    </p>
-                  </div>
-                  {isAdmin && r.status === "approved" && failures.length > 0 && (
-                    <form action={retryOooAction}>
-                      <input type="hidden" name="request_id" value={r.id} />
-                      <button className={btnSecondaryCls}>
-                        Retry calendar updates
-                      </button>
-                    </form>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
 
-        <section className={cardCls}>
-          <h2 className="mb-1 text-sm font-semibold">
-            {isAdmin ? "Team insights (whole company)" : "Team insights"}
-          </h2>
-          <p className="mb-4 text-xs text-fg-muted">
+        {/* Recent decisions — flat list */}
+        <section>
+          <p className="pn-eyebrow text-fg-muted">
+            Recent decisions{" "}
+            <span className="font-normal normal-case text-fg-muted">
+              · last {HISTORY_DAYS} days
+            </span>
+          </p>
+          {history.length === 0 ? (
+            <p className="mt-3 text-sm text-fg-muted">Nothing decided yet.</p>
+          ) : (
+            <ul className="mt-1 divide-y divide-border">
+              {history.map((r) => {
+                const failures = failedEffects(r);
+                return (
+                  <li
+                    key={r.id}
+                    id={`request-${r.id}`}
+                    className={`flex flex-wrap items-center justify-between gap-2 py-4 ${
+                      sp.request === r.id
+                        ? "rounded-md outline-2 outline-offset-4 outline-[var(--focus-ring)]"
+                        : ""
+                    }`}
+                  >
+                    <div className="min-w-0 text-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-fg">
+                          {nameOf(r.user_id)}
+                        </span>
+                        <span className="tabular-nums text-fg-muted">
+                          {whenOf(r)}
+                        </span>
+                        <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
+                        {r.status === "approved" && failures.length > 0 && (
+                          <Pill
+                            variant="status-error"
+                            title={failures
+                              .map(([k, v]) => `${k}: ${v}`)
+                              .join("\n")}
+                          >
+                            calendar updates incomplete
+                          </Pill>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-fg-muted">
+                        {r.reason}
+                        {r.rejection_note ? ` · Note: ${r.rejection_note}` : ""}
+                        {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
+                      </p>
+                    </div>
+                    {isAdmin && r.status === "approved" && failures.length > 0 && (
+                      <form action={retryOooAction}>
+                        <input type="hidden" name="request_id" value={r.id} />
+                        <button className={btnSecondaryCls}>
+                          Retry calendar updates
+                        </button>
+                      </form>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {/* Insights — a navy stat band, then supporting detail */}
+        <section>
+          <p className="pn-eyebrow text-fg-muted">
+            {isAdmin ? "Team insights · whole company" : "Team insights"}
+          </p>
+          <p className="mt-1 text-sm text-fg-muted">
             {roster.length} {roster.length === 1 ? "person" : "people"} on the
             roster. Numbers cover all requests on record.
           </p>
-          <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
-            <div>
-              <dt className={labelCls}>Approval rate</dt>
-              <dd className="mt-1 tabular-nums">
-                {insights.stats.rate}%
-                <span className="text-xs text-fg-muted">
-                  {" "}
-                  of {insights.stats.total}
-                </span>
-              </dd>
-            </div>
-            <div>
-              <dt className={labelCls}>Median advance notice</dt>
-              <dd className="mt-1 tabular-nums">
-                {insights.advanceNotice}{" "}
-                {insights.advanceNotice === 1 ? "day" : "days"}
-              </dd>
-            </div>
-            <div>
-              <dt className={labelCls}>Busiest month</dt>
-              <dd className="mt-1">{insights.busiest}</dd>
-            </div>
-            {company && (
-              <div>
-                <dt className={labelCls}>Median manager approval</dt>
-                <dd className="mt-1 tabular-nums">
-                  {company.rate}%
-                  <span className="text-xs text-fg-muted">
-                    {" "}
-                    across {company.managerCount}
-                  </span>
-                </dd>
-              </div>
-            )}
+          <dl className="mt-3 grid grid-cols-2 divide-x divide-y divide-pennie-beige/10 overflow-hidden rounded-xl bg-pennie-navy sm:grid-cols-4 sm:divide-y-0 dark:bg-surface dark:divide-border">
+            {stats.map((s) => (
+              <Stat key={s.label} label={s.label} value={s.value} sub={s.sub} />
+            ))}
           </dl>
 
           {insights.alerts.length > 0 && (
-            <div className="mt-5">
+            <div className="mt-6">
               <h3 className="text-xs font-semibold text-fg-muted">
-                Coverage alerts (next 30 days)
+                Coverage alerts · next 30 days
               </h3>
               <ul className="mt-2 space-y-2">
                 {insights.alerts.map((a) => (
@@ -404,8 +436,10 @@ export default async function OooQueuePage({
                       {a.dateFormatted}
                     </Pill>
                     <span>
-                      {a.count} of {roster.length} out ({a.percent}%):{" "}
-                      {a.people.join(", ")}
+                      <span className="tabular-nums">
+                        {a.count} of {roster.length}
+                      </span>{" "}
+                      out ({a.percent}%): {a.people.join(", ")}
                     </span>
                   </li>
                 ))}
@@ -414,7 +448,7 @@ export default async function OooQueuePage({
           )}
 
           {insights.noTimeOff.length > 0 && (
-            <div className="mt-5">
+            <div className="mt-6">
               <h3 className="text-xs font-semibold text-fg-muted">
                 No time off in the last 90 days or next 30
               </h3>
@@ -425,10 +459,8 @@ export default async function OooQueuePage({
           )}
 
           {breakdown && breakdown.length > 0 && (
-            <div className="mt-5">
-              <h3 className="text-xs font-semibold text-fg-muted">
-                By manager
-              </h3>
+            <div className="mt-6">
+              <h3 className="text-xs font-semibold text-fg-muted">By manager</h3>
               <table className="mt-2 w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-fg-muted">

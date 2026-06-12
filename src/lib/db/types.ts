@@ -43,6 +43,8 @@ export interface User {
   name: string | null;
   role: Role;
   google_sub: string | null;
+  /** Google profile picture URL from OAuth metadata; null until first login. */
+  avatar_url: string | null;
   attributes: Attributes;
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
