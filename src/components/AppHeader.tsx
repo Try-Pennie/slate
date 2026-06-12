@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { agentSchedulingLive } from "@/lib/env";
 
 /**
  * Shared branded header for the internal pages (/admin, /me).
@@ -46,6 +47,8 @@ export function AppHeader({
   // The approval queue is a manager surface; agents manage their own time off
   // from /me, so they don't get the tab.
   const showTimeOff = role === "manager" || role === "admin";
+  // OOO-only launch phase: agents see just the time off tool, no scheduling.
+  const oooOnly = role === "agent" && !agentSchedulingLive();
   return (
     <header className="border-b border-border bg-bg">
       <div className="mx-auto flex min-h-16 max-w-4xl flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2">
@@ -62,16 +65,24 @@ export function AppHeader({
           className="hidden h-[22px] w-auto dark:block"
         />
         <nav aria-label="Slate sections" className="flex items-center gap-5">
-          <NavTab href="/admin" current={active === "admin"}>
-            Admin
-          </NavTab>
-          <NavTab href="/me" current={active === "me"}>
-            My availability
-          </NavTab>
-          {showTimeOff && (
-            <NavTab href="/admin/ooo" current={active === "ooo"}>
+          {oooOnly ? (
+            <NavTab href="/me" current={active === "me"}>
               Time off
             </NavTab>
+          ) : (
+            <>
+              <NavTab href="/admin" current={active === "admin"}>
+                Admin
+              </NavTab>
+              <NavTab href="/me" current={active === "me"}>
+                My availability
+              </NavTab>
+              {showTimeOff && (
+                <NavTab href="/admin/ooo" current={active === "ooo"}>
+                  Time off
+                </NavTab>
+              )}
+            </>
           )}
         </nav>
         <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
@@ -80,9 +91,13 @@ export function AppHeader({
             {role ? ` · ${role}` : ""}
           </span>
           <ThemeToggle />
-          <a href="/login" className="pn-btn pn-btn--small pn-btn--additional min-h-11">
-            Connect / reconnect Google
-          </a>
+          {/* Google reconnect is for availability sync; hidden in the OOO-only
+              phase since agents aren't scheduling yet. */}
+          {!oooOnly && (
+            <a href="/login" className="pn-btn pn-btn--small pn-btn--additional min-h-11">
+              Connect / reconnect Google
+            </a>
+          )}
         </div>
       </div>
     </header>

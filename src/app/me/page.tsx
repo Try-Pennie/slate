@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
+import { agentSchedulingLive } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
 import { cancelMyOoo, modifyMyOoo, submitMyOoo } from "@/app/me/actions";
@@ -50,6 +51,11 @@ export default async function MePage({
   const sp = await searchParams;
   const me = await currentUser();
   if (!me) redirect("/login");
+
+  // OOO-only launch phase: agents see just the time off tool, no scheduling
+  // (working hours, bookable status, Google reconnect). Managers/admins keep
+  // their availability self-service. Flip AGENT_SCHEDULING_LIVE=true to reveal.
+  const oooOnly = me.role === "agent" && !agentSchedulingLive();
 
   const db = supabaseAdmin();
   const { data: schedule } = await db
@@ -108,16 +114,18 @@ export default async function MePage({
     <AppHeader email={me.email} role={me.role} active="me" />
     <main className="mx-auto w-full min-w-0 max-w-xl space-y-6 p-8">
       <div>
-        <h1 className="pn-h3">Your availability</h1>
+        <h1 className="pn-h3">{oooOnly ? "Time off" : "Your availability"}</h1>
         <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
           <span>{me.name ?? me.email}</span>
-          <Pill variant={me.bookable ? "status-ok" : "outline"}>
-            {me.bookable ? "Bookable" : "Not bookable yet"}
-          </Pill>
+          {!oooOnly && (
+            <Pill variant={me.bookable ? "status-ok" : "outline"}>
+              {me.bookable ? "Bookable" : "Not bookable yet"}
+            </Pill>
+          )}
         </p>
       </div>
 
-      {rules.length === 0 && (
+      {!oooOnly && rules.length === 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
           <span className="flex items-center gap-2.5">
             <InfoIcon
@@ -133,6 +141,7 @@ export default async function MePage({
         </div>
       )}
 
+      {!oooOnly && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
         <p className="mb-4 text-xs text-fg-muted">
@@ -203,12 +212,13 @@ export default async function MePage({
           </button>
         </form>
       </section>
+      )}
 
       <section id="time-off" className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Time off</h2>
         <p className="mb-4 text-xs text-fg-muted">
           {manager
-            ? `Requests go to ${manager.name ?? manager.email} for approval. Approved time off blocks your booking availability.`
+            ? `Requests go to ${manager.name ?? manager.email} for approval.${oooOnly ? "" : " Approved time off blocks your booking availability."}`
             : "Ask an admin to set your manager before requesting time off."}
         </p>
 
@@ -386,9 +396,11 @@ export default async function MePage({
         )}
       </section>
 
-      <p className="text-sm text-fg-muted">
-        Your manager controls whether you&apos;re bookable and which teams you&apos;re on.
-      </p>
+      {!oooOnly && (
+        <p className="text-sm text-fg-muted">
+          Your manager controls whether you&apos;re bookable and which teams you&apos;re on.
+        </p>
+      )}
     </main>
     </>
   );
