@@ -137,11 +137,11 @@ await run();
 // --- eventDescription (#64: invite carries the manage link) ---
 const desc = eventDescription("+12035615295", "https://slate.trypennie.app/booking/manage/tok123");
 assert(
-  desc === "Booked via Slate. Phone: +12035615295\nReschedule or cancel: https://slate.trypennie.app/booking/manage/tok123",
+  desc === "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://slate.trypennie.app/booking/manage/tok123",
   "description carries phone and the manage link",
 );
 assert(
-  eventDescription(null, "https://x/m/t") === "Booked via Slate.\nReschedule or cancel: https://x/m/t",
+  eventDescription(null, "https://x/m/t") === "Booked via Pennie.\nReschedule or cancel: https://x/m/t",
   "no phone -> still carries the manage link",
 );
 assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has no dashes");

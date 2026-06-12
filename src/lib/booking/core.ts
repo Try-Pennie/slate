@@ -98,8 +98,8 @@ export function eventDescription(
   phone: string | null,
   manageUrl: string,
 ): string {
-  const lines = ["Booked via Slate."];
-  if (phone) lines[0] = `Booked via Slate. Phone: ${phone}`;
+  const lines = ["Booked via Pennie."];
+  if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
   lines.push(`Reschedule or cancel: ${manageUrl}`);
   return lines.join("\n");
 }
