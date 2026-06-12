@@ -15,6 +15,7 @@ import type {
   BusyBlock,
   EventType,
   GoogleCredentials,
+  OooRequest,
   Organization,
   RateLimit,
   SyncLock,
@@ -46,6 +47,7 @@ export interface Database {
       availability_rules: Table<AvailabilityRule>;
       busy_blocks: Table<BusyBlock>;
       bookings: Table<Booking>;
+      ooo_requests: Table<OooRequest>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;

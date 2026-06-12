@@ -10,7 +10,9 @@ import {
   replayFailedWebhooks,
   resendWebhookDelivery,
   setAgentAttributes,
+  setAgentManager,
   setBookable,
+  setOooCalendarId,
   setOrgDefaultHours,
   setUserRole,
   setWebhookEndpoint,
@@ -302,6 +304,10 @@ export default async function AdminPage({
   // Routing trace viewer: recent bookings + how each one routed.
   const recent = (recentRes.data ?? []) as TraceRow[];
   const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
+  // OOO requests route to the agent's manager; only manager/admin rows qualify.
+  const managers = users
+    .filter((u) => u.role === "manager" || u.role === "admin")
+    .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
   const nameOf = (id: string | null) =>
     id ? (agentName.get(id) ?? id.slice(0, 8)) : "unassigned";
 
@@ -564,6 +570,46 @@ export default async function AdminPage({
                     </button>
                   </form>
                 </div>
+              </div>
+              <div className="mt-2 flex flex-wrap items-end gap-3">
+                <form action={setAgentManager} className="flex items-end gap-2">
+                  <input type="hidden" name="user_id" value={u.id} />
+                  <div>
+                    <label className={labelCls}>Manager (time off approvals)</label>
+                    <select
+                      name="manager_id"
+                      aria-label={`Manager for ${u.name ?? u.email}`}
+                      defaultValue={u.manager_id ?? ""}
+                      className={`${inputCls} w-48`}
+                    >
+                      <option value="">No manager</option>
+                      {managers
+                        .filter((m) => m.id !== u.id)
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name ?? m.email}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <button className={btnSecondaryCls}>Set manager</button>
+                </form>
+                {isAdmin && u.role !== "agent" && (
+                  <form action={setOooCalendarId} className="flex items-end gap-2">
+                    <input type="hidden" name="user_id" value={u.id} />
+                    <div>
+                      <label className={labelCls}>OOO calendar ID</label>
+                      <input
+                        name="ooo_calendar_id"
+                        aria-label={`OOO calendar ID for ${u.name ?? u.email}`}
+                        defaultValue={u.ooo_calendar_id ?? ""}
+                        placeholder="c_xxxx@group.calendar.google.com"
+                        className={`${inputCls} w-72`}
+                      />
+                    </div>
+                    <button className={btnSecondaryCls}>Save calendar</button>
+                  </form>
+                )}
               </div>
               {u.bookable && (
                 <>

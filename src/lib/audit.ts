@@ -5,7 +5,15 @@ export type AuditAction =
   | "agent.hours"
   | "agent.use_default_hours"
   | "agent.bookable"
-  | "agent.attributes";
+  | "agent.attributes"
+  | "agent.manager"
+  | "agent.ooo_calendar"
+  | "ooo.submit"
+  | "ooo.approve"
+  | "ooo.reject"
+  | "ooo.cancel"
+  | "ooo.modify"
+  | "ooo.retry";
 
 /**
  * Appends a privileged action to the audit trail. Best-effort: never throws, so
