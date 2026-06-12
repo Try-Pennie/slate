@@ -22,7 +22,12 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('slate-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`,
+            // No-flash theme. Reads the account preference from the `slate-theme`
+            // cookie (seeded at login, so it follows across devices), falling
+            // back to legacy localStorage. 'system' resolves to the device
+            // setting. No cookie/storage (e.g. the consumer Booker) = untouched,
+            // so this only themes signed-in internal users.
+            __html: `(function(){try{var m=document.cookie.match(/(?:^|; )slate-theme=([^;]+)/);var p=m?decodeURIComponent(m[1]):localStorage.getItem('slate-theme');if(!p)return;var t=p==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):p;if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`,
           }}
         />
       </head>

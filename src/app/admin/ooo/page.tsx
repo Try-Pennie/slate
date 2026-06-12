@@ -177,7 +177,12 @@ export default async function OooQueuePage({
 
   return (
     <>
-      <AppHeader email={me.email} role={me.role} active="ooo" />
+      <AppHeader
+        email={me.email}
+        role={me.role}
+        active="ooo"
+        themePreference={me.theme_preference}
+      />
       <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
         <div>
           <h1 className="pn-h3">Time off</h1>

@@ -48,5 +48,13 @@ export async function GET(req: NextRequest) {
 
   // Managers + admins get the admin console; agents land on their own page.
   const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";
-  return NextResponse.redirect(`${origin}${dest}`);
+  const res = NextResponse.redirect(`${origin}${dest}`);
+  // Seed the theme cookie from the account so the preference follows the user
+  // onto this device (the no-flash script reads it before first paint).
+  res.cookies.set("slate-theme", slateUser.theme_preference ?? "system", {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    sameSite: "lax",
+  });
+  return res;
 }

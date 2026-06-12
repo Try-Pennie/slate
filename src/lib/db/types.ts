@@ -6,6 +6,7 @@
 export type Role = "admin" | "manager" | "agent";
 export type BusySource = "slate" | "gcal";
 export type OooStatus = "pending" | "approved" | "rejected" | "cancelled";
+export type ThemePreference = "system" | "light" | "dark";
 export type BookingStatus =
   | "confirmed"
   | "rescheduled"
@@ -49,6 +50,8 @@ export interface User {
   manager_id: string | null;
   /** On manager rows: the manager's OOO Google calendar for approval events. */
   ooo_calendar_id: string | null;
+  /** Account-tied UI theme; 'system' follows the device setting. */
+  theme_preference: ThemePreference;
   created_at: string;
 }
 
