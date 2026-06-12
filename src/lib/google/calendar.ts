@@ -163,6 +163,53 @@ export async function createEvent(
   return data.id;
 }
 
+/**
+ * Event create on an arbitrary calendar (the OOO flow writes to manager OOO
+ * calendars and agent primaries). No attendees and no sendUpdates — these are
+ * blocking events, not invitations; the booking paths above stay untouched.
+ */
+export async function createEventOnCalendar(
+  actorEmail: string,
+  calendarId: string,
+  input: Omit<CreateEventInput, "attendeeEmail" | "attendeeName">,
+): Promise<string> {
+  const res = await ok(
+    await gfetch(
+      actorEmail,
+      `${BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          summary: input.summary,
+          description: input.description,
+          start: { dateTime: input.start, timeZone: input.timezone },
+          end: { dateTime: input.end, timeZone: input.timezone },
+        }),
+      },
+    ),
+    "events.insert",
+  );
+  const data = (await res.json()) as { id?: string };
+  if (!data.id) throw new Error("Google did not return an event id");
+  return data.id;
+}
+
+/** Tolerant delete on an arbitrary calendar (404/410 mean already gone). */
+export async function deleteEventOnCalendar(
+  actorEmail: string,
+  calendarId: string,
+  eventId: string,
+): Promise<void> {
+  const res = await gfetch(
+    actorEmail,
+    `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404 && res.status !== 410) {
+    throw new Error(`events.delete failed: ${res.status} ${await res.text()}`);
+  }
+}
+
 export async function updateEventTime(
   email: string,
   eventId: string,

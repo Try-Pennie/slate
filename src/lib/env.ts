@@ -72,3 +72,17 @@ export const slackAlertsChannel = (): string =>
   process.env.SLACK_ALERTS_CHANNEL ?? "";
 
 export const googlePushUrl = (): string => `${appUrl()}/api/google/push`;
+
+// OOO workflow. The main OOO calendar doubles as the default DWD actor for
+// manager-calendar writes (the Apps Script ran as ooo@trypennie.com).
+export const mainOooCalendarId = (): string => requireEnv("MAIN_OOO_CAL_ID");
+export const oooCalendarActorEmail = (): string =>
+  process.env.OOO_CALENDAR_ACTOR_EMAIL ?? mainOooCalendarId();
+
+// Cal.com dual-write during the cutover transition. Flag off = no-op.
+export const oooCalcomDualWrite = (): boolean =>
+  process.env.OOO_CALCOM_DUAL_WRITE === "true";
+export const calcomBaseUrl = (): string =>
+  (process.env.CALCOM_BASE_URL ?? "https://api.cal.com/v2").replace(/\/$/, "");
+export const calcomOrgId = (): string => process.env.CALCOM_ORG_ID ?? "";
+export const calcomApiKey = (): string => process.env.CALCOM_API_KEY ?? "";
