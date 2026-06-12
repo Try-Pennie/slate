@@ -7,8 +7,8 @@
 export const labelCls = "block text-xs font-semibold text-fg-muted";
 
 export const inputCls =
-  "mt-1 w-full rounded-sm bg-surface px-3 text-fg " +
-  "shadow-xs h-[44px] placeholder:text-fg-muted";
+  "mt-1 w-full rounded-sm border border-border bg-surface px-3 text-fg " +
+  "h-[44px] placeholder:text-fg-muted";
 
 export const cardCls = "rounded-md bg-surface shadow-xs p-6";
 

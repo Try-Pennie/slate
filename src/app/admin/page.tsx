@@ -26,6 +26,7 @@ import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
+import { DayToggles } from "@/components/ui/DayToggles";
 import type {
   AuditEntry,
   Booking,
@@ -387,8 +388,22 @@ export default async function AdminPage({
       bookable={me.bookable}
         avatarUrl={me.avatar_url}
     />
-    <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
-      <h1 className="text-xl font-semibold tracking-tight">Slate admin</h1>
+    <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-6 py-10 sm:px-8">
+      <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
+        <p className="pn-eyebrow text-pennie-sky">Admin</p>
+        <h1 className="pn-h3 mt-2 text-pennie-beige">Slate admin</h1>
+        <p className="mt-2 text-pennie-beige/75">
+          <span className="font-semibold tabular-nums text-pennie-beige">
+            {bookableAgents.length}
+          </span>{" "}
+          bookable of{" "}
+          <span className="tabular-nums">{users.length}</span> agents ·{" "}
+          <span className="tabular-nums">
+            {watchedCount}/{bookableAgents.length}
+          </span>{" "}
+          calendars syncing
+        </p>
+      </section>
 
       {sp.synced && (
         <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg">
@@ -454,29 +469,14 @@ export default async function AdminPage({
               className={`${inputCls} w-44`}
             />
           </div>
-          <div className="flex gap-1">
-            {[
-              [1, "M"],
-              [2, "T"],
-              [3, "W"],
-              [4, "T"],
-              [5, "F"],
-              [6, "S"],
-              [7, "S"],
-            ].map(([d, lbl]) => (
-              <label
-                key={d}
-                className="flex flex-col items-center text-xs text-fg-muted"
-              >
-                {lbl}
-                <input
-                  type="checkbox"
-                  name={`dday_${d}`}
-                  defaultChecked={org.default_weekdays.includes(Number(d))}
-                  className="accent-pennie-sky"
-                />
-              </label>
-            ))}
+          <div>
+            <span className={labelCls}>Days</span>
+            <div className="mt-1">
+              <DayToggles
+                namePrefix="dday_"
+                isOn={(d) => org.default_weekdays.includes(d)}
+              />
+            </div>
           </div>
           <div>
             <label className={labelCls}>Start</label>
@@ -643,13 +643,25 @@ export default async function AdminPage({
                       className={`${inputCls} w-48`}
                     >
                       <option value="">No manager</option>
-                      {managers
-                        .filter((m) => m.id !== u.id)
-                        .map((m) => (
+                      {(() => {
+                        // Always include the currently assigned manager, even
+                        // if they aren't a manager-role user (e.g. an approver
+                        // who is also a debt-team agent) - otherwise the select
+                        // falls back to "No manager" and hides a real link.
+                        const opts = managers.filter((m) => m.id !== u.id);
+                        const assigned = u.manager_id
+                          ? users.find((x) => x.id === u.manager_id)
+                          : null;
+                        const list =
+                          assigned && !opts.some((m) => m.id === assigned.id)
+                            ? [assigned, ...opts]
+                            : opts;
+                        return list.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.name ?? m.email}
                           </option>
-                        ))}
+                        ));
+                      })()}
                     </select>
                   </div>
                   <button className={btnSecondaryCls}>Set manager</button>
@@ -687,29 +699,11 @@ export default async function AdminPage({
                     className={`${inputCls} w-44`}
                   />
                 </div>
-                <div className="flex gap-1">
-                  {[
-                    [1, "M"],
-                    [2, "T"],
-                    [3, "W"],
-                    [4, "T"],
-                    [5, "F"],
-                    [6, "S"],
-                    [7, "S"],
-                  ].map(([d, lbl]) => (
-                    <label
-                      key={d}
-                      className="flex flex-col items-center text-xs text-fg-muted"
-                    >
-                      {lbl}
-                      <input
-                        type="checkbox"
-                        name={`day_${d}`}
-                        defaultChecked={Number(d) <= 5}
-                        className="accent-pennie-sky"
-                      />
-                    </label>
-                  ))}
+                <div>
+                  <span className={labelCls}>Days</span>
+                  <div className="mt-1">
+                    <DayToggles namePrefix="day_" isOn={(d) => d <= 5} />
+                  </div>
                 </div>
                 <div>
                   <label className={labelCls}>Start</label>
