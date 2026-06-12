@@ -93,6 +93,7 @@ function makeDeps(opts: FakeOpts) {
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
     webhooks: [] as { event: string }[],
+    emails: [] as { kind: string; manageUrl: string }[],
   };
   let seq = 0;
   let insertAttempted = false;
@@ -139,6 +140,9 @@ function makeDeps(opts: FakeOpts) {
     loadBookingById: async () => opts.bookingById ?? null,
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
+    sendBookingEmail: async (kind, ctx) => {
+      calls.emails.push({ kind, manageUrl: ctx.manageUrl });
+    },
     emitWebhook: async (_orgId, event) => {
       calls.webhooks.push({ event });
     },
@@ -171,6 +175,12 @@ async function run() {
       "create: busy block spans the booked slot (30m)",
     );
     assert(calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created", "create: fires booking.created");
+    assert(
+      calls.emails.length === 1 &&
+        calls.emails[0].kind === "created" &&
+        calls.emails[0].manageUrl === "https://slate.test/booking/manage/tok-fixed",
+      "create: sends the branded created email with the manage URL",
+    );
     assert(calls.deleteEvent.length === 0, "create: no rollback on success");
   }
 
@@ -195,6 +205,7 @@ async function run() {
     );
     assert(calls.insertBusyBlock.length === 0, "create-fail: no busy block written");
     assert(calls.webhooks.length === 0, "create-fail: no webhook fired");
+    assert(calls.emails.length === 0, "create-fail: no email sent");
   }
 
   // --- createBooking: unique-slot conflict (verify-on-book race loser) ---
@@ -290,6 +301,10 @@ async function run() {
     assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reschedule: busy block moved");
     assert(res.booking.status === "rescheduled" && res.booking.starts_at === "2026-06-09T14:00:00.000Z", "reschedule: status + new start applied");
     assert(calls.webhooks[0].event === "booking.rescheduled", "reschedule: fires booking.rescheduled");
+    assert(
+      calls.emails.length === 1 && calls.emails[0].kind === "rescheduled",
+      "reschedule: sends the branded rescheduled email",
+    );
   }
 
   // --- reschedule: same agent busy -> reassign to B ---
@@ -337,12 +352,16 @@ async function run() {
       "cancel: marks the booking cancelled",
     );
     assert(calls.webhooks[0].event === "booking.cancelled", "cancel: fires booking.cancelled");
+    assert(
+      calls.emails.length === 1 && calls.emails[0].kind === "cancelled",
+      "cancel: sends the branded cancelled email",
+    );
 
     const ctx2 = { booking: makeBooking({ status: "cancelled" }), bucket, eventType };
     const { deps: d2, calls: c2 } = makeDeps({ existing: ctx2 });
     await cancelBooking("tok1", d2);
     assert(
-      c2.deleteEvent.length === 0 && c2.updateBooking.length === 0 && c2.webhooks.length === 0,
+      c2.deleteEvent.length === 0 && c2.updateBooking.length === 0 && c2.webhooks.length === 0 && c2.emails.length === 0,
       "cancel: no-op when already cancelled",
     );
   }

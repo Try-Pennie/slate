@@ -6,11 +6,14 @@ import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
  * RS256 JWT is signed with Web Crypto so this runs on the Cloudflare Worker.
  */
 
-const SCOPE =
-  "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.readonly";
+const CALENDAR_SCOPES = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar.freebusy",
+  "https://www.googleapis.com/auth/calendar.readonly",
+];
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
-// In-memory token cache per impersonated email (tokens last ~1h).
+// In-memory token cache per impersonated email + scope set (tokens last ~1h).
 const cache = new Map<string, { token: string; exp: number }>();
 
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
@@ -37,14 +40,14 @@ function pemToPkcs8(pem: string): ArrayBuffer {
   return buf.buffer;
 }
 
-async function signJwt(subject: string): Promise<string> {
+async function signJwt(subject: string, scope: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = b64urlString(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = b64urlString(
     JSON.stringify({
       iss: googleSaClientEmail(),
       sub: subject,
-      scope: SCOPE,
+      scope,
       aud: TOKEN_URL,
       iat: now,
       exp: now + 3600,
@@ -67,12 +70,21 @@ async function signJwt(subject: string): Promise<string> {
   return `${input}.${b64url(sig)}`;
 }
 
-/** Returns a calendar access token impersonating `email` (cached ~55 min). */
-export async function getDelegatedToken(email: string): Promise<string> {
-  const hit = cache.get(email);
+/**
+ * Returns an access token impersonating `email` (cached ~55 min). Defaults to
+ * the calendar scope set; pass `scopes` for anything else (e.g. gmail.send for
+ * the branded booking emails).
+ */
+export async function getDelegatedToken(
+  email: string,
+  scopes: string[] = CALENDAR_SCOPES,
+): Promise<string> {
+  const scope = scopes.join(" ");
+  const cacheKey = `${email}|${scope}`;
+  const hit = cache.get(cacheKey);
   if (hit && hit.exp - Date.now() > 60_000) return hit.token;
 
-  const assertion = await signJwt(email);
+  const assertion = await signJwt(email, scope);
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -85,7 +97,7 @@ export async function getDelegatedToken(email: string): Promise<string> {
     throw new Error(`Delegated token failed for ${email}: ${res.status} ${await res.text()}`);
   }
   const data = (await res.json()) as { access_token: string; expires_in: number };
-  cache.set(email, {
+  cache.set(cacheKey, {
     token: data.access_token,
     exp: Date.now() + data.expires_in * 1000,
   });

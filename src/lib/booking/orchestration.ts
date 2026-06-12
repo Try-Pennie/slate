@@ -111,16 +111,36 @@ export interface BookingContext {
   eventType: EventType;
 }
 
+export type BookingEmailKind = "created" | "rescheduled" | "cancelled";
+
+export interface BookingEmailContext {
+  booking: Booking;
+  eventType: EventType;
+  manageUrl: string;
+}
+
+/** Google attendee notifications: "none" by default (branded email instead). */
+export type SendUpdatesMode = "all" | "none";
+
 /** Every side effect the orchestration needs. `service.ts` wires the real ones. */
 export interface BookingDeps {
   // availability / routing
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
   roundRobinCandidates(bucket: Bucket, eventType: EventType, startMs: number): Promise<string[]>;
-  // google calendar
+  // google calendar (sendUpdates defaults to "none": the lead-facing email is
+  // the branded iMIP send below; "all" is used where Google's native emails
+  // are intentionally kept, e.g. the reassign paths)
   isFree(email: string, startIso: string, endIso: string): Promise<boolean>;
-  createEvent(email: string, args: CreateEventArgs): Promise<string>;
-  deleteEvent(email: string, eventId: string): Promise<void>;
-  updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
+  createEvent(email: string, args: CreateEventArgs, sendUpdates?: SendUpdatesMode): Promise<string>;
+  deleteEvent(email: string, eventId: string, sendUpdates?: SendUpdatesMode): Promise<void>;
+  updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string, sendUpdates?: SendUpdatesMode): Promise<void>;
+  /**
+   * Branded transactional email to the lead with the embedded calendar invite.
+   * The real impl owns its own fallback (make Google email the invite) and
+   * must never throw in a way that fails the booking; orchestration still
+   * guards every call with .catch.
+   */
+  sendBookingEmail(kind: BookingEmailKind, ctx: BookingEmailContext): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
@@ -331,6 +351,16 @@ export async function createBooking(
   // Write-through: the cache reflects this booking immediately.
   await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
 
+  // Email problems must never fail the booking (the impl falls back to
+  // Google's native invite on its own; this catch is belt and braces).
+  await deps
+    .sendBookingEmail("created", {
+      booking,
+      eventType,
+      manageUrl: manageUrl(deps, manageToken),
+    })
+    .catch(() => {});
+
   await fire(deps, "booking.created", booking, bucket, eventType);
 
   return { booking, manageUrl: manageUrl(deps, manageToken) };
@@ -375,7 +405,12 @@ export async function rescheduleBooking(
     agentName = newAgent.name;
     agentEmail = newAgent.email;
     if (currentEmail && booking.gcal_event_id) {
-      await deps.deleteEvent(currentEmail, booking.gcal_event_id).catch(() => {});
+      // The agent (= iMIP organizer) changes, so the new branded invite gets a
+      // NEW UID and can't clear the old entry off the lead's calendar. Let
+      // Google send its native cancel for the old event instead.
+      await deps
+        .deleteEvent(currentEmail, booking.gcal_event_id, "all")
+        .catch(() => {});
     }
     const newEventId = await deps.createEvent(next.email, {
       summary: `${eventType.name}${
@@ -415,6 +450,15 @@ export async function rescheduleBooking(
     agent_email: agentEmail,
     status: "rescheduled" as const,
   };
+
+  await deps
+    .sendBookingEmail("rescheduled", {
+      booking: updated,
+      eventType,
+      manageUrl: manageUrl(deps, token),
+    })
+    .catch(() => {});
+
   await fire(deps, "booking.rescheduled", updated, bucket, eventType);
 
   return { booking: updated, manageUrl: manageUrl(deps, token) };
@@ -450,19 +494,28 @@ export async function reassignBooking(
 
   // Move the calendar event to the owning agent at the same time. No free check:
   // this path intentionally double-books, gated only by `allow_double_book`.
+  // The slot time is unchanged, so the branded "new time" email would be
+  // wrong here; keep Google's native cancel + invite pair (sendUpdates=all)
+  // so the lead's calendar entry follows the new organizer.
   if (booking.agent_email && booking.gcal_event_id) {
-    await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
+    await deps
+      .deleteEvent(booking.agent_email, booking.gcal_event_id, "all")
+      .catch(() => {});
   }
-  const newEventId = await deps.createEvent(agent.email, {
-    summary: `${eventType.name}${
-      booking.attendee_name ? ` with ${booking.attendee_name}` : ""
-    }`,
-    start: booking.starts_at,
-    end: booking.ends_at,
-    timezone: booking.timezone,
-    attendeeEmail: booking.attendee_email ?? undefined,
-    attendeeName: booking.attendee_name ?? undefined,
-  });
+  const newEventId = await deps.createEvent(
+    agent.email,
+    {
+      summary: `${eventType.name}${
+        booking.attendee_name ? ` with ${booking.attendee_name}` : ""
+      }`,
+      start: booking.starts_at,
+      end: booking.ends_at,
+      timezone: booking.timezone,
+      attendeeEmail: booking.attendee_email ?? undefined,
+      attendeeName: booking.attendee_name ?? undefined,
+    },
+    "all",
+  );
 
   // Record the override on the trace so the viewer can show who reassigned whom.
   const reassignment = {
@@ -523,6 +576,17 @@ export async function cancelBooking(
   if (booking.status === "cancelled") return;
 
   if (booking.agent_email && booking.gcal_event_id) {
+    // Branded CANCEL goes out BEFORE the event is deleted: if the branded send
+    // fails, its fallback deletes the event with sendUpdates=all so Google
+    // emails the cancellation — possible only while the event still exists.
+    // The delete below then finds a 404/410, which deleteEvent tolerates.
+    await deps
+      .sendBookingEmail("cancelled", {
+        booking,
+        eventType,
+        manageUrl: manageUrl(deps, token),
+      })
+      .catch(() => {});
     await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
   }
 

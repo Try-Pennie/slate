@@ -13,9 +13,11 @@ import {
 } from "@/lib/google/calendar";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendBrandedBookingEmail } from "@/lib/email/send";
 import type { Booking, Bucket, EventType, User } from "@/lib/db/types";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const EMAIL_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** Calendar ids whose busy blocks an agent, looked up by their email. */
 async function calendarIdsForEmail(email: string): Promise<string[]> {
@@ -64,6 +66,54 @@ function realDeps(): BookingDeps {
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
+
+    // Branded transactional email from the agent's own Gmail (iMIP invite
+    // embedded, #64). If it fails — most likely the gmail.send DWD scope not
+    // yet granted — fall back to Google's native attendee email so the lead
+    // is always notified. Never throws: email problems must not fail bookings.
+    sendBookingEmail: async (kind, ctx) => {
+      const { booking } = ctx;
+      if (!booking.attendee_email) return;
+      try {
+        await sendBrandedBookingEmail(kind, ctx);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `branded ${kind} email failed for booking ${booking.id}: ${msg}`,
+        );
+        if (booking.agent_email && booking.gcal_event_id) {
+          try {
+            if (kind === "cancelled") {
+              // Orchestration deletes the event right after this; deleting it
+              // here first with sendUpdates=all makes Google email the
+              // cancellation (the later delete tolerates the 404/410).
+              await deleteEvent(booking.agent_email, booking.gcal_event_id, "all");
+            } else {
+              // No-op field touch with sendUpdates=all → Google emails the
+              // invite/update to the attendee.
+              await updateEventTime(
+                booking.agent_email,
+                booking.gcal_event_id,
+                booking.starts_at,
+                booking.ends_at,
+                booking.timezone,
+                "all",
+              );
+            }
+          } catch (fallbackErr) {
+            console.error(
+              `google invite fallback (${kind}) failed for booking ${booking.id}:`,
+              fallbackErr,
+            );
+          }
+        }
+        await sendThrottledAlert(
+          "branded_email_fallback",
+          EMAIL_ALERT_COOLDOWN_MS,
+          `Slate: branded ${kind} booking email failed for booking ${booking.id} (${msg}). Fell back to Google's native invite email. If this persists, check that the service account's domain-wide delegation includes the gmail.send scope.`,
+        ).catch(() => {});
+      }
+    },
 
     getUser: async (userId) => {
       const { data } = await supabaseAdmin()

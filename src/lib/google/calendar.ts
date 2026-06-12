@@ -139,12 +139,21 @@ export interface CreateEventInput {
   attendeeName?: string;
 }
 
+/**
+ * Whether Google emails the event's attendees about a change. Defaults to
+ * "none" everywhere: the lead-facing email is Slate's branded iMIP send
+ * (src/lib/email); "all" is the fallback when that send fails, and the
+ * reassign paths where Google's native cancel/invite pair is kept.
+ */
+export type SendUpdates = "all" | "none";
+
 export async function createEvent(
   email: string,
   input: CreateEventInput,
+  sendUpdates: SendUpdates = "none",
 ): Promise<string> {
   const res = await ok(
-    await gfetch(email, `${BASE}/calendars/${CAL}/events?sendUpdates=all`, {
+    await gfetch(email, `${BASE}/calendars/${CAL}/events?sendUpdates=${sendUpdates}`, {
       method: "POST",
       body: JSON.stringify({
         summary: input.summary,
@@ -169,11 +178,12 @@ export async function updateEventTime(
   start: string,
   end: string,
   timezone: string,
+  sendUpdates: SendUpdates = "none",
 ): Promise<void> {
   await ok(
     await gfetch(
       email,
-      `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+      `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates}`,
       {
         method: "PATCH",
         body: JSON.stringify({
@@ -186,10 +196,14 @@ export async function updateEventTime(
   );
 }
 
-export async function deleteEvent(email: string, eventId: string): Promise<void> {
+export async function deleteEvent(
+  email: string,
+  eventId: string,
+  sendUpdates: SendUpdates = "none",
+): Promise<void> {
   const res = await gfetch(
     email,
-    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates}`,
     { method: "DELETE" },
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
