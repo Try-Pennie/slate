@@ -16,12 +16,11 @@ import type { Criteria } from "@/lib/db/types";
  * - Every code routes to its own debt team (digit 1). Backend digit 2/3
  *   requires the matching backend_service; 0 (None) and 1 (Both) leave it
  *   unconstrained.
- * - The legal filter applies only when the lead is Legal (LEG=1) AND no
- *   backend constraint narrows the pool (BES=0/1) - cal.com's "BOTH | LIMIT"
- *   routes. NOTE: cal.com used "Legal Eligible != N" (unset passed); Slate
- *   requires legal_eligible="Y" explicitly, so unmarked agents are EXCLUDED
- *   from legal leads until onboarding marks everyone Y or N - the safe
- *   default for a compliance filter.
+ * - The legal digit is LABEL-ONLY: it describes the lead and names the
+ *   bucket but never constrains agent selection. Cal.com's old
+ *   "Legal Eligible != N" member filter was retired on the agent side
+ *   (2026-06: the attribute was removed from the team as volume moved to
+ *   Achieve), so Slate ships without it.
  */
 
 export const DEBT_TIER: Record<string, { key: string; label: string }> = {
@@ -63,7 +62,6 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
 
   const criteria: Criteria = { debt_team: tier.key };
   if (backend.key) criteria.backend_service = backend.key;
-  if (leg === "1" && backend.key === null) criteria.legal_eligible = "Y";
   return { code, name, criteria };
 }
 
