@@ -1,0 +1,15 @@
+{
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa"
+  ],
+  "date": "2026-06-12",
+  "violations": [],
+  "passes": 19,
+  "incomplete": [
+    "color-contrast"
+  ],
+  "note": "sole incomplete = axe undeterminable color-contrast over scrim/iframe (4.2/4.V parity); dialog role/aria-modal/aria-label=Book a call/iframe title=Slate booking confirmed"
+}

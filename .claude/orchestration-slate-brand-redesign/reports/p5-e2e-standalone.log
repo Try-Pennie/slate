@@ -1,0 +1,19 @@
+availability: bucket 411 Ultra High | slots: 431 | first: "2026-06-12T16:50:00.000Z"
+POST /api/bookings → 200 {"id":"459ccb66-fe16-4134-bf0c-aa7ee5eb7cb2","startsAt":"2026-06-12T16:50:00+00:00","endsAt":"2026-06-12T17:10:00+00:00","manageUrl":"https://slate.trypennie.app/booking/manage/s3ZshI5oZIuQmOFc9UwXcMMF"}
+booking row: undefined
+file:///private/tmp/slate-e2e-standalone.mjs:48
+if (row.status !== "confirmed" || !row.gcal_event_id) { console.error("FAIL: booking row not confirmed/gcal"); process.exit(1); }
+        ^
+
+TypeError: Cannot read properties of undefined (reading 'status')
+    at file:///private/tmp/slate-e2e-standalone.mjs:48:9
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+
+Node.js v24.12.0
+booking row: {"id":"459ccb66-fe16-4134-bf0c-aa7ee5eb7cb2","status":"confirmed","gcal_event_id":"ni4ivcdohr5beh16t0a2jc8ecg","starts_at":"2026-06-12T16:50:00+00:00","ends_at":"2026-06-12T17:10:00+00:00","assigned_user_id":"a0a2d2c3-7741-41c2-8197-56035f66eb05","agent_email":"dwright@trypennie.com","attendee_name":"Slate E2E Test (will cancel)","attendee_email":"dwright@trypennie.com","manage_token":"s3ZshI5oZIuQmOFc9UwXcMMF"}
+busy_blocks (write-through): [{"id":"391ff821-73a0-42a5-9280-da86dde33fe0","user_id":"a0a2d2c3-7741-41c2-8197-56035f66eb05","source":"slate","starts_at":"2026-06-12T16:50:00+00:00","ends_at":"2026-06-12T17:10:00+00:00","gcal_event_id":null}]
+booking.created delivery: [{"id":"9f578dfc-861e-4aee-99dd-2efbc0854169","status":"success","attempts":1,"last_response":"200 {\"message\": \"ok\"}"}]
+POST cancel → 200 {"ok":true}
+after cancel: status = cancelled | busy_blocks left: 0
+booking.cancelled delivery: [{"id":"6b111972-896c-4288-8d21-e9dc40c13930","status":"success","attempts":1,"last_response":"200 {\"message\": \"ok\"}"}]
+STANDALONE E2E: PASS

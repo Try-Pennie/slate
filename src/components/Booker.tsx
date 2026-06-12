@@ -176,6 +176,13 @@ export default function Booker({
     if (confirmed) confirmedHeadingRef.current?.focus();
   }, [confirmed]);
 
+  // a11y: when a slot is picked the slot list unmounts and the attendee form
+  // mounts in its place; without this, keyboard focus drops to <body> and the
+  // user has to re-traverse the calendar to reach the form.
+  useEffect(() => {
+    if (selectedSlot) document.getElementById("booker-name")?.focus();
+  }, [selectedSlot]);
+
   const loadSlots = useCallback(async () => {
     const monthStart = month.startOf("month");
     const from = DateTime.max(monthStart, today).toUTC().toISO();

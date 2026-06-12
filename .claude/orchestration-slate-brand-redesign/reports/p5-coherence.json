@@ -1,0 +1,196 @@
+{
+ "book-light": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(52, 52, 52)"
+  },
+  "htmlTheme": "light",
+  "card": {
+   "bg": "rgb(255, 255, 255)",
+   "radius": "16px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0"
+  },
+  "slot": {
+   "radius": "10px",
+   "numeric": "tabular-nums",
+   "h": 44
+  },
+  "cta": null,
+  "input": {
+   "radius": "8px",
+   "font": "16px",
+   "bg": "rgb(255, 255, 255)"
+  },
+  "focusAfterSlot": "booker-name"
+ },
+ "book-dark": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(249, 246, 240)"
+  },
+  "htmlTheme": "light",
+  "card": {
+   "bg": "rgb(52, 55, 68)",
+   "radius": "16px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0"
+  }
+ },
+ "landing-light": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(52, 52, 52)"
+  },
+  "htmlTheme": "light",
+  "cta": {
+   "bg": "rgb(130, 208, 255)",
+   "color": "rgb(52, 52, 52)",
+   "radius": "16px",
+   "weight": "600",
+   "font": "ppMori, \"ppMori Fallback\", -ap",
+   "shadow": "none"
+  }
+ },
+ "landing-dark": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(29, 33, 47)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(249, 246, 240)"
+  },
+  "htmlTheme": "dark",
+  "cta": {
+   "bg": "rgb(130, 208, 255)",
+   "color": "rgb(52, 52, 52)",
+   "radius": "16px",
+   "weight": "600",
+   "font": "ppMori, \"ppMori Fallback\", -ap",
+   "shadow": "none"
+  }
+ },
+ "login-light": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(52, 52, 52)"
+  },
+  "htmlTheme": "light",
+  "cta": {
+   "bg": "rgb(130, 208, 255)",
+   "color": "rgb(52, 52, 52)",
+   "radius": "16px",
+   "weight": "600",
+   "font": "ppMori, \"ppMori Fallback\", -ap",
+   "shadow": "none"
+  },
+  "card": {
+   "bg": "rgb(255, 255, 255)",
+   "radius": "16px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0"
+  }
+ },
+ "login-dark": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(29, 33, 47)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(249, 246, 240)"
+  },
+  "htmlTheme": "dark",
+  "cta": {
+   "bg": "rgb(130, 208, 255)",
+   "color": "rgb(52, 52, 52)",
+   "radius": "16px",
+   "weight": "600",
+   "font": "ppMori, \"ppMori Fallback\", -ap",
+   "shadow": "none"
+  }
+ },
+ "manage-cancelled-light": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(52, 52, 52)"
+  },
+  "htmlTheme": "light",
+  "status": "rgb(196, 61, 61)"
+ },
+ "admin-light": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(52, 52, 52)"
+  },
+  "htmlTheme": "light",
+  "cta": {
+   "bg": "rgba(0, 0, 0, 0)",
+   "color": "rgb(52, 52, 52)",
+   "radius": "12px",
+   "weight": "600",
+   "font": "ppMori, \"ppMori Fallback\", -ap",
+   "shadow": "none"
+  },
+  "pill": {
+   "radius": "3.35544e+07px",
+   "h": 8,
+   "text": "",
+   "weight": "400"
+  },
+  "url": "http://localhost:3000/admin"
+ },
+ "admin-dark": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(29, 33, 47)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(249, 246, 240)"
+  },
+  "htmlTheme": "dark"
+ },
+ "me-light": {
+  "bodyFont": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+  "bodyBg": "rgb(249, 246, 240)",
+  "heading": {
+   "tag": "H1",
+   "font": "ppMori, \"ppMori Fallback\", -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+   "weight": "600",
+   "color": "rgb(52, 52, 52)"
+  },
+  "htmlTheme": "light",
+  "cta": {
+   "bg": "rgb(130, 208, 255)",
+   "color": "rgb(52, 52, 52)",
+   "radius": "12px",
+   "weight": "600",
+   "font": "ppMori, \"ppMori Fallback\", -ap",
+   "shadow": "none"
+  },
+  "url": "http://localhost:3000/me"
+ }
+}
