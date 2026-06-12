@@ -248,7 +248,7 @@
     iframe.style.cssText =
       "width:100%;border:0;min-height:560px;opacity:0" +
       (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
-    iframe.setAttribute("title", "Slate booking");
+    iframe.setAttribute("title", "Pennie booking");
     iframe.allow = "fullscreen";
     iframe.addEventListener("load", function () {
       if (loader.parentNode) loader.parentNode.removeChild(loader);
