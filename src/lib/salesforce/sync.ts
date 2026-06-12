@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
+import { resolveManagerSync } from "@/lib/salesforce/manager-sync";
 import type { Attributes, User } from "@/lib/db/types";
 
 // SF User custom booleans -> Slate attribute values.
@@ -21,6 +22,7 @@ interface SfUser {
   Email: string | null;
   Name: string | null;
   Profile?: { Name?: string } | null;
+  Manager?: { Email?: string | null; Name?: string | null } | null;
   UltraHighDebt__c?: boolean;
   VeryHighDebt__c?: boolean;
   HighDebt__c?: boolean;
@@ -83,6 +85,8 @@ export interface SyncResult {
   inserted: number;
   updated: number;
   deleted: number;
+  managersCreated: number;
+  managersLinked: number;
 }
 
 /**
@@ -95,7 +99,8 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
   const debtFilter = DEBT.map(([f]) => `${f}=true`).join(" OR ");
   const soql =
-    `SELECT Email, Name, Profile.Name, ${DEBT.map(([f]) => f).join(", ")}, ` +
+    `SELECT Email, Name, Profile.Name, Manager.Email, Manager.Name, ` +
+    `${DEBT.map(([f]) => f).join(", ")}, ` +
     `${BACKEND.map(([f]) => f).join(", ")} FROM User ` +
     `WHERE IsActive = true AND (${debtFilter}) AND Email != null`;
 
@@ -149,16 +154,79 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
 
   if (inserts.length) await db.from("users").insert(inserts);
 
-  // Delete synced-only agents (never logged in) no longer in the SF set.
+  // Manager edge (#76): resolve agent->manager from SF and create any manager
+  // who isn't already a Slate user so manager_id can reference them. Managers
+  // come in role='manager', bookable=false (they approve, they don't take
+  // bookings); if they later log in, provision keeps that role.
+  const plan = resolveManagerSync(
+    sfUsers.map((u) => ({
+      email: (u.Email ?? "").toLowerCase(),
+      managerEmail: u.Manager?.Email ?? null,
+      managerName: u.Manager?.Name ?? null,
+    })),
+    new Set(byEmail.keys()),
+  );
+  const managerInserts: Partial<User>[] = plan.managersToCreate.map((m) => ({
+    org_id: org.id,
+    email: m.email,
+    name: m.name,
+    role: "manager",
+    attributes: {},
+    bookable: false,
+  }));
+  if (managerInserts.length) await db.from("users").insert(managerInserts);
+
+  // Re-read so freshly inserted agents AND managers are resolvable by email.
+  const { data: afterInsert } = await db
+    .from("users")
+    .select("id, email, manager_id")
+    .eq("org_id", org.id);
+  const idByEmail = new Map(
+    (afterInsert ?? []).map((u) => {
+      const row = u as { id: string; email: string };
+      return [row.email.toLowerCase(), row.id];
+    }),
+  );
+  const managerIdByUser = new Map(
+    (afterInsert ?? []).map((u) => {
+      const row = u as { id: string; manager_id: string | null };
+      return [row.id, row.manager_id];
+    }),
+  );
+
+  // Apply links; only write when the value actually changes (and never null
+  // out an existing assignment just because SF didn't resolve - admins can
+  // override). Self-links are already filtered by resolveManagerSync.
+  let managersLinked = 0;
+  for (const link of plan.links) {
+    const agentId = idByEmail.get(link.agentEmail);
+    const managerId = idByEmail.get(link.managerEmail);
+    if (!agentId || !managerId || agentId === managerId) continue;
+    if (managerIdByUser.get(agentId) === managerId) continue;
+    await db.from("users").update({ manager_id: managerId }).eq("id", agentId);
+    managersLinked++;
+  }
+
+  // Delete synced-only users (never logged in) no longer referenced - keep
+  // both the SF agent set AND anyone who is a manager of record, so a manager
+  // without a debt team (thus absent from the agent query) is never reaped.
+  const keepEmails = new Set(sfEmails);
+  for (const link of plan.links) keepEmails.add(link.managerEmail);
   const { data: orphans } = await db
     .from("users")
     .select("id, email")
     .eq("org_id", org.id)
     .is("auth_user_id", null);
   const toDelete = (orphans ?? [])
-    .filter((u) => !sfEmails.has((u as { email: string }).email.toLowerCase()))
+    .filter((u) => !keepEmails.has((u as { email: string }).email.toLowerCase()))
     .map((u) => (u as { id: string }).id);
   if (toDelete.length) await db.from("users").delete().in("id", toDelete);
 
-  return { inserted: inserts.length, updated, deleted: toDelete.length };
+  return {
+    inserted: inserts.length,
+    updated,
+    deleted: toDelete.length,
+    managersCreated: plan.managersToCreate.length,
+    managersLinked,
+  };
 }
