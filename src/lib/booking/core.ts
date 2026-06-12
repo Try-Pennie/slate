@@ -88,3 +88,18 @@ export function busyBlockFor(
     booking_id: bookingId,
   };
 }
+
+/**
+ * The Google event description, shown on the lead's calendar invite: phone
+ * (when present) plus the self-serve manage link - the invite is the lead's
+ * only email, so the reschedule/cancel link must ride along (#64).
+ */
+export function eventDescription(
+  phone: string | null,
+  manageUrl: string,
+): string {
+  const lines = ["Booked via Slate."];
+  if (phone) lines[0] = `Booked via Slate. Phone: ${phone}`;
+  lines.push(`Reschedule or cancel: ${manageUrl}`);
+  return lines.join("\n");
+}
