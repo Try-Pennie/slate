@@ -9,6 +9,8 @@ export const CRON_ROUTES: Record<string, string> = {
   "* * * * *": "/api/cron/sync",
   // Booking completion sweep + webhook retry queue.
   "*/5 * * * *": "/api/cron/complete",
+  // Daily roster maintenance: Salesforce agent/team sync + default hours.
+  "0 6 * * *": "/api/cron/agents",
 };
 
 export function routeForCron(cron: string): string | null {
