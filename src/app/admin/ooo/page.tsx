@@ -4,6 +4,16 @@ import { canManageAgents } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { formatWhenLine, overlaps } from "@/lib/ooo/core";
 import {
+  approvalStats,
+  busiestMonth,
+  companyApprovalStats,
+  coverageAlerts,
+  managerBreakdown,
+  medianAdvanceNoticeDays,
+  peopleWithNoTimeOff,
+  type RosterPerson,
+} from "@/lib/ooo/analytics-core";
+import {
   approveOooAction,
   rejectOooAction,
   retryOooAction,
@@ -24,9 +34,25 @@ const STATUS_PILL: Record<OooStatus, PillVariant> = {
 
 const HISTORY_DAYS = 90;
 
-// Module scope so the Date.now() call doesn't trip react-hooks/purity in render.
+// Module scope so the Date.now() calls don't trip react-hooks/purity in render.
 function historySinceIso(): string {
   return new Date(Date.now() - HISTORY_DAYS * 24 * 3600 * 1000).toISOString();
+}
+
+/** Legacy-parity insights over a roster + its requests (see analytics-core). */
+function buildInsights(
+  roster: RosterPerson[],
+  requests: OooRequest[],
+  zone: string,
+) {
+  const now = Date.now();
+  return {
+    stats: approvalStats(requests),
+    alerts: coverageAlerts(roster, requests, now, zone),
+    noTimeOff: peopleWithNoTimeOff(roster, requests, now),
+    advanceNotice: medianAdvanceNoticeDays(requests),
+    busiest: busiestMonth(requests, zone),
+  };
 }
 
 export default async function OooQueuePage({
@@ -67,14 +93,46 @@ export default async function OooQueuePage({
     .limit(50);
   if (!isAdmin) historyQuery = historyQuery.eq("manager_id", me.id);
 
-  const [pendingRes, historyRes, usersRes] = await Promise.all([
+  const [pendingRes, historyRes, usersRes, orgRes, allRes] = await Promise.all([
     pendingQuery,
     historyQuery,
-    db.from("users").select("id, name, email").eq("org_id", me.org_id),
+    db
+      .from("users")
+      .select("id, name, email, manager_id")
+      .eq("org_id", me.org_id),
+    db
+      .from("organizations")
+      .select("default_timezone")
+      .eq("id", me.org_id)
+      .single(),
+    // Insights run over the full request history, not just the 90-day list.
+    db.from("ooo_requests").select("*").eq("org_id", me.org_id),
   ]);
   const pending = (pendingRes.data ?? []) as OooRequest[];
   const history = (historyRes.data ?? []) as OooRequest[];
-  const users = (usersRes.data ?? []) as Pick<User, "id" | "name" | "email">[];
+  const users = (usersRes.data ?? []) as Pick<
+    User,
+    "id" | "name" | "email" | "manager_id"
+  >[];
+  const orgZone =
+    (orgRes.data as { default_timezone: string } | null)?.default_timezone ??
+    "America/New_York";
+  const allRequests = (allRes.data ?? []) as OooRequest[];
+
+  // Manager view: their reports + their requests. Admin view: everyone who is
+  // in the OOO system (has a manager), org-wide requests, manager breakdown.
+  const toRoster = (
+    u: Pick<User, "id" | "name" | "email" | "manager_id">,
+  ): RosterPerson => ({ id: u.id, name: u.name ?? u.email });
+  const roster = isAdmin
+    ? users.filter((u) => u.manager_id !== null).map(toRoster)
+    : users.filter((u) => u.manager_id === me.id).map(toRoster);
+  const scopedRequests = isAdmin
+    ? allRequests
+    : allRequests.filter((r) => r.manager_id === me.id);
+  const insights = buildInsights(roster, scopedRequests, orgZone);
+  const company = isAdmin ? companyApprovalStats(allRequests) : null;
+  const breakdown = isAdmin ? managerBreakdown(allRequests) : null;
   const nameOf = (id: string | null) => {
     const u = users.find((x) => x.id === id);
     return u ? (u.name ?? u.email) : "unknown";
@@ -276,6 +334,124 @@ export default async function OooQueuePage({
               );
             })}
           </div>
+        </section>
+
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">
+            {isAdmin ? "Team insights (whole company)" : "Team insights"}
+          </h2>
+          <p className="mb-4 text-xs text-fg-muted">
+            {roster.length} {roster.length === 1 ? "person" : "people"} on the
+            roster. Numbers cover all requests on record.
+          </p>
+          <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            <div>
+              <dt className={labelCls}>Approval rate</dt>
+              <dd className="mt-1 tabular-nums">
+                {insights.stats.rate}%
+                <span className="text-xs text-fg-muted">
+                  {" "}
+                  of {insights.stats.total}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt className={labelCls}>Median advance notice</dt>
+              <dd className="mt-1 tabular-nums">
+                {insights.advanceNotice}{" "}
+                {insights.advanceNotice === 1 ? "day" : "days"}
+              </dd>
+            </div>
+            <div>
+              <dt className={labelCls}>Busiest month</dt>
+              <dd className="mt-1">{insights.busiest}</dd>
+            </div>
+            {company && (
+              <div>
+                <dt className={labelCls}>Median manager approval</dt>
+                <dd className="mt-1 tabular-nums">
+                  {company.rate}%
+                  <span className="text-xs text-fg-muted">
+                    {" "}
+                    across {company.managerCount}
+                  </span>
+                </dd>
+              </div>
+            )}
+          </dl>
+
+          {insights.alerts.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-xs font-semibold text-fg-muted">
+                Coverage alerts (next 30 days)
+              </h3>
+              <ul className="mt-2 space-y-2">
+                {insights.alerts.map((a) => (
+                  <li
+                    key={a.date}
+                    className="flex flex-wrap items-center gap-2 text-sm"
+                  >
+                    <Pill
+                      variant={
+                        a.severity === "high" ? "status-error" : "status-pending"
+                      }
+                    >
+                      {a.dateFormatted}
+                    </Pill>
+                    <span>
+                      {a.count} of {roster.length} out ({a.percent}%):{" "}
+                      {a.people.join(", ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {insights.noTimeOff.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-xs font-semibold text-fg-muted">
+                No time off in the last 90 days or next 30
+              </h3>
+              <p className="mt-2 text-sm text-fg-muted">
+                {insights.noTimeOff.map((p) => p.name).join(", ")}
+              </p>
+            </div>
+          )}
+
+          {breakdown && breakdown.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-xs font-semibold text-fg-muted">
+                By manager
+              </h3>
+              <table className="mt-2 w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-fg-muted">
+                    <th className="py-1 font-semibold">Manager</th>
+                    <th className="py-1 font-semibold">Approved</th>
+                    <th className="py-1 font-semibold">Rejected</th>
+                    <th className="py-1 font-semibold">Pending</th>
+                    <th className="py-1 font-semibold">Rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdown.map((row) => (
+                    <tr key={row.managerId} className="border-t border-border">
+                      <td className="py-1.5">
+                        {row.managerId === "unassigned"
+                          ? "No manager"
+                          : nameOf(row.managerId)}
+                      </td>
+                      <td className="py-1.5 tabular-nums">{row.approved}</td>
+                      <td className="py-1.5 tabular-nums">{row.rejected}</td>
+                      <td className="py-1.5 tabular-nums">{row.pending}</td>
+                      <td className="py-1.5 tabular-nums">{row.rate}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       </main>
     </>
