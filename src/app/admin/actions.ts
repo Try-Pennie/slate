@@ -151,6 +151,7 @@ export async function syncSalesforceNow(): Promise<void> {
       r.inserted ? `${r.inserted} added` : null,
       r.managersLinked ? `${r.managersLinked} managers linked` : null,
       r.managersCreated ? `${r.managersCreated} managers created` : null,
+      r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
       r.deleted ? `${r.deleted} removed` : null,
     ].filter(Boolean);
     summary =
