@@ -15,6 +15,7 @@ import {
   setOooCalendarId,
   setOrgDefaultHours,
   setUserRole,
+  startImpersonation,
   setWebhookEndpoint,
   setWorkingHours,
   syncSalesforceNow,
@@ -250,7 +251,7 @@ function BucketForm({
 export default async function AdminPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; bookable?: string }>;
+  searchParams: Promise<{ q?: string; bookable?: string; imp_error?: string }>;
 }) {
   const sp = await searchParams;
   const query = (sp.q ?? "").trim().toLowerCase();
@@ -374,6 +375,37 @@ export default async function AdminPage({
     <AppHeader email={me.email} role={me.role} active="admin" />
     <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
       <h1 className="text-xl font-semibold tracking-tight">Slate admin</h1>
+
+      {/* View as another user (admin only) */}
+      {isAdmin && (
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">View as another user</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          See the app exactly as someone else does. While viewing as them, what
+          you do happens as them, so be careful. A banner stays up the whole time
+          with a way back to yourself.
+        </p>
+        {sp.imp_error && (
+          <p role="alert" className="mb-3 text-sm text-error">
+            {sp.imp_error}
+          </p>
+        )}
+        <form action={startImpersonation} className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className={labelCls}>Their email</label>
+            <input
+              name="email"
+              type="email"
+              required
+              aria-label="Email of the user to view as"
+              placeholder="agent@trypennie.com"
+              className={`${inputCls} w-72`}
+            />
+          </div>
+          <button className={btnCls}>View as them</button>
+        </form>
+      </section>
+      )}
 
       {/* Org default working hours (admin only) */}
       {isAdmin && (

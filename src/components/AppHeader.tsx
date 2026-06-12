@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { agentSchedulingLive } from "@/lib/env";
+import { getImpersonation } from "@/lib/auth";
+import { stopImpersonation } from "@/app/admin/actions";
 
 /**
  * Shared branded header for the internal pages (/admin, /me).
@@ -35,7 +37,7 @@ function NavTab({
   );
 }
 
-export function AppHeader({
+export async function AppHeader({
   email,
   role,
   active,
@@ -49,7 +51,24 @@ export function AppHeader({
   const showTimeOff = role === "manager" || role === "admin";
   // OOO-only launch phase: agents see just the time off tool, no scheduling.
   const oooOnly = role === "agent" && !agentSchedulingLive();
+  // Persistent banner so an impersonating admin always knows + can get out.
+  const impersonation = await getImpersonation();
   return (
+    <>
+    {impersonation && (
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-pennie-navy px-4 py-2 text-center text-sm text-pennie-beige">
+        <span>
+          Viewing as{" "}
+          <strong>{impersonation.target.name ?? impersonation.target.email}</strong>{" "}
+          ({impersonation.target.role}). Actions you take happen as them.
+        </span>
+        <form action={stopImpersonation}>
+          <button className="pn-btn pn-btn--small pn-btn--primary">
+            Stop viewing as them
+          </button>
+        </form>
+      </div>
+    )}
     <header className="border-b border-border bg-bg">
       <div className="mx-auto flex min-h-16 max-w-4xl flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2">
         {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
@@ -101,5 +120,6 @@ export function AppHeader({
         </div>
       </div>
     </header>
+    </>
   );
 }
