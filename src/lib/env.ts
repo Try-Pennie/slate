@@ -79,6 +79,13 @@ export const mainOooCalendarId = (): string => requireEnv("MAIN_OOO_CAL_ID");
 export const oooCalendarActorEmail = (): string =>
   process.env.OOO_CALENDAR_ACTOR_EMAIL ?? mainOooCalendarId();
 
+// Phased launch: until agent scheduling self-service goes live, agents see
+// only the OOO tool (request time off) and nothing about availability/bookings.
+// Default off = OOO-only phase; set "true" to reveal the scheduling UI to
+// agents. Managers/admins always keep their full tools regardless.
+export const agentSchedulingLive = (): boolean =>
+  process.env.AGENT_SCHEDULING_LIVE === "true";
+
 // Cal.com dual-write during the cutover transition. Flag off = no-op.
 export const oooCalcomDualWrite = (): boolean =>
   process.env.OOO_CALCOM_DUAL_WRITE === "true";
