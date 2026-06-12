@@ -88,6 +88,97 @@ for (const kind of KINDS) {
   assert(!/#000000|black/i.test(html), `${kind}: no hard black`);
 }
 
+// --- rendering robustness (bulletproof email markup) ---
+// Font-family heuristic: Outlook resets any element missing font-family to
+// Times New Roman. All visible text in these templates lives in <p>, <h1>,
+// <h2>, <a>, and <span> elements, so every opening tag of those kinds must
+// carry an inline style that declares font-family. (We do not inspect <td>
+// directly: text-bearing tds delegate to their inner p/h1/a elements.)
+for (const kind of KINDS) {
+  const { html } = renderBookingEmail({ ...base, kind });
+
+  const tableTags = html.match(/<table\b[^>]*>/g) ?? [];
+  assert(
+    tableTags.length >= 3 &&
+      tableTags.every((t) => t.includes('role="presentation"')),
+    `${kind}: every layout <table> has role="presentation" (${tableTags.length} tables)`,
+  );
+
+  assert(
+    !/display\s*:\s*(flex|grid)/i.test(html) &&
+      !/float\s*:/i.test(html) &&
+      !/position\s*:/i.test(html),
+    `${kind}: no flex, grid, float, or position CSS`,
+  );
+
+  const textTags = html.match(/<(?:p|h1|h2|a|span)\b[^>]*>/g) ?? [];
+  assert(
+    textTags.length > 0 &&
+      textTags.every((t) => t.includes('style="') && t.includes("font-family")),
+    `${kind}: every text element declares font-family inline (${textTags.length} checked)`,
+  );
+
+  // CTA href appears as a styled button AND as visible plain-text link copy.
+  const hrefCount = html.split(`href="${base.manageUrl}"`).length - 1;
+  assert(
+    hrefCount >= 2,
+    `${kind}: manage URL is an href at least twice (button + text fallback)`,
+  );
+  assert(
+    html.includes(`>${base.manageUrl}</a>`),
+    `${kind}: manage URL also visible as plain link text`,
+  );
+
+  const preheader =
+    /<div style="display:none[^>]*mso-hide:all[^>]*>([^<]*)<\/div>/.exec(html);
+  assert(
+    preheader !== null && preheader[1].includes(EXPECTED_TIME),
+    `${kind}: hidden preheader present and carries the time summary`,
+  );
+
+  const divTags = html.match(/<div\b[^>]*>/g) ?? [];
+  assert(
+    divTags.every((t) => t.includes("display:none")),
+    `${kind}: no div-based layout (only the hidden preheader div)`,
+  );
+
+  assert(
+    html.includes('name="color-scheme" content="light"') &&
+      html.includes('name="supported-color-schemes" content="light"'),
+    `${kind}: light color-scheme metas`,
+  );
+
+  assert(
+    html.startsWith(
+      '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"',
+    ),
+    `${kind}: XHTML 1.0 Transitional doctype`,
+  );
+  assert(
+    html.includes("max-width:600px") && html.includes('width="600"'),
+    `${kind}: 600px container (fluid max-width + mso fixed width)`,
+  );
+  assert(html.includes("<!--[if mso]>"), `${kind}: mso conditional present`);
+
+  const bodyTag = /<body\b[^>]*>/.exec(html)?.[0] ?? "";
+  assert(bodyTag.includes('bgcolor="#F9F6F0"'), `${kind}: bgcolor on <body>`);
+  assert(
+    html.includes('bgcolor="#82D0FF"'),
+    `${kind}: bgcolor on the button cell`,
+  );
+  assert(html.includes('bgcolor="#FFFFFF"'), `${kind}: bgcolor on the card`);
+
+  assert(!/<img/i.test(html), `${kind}: imageless`);
+  assert(
+    !/@font-face|fonts\.googleapis|<link/i.test(html),
+    `${kind}: no webfont loading`,
+  );
+  assert(
+    html.includes("mso-line-height-rule:exactly"),
+    `${kind}: mso line-height rule applied`,
+  );
+}
+
 // --- subjects ---
 {
   assert(
