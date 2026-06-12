@@ -6,6 +6,7 @@ import {
   IMPERSONATE_COOKIE,
   resolveEffectiveUserId,
 } from "@/lib/auth/impersonation";
+import { devPreviewUser } from "@/lib/auth/dev-preview";
 import type { Role, User } from "@/lib/db/types";
 
 /**
@@ -14,6 +15,11 @@ import type { Role, User } from "@/lib/db/types";
  * stopping impersonation — never for "who am I acting as" (that's currentUser).
  */
 export async function realCurrentUser(): Promise<User | null> {
+  // Dev-only localhost preview (inert in production). Lets you act as any user
+  // without OAuth so the internal surfaces can be iterated on quickly.
+  const preview = await devPreviewUser();
+  if (preview) return preview;
+
   const supabase = await supabaseServer();
   const {
     data: { user },

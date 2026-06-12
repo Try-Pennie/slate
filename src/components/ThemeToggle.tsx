@@ -1,57 +1,76 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
-
-type Theme = "light" | "dark";
+import { useEffect, useState } from "react";
+import { setThemePreference } from "@/app/theme-actions";
+import type { ThemePreference } from "@/lib/db/types";
 
 /**
- * Client island that flips `data-theme` on <html> and persists the choice to
- * localStorage under `slate-theme` — the same key the no-flash <head> script in
- * layout.tsx reads before first paint. Mounted by internal pages (Phase 3).
- *
- * The current theme is read from <html data-theme> via useSyncExternalStore so
- * the value is SSR-safe (server snapshot is always "light", matching the SSR
- * default) and never touches `document` during render.
+ * Account-tied theme control. Three choices — System / Light / Dark — where
+ * System follows the device's `prefers-color-scheme` and updates live if the OS
+ * flips. The choice is applied instantly (data-theme + cookie) and persisted to
+ * the user's account via a server action; the no-flash script in layout.tsx
+ * reads the cookie on the next load. Initial value comes from the account.
  */
 
-function subscribe(onChange: () => void) {
-  const observer = new MutationObserver(onChange);
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme"],
-  });
-  return () => observer.disconnect();
+const OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+function resolve(pref: ThemePreference): "light" | "dark" {
+  if (pref === "system") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+  return pref;
 }
 
-function getSnapshot(): Theme {
-  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+function apply(pref: ThemePreference) {
+  document.documentElement.setAttribute("data-theme", resolve(pref));
 }
 
-function getServerSnapshot(): Theme {
-  return "light";
-}
+export function ThemeToggle({
+  preference = "system",
+}: {
+  preference?: ThemePreference;
+}) {
+  const [pref, setPref] = useState<ThemePreference>(preference);
 
-export function ThemeToggle() {
-  const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  // Reconcile to the account preference on mount (covers a new device where the
+  // cookie wasn't seeded yet) and, while on System, track live OS changes.
+  useEffect(() => {
+    apply(pref);
+    if (pref !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => apply("system");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [pref]);
 
-  function toggle() {
-    const next: Theme = theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    try {
-      localStorage.setItem("slate-theme", next);
-    } catch {
-      // localStorage may be unavailable (private mode); theme still flips for the session.
-    }
+  function choose(next: ThemePreference) {
+    setPref(next);
+    apply(next);
+    document.cookie = `slate-theme=${next}; path=/; max-age=31536000; samesite=lax`;
+    void setThemePreference(next).catch(() => {});
   }
 
   return (
-    <button
-      type="button"
-      onClick={toggle}
-      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-      className="pn-btn pn-btn--small pn-btn--additional min-h-11"
-    >
-      {theme === "dark" ? "Light" : "Dark"}
-    </button>
+    <label className="inline-flex items-center gap-1.5 text-sm text-fg-muted">
+      <span className="sr-only">Theme</span>
+      <select
+        aria-label="Theme"
+        value={pref}
+        onChange={(e) => choose(e.target.value as ThemePreference)}
+        className="min-h-11 rounded-md border border-border bg-surface px-2 py-1 text-sm text-fg"
+      >
+        {OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

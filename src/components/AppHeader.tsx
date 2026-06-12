@@ -3,6 +3,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { agentSchedulingLive } from "@/lib/env";
 import { getImpersonation } from "@/lib/auth";
 import { stopImpersonation } from "@/app/admin/actions";
+import type { ThemePreference } from "@/lib/db/types";
 
 /**
  * Shared branded header for the internal pages (/admin, /me).
@@ -41,10 +42,12 @@ export async function AppHeader({
   email,
   role,
   active,
+  themePreference = "system",
 }: {
   email: string;
   role?: string;
   active: "admin" | "me" | "ooo";
+  themePreference?: ThemePreference;
 }) {
   // The approval queue is a manager surface; agents manage their own time off
   // from /me, so they don't get the tab.
@@ -109,7 +112,7 @@ export async function AppHeader({
             {email}
             {role ? ` · ${role}` : ""}
           </span>
-          <ThemeToggle />
+          <ThemeToggle preference={themePreference} />
           {/* Google reconnect is for availability sync; hidden in the OOO-only
               phase since agents aren't scheduling yet. */}
           {!oooOnly && (

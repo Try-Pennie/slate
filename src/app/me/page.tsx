@@ -7,7 +7,7 @@ import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
 import { cancelMyOoo, modifyMyOoo, submitMyOoo } from "@/app/me/actions";
 import { formatWhenLine, normalizeTzLabel } from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
-import { labelCls, inputCls, btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
+import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -35,11 +35,87 @@ const STATUS_PILL: Record<OooStatus, PillVariant> = {
   cancelled: "outline",
 };
 
-// Module scope so the Date.now() call doesn't trip react-hooks/purity in render.
+// Module scope so the Date.now() calls don't trip react-hooks/purity in render.
 function isChangeable(r: OooRequest): boolean {
   return (
     (r.status === "pending" || r.status === "approved") &&
     Date.parse(r.ends_at) > Date.now()
+  );
+}
+
+function summarize(requests: OooRequest[]): {
+  pending: number;
+  upcomingApproved: number;
+} {
+  const now = Date.now();
+  return {
+    pending: requests.filter((r) => r.status === "pending").length,
+    upcomingApproved: requests.filter(
+      (r) => r.status === "approved" && Date.parse(r.ends_at) > now,
+    ).length,
+  };
+}
+
+/** Upcoming = still awaiting (pending) or approved and not yet over. */
+function isUpcoming(r: OooRequest): boolean {
+  if (r.status === "pending") return true;
+  if (r.status === "approved") return Date.parse(r.ends_at) > Date.now();
+  return false;
+}
+
+// Form fields get a visible border so they don't vanish on the white card
+// (inputCls relies on a faint shadow alone, which is white-on-white here).
+const fieldBaseCls =
+  "h-[44px] rounded-sm border border-border bg-surface px-3 text-fg placeholder:text-fg-muted";
+const tzInputCls = `${fieldBaseCls} text-sm`;
+// Graphite (not muted) labels — these are fields the agent has to read and fill.
+const formLabelCls = "block text-xs font-semibold text-fg";
+
+/** Flat divider list of requests (shared by the Upcoming and Past sections). */
+function RequestList({ items }: { items: OooRequest[] }) {
+  return (
+    <ul className="mt-1 divide-y divide-border">
+      {items.map((r) => (
+        <li
+          key={r.id}
+          className="flex flex-wrap items-center justify-between gap-3 py-4"
+        >
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold tabular-nums text-fg">
+                {formatWhenLine(
+                  r.starts_at,
+                  r.ends_at,
+                  r.display_tz_id,
+                  r.display_tz_label,
+                )}
+              </span>
+              <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
+            </div>
+            <p className="mt-1 text-sm text-fg-muted">{r.reason}</p>
+            {r.status === "rejected" && r.rejection_note && (
+              <p className="mt-1 text-sm text-error">{r.rejection_note}</p>
+            )}
+          </div>
+          {isChangeable(r) && (
+            <div className="flex items-center gap-4">
+              <a
+                href={`/me?edit=${r.id}#time-off`}
+                className="text-sm text-pennie-blue underline dark:text-pennie-sky"
+              >
+                Edit
+              </a>
+              <form action={cancelMyOoo}>
+                <input type="hidden" name="request_id" value={r.id} />
+                <button className="text-sm text-fg-muted underline hover:text-fg">
+                  Cancel
+                </button>
+              </form>
+            </div>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -52,9 +128,7 @@ export default async function MePage({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  // OOO-only launch phase: agents see just the time off tool, no scheduling
-  // (working hours, bookable status, Google reconnect). Managers/admins keep
-  // their availability self-service. Flip AGENT_SCHEDULING_LIVE=true to reveal.
+  // OOO-only launch phase: agents see just the time off tool, no scheduling.
   const oooOnly = me.role === "agent" && !agentSchedulingLive();
 
   const db = supabaseAdmin();
@@ -96,12 +170,16 @@ export default async function MePage({
           .maybeSingle()
       ).data as Pick<User, "name" | "email"> | null)
     : null;
+  const managerName = manager?.name ?? manager?.email ?? null;
 
   const editing =
     sp.edit !== undefined
       ? (oooRequests.find((r) => r.id === sp.edit && isChangeable(r)) ?? null)
       : null;
   const defaultTz = editing?.display_tz_id ?? sched?.timezone ?? "America/New_York";
+  const tzOptions = OOO_TIMEZONES.includes(defaultTz)
+    ? OOO_TIMEZONES
+    : [defaultTz, ...OOO_TIMEZONES];
   const editStart = editing
     ? DateTime.fromISO(editing.starts_at, { zone: editing.display_tz_id })
     : null;
@@ -109,299 +187,359 @@ export default async function MePage({
     ? DateTime.fromISO(editing.ends_at, { zone: editing.display_tz_id })
     : null;
 
+  const firstName = me.name?.trim().split(/\s+/)[0] ?? null;
+  const summary = summarize(oooRequests);
+  const hasRequests = oooRequests.length > 0;
+  // Soonest-first for upcoming; most-recent-first (query order) for past.
+  const upcoming = oooRequests
+    .filter(isUpcoming)
+    .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
+  const past = oooRequests.filter((r) => !isUpcoming(r));
+
   return (
     <>
-    <AppHeader email={me.email} role={me.role} active="me" />
-    <main className="mx-auto w-full min-w-0 max-w-xl space-y-6 p-8">
-      <div>
-        <h1 className="pn-h3">{oooOnly ? "Time off" : "Your availability"}</h1>
-        <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
-          <span>{me.name ?? me.email}</span>
-          {!oooOnly && (
-            <Pill variant={me.bookable ? "status-ok" : "outline"}>
-              {me.bookable ? "Bookable" : "Not bookable yet"}
-            </Pill>
-          )}
-        </p>
-      </div>
-
-      {!oooOnly && rules.length === 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
-          <span className="flex items-center gap-2.5">
-            <InfoIcon
-              width={20}
-              height={20}
-              className="shrink-0 text-pennie-blue dark:text-pennie-sky"
-            />
-            You have no working hours set, so you won&apos;t get bookings.
-          </span>
-          <form action={useMyDefaultHours}>
-            <button className={btnCls}>Use default hours</button>
-          </form>
-        </div>
-      )}
-
-      {!oooOnly && (
-      <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
-        <p className="mb-4 text-xs text-fg-muted">
-          Set your home timezone and weekly hours. Leads always see times in their
-          own timezone.
-        </p>
-        <form action={setMyWorkingHours} className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className={labelCls}>Your timezone</label>
-            <input
-              name="timezone"
-              aria-label="Your timezone"
-              defaultValue={sched?.timezone ?? "America/New_York"}
-              className={`${inputCls} w-48`}
-            />
-          </div>
-          <div className="flex gap-1">
-            {[
-              [1, "M"],
-              [2, "T"],
-              [3, "W"],
-              [4, "T"],
-              [5, "F"],
-              [6, "S"],
-              [7, "S"],
-            ].map(([d, lbl]) => (
-              <label
-                key={d}
-                className="flex flex-col items-center text-xs text-fg-muted"
-              >
-                {lbl}
-                <input
-                  type="checkbox"
-                  name={`day_${d}`}
-                  className="accent-pennie-sky"
-                  defaultChecked={
-                    rules.length ? days.has(Number(d)) : Number(d) <= 5
-                  }
-                />
-              </label>
-            ))}
-          </div>
-          <div>
-            <label className={labelCls}>Start</label>
-            <input
-              name="start"
-              type="time"
-              aria-label="Start"
-              defaultValue={minutesToTime(start)}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>End</label>
-            <input
-              name="end"
-              type="time"
-              aria-label="End"
-              defaultValue={minutesToTime(end)}
-              className={inputCls}
-            />
-          </div>
-          <button className={btnCls}>Save</button>
-        </form>
-        <form action={useMyDefaultHours} className="mt-3">
-          <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
-            Reset to company default hours
-          </button>
-        </form>
-      </section>
-      )}
-
-      <section id="time-off" className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Time off</h2>
-        <p className="mb-4 text-xs text-fg-muted">
-          {manager
-            ? `Requests go to ${manager.name ?? manager.email} for approval.${oooOnly ? "" : " Approved time off blocks your booking availability."}`
-            : "Ask an admin to set your manager before requesting time off."}
-        </p>
-
-        {sp.ooo && (
-          <div className="mb-4 flex items-center gap-2.5 rounded-md bg-[var(--pennie-green-wash)] p-4 text-sm text-fg">
-            <InfoIcon width={20} height={20} className="shrink-0" />
-            {sp.ooo}
-          </div>
-        )}
-        {sp.ooo_error && (
-          <div
-            role="alert"
-            className="mb-4 rounded-md border border-[var(--error)] p-4 text-sm text-error"
-          >
-            {sp.ooo_error}
-          </div>
-        )}
-
-        {editing && (
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-fg">
-            <Pill variant="status-pending">Editing</Pill>
-            <span>
-              Changing your request for{" "}
-              {formatWhenLine(
-                editing.starts_at,
-                editing.ends_at,
-                editing.display_tz_id,
-                editing.display_tz_label,
-              )}
-              {editing.status === "approved" &&
-                ". Saving sends it back to your manager for approval."}
-            </span>
-            <a href="/me#time-off" className="text-pennie-blue underline dark:text-pennie-sky">
-              Keep it as is
-            </a>
-          </div>
-        )}
-
-        <form
-          action={editing ? modifyMyOoo : submitMyOoo}
-          className="flex flex-wrap items-end gap-3"
-        >
-          {editing && <input type="hidden" name="request_id" value={editing.id} />}
-          <div>
-            <label className={labelCls}>First day</label>
-            <input
-              name="start_date"
-              type="date"
-              required
-              aria-label="First day"
-              defaultValue={editStart?.toISODate() ?? undefined}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>From</label>
-            <input
-              name="start_time"
-              type="time"
-              aria-label="From"
-              defaultValue={editStart?.toFormat("HH:mm") ?? "09:00"}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Last day</label>
-            <input
-              name="end_date"
-              type="date"
-              required
-              aria-label="Last day"
-              defaultValue={editEnd?.toISODate() ?? undefined}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Until</label>
-            <input
-              name="end_time"
-              type="time"
-              aria-label="Until"
-              defaultValue={editEnd?.toFormat("HH:mm") ?? "17:00"}
-              className={inputCls}
-            />
-          </div>
-          <label className="flex min-h-11 items-center gap-2 text-sm text-fg">
-            <input type="checkbox" name="all_day" className="accent-pennie-sky" />
-            All day
-          </label>
-          <div>
-            <label className={labelCls}>Timezone</label>
-            <select
-              name="timezone"
-              aria-label="Timezone"
-              defaultValue={defaultTz}
-              className={`${inputCls} w-48`}
-            >
-              {(OOO_TIMEZONES.includes(defaultTz)
-                ? OOO_TIMEZONES
-                : [defaultTz, ...OOO_TIMEZONES]
-              ).map((tz) => (
-                <option key={tz} value={tz}>
-                  {tz.split("/")[1]?.replace(/_/g, " ") ?? tz} ({normalizeTzLabel(tz)})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="w-full">
-            <label className={labelCls}>Reason</label>
-            <input
-              name="reason"
-              required
-              aria-label="Reason"
-              placeholder="Vacation, appointment, family"
-              defaultValue={editing?.reason ?? ""}
-              className={inputCls}
-            />
-          </div>
-          <div className="w-full">
-            <label className={labelCls}>Notes for your manager (optional)</label>
-            <input
-              name="notes"
-              aria-label="Notes for your manager (optional)"
-              defaultValue={editing?.notes ?? ""}
-              className={inputCls}
-            />
-          </div>
-          <button className={btnCls}>
-            {editing ? "Send my changes" : "Request time off"}
-          </button>
-        </form>
-
-        {oooRequests.length > 0 && (
-          <div className="mt-6 space-y-4">
-            <h3 className="text-xs font-semibold text-fg-muted">Your requests</h3>
-            {oooRequests.map((r) => (
-              <div
-                key={r.id}
-                className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3"
-              >
-                <div className="min-w-0 text-sm">
-                  <div className="flex flex-wrap items-center gap-2">
+      <AppHeader
+        email={me.email}
+        role={me.role}
+        active="me"
+        themePreference={me.theme_preference}
+      />
+      <main className="mx-auto w-full min-w-0 max-w-2xl space-y-10 px-6 py-10 sm:px-8">
+        {oooOnly ? (
+          /* Compact navy header: greeting + at-a-glance status (earns its weight). */
+          <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
+            <h1 className="pn-h3 text-pennie-beige">
+              {firstName ? `Hi, ${firstName}.` : "Hi there."}
+            </h1>
+            <p className="mt-2 text-pennie-beige/75">
+              {!hasRequests ? (
+                managerName
+                  ? `Need a day off? Request it below and ${managerName} takes it from there.`
+                  : "Need a day off? An admin needs to set your manager before you can request."
+              ) : summary.pending === 0 && summary.upcomingApproved === 0 ? (
+                "Nothing pending. Need another day off? Request it below."
+              ) : (
+                <>
+                  {summary.pending > 0 && (
                     <span>
-                      {formatWhenLine(
-                        r.starts_at,
-                        r.ends_at,
-                        r.display_tz_id,
-                        r.display_tz_label,
-                      )}
+                      <span className="font-semibold tabular-nums text-pennie-beige">
+                        {summary.pending}
+                      </span>{" "}
+                      waiting on {managerName ?? "your manager"}
                     </span>
-                    <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
-                  </div>
-                  <p className="mt-0.5 text-xs text-fg-muted">{r.reason}</p>
-                  {r.status === "rejected" && r.rejection_note && (
-                    <p className="mt-0.5 text-xs text-error">{r.rejection_note}</p>
                   )}
-                </div>
-                {isChangeable(r) && (
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={`/me?edit=${r.id}#time-off`}
-                      className={btnSecondaryCls}
-                    >
-                      Edit request
-                    </a>
-                    <form action={cancelMyOoo}>
-                      <input type="hidden" name="request_id" value={r.id} />
-                      <button className={btnSecondaryCls}>Cancel request</button>
-                    </form>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+                  {summary.pending > 0 && summary.upcomingApproved > 0 && (
+                    <span className="px-2 text-pennie-beige/40">·</span>
+                  )}
+                  {summary.upcomingApproved > 0 && (
+                    <span>
+                      <span className="font-semibold tabular-nums text-pennie-beige">
+                        {summary.upcomingApproved}
+                      </span>{" "}
+                      approved and coming up
+                    </span>
+                  )}
+                </>
+              )}
+            </p>
+          </section>
+        ) : (
+          <>
+            <div>
+              <h1 className="pn-h3">Your availability</h1>
+              <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+                <span>{me.name ?? me.email}</span>
+                <Pill variant={me.bookable ? "status-ok" : "outline"}>
+                  {me.bookable ? "Bookable" : "Not bookable yet"}
+                </Pill>
+              </p>
+            </div>
 
-      {!oooOnly && (
-        <p className="text-sm text-fg-muted">
-          Your manager controls whether you&apos;re bookable and which teams you&apos;re on.
-        </p>
-      )}
-    </main>
+            {rules.length === 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
+                <span className="flex items-center gap-2.5">
+                  <InfoIcon
+                    width={20}
+                    height={20}
+                    className="shrink-0 text-pennie-blue dark:text-pennie-sky"
+                  />
+                  You have no working hours set, so you won&apos;t get bookings.
+                </span>
+                <form action={useMyDefaultHours}>
+                  <button className={btnCls}>Use default hours</button>
+                </form>
+              </div>
+            )}
+
+            <section className={cardCls}>
+              <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
+              <p className="mb-4 text-xs text-fg-muted">
+                Set your home timezone and weekly hours. Leads always see times in
+                their own timezone.
+              </p>
+              <form
+                action={setMyWorkingHours}
+                className="flex flex-wrap items-end gap-3"
+              >
+                <div>
+                  <label className={labelCls}>Your timezone</label>
+                  <input
+                    name="timezone"
+                    aria-label="Your timezone"
+                    defaultValue={sched?.timezone ?? "America/New_York"}
+                    className={`${inputCls} w-48`}
+                  />
+                </div>
+                <div className="flex gap-1">
+                  {[
+                    [1, "M"],
+                    [2, "T"],
+                    [3, "W"],
+                    [4, "T"],
+                    [5, "F"],
+                    [6, "S"],
+                    [7, "S"],
+                  ].map(([d, lbl]) => (
+                    <label
+                      key={d}
+                      className="flex flex-col items-center text-xs text-fg-muted"
+                    >
+                      {lbl}
+                      <input
+                        type="checkbox"
+                        name={`day_${d}`}
+                        className="accent-pennie-sky"
+                        defaultChecked={
+                          rules.length ? days.has(Number(d)) : Number(d) <= 5
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div>
+                  <label className={labelCls}>Start</label>
+                  <input
+                    name="start"
+                    type="time"
+                    aria-label="Start"
+                    defaultValue={minutesToTime(start)}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>End</label>
+                  <input
+                    name="end"
+                    type="time"
+                    aria-label="End"
+                    defaultValue={minutesToTime(end)}
+                    className={inputCls}
+                  />
+                </div>
+                <button className={btnCls}>Save</button>
+              </form>
+              <form action={useMyDefaultHours} className="mt-3">
+                <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
+                  Reset to company default hours
+                </button>
+              </form>
+            </section>
+          </>
+        )}
+
+        {/* Time off (shared by agents and managers viewing their own page) */}
+        <section id="time-off" className="scroll-mt-8 space-y-6">
+          <header>
+            <h2 className="pn-h3">
+              {editing ? "Change your request" : "Request time away"}
+            </h2>
+            <p className="mt-1.5 text-sm text-fg-muted">
+              {managerName
+                ? `${managerName} signs off on these.`
+                : "Ask an admin to set your manager before you can request."}
+            </p>
+          </header>
+
+          {sp.ooo && (
+            <div className="rounded-md bg-pennie-sky-soft px-5 py-4 dark:bg-accent/15">
+              <p className="font-semibold text-fg">Nice, that&apos;s done.</p>
+              <p className="mt-0.5 text-sm text-fg">{sp.ooo}</p>
+            </div>
+          )}
+          {sp.ooo_error && (
+            <div
+              role="alert"
+              className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+            >
+              {sp.ooo_error}
+            </div>
+          )}
+
+          {editing && (
+            <p className="flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+              <span>
+                Changing{" "}
+                <span className="font-semibold tabular-nums text-fg">
+                  {formatWhenLine(
+                    editing.starts_at,
+                    editing.ends_at,
+                    editing.display_tz_id,
+                    editing.display_tz_label,
+                  )}
+                </span>
+                {editing.status === "approved" &&
+                  ". Saving sends it back for approval."}
+              </span>
+            </p>
+          )}
+
+          <form
+            action={editing ? modifyMyOoo : submitMyOoo}
+            className="rounded-md bg-surface p-6 shadow-xs"
+          >
+            {editing && <input type="hidden" name="request_id" value={editing.id} />}
+
+            {/* Reads as one phrase: From [date] [time] to [date] [time].
+                Each half is a nowrap unit so it wraps as a clean pair. */}
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-12 shrink-0 text-sm font-semibold text-fg">
+                  From
+                </span>
+                <input
+                  name="start_date"
+                  type="date"
+                  required
+                  aria-label="First day"
+                  defaultValue={editStart?.toISODate() ?? undefined}
+                  className={`${fieldBaseCls} w-44`}
+                />
+                <input
+                  name="start_time"
+                  type="time"
+                  aria-label="Start time"
+                  defaultValue={editStart?.toFormat("HH:mm") ?? "09:00"}
+                  className={`${fieldBaseCls} w-40`}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-12 shrink-0 text-sm font-semibold text-fg">
+                  to
+                </span>
+                <input
+                  name="end_date"
+                  type="date"
+                  required
+                  aria-label="Last day"
+                  defaultValue={editEnd?.toISODate() ?? undefined}
+                  className={`${fieldBaseCls} w-44`}
+                />
+                <input
+                  name="end_time"
+                  type="time"
+                  aria-label="End time"
+                  defaultValue={editEnd?.toFormat("HH:mm") ?? "17:00"}
+                  className={`${fieldBaseCls} w-40`}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+              <label className="flex min-h-11 items-center gap-2 text-sm text-fg">
+                <input type="checkbox" name="all_day" className="accent-pennie-sky" />
+                All day
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="pn-eyebrow text-fg-muted">Timezone</span>
+                <select
+                  name="timezone"
+                  aria-label="Timezone"
+                  defaultValue={defaultTz}
+                  className={tzInputCls}
+                >
+                  {tzOptions.map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz.split("/")[1]?.replace(/_/g, " ") ?? tz} (
+                      {normalizeTzLabel(tz)})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4">
+              <label className={formLabelCls}>Reason</label>
+              <input
+                name="reason"
+                required
+                aria-label="Reason"
+                placeholder="Vacation, appointment, family"
+                defaultValue={editing?.reason ?? ""}
+                className={`${fieldBaseCls} mt-1 w-full`}
+              />
+            </div>
+            <div className="mt-4">
+              <label className={formLabelCls}>
+                Anything your manager should know? (optional)
+              </label>
+              <input
+                name="notes"
+                aria-label="Notes for your manager (optional)"
+                defaultValue={editing?.notes ?? ""}
+                className={`${fieldBaseCls} mt-1 w-full`}
+              />
+            </div>
+
+            <div className="mt-6 flex flex-wrap items-center gap-4">
+              <button className="pn-btn pn-btn--big pn-btn--primary">
+                {editing ? "Send my changes" : "Request time off"}
+              </button>
+              {editing && (
+                <a
+                  href="/me#time-off"
+                  className="text-sm text-pennie-blue underline dark:text-pennie-sky"
+                >
+                  Keep it as is
+                </a>
+              )}
+            </div>
+          </form>
+
+          <div className="space-y-8">
+            <div>
+              <p className="pn-eyebrow text-fg-muted">
+                Upcoming
+                {upcoming.length > 0 && (
+                  <span className="tabular-nums"> ({upcoming.length})</span>
+                )}
+              </p>
+              {upcoming.length === 0 ? (
+                <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
+                  No upcoming time off. Use the form above to request a day.
+                </p>
+              ) : (
+                <RequestList items={upcoming} />
+              )}
+            </div>
+
+            {past.length > 0 && (
+              <div>
+                <p className="pn-eyebrow text-fg-muted">
+                  Past <span className="tabular-nums">({past.length})</span>
+                </p>
+                <RequestList items={past} />
+              </div>
+            )}
+          </div>
+        </section>
+
+        {!oooOnly && (
+          <p className="text-sm text-fg-muted">
+            Your manager controls whether you&apos;re bookable and which teams
+            you&apos;re on.
+          </p>
+        )}
+      </main>
     </>
   );
 }

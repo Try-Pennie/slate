@@ -372,7 +372,12 @@ export default async function AdminPage({
 
   return (
     <>
-    <AppHeader email={me.email} role={me.role} active="admin" />
+    <AppHeader
+      email={me.email}
+      role={me.role}
+      active="admin"
+      themePreference={me.theme_preference}
+    />
     <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
       <h1 className="text-xl font-semibold tracking-tight">Slate admin</h1>
 
