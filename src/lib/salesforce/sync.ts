@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
+import { mergeSfAttributes } from "@/lib/salesforce/attributes";
 import type { Attributes, User } from "@/lib/db/types";
 
 // SF User custom booleans -> Slate attribute values.
@@ -102,15 +103,16 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const db = supabaseAdmin();
   const org = await ensureDefaultOrg();
 
-  // Existing Slate agents by email.
+  // Existing Slate agents by email (attributes too: Slate-managed keys like
+  // legal_eligible must survive the sync - see mergeSfAttributes).
   const { data: existing } = await db
     .from("users")
-    .select("id, email")
+    .select("id, email, attributes")
     .eq("org_id", org.id);
   const byEmail = new Map(
     (existing ?? []).map((u) => {
-      const row = u as { id: string; email: string };
-      return [row.email.toLowerCase(), row.id];
+      const row = u as { id: string; email: string; attributes: Attributes };
+      return [row.email.toLowerCase(), row];
     }),
   );
 
@@ -123,12 +125,15 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     if (!email) continue;
     sfEmails.add(email);
     const attributes = toAttributes(u);
-    const id = byEmail.get(email);
-    if (id) {
+    const current = byEmail.get(email);
+    if (current) {
       await db
         .from("users")
-        .update({ name: u.Name, attributes })
-        .eq("id", id);
+        .update({
+          name: u.Name,
+          attributes: mergeSfAttributes(current.attributes, attributes),
+        })
+        .eq("id", current.id);
       updated++;
     } else {
       inserts.push({
