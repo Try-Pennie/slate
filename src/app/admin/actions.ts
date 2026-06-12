@@ -1,9 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { currentUser, requireAdmin, requireManager } from "@/lib/auth";
+import {
+  currentUser,
+  realCurrentUser,
+  requireAdmin,
+  requireManager,
+} from "@/lib/auth";
+import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
 import { canManageUser, canChangeRole, isRole } from "@/lib/auth/roles";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
@@ -356,6 +364,65 @@ export async function setBookable(form: FormData): Promise<void> {
     .update({ bookable: form.get("bookable") === "true" })
     .eq("id", userId);
   revalidatePath("/admin");
+}
+
+/**
+ * Admin-only: start viewing the app as another user. The cookie only takes
+ * effect for a real admin session (resolveEffectiveUserId gates it), so it
+ * can't be used to escalate. Lands on /me — the impersonated user's home.
+ */
+export async function startImpersonation(form: FormData): Promise<void> {
+  const admin = await realCurrentUser();
+  if (!admin || admin.role !== "admin") throw new Error("Not authorized");
+
+  const email = String(form.get("email") ?? "").trim().toLowerCase();
+  if (!email) redirect(`/admin?imp_error=${encodeURIComponent("Enter an email.")}`);
+
+  const { data } = await supabaseAdmin()
+    .from("users")
+    .select("id")
+    .eq("org_id", admin.org_id)
+    .eq("email", email)
+    .maybeSingle();
+  const target = data as { id: string } | null;
+  if (!target) {
+    redirect(`/admin?imp_error=${encodeURIComponent(`No user with email ${email}.`)}`);
+  }
+  if (target.id === admin.id) {
+    redirect(`/admin?imp_error=${encodeURIComponent("That is already you.")}`);
+  }
+
+  const store = await cookies();
+  store.set(IMPERSONATE_COOKIE, target.id, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+  });
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "impersonate.start",
+    targetId: target.id,
+  });
+  redirect("/me");
+}
+
+/** Stop impersonating and revert to your own session. Safe for anyone to call. */
+export async function stopImpersonation(): Promise<void> {
+  const real = await realCurrentUser();
+  const store = await cookies();
+  const targetId = store.get(IMPERSONATE_COOKIE)?.value;
+  store.delete(IMPERSONATE_COOKIE);
+  if (real && targetId) {
+    await recordAudit({
+      orgId: real.org_id,
+      actorId: real.id,
+      action: "impersonate.stop",
+      targetId,
+    });
+  }
+  redirect("/admin");
 }
 
 /** Assigns (or clears) an agent's manager, the routing edge for OOO requests. */
