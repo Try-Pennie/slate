@@ -57,13 +57,13 @@ export function ThemeToggle({
   }
 
   return (
-    <label className="inline-flex items-center gap-1.5 text-sm text-fg-muted">
+    <label className="inline-flex items-center">
       <span className="sr-only">Theme</span>
       <select
         aria-label="Theme"
         value={pref}
         onChange={(e) => choose(e.target.value as ThemePreference)}
-        className="min-h-11 rounded-md border border-border bg-surface px-2 py-1 text-sm text-fg"
+        className="min-h-11 cursor-pointer rounded-md border border-transparent bg-transparent px-1.5 text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg focus-visible:border-border"
       >
         {OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>

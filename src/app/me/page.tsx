@@ -203,6 +203,9 @@ export default async function MePage({
         role={me.role}
         active="me"
         themePreference={me.theme_preference}
+        userId={me.id}
+        bookable={me.bookable}
+        avatarUrl={me.avatar_url}
       />
       <main className="mx-auto w-full min-w-0 max-w-2xl space-y-10 px-6 py-10 sm:px-8">
         {oooOnly ? (
@@ -290,31 +293,33 @@ export default async function MePage({
                     className={`${inputCls} w-48`}
                   />
                 </div>
-                <div className="flex gap-1">
-                  {[
-                    [1, "M"],
-                    [2, "T"],
-                    [3, "W"],
-                    [4, "T"],
-                    [5, "F"],
-                    [6, "S"],
-                    [7, "S"],
-                  ].map(([d, lbl]) => (
-                    <label
-                      key={d}
-                      className="flex flex-col items-center text-xs text-fg-muted"
-                    >
-                      {lbl}
-                      <input
-                        type="checkbox"
-                        name={`day_${d}`}
-                        className="accent-pennie-sky"
-                        defaultChecked={
-                          rules.length ? days.has(Number(d)) : Number(d) <= 5
-                        }
-                      />
-                    </label>
-                  ))}
+                <div>
+                  <span className={labelCls}>Days</span>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        [1, "M"],
+                        [2, "T"],
+                        [3, "W"],
+                        [4, "T"],
+                        [5, "F"],
+                        [6, "S"],
+                        [7, "S"],
+                      ] as [number, string][]
+                    ).map(([d, lbl], i) => (
+                      <label key={i} className="cursor-pointer">
+                        <input
+                          type="checkbox"
+                          name={`day_${d}`}
+                          defaultChecked={rules.length ? days.has(d) : d <= 5}
+                          className="peer sr-only"
+                        />
+                        <span className="flex h-11 w-11 items-center justify-center rounded-full border border-border text-sm font-semibold text-fg-muted transition-colors peer-checked:border-transparent peer-checked:bg-pennie-sky peer-checked:text-pennie-graphite peer-hover:border-fg/40 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--focus-ring)]">
+                          {lbl}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <label className={labelCls}>Start</label>

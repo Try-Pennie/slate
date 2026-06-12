@@ -1,9 +1,18 @@
 import Link from "next/link";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { AccountMenu } from "@/components/AccountMenu";
 import { agentSchedulingLive } from "@/lib/env";
 import { getImpersonation } from "@/lib/auth";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { stopImpersonation } from "@/app/admin/actions";
 import type { ThemePreference } from "@/lib/db/types";
+
+// Module scope so the Date.now() call doesn't trip react-hooks/purity in render.
+function hasLiveWatch(rows: { watch_expiration: string | null }[]): boolean {
+  const now = Date.now();
+  return rows.some(
+    (r) => r.watch_expiration && Date.parse(r.watch_expiration) > now,
+  );
+}
 
 /**
  * Shared branded header for the internal pages (/admin, /me).
@@ -43,11 +52,17 @@ export async function AppHeader({
   role,
   active,
   themePreference = "system",
+  userId,
+  bookable,
+  avatarUrl,
 }: {
   email: string;
   role?: string;
   active: "admin" | "me" | "ooo";
   themePreference?: ThemePreference;
+  userId?: string;
+  bookable?: boolean;
+  avatarUrl?: string | null;
 }) {
   // The approval queue is a manager surface; agents manage their own time off
   // from /me, so they don't get the tab.
@@ -56,6 +71,22 @@ export async function AppHeader({
   const oooOnly = role === "agent" && !agentSchedulingLive();
   // Persistent banner so an impersonating admin always knows + can get out.
   const impersonation = await getImpersonation();
+
+  // Google Calendar sync status. DWD reaches calendars by email, so the real
+  // per-user "actively syncing" signal is a live push-watch channel. null =
+  // not checked (OOO-only agents don't sync). A bookable user with no live
+  // watch is the urgent case: their availability can drift and double-book.
+  let calendarConnected: boolean | null = null;
+  if (userId && !oooOnly) {
+    const { data } = await supabaseAdmin()
+      .from("agent_calendars")
+      .select("watch_expiration")
+      .eq("user_id", userId);
+    calendarConnected = hasLiveWatch(
+      (data ?? []) as { watch_expiration: string | null }[],
+    );
+  }
+  const calendarUrgent = bookable === true && calendarConnected === false;
   return (
     <>
     {impersonation && (
@@ -70,6 +101,20 @@ export async function AppHeader({
             Stop viewing as them
           </button>
         </form>
+      </div>
+    )}
+    {calendarUrgent && (
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-[var(--error)] px-4 py-2 text-center text-sm text-white">
+        <span>
+          Your Google Calendar isn&apos;t syncing, so your availability can be
+          wrong and you may get double-booked.
+        </span>
+        <a
+          href="/login"
+          className="rounded-md bg-white px-3 py-1.5 font-semibold text-error"
+        >
+          Connect Google
+        </a>
       </div>
     )}
     <header className="border-b border-border bg-bg">
@@ -107,19 +152,20 @@ export async function AppHeader({
             </>
           )}
         </nav>
-        <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
-          <span className="min-w-0 truncate text-sm text-fg-muted">
-            {email}
-            {role ? ` · ${role}` : ""}
-          </span>
-          <ThemeToggle preference={themePreference} />
-          {/* Google reconnect is for availability sync; hidden in the OOO-only
-              phase since agents aren't scheduling yet. */}
-          {!oooOnly && (
-            <a href="/login" className="pn-btn pn-btn--small pn-btn--additional min-h-11">
-              Connect / reconnect Google
-            </a>
-          )}
+        <div className="ml-auto flex items-center">
+          <AccountMenu
+            email={email}
+            role={role}
+            avatarUrl={avatarUrl}
+            themePreference={themePreference}
+            calendar={
+              oooOnly || calendarConnected === null
+                ? "na"
+                : calendarConnected
+                  ? "connected"
+                  : "disconnected"
+            }
+          />
         </div>
       </div>
     </header>
