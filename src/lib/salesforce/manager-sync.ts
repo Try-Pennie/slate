@@ -33,6 +33,34 @@ const norm = (s: string | null | undefined): string =>
   (s ?? "").trim().toLowerCase();
 
 /**
+ * Resolves an informal "First Last" name (e.g. the Agent_Manager picklist value
+ * "Mike Dugan") to an email by matching candidates on last name + first initial.
+ * Returns the email ONLY when exactly one active user matches, so it never links
+ * to the wrong person; ambiguous or no match returns null.
+ */
+export function matchByInitialLastName(
+  name: string,
+  candidates: { firstName: string; lastName: string; email: string }[],
+): string | null {
+  const toks = name.trim().split(/\s+/);
+  if (toks.length < 2 || !toks[0]) return null;
+  const initial = toks[0][0].toLowerCase();
+  const last = toks[toks.length - 1].toLowerCase();
+  const emails = [
+    ...new Set(
+      candidates
+        .filter(
+          (c) =>
+            c.firstName[0]?.toLowerCase() === initial &&
+            c.lastName.trim().toLowerCase() === last,
+        )
+        .map((c) => c.email.trim().toLowerCase()),
+    ),
+  ];
+  return emails.length === 1 ? emails[0] : null;
+}
+
+/**
  * @param agents     SF agent records (emails already lowercased by the caller).
  * @param existingEmails Lowercased emails already present in Slate `users`.
  *

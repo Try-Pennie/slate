@@ -2,7 +2,10 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
-import { resolveManagerSync } from "@/lib/salesforce/manager-sync";
+import {
+  matchByInitialLastName,
+  resolveManagerSync,
+} from "@/lib/salesforce/manager-sync";
 import type { Attributes, User } from "@/lib/db/types";
 
 // SF User custom booleans -> Slate attribute values.
@@ -21,8 +24,12 @@ const BACKEND: [keyof SfUser, string][] = [
 interface SfUser {
   Email: string | null;
   Name: string | null;
+  FirstName?: string | null;
+  LastName?: string | null;
   Profile?: { Name?: string } | null;
-  Manager?: { Email?: string | null; Name?: string | null } | null;
+  /** Custom picklist holding the agent's OOO approver by NAME (not the standard
+   *  Manager lookup, which is a different person at Pennie). */
+  Agent_Manager__c?: string | null;
   UltraHighDebt__c?: boolean;
   VeryHighDebt__c?: boolean;
   HighDebt__c?: boolean;
@@ -99,7 +106,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
   const debtFilter = DEBT.map(([f]) => `${f}=true`).join(" OR ");
   const soql =
-    `SELECT Email, Name, Profile.Name, Manager.Email, Manager.Name, ` +
+    `SELECT Email, Name, Profile.Name, Agent_Manager__c, ` +
     `${DEBT.map(([f]) => f).join(", ")}, ` +
     `${BACKEND.map(([f]) => f).join(", ")} FROM User ` +
     `WHERE IsActive = true AND (${debtFilter}) AND Email != null`;
@@ -154,16 +161,79 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
 
   if (inserts.length) await db.from("users").insert(inserts);
 
-  // Manager edge (#76): resolve agent->manager from SF and create any manager
-  // who isn't already a Slate user so manager_id can reference them. Managers
-  // come in role='manager', bookable=false (they approve, they don't take
-  // bookings); if they later log in, provision keeps that role.
+  // Manager edge (#76): the approver lives in the custom Agent_Manager__c
+  // picklist as a NAME ("Jason Campbell"). Resolve every distinct name to an
+  // email in ONE SF query (a per-sync map, not a lookup per agent).
+  const managerNames = [
+    ...new Set(
+      sfUsers.map((u) => (u.Agent_Manager__c ?? "").trim()).filter(Boolean),
+    ),
+  ];
+  const nameToEmail = new Map<string, string>();
+  if (managerNames.length) {
+    const inList = managerNames
+      .map((n) => `'${n.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
+      .join(",");
+    const mgrRecords = await queryAll(
+      instanceUrl,
+      token,
+      `SELECT Name, Email FROM User WHERE Name IN (${inList}) AND Email != null`,
+    );
+    for (const m of mgrRecords) {
+      const nm = (m.Name ?? "").trim();
+      const em = (m.Email ?? "").toLowerCase();
+      if (nm && em && !nameToEmail.has(nm)) nameToEmail.set(nm, em);
+    }
+  }
+
+  // Fallback for informal picklist names (e.g. "Mike Dugan" vs the user
+  // "Michael Dugan"): match unresolved names by last name + first initial, but
+  // only when exactly one active user matches, so it never links to the wrong
+  // person.
+  const unresolved = managerNames.filter((n) => !nameToEmail.has(n));
+  if (unresolved.length) {
+    const lastNames = [
+      ...new Set(
+        unresolved
+          .map((n) => n.trim().split(/\s+/).pop() ?? "")
+          .filter(Boolean),
+      ),
+    ];
+    const inLast = lastNames
+      .map((n) => `'${n.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
+      .join(",");
+    const candidates = (
+      await queryAll(
+        instanceUrl,
+        token,
+        `SELECT FirstName, LastName, Email FROM User WHERE IsActive = true AND Email != null AND LastName IN (${inLast})`,
+      )
+    )
+      .map((c) => ({
+        firstName: c.FirstName ?? "",
+        lastName: c.LastName ?? "",
+        email: c.Email ?? "",
+      }))
+      .filter((c) => c.firstName && c.lastName && c.email);
+    for (const name of unresolved) {
+      const em = matchByInitialLastName(name, candidates);
+      if (em) nameToEmail.set(name, em);
+    }
+  }
+
+  // Resolve agent->manager and create any manager who isn't already a Slate
+  // user so manager_id can reference them. Managers come in role='manager',
+  // bookable=false (they approve, they don't take bookings); if they later log
+  // in, provision keeps that role.
   const plan = resolveManagerSync(
-    sfUsers.map((u) => ({
-      email: (u.Email ?? "").toLowerCase(),
-      managerEmail: u.Manager?.Email ?? null,
-      managerName: u.Manager?.Name ?? null,
-    })),
+    sfUsers.map((u) => {
+      const mgrName = (u.Agent_Manager__c ?? "").trim();
+      return {
+        email: (u.Email ?? "").toLowerCase(),
+        managerEmail: mgrName ? (nameToEmail.get(mgrName) ?? null) : null,
+        managerName: mgrName || null,
+      };
+    }),
     new Set(byEmail.keys()),
   );
   const managerInserts: Partial<User>[] = plan.managersToCreate.map((m) => ({
