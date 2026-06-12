@@ -2,6 +2,8 @@ import ManageBooking from "@/components/ManageBooking";
 import { getBookingByToken } from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
+// Lead-facing: the brand is Pennie; Slate stays internal.
+export const metadata = { title: "Manage your booking with Pennie" };
 
 export default async function ManagePage({
   params,

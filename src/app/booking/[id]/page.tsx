@@ -1,6 +1,8 @@
 import Booker from "@/components/Booker";
 
 export const dynamic = "force-dynamic";
+// Lead-facing: the brand is Pennie; Slate stays internal.
+export const metadata = { title: "Book a call with Pennie" };
 
 type SP = Record<string, string | string[] | undefined>;
 
