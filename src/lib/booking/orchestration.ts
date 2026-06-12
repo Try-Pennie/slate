@@ -5,6 +5,7 @@ import { toE164 } from "../phone.ts";
 import {
   bookingWindow,
   busyBlockFor,
+  eventDescription,
   idempotencyKeyFor,
   selectAgent,
   type AssignResult,
@@ -262,21 +263,20 @@ export async function createBooking(
   // Normalize once so the stored row and every webhook carry E.164.
   const phone = toE164(input.attendee.phone);
 
+  // Minted before the event so the invite can carry the manage link.
+  const manageToken = deps.newManageToken();
+
   const gcalEventId = await deps.createEvent(email, {
     summary: `${eventType.name}${
       input.attendee.name ? ` with ${input.attendee.name}` : ""
     }`,
-    description: phone
-      ? `Booked via Slate. Phone: ${phone}`
-      : "Booked via Slate.",
+    description: eventDescription(phone, manageUrl(deps, manageToken)),
     start: startIso,
     end: endIso,
     timezone: input.timezone,
     attendeeEmail: input.attendee.email,
     attendeeName: input.attendee.name,
   });
-
-  const manageToken = deps.newManageToken();
   const inserted = await deps.insertBooking({
     org_id: bucket.org_id,
     bucket_id: bucket.id,
@@ -381,6 +381,10 @@ export async function rescheduleBooking(
       summary: `${eventType.name}${
         booking.attendee_name ? ` with ${booking.attendee_name}` : ""
       }`,
+      description: eventDescription(
+        booking.attendee_phone,
+        manageUrl(deps, token),
+      ),
       start: startIso,
       end: endIso,
       timezone: booking.timezone,
