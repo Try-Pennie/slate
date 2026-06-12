@@ -11,6 +11,10 @@ export const CRON_ROUTES: Record<string, string> = {
   "*/5 * * * *": "/api/cron/complete",
   // Daily roster maintenance: Salesforce agent/team sync + default hours.
   "0 6 * * *": "/api/cron/agents",
+  // Pending-OOO morning digest. Two UTC slots straddle DST so it lands at 9am
+  // ET on weekdays; the route's isDigestTime gate lets exactly one fire.
+  "0 13 * * 1-5": "/api/cron/ooo-digest",
+  "0 14 * * 1-5": "/api/cron/ooo-digest",
 };
 
 export function routeForCron(cron: string): string | null {
