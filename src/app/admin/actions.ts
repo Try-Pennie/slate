@@ -143,8 +143,25 @@ export async function useMyDefaultHours(): Promise<void> {
 
 export async function syncSalesforceNow(): Promise<void> {
   await requireAdmin();
-  await syncSalesforceAgents();
+  let summary: string;
+  try {
+    const r = await syncSalesforceAgents();
+    const parts = [
+      `${r.updated + r.inserted} agents synced`,
+      r.inserted ? `${r.inserted} added` : null,
+      r.managersLinked ? `${r.managersLinked} managers linked` : null,
+      r.managersCreated ? `${r.managersCreated} managers created` : null,
+      r.deleted ? `${r.deleted} removed` : null,
+    ].filter(Boolean);
+    summary =
+      parts.length > 1 ? parts.join(" · ") : `${parts[0]} (already up to date)`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    revalidatePath("/admin");
+    redirect(`/admin?sync_error=${encodeURIComponent(message.slice(0, 200))}`);
+  }
   revalidatePath("/admin");
+  redirect(`/admin?synced=${encodeURIComponent(summary)}`);
 }
 
 function num(form: FormData, key: string, fallback: number): number {

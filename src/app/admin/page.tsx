@@ -251,7 +251,13 @@ function BucketForm({
 export default async function AdminPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; bookable?: string; imp_error?: string }>;
+  searchParams: Promise<{
+    q?: string;
+    bookable?: string;
+    imp_error?: string;
+    synced?: string;
+    sync_error?: string;
+  }>;
 }) {
   const sp = await searchParams;
   const query = (sp.q ?? "").trim().toLowerCase();
@@ -383,6 +389,20 @@ export default async function AdminPage({
     />
     <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-8">
       <h1 className="text-xl font-semibold tracking-tight">Slate admin</h1>
+
+      {sp.synced && (
+        <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg">
+          Salesforce sync complete. {sp.synced}.
+        </div>
+      )}
+      {sp.sync_error && (
+        <div
+          role="alert"
+          className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+        >
+          Salesforce sync failed: {sp.sync_error}
+        </div>
+      )}
 
       {/* View as another user (admin only) */}
       {isAdmin && (
