@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
     email: user.email ?? (meta.email as string) ?? "",
     name: (meta.full_name as string) ?? (meta.name as string) ?? null,
     googleSub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
+    avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
   });
 
   // Calendar is reachable via domain-wide delegation (by email), so warm the

@@ -27,6 +27,7 @@ interface ProvisionInput {
   email: string;
   name: string | null;
   googleSub: string | null;
+  avatarUrl: string | null;
 }
 
 /**
@@ -39,13 +40,25 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   const db = supabaseAdmin();
   const org = await ensureDefaultOrg();
 
-  // Already linked?
+  // Already linked? Refresh the avatar in case it changed.
   const { data: linked } = await db
     .from("users")
     .select("*")
     .eq("auth_user_id", input.authUserId)
     .maybeSingle();
-  if (linked) return linked as User;
+  if (linked) {
+    const u = linked as User;
+    if (input.avatarUrl && u.avatar_url !== input.avatarUrl) {
+      const { data: refreshed } = await db
+        .from("users")
+        .update({ avatar_url: input.avatarUrl })
+        .eq("id", u.id)
+        .select("*")
+        .single();
+      return refreshed as User;
+    }
+    return u;
+  }
 
   // Existing row by email (e.g. a Salesforce-synced agent now logging in).
   const { data: byEmail } = await db
@@ -56,7 +69,11 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   if (byEmail) {
     const { data: updated } = await db
       .from("users")
-      .update({ auth_user_id: input.authUserId, google_sub: input.googleSub })
+      .update({
+        auth_user_id: input.authUserId,
+        google_sub: input.googleSub,
+        avatar_url: input.avatarUrl,
+      })
       .eq("id", (byEmail as User).id)
       .select("*")
       .single();
@@ -78,6 +95,7 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
       email: input.email,
       name: input.name,
       google_sub: input.googleSub,
+      avatar_url: input.avatarUrl,
       role,
     })
     .select("*")
