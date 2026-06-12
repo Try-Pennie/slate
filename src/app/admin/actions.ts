@@ -358,6 +358,53 @@ export async function setBookable(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
+/** Assigns (or clears) an agent's manager, the routing edge for OOO requests. */
+export async function setAgentManager(form: FormData): Promise<void> {
+  const userId = String(form.get("user_id") ?? "");
+  if (!userId) return;
+  const managerId = String(form.get("manager_id") ?? "");
+  if (managerId === userId) throw new Error("An agent cannot manage themselves");
+
+  if (managerId) {
+    const { data } = await supabaseAdmin()
+      .from("users")
+      .select("role")
+      .eq("id", managerId)
+      .maybeSingle();
+    const role = (data as { role: Role } | null)?.role;
+    if (role !== "manager" && role !== "admin") {
+      throw new Error("Manager must hold the manager or admin role");
+    }
+  }
+
+  await requireManageAgent(userId, "agent.manager");
+  await supabaseAdmin()
+    .from("users")
+    .update({ manager_id: managerId || null })
+    .eq("id", userId);
+  revalidatePath("/admin");
+}
+
+/** Admin-only: set the OOO Google calendar approval events land on (manager rows). */
+export async function setOooCalendarId(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const userId = String(form.get("user_id") ?? "");
+  if (!userId) return;
+  const calendarId = String(form.get("ooo_calendar_id") ?? "").trim();
+  await supabaseAdmin()
+    .from("users")
+    .update({ ooo_calendar_id: calendarId || null })
+    .eq("id", userId);
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "agent.ooo_calendar",
+    targetId: userId,
+    details: { ooo_calendar_id: calendarId || null },
+  });
+  revalidatePath("/admin");
+}
+
 /** Admin-only: change a user's tier (agent/manager/admin). Guards last-admin. */
 export async function setUserRole(form: FormData): Promise<void> {
   const admin = await requireAdmin();

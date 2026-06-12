@@ -5,6 +5,7 @@
 
 export type Role = "admin" | "manager" | "agent";
 export type BusySource = "slate" | "gcal";
+export type OooStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type BookingStatus =
   | "confirmed"
   | "rescheduled"
@@ -44,7 +45,43 @@ export interface User {
   attributes: Attributes;
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
+  /** This agent's manager (routes OOO requests). Admin-edited, not SF-synced. */
+  manager_id: string | null;
+  /** On manager rows: the manager's OOO Google calendar for approval events. */
+  ooo_calendar_id: string | null;
   created_at: string;
+}
+
+export interface OooRequest {
+  id: string;
+  org_id: string;
+  user_id: string;
+  /** Manager snapshot at submit time. */
+  manager_id: string | null;
+  starts_at: string;
+  ends_at: string;
+  /** Display timezone the agent submitted in; notifications render in it. */
+  display_tz_id: string;
+  display_tz_label: string;
+  reason: string;
+  notes: string | null;
+  status: OooStatus;
+  rejection_note: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  cancelled_at: string | null;
+  /** Post-approval artifact ids, stored for deterministic undo. */
+  manager_event_id: string | null;
+  manager_event_calendar_id: string | null;
+  agent_event_id: string | null;
+  busy_block_id: string | null;
+  calcom_synced: boolean;
+  /** Per-effect outcome map, e.g. { manager_event: "ok", calcom: "skipped" }. */
+  side_effects: Record<string, string>;
+  /** Sheet request_id from the one-time import (idempotency key). */
+  legacy_request_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface GoogleCredentials {
