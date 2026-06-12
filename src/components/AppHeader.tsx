@@ -41,8 +41,11 @@ export function AppHeader({
 }: {
   email: string;
   role?: string;
-  active: "admin" | "me";
+  active: "admin" | "me" | "ooo";
 }) {
+  // The approval queue is a manager surface; agents manage their own time off
+  // from /me, so they don't get the tab.
+  const showTimeOff = role === "manager" || role === "admin";
   return (
     <header className="border-b border-border bg-bg">
       <div className="mx-auto flex min-h-16 max-w-4xl flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2">
@@ -65,6 +68,11 @@ export function AppHeader({
           <NavTab href="/me" current={active === "me"}>
             My availability
           </NavTab>
+          {showTimeOff && (
+            <NavTab href="/admin/ooo" current={active === "ooo"}>
+              Time off
+            </NavTab>
+          )}
         </nav>
         <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
           <span className="min-w-0 truncate text-sm text-fg-muted">
