@@ -14,25 +14,52 @@ function assert(cond: boolean, msg: string) {
 
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-// --- Tiers 1-3: every code routes to the Low pool (cal.com "Otherwise") ---
-const lowParity: string[] = [];
-for (const adv of ["1", "2", "3"])
-  for (const bes of ["0", "1", "2", "3"])
-    for (const leg of ["0", "1", "2"]) lowParity.push(`${adv}${bes}${leg}`);
-
-for (const code of lowParity) {
-  const spec = bucketSpecForXbc(code);
-  assert(
-    !!spec && eq(spec.criteria, { debt_team: "low" }),
-    `${code} -> Low pool only (got ${JSON.stringify(spec?.criteria)})`,
-  );
-}
-assert(lowParity.length === 36, "tiers 1-3 cover 36 codes");
-
-// --- Tiers 4-5: handwritten golden table for all 24 codes ---
+// --- Handwritten golden table: ALL 60 codes, uniform per-tier structure ---
+const LO = "low";
+const MD = "medium";
+const HI = "high";
 const VH = "very_high";
 const UH = "ultra_high";
 const golden: Record<string, Record<string, string>> = {
+  // Low
+  "100": { debt_team: LO },
+  "101": { debt_team: LO, legal_eligible: "Y" },
+  "102": { debt_team: LO },
+  "110": { debt_team: LO },
+  "111": { debt_team: LO, legal_eligible: "Y" },
+  "112": { debt_team: LO },
+  "120": { debt_team: LO, backend_service: "beyond" },
+  "121": { debt_team: LO, backend_service: "beyond" },
+  "122": { debt_team: LO, backend_service: "beyond" },
+  "130": { debt_team: LO, backend_service: "achieve" },
+  "131": { debt_team: LO, backend_service: "achieve" },
+  "132": { debt_team: LO, backend_service: "achieve" },
+  // Medium
+  "200": { debt_team: MD },
+  "201": { debt_team: MD, legal_eligible: "Y" },
+  "202": { debt_team: MD },
+  "210": { debt_team: MD },
+  "211": { debt_team: MD, legal_eligible: "Y" },
+  "212": { debt_team: MD },
+  "220": { debt_team: MD, backend_service: "beyond" },
+  "221": { debt_team: MD, backend_service: "beyond" },
+  "222": { debt_team: MD, backend_service: "beyond" },
+  "230": { debt_team: MD, backend_service: "achieve" },
+  "231": { debt_team: MD, backend_service: "achieve" },
+  "232": { debt_team: MD, backend_service: "achieve" },
+  // High
+  "300": { debt_team: HI },
+  "301": { debt_team: HI, legal_eligible: "Y" },
+  "302": { debt_team: HI },
+  "310": { debt_team: HI },
+  "311": { debt_team: HI, legal_eligible: "Y" },
+  "312": { debt_team: HI },
+  "320": { debt_team: HI, backend_service: "beyond" },
+  "321": { debt_team: HI, backend_service: "beyond" },
+  "322": { debt_team: HI, backend_service: "beyond" },
+  "330": { debt_team: HI, backend_service: "achieve" },
+  "331": { debt_team: HI, backend_service: "achieve" },
+  "332": { debt_team: HI, backend_service: "achieve" },
   // Very High
   "400": { debt_team: VH },
   "401": { debt_team: VH, legal_eligible: "Y" },
@@ -67,6 +94,22 @@ for (const [code, criteria] of Object.entries(golden)) {
     !!spec && eq(spec.criteria, criteria),
     `${code} -> ${JSON.stringify(criteria)} (got ${JSON.stringify(spec?.criteria)})`,
   );
+}
+
+// --- structural extrapolation: every tier mirrors the Very High structure ---
+for (const [advA, advB] of [["1", "4"], ["2", "4"], ["3", "4"], ["5", "4"]]) {
+  for (const bes of ["0", "1", "2", "3"]) {
+    for (const leg of ["0", "1", "2"]) {
+      const a = bucketSpecForXbc(`${advA}${bes}${leg}`)!;
+      const b = bucketSpecForXbc(`${advB}${bes}${leg}`)!;
+      const { debt_team: _a, ...restA } = a.criteria;
+      const { debt_team: _b, ...restB } = b.criteria;
+      assert(
+        eq(restA, restB),
+        `${advA}${bes}${leg} mirrors ${advB}${bes}${leg} apart from the tier`,
+      );
+    }
+  }
 }
 
 // --- cal.com screenshot parity (the routes we can see verbatim) ---
