@@ -6,7 +6,7 @@ import {
   matchByInitialLastName,
   resolveManagerSync,
 } from "@/lib/salesforce/manager-sync";
-import type { Attributes, User } from "@/lib/db/types";
+import type { Attributes, Role, User } from "@/lib/db/types";
 
 // SF User custom booleans -> Slate attribute values.
 const DEBT: [keyof SfUser, string][] = [
@@ -94,6 +94,7 @@ export interface SyncResult {
   deleted: number;
   managersCreated: number;
   managersLinked: number;
+  managersPromoted: number;
 }
 
 /**
@@ -249,7 +250,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   // Re-read so freshly inserted agents AND managers are resolvable by email.
   const { data: afterInsert } = await db
     .from("users")
-    .select("id, email, manager_id")
+    .select("id, email, manager_id, role")
     .eq("org_id", org.id);
   const idByEmail = new Map(
     (afterInsert ?? []).map((u) => {
@@ -277,6 +278,22 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     managersLinked++;
   }
 
+  // Anyone SF lists as an Agent_Manager (a real approver) becomes a Slate
+  // 'manager' so they can open the queue and approve - even if they're also a
+  // debt-team agent. Admins keep their role; this never demotes.
+  const managerEmails = new Set(plan.links.map((l) => l.managerEmail));
+  const toPromote = (afterInsert ?? [])
+    .map((u) => u as { id: string; email: string; role: Role })
+    .filter(
+      (u) => u.role === "agent" && managerEmails.has(u.email.toLowerCase()),
+    )
+    .map((u) => u.id);
+  let managersPromoted = 0;
+  if (toPromote.length) {
+    await db.from("users").update({ role: "manager" }).in("id", toPromote);
+    managersPromoted = toPromote.length;
+  }
+
   // Delete synced-only users (never logged in) no longer referenced - keep
   // both the SF agent set AND anyone who is a manager of record, so a manager
   // without a debt team (thus absent from the agent query) is never reaped.
@@ -298,5 +315,6 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     deleted: toDelete.length,
     managersCreated: plan.managersToCreate.length,
     managersLinked,
+    managersPromoted,
   };
 }

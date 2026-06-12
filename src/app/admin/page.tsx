@@ -27,6 +27,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { DayToggles } from "@/components/ui/DayToggles";
+import { SyncButton } from "@/components/SyncButton";
 import type {
   AuditEntry,
   Booking,
@@ -531,9 +532,7 @@ export default async function AdminPage({
           </div>
           {isAdmin && (
             <form action={syncSalesforceNow}>
-              <button className={btnSecondaryCls}>
-                Sync from Salesforce
-              </button>
+              <SyncButton />
             </form>
           )}
         </div>
