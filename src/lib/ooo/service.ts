@@ -9,6 +9,7 @@ import {
   createEventOnCalendar,
   deleteEventOnCalendar,
 } from "@/lib/google/calendar";
+import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
 import { dmSlackUserByEmail, postSlack } from "@/lib/notify/slack";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { recordAudit } from "@/lib/audit";
@@ -147,12 +148,16 @@ function realDeps(): OooDeps {
       }
     },
 
-    // Cal.com dual-write lands with the transition flag; off (or not yet
-    // wired) records "skipped" so side_effects stays honest.
-    calcomAddOverrides: async () =>
-      oooCalcomDualWrite() ? "failed: calcom client not configured" : "skipped",
-    calcomRemoveOverrides: async () =>
-      oooCalcomDualWrite() ? "failed: calcom client not configured" : "skipped",
+    // Cal.com dual-write only during the cutover transition; flag off records
+    // "skipped" so side_effects stays honest.
+    calcomAddOverrides: async (email, startIso, endIso) =>
+      oooCalcomDualWrite()
+        ? addOooOverrides(email, startIso, endIso)
+        : "skipped",
+    calcomRemoveOverrides: async (email, startIso, endIso) =>
+      oooCalcomDualWrite()
+        ? removeOooOverrides(email, startIso, endIso)
+        : "skipped",
 
     dmUserByEmail: (email, text) => dmSlackUserByEmail(email, text),
     postFallbackChannel: async (text) => {
