@@ -1,0 +1,13 @@
+{
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa"
+  ],
+  "date": "2026-06-12",
+  "violations": [],
+  "passes": 23,
+  "incomplete": [],
+  "note": "injected admin session, READ-ONLY browsing"
+}

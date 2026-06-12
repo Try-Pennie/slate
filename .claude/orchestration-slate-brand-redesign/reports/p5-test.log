@@ -1,0 +1,514 @@
+
+> slate@0.1.0 test /Users/danhankins-wright/Documents/Slate
+> for f in scripts/test-*.ts; do echo "# $f"; node --experimental-strip-types "$f" || exit 1; done
+
+# scripts/test-alerts.ts
+(node:85272) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-alerts.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: never-alerted: sends
+ok: within cooldown: suppressed
+ok: exactly at cooldown: sends
+ok: past cooldown: sends
+ok: singular phrasing for one failure
+ok: plural phrasing for multiple failures
+ok: no failures -> no alert
+ok: a single failing pass stays quiet (transient blip)
+ok: second consecutive failing pass alerts
+ok: longer streaks keep alerting (throttle handles spam)
+ok: sync alert includes the failure count
+ok: sync alert says it is a streak
+ok: sync alert carries the first error
+ok: singular agent copy + no error suffix when absent
+ok: error detail is truncated
+
+ALL PASSED
+# scripts/test-attendee.ts
+(node:85273) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-attendee.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: well-formed attendee passes
+ok: empty name rejected
+ok: whitespace name rejected
+ok: missing name rejected
+ok: empty email rejected
+ok: no-domain email rejected
+ok: no-TLD email rejected
+ok: email with spaces rejected
+ok: email is trimmed before checking
+ok: empty phone rejected
+ok: too-short phone rejected
+ok: too-long phone rejected
+ok: E.164-ish phone with punctuation passes
+ok: bare 10-digit US phone passes
+ok: reports every invalid field, not just the first
+
+ALL PASSED
+# scripts/test-booking-orchestration.ts
+(node:85274) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-booking-orchestration.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: create returns the persisted booking
+ok: manage URL uses base + manage token
+ok: create: one calendar event
+ok: create: write-through busy block for the booked agent
+ok: create: busy block spans the booked slot (30m)
+ok: create: fires booking.created
+ok: create: no rollback on success
+ok: create: throws when persist fails
+ok: create-fail: calendar event was created
+ok: create-fail: rolls back the created calendar event
+ok: create-fail: no busy block written
+ok: create-fail: no webhook fired
+ok: create-conflict: unique-slot conflict throws SlotUnavailableError
+ok: create-conflict: rolls back the calendar event
+ok: create-conflict: no busy block / webhook
+ok: idempotency: returns the existing booking on replay
+ok: idempotency: manage URL points at the existing booking
+ok: idempotency: no calendar event created on replay
+ok: idempotency: no insert / busy block / webhook on replay
+ok: idempotency race: returns the winning booking, not an error
+ok: idempotency race: manage URL points at the winner
+ok: idempotency race: the loser's calendar event was rolled back
+ok: create: skips busy A, books free B
+ok: create: checked A then B (one free-check each)
+ok: create: SlotUnavailableError when none free
+ok: create: no calendar event when no agent is free
+ok: reschedule(same agent): moves the existing event in place
+ok: reschedule(same agent): no new/old event churn
+ok: reschedule: busy block moved
+ok: reschedule: status + new start applied
+ok: reschedule: fires booking.rescheduled
+ok: reschedule(reassign): moves to free agent B
+ok: reschedule(reassign): old event deleted
+ok: reschedule(reassign): new event created for B
+ok: reschedule(reassign): no in-place move
+ok: reschedule: rejects a cancelled booking
+ok: reschedule: throws when booking not found
+ok: cancel: deletes the calendar event
+ok: cancel: removes the busy block
+ok: cancel: marks the booking cancelled
+ok: cancel: fires booking.cancelled
+ok: cancel: no-op when already cancelled
+ok: complete: returns the count of completed bookings
+ok: complete: marks each due booking completed
+ok: complete: fires booking.completed for each
+ok: complete: zero when nothing is due
+ok: reassign: booking moved to the owning agent
+ok: reassign: old agent's event removed
+ok: reassign: event created on the owning agent
+ok: reassign: marks allow_double_book and the new agent
+ok: reassign: records the override in routing_trace
+ok: reassign: busy block moved to the owner
+ok: reassign: fires booking.rescheduled
+ok: reassign: rejects an unknown/offboarded agent
+ok: reassign: throws when the booking is not found
+ok: reassign: no-op when already the owning agent
+
+ALL PASSED
+# scripts/test-booking.ts
+(node:85354) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-booking.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: start normalized to ISO
+ok: end is start + 30m
+ok: non-UTC start normalized to UTC
+ok: end adds duration to normalized start
+ok: write-through block has the expected shape (source=slate)
+ok: idempotency key stable across email case + phone whitespace
+ok: different slot yields a different key
+ok: no attendee identity yields null (no dedup)
+ok: salesforceId alone is enough identity
+ok: first free candidate wins
+ok: stops at first free — one isFree check
+ok: candidate with empty email is skipped
+ok: no isFree check for an emailless candidate
+ok: candidate with null email is skipped
+ok: walks past busy candidate to next free
+ok: checks each candidate in order until first free
+ok: no free candidate yields null
+ok: checks all candidates when none is free
+ok: returns first free in candidate order
+ok: empty candidate list yields null, no checks
+
+ALL PASSED
+# scripts/test-brand-label.ts
+(node:85372) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-brand-label.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: white luminance is 1
+ok: black luminance is 0
+ok: bare 3-digit hex parses
+ok: pennie sky parses
+ok: garbage returns null
+ok: alpha hex is rejected, not misread
+ok: graphite-on-sky reproduces the D17 ratio (got 7.36)
+ok: pennie sky -> graphite label
+ok: bright orange -> graphite label
+ok: white -> graphite label
+ok: pennie navy -> beige label
+ok: black -> beige label
+ok: pennie blue (dark-mid) -> beige label
+ok: empty input keeps the graphite default
+ok: named colors keep the graphite default
+ok: #82D0FF: picked label is the higher-contrast one (7.36 vs 1.57)
+ok: #FF8800: picked label is the higher-contrast one (5.20 vs 2.22)
+ok: #1D212F: picked label is the higher-contrast one (14.85 vs 1.29)
+ok: #486CCA: picked label is the higher-contrast one (4.56 vs 2.53)
+ok: #ffffff: picked label is the higher-contrast one (12.45 vs 1.08)
+ok: #000000: picked label is the higher-contrast one (19.47 vs 1.69)
+ok: #777777: picked label is the higher-contrast one (4.15 vs 2.78)
+
+ALL PASSED
+# scripts/test-calendar-select.ts
+(node:85374) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-calendar-select.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: includes the primary calendar
+ok: excludes owned secondary calendars (primary-only rule, #42)
+ok: excludes writable shared team calendars (one teammate's OOO must not block everyone)
+ok: excludes read-only subscriptions
+ok: excludes freeBusyReader calendars
+ok: excludes holiday calendars
+ok: excludes birthday/contacts calendars
+ok: excludes deleted calendars
+ok: excludes a deleted primary
+ok: excludes entries with no id
+ok: keeps exactly the primary calendar (got 1)
+
+ALL PASSED
+# scripts/test-catalog.ts
+(node:85375) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-catalog.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: unions + sorts array and scalar values across agents
+ok: dedups scalar values
+ok: booleans become string options
+ok: keys present on only some agents are included
+ok: keys are sorted
+ok: empty values are dropped
+ok: no agents yields an empty catalog
+ok: null/undefined attributes are skipped
+
+ALL PASSED
+# scripts/test-compute.ts
+(node:85377) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-compute.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: single agent Mon 9-17 yields 16 slots (got 16)
+ok: first slot is 09:00 NY (got 2026-06-08T13:00:00.000Z)
+ok: busy hour removes 2 slots (got 14)
+ok: union restores busy slots via second agent (got 16)
+ok: only the free agent is a candidate at the busy instant (got ["a"])
+ok: excessive min-notice yields no slots (got 0)
+
+ALL PASSED
+# scripts/test-contrast.ts
+(node:85383) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-contrast.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: PRIMARY CTA graphite-on-sky = 7.36:1 (>= 4.5)
+ok: CTA label on hover sky = 6.51:1 (>= 4.5)
+ok: body graphite-on-beige = 11.54:1 (>= 4.5)
+ok: graphite-on-white = 12.45:1 (>= 4.5)
+ok: white-on-navy band = 16.02:1 (>= 4.5)
+ok: beige-on-navy (fg-on-ink) = 14.85:1 (>= 4.5)
+ok: muted-on-beige (thin 4.98 pass guard) = 4.98:1 (>= 4.5)
+ok: error rose-on-beige = 4.77:1 (>= 4.5)
+ok: blue text-on-beige (only passing blue on light) = 4.56:1 (>= 4.5)
+ok: blue text-on-white = 4.91:1 (>= 4.5)
+ok: focus line graphite-on-beige (light theme) = 11.54:1 (>= 3)
+ok: focus line sky-on-navy (dark theme) = 9.47:1 (>= 3)
+ok: graphite-on-sky-deep - must NOT be a CTA text bg (4.32 fail) = 4.32:1 (correctly < 4.5, forbidden as text)
+ok: sky as text on beige - forbidden = 1.57:1 (correctly < 4.5, forbidden as text)
+ok: white text on sky - forbidden = 1.69:1 (correctly < 4.5, forbidden as text)
+ok: Pill status-ok graphite-on-green-wash = 11.58:1 (>= 4.5)
+ok: Pill status-error rose-on-white = 5.14:1 (>= 4.5)
+ok: dark error rose-on-ink-2 surface = 4.96:1 (>= 4.5)
+ok: dark error rose-on-navy bg = 6.71:1 (>= 4.5)
+
+ALL PASSED
+# scripts/test-copy.ts
+(node:85384) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-copy.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: no forbidden dashes or names across 41 user-facing files
+
+ALL PASSED
+# scripts/test-css-layering.ts
+(node:85385) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-css-layering.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: @layer components block exists
+ok: .pn-h1 is inside @layer components
+ok: .pn-lead is inside @layer components
+ok: .pn-btn is inside @layer components
+ok: .pn-card is inside @layer components
+ok: global :focus-visible recipe stays unlayered
+ok: .pn-btn:focus-visible stays unlayered
+ok: no focus-visible rule snuck inside the layer
+ok: .sr-only stays unlayered
+ok: .sr-only is not duplicated inside the layer
+ok: reduced-motion guard exists and is not inside the layer
+
+ALL PASSED
+# scripts/test-dst.ts
+(node:85386) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-dst.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: pre-spring Fri (EST): 09:00 = 14:00Z, 16 slots
+ok: post-spring Mon (EDT): 09:00 = 13:00Z, 16 slots
+ok: spring-forward day: 09:00 = 13:00Z (not shifted to 10:00)
+ok: fall-back day: 09:00 = 14:00Z (not shifted to 08:00)
+ok: post-fall-back Mon (EST): 09:00 = 14:00Z, 16 slots
+
+ALL PASSED
+# scripts/test-match.ts
+(node:85387) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-match.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: array attr matches scalar criterion
+ok: all keys must match (both do)
+ok: non-matching role fails
+ok: debt team not in agent's teams fails
+ok: one mismatched key fails the AND
+ok: boolean criterion matches
+ok: boolean mismatch fails
+ok: array criterion intersects array attr
+ok: empty criteria matches nobody
+ok: absent attribute fails
+ok: null attributes never match
+
+ALL PASSED
+# scripts/test-migrations.ts
+(node:85388) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-migrations.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: migrations directory has .sql files
+ok: migration #0 is 0001 (no gaps/dupes); got 0001
+ok: migration #1 is 0002 (no gaps/dupes); got 0002
+ok: migration #2 is 0003 (no gaps/dupes); got 0003
+ok: migration #3 is 0004 (no gaps/dupes); got 0004
+ok: migration #4 is 0005 (no gaps/dupes); got 0005
+ok: migration #5 is 0006 (no gaps/dupes); got 0006
+ok: migration #6 is 0007 (no gaps/dupes); got 0007
+ok: migration #7 is 0008 (no gaps/dupes); got 0008
+ok: migration #8 is 0009 (no gaps/dupes); got 0009
+ok: migration #9 is 0010 (no gaps/dupes); got 0010
+ok: migration #10 is 0011 (no gaps/dupes); got 0011
+ok: migration #11 is 0012 (no gaps/dupes); got 0012
+ok: migration #12 is 0013 (no gaps/dupes); got 0013
+ok: migration #13 is 0014 (no gaps/dupes); got 0014
+ok: migration #14 is 0015 (no gaps/dupes); got 0015
+ok: migration #15 is 0016 (no gaps/dupes); got 0016
+ok: migration #16 is 0017 (no gaps/dupes); got 0017
+ok: migration #17 is 0018 (no gaps/dupes); got 0018
+ok: migration #18 is 0019 (no gaps/dupes); got 0019
+ok: migration #19 is 0020 (no gaps/dupes); got 0020
+ok: migration #20 is 0021 (no gaps/dupes); got 0021
+ok: migration #21 is 0022 (no gaps/dupes); got 0022
+ok: migration #22 is 0023 (no gaps/dupes); got 0023
+ok: migration #23 is 0024 (no gaps/dupes); got 0024
+ok: table "organizations" enables RLS (or is marked "-- rls-exempt: organizations")
+ok: table "users" enables RLS (or is marked "-- rls-exempt: users")
+ok: table "google_credentials" enables RLS (or is marked "-- rls-exempt: google_credentials")
+ok: table "event_types" enables RLS (or is marked "-- rls-exempt: event_types")
+ok: table "buckets" enables RLS (or is marked "-- rls-exempt: buckets")
+ok: table "bucket_members" enables RLS (or is marked "-- rls-exempt: bucket_members")
+ok: table "availability_schedules" enables RLS (or is marked "-- rls-exempt: availability_schedules")
+ok: table "availability_rules" enables RLS (or is marked "-- rls-exempt: availability_rules")
+ok: table "busy_blocks" enables RLS (or is marked "-- rls-exempt: busy_blocks")
+ok: table "bookings" enables RLS (or is marked "-- rls-exempt: bookings")
+ok: table "webhook_endpoints" enables RLS (or is marked "-- rls-exempt: webhook_endpoints")
+ok: table "webhook_deliveries" enables RLS (or is marked "-- rls-exempt: webhook_deliveries")
+ok: table "alert_state" enables RLS (or is marked "-- rls-exempt: alert_state")
+ok: table "agent_calendars" enables RLS (or is marked "-- rls-exempt: agent_calendars")
+ok: table "audit_log" enables RLS (or is marked "-- rls-exempt: audit_log")
+ok: table "sync_locks" enables RLS (or is marked "-- rls-exempt: sync_locks")
+ok: table "rate_limits" enables RLS (or is marked "-- rls-exempt: rate_limits")
+
+ALL PASSED
+# scripts/test-rate-limit.ts
+(node:85389) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-rate-limit.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: prefers cf-connecting-ip (Cloudflare sets it on every request)
+ok: cf-connecting-ip wins over x-forwarded-for
+ok: x-forwarded-for uses the first hop (the client)
+ok: ips are trimmed
+ok: no headers -> a stable fallback key
+ok: at least two windows
+ok: burst window is shorter and tighter than the sustained window
+ok: all rules are positive
+ok: rule prefixes are distinct (separate counters)
+ok: availability: burst window shorter and tighter than sustained
+ok: availability is looser than bookings (Booker refetches per month nav)
+ok: availability and booking counters never share keys
+
+ALL PASSED
+# scripts/test-regal.ts
+(node:85390) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-regal.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: event name maps to Slate Booking Created
+ok: eventSource is slate
+ok: type uses the regal_type slug
+ok: eventTitle is the event type name
+ok: description carried from event type
+ok: ownerEmail is the agent email
+ok: agentName is the agent full name
+ok: bookingId is the Slate UUID
+ok: salesforceId carried
+ok: slateBookingLink is manage_url
+ok: location hardcoded to Phone Call
+ok: tz abbreviation normalized to ET
+ok: day of week computed in attendee tz
+ok: local time 09:00 AM in ET
+ok: local date in ET
+ok: confirmed maps to ACCEPTED
+ok: name split into traits
+ok: created phone trait has voice+sms opt-in
+ok: created email trait has email opt-in
+ok: cancel event name
+ok: cancelled maps to CANCELLED
+ok: non-created phone trait has no opt-in
+ok: cancel includes cancelledBy property
+ok: reschedule includes rescheduleId
+
+ALL PASSED
+# scripts/test-roles.ts
+(node:85391) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-roles.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: rank order: agent < manager < admin
+ok: atLeast respects the hierarchy
+ok: canManageAgents = manager and up
+ok: canEditOrgSettings = admin only
+ok: canAssignRole = admin only
+ok: manager can edit an agent
+ok: manager cannot edit a peer manager
+ok: manager cannot edit an admin
+ok: admin can edit managers and agents
+ok: agent can edit self
+ok: agent cannot edit another agent
+ok: anyone can edit self
+ok: cannot demote the last admin
+ok: can demote an admin when another remains
+ok: promoting an agent is always fine
+ok: admin to admin no-op allowed
+ok: isRole validates the enum
+
+ALL PASSED
+# scripts/test-roundrobin.ts
+(node:85392) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-roundrobin.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: orders by oldest last-booking first
+ok: never-booked agent (missing) comes first
+ok: null last-booking is treated as never booked (first)
+ok: all never-booked: deterministic id tiebreak
+ok: equal timestamps: deterministic id tiebreak
+ok: result is independent of input ordering
+ok: empty input yields empty
+ok: single candidate passes through
+ok: input array is not mutated
+ok: non-empty matched pool is used as-is (no fallback)
+ok: empty pool with a fallback routes to the fallback agent
+ok: empty pool with no fallback stays empty
+
+ALL PASSED
+# scripts/test-sync-coalesce.ts
+(node:85393) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-sync-coalesce.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: claim is the current instant
+ok: stale cutoff is claim minus the TTL
+ok: cutoff always precedes the claim
+ok: claim exactly TTL old is not strictly before the cutoff
+ok: rerun when new pushes arrived during the pass
+ok: no rerun when nothing arrived
+ok: burst bound stops reruns (cron backstop owns the tail)
+ok: passes under the bound continue
+ok: no deadline -> never past (login warm-up path)
+ok: before the deadline -> keep going
+ok: at the deadline -> stop starting new calendars
+ok: after the deadline -> stop
+ok: tick budget stays under Worker CPU ceilings
+ok: incrementals first, bootstraps last, stable within groups
+
+ALL PASSED
+# scripts/test-sync-core.ts
+(node:85394) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-sync-core.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: timed event keeps its dateTimes
+ok: all-day event expands date to midnight UTC
+ok: event with no times yields null
+ok: normal timed event is busy
+ok: cancelled event is not busy
+ok: free (transparent) event is not busy
+ok: timeless event is not busy
+ok: blocks whose event id wasn't seen are stale (null event id ignored)
+ok: all seen -> nothing stale
+
+ALL PASSED
+# scripts/test-webhook-retry.ts
+(node:85395) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-webhook-retry.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: 0 attempts -> 1 min
+ok: 1 attempt -> 2 min
+ok: 3 attempts -> 8 min
+ok: backoff caps at 30 min
+ok: due once the backoff window elapses
+ok: not due inside the backoff window
+ok: a stuck-pending row (0 attempts) is due after 1 min
+ok: exhausted attempts are never due (dead-lettered)
+ok: failed with attempts exhausted is dead-lettered
+ok: manual resends past the cap stay dead-lettered if they fail again
+ok: failed under the cap is NOT dead-lettered (cron still owns it)
+ok: pending is never dead-lettered
+ok: success is never dead-lettered
+
+ALL PASSED
+# scripts/test-webhook-wire.ts
+(node:85396) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/danhankins-wright/Documents/Slate/scripts/test-webhook-wire.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/danhankins-wright/Documents/Slate/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ok: regal: x-slate-delivery-id header carries the delivery row id
+ok: regal: auth header preserved
+ok: regal: properties.slateDeliveryId set (journeys see properties, not headers)
+ok: regal: event name intact
+ok: regal: existing properties intact
+ok: regal: a retry of the same delivery carries the same id
+ok: generic: x-slate-delivery-id header carries the delivery row id
+ok: generic: event header intact
+ok: generic: timestamp header intact
+ok: generic: signature still verifies over timestamp.body
+ok: generic: exported sign() matches
+ok: generic: body stays {event, data} (delivery id is header-only here)
+ok: generic: body unchanged by the delivery id (signature compatibility)
+
+ALL PASSED

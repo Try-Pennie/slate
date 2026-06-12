@@ -4,6 +4,10 @@ export const dynamic = "force-dynamic";
 
 type SP = Record<string, string | string[] | undefined>;
 
+/** Canonical --pennie-sky; mirrors /book (D14): the embed gets it as the
+ *  default brandColor, overridable via the `brand` param. */
+const PENNIE_SKY = "#82D0FF";
+
 function first(sp: SP, key: string): string {
   const v = sp[key];
   return (Array.isArray(v) ? v[0] : v) ?? "";
@@ -45,6 +49,8 @@ export default async function BookingPage({
     prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
   }
 
+  const embedded = first(sp, "embed") === "1";
+
   return (
     <main>
       <Booker
@@ -56,7 +62,9 @@ export default async function BookingPage({
           phone,
         }}
         prefill={prefill}
-        embedded={first(sp, "embed") === "1"}
+        embedded={embedded}
+        theme={first(sp, "theme") === "dark" ? "dark" : "light"}
+        brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
       />
     </main>
   );

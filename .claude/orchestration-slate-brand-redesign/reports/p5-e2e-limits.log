@@ -1,0 +1,7 @@
+empty attendee → 400 {"error":"Please check your contact details.","fieldErrors":{"name":"Enter your name","email":"Enter your email","phone":"Enter your phone number"}}
+validation check: PASS
+429 body: {"error":"Too many booking attempts from your network. Please try again in a few minutes."}
+rapid-post statuses: 400,400,400,429
+rate-limit check: PASS
+cleaned rate_limits rows: ["book:h:198.51.100.77","book:m:198.51.100.77"]
+remaining spoof keys: []
