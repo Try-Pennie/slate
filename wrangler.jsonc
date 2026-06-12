@@ -4,7 +4,7 @@
   "main": "worker/index.ts",
   // Cron triggers drive worker/index.ts scheduled(); keep in lockstep with
   // worker/cron-routes.ts (scripts/test-cron-routes.ts enforces it).
-  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "0 6 * * *"] },
+  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "0 6 * * *", "0 13 * * 1-5", "0 14 * * 1-5"] },
   "account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
   "routes": [
     { "pattern": "slate.trypennie.dev", "custom_domain": true },
