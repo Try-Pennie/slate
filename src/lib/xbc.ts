@@ -8,12 +8,14 @@ import type { Criteria } from "@/lib/db/types";
  *   2nd (BES, backend):    0=None 1=Both 2=Beyond 3=Achieve
  *   3rd (LEG, legal):      0=None 1=Legal(red) 2=Non-Legal(green)
  *
- * Routing semantics, generalized from the live cal.com form:
- * - Tiers 1-3 (Low/Medium/High) all fell through to cal.com's "Otherwise"
- *   route -> the Low team, with backend/legal digits ignored. Replicated
- *   exactly for the drop-in swap; refine post-cutover if wanted.
- * - Tiers 4-5 route to their own debt team. Backend digit 2/3 requires the
- *   matching backend_service; 0 (None) and 1 (Both) leave it unconstrained.
+
+ * Routing semantics, extrapolated from the live cal.com form: the Very High
+ * and Ultra High sections share one structure, so every tier follows it
+ * (cal.com's "Otherwise -> Low" is the catch-all for malformed codes, which
+ * Slate handles by 404ing unknown bucket codes instead):
+ * - Every code routes to its own debt team (digit 1). Backend digit 2/3
+ *   requires the matching backend_service; 0 (None) and 1 (Both) leave it
+ *   unconstrained.
  * - The legal filter applies only when the lead is Legal (LEG=1) AND no
  *   backend constraint narrows the pool (BES=0/1) - cal.com's "BOTH | LIMIT"
  *   routes. NOTE: cal.com used "Legal Eligible != N" (unset passed); Slate
@@ -58,15 +60,6 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
   const legal = LEGAL[leg];
 
   const name = `${tier.label} | ${backend.label} | ${legal.label}`;
-
-  // Low/Medium/High: cal.com "Otherwise" parity - everything to the Low pool.
-  if (adv === "1" || adv === "2" || adv === "3") {
-    return {
-      code,
-      name: `${name} (routes to Low pool)`,
-      criteria: { debt_team: "low" },
-    };
-  }
 
   const criteria: Criteria = { debt_team: tier.key };
   if (backend.key) criteria.backend_service = backend.key;
