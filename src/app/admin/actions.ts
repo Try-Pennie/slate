@@ -146,13 +146,17 @@ export async function syncSalesforceNow(): Promise<void> {
   let summary: string;
   try {
     const r = await syncSalesforceAgents();
+    const plural = (n: number, one: string, many = `${one}s`) =>
+      `${n} ${n === 1 ? one : many}`;
     const parts = [
       `${r.updated + r.inserted} agents synced`,
       r.inserted ? `${r.inserted} added` : null,
-      r.managersLinked ? `${r.managersLinked} managers linked` : null,
-      r.managersCreated ? `${r.managersCreated} managers created` : null,
+      r.managersLinked
+        ? `${plural(r.managersLinked, "agent")} reassigned to a manager`
+        : null,
+      r.managersCreated ? `${plural(r.managersCreated, "new manager")}` : null,
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
-      r.deleted ? `${r.deleted} removed` : null,
+      r.deleted ? `${plural(r.deleted, "user")} removed` : null,
     ].filter(Boolean);
     summary =
       parts.length > 1 ? parts.join(" · ") : `${parts[0]} (already up to date)`;
