@@ -47,14 +47,6 @@ export default function LoginPage() {
             Manage your availability and let the right calls find you.
           </p>
         </div>
-        <div
-          aria-hidden="true"
-          className="hidden max-w-2xs -rotate-3 self-start rounded-sm bg-pennie-yellow px-5 py-4 shadow-sm lg:block"
-        >
-          <p className="text-sm font-semibold text-pennie-graphite">
-            Leads always see times in their own timezone.
-          </p>
-        </div>
       </section>
       <section className="flex items-center justify-center p-6 sm:p-10">
         <div className="w-full max-w-sm rounded-xl bg-surface p-8 shadow-xs">
