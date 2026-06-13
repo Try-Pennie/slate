@@ -78,6 +78,37 @@ async function queryAll(
   return records;
 }
 
+/**
+ * Returns the subset of `emails` whose Salesforce User is explicitly inactive
+ * (IsActive = false). Emails with no Salesforce match are NOT returned, so the
+ * caller keeps them — only a positive inactive signal triggers reaping.
+ * Chunked to keep each SOQL IN list well under Salesforce's query limits.
+ */
+async function queryInactiveEmails(
+  instanceUrl: string,
+  token: string,
+  emails: string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const CHUNK = 200;
+  for (let i = 0; i < emails.length; i += CHUNK) {
+    const inList = emails
+      .slice(i, i + CHUNK)
+      .map((e) => `'${e.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
+      .join(",");
+    const rows = await queryAll(
+      instanceUrl,
+      token,
+      `SELECT Email FROM User WHERE IsActive = false AND Email IN (${inList})`,
+    );
+    for (const r of rows) {
+      const em = (r.Email ?? "").toLowerCase();
+      if (em) out.add(em);
+    }
+  }
+  return out;
+}
+
 function toAttributes(u: SfUser): Attributes {
   const debt = DEBT.filter(([f]) => u[f]).map(([, v]) => v);
   const backend = BACKEND.filter(([f]) => u[f]).map(([, v]) => v);
@@ -99,9 +130,11 @@ export interface SyncResult {
 
 /**
  * Syncs active Salesforce agents (with any debt team) into Slate `users`,
- * matched by email. New agents come in bookable=false; agents that drop out of
- * the SF set and never logged in are deleted (booking history survives via the
- * agent snapshot on bookings). Admins (auth_user_id set) are never deleted.
+ * matched by email. New agents come in bookable=false. Never-logged-in agents
+ * and managers whose Salesforce account is INACTIVE are deleted (booking history
+ * survives via the agent snapshot on bookings); a user merely absent from the
+ * debt-team query is kept. Anyone who has logged in (auth_user_id set) and
+ * admins/super admins are never deleted.
  */
 export async function syncSalesforceAgents(): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
@@ -129,14 +162,12 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     }),
   );
 
-  const sfEmails = new Set<string>();
   const inserts: Partial<User>[] = [];
   let updated = 0;
 
   for (const u of sfUsers) {
     const email = (u.Email ?? "").toLowerCase();
     if (!email) continue;
-    sfEmails.add(email);
     const attributes = toAttributes(u);
     const current = byEmail.get(email);
     if (current) {
@@ -294,22 +325,31 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     managersPromoted = toPromote.length;
   }
 
-  // Delete synced-only AGENTS (never logged in) no longer in Salesforce. Only
-  // role='agent' rows are reaped, so manually-created admins/managers/super
-  // admins seeded ahead of their first login are never deleted. Managers of
-  // record are kept by email too, belt-and-suspenders.
-  const keepEmails = new Set(sfEmails);
-  for (const link of plan.links) keepEmails.add(link.managerEmail);
-  const { data: orphans } = await db
+  // Reap never-logged-in agents AND managers whose Salesforce account is
+  // INACTIVE. Absence from the active-agent query is NOT grounds for deletion:
+  // a user can be active in SF but have no debt-team flag (e.g. an OOO approver,
+  // or staff who aren't sales agents at all), so we only delete on a positive
+  // IsActive=false from Salesforce. Admins/super admins and anyone who has
+  // logged in (auth_user_id set) are never touched.
+  const { data: reapable } = await db
     .from("users")
     .select("id, email")
     .eq("org_id", org.id)
-    .eq("role", "agent")
+    .in("role", ["agent", "manager"])
     .is("auth_user_id", null);
-  const toDelete = (orphans ?? [])
-    .filter((u) => !keepEmails.has((u as { email: string }).email.toLowerCase()))
-    .map((u) => (u as { id: string }).id);
-  if (toDelete.length) await db.from("users").delete().in("id", toDelete);
+  const reapableRows = (reapable ?? []) as { id: string; email: string }[];
+  let toDelete: string[] = [];
+  if (reapableRows.length) {
+    const inactive = await queryInactiveEmails(
+      instanceUrl,
+      token,
+      reapableRows.map((u) => u.email.toLowerCase()),
+    );
+    toDelete = reapableRows
+      .filter((u) => inactive.has(u.email.toLowerCase()))
+      .map((u) => u.id);
+    if (toDelete.length) await db.from("users").delete().in("id", toDelete);
+  }
 
   return {
     inserted: inserts.length,
