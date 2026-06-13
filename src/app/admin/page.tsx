@@ -15,7 +15,12 @@ import {
   syncSalesforceNow,
   updateBucket,
 } from "@/app/admin/actions";
-import { canManageAgents, canEditOrgSettings } from "@/lib/auth/roles";
+import {
+  canManageAgents,
+  canEditOrgSettings,
+  canEditOrgDefaults,
+  roleLabel,
+} from "@/lib/auth/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
@@ -266,8 +271,10 @@ export default async function AdminPage({
       </main>
     );
   }
-  // Managers manage the agent roster; only admins see org/app config.
+  // Managers manage the agent roster; only admins see org/app config; only
+  // super admins move the org-wide default working hours.
   const isAdmin = canEditOrgSettings(me.role);
+  const isSuperAdmin = canEditOrgDefaults(me.role);
 
   const db = supabaseAdmin();
   const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes, recentRes] =
@@ -440,8 +447,8 @@ export default async function AdminPage({
       </section>
       )}
 
-      {/* Org default working hours (admin only) */}
-      {isAdmin && (
+      {/* Org default working hours (super admin only) */}
+      {isSuperAdmin && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Default working hours</h2>
         <p className="mb-3 text-xs text-fg-muted">
@@ -605,7 +612,7 @@ export default async function AdminPage({
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      <Pill variant={`role-${u.role}`}>{u.role}</Pill>
+                      <Pill variant={`role-${u.role}`}>{roleLabel(u.role)}</Pill>
                     </td>
                     <td className="px-3 py-3 text-fg-muted">
                       {attrToText(u.attributes?.debt_team) || "-"}

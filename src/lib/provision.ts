@@ -67,14 +67,18 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
     .eq("email", input.email)
     .maybeSingle();
   if (byEmail) {
+    const existing = byEmail as User;
     const { data: updated } = await db
       .from("users")
       .update({
         auth_user_id: input.authUserId,
         google_sub: input.googleSub,
         avatar_url: input.avatarUrl,
+        // Backfill a display name only when the row has none (e.g. a pre-seeded
+        // admin); never clobber a Salesforce-provided name.
+        ...(existing.name ? {} : { name: input.name }),
       })
-      .eq("id", (byEmail as User).id)
+      .eq("id", existing.id)
       .select("*")
       .single();
     return updated as User;

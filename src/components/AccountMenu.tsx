@@ -103,7 +103,11 @@ export function AccountMenu({
           className="absolute right-0 z-20 mt-2 w-64 rounded-md border border-border bg-surface p-4 shadow-pop"
         >
           <p className="truncate text-sm font-semibold text-fg">{email}</p>
-          {role && <p className="text-xs capitalize text-fg-muted">{role}</p>}
+          {role && (
+            <p className="text-xs capitalize text-fg-muted">
+              {role.replace("_", " ")}
+            </p>
+          )}
 
           {calendar !== "na" && (
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-sm">

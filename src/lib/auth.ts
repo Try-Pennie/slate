@@ -103,3 +103,4 @@ export async function requireRole(min: Role): Promise<User> {
 
 export const requireManager = (): Promise<User> => requireRole("manager");
 export const requireAdmin = (): Promise<User> => requireRole("admin");
+export const requireSuperAdmin = (): Promise<User> => requireRole("super_admin");

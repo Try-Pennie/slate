@@ -13,6 +13,7 @@ export type PillVariant =
   | "role-agent"
   | "role-manager"
   | "role-admin"
+  | "role-super_admin"
   | "status-ok"
   | "status-error"
   | "status-pending"
@@ -24,6 +25,11 @@ const VARIANT_CLS: Record<PillVariant, string> = {
   "role-admin":
     "bg-pennie-navy text-pennie-beige " +
     "dark:bg-transparent dark:border-border dark:text-[var(--pennie-sky-soft)]",
+  // Top tier: navy fill like admin but with the sky accent text, so it reads
+  // as "admin, elevated" without borrowing the CTA sky fill.
+  "role-super_admin":
+    "bg-pennie-navy text-[var(--pennie-sky-soft)] " +
+    "dark:bg-transparent dark:border-[var(--pennie-sky-soft)] dark:text-[var(--pennie-sky-soft)]",
   // 3.V AA fix: green-deep on green-wash is 2.44:1 at 13px (axe color-contrast
   // fail). Graphite on the wash is 11.58:1 and stays put in dark (both are raw
   // tokens); the wash + label text carry the status meaning.
