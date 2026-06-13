@@ -9,20 +9,13 @@ import {
   createEventType,
   replayFailedWebhooks,
   resendWebhookDelivery,
-  setAgentAttributes,
-  setAgentManager,
-  setBookable,
-  setOooCalendarId,
   setOrgDefaultHours,
-  setUserRole,
   startImpersonation,
   setWebhookEndpoint,
-  setWorkingHours,
   syncSalesforceNow,
   updateBucket,
-  useDefaultHours,
 } from "@/app/admin/actions";
-import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
+import { canManageAgents, canEditOrgSettings } from "@/lib/auth/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
@@ -313,10 +306,6 @@ export default async function AdminPage({
   // Routing trace viewer: recent bookings + how each one routed.
   const recent = (recentRes.data ?? []) as TraceRow[];
   const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
-  // OOO requests route to the agent's manager; only manager/admin rows qualify.
-  const managers = users
-    .filter((u) => u.role === "manager" || u.role === "admin")
-    .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
   const nameOf = (id: string | null) =>
     id ? (agentName.get(id) ?? id.slice(0, 8)) : "unassigned";
 
@@ -568,228 +557,94 @@ export default async function AdminPage({
             showing {visibleAgents.length} of {users.length}
           </span>
         </form>
-        <div className="space-y-5">
-          {visibleAgents.map((u) => (
-            <div key={u.id} className="border-t border-border pt-4 first:border-0 first:pt-0">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="font-semibold">{u.name ?? u.email}</span>
-                  <Pill variant={`role-${u.role}`}>{u.role}</Pill>
-                  <span className="text-xs text-fg-muted">
-                    {[
-                      attrToText(u.attributes?.role),
-                      attrToText(u.attributes?.debt_team),
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {isAdmin && (
-                    <form action={setUserRole} className="flex items-center gap-1">
-                      <input type="hidden" name="user_id" value={u.id} />
-                      <select
-                        name="role"
-                        aria-label={`Role for ${u.name ?? u.email}`}
-                        defaultValue={u.role}
-                        className="rounded-sm border border-border bg-surface px-1.5 py-1 text-xs text-fg"
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
+                <th className="px-4 py-2.5 font-semibold">Member</th>
+                <th className="px-3 py-2.5 font-semibold">Role</th>
+                <th className="px-3 py-2.5 font-semibold">Team</th>
+                <th className="px-3 py-2.5 font-semibold">Manager</th>
+                <th className="px-3 py-2.5 font-semibold">Bookable</th>
+                <th className="px-4 py-2.5" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {visibleAgents.map((u) => {
+                const mgr = u.manager_id
+                  ? users.find((x) => x.id === u.manager_id)
+                  : null;
+                return (
+                  <tr key={u.id} className="transition-colors hover:bg-[var(--bg-alt)]">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        {u.avatar_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
+                          <img
+                            src={u.avatar_url}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            className="h-8 w-8 shrink-0 rounded-full object-cover"
+                          />
+                        ) : (
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-pennie-navy text-[11px] font-semibold text-pennie-beige">
+                            {(u.name ?? u.email).slice(0, 2).toUpperCase()}
+                          </span>
+                        )}
+                        <div className="min-w-0">
+                          <a
+                            href={`/admin/agents/${u.id}`}
+                            className="font-semibold text-fg hover:underline"
+                          >
+                            {u.name ?? u.email}
+                          </a>
+                          <p className="truncate text-xs text-fg-muted">
+                            {u.email}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <Pill variant={`role-${u.role}`}>{u.role}</Pill>
+                    </td>
+                    <td className="px-3 py-3 text-fg-muted">
+                      {attrToText(u.attributes?.debt_team) || "—"}
+                    </td>
+                    <td className="px-3 py-3 text-fg-muted">
+                      {mgr ? (mgr.name ?? mgr.email) : "—"}
+                    </td>
+                    <td className="px-3 py-3">
+                      {u.bookable ? (
+                        <Pill variant="status-ok">Bookable</Pill>
+                      ) : (
+                        <span className="text-fg-muted">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <a
+                        href={`/admin/agents/${u.id}`}
+                        className="text-sm text-pennie-blue underline dark:text-pennie-sky"
                       >
-                        {ROLES.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
-                        ))}
-                      </select>
-                      <button className={btnSecondaryCls}>
-                        Set role
-                      </button>
-                    </form>
-                  )}
-                  <form action={useDefaultHours}>
-                    <input type="hidden" name="user_id" value={u.id} />
-                    <button className={btnSecondaryCls}>
-                      Use default hours
-                    </button>
-                  </form>
-                  <form action={setBookable}>
-                    <input type="hidden" name="user_id" value={u.id} />
-                    <input
-                      type="hidden"
-                      name="bookable"
-                      value={u.bookable ? "false" : "true"}
-                    />
-                    <button
-                      className={`inline-flex h-6 items-center rounded-pill border px-2 text-[13px] font-semibold leading-none ${
-                        u.bookable
-                          ? "border-transparent bg-[var(--pennie-green-wash)] text-pennie-graphite"
-                          : "border-[var(--pennie-mercury)] text-fg-muted"
-                      }`}
-                    >
-                      {u.bookable ? "Bookable ✓" : "Not bookable"}
-                    </button>
-                  </form>
-                </div>
-              </div>
-              <div className="mt-2 flex flex-wrap items-end gap-3">
-                <form action={setAgentManager} className="flex items-end gap-2">
-                  <input type="hidden" name="user_id" value={u.id} />
-                  <div>
-                    <label className={labelCls}>Manager (time off approvals)</label>
-                    <select
-                      name="manager_id"
-                      aria-label={`Manager for ${u.name ?? u.email}`}
-                      defaultValue={u.manager_id ?? ""}
-                      className={`${inputCls} w-48`}
-                    >
-                      <option value="">No manager</option>
-                      {(() => {
-                        // Always include the currently assigned manager, even
-                        // if they aren't a manager-role user (e.g. an approver
-                        // who is also a debt-team agent) - otherwise the select
-                        // falls back to "No manager" and hides a real link.
-                        const opts = managers.filter((m) => m.id !== u.id);
-                        const assigned = u.manager_id
-                          ? users.find((x) => x.id === u.manager_id)
-                          : null;
-                        const list =
-                          assigned && !opts.some((m) => m.id === assigned.id)
-                            ? [assigned, ...opts]
-                            : opts;
-                        return list.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name ?? m.email}
-                          </option>
-                        ));
-                      })()}
-                    </select>
-                  </div>
-                  <button className={btnSecondaryCls}>Set manager</button>
-                </form>
-                {isAdmin && u.role !== "agent" && (
-                  <form action={setOooCalendarId} className="flex items-end gap-2">
-                    <input type="hidden" name="user_id" value={u.id} />
-                    <div>
-                      <label className={labelCls}>OOO calendar ID</label>
-                      <input
-                        name="ooo_calendar_id"
-                        aria-label={`OOO calendar ID for ${u.name ?? u.email}`}
-                        defaultValue={u.ooo_calendar_id ?? ""}
-                        placeholder="c_xxxx@group.calendar.google.com"
-                        className={`${inputCls} w-72`}
-                      />
-                    </div>
-                    <button className={btnSecondaryCls}>Save calendar</button>
-                  </form>
-                )}
-              </div>
-              {u.bookable && (
-                <>
-              <form
-                action={setWorkingHours}
-                className="mt-3 flex flex-wrap items-end gap-3"
-              >
-                <input type="hidden" name="user_id" value={u.id} />
-                <div>
-                  <label className={labelCls}>Timezone (agent home tz)</label>
-                  <input
-                    name="timezone"
-                    aria-label="Timezone (agent home tz)"
-                    defaultValue={org.default_timezone}
-                    className={`${inputCls} w-44`}
-                  />
-                </div>
-                <div>
-                  <span className={labelCls}>Days</span>
-                  <div className="mt-1">
-                    <DayToggles namePrefix="day_" isOn={(d) => d <= 5} />
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>Start</label>
-                  <input
-                    name="start"
-                    type="time"
-                    aria-label="Start"
-                    defaultValue="09:00"
-                    className={inputCls}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>End</label>
-                  <input
-                    name="end"
-                    type="time"
-                    aria-label="End"
-                    defaultValue="17:00"
-                    className={inputCls}
-                  />
-                </div>
-                <button className={btnCls}>Save hours</button>
-              </form>
-              <form
-                action={setAgentAttributes}
-                className="mt-2 flex flex-wrap items-end gap-3"
-              >
-                <input type="hidden" name="user_id" value={u.id} />
-                <div>
-                  <label className={labelCls}>Debt team(s)</label>
-                  <input
-                    name="debt_team"
-                    defaultValue={attrToText(u.attributes?.debt_team)}
-                    placeholder="ultra_high, very_high"
-                    className={`${inputCls} w-44`}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>Backend</label>
-                  <input
-                    name="backend_service"
-                    defaultValue={attrToText(u.attributes?.backend_service)}
-                    placeholder="achieve"
-                    className={`${inputCls} w-28`}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>Role</label>
-                  <input
-                    name="agent_role"
-                    defaultValue={attrToText(u.attributes?.role)}
-                    placeholder="sales_agent"
-                    className={`${inputCls} w-32`}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>Legal eligible</label>
-                  <select
-                    name="legal_eligible"
-                    aria-label="Legal eligible"
-                    defaultValue={
-                      u.attributes?.legal_eligible === true
-                        ? "true"
-                        : u.attributes?.legal_eligible === false
-                          ? "false"
-                          : ""
-                    }
-                    className={inputCls}
+                        Manage
+                      </a>
+                    </td>
+                  </tr>
+                );
+              })}
+              {visibleAgents.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-4 py-10 text-center text-sm text-fg-muted"
                   >
-                    <option value="">Not set</option>
-                    <option value="true">Yes</option>
-                    <option value="false">No</option>
-                  </select>
-                </div>
-                <button className={btnCls}>Save attributes</button>
-              </form>
-                </>
+                    {users.length === 0
+                      ? "No agents yet. Sync from Salesforce or sign in."
+                      : "No agents match your search."}
+                  </td>
+                </tr>
               )}
-            </div>
-          ))}
-          {visibleAgents.length === 0 && (
-            <p className="text-sm text-fg-muted">
-              {users.length === 0
-                ? "No agents yet. Sync from Salesforce or sign in."
-                : "No agents match your search."}
-            </p>
-          )}
+            </tbody>
+          </table>
         </div>
       </section>
 
