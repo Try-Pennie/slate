@@ -10,9 +10,15 @@ import {
   realCurrentUser,
   requireAdmin,
   requireManager,
+  requireSuperAdmin,
 } from "@/lib/auth";
 import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
-import { canManageUser, canChangeRole, isRole } from "@/lib/auth/roles";
+import {
+  canManageUser,
+  canChangeRole,
+  canSetRole,
+  isRole,
+} from "@/lib/auth/roles";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { recordAudit, type AuditAction } from "@/lib/audit";
@@ -315,7 +321,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
 }
 
 export async function setOrgDefaultHours(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await requireSuperAdmin();
   const weekdays = [1, 2, 3, 4, 5, 6, 7].filter((d) => form.get(`dday_${d}`));
   await supabaseAdmin()
     .from("organizations")
@@ -510,10 +516,16 @@ export async function setUserRole(form: FormData): Promise<void> {
   const current = (target as { role: Role } | null)?.role;
   if (!current) return;
 
+  // Only a super admin can grant or revoke super_admin; regular admins can't
+  // mint a peer above themselves nor demote one.
+  if (!canSetRole(admin.role, current, next)) {
+    throw new Error("Not authorized to set this role");
+  }
+
   const { count } = await db
     .from("users")
     .select("id", { count: "exact", head: true })
-    .eq("role", "admin");
+    .in("role", ["admin", "super_admin"]);
   if (!canChangeRole(current, next, count ?? 0)) {
     throw new Error("Cannot remove the last admin");
   }

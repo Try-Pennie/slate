@@ -1,6 +1,12 @@
 import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
+import {
+  canManageAgents,
+  canEditOrgSettings,
+  canSetRole,
+  roleLabel,
+  ROLES,
+} from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   setUserRole,
@@ -46,6 +52,11 @@ export default async function AgentProfilePage({
   }
   const isAdmin = canEditOrgSettings(me.role);
   const db = supabaseAdmin();
+  // Roles this actor may assign to this target. A regular admin can't grant or
+  // revoke super_admin (so the option is hidden and the form disappears for a
+  // super_admin target).
+  const roleOptions = (target: User["role"]) =>
+    ROLES.filter((r) => canSetRole(me.role, target, r));
 
   const { data: agentData } = await db
     .from("users")
@@ -141,7 +152,7 @@ export default async function AgentProfilePage({
             <p className="truncate text-sm text-pennie-beige/75">{agent.email}</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Pill variant={`role-${agent.role}`}>{agent.role}</Pill>
+            <Pill variant={`role-${agent.role}`}>{roleLabel(agent.role)}</Pill>
             <Pill variant={agent.bookable ? "status-ok" : "outline"}>
               {agent.bookable ? "Bookable" : "Not bookable"}
             </Pill>
@@ -152,7 +163,7 @@ export default async function AgentProfilePage({
         <section className={cardCls}>
           <p className="pn-eyebrow text-fg-muted">Access</p>
           <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-4">
-            {isAdmin && (
+            {isAdmin && roleOptions(agent.role).length > 0 && (
               <form action={setUserRole} className="flex items-end gap-2">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <div>
@@ -161,11 +172,11 @@ export default async function AgentProfilePage({
                     name="role"
                     aria-label="Role"
                     defaultValue={agent.role}
-                    className={`${inputCls} w-36`}
+                    className={`${inputCls} w-40`}
                   >
-                    {ROLES.map((r) => (
+                    {roleOptions(agent.role).map((r) => (
                       <option key={r} value={r}>
-                        {r}
+                        {r === "super_admin" ? "super admin" : r}
                       </option>
                     ))}
                   </select>

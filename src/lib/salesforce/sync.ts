@@ -294,15 +294,17 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     managersPromoted = toPromote.length;
   }
 
-  // Delete synced-only users (never logged in) no longer referenced - keep
-  // both the SF agent set AND anyone who is a manager of record, so a manager
-  // without a debt team (thus absent from the agent query) is never reaped.
+  // Delete synced-only AGENTS (never logged in) no longer in Salesforce. Only
+  // role='agent' rows are reaped, so manually-created admins/managers/super
+  // admins seeded ahead of their first login are never deleted. Managers of
+  // record are kept by email too, belt-and-suspenders.
   const keepEmails = new Set(sfEmails);
   for (const link of plan.links) keepEmails.add(link.managerEmail);
   const { data: orphans } = await db
     .from("users")
     .select("id, email")
     .eq("org_id", org.id)
+    .eq("role", "agent")
     .is("auth_user_id", null);
   const toDelete = (orphans ?? [])
     .filter((u) => !keepEmails.has((u as { email: string }).email.toLowerCase()))
