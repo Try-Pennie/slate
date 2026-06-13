@@ -20,10 +20,12 @@ import {
   canEditOrgSettings,
   canEditOrgDefaults,
   roleLabel,
+  ROLES,
 } from "@/lib/auth/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
+import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
 import type {
@@ -253,6 +255,9 @@ export default async function AdminPage({
 }: {
   searchParams: Promise<{
     q?: string;
+    role?: string;
+    team?: string;
+    manager?: string;
     bookable?: string;
     imp_error?: string;
     synced?: string;
@@ -261,7 +266,12 @@ export default async function AdminPage({
 }) {
   const sp = await searchParams;
   const query = (sp.q ?? "").trim().toLowerCase();
-  const bookableOnly = sp.bookable === "1";
+  const roleFilter = sp.role ?? "";
+  const teamFilter = sp.team ?? "";
+  const managerFilter = sp.manager ?? "";
+  const bookableFilter = sp.bookable ?? ""; // "" all · "yes" · "no"
+  const hasFilter =
+    !!query || !!roleFilter || !!teamFilter || !!managerFilter || !!bookableFilter;
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) {
@@ -363,16 +373,54 @@ export default async function AdminPage({
   const pushHealthy =
     bookableAgents.length > 0 && watchedCount === bookableAgents.length;
 
-  const visibleAgents = users.filter((u) => {
-    if (bookableOnly && !u.bookable) return false;
-    if (!query) return true;
-    const hay = `${u.name ?? ""} ${u.email} ${u.role} ${attrToText(
-      u.attributes?.debt_team,
-    )} ${attrToText(u.attributes?.role)} ${attrToText(
-      u.attributes?.backend_service,
-    )}`.toLowerCase();
-    return hay.includes(query);
-  });
+  // Debt team(s) an agent belongs to (the attribute is a string or string[]).
+  const teamsOf = (u: User): string[] => {
+    const t = u.attributes?.debt_team;
+    return Array.isArray(t) ? t.map(String) : t != null ? [String(t)] : [];
+  };
+  // Sort key: surname (last whitespace-separated token of the display name),
+  // falling back to the email when there's no name.
+  const lastNameKey = (u: User): string => {
+    const name = (u.name ?? "").trim();
+    if (!name) return (u.email ?? "").toLowerCase();
+    const parts = name.split(/\s+/);
+    return parts[parts.length - 1].toLowerCase();
+  };
+
+  const filterCtl =
+    "h-11 rounded-sm border border-border bg-surface px-2.5 text-sm text-fg";
+  // Filter option lists, derived from the roster so they only offer real values.
+  const rolesPresent = ROLES.filter((r) => users.some((u) => u.role === r));
+  const teamOptions = [...new Set(users.flatMap(teamsOf))].sort();
+  const managerOptions = [
+    ...new Map(
+      users
+        .filter((u) => u.manager_id)
+        .map((u) => {
+          const m = users.find((x) => x.id === u.manager_id);
+          return [u.manager_id as string, m ? (m.name ?? m.email) : "Unknown"];
+        }),
+    ),
+  ].sort((a, b) => a[1].localeCompare(b[1]));
+
+  const visibleAgents = users
+    .filter((u) => {
+      if (roleFilter && u.role !== roleFilter) return false;
+      if (bookableFilter === "yes" && !u.bookable) return false;
+      if (bookableFilter === "no" && u.bookable) return false;
+      if (teamFilter && !teamsOf(u).includes(teamFilter)) return false;
+      if (managerFilter && u.manager_id !== managerFilter) return false;
+      if (query) {
+        const hay = `${u.name ?? ""} ${u.email}`.toLowerCase();
+        if (!hay.includes(query)) return false;
+      }
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        lastNameKey(a).localeCompare(lastNameKey(b)) ||
+        (a.name ?? a.email).localeCompare(b.name ?? b.email),
+    );
 
   return (
     <>
@@ -532,27 +580,74 @@ export default async function AdminPage({
             </form>
           )}
         </div>
-        <form method="get" className="mb-4 flex items-center gap-3">
+        <form method="get" className="mb-4 flex flex-wrap items-center gap-2">
           <input
             name="q"
             defaultValue={sp.q ?? ""}
-            placeholder="Search name, email, team…"
-            className={`${inputCls} w-64`}
+            placeholder="Search name or email…"
+            aria-label="Search by name or email"
+            className={`${inputCls} w-56`}
           />
-          <label className="flex items-center gap-1 text-xs text-fg-muted">
-            <input
-              type="checkbox"
-              name="bookable"
-              value="1"
-              defaultChecked={bookableOnly}
-              className="accent-pennie-sky"
-            />
-            bookable only
-          </label>
-          <button className={btnSecondaryCls}>
-            Search
-          </button>
-          {(query || bookableOnly) && (
+          <button className={btnSecondaryCls}>Search</button>
+
+          <AutoSubmitSelect
+            name="role"
+            defaultValue={roleFilter}
+            ariaLabel="Filter by role"
+            className={filterCtl}
+          >
+            <option value="">All roles</option>
+            {rolesPresent.map((r) => (
+              <option key={r} value={r}>
+                {roleLabel(r)}
+              </option>
+            ))}
+          </AutoSubmitSelect>
+
+          {teamOptions.length > 0 && (
+            <AutoSubmitSelect
+              name="team"
+              defaultValue={teamFilter}
+              ariaLabel="Filter by team"
+              className={filterCtl}
+            >
+              <option value="">All teams</option>
+              {teamOptions.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </AutoSubmitSelect>
+          )}
+
+          {managerOptions.length > 0 && (
+            <AutoSubmitSelect
+              name="manager"
+              defaultValue={managerFilter}
+              ariaLabel="Filter by manager"
+              className={filterCtl}
+            >
+              <option value="">All managers</option>
+              {managerOptions.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
+            </AutoSubmitSelect>
+          )}
+
+          <AutoSubmitSelect
+            name="bookable"
+            defaultValue={bookableFilter}
+            ariaLabel="Filter by bookable"
+            className={filterCtl}
+          >
+            <option value="">Any status</option>
+            <option value="yes">Bookable</option>
+            <option value="no">Not bookable</option>
+          </AutoSubmitSelect>
+
+          {hasFilter && (
             <a
               href="/admin"
               className="text-xs text-pennie-blue underline dark:text-pennie-sky"
@@ -560,7 +655,7 @@ export default async function AdminPage({
               clear
             </a>
           )}
-          <span className="text-xs text-fg-muted tabular-nums">
+          <span className="ml-auto text-xs text-fg-muted tabular-nums">
             showing {visibleAgents.length} of {users.length}
           </span>
         </form>
