@@ -608,16 +608,16 @@ export default async function AdminPage({
                       <Pill variant={`role-${u.role}`}>{u.role}</Pill>
                     </td>
                     <td className="px-3 py-3 text-fg-muted">
-                      {attrToText(u.attributes?.debt_team) || "—"}
+                      {attrToText(u.attributes?.debt_team) || "-"}
                     </td>
                     <td className="px-3 py-3 text-fg-muted">
-                      {mgr ? (mgr.name ?? mgr.email) : "—"}
+                      {mgr ? (mgr.name ?? mgr.email) : "-"}
                     </td>
                     <td className="px-3 py-3">
                       {u.bookable ? (
                         <Pill variant="status-ok">Bookable</Pill>
                       ) : (
-                        <span className="text-fg-muted">—</span>
+                        <span className="text-fg-muted">-</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
