@@ -134,7 +134,7 @@ export async function AppHeader({
         <nav aria-label="Slate sections" className="flex items-center gap-5">
           {oooOnly ? (
             <NavTab href="/me" current={active === "me"}>
-              Time off
+              My Requests
             </NavTab>
           ) : (
             <>
@@ -142,11 +142,11 @@ export async function AppHeader({
                 Admin
               </NavTab>
               <NavTab href="/me" current={active === "me"}>
-                My availability
+                My Availability
               </NavTab>
               {showTimeOff && (
                 <NavTab href="/admin/ooo" current={active === "ooo"}>
-                  Time off
+                  Team Requests
                 </NavTab>
               )}
             </>
