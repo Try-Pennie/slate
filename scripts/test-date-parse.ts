@@ -4,6 +4,7 @@ import {
   parseTypedDate,
   dateFromParts,
   roundDownToQuarterHour,
+  roundUpToQuarterHour,
 } from "../src/lib/date/parse.ts";
 
 let failures = 0;
@@ -80,7 +81,27 @@ for (const [input, want] of roundCases) {
 }
 // Malformed / empty stays untouched.
 for (const passthrough of ["", "nope", "9", "25:00"]) {
-  assert(roundDownToQuarterHour(passthrough) === passthrough, `round leaves "${passthrough}" unchanged`);
+  assert(roundDownToQuarterHour(passthrough) === passthrough, `round-down leaves "${passthrough}" unchanged`);
+}
+
+// roundUpToQuarterHour: END times snap UP to :00/:15/:30/:45.
+const roundUpCases: [string, string][] = [
+  ["17:00", "17:00"],
+  ["17:01", "17:15"],
+  ["17:14", "17:15"],
+  ["17:15", "17:15"],
+  ["17:16", "17:30"],
+  ["17:45", "17:45"],
+  ["17:46", "18:00"],
+  ["00:00", "00:00"],
+  ["23:46", "23:45"], // clamp: no same-day quarter above 23:45
+  ["23:50", "23:45"],
+];
+for (const [input, want] of roundUpCases) {
+  assert(roundUpToQuarterHour(input) === want, `round-up ${input} -> ${want} (got ${roundUpToQuarterHour(input)})`);
+}
+for (const passthrough of ["", "nope", "25:00"]) {
+  assert(roundUpToQuarterHour(passthrough) === passthrough, `round-up leaves "${passthrough}" unchanged`);
 }
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);

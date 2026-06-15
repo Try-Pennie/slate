@@ -285,6 +285,7 @@ export default async function AgentProfilePage({
               <TimeField
                 name="end"
                 ariaLabel="End"
+                round="up"
                 defaultValue={minutesToTime(end)}
                 className={inputCls}
               />

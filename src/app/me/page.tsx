@@ -354,6 +354,7 @@ export default async function MePage({
                   <TimeField
                     name="end"
                     ariaLabel="End"
+                    round="up"
                     defaultValue={minutesToTime(end)}
                     className={inputCls}
                   />
@@ -458,6 +459,7 @@ export default async function MePage({
                 <TimeField
                   name="end_time"
                   ariaLabel="End time"
+                  round="up"
                   defaultValue={editEnd?.toFormat("HH:mm") ?? ""}
                   className={`${fieldBaseCls} w-40`}
                 />

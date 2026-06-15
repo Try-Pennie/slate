@@ -5,7 +5,10 @@ import { revalidatePath } from "next/cache";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { normalizeTzLabel } from "@/lib/ooo/core";
-import { roundDownToQuarterHour } from "@/lib/date/parse";
+import {
+  roundDownToQuarterHour,
+  roundUpToQuarterHour,
+} from "@/lib/date/parse";
 import { cancelOoo, modifyOoo, submitOoo } from "@/lib/ooo/service";
 import type { SubmitOooInput } from "@/lib/ooo/service";
 
@@ -33,14 +36,15 @@ function windowFrom(form: FormData): SubmitOooInput | { error: string } {
   if (!startDate || !endDate) {
     return { error: "Pick a start and end date for your time off." };
   }
-  // Times snap down to a quarter hour (matches the picker; safety net if the
-  // client value slips through off-grid). All-day uses the full day as-is.
+  // Times snap to a quarter hour (matches the pickers; safety net if a client
+  // value slips through off-grid). Start rounds down, end rounds up so the
+  // window never shrinks. All-day uses the full day as-is.
   const startTime = allDay
     ? "00:00"
     : roundDownToQuarterHour(String(form.get("start_time") ?? ""));
   const endTime = allDay
     ? "23:59"
-    : roundDownToQuarterHour(String(form.get("end_time") ?? ""));
+    : roundUpToQuarterHour(String(form.get("end_time") ?? ""));
   if (!startTime || !endTime) {
     return { error: "Pick start and end times, or choose all day." };
   }
