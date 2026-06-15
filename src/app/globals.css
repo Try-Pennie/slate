@@ -30,6 +30,9 @@
   /* ---------------- Accents ---------------- */
   --pennie-sky:         rgb(130, 208, 255); /* primary action blue */
   --pennie-sky-soft:    rgb(236, 248, 255); /* sky wash */
+  /* Translucent sky tint for the active date/time segment — readable over both
+     the light beige field and the dark navy field (sky-soft is light-only). */
+  --pennie-seg-active:  color-mix(in srgb, var(--accent) 18%, transparent);
   --pennie-sky-deep:    rgb(67, 159, 225);  /* hover / deep sky */
   --pennie-sky-2:       rgb(115, 162, 255); /* periwinkle variant */
   --pennie-blue:        rgb(72, 108, 202);  /* deep brand blue */
@@ -305,6 +308,13 @@ h1.pn-display {
   outline: 2px solid var(--focus-ring-line);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+}
+/* DateTimeField segments live inside one bordered field that already shows the
+   focus ring via focus-within. Suppress the per-segment ring (unlayered, higher
+   specificity than the bare :focus-visible above) so it isn't doubled inside. */
+.dt-seg:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 /* ---------------- Visually-hidden utility (S7) ---------------- */
