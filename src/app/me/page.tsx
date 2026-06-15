@@ -441,7 +441,7 @@ export default async function MePage({
                   name="start_time"
                   type="time"
                   aria-label="Start time"
-                  defaultValue={editStart?.toFormat("HH:mm") ?? "09:00"}
+                  defaultValue={editStart?.toFormat("HH:mm") ?? ""}
                   className={`${fieldBaseCls} w-40`}
                 />
               </div>
