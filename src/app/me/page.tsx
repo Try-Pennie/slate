@@ -342,20 +342,18 @@ export default async function MePage({
                 </div>
                 <div>
                   <label className={labelCls}>Start</label>
-                  <input
+                  <TimeField
                     name="start"
-                    type="time"
-                    aria-label="Start"
+                    ariaLabel="Start"
                     defaultValue={minutesToTime(start)}
                     className={inputCls}
                   />
                 </div>
                 <div>
                   <label className={labelCls}>End</label>
-                  <input
+                  <TimeField
                     name="end"
-                    type="time"
-                    aria-label="End"
+                    ariaLabel="End"
                     defaultValue={minutesToTime(end)}
                     className={inputCls}
                   />

@@ -19,6 +19,7 @@ import {
 } from "@/app/admin/actions";
 import { AppHeader } from "@/components/AppHeader";
 import { DayToggles } from "@/components/ui/DayToggles";
+import { TimeField } from "@/components/ui/TimeField";
 import { labelCls, inputCls, btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import type { Attributes, Organization, User } from "@/lib/db/types";
@@ -272,20 +273,18 @@ export default async function AgentProfilePage({
             </div>
             <div>
               <label className={labelCls}>Start</label>
-              <input
+              <TimeField
                 name="start"
-                type="time"
-                aria-label="Start"
+                ariaLabel="Start"
                 defaultValue={minutesToTime(start)}
                 className={inputCls}
               />
             </div>
             <div>
               <label className={labelCls}>End</label>
-              <input
+              <TimeField
                 name="end"
-                type="time"
-                aria-label="End"
+                ariaLabel="End"
                 defaultValue={minutesToTime(end)}
                 className={inputCls}
               />
