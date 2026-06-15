@@ -26,6 +26,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
+import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
 import type {
@@ -525,20 +526,18 @@ export default async function AdminPage({
           </div>
           <div>
             <label className={labelCls}>Start</label>
-            <input
+            <TimeField
               name="default_start"
-              type="time"
-              aria-label="Start"
+              ariaLabel="Start"
               defaultValue={minutesToTime(org.default_start_minute)}
               className={inputCls}
             />
           </div>
           <div>
             <label className={labelCls}>End</label>
-            <input
+            <TimeField
               name="default_end"
-              type="time"
-              aria-label="End"
+              ariaLabel="End"
               defaultValue={minutesToTime(org.default_end_minute)}
               className={inputCls}
             />

@@ -623,7 +623,10 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
+// Working-hours times snap down to a quarter hour (matches the 15-min pickers;
+// safety net if an off-grid value slips through).
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
+  const total = (h || 0) * 60 + (m || 0);
+  return Math.floor(total / 15) * 15;
 }
