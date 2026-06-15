@@ -31,6 +31,21 @@ export function parseTypedDate(text: string): DateTime | null {
 }
 
 /**
+ * Round an "HH:MM" time string DOWN to the nearest quarter hour (:00/:15/:30/
+ * :45) — e.g. 09:01 and 09:14 both become 09:00. Returns the input unchanged if
+ * it isn't a well-formed time (empty stays empty).
+ */
+export function roundDownToQuarterHour(hhmm: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) return hhmm;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return hhmm;
+  const rounded = Math.floor(min / 15) * 15;
+  return `${String(h).padStart(2, "0")}:${String(rounded).padStart(2, "0")}`;
+}
+
+/**
  * Build a start-of-day DateTime from separate month/day/year segments, or null
  * if any segment is malformed or the combination isn't a real calendar date
  * (e.g. month 13, or Feb 30). Year must be 4 digits; month/day 1-2 digits.

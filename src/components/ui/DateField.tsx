@@ -160,7 +160,7 @@ export function DateField({
           onFocus={() => setOpen(true)}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)}
           onKeyDown={(e) => segKeyDown(e, null, ddRef)}
-          className={`w-[2.5ch] ${segCls}`}
+          className={`w-[3.5ch] ${segCls}`}
         />
         <span className="text-fg-muted">/</span>
         <input
@@ -172,7 +172,7 @@ export function DateField({
           onFocus={() => setOpen(true)}
           onChange={(e) => handleSeg("dd", e.target.value, yyRef)}
           onKeyDown={(e) => segKeyDown(e, mmRef, yyRef)}
-          className={`w-[2.5ch] ${segCls}`}
+          className={`w-[3.5ch] ${segCls}`}
         />
         <span className="text-fg-muted">/</span>
         <input
@@ -184,7 +184,7 @@ export function DateField({
           onFocus={() => setOpen(true)}
           onChange={(e) => handleSeg("yyyy", e.target.value, null)}
           onKeyDown={(e) => segKeyDown(e, ddRef, null)}
-          className={`w-[4.5ch] ${segCls}`}
+          className={`w-[5.5ch] ${segCls}`}
         />
         <button
           type="button"

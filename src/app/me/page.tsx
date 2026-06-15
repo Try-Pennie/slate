@@ -11,6 +11,7 @@ import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { DateField } from "@/components/ui/DateField";
+import { TimeField } from "@/components/ui/TimeField";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -437,10 +438,9 @@ export default async function MePage({
                   max={bounds.maxISO}
                   todayISO={bounds.todayISO}
                 />
-                <input
+                <TimeField
                   name="start_time"
-                  type="time"
-                  aria-label="Start time"
+                  ariaLabel="Start time"
                   defaultValue={editStart?.toFormat("HH:mm") ?? ""}
                   className={`${fieldBaseCls} w-40`}
                 />
@@ -457,10 +457,9 @@ export default async function MePage({
                   max={bounds.maxISO}
                   todayISO={bounds.todayISO}
                 />
-                <input
+                <TimeField
                   name="end_time"
-                  type="time"
-                  aria-label="End time"
+                  ariaLabel="End time"
                   defaultValue={editEnd?.toFormat("HH:mm") ?? ""}
                   className={`${fieldBaseCls} w-40`}
                 />
