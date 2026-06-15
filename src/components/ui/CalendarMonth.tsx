@@ -6,7 +6,7 @@ import { DateTime } from "luxon";
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 /**
- * The internal month-grid calendar (used by the time-off DateField and any
+ * The internal month-grid calendar (used by the time-off DateTimeField and any
  * future internal date inputs). Deliberately separate from the consumer
  * `BookerCalendar` — the booking embed and the internal tools have different
  * futures, so they're decoupled and free to diverge. Presentation + keyboard
