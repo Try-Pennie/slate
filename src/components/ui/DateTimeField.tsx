@@ -201,7 +201,7 @@ export function DateTimeField({
   // the whole field rings via focus-within; the active segment gets a subtle
   // sky-soft fill instead, like a native date input's highlighted part.
   const segCls =
-    "dt-seg rounded-sm bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted focus:bg-pennie-sky-soft";
+    "dt-seg rounded-sm bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted focus:bg-[var(--pennie-seg-active)]";
   const popSel =
     "h-9 rounded-sm border border-border bg-surface px-2 text-sm text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
 

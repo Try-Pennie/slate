@@ -30,6 +30,9 @@
   /* ---------------- Accents ---------------- */
   --pennie-sky:         rgb(130, 208, 255); /* primary action blue */
   --pennie-sky-soft:    rgb(236, 248, 255); /* sky wash */
+  /* Translucent sky tint for the active date/time segment — readable over both
+     the light beige field and the dark navy field (sky-soft is light-only). */
+  --pennie-seg-active:  color-mix(in srgb, var(--accent) 18%, transparent);
   --pennie-sky-deep:    rgb(67, 159, 225);  /* hover / deep sky */
   --pennie-sky-2:       rgb(115, 162, 255); /* periwinkle variant */
   --pennie-blue:        rgb(72, 108, 202);  /* deep brand blue */
