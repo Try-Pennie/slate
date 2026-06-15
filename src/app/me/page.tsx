@@ -10,7 +10,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
-import { DateField } from "@/components/ui/DateField";
+import { DateTimeField } from "@/components/ui/DateTimeField";
 import { TimeField } from "@/components/ui/TimeField";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
@@ -422,45 +422,36 @@ export default async function MePage({
           >
             {editing && <input type="hidden" name="request_id" value={editing.id} />}
 
-            {/* Reads as one phrase: From [date] [time] to [date] [time].
-                Each half is a nowrap unit so it wraps as a clean pair. */}
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-12 shrink-0 text-sm font-semibold text-fg">
-                  From
-                </span>
-                <DateField
-                  name="start_date"
-                  ariaLabel="First day"
-                  defaultValue={editStart?.toISODate() ?? undefined}
-                  min={bounds.minISO}
-                  max={bounds.maxISO}
-                  todayISO={bounds.todayISO}
-                />
-                <TimeField
-                  name="start_time"
-                  ariaLabel="Start time"
-                  defaultValue={editStart?.toFormat("HH:mm") ?? ""}
-                />
+            <div className="space-y-4">
+              <div>
+                <label className={formLabelCls}>Start date and time</label>
+                <div className="mt-1">
+                  <DateTimeField
+                    nameDate="start_date"
+                    nameTime="start_time"
+                    ariaLabel="Start date and time"
+                    defaultDate={editStart?.toISODate() ?? undefined}
+                    defaultTime={editStart?.toFormat("HH:mm") ?? undefined}
+                    min={bounds.minISO}
+                    max={bounds.maxISO}
+                    todayISO={bounds.todayISO}
+                  />
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-12 shrink-0 text-sm font-semibold text-fg">
-                  to
-                </span>
-                <DateField
-                  name="end_date"
-                  ariaLabel="Last day"
-                  defaultValue={editEnd?.toISODate() ?? undefined}
-                  min={bounds.minISO}
-                  max={bounds.maxISO}
-                  todayISO={bounds.todayISO}
-                />
-                <TimeField
-                  name="end_time"
-                  ariaLabel="End time"
-                  round="up"
-                  defaultValue={editEnd?.toFormat("HH:mm") ?? ""}
-                />
+              <div>
+                <label className={formLabelCls}>End date and time</label>
+                <div className="mt-1">
+                  <DateTimeField
+                    nameDate="end_date"
+                    nameTime="end_time"
+                    ariaLabel="End date and time"
+                    defaultDate={editEnd?.toISODate() ?? undefined}
+                    defaultTime={editEnd?.toFormat("HH:mm") ?? undefined}
+                    min={bounds.minISO}
+                    max={bounds.maxISO}
+                    todayISO={bounds.todayISO}
+                  />
+                </div>
               </div>
             </div>
 
