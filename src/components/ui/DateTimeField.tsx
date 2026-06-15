@@ -169,6 +169,16 @@ export function DateTimeField({
     }
   };
 
+  // Clicking the field's padding or a separator (not a segment box or the icon
+  // button) should still drop the cursor into a segment ready to type, like the
+  // original OOO tool. Focus the first empty segment, else the month.
+  const focusFirstEmpty = () => {
+    const order: Array<[string, RefObject<HTMLInputElement | null>]> = [
+      [mm, mmRef], [dd, ddRef], [yyyy, yyRef], [hh, hhRef], [mi, miRef],
+    ];
+    (order.find(([v]) => !v)?.[1] ?? mmRef).current?.focus();
+  };
+
   const canPrev = view.startOf("month") > minD.startOf("month");
   const canNext = view.endOf("month") < maxD.endOf("month");
   const segCls =
@@ -182,7 +192,12 @@ export function DateTimeField({
       <input type="hidden" name={nameTime} value={timeHHMM} />
 
       <div role="group" aria-label={ariaLabel}
-        className="flex h-[44px] w-72 items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
+        onMouseDown={(e) => {
+          if ((e.target as HTMLElement).closest("input, button")) return;
+          e.preventDefault();
+          focusFirstEmpty();
+        }}
+        className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)}
           onKeyDown={(e) => segKeyDown(e, mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
