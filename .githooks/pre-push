@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Pre-push guard against the "merge-gap": pushing a follow-up commit onto a
+# branch whose PR has already merged/closed silently strands the commit (it
+# never reaches main). This refuses such a push and tells you to branch fresh
+# off main instead. Override with ALLOW_MERGED_PUSH=1 if you really mean it.
+#
+# Enabled via `git config core.hooksPath .githooks` (the package.json "prepare"
+# script sets this on install). No-ops when gh is missing or no PR exists.
+set -euo pipefail
+
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
+[ -z "$branch" ] && exit 0
+[ "$branch" = "main" ] && exit 0
+[ "${ALLOW_MERGED_PUSH:-}" = "1" ] && exit 0
+command -v gh >/dev/null 2>&1 || exit 0
+
+state="$(gh pr view "$branch" --json state --jq .state 2>/dev/null || echo '')"
+if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
+  echo "" >&2
+  echo "✋ pre-push blocked: the PR for '$branch' is already $state." >&2
+  echo "   Pushing here strands the commit — it won't reach main." >&2
+  echo "   Branch fresh off main instead, e.g.:" >&2
+  echo "     git checkout -b <new-branch> origin/main && git cherry-pick <sha>" >&2
+  echo "   Or, if intentional: ALLOW_MERGED_PUSH=1 git push ..." >&2
+  echo "" >&2
+  exit 1
+fi
+exit 0
