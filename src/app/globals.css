@@ -306,6 +306,13 @@ h1.pn-display {
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
 }
+/* DateTimeField segments live inside one bordered field that already shows the
+   focus ring via focus-within. Suppress the per-segment ring (unlayered, higher
+   specificity than the bare :focus-visible above) so it isn't doubled inside. */
+.dt-seg:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
 
 /* ---------------- Visually-hidden utility (S7) ---------------- */
 .sr-only {

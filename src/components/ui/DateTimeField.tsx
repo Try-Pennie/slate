@@ -72,12 +72,13 @@ export function DateTimeField({
   );
   const [open, setOpen] = useState(false);
 
+  const inRange = (d: DateTime) => d >= minD && d <= maxD;
   const dateObj = dateFromParts(mm, dd, yyyy);
-  const dateISO = dateObj ? dateObj.toISODate()! : "";
+  // Never emit an out-of-range date (e.g. a typed year past the ±2yr cap).
+  const dateISO = dateObj && inRange(dateObj) ? dateObj.toISODate()! : "";
   const hour12 = hh ? Number(hh) : 0;
   const minute = mi ? Number(mi) : 0;
   const timeHHMM = to24(hour12, minute, ap);
-  const inRange = (d: DateTime) => d >= minD && d <= maxD;
 
   const [view, setView] = useState(() => (dateObj ?? today).startOf("month"));
   const snapshot = useRef<{
@@ -96,7 +97,7 @@ export function DateTimeField({
 
   const openPopup = () => {
     snapshot.current = { mm, dd, yyyy, hh, mi, ap };
-    if (dateObj) setView(dateObj.startOf("month"));
+    if (dateObj && inRange(dateObj)) setView(dateObj.startOf("month"));
     setOpen(true);
   };
   const cancel = () => {
@@ -154,6 +155,21 @@ export function DateTimeField({
     if (advance) nextRef?.current?.focus();
   };
 
+  // On blur of the year, snap a completed (4-digit) out-of-range date back into
+  // the ±2yr cap — keep the typed month/day, pull only to the nearest bound.
+  const clampYearOnBlur = (v: string) => {
+    if (v.length !== 4) return;
+    let y = clamp(Number(v) || minD.year, minD.year, maxD.year);
+    const d = dateFromParts(mm, dd, String(y));
+    if (d && !inRange(d)) {
+      const c = d < minD ? minD : maxD;
+      setMm(pad(c.month)); setDd(pad(c.day)); y = c.year; setView(c.startOf("month"));
+    } else if (d) {
+      setView(d.startOf("month"));
+    }
+    if (String(y) !== v) setYyyy(String(y));
+  };
+
   const segKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
     value: string,
@@ -181,8 +197,11 @@ export function DateTimeField({
 
   const canPrev = view.startOf("month") > minD.startOf("month");
   const canNext = view.endOf("month") < maxD.endOf("month");
+  // `dt-seg` suppresses the global per-segment focus ring (globals.css) so only
+  // the whole field rings via focus-within; the active segment gets a subtle
+  // sky-soft fill instead, like a native date input's highlighted part.
   const segCls =
-    "bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted";
+    "dt-seg rounded-sm bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted focus:bg-pennie-sky-soft";
   const popSel =
     "h-9 rounded-sm border border-border bg-surface px-2 text-sm text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
 
@@ -208,6 +227,7 @@ export function DateTimeField({
         <span className="text-fg-muted">/</span>
         <input ref={yyRef} inputMode="numeric" aria-label={`${ariaLabel}, year`} placeholder="YYYY" value={yyyy}
           onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)}
+          onBlur={(e) => clampYearOnBlur(e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
 
         <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
