@@ -179,9 +179,12 @@ export function DateTimeField({
     if (e.key === "Backspace" && value === "" && prevRef) {
       e.preventDefault();
       prevRef.current?.focus();
-    } else if ((e.key === "/" || e.key === ":") && nextRef) {
+    } else if (((e.key === "/" || e.key === ":") || e.key === "ArrowRight") && nextRef) {
       e.preventDefault();
       nextRef.current?.focus();
+    } else if (e.key === "ArrowLeft" && prevRef) {
+      e.preventDefault();
+      prevRef.current?.focus();
     }
   };
 
@@ -253,6 +256,7 @@ export function DateTimeField({
             if (k === "a") { e.preventDefault(); setAp("AM"); }
             else if (k === "p") { e.preventDefault(); setAp("PM"); }
             else if (k === "arrowup" || k === "arrowdown") { e.preventDefault(); setAp(ap === "AM" ? "PM" : "AM"); }
+            else if (k === "arrowleft") { e.preventDefault(); miRef.current?.focus(); }
             else if (k === "backspace" && hhRef) { e.preventDefault(); miRef.current?.focus(); }
             else if (e.key.length === 1) e.preventDefault();
           }}
