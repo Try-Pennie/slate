@@ -1,6 +1,6 @@
-// Tests for the date field's free-text parser.
+// Tests for the date field's parsers (paste free-text + segmented parts).
 // Run: node --experimental-strip-types scripts/test-date-parse.ts
-import { parseTypedDate } from "../src/lib/date/parse.ts";
+import { parseTypedDate, dateFromParts } from "../src/lib/date/parse.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -43,6 +43,18 @@ assert(
   parseTypedDate("  3/14/2027  ")?.toISODate() === "2027-03-14",
   "surrounding whitespace is trimmed",
 );
+
+// dateFromParts: segmented MM/DD/YYYY entry.
+assert(dateFromParts("03", "14", "2027")?.toISODate() === "2027-03-14", "parts 03/14/2027");
+assert(dateFromParts("3", "14", "2027")?.toISODate() === "2027-03-14", "parts tolerate 1-digit month");
+assert(dateFromParts("12", "31", "2028")?.toISODate() === "2028-12-31", "parts 12/31/2028");
+// Invalid combinations return null (never a bogus date).
+for (const [m, d, y] of [["13", "01", "2027"], ["02", "30", "2026"], ["00", "10", "2027"], ["06", "00", "2027"]]) {
+  assert(dateFromParts(m, d, y) === null, `parts ${m}/${d}/${y} -> null`);
+}
+// Incomplete segments (year not yet 4 digits) return null.
+assert(dateFromParts("06", "20", "20") === null, "incomplete year -> null");
+assert(dateFromParts("", "", "") === null, "empty parts -> null");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
