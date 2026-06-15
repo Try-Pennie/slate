@@ -6,6 +6,7 @@ import { dateFromParts } from "@/lib/date/parse";
 import { CalendarMonth } from "@/components/ui/CalendarMonth";
 
 const pad = (n: number) => String(n).padStart(2, "0");
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 function to24(hour12: number, minute: number, ampm: "AM" | "PM"): string {
   if (!hour12) return "";
@@ -13,14 +14,20 @@ function to24(hour12: number, minute: number, ampm: "AM" | "PM"): string {
   if (ampm === "PM") h += 12;
   return `${pad(h)}:${pad(minute)}`;
 }
+// Snap a minute to the nearest quarter hour, clamped to :45 so it never rolls
+// into the next hour.
+function snapMinute(m: number): number {
+  const n = Math.round(m / 15) * 15;
+  return n >= 60 ? 45 : n;
+}
 
 /**
- * Combined date + time picker (matches the original OOO tool): one field showing
- * "MM / DD / YYYY  h:mm AM" with a calendar icon. The date is typeable in fixed
- * digit segments; the calendar icon opens a popup with the month grid AND the
- * Hour / Minute (quarter-hour) / AM-PM pickers together, plus Cancel / Confirm.
+ * Combined date + time picker (matches the original OOO tool). One field with
+ * typeable segments — MM / DD / YYYY  HH : MM AM — and a calendar icon that
+ * opens a popup with the month grid AND Hour / Minute / AM-PM pickers plus
+ * Cancel / Confirm. Type the time or pick it; minutes snap to a quarter hour.
  * Submits the date and time as two hidden inputs (`nameDate` ISO, `nameTime`
- * 24h "HH:MM"), so the existing form/server are unchanged.
+ * 24h "HH:MM"), so the form/server are unchanged.
  */
 export function DateTimeField({
   nameDate,
@@ -50,35 +57,39 @@ export function DateTimeField({
   const [mm, setMm] = useState(initDate ? pad(initDate.month) : "");
   const [dd, setDd] = useState(initDate ? pad(initDate.day) : "");
   const [yyyy, setYyyy] = useState(initDate ? String(initDate.year) : "");
-  const [hour, setHour] = useState(
-    initTime ? Number(initTime[1]) % 12 || 12 : 0,
+  const [hh, setHh] = useState(
+    initTime ? pad(Number(initTime[1]) % 12 || 12) : "",
   );
-  const [minute, setMinute] = useState(initTime ? Number(initTime[2]) : 0);
-  const [ampm, setAmpm] = useState<"AM" | "PM">(
+  const [mi, setMi] = useState(initTime ? pad(Number(initTime[2])) : "");
+  const [ap, setAp] = useState<"AM" | "PM">(
     initTime && Number(initTime[1]) >= 12 ? "PM" : "AM",
   );
   const [open, setOpen] = useState(false);
 
   const dateObj = dateFromParts(mm, dd, yyyy);
   const dateISO = dateObj ? dateObj.toISODate()! : "";
-  const timeHHMM = to24(hour, minute, ampm);
+  const hour12 = hh ? Number(hh) : 0;
+  const minute = mi ? Number(mi) : 0;
+  const timeHHMM = to24(hour12, minute, ap);
   const inRange = (d: DateTime) => d >= minD && d <= maxD;
 
   const [view, setView] = useState(() => (dateObj ?? today).startOf("month"));
   const snapshot = useRef<{
-    mm: string; dd: string; yyyy: string;
-    hour: number; minute: number; ampm: "AM" | "PM";
+    mm: string; dd: string; yyyy: string; hh: string; mi: string; ap: "AM" | "PM";
   } | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const mmRef = useRef<HTMLInputElement>(null);
   const ddRef = useRef<HTMLInputElement>(null);
   const yyRef = useRef<HTMLInputElement>(null);
+  const hhRef = useRef<HTMLInputElement>(null);
+  const miRef = useRef<HTMLInputElement>(null);
+  const apRef = useRef<HTMLInputElement>(null);
   const labelId = useId();
   const dialogId = `${labelId}-dialog`;
 
   const openPopup = () => {
-    snapshot.current = { mm, dd, yyyy, hour, minute, ampm };
+    snapshot.current = { mm, dd, yyyy, hh, mi, ap };
     if (dateObj) setView(dateObj.startOf("month"));
     setOpen(true);
   };
@@ -86,7 +97,7 @@ export function DateTimeField({
     const s = snapshot.current;
     if (s) {
       setMm(s.mm); setDd(s.dd); setYyyy(s.yyyy);
-      setHour(s.hour); setMinute(s.minute); setAmpm(s.ampm);
+      setHh(s.hh); setMi(s.mi); setAp(s.ap);
     }
     setOpen(false);
   };
@@ -95,7 +106,7 @@ export function DateTimeField({
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false); // click-away keeps the current selection (like Confirm)
+        setOpen(false);
       }
     };
     const onKey = (e: KeyboardEvent) => {
@@ -109,37 +120,44 @@ export function DateTimeField({
     };
   }, [open]);
 
+  // High first digit that can only be a single value: pad and move on.
+  const HIGH: Record<string, number> = { mm: 2, dd: 4, hh: 2, mi: 6 };
+  const setters: Record<string, (v: string) => void> = {
+    mm: setMm, dd: setDd, yyyy: setYyyy, hh: setHh, mi: setMi,
+  };
+
   const handleSeg = (
-    key: "mm" | "dd" | "yyyy",
+    key: "mm" | "dd" | "yyyy" | "hh" | "mi",
     raw: string,
     nextRef: RefObject<HTMLInputElement | null> | null,
   ) => {
     let digits = raw.replace(/\D/g, "").slice(0, key === "yyyy" ? 4 : 2);
     let advance = false;
     if (key !== "yyyy") {
-      if (digits.length === 1 && Number(digits) >= (key === "mm" ? 2 : 4)) {
-        digits = `0${digits}`;
-      }
+      if (digits.length === 1 && Number(digits) >= HIGH[key]) digits = `0${digits}`;
       advance = digits.length === 2;
+    } else {
+      advance = digits.length === 4;
     }
-    const next = { mm, dd, yyyy, [key]: digits };
-    if (key === "mm") setMm(digits);
-    else if (key === "dd") setDd(digits);
-    else setYyyy(digits);
-    const d = dateFromParts(next.mm, next.dd, next.yyyy);
-    if (d && inRange(d)) setView(d.startOf("month"));
+    setters[key](digits);
+    if (key === "mm" || key === "dd" || key === "yyyy") {
+      const next = { mm, dd, yyyy, [key]: digits };
+      const d = dateFromParts(next.mm, next.dd, next.yyyy);
+      if (d && inRange(d)) setView(d.startOf("month"));
+    }
     if (advance) nextRef?.current?.focus();
   };
 
   const segKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
+    value: string,
     prevRef: RefObject<HTMLInputElement | null> | null,
     nextRef: RefObject<HTMLInputElement | null> | null,
   ) => {
-    if (e.key === "Backspace" && e.currentTarget.value === "" && prevRef) {
+    if (e.key === "Backspace" && value === "" && prevRef) {
       e.preventDefault();
       prevRef.current?.focus();
-    } else if (e.key === "/" && nextRef) {
+    } else if ((e.key === "/" || e.key === ":") && nextRef) {
       e.preventDefault();
       nextRef.current?.focus();
     }
@@ -157,36 +175,51 @@ export function DateTimeField({
       <input type="hidden" name={nameDate} value={dateISO} />
       <input type="hidden" name={nameTime} value={timeHHMM} />
 
-      <div
-        role="group"
-        aria-label={ariaLabel}
-        className="flex h-[44px] w-64 items-center gap-0.5 rounded-sm border border-border bg-surface pl-2 pr-1 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky"
-      >
+      <div role="group" aria-label={ariaLabel}
+        className="flex h-[44px] w-72 items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)}
-          onKeyDown={(e) => segKeyDown(e, null, ddRef)} className={`w-[3ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={ddRef} inputMode="numeric" aria-label={`${ariaLabel}, day`} placeholder="DD" value={dd}
           onChange={(e) => handleSeg("dd", e.target.value, yyRef)}
-          onKeyDown={(e) => segKeyDown(e, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, dd, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={yyRef} inputMode="numeric" aria-label={`${ariaLabel}, year`} placeholder="YYYY" value={yyyy}
-          onChange={(e) => handleSeg("yyyy", e.target.value, null)}
-          onKeyDown={(e) => segKeyDown(e, ddRef, null)} className={`w-[5ch] ${segCls}`} />
+          onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)}
+          onKeyDown={(e) => segKeyDown(e, yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
+
+        <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
+
+        <input ref={hhRef} inputMode="numeric" aria-label={`${ariaLabel}, hour`} placeholder="HH" value={hh}
+          onChange={(e) => handleSeg("hh", e.target.value, miRef)}
+          onBlur={(e) => { const v = e.currentTarget.value; setHh(v ? pad(clamp(Number(v) || 12, 1, 12)) : ""); }}
+          onKeyDown={(e) => segKeyDown(e, hh, yyRef, miRef)} className={`w-[3ch] ${segCls}`} />
+        <span className="text-fg-muted">:</span>
+        <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
+          onChange={(e) => handleSeg("mi", e.target.value, apRef)}
+          onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0)) : ""); }}
+          onKeyDown={(e) => segKeyDown(e, mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
+        <input ref={apRef} aria-label={`${ariaLabel}, AM or PM`} placeholder="--" value={hh ? ap : ""}
+          onChange={() => {}}
+          onKeyDown={(e) => {
+            const k = e.key.toLowerCase();
+            if (k === "a") { e.preventDefault(); setAp("AM"); }
+            else if (k === "p") { e.preventDefault(); setAp("PM"); }
+            else if (k === "arrowup" || k === "arrowdown") { e.preventDefault(); setAp(ap === "AM" ? "PM" : "AM"); }
+            else if (k === "backspace" && hhRef) { e.preventDefault(); miRef.current?.focus(); }
+            else if (e.key.length === 1) e.preventDefault();
+          }}
+          className={`w-[3.5ch] ${segCls}`} />
 
         <button type="button" onClick={open ? cancel : openPopup}
           aria-label={open ? "Close calendar" : "Open calendar and time"}
           aria-haspopup="dialog" aria-expanded={open} aria-controls={dialogId}
-          className="ml-auto flex items-center gap-1.5 rounded-sm pl-2 pr-1 text-sm text-fg outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky">
-          <span className={`tabular-nums ${hour ? "text-fg" : "text-fg-muted"}`}>
-            {hour ? `${hour}:${pad(minute)} ${ampm}` : "--:-- --"}
-          </span>
-          <span className="flex h-8 w-7 items-center justify-center text-fg-muted">
-            <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-4 w-4">
-              <rect x="2" y="3" width="12" height="11" rx="2" />
-              <path d="M2 6h12M5.5 1.5v3M10.5 1.5v3" strokeLinecap="round" />
-            </svg>
-          </span>
+          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky">
+          <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-4 w-4">
+            <rect x="2" y="3" width="12" height="11" rx="2" />
+            <path d="M2 6h12M5.5 1.5v3M10.5 1.5v3" strokeLinecap="round" />
+          </svg>
         </button>
       </div>
 
@@ -210,22 +243,22 @@ export function DateTimeField({
           />
 
           <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-3">
-            <select aria-label={`${ariaLabel} hour`} value={hour}
-              onChange={(e) => setHour(Number(e.target.value))} className={`${popSel} flex-1`}>
-              <option value={0}>--</option>
+            <select aria-label={`${ariaLabel} hour`} value={hh}
+              onChange={(e) => setHh(e.target.value)} className={`${popSel} flex-1`}>
+              <option value="">--</option>
               {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((h) => (
-                <option key={h} value={h}>{h}</option>
+                <option key={h} value={pad(h)}>{h}</option>
               ))}
             </select>
             <span aria-hidden="true" className="text-fg-muted">:</span>
-            <select aria-label={`${ariaLabel} minute`} value={minute}
-              onChange={(e) => setMinute(Number(e.target.value))} className={`${popSel} flex-1`}>
+            <select aria-label={`${ariaLabel} minute`} value={pad(snapMinute(minute))}
+              onChange={(e) => setMi(e.target.value)} className={`${popSel} flex-1`}>
               {[0, 15, 30, 45].map((m) => (
-                <option key={m} value={m}>{pad(m)}</option>
+                <option key={m} value={pad(m)}>{pad(m)}</option>
               ))}
             </select>
-            <select aria-label={`${ariaLabel} AM or PM`} value={ampm}
-              onChange={(e) => setAmpm(e.target.value as "AM" | "PM")} className={`${popSel} flex-1`}>
+            <select aria-label={`${ariaLabel} AM or PM`} value={ap}
+              onChange={(e) => setAp(e.target.value as "AM" | "PM")} className={`${popSel} flex-1`}>
               <option value="AM">AM</option>
               <option value="PM">PM</option>
             </select>
