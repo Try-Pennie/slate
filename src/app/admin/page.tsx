@@ -538,6 +538,7 @@ export default async function AdminPage({
             <TimeField
               name="default_end"
               ariaLabel="End"
+              round="up"
               defaultValue={minutesToTime(org.default_end_minute)}
               className={inputCls}
             />

@@ -19,6 +19,7 @@ import {
   canSetRole,
   isRole,
 } from "@/lib/auth/roles";
+import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { recordAudit, type AuditAction } from "@/lib/audit";
@@ -134,7 +135,7 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
     String(form.get("timezone") ?? "America/New_York"),
     weekdaysFrom(form),
     toMinutes(String(form.get("start") ?? "09:00")),
-    toMinutes(String(form.get("end") ?? "17:00")),
+    toMinutes(roundUpToQuarterHour(String(form.get("end") ?? "17:00"))),
   );
   revalidatePath("/me");
 }
@@ -279,7 +280,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   await requireManageAgent(userId, "agent.hours");
   const timezone = String(form.get("timezone") ?? "America/New_York");
   const startMinute = toMinutes(String(form.get("start") ?? "09:00"));
-  const endMinute = toMinutes(String(form.get("end") ?? "17:00"));
+  const endMinute = toMinutes(roundUpToQuarterHour(String(form.get("end") ?? "17:00")));
   const weekdays = [1, 2, 3, 4, 5, 6, 7].filter((d) =>
     form.get(`day_${d}`),
   );
@@ -328,7 +329,9 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
     .update({
       default_timezone: String(form.get("default_timezone") ?? "America/New_York"),
       default_start_minute: toMinutes(String(form.get("default_start") ?? "09:00")),
-      default_end_minute: toMinutes(String(form.get("default_end") ?? "17:00")),
+      default_end_minute: toMinutes(
+        roundUpToQuarterHour(String(form.get("default_end") ?? "17:00")),
+      ),
       default_weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
     })
     .eq("id", admin.org_id);
