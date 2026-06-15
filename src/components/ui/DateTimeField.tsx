@@ -76,7 +76,10 @@ export function DateTimeField({
   const dateObj = dateFromParts(mm, dd, yyyy);
   // Never emit an out-of-range date (e.g. a typed year past the ±2yr cap).
   const dateISO = dateObj && inRange(dateObj) ? dateObj.toISODate()! : "";
-  const hour12 = hh ? Number(hh) : 0;
+  // A non-empty hour of 0 (a lone typed "0", or "00") means 12 o'clock, matching
+  // the blur clamp — otherwise to24 would treat it as "no hour" and emit an empty
+  // time, so the server rejects "0:MM" until a second digit is typed.
+  const hour12 = hh ? Number(hh) || 12 : 0;
   const minute = mi ? Number(mi) : 0;
   const timeHHMM = to24(hour12, minute, ap);
 
