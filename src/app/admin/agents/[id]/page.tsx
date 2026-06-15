@@ -277,7 +277,7 @@ export default async function AgentProfilePage({
                 name="start"
                 ariaLabel="Start"
                 defaultValue={minutesToTime(start)}
-                className={inputCls}
+                className="mt-1"
               />
             </div>
             <div>
@@ -287,7 +287,7 @@ export default async function AgentProfilePage({
                 ariaLabel="End"
                 round="up"
                 defaultValue={minutesToTime(end)}
-                className={inputCls}
+                className="mt-1"
               />
             </div>
             <button className={btnCls}>Save hours</button>

@@ -530,7 +530,7 @@ export default async function AdminPage({
               name="default_start"
               ariaLabel="Start"
               defaultValue={minutesToTime(org.default_start_minute)}
-              className={inputCls}
+              className="mt-1"
             />
           </div>
           <div>
@@ -540,7 +540,7 @@ export default async function AdminPage({
               ariaLabel="End"
               round="up"
               defaultValue={minutesToTime(org.default_end_minute)}
-              className={inputCls}
+              className="mt-1"
             />
           </div>
           <button className={btnCls}>Save default</button>
