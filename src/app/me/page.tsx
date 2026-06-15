@@ -461,7 +461,7 @@ export default async function MePage({
                   name="end_time"
                   type="time"
                   aria-label="End time"
-                  defaultValue={editEnd?.toFormat("HH:mm") ?? "17:00"}
+                  defaultValue={editEnd?.toFormat("HH:mm") ?? ""}
                   className={`${fieldBaseCls} w-40`}
                 />
               </div>

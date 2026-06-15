@@ -3,8 +3,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { DateTime } from "luxon";
 import { parseTypedDate } from "@/lib/date/parse";
+import { CalendarMonth } from "@/components/ui/CalendarMonth";
 
-const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const DISPLAY = "LLL d, yyyy"; // "Jun 20, 2026"
 
 /**
@@ -106,11 +106,6 @@ export function DateField({
     }
   };
 
-  const start = view.startOf("month");
-  const lead = start.weekday % 7; // Luxon: 1=Mon..7=Sun -> Sunday-first column
-  const cells: (DateTime | null)[] = Array.from({ length: lead }, () => null);
-  for (let d = 1; d <= start.daysInMonth!; d++) cells.push(start.set({ day: d }));
-
   const canPrev = view.startOf("month") > minD.startOf("month");
   const canNext = view.endOf("month") < maxD.endOf("month");
 
@@ -172,75 +167,18 @@ export function DateField({
           id={dialogId}
           role="dialog"
           aria-label={ariaLabel}
-          aria-labelledby={labelId}
           className="absolute left-0 z-20 mt-1 w-72 rounded-md border border-border bg-surface p-3 shadow-pop"
         >
-          <div className="mb-2 flex items-center justify-between">
-            <button
-              type="button"
-              aria-label="Previous month"
-              disabled={!canPrev}
-              onClick={() => setView((v) => v.minus({ months: 1 }))}
-              className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-                <path d="M10 4L6 8l4 4" />
-              </svg>
-            </button>
-            <span id={labelId} className="text-sm font-semibold text-fg">
-              {view.toFormat("LLLL yyyy")}
-            </span>
-            <button
-              type="button"
-              aria-label="Next month"
-              disabled={!canNext}
-              onClick={() => setView((v) => v.plus({ months: 1 }))}
-              className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-                <path d="M6 4l4 4-4 4" />
-              </svg>
-            </button>
-          </div>
-
-          <div className="mb-1 grid grid-cols-7 text-center text-[11px] font-semibold text-fg-muted">
-            {WEEKDAYS.map((w, i) => (
-              <span key={i} className="py-1">
-                {w}
-              </span>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-7 gap-0.5">
-            {cells.map((d, i) => {
-              if (!d) return <span key={i} />;
-              const iso = d.toISODate();
-              const isSelected = selected?.hasSame(d, "day") ?? false;
-              const isToday = d.hasSame(today, "day");
-              const disabled = !inRange(d);
-              return (
-                <button
-                  key={iso}
-                  type="button"
-                  disabled={disabled}
-                  aria-pressed={isSelected}
-                  aria-label={d.toFormat("cccc, LLLL d, yyyy")}
-                  onClick={() => commit(d)}
-                  className={`flex h-9 items-center justify-center rounded-full text-sm tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky motion-reduce:transition-none ${
-                    disabled
-                      ? "cursor-not-allowed text-fg-muted opacity-30"
-                      : isSelected
-                        ? "bg-pennie-sky font-semibold text-pennie-graphite"
-                        : isToday
-                          ? "font-semibold text-pennie-blue hover:bg-pennie-sky-soft dark:text-pennie-sky"
-                          : "text-fg hover:bg-pennie-sky-soft"
-                  }`}
-                >
-                  {d.day}
-                </button>
-              );
-            })}
-          </div>
+          <CalendarMonth
+            month={view}
+            today={today}
+            onMonthChange={setView}
+            canPrev={canPrev}
+            canNext={canNext}
+            isSelected={(d) => selected?.hasSame(d, "day") ?? false}
+            isDisabled={(d) => !inRange(d)}
+            onSelect={commit}
+          />
         </div>
       )}
     </div>

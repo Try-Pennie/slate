@@ -4,6 +4,7 @@ import { DateTime } from "luxon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
+import { CalendarMonth } from "@/components/ui/CalendarMonth";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { labelColorFor } from "@/lib/brand-label";
 
@@ -38,7 +39,6 @@ const localZone = () =>
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
     : "America/New_York";
 
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** Avatar initials from the org name: "Pennie" -> "PE", "Acme Co" -> "AC". */
 function initials(name: string): string {
@@ -150,7 +150,6 @@ export default function Booker({
   // Brand accent overrides (inline, since the hex is dynamic). Undefined = keep
   // the palette default (green dots, themed ring/confirm).
   const dotStyle = brandColor ? { backgroundColor: brandColor } : undefined;
-  const ringStyle = brandColor ? { boxShadow: `inset 0 0 0 1.5px ${brandColor}` } : undefined;
   // Label picked by luminance: graphite for light brands (sky 7.36:1), beige
   // for dark ones (a graphite label on navy would be 1.5:1).
   const confirmStyle = brandColor
@@ -248,16 +247,6 @@ export default function Booker({
     document.addEventListener("keydown", onKeydown);
     return () => document.removeEventListener("keydown", onKeydown);
   }, [embedded]);
-
-  const monthCells = useMemo(() => {
-    const start = month.startOf("month");
-    const lead = start.weekday % 7; // Sunday-first column index
-    const cells: (DateTime | null)[] = Array.from({ length: lead }, () => null);
-    for (let d = 1; d <= start.daysInMonth!; d++) {
-      cells.push(start.set({ day: d }));
-    }
-    return cells;
-  }, [month]);
 
   const daySlots = activeDay ? (slotsByDay.get(activeDay) ?? []) : [];
 
@@ -435,85 +424,26 @@ export default function Booker({
 
         {/* Calendar */}
         <section className={`border-b p-6 ${c.border} md:border-b-0`}>
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className={`text-sm font-semibold ${c.title}`}>
-              {month.toFormat("LLLL")}{" "}
-              <span className={`font-normal ${c.faint}`}>{month.toFormat("yyyy")}</span>
-            </h2>
-            <div className="flex gap-1">
-              <button
-                aria-label="Previous month"
-                disabled={month.toMillis() <= today.startOf("month").toMillis()}
-                onClick={() => {
-                  setLoading(true);
-                  setMonth((m) => m.minus({ months: 1 }));
-                  setSelectedDay(null);
-                  setSelectedSlot(null);
-                }}
-                className={`inline-flex h-11 w-11 items-center justify-center rounded-md text-lg ${c.muted} ${c.navHover} disabled:opacity-30`}
-              >
-                ‹
-              </button>
-              <button
-                aria-label="Next month"
-                onClick={() => {
-                  setLoading(true);
-                  setMonth((m) => m.plus({ months: 1 }));
-                  setSelectedDay(null);
-                  setSelectedSlot(null);
-                }}
-                className={`inline-flex h-11 w-11 items-center justify-center rounded-md text-lg ${c.muted} ${c.navHover}`}
-              >
-                ›
-              </button>
-            </div>
-          </div>
-
-          <div className={`grid grid-cols-7 gap-1 text-center text-xs uppercase tracking-wide ${c.faint}`}>
-            {WEEKDAYS.map((d) => (
-              <div key={d} className="py-1">
-                {d}
-              </div>
-            ))}
-          </div>
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {monthCells.map((cell, i) => {
-              if (!cell) return <div key={`b${i}`} />;
-              const key = cell.toISODate()!;
-              const has = slotsByDay.has(key);
-              const isSelected = key === activeDay;
-              const isToday = key === today.toISODate();
-              return (
-                <button
-                  key={key}
-                  disabled={!has}
-                  onClick={() => {
-                    setSelectedDay(key);
-                    setSelectedSlot(null);
-                  }}
-                  aria-label={`${cell.toFormat("cccc, LLLL d")}${isToday ? ", today" : ""}`}
-                  aria-pressed={isSelected}
-                  aria-current={isToday ? "date" : undefined}
-                  style={isSelected ? ringStyle : undefined}
-                  className={[
-                    "relative aspect-square min-h-[44px] rounded-sm text-sm tabular-nums",
-                    has ? c.dayOn : c.dayOff,
-                    isSelected
-                      ? `font-semibold ${c.daySelected} ${brandColor ? "" : `ring-1 ${c.ring}`}`
-                      : "",
-                  ].join(" ")}
-                >
-                  {cell.day}
-                  {isToday && (
-                    <span
-                      className="absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-pennie-green"
-                      style={dotStyle}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          <CalendarMonth
+            month={month}
+            today={today}
+            canPrev={month.startOf("month") > today.startOf("month")}
+            canNext={true}
+            onMonthChange={(m) => {
+              setLoading(true);
+              setMonth(m);
+              setSelectedDay(null);
+              setSelectedSlot(null);
+            }}
+            isSelected={(d) => d.toISODate() === activeDay}
+            isDisabled={(d) => !slotsByDay.has(d.toISODate()!)}
+            onSelect={(d) => {
+              setSelectedDay(d.toISODate()!);
+              setSelectedSlot(null);
+            }}
+            selectedStyle={confirmStyle}
+            todayDotStyle={dotStyle}
+          />
         </section>
 
         {/* Times / booking form (the 420px cap is for the scrolling slot list only) */}
