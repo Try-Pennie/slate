@@ -1,7 +1,6 @@
-// Tests for the date field's parsers (paste free-text + segmented parts).
+// Tests for the date field's parsers (segmented parts + quarter-hour rounding).
 // Run: node --experimental-strip-types scripts/test-date-parse.ts
 import {
-  parseTypedDate,
   dateFromParts,
   roundDownToQuarterHour,
   roundUpToQuarterHour,
@@ -14,40 +13,6 @@ function assert(cond: boolean, msg: string) {
     failures++;
   } else console.log("ok:", msg);
 }
-
-// Each accepted format resolves to the same day (ISO yyyy-MM-dd).
-const accepts: [string, string][] = [
-  ["3/14/2027", "2027-03-14"],
-  ["03/14/2027", "2027-03-14"],
-  ["3-14-2027", "2027-03-14"],
-  ["2027-03-14", "2027-03-14"],
-  ["Jun 20 2026", "2026-06-20"],
-  ["Jun 20, 2026", "2026-06-20"],
-  ["June 20 2026", "2026-06-20"],
-  ["June 20, 2026", "2026-06-20"],
-  ["6/20/26", "2026-06-20"],
-  // A bare 4-digit year is valid ISO (resolves to Jan 1 of that year).
-  ["2027", "2027-01-01"],
-];
-for (const [input, iso] of accepts) {
-  const d = parseTypedDate(input);
-  assert(d?.toISODate() === iso, `"${input}" -> ${iso} (got ${d?.toISODate() ?? "null"})`);
-  assert(
-    d?.hour === 0 && d?.minute === 0,
-    `"${input}" is normalized to start of day`,
-  );
-}
-
-// Unparseable / empty inputs return null (never a bogus date).
-for (const bad of ["", "   ", "not a date", "13/40/2027", "abc/def"]) {
-  assert(parseTypedDate(bad) === null, `"${bad}" -> null`);
-}
-
-// Whitespace is tolerated around a valid value.
-assert(
-  parseTypedDate("  3/14/2027  ")?.toISODate() === "2027-03-14",
-  "surrounding whitespace is trimmed",
-);
 
 // dateFromParts: segmented MM/DD/YYYY entry.
 assert(dateFromParts("03", "14", "2027")?.toISODate() === "2027-03-14", "parts 03/14/2027");
