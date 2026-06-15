@@ -445,6 +445,7 @@ export default async function MePage({
                     nameDate="end_date"
                     nameTime="end_time"
                     ariaLabel="End date and time"
+                    round="up"
                     defaultDate={editEnd?.toISODate() ?? undefined}
                     defaultTime={editEnd?.toFormat("HH:mm") ?? undefined}
                     min={bounds.minISO}

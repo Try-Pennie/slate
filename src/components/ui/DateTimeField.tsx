@@ -14,11 +14,15 @@ function to24(hour12: number, minute: number, ampm: "AM" | "PM"): string {
   if (ampm === "PM") h += 12;
   return `${pad(h)}:${pad(minute)}`;
 }
-// Snap a minute to the nearest quarter hour, clamped to :45 so it never rolls
-// into the next hour.
-function snapMinute(m: number): number {
-  const n = Math.round(m / 15) * 15;
-  return n >= 60 ? 45 : n;
+// Snap a minute to a quarter hour. START times round down, END times round up
+// (so rounding never shrinks the window); clamped to :45 so it never rolls into
+// the next hour.
+function snapMinute(m: number, dir: "down" | "up"): number {
+  if (dir === "up") {
+    const n = Math.ceil(m / 15) * 15;
+    return n >= 60 ? 45 : n;
+  }
+  return Math.floor(m / 15) * 15;
 }
 
 /**
@@ -38,6 +42,7 @@ export function DateTimeField({
   min,
   max,
   todayISO,
+  round = "down",
 }: {
   nameDate: string;
   nameTime: string;
@@ -47,6 +52,7 @@ export function DateTimeField({
   min: string;
   max: string;
   todayISO: string;
+  round?: "down" | "up";
 }) {
   const minD = DateTime.fromISO(min).startOf("day");
   const maxD = DateTime.fromISO(max).startOf("day");
@@ -198,7 +204,7 @@ export function DateTimeField({
         <span className="text-fg-muted">:</span>
         <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
           onChange={(e) => handleSeg("mi", e.target.value, apRef)}
-          onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0)) : ""); }}
+          onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0, round)) : ""); }}
           onKeyDown={(e) => segKeyDown(e, mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
         <input ref={apRef} aria-label={`${ariaLabel}, AM or PM`} placeholder="--" value={hh ? ap : ""}
           onChange={() => {}}
@@ -251,7 +257,7 @@ export function DateTimeField({
               ))}
             </select>
             <span aria-hidden="true" className="text-fg-muted">:</span>
-            <select aria-label={`${ariaLabel} minute`} value={pad(snapMinute(minute))}
+            <select aria-label={`${ariaLabel} minute`} value={pad(snapMinute(minute, round))}
               onChange={(e) => setMi(e.target.value)} className={`${popSel} flex-1`}>
               {[0, 15, 30, 45].map((m) => (
                 <option key={m} value={pad(m)}>{pad(m)}</option>
