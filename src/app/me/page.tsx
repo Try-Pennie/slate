@@ -528,12 +528,28 @@ export default async function MePage({
             </div>
 
             {past.length > 0 && (
-              <div>
-                <p className="pn-eyebrow text-fg-muted">
-                  Past <span className="tabular-nums">({past.length})</span>
-                </p>
-                <RequestList items={past} />
-              </div>
+              <details className="group">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky [&::-webkit-details-marker]:hidden">
+                  <svg
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
+                  >
+                    <path d="M6 4l4 4-4 4" />
+                  </svg>
+                  <span className="pn-eyebrow text-fg-muted">
+                    Past <span className="tabular-nums">({past.length})</span>
+                  </span>
+                </summary>
+                <div className="mt-3">
+                  <RequestList items={past} />
+                </div>
+              </details>
             )}
           </div>
         </section>
