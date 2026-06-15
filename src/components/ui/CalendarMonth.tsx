@@ -1,17 +1,18 @@
 "use client";
 
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DateTime } from "luxon";
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 /**
- * The one month-grid calendar shared by the Booker and the time-off DateField,
- * so every calendar in Slate looks and behaves the same. Presentation +
- * keyboard only: the parent owns selection/availability and passes per-day
- * state. Days are full keyboard-navigable (arrow keys roll across weeks and
- * months, Home/End jump to the week edges, PageUp/PageDown change month). The
- * selected day takes a sky fill (or `selectedStyle` for an embed brand color);
+ * The internal month-grid calendar (used by the time-off DateField and any
+ * future internal date inputs). Deliberately separate from the consumer
+ * `BookerCalendar` — the booking embed and the internal tools have different
+ * futures, so they're decoupled and free to diverge. Presentation + keyboard
+ * only: the parent owns selection/availability and passes per-day state. Full
+ * keyboard nav (arrows roll across weeks and months, Home/End jump to the week
+ * edges, PageUp/PageDown change month). The selected day takes a sky fill;
  * today shows a dot. Disabled days use `aria-disabled` (not the disabled
  * attribute) so they stay focusable for arrow navigation.
  */
@@ -24,8 +25,6 @@ export function CalendarMonth({
   isSelected,
   isDisabled,
   onSelect,
-  selectedStyle,
-  todayDotStyle,
 }: {
   month: DateTime;
   today: DateTime;
@@ -35,8 +34,6 @@ export function CalendarMonth({
   isSelected: (d: DateTime) => boolean;
   isDisabled: (d: DateTime) => boolean;
   onSelect: (d: DateTime) => void;
-  selectedStyle?: CSSProperties;
-  todayDotStyle?: CSSProperties;
 }) {
   const start = month.startOf("month");
   const lead = start.weekday % 7; // Luxon: 1=Mon..7=Sun -> Sunday-first column
@@ -146,7 +143,6 @@ export function CalendarMonth({
               aria-pressed={selected}
               aria-current={isToday ? "date" : undefined}
               aria-label={d.toFormat("cccc, LLLL d, yyyy")}
-              style={selected ? selectedStyle : undefined}
               onClick={() => {
                 if (!disabled) onSelect(d);
               }}
@@ -163,7 +159,6 @@ export function CalendarMonth({
               {isToday && !selected && (
                 <span
                   aria-hidden="true"
-                  style={todayDotStyle}
                   className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-pennie-green"
                 />
               )}

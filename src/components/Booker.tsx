@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
-import { CalendarMonth } from "@/components/ui/CalendarMonth";
+import { BookerCalendar } from "@/components/BookerCalendar";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { labelColorFor } from "@/lib/brand-label";
 
@@ -424,7 +424,7 @@ export default function Booker({
 
         {/* Calendar */}
         <section className={`border-b p-6 ${c.border} md:border-b-0`}>
-          <CalendarMonth
+          <BookerCalendar
             month={month}
             today={today}
             canPrev={month.startOf("month") > today.startOf("month")}
