@@ -76,7 +76,10 @@ export function DateTimeField({
   const dateObj = dateFromParts(mm, dd, yyyy);
   // Never emit an out-of-range date (e.g. a typed year past the ±2yr cap).
   const dateISO = dateObj && inRange(dateObj) ? dateObj.toISODate()! : "";
-  const hour12 = hh ? Number(hh) : 0;
+  // A non-empty hour of 0 (a lone typed "0", or "00") means 12 o'clock, matching
+  // the blur clamp — otherwise to24 would treat it as "no hour" and emit an empty
+  // time, so the server rejects "0:MM" until a second digit is typed.
+  const hour12 = hh ? Number(hh) || 12 : 0;
   const minute = mi ? Number(mi) : 0;
   const timeHHMM = to24(hour12, minute, ap);
 
@@ -155,19 +158,33 @@ export function DateTimeField({
     if (advance) nextRef?.current?.focus();
   };
 
-  // On blur of the year, snap a completed (4-digit) out-of-range date back into
-  // the ±2yr cap — keep the typed month/day, pull only to the nearest bound.
-  const clampYearOnBlur = (v: string) => {
-    if (v.length !== 4) return;
-    let y = clamp(Number(v) || minD.year, minD.year, maxD.year);
-    const d = dateFromParts(mm, dd, String(y));
+  // On blur of any date segment, auto-correct it (the behavior chosen for
+  // out-of-range years, extended to the whole date): month → 1..12; year → the
+  // ±2yr cap once 4 digits are in; day → the month's real length, but only once
+  // the year is known so leap days (Feb 29) aren't clamped prematurely; and a
+  // complete-but-out-of-range date is pulled to the nearest bound. The blurred
+  // segment is read from the event (fresh) since auto-advance fires blur with
+  // stale closure state. `which` is the segment that blurred, `raw` its value.
+  const normalizeDate = (which: "mm" | "dd" | "yyyy", raw: string) => {
+    let m = which === "mm" ? raw : mm;
+    let dy = which === "dd" ? raw : dd;
+    let y = which === "yyyy" ? raw : yyyy;
+    if (m) m = pad(clamp(Number(m) || 1, 1, 12));
+    if (y.length === 4) y = String(clamp(Number(y) || minD.year, minD.year, maxD.year));
+    if (m && dy && y.length === 4) {
+      const dim = DateTime.fromObject({ year: Number(y), month: Number(m) }).daysInMonth!;
+      dy = pad(clamp(Number(dy) || 1, 1, dim));
+    }
+    const d = dateFromParts(m, dy, y);
     if (d && !inRange(d)) {
       const c = d < minD ? minD : maxD;
-      setMm(pad(c.month)); setDd(pad(c.day)); y = c.year; setView(c.startOf("month"));
-    } else if (d) {
-      setView(d.startOf("month"));
+      m = pad(c.month); dy = pad(c.day); y = String(c.year);
     }
-    if (String(y) !== v) setYyyy(String(y));
+    if (m !== mm) setMm(m);
+    if (dy !== dd) setDd(dy);
+    if (y !== yyyy) setYyyy(y);
+    const fd = dateFromParts(m, dy, y);
+    if (fd && inRange(fd)) setView(fd.startOf("month"));
   };
 
   // Up/Down nudges a segment's value (native date-input behavior). The year
@@ -262,15 +279,17 @@ export function DateTimeField({
         className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus}
+          onBlur={(e) => normalizeDate("mm", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "mm", mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={ddRef} inputMode="numeric" aria-label={`${ariaLabel}, day`} placeholder="DD" value={dd}
           onChange={(e) => handleSeg("dd", e.target.value, yyRef)} onFocus={selectOnFocus}
+          onBlur={(e) => normalizeDate("dd", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "dd", dd, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={yyRef} inputMode="numeric" aria-label={`${ariaLabel}, year`} placeholder="YYYY" value={yyyy}
           onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)} onFocus={selectOnFocus}
-          onBlur={(e) => clampYearOnBlur(e.currentTarget.value)}
+          onBlur={(e) => normalizeDate("yyyy", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "yyyy", yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
 
         <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
