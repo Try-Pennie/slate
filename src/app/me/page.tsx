@@ -10,6 +10,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
+import { DateField } from "@/components/ui/DateField";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -61,6 +62,22 @@ function isUpcoming(r: OooRequest): boolean {
   if (r.status === "pending") return true;
   if (r.status === "approved") return Date.parse(r.ends_at) > Date.now();
   return false;
+}
+
+// Selectable date window for time-off: full calendar years, two back to two
+// forward (e.g. in 2026 -> Jan 1 2024 through Dec 31 2028). Module scope so the
+// Date.now() call doesn't trip react-hooks/purity in render.
+function dateBounds(zone: string): {
+  minISO: string;
+  maxISO: string;
+  todayISO: string;
+} {
+  const today = DateTime.now().setZone(zone).startOf("day");
+  return {
+    minISO: today.startOf("year").minus({ years: 2 }).toISODate()!,
+    maxISO: today.endOf("year").plus({ years: 2 }).toISODate()!,
+    todayISO: today.toISODate()!,
+  };
 }
 
 // Form fields get a visible border so they don't vanish on the white card
@@ -186,6 +203,7 @@ export default async function MePage({
   const editEnd = editing
     ? DateTime.fromISO(editing.ends_at, { zone: editing.display_tz_id })
     : null;
+  const bounds = dateBounds(defaultTz);
 
   const firstName = me.name?.trim().split(/\s+/)[0] ?? null;
   const summary = summarize(oooRequests);
@@ -411,13 +429,13 @@ export default async function MePage({
                 <span className="w-12 shrink-0 text-sm font-semibold text-fg">
                   From
                 </span>
-                <input
+                <DateField
                   name="start_date"
-                  type="date"
-                  required
-                  aria-label="First day"
+                  ariaLabel="First day"
                   defaultValue={editStart?.toISODate() ?? undefined}
-                  className={`${fieldBaseCls} w-44`}
+                  min={bounds.minISO}
+                  max={bounds.maxISO}
+                  todayISO={bounds.todayISO}
                 />
                 <input
                   name="start_time"
@@ -431,13 +449,13 @@ export default async function MePage({
                 <span className="w-12 shrink-0 text-sm font-semibold text-fg">
                   to
                 </span>
-                <input
+                <DateField
                   name="end_date"
-                  type="date"
-                  required
-                  aria-label="Last day"
+                  ariaLabel="Last day"
                   defaultValue={editEnd?.toISODate() ?? undefined}
-                  className={`${fieldBaseCls} w-44`}
+                  min={bounds.minISO}
+                  max={bounds.maxISO}
+                  todayISO={bounds.todayISO}
                 />
                 <input
                   name="end_time"
