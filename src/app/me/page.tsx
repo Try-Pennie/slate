@@ -346,7 +346,7 @@ export default async function MePage({
                     name="start"
                     ariaLabel="Start"
                     defaultValue={minutesToTime(start)}
-                    className={inputCls}
+                    className="mt-1"
                   />
                 </div>
                 <div>
@@ -356,7 +356,7 @@ export default async function MePage({
                     ariaLabel="End"
                     round="up"
                     defaultValue={minutesToTime(end)}
-                    className={inputCls}
+                    className="mt-1"
                   />
                 </div>
                 <button className={btnCls}>Save</button>
@@ -441,7 +441,6 @@ export default async function MePage({
                   name="start_time"
                   ariaLabel="Start time"
                   defaultValue={editStart?.toFormat("HH:mm") ?? ""}
-                  className={`${fieldBaseCls} w-40`}
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -461,7 +460,6 @@ export default async function MePage({
                   ariaLabel="End time"
                   round="up"
                   defaultValue={editEnd?.toFormat("HH:mm") ?? ""}
-                  className={`${fieldBaseCls} w-40`}
                 />
               </div>
             </div>
