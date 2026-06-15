@@ -195,6 +195,11 @@ export function DateTimeField({
     (order.find(([v]) => !v)?.[1] ?? mmRef).current?.focus();
   };
 
+  // Focusing a filled segment selects its contents, so the next keystroke
+  // replaces the whole value (start fresh) instead of editing one digit.
+  const selectOnFocus = (e: React.FocusEvent<HTMLInputElement>) =>
+    e.currentTarget.select();
+
   const canPrev = view.startOf("month") > minD.startOf("month");
   const canNext = view.endOf("month") < maxD.endOf("month");
   // `dt-seg` suppresses the global per-segment focus ring (globals.css) so only
@@ -218,27 +223,27 @@ export function DateTimeField({
         }}
         className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
-          onChange={(e) => handleSeg("mm", e.target.value, ddRef)}
+          onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus}
           onKeyDown={(e) => segKeyDown(e, mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={ddRef} inputMode="numeric" aria-label={`${ariaLabel}, day`} placeholder="DD" value={dd}
-          onChange={(e) => handleSeg("dd", e.target.value, yyRef)}
+          onChange={(e) => handleSeg("dd", e.target.value, yyRef)} onFocus={selectOnFocus}
           onKeyDown={(e) => segKeyDown(e, dd, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={yyRef} inputMode="numeric" aria-label={`${ariaLabel}, year`} placeholder="YYYY" value={yyyy}
-          onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)}
+          onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)} onFocus={selectOnFocus}
           onBlur={(e) => clampYearOnBlur(e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
 
         <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
 
         <input ref={hhRef} inputMode="numeric" aria-label={`${ariaLabel}, hour`} placeholder="HH" value={hh}
-          onChange={(e) => handleSeg("hh", e.target.value, miRef)}
+          onChange={(e) => handleSeg("hh", e.target.value, miRef)} onFocus={selectOnFocus}
           onBlur={(e) => { const v = e.currentTarget.value; setHh(v ? pad(clamp(Number(v) || 12, 1, 12)) : ""); }}
           onKeyDown={(e) => segKeyDown(e, hh, yyRef, miRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">:</span>
         <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
-          onChange={(e) => handleSeg("mi", e.target.value, apRef)}
+          onChange={(e) => handleSeg("mi", e.target.value, apRef)} onFocus={selectOnFocus}
           onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0, round)) : ""); }}
           onKeyDown={(e) => segKeyDown(e, mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
         <input ref={apRef} aria-label={`${ariaLabel}, AM or PM`} placeholder="--" value={hh ? ap : ""}
