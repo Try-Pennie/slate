@@ -170,8 +170,40 @@ export function DateTimeField({
     if (String(y) !== v) setYyyy(String(y));
   };
 
+  // Up/Down nudges a segment's value (native date-input behavior). The year
+  // CLAMPS to the ±2yr cap (never steps onto a bad year); month/day/hour wrap
+  // within their range; minute steps by 15. From empty, Up starts at the low
+  // end, Down at the high end.
+  const bump = (key: "mm" | "dd" | "yyyy" | "hh" | "mi", dir: 1 | -1) => {
+    if (key === "yyyy") {
+      const next = clamp((yyyy ? Number(yyyy) : today.year) + dir, minD.year, maxD.year);
+      setYyyy(String(next));
+      const d = dateFromParts(mm, dd, String(next));
+      if (d && inRange(d)) setView(d.startOf("month"));
+      return;
+    }
+    if (key === "mi") {
+      const steps = [0, 15, 30, 45];
+      const idx = (steps.indexOf(mi ? snapMinute(Number(mi), "down") : 0) + dir + 4) % 4;
+      setMi(pad(steps[idx]));
+      return;
+    }
+    const [lo, hi] = key === "dd" ? [1, 31] : [1, 12]; // mm, hh both 1..12
+    const cur = key === "mm" ? mm : key === "dd" ? dd : hh;
+    let n = (cur ? Number(cur) : dir > 0 ? lo - 1 : hi + 1) + dir;
+    if (n > hi) n = lo;
+    if (n < lo) n = hi;
+    const val = pad(n);
+    setters[key](val);
+    if (key === "mm" || key === "dd") {
+      const d = dateFromParts(key === "mm" ? val : mm, key === "dd" ? val : dd, yyyy);
+      if (d && inRange(d)) setView(d.startOf("month"));
+    }
+  };
+
   const segKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
+    key: "mm" | "dd" | "yyyy" | "hh" | "mi",
     value: string,
     prevRef: RefObject<HTMLInputElement | null> | null,
     nextRef: RefObject<HTMLInputElement | null> | null,
@@ -185,6 +217,9 @@ export function DateTimeField({
     } else if (e.key === "ArrowLeft" && prevRef) {
       e.preventDefault();
       prevRef.current?.focus();
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      bump(key, e.key === "ArrowUp" ? 1 : -1);
     }
   };
 
@@ -227,28 +262,28 @@ export function DateTimeField({
         className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus}
-          onKeyDown={(e) => segKeyDown(e, mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, "mm", mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={ddRef} inputMode="numeric" aria-label={`${ariaLabel}, day`} placeholder="DD" value={dd}
           onChange={(e) => handleSeg("dd", e.target.value, yyRef)} onFocus={selectOnFocus}
-          onKeyDown={(e) => segKeyDown(e, dd, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, "dd", dd, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={yyRef} inputMode="numeric" aria-label={`${ariaLabel}, year`} placeholder="YYYY" value={yyyy}
           onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)} onFocus={selectOnFocus}
           onBlur={(e) => clampYearOnBlur(e.currentTarget.value)}
-          onKeyDown={(e) => segKeyDown(e, yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, "yyyy", yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
 
         <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
 
         <input ref={hhRef} inputMode="numeric" aria-label={`${ariaLabel}, hour`} placeholder="HH" value={hh}
           onChange={(e) => handleSeg("hh", e.target.value, miRef)} onFocus={selectOnFocus}
           onBlur={(e) => { const v = e.currentTarget.value; setHh(v ? pad(clamp(Number(v) || 12, 1, 12)) : ""); }}
-          onKeyDown={(e) => segKeyDown(e, hh, yyRef, miRef)} className={`w-[3ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, "hh", hh, yyRef, miRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">:</span>
         <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
           onChange={(e) => handleSeg("mi", e.target.value, apRef)} onFocus={selectOnFocus}
           onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0, round)) : ""); }}
-          onKeyDown={(e) => segKeyDown(e, mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
+          onKeyDown={(e) => segKeyDown(e, "mi", mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
         <input ref={apRef} aria-label={`${ariaLabel}, AM or PM`} placeholder="--" value={hh ? ap : ""}
           onChange={() => {}}
           onKeyDown={(e) => {
