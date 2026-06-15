@@ -1,20 +1,20 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { DateTime } from "luxon";
-import { parseTypedDate } from "@/lib/date/parse";
+import { dateFromParts, parseTypedDate } from "@/lib/date/parse";
 import { CalendarMonth } from "@/components/ui/CalendarMonth";
 
-const DISPLAY = "LLL d, yyyy"; // "Jun 20, 2026"
+const pad = (n: number, len: number) => String(n).padStart(len, "0");
 
 /**
- * Pennie-branded date picker with a typeable text box. Type a date
- * (m/d/yyyy, "Jun 20 2026", or ISO) and the calendar jumps to that month with
- * the day selected; or click the calendar icon and pick. The popover matches
- * the Booker's calendar language (sky-soft days, sky fill on the selected day).
- * Selection is bounded by `min`/`max`; out-of-range days and month navigation
- * past the bounds are disabled. Submits the ISO date through a hidden input, so
- * it drops into the existing server-action form unchanged.
+ * Pennie-branded date picker with a segmented MM / DD / YYYY entry. Each segment
+ * accepts only digits and a fixed width, auto-advancing (and Tab moves) to the
+ * next; so you can't type nonsense and partial input is never lost. The month
+ * stays a number while typing (the calendar header carries the month word), and
+ * the calendar only highlights a day once all three segments form a real,
+ * in-range date. Click the calendar icon to pick instead. Submits the ISO date
+ * through a hidden input, so it drops into the existing form unchanged.
  */
 export function DateField({
   name,
@@ -38,18 +38,23 @@ export function DateField({
     ? DateTime.fromISO(defaultValue).startOf("day")
     : null;
 
-  const [value, setValue] = useState(defaultValue ?? ""); // ISO yyyy-MM-dd or ""
-  const [text, setText] = useState(initial ? initial.toFormat(DISPLAY) : "");
+  const [mm, setMm] = useState(initial ? pad(initial.month, 2) : "");
+  const [dd, setDd] = useState(initial ? pad(initial.day, 2) : "");
+  const [yyyy, setYyyy] = useState(initial ? String(initial.year) : "");
   const [open, setOpen] = useState(false);
-  const selected = value ? DateTime.fromISO(value).startOf("day") : null;
+
+  const inRange = (d: DateTime) => d >= minD && d <= maxD;
+  const parsed = dateFromParts(mm, dd, yyyy);
+  const value = parsed && inRange(parsed) ? parsed.toISODate()! : "";
+  const selected = value ? parsed : null;
   const [view, setView] = useState(() => (selected ?? today).startOf("month"));
 
   const rootRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const mmRef = useRef<HTMLInputElement>(null);
+  const ddRef = useRef<HTMLInputElement>(null);
+  const yyRef = useRef<HTMLInputElement>(null);
   const labelId = useId();
   const dialogId = `${labelId}-dialog`;
-
-  const inRange = (d: DateTime) => d >= minD && d <= maxD;
 
   useEffect(() => {
     if (!open) return;
@@ -69,84 +74,129 @@ export function DateField({
     };
   }, [open]);
 
-  // Pick a day (click or typed-then-Enter): set value + normalize the text box.
-  const commit = (d: DateTime) => {
-    setValue(d.toISODate()!);
-    setText(d.toFormat(DISPLAY));
+  // Fill all three segments at once (calendar click or paste).
+  const fillFrom = (d: DateTime) => {
+    setMm(pad(d.month, 2));
+    setDd(pad(d.day, 2));
+    setYyyy(String(d.year));
     setView(d.startOf("month"));
+  };
+  const commit = (d: DateTime) => {
+    fillFrom(d);
     setOpen(false);
   };
 
-  // Live as the user types: jump the calendar to a valid in-range date.
-  const onType = (raw: string) => {
-    setText(raw);
-    if (raw.trim() === "") {
-      setValue("");
-      return;
+  const handleSeg = (
+    key: "mm" | "dd" | "yyyy",
+    raw: string,
+    nextRef: RefObject<HTMLInputElement | null> | null,
+  ) => {
+    let digits = raw.replace(/\D/g, "").slice(0, key === "yyyy" ? 4 : 2);
+    let advance = false;
+    if (key === "yyyy") {
+      advance = false;
+    } else {
+      // A leading 2+ (month) or 4+ (day) can only be a single-digit value, so
+      // pad it and move on, mirroring native date fields.
+      if (digits.length === 1 && Number(digits) >= (key === "mm" ? 2 : 4)) {
+        digits = `0${digits}`;
+      }
+      advance = digits.length === 2;
     }
-    const d = parseTypedDate(raw);
-    if (d && inRange(d)) {
-      setValue(d.toISODate()!);
-      setView(d.startOf("month"));
-      setOpen(true);
+    const next = { mm, dd, yyyy, [key]: digits };
+    if (key === "mm") setMm(digits);
+    else if (key === "dd") setDd(digits);
+    else setYyyy(digits);
+
+    const d = dateFromParts(next.mm, next.dd, next.yyyy);
+    if (d && inRange(d)) setView(d.startOf("month"));
+    if (advance) nextRef?.current?.focus();
+  };
+
+  const segKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    prevRef: RefObject<HTMLInputElement | null> | null,
+    nextRef: RefObject<HTMLInputElement | null> | null,
+  ) => {
+    if (e.key === "Escape") setOpen(false);
+    else if (e.key === "Backspace" && e.currentTarget.value === "" && prevRef) {
+      e.preventDefault();
+      prevRef.current?.focus();
+    } else if (e.key === "/" && nextRef) {
+      e.preventDefault();
+      nextRef.current?.focus();
     }
   };
 
-  // On blur, settle the text box: canonicalize a valid entry, clear an empty
-  // one, or revert garbage back to the last good value.
-  const onBlur = () => {
-    const d = parseTypedDate(text);
+  const onPaste = (e: React.ClipboardEvent) => {
+    const d = parseTypedDate(e.clipboardData.getData("text"));
     if (d && inRange(d)) {
-      setValue(d.toISODate()!);
-      setText(d.toFormat(DISPLAY));
-    } else if (text.trim() === "") {
-      setValue("");
-    } else {
-      setText(value ? DateTime.fromISO(value).toFormat(DISPLAY) : "");
+      e.preventDefault();
+      fillFrom(d);
     }
   };
 
   const canPrev = view.startOf("month") > minD.startOf("month");
   const canNext = view.endOf("month") < maxD.endOf("month");
 
+  const segCls =
+    "bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted";
+
   return (
     <div ref={rootRef} className="relative">
       <input type="hidden" name={name} value={value} />
-      <div className="relative">
+      <div
+        role="group"
+        aria-label={ariaLabel}
+        onPaste={onPaste}
+        className="flex h-[44px] w-44 items-center rounded-sm border border-border bg-surface pl-2 pr-1 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky"
+      >
         <input
-          ref={inputRef}
-          type="text"
-          role="combobox"
-          aria-label={ariaLabel}
-          aria-expanded={open}
-          aria-controls={dialogId}
-          aria-haspopup="dialog"
-          autoComplete="off"
-          placeholder="mm/dd/yyyy"
-          value={text}
-          onChange={(e) => onType(e.target.value)}
+          ref={mmRef}
+          inputMode="numeric"
+          aria-label={`${ariaLabel}, month`}
+          placeholder="MM"
+          value={mm}
           onFocus={() => setOpen(true)}
-          onBlur={onBlur}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setOpen(false);
-            if (e.key === "Enter") {
-              const d = parseTypedDate(text);
-              if (d && inRange(d)) {
-                e.preventDefault();
-                commit(d);
-              }
-            }
-          }}
-          className="h-[44px] w-44 rounded-sm border border-border bg-surface pl-3 pr-9 text-sm text-fg tabular-nums placeholder:text-fg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+          onChange={(e) => handleSeg("mm", e.target.value, ddRef)}
+          onKeyDown={(e) => segKeyDown(e, null, ddRef)}
+          className={`w-[2.5ch] ${segCls}`}
+        />
+        <span className="text-fg-muted">/</span>
+        <input
+          ref={ddRef}
+          inputMode="numeric"
+          aria-label={`${ariaLabel}, day`}
+          placeholder="DD"
+          value={dd}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => handleSeg("dd", e.target.value, yyRef)}
+          onKeyDown={(e) => segKeyDown(e, mmRef, yyRef)}
+          className={`w-[2.5ch] ${segCls}`}
+        />
+        <span className="text-fg-muted">/</span>
+        <input
+          ref={yyRef}
+          inputMode="numeric"
+          aria-label={`${ariaLabel}, year`}
+          placeholder="YYYY"
+          value={yyyy}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => handleSeg("yyyy", e.target.value, null)}
+          onKeyDown={(e) => segKeyDown(e, ddRef, null)}
+          className={`w-[4.5ch] ${segCls}`}
         />
         <button
           type="button"
           aria-label={open ? "Close calendar" : "Open calendar"}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={dialogId}
           onClick={() => {
             setOpen((o) => !o);
-            inputRef.current?.focus();
+            if (!open) mmRef.current?.focus();
           }}
-          className="absolute right-0 top-0 flex h-[44px] w-9 items-center justify-center text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky"
         >
           <svg
             viewBox="0 0 16 16"
