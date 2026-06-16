@@ -359,16 +359,15 @@ html {
 }
 
 /* Deep-link arrival highlight: a manager landing from a Slack "Review it here"
-   link gets a sky ring plus a couple of soft pulses so the exact request is
-   unmistakable. The reduced-motion guard collapses the pulse; the ring stays. */
+   link gets a sky-tinted row with an inset ring, plus a couple of soft pulses.
+   Uses an INSET ring + background (not an outset outline) so it isn't clipped
+   by the list's rounded/overflow-hidden container. Reduced-motion guard below
+   collapses the pulse; the ring + tint stay. */
 @keyframes pn-deeplink-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 transparent; }
-  20% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 40%, transparent); }
+  from { background-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 }
 .pn-deeplink {
-  border-radius: 12px;
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  box-shadow: inset 0 0 0 2px var(--accent);
   background-color: color-mix(in srgb, var(--accent) 12%, transparent);
   scroll-margin-top: 6rem;
   animation: pn-deeplink-pulse 1.1s ease-out 2;
