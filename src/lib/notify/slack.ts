@@ -1,5 +1,25 @@
 import { slackBotToken, slackAlertsChannel } from "@/lib/env";
 
+// Slack normally answers in well under a second; cap every call so a slow or
+// unreachable Slack can never wedge the flow awaiting it (a booking/OOO submit,
+// an approval). On timeout the AbortError is caught like any other failure and
+// the call returns not-ok/null, honouring the never-throws contract. Uses the
+// AbortController pattern (same as src/lib/webhooks/emit.ts) rather than
+// AbortSignal.timeout, to stay on the fetch-timeout shape already proven on the
+// Cloudflare runtime.
+const SLACK_TIMEOUT_MS = 8000;
+
+function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SLACK_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() =>
+    clearTimeout(timer),
+  );
+}
+
 /**
  * Minimal reusable Slack notifier (bot token → chat.postMessage). Configurable
  * to post any text/blocks to any channel — the watch-lapse alert is just the
@@ -31,7 +51,7 @@ async function slackApi(
   const token = slackBotToken();
   if (!token) return { ok: false, error: "slack-not-configured" };
   try {
-    const res = await fetch(`https://slack.com/api/${method}`, {
+    const res = await fetchWithTimeout(`https://slack.com/api/${method}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json; charset=utf-8",
@@ -53,7 +73,7 @@ export async function lookupSlackUserIdByEmail(
   const token = slackBotToken();
   if (!token) return null;
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://slack.com/api/users.lookupByEmail?email=${encodeURIComponent(email)}`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
@@ -114,7 +134,7 @@ export async function postSlack(
   if (!channel) return { ok: false, error: "no-channel" };
 
   try {
-    const res = await fetch("https://slack.com/api/chat.postMessage", {
+    const res = await fetchWithTimeout("https://slack.com/api/chat.postMessage", {
       method: "POST",
       headers: {
         "Content-Type": "application/json; charset=utf-8",

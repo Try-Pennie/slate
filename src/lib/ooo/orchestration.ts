@@ -277,11 +277,11 @@ function managerNotice(
 ): string {
   return (
     `*${heading}* from ${agent.name ?? agent.email}\n` +
+    `${STATUS_LINE[status]}\n` +
     `${whenLineFor(request)}\n` +
     `Reason: ${request.reason}` +
     (request.notes ? `\nNotes: ${request.notes}` : "") +
-    `\n<${reviewUrl(deps, request.id)}|Review it here>\n` +
-    STATUS_LINE[status]
+    `\n<${reviewUrl(deps, request.id)}|Review it here>`
   );
 }
 
