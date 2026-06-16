@@ -52,6 +52,9 @@ export function overlaps(
   );
 }
 
+/** Upper bound on a single request's length. */
+export const MAX_OOO_DAYS = 90;
+
 /** Returns a user-facing error for an invalid request window, or null. */
 export function validateWindow(
   startIso: string,
@@ -64,6 +67,9 @@ export function validateWindow(
   }
   if (start >= end) {
     return "The end of your time off must be after the start.";
+  }
+  if (end - start > MAX_OOO_DAYS * 24 * 60 * 60 * 1000) {
+    return `Time off can't be longer than ${MAX_OOO_DAYS} days. Please submit it as separate requests.`;
   }
   return null;
 }
