@@ -296,7 +296,13 @@ export function DateTimeField({
 
         <input ref={hhRef} inputMode="numeric" aria-label={`${ariaLabel}, hour`} placeholder="HH" value={hh}
           onChange={(e) => handleSeg("hh", e.target.value, miRef)} onFocus={selectOnFocus}
-          onBlur={(e) => { const v = e.currentTarget.value; setHh(v ? pad(clamp(Number(v) || 12, 1, 12)) : ""); }}
+          onBlur={(e) => {
+            const v = e.currentTarget.value;
+            setHh(v ? pad(clamp(Number(v) || 12, 1, 12)) : "");
+            // Once an hour is set, fill an empty minute to 00 so the field never
+            // looks half-set (the time already computes as :00 either way).
+            if (v && !mi) setMi("00");
+          }}
           onKeyDown={(e) => segKeyDown(e, "hh", hh, yyRef, miRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">:</span>
         <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
