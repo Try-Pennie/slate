@@ -83,6 +83,9 @@ export interface OooRequest {
   calcom_synced: boolean;
   /** Per-effect outcome map, e.g. { manager_event: "ok", calcom: "skipped" }. */
   side_effects: Record<string, string>;
+  /** Where the manager Slack notification landed, so its status can be edited. */
+  slack_channel: string | null;
+  slack_ts: string | null;
   /** Sheet request_id from the one-time import (idempotency key). */
   legacy_request_id: string | null;
   created_at: string;

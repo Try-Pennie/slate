@@ -10,7 +10,11 @@ import {
   deleteEventOnCalendar,
 } from "@/lib/google/calendar";
 import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
-import { dmSlackUserByEmail, postSlack } from "@/lib/notify/slack";
+import {
+  dmSlackUserByEmail,
+  postSlack,
+  updateSlackMessage,
+} from "@/lib/notify/slack";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { recordAudit } from "@/lib/audit";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -161,7 +165,13 @@ function realDeps(): OooDeps {
 
     dmUserByEmail: (email, text) => dmSlackUserByEmail(email, text),
     postFallbackChannel: async (text) => {
-      await postSlack({ text });
+      const r = await postSlack({ text });
+      return r.ok && r.channel && r.ts
+        ? { channel: r.channel, ts: r.ts }
+        : null;
+    },
+    editMessage: async (ref, text) => {
+      await updateSlackMessage(ref, text);
     },
     alertOps: (key, message) =>
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),
