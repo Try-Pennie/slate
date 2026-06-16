@@ -100,7 +100,7 @@ function RequestList({
         return (
         <li
           key={r.id}
-          className={`flex flex-wrap items-center justify-between gap-3 py-4 ${
+          className={`flex items-start justify-between gap-4 py-4 ${
             isEditing
               ? "rounded-lg bg-pennie-sky-soft/60 px-3 dark:bg-accent/10"
               : ""
@@ -125,7 +125,7 @@ function RequestList({
           </div>
           {isChangeable(r) &&
             (isEditing ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-pennie-blue dark:text-pennie-sky">
+              <span className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-pennie-blue dark:text-pennie-sky">
                 <span
                   aria-hidden="true"
                   className="h-1.5 w-1.5 rounded-full bg-pennie-sky"
@@ -133,7 +133,7 @@ function RequestList({
                 Editing above
               </span>
             ) : (
-              <div className="flex items-center gap-1">
+              <div className="flex shrink-0 items-center gap-1">
                 <EditRequestButton requestId={r.id} />
                 <CancelRequestButton action={cancelMyOoo} requestId={r.id} />
               </div>
