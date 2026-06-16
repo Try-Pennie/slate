@@ -74,7 +74,12 @@ export async function dmSlackUserByEmail(
   const opened = await slackApi("conversations.open", { users: userId });
   const channel = (opened.data?.channel as { id?: string } | undefined)?.id;
   if (!opened.ok || !channel) return false;
-  const posted = await slackApi("chat.postMessage", { channel, text });
+  const posted = await slackApi("chat.postMessage", {
+    channel,
+    text,
+    unfurl_links: false,
+    unfurl_media: false,
+  });
   return posted.ok;
 }
 
@@ -96,6 +101,8 @@ export async function postSlack(
       body: JSON.stringify({
         channel,
         text: msg.text,
+        unfurl_links: false,
+        unfurl_media: false,
         ...(msg.blocks ? { blocks: msg.blocks } : {}),
       }),
     });

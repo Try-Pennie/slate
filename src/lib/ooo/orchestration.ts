@@ -224,7 +224,7 @@ async function notifyManagerOfPending(
     `${whenLineFor(request)}\n` +
     `Reason: ${request.reason}` +
     (request.notes ? `\nNotes: ${request.notes}` : "") +
-    `\nReview it here: ${reviewUrl(deps, request.id)}`;
+    `\n<${reviewUrl(deps, request.id)}|Review it here>`;
   const manager = request.manager_id
     ? await deps.getUser(request.manager_id)
     : null;
@@ -379,6 +379,12 @@ async function runPostApproval(
     );
     effects[EFFECTS.calcom] = outcome;
     if (outcome === "ok") patch.calcom_synced = true;
+    else if (outcome.startsWith("failed")) {
+      await deps.alertOps(
+        "ooo_calcom",
+        `Slate: the Cal.com availability override for request ${request.id} failed (${outcome}).`,
+      );
+    }
   }
 
   // 5. DM the agent (suppressed on silent retries).
@@ -388,6 +394,12 @@ async function runPostApproval(
       `:white_check_mark: Your time off request was *approved* for ${whenLineFor(request)}.\n\n*Your reason:* ${request.reason}`,
     );
     effects[EFFECTS.agentDm] = delivered ? "ok" : "failed: dm undeliverable";
+    if (!delivered) {
+      await deps.alertOps(
+        "ooo_agent_dm",
+        `Slate: the approval DM to ${agent.email} for request ${request.id} could not be delivered.`,
+      );
+    }
   }
 
   patch.side_effects = effects;
