@@ -107,18 +107,18 @@ function RequestList({
           }`}
         >
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold tabular-nums text-fg">
-                {formatWhenLine(
-                  r.starts_at,
-                  r.ends_at,
-                  r.display_tz_id,
-                  r.display_tz_label,
-                )}
-              </span>
+            <span className="block font-semibold tabular-nums text-fg">
+              {formatWhenLine(
+                r.starts_at,
+                r.ends_at,
+                r.display_tz_id,
+                r.display_tz_label,
+              )}
+            </span>
+            <div className="mt-1.5">
               <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
             </div>
-            <p className="mt-1 text-sm text-fg-muted">{r.reason}</p>
+            <p className="mt-1.5 text-sm text-fg-muted">{r.reason}</p>
             {r.status === "rejected" && r.rejection_note && (
               <p className="mt-1 text-sm text-error">{r.rejection_note}</p>
             )}

@@ -87,12 +87,13 @@ export function OooForm({
     return () => clearTimeout(t);
   }, [isPending]);
 
-  // Entering edit mode (this component remounts per ?edit=<id>): glide the form
-  // into view from wherever the agent clicked, instead of the navigation jumping
-  // to the top of the page and scrolling back down.
+  // Entering edit mode (this component remounts per ?edit=<id>): snap the form
+  // into view immediately. A long smooth scroll up the page reads as "nothing
+  // happened"; an instant jump straight to the form (no page-top overshoot,
+  // with the card's entrance animation as the cue) feels responsive.
   useEffect(() => {
     if (isEditing) {
-      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      formRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
     }
   }, [isEditing]);
 
@@ -162,6 +163,7 @@ export function OooForm({
 
       <form
         ref={formRef}
+        id="ooo-form"
         action={formAction}
         onSubmit={() => {
           setSubmitted(true);
