@@ -14,6 +14,11 @@
   "compatibility_date": "2025-08-01",
   // nodejs_compat is required for OpenNext + googleapis/node:crypto.
   "compatibility_flags": ["nodejs_compat"],
+  // Non-secret runtime flags live here so deploys can't wipe them (Wrangler
+  // treats the config as the source of truth for plain vars; dashboard-only
+  // vars get overwritten on deploy). The CALCOM_* credentials are sensitive and
+  // must be set as secrets instead.
+  "vars": { "OOO_CALCOM_DUAL_WRITE": "true" },
   "assets": {
     "binding": "ASSETS",
     "directory": ".open-next/assets"
