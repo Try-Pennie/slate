@@ -18,11 +18,16 @@ import type { SubmitOooInput } from "@/lib/ooo/service";
  * and the page renders the banner.
  */
 
-function done(message: string): never {
+type Outcome = "sent" | "changed" | "cancelled";
+
+function done(message: string, kind: Outcome = "sent"): never {
   revalidatePath("/me");
   // The nonce makes every success URL unique so the form (keyed on it) remounts
   // and clears its fields, even on back-to-back submits with the same message.
-  redirect(`/me?ooo=${encodeURIComponent(message)}&t=${Date.now()}#time-off`);
+  // `kind` lets the banner pick the right header/icon (a cancel isn't a "sent").
+  redirect(
+    `/me?ooo=${encodeURIComponent(message)}&ooo_kind=${kind}&t=${Date.now()}#time-off`,
+  );
 }
 
 function failed(error: string): never {
@@ -65,26 +70,41 @@ function windowFrom(form: FormData): SubmitOooInput | { error: string } {
   };
 }
 
-export async function submitMyOoo(form: FormData): Promise<void> {
+/**
+ * Form state for the useActionState-driven OOO form. On a validation/business
+ * error we RETURN the message (no redirect) so the page stays put, the typed
+ * values survive, and the error renders inline as a styled banner instead of
+ * the browser's native tooltip. Success still redirects (which clears the form
+ * and shows the success banner).
+ */
+export type OooFormState = { error: string | null };
+
+export async function submitMyOoo(
+  _prev: OooFormState,
+  form: FormData,
+): Promise<OooFormState> {
   const me = await currentUser();
   if (!me) redirect("/login");
   const input = windowFrom(form);
-  if ("error" in input) failed(input.error);
+  if ("error" in input) return { error: input.error };
   const result = await submitOoo(me, input);
-  if (!result.ok) failed(result.error);
+  if (!result.ok) return { error: result.error };
   done("Your time off request was sent to your manager.");
 }
 
-export async function modifyMyOoo(form: FormData): Promise<void> {
+export async function modifyMyOoo(
+  _prev: OooFormState,
+  form: FormData,
+): Promise<OooFormState> {
   const me = await currentUser();
   if (!me) redirect("/login");
   const requestId = String(form.get("request_id") ?? "");
-  if (!requestId) failed("That request could not be found.");
+  if (!requestId) return { error: "That request could not be found." };
   const input = windowFrom(form);
-  if ("error" in input) failed(input.error);
+  if ("error" in input) return { error: input.error };
   const result = await modifyOoo(requestId, me, input);
-  if (!result.ok) failed(result.error);
-  done("Your changes were sent to your manager.");
+  if (!result.ok) return { error: result.error };
+  done("Your changes were sent to your manager.", "changed");
 }
 
 export async function cancelMyOoo(form: FormData): Promise<void> {
@@ -94,5 +114,5 @@ export async function cancelMyOoo(form: FormData): Promise<void> {
   if (!requestId) failed("That request could not be found.");
   const result = await cancelOoo(requestId, me);
   if (!result.ok) failed(result.error);
-  done("Your time off request was cancelled.");
+  done("Your time off request was cancelled.", "cancelled");
 }

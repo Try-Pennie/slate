@@ -10,9 +10,9 @@ import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
-import { DateTimeField } from "@/components/ui/DateTimeField";
 import { TimeField } from "@/components/ui/TimeField";
-import { SubmitButton } from "@/components/ui/SubmitButton";
+import { OooForm } from "@/components/ui/OooForm";
+import { CancelRequestButton } from "@/components/ui/CancelRequestButton";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -39,11 +39,12 @@ const STATUS_PILL: Record<OooStatus, PillVariant> = {
 };
 
 // Module scope so the Date.now() calls don't trip react-hooks/purity in render.
+// A pending request is always editable/cancellable (even one whose window has
+// passed while it waited on a manager); an approved one only while it's still
+// upcoming, since changing an elapsed approval does nothing useful.
 function isChangeable(r: OooRequest): boolean {
-  return (
-    (r.status === "pending" || r.status === "approved") &&
-    Date.parse(r.ends_at) > Date.now()
-  );
+  if (r.status === "pending") return true;
+  return r.status === "approved" && Date.parse(r.ends_at) > Date.now();
 }
 
 function summarize(requests: OooRequest[]): {
@@ -82,22 +83,27 @@ function dateBounds(zone: string): {
   };
 }
 
-// Form fields get a visible border so they don't vanish on the white card
-// (inputCls relies on a faint shadow alone, which is white-on-white here).
-const fieldBaseCls =
-  "h-[44px] rounded-sm border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted";
-const tzInputCls = `${fieldBaseCls} text-sm`;
-// Graphite (not muted) labels — these are fields the agent has to read and fill.
-const formLabelCls = "block text-xs font-semibold text-fg";
 
 /** Flat divider list of requests (shared by the Upcoming and Past sections). */
-function RequestList({ items }: { items: OooRequest[] }) {
+function RequestList({
+  items,
+  editingId,
+}: {
+  items: OooRequest[];
+  editingId?: string;
+}) {
   return (
     <ul className="mt-1 divide-y divide-border">
-      {items.map((r) => (
+      {items.map((r) => {
+        const isEditing = r.id === editingId;
+        return (
         <li
           key={r.id}
-          className="flex flex-wrap items-center justify-between gap-3 py-4"
+          className={`flex flex-wrap items-center justify-between gap-3 py-4 ${
+            isEditing
+              ? "rounded-lg bg-pennie-sky-soft/60 px-3 dark:bg-accent/10"
+              : ""
+          }`}
         >
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -116,24 +122,29 @@ function RequestList({ items }: { items: OooRequest[] }) {
               <p className="mt-1 text-sm text-error">{r.rejection_note}</p>
             )}
           </div>
-          {isChangeable(r) && (
-            <div className="flex items-center gap-1">
-              <a
-                href={`/me?edit=${r.id}#time-off`}
-                className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg transition-colors hover:bg-pennie-sky-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
-              >
-                Edit
-              </a>
-              <form action={cancelMyOoo}>
-                <input type="hidden" name="request_id" value={r.id} />
-                <button className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky">
-                  Cancel
-                </button>
-              </form>
-            </div>
-          )}
+          {isChangeable(r) &&
+            (isEditing ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-pennie-blue dark:text-pennie-sky">
+                <span
+                  aria-hidden="true"
+                  className="h-1.5 w-1.5 rounded-full bg-pennie-sky"
+                />
+                Editing above
+              </span>
+            ) : (
+              <div className="flex items-center gap-1">
+                <a
+                  href={`/me?edit=${r.id}#time-off`}
+                  className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg transition-colors hover:bg-pennie-sky-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
+                >
+                  Edit
+                </a>
+                <CancelRequestButton action={cancelMyOoo} requestId={r.id} />
+              </div>
+            ))}
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }
@@ -143,6 +154,7 @@ export default async function MePage({
 }: {
   searchParams: Promise<{
     ooo?: string;
+    ooo_kind?: string;
     ooo_error?: string;
     edit?: string;
     t?: string;
@@ -211,6 +223,28 @@ export default async function MePage({
     ? DateTime.fromISO(editing.ends_at, { zone: editing.display_tz_id })
     : null;
   const bounds = dateBounds(defaultTz);
+  const tzChoices = tzOptions.map((tz) => ({
+    value: tz,
+    label: `${tz.split("/")[1]?.replace(/_/g, " ") ?? tz} (${normalizeTzLabel(tz)})`,
+  }));
+  const editingForForm = editing
+    ? {
+        id: editing.id,
+        whenLine: formatWhenLine(
+          editing.starts_at,
+          editing.ends_at,
+          editing.display_tz_id,
+          editing.display_tz_label,
+        ),
+        approved: editing.status === "approved",
+        startDate: editStart?.toISODate() ?? undefined,
+        startTime: editStart?.toFormat("HH:mm") ?? undefined,
+        endDate: editEnd?.toISODate() ?? undefined,
+        endTime: editEnd?.toFormat("HH:mm") ?? undefined,
+        reason: editing.reason,
+        notes: editing.notes ?? "",
+      }
+    : null;
 
   const firstName = me.name?.trim().split(/\s+/)[0] ?? null;
   const summary = summarize(oooRequests);
@@ -389,25 +423,6 @@ export default async function MePage({
             </p>
           </header>
 
-          {sp.ooo && (
-            <div
-              role="status"
-              className="pn-confirm-enter flex items-start gap-3 rounded-md bg-pennie-sky-soft px-5 py-4 dark:bg-accent/15"
-            >
-              <span
-                aria-hidden="true"
-                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-pennie-sky text-pennie-graphite"
-              >
-                <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <div>
-                <p className="font-semibold text-fg">Request sent!</p>
-                <p className="mt-0.5 text-sm text-fg">{sp.ooo}</p>
-              </div>
-            </div>
-          )}
           {sp.ooo_error && (
             <div
               role="alert"
@@ -417,128 +432,17 @@ export default async function MePage({
             </div>
           )}
 
-          {editing && (
-            <p className="flex flex-wrap items-center gap-2 text-sm text-fg-muted">
-              <span>
-                Changing{" "}
-                <span className="font-semibold tabular-nums text-fg">
-                  {formatWhenLine(
-                    editing.starts_at,
-                    editing.ends_at,
-                    editing.display_tz_id,
-                    editing.display_tz_label,
-                  )}
-                </span>
-                {editing.status === "approved" &&
-                  ". Saving sends it back for approval."}
-              </span>
-            </p>
-          )}
-
-          <form
+          <OooForm
             key={sp.t ?? sp.edit ?? "new"}
             action={editing ? modifyMyOoo : submitMyOoo}
-            className="rounded-md bg-surface p-6 shadow-xs dark:border dark:border-border"
-          >
-            {editing && <input type="hidden" name="request_id" value={editing.id} />}
-
-            <div className="space-y-4">
-              <div>
-                <label className={formLabelCls}>Start date and time</label>
-                <div className="mt-1">
-                  <DateTimeField
-                    nameDate="start_date"
-                    nameTime="start_time"
-                    ariaLabel="Start date and time"
-                    defaultDate={editStart?.toISODate() ?? undefined}
-                    defaultTime={editStart?.toFormat("HH:mm") ?? undefined}
-                    min={bounds.minISO}
-                    max={bounds.maxISO}
-                    todayISO={bounds.todayISO}
-                  />
-                </div>
-              </div>
-              <div>
-                <label className={formLabelCls}>End date and time</label>
-                <div className="mt-1">
-                  <DateTimeField
-                    nameDate="end_date"
-                    nameTime="end_time"
-                    ariaLabel="End date and time"
-                    round="up"
-                    defaultDate={editEnd?.toISODate() ?? undefined}
-                    defaultTime={editEnd?.toFormat("HH:mm") ?? undefined}
-                    min={bounds.minISO}
-                    max={bounds.maxISO}
-                    todayISO={bounds.todayISO}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
-              <label className="flex min-h-11 items-center gap-2 text-sm text-fg">
-                <input type="checkbox" name="all_day" className="accent-pennie-sky" />
-                All day
-              </label>
-              <label className="flex items-center gap-2">
-                <span className="pn-eyebrow text-fg-muted">Timezone</span>
-                <select
-                  name="timezone"
-                  aria-label="Timezone"
-                  defaultValue={defaultTz}
-                  className={tzInputCls}
-                >
-                  {tzOptions.map((tz) => (
-                    <option key={tz} value={tz}>
-                      {tz.split("/")[1]?.replace(/_/g, " ") ?? tz} (
-                      {normalizeTzLabel(tz)})
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div className="mt-4">
-              <label className={formLabelCls}>Reason</label>
-              <input
-                name="reason"
-                required
-                aria-label="Reason"
-                placeholder="Vacation, appointment, family"
-                defaultValue={editing?.reason ?? ""}
-                className={`${fieldBaseCls} mt-1 w-full`}
-              />
-            </div>
-            <div className="mt-4">
-              <label className={formLabelCls}>
-                Anything your manager should know? (optional)
-              </label>
-              <input
-                name="notes"
-                aria-label="Notes for your manager (optional)"
-                defaultValue={editing?.notes ?? ""}
-                className={`${fieldBaseCls} mt-1 w-full`}
-              />
-            </div>
-
-            <div className="mt-6 flex flex-wrap items-center gap-4">
-              <SubmitButton
-                className="pn-btn pn-btn--big pn-btn--primary"
-                pendingLabel={editing ? "Sending…" : "Submitting…"}
-              >
-                {editing ? "Send my changes" : "Request time off"}
-              </SubmitButton>
-              {editing && (
-                <a
-                  href="/me#time-off"
-                  className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-pennie-sky-soft hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
-                >
-                  Keep it as is
-                </a>
-              )}
-            </div>
-          </form>
+            editing={editingForForm}
+            managerName={managerName}
+            defaultTz={defaultTz}
+            tzOptions={tzChoices}
+            bounds={bounds}
+            successMessage={sp.ooo ?? null}
+            successKind={sp.ooo_kind ?? null}
+          />
 
           <div className="space-y-8">
             <div>
@@ -553,7 +457,7 @@ export default async function MePage({
                   No upcoming time off. Use the form above to request a day.
                 </p>
               ) : (
-                <RequestList items={upcoming} />
+                <RequestList items={upcoming} editingId={editing?.id} />
               )}
             </div>
 
