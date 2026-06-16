@@ -3,7 +3,7 @@ import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { matchesCriteria } from "@/lib/availability/match";
-import { appUrl, reassignApiKey, agentSchedulingLive } from "@/lib/env";
+import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import {
   createBucket,
   createEventType,
@@ -284,7 +284,7 @@ export default async function AdminPage({
   }
   // OOO-only launch: the agent roster is part of the booking tool, so managers
   // are limited to the OOO surfaces until scheduling goes live. Admins keep it.
-  if (!agentSchedulingLive() && !canEditOrgSettings(me.role)) {
+  if (oooOnlyFor(me.role)) {
     redirect("/admin/ooo");
   }
   // Managers manage the agent roster; only admins see org/app config; only
