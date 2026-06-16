@@ -13,6 +13,7 @@ import { InfoIcon } from "@/components/icons";
 import { TimeField } from "@/components/ui/TimeField";
 import { OooForm } from "@/components/ui/OooForm";
 import { CancelRequestButton } from "@/components/ui/CancelRequestButton";
+import { EditRequestButton } from "@/components/ui/EditRequestButton";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -133,12 +134,7 @@ function RequestList({
               </span>
             ) : (
               <div className="flex items-center gap-1">
-                <a
-                  href={`/me?edit=${r.id}#time-off`}
-                  className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg transition-colors hover:bg-pennie-sky-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
-                >
-                  Edit
-                </a>
+                <EditRequestButton requestId={r.id} />
                 <CancelRequestButton action={cancelMyOoo} requestId={r.id} />
               </div>
             ))}

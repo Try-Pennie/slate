@@ -56,6 +56,8 @@ export function OooForm({
     { error: null },
   );
   const errorRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const isEditing = !!editing;
   // Once the agent starts another submit, the prior success banner is stale.
   const [submitted, setSubmitted] = useState(false);
   // React 19 auto-resets uncontrolled fields when a form action finishes, which
@@ -84,6 +86,15 @@ export function OooForm({
     const t = setTimeout(() => setStalled(true), 15000);
     return () => clearTimeout(t);
   }, [isPending]);
+
+  // Entering edit mode (this component remounts per ?edit=<id>): glide the form
+  // into view from wherever the agent clicked, instead of the navigation jumping
+  // to the top of the page and scrolling back down.
+  useEffect(() => {
+    if (isEditing) {
+      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [isEditing]);
 
   const showSuccess = !!successMessage && !submitted && !state.error;
   const cancelled = successKind === "cancelled";
@@ -150,12 +161,13 @@ export function OooForm({
       )}
 
       <form
+        ref={formRef}
         action={formAction}
         onSubmit={() => {
           setSubmitted(true);
           setStalled(false);
         }}
-        className={`rounded-md bg-surface p-6 shadow-xs dark:border dark:border-border ${
+        className={`scroll-mt-24 rounded-md bg-surface p-6 shadow-xs dark:border dark:border-border ${
           editing
             ? "pn-confirm-enter ring-1 ring-pennie-sky dark:border-pennie-sky"
             : ""
