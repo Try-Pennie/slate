@@ -160,8 +160,9 @@ export default async function MePage({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  // OOO-only launch phase: agents see just the time off tool, no scheduling.
-  const oooOnly = me.role === "agent" && !agentSchedulingLive();
+  // OOO-only launch phase: until scheduling goes live, everyone but admins sees
+  // just the time off tool, no booking/availability scheduling.
+  const oooOnly = me.role !== "admin" && !agentSchedulingLive();
 
   const db = supabaseAdmin();
   const { data: schedule } = await db

@@ -67,8 +67,13 @@ export async function AppHeader({
   // The approval queue is a manager surface; agents manage their own time off
   // from /me, so they don't get the tab.
   const showTimeOff = role === "manager" || role === "admin";
-  // OOO-only launch phase: agents see just the time off tool, no scheduling.
-  const oooOnly = role === "agent" && !agentSchedulingLive();
+  const isAdmin = role === "admin";
+  // OOO-only launch phase: until scheduling goes live, everyone but admins sees
+  // just the time off tool, no booking/availability scheduling.
+  const oooOnly = !isAdmin && !agentSchedulingLive();
+  // Agents in OOO-only mode have a single page ("My Requests"); managers/admins
+  // keep the "My Availability" label since they also have the Team Requests tab.
+  const meLabel = oooOnly && role === "agent" ? "My Requests" : "My Availability";
   // Persistent banner so an impersonating admin always knows + can get out.
   const impersonation = await getImpersonation();
 
@@ -132,24 +137,18 @@ export async function AppHeader({
           className="hidden h-[22px] w-auto dark:block"
         />
         <nav aria-label="Slate sections" className="flex items-center gap-5">
-          {oooOnly ? (
-            <NavTab href="/me" current={active === "me"}>
-              My Requests
+          {isAdmin && (
+            <NavTab href="/admin" current={active === "admin"}>
+              Admin
             </NavTab>
-          ) : (
-            <>
-              <NavTab href="/admin" current={active === "admin"}>
-                Admin
-              </NavTab>
-              <NavTab href="/me" current={active === "me"}>
-                My Availability
-              </NavTab>
-              {showTimeOff && (
-                <NavTab href="/admin/ooo" current={active === "ooo"}>
-                  Team Requests
-                </NavTab>
-              )}
-            </>
+          )}
+          <NavTab href="/me" current={active === "me"}>
+            {meLabel}
+          </NavTab>
+          {showTimeOff && (
+            <NavTab href="/admin/ooo" current={active === "ooo"}>
+              Team Requests
+            </NavTab>
           )}
         </nav>
         <div className="ml-auto flex items-center">
