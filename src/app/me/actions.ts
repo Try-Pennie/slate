@@ -20,7 +20,9 @@ import type { SubmitOooInput } from "@/lib/ooo/service";
 
 function done(message: string): never {
   revalidatePath("/me");
-  redirect(`/me?ooo=${encodeURIComponent(message)}#time-off`);
+  // The nonce makes every success URL unique so the form (keyed on it) remounts
+  // and clears its fields, even on back-to-back submits with the same message.
+  redirect(`/me?ooo=${encodeURIComponent(message)}&t=${Date.now()}#time-off`);
 }
 
 function failed(error: string): never {

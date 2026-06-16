@@ -12,6 +12,7 @@ import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { DateTimeField } from "@/components/ui/DateTimeField";
 import { TimeField } from "@/components/ui/TimeField";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -116,16 +117,16 @@ function RequestList({ items }: { items: OooRequest[] }) {
             )}
           </div>
           {isChangeable(r) && (
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1">
               <a
                 href={`/me?edit=${r.id}#time-off`}
-                className="text-sm text-pennie-blue underline dark:text-pennie-sky"
+                className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg transition-colors hover:bg-pennie-sky-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
               >
                 Edit
               </a>
               <form action={cancelMyOoo}>
                 <input type="hidden" name="request_id" value={r.id} />
-                <button className="text-sm text-fg-muted underline hover:text-fg">
+                <button className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky">
                   Cancel
                 </button>
               </form>
@@ -140,7 +141,12 @@ function RequestList({ items }: { items: OooRequest[] }) {
 export default async function MePage({
   searchParams,
 }: {
-  searchParams: Promise<{ ooo?: string; ooo_error?: string; edit?: string }>;
+  searchParams: Promise<{
+    ooo?: string;
+    ooo_error?: string;
+    edit?: string;
+    t?: string;
+  }>;
 }) {
   const sp = await searchParams;
   const me = await currentUser();
@@ -384,9 +390,22 @@ export default async function MePage({
           </header>
 
           {sp.ooo && (
-            <div className="rounded-md bg-pennie-sky-soft px-5 py-4 dark:bg-accent/15">
-              <p className="font-semibold text-fg">Nice, that&apos;s done.</p>
-              <p className="mt-0.5 text-sm text-fg">{sp.ooo}</p>
+            <div
+              role="status"
+              className="pn-confirm-enter flex items-start gap-3 rounded-md bg-pennie-sky-soft px-5 py-4 dark:bg-accent/15"
+            >
+              <span
+                aria-hidden="true"
+                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-pennie-sky text-pennie-graphite"
+              >
+                <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <div>
+                <p className="font-semibold text-fg">Request sent!</p>
+                <p className="mt-0.5 text-sm text-fg">{sp.ooo}</p>
+              </div>
             </div>
           )}
           {sp.ooo_error && (
@@ -417,6 +436,7 @@ export default async function MePage({
           )}
 
           <form
+            key={sp.t ?? sp.edit ?? "new"}
             action={editing ? modifyMyOoo : submitMyOoo}
             className="rounded-md bg-surface p-6 shadow-xs"
           >
@@ -503,13 +523,16 @@ export default async function MePage({
             </div>
 
             <div className="mt-6 flex flex-wrap items-center gap-4">
-              <button className="pn-btn pn-btn--big pn-btn--primary">
+              <SubmitButton
+                className="pn-btn pn-btn--big pn-btn--primary"
+                pendingLabel={editing ? "Sending…" : "Submitting…"}
+              >
                 {editing ? "Send my changes" : "Request time off"}
-              </button>
+              </SubmitButton>
               {editing && (
                 <a
                   href="/me#time-off"
-                  className="text-sm text-pennie-blue underline dark:text-pennie-sky"
+                  className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-pennie-sky-soft hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
                 >
                   Keep it as is
                 </a>
