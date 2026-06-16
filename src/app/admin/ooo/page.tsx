@@ -165,13 +165,17 @@ export default async function OooQueuePage({
       sub: insights.advanceNotice === 1 ? "day" : "days",
     },
     { label: "Most time off", value: insights.busiest },
-    company
-      ? {
-          label: "Median mgr approval",
-          value: `${company.rate}%`,
-          sub: `of ${company.managerCount}`,
-        }
-      : { label: "Awaiting you", value: String(pending.length) },
+    // Admins get a company-wide stat here; managers don't (the count that used
+    // to sit here just duplicated the "N waiting on you" header above).
+    ...(company
+      ? [
+          {
+            label: "Median mgr approval",
+            value: `${company.rate}%`,
+            sub: `of ${company.managerCount}`,
+          },
+        ]
+      : []),
   ];
   const nameOf = (id: string | null) => {
     const u = users.find((x) => x.id === id);
@@ -279,7 +283,11 @@ export default async function OooQueuePage({
             {roster.length} {roster.length === 1 ? "person" : "people"} on the
             roster. Numbers cover all requests on record.
           </p>
-          <dl className="mt-3 grid grid-cols-2 divide-x divide-y divide-pennie-beige/10 overflow-hidden rounded-xl bg-pennie-navy sm:grid-cols-4 sm:divide-y-0 dark:bg-surface dark:divide-border">
+          <dl
+            className={`mt-3 grid grid-cols-2 divide-x divide-y divide-pennie-beige/10 overflow-hidden rounded-xl bg-pennie-navy sm:divide-y-0 dark:bg-surface dark:divide-border ${
+              company ? "sm:grid-cols-4" : "sm:grid-cols-3"
+            }`}
+          >
             {stats.map((s) => (
               <Stat key={s.label} label={s.label} value={s.value} sub={s.sub} />
             ))}
