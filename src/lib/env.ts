@@ -4,6 +4,8 @@
  * only actually reading a server secret (which only runs server-side) does.
  */
 
+import { atLeast, isRole } from "@/lib/auth/roles";
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -81,10 +83,21 @@ export const oooCalendarActorEmail = (): string =>
 
 // Phased launch: until agent scheduling self-service goes live, agents see
 // only the OOO tool (request time off) and nothing about availability/bookings.
-// Default off = OOO-only phase; set "true" to reveal the scheduling UI to
-// agents. Managers/admins always keep their full tools regardless.
+// Default off = OOO-only phase; set "true" to reveal the scheduling UI.
 export const agentSchedulingLive = (): boolean =>
   process.env.AGENT_SCHEDULING_LIVE === "true";
+
+/**
+ * The single OOO-only launch gate: until agent scheduling goes live, everyone
+ * below admin (agents + managers) sees just the time-off tool, not the booking/
+ * availability surfaces. Admins and super admins keep full access. Used by /me,
+ * the header nav, and the admin route guards so they can't drift apart.
+ */
+export const oooOnlyFor = (role: string | undefined): boolean => {
+  if (agentSchedulingLive()) return false;
+  const r = role ?? "";
+  return !(isRole(r) && atLeast(r, "admin"));
+};
 
 // Cal.com dual-write during the cutover transition. Flag off = no-op.
 export const oooCalcomDualWrite = (): boolean =>

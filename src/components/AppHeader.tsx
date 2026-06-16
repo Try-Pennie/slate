@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { AccountMenu } from "@/components/AccountMenu";
-import { agentSchedulingLive } from "@/lib/env";
+import { oooOnlyFor } from "@/lib/env";
+import { atLeast, canManageAgents, isRole } from "@/lib/auth/roles";
 import { getImpersonation } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { stopImpersonation } from "@/app/admin/actions";
@@ -66,14 +67,15 @@ export async function AppHeader({
 }) {
   // The approval queue is a manager surface; agents manage their own time off
   // from /me, so they don't get the tab.
-  const showTimeOff = role === "manager" || role === "admin";
-  const isAdmin = role === "admin";
-  // OOO-only launch phase: until scheduling goes live, everyone but admins sees
-  // just the time off tool, no booking/availability scheduling.
-  const oooOnly = !isAdmin && !agentSchedulingLive();
-  // Agents in OOO-only mode have a single page ("My Requests"); managers/admins
-  // keep the "My Availability" label since they also have the Team Requests tab.
-  const meLabel = oooOnly && role === "agent" ? "My Requests" : "My Availability";
+  const r = role ?? "";
+  const oooOnly = oooOnlyFor(role);
+  // Approval queue: managers and up. Agent roster: same, but hidden in the
+  // OOO-only phase (so effectively admins+ until scheduling goes live).
+  const showTimeOff = isRole(r) && atLeast(r, "manager");
+  const showAdmin = !oooOnly && isRole(r) && canManageAgents(r);
+  // Agents in OOO-only mode have a single page ("My Requests"); everyone else
+  // keeps the "My Availability" label since they also have other tabs.
+  const meLabel = oooOnly && r === "agent" ? "My Requests" : "My Availability";
   // Persistent banner so an impersonating admin always knows + can get out.
   const impersonation = await getImpersonation();
 
@@ -137,7 +139,7 @@ export async function AppHeader({
           className="hidden h-[22px] w-auto dark:block"
         />
         <nav aria-label="Slate sections" className="flex items-center gap-5">
-          {isAdmin && (
+          {showAdmin && (
             <NavTab href="/admin" current={active === "admin"}>
               Admin
             </NavTab>

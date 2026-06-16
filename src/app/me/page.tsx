@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
-import { agentSchedulingLive } from "@/lib/env";
+import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
 import { cancelMyOoo, modifyMyOoo, submitMyOoo } from "@/app/me/actions";
@@ -160,9 +160,7 @@ export default async function MePage({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  // OOO-only launch phase: until scheduling goes live, everyone but admins sees
-  // just the time off tool, no booking/availability scheduling.
-  const oooOnly = me.role !== "admin" && !agentSchedulingLive();
+  const oooOnly = oooOnlyFor(me.role);
 
   const db = supabaseAdmin();
   const { data: schedule } = await db
