@@ -85,7 +85,7 @@ function dateBounds(zone: string): {
 // Form fields get a visible border so they don't vanish on the white card
 // (inputCls relies on a faint shadow alone, which is white-on-white here).
 const fieldBaseCls =
-  "h-[44px] rounded-sm border border-border bg-surface px-3 text-fg placeholder:text-fg-muted";
+  "h-[44px] rounded-sm border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted";
 const tzInputCls = `${fieldBaseCls} text-sm`;
 // Graphite (not muted) labels — these are fields the agent has to read and fill.
 const formLabelCls = "block text-xs font-semibold text-fg";
@@ -235,11 +235,11 @@ export default async function MePage({
       <main className="mx-auto w-full min-w-0 max-w-2xl space-y-10 px-6 py-10 sm:px-8">
         {oooOnly ? (
           /* Compact navy header: greeting + at-a-glance status (earns its weight). */
-          <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
+          <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface-elevated dark:border dark:border-border">
             <h1 className="pn-h3 text-pennie-beige">
               {firstName ? `Hi, ${firstName}.` : "Hi there."}
             </h1>
-            <p className="mt-2 text-pennie-beige/75">
+            <p className="mt-2 text-pennie-beige/85">
               {!hasRequests ? (
                 managerName
                   ? `Need a day off? Request it below and ${managerName} takes it from there.`
@@ -438,7 +438,7 @@ export default async function MePage({
           <form
             key={sp.t ?? sp.edit ?? "new"}
             action={editing ? modifyMyOoo : submitMyOoo}
-            className="rounded-md bg-surface p-6 shadow-xs"
+            className="rounded-md bg-surface p-6 shadow-xs dark:border dark:border-border"
           >
             {editing && <input type="hidden" name="request_id" value={editing.id} />}
 

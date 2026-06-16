@@ -7,10 +7,13 @@
 export const labelCls = "block text-xs font-semibold text-fg-muted";
 
 export const inputCls =
-  "mt-1 w-full rounded-sm border border-border bg-surface px-3 text-fg " +
+  "mt-1 w-full rounded-sm border border-border bg-[var(--field)] px-3 text-fg " +
   "h-[44px] placeholder:text-fg-muted";
 
-export const cardCls = "rounded-md bg-surface shadow-xs p-6";
+// Cards lean on a soft shadow in light mode; shadows vanish on dark, so a
+// subtle border restores the card edge there.
+export const cardCls =
+  "rounded-md bg-surface shadow-xs p-6 dark:border dark:border-border";
 
 export const btnCls = "pn-btn pn-btn--small pn-btn--primary";
 
