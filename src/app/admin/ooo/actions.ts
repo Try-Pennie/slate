@@ -39,7 +39,7 @@ export async function approveOooAction(form: FormData): Promise<void> {
   finish(
     await approveOoo(requestId, actor),
     (n) =>
-      `Approved — but ${n} follow-up step${n > 1 ? "s" : ""} failed to apply. Use “Retry” on the request below.`,
+      `Approved, but ${n} follow-up step${n > 1 ? "s" : ""} failed to apply. Use Retry on the request below.`,
   );
 }
 

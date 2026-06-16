@@ -76,6 +76,7 @@ interface World {
   requests: Map<string, OooRequest>;
   dms: { email: string; text: string }[];
   channelPosts: string[];
+  edits: { ref: { channel: string; ts: string }; text: string }[];
   alerts: { key: string; message: string }[];
   createdEvents: { actor: string; calendarId: string; summary: string; id: string }[];
   deletedEvents: { actor: string; calendarId: string; eventId: string }[];
@@ -93,6 +94,7 @@ function makeWorld(): World {
     requests: new Map(),
     dms: [],
     channelPosts: [],
+    edits: [],
     alerts: [],
     createdEvents: [],
     deletedEvents: [],
@@ -201,10 +203,14 @@ function makeWorld(): World {
     calcomRemoveOverrides: async () => "skipped",
     dmUserByEmail: async (email, text) => {
       world.dms.push({ email, text });
-      return true;
+      return { channel: `D-${email}`, ts: `ts-dm-${world.dms.length}` };
     },
     postFallbackChannel: async (text) => {
       world.channelPosts.push(text);
+      return { channel: "C-alerts", ts: `ts-ch-${world.channelPosts.length}` };
+    },
+    editMessage: async (ref, text) => {
+      world.edits.push({ ref, text });
     },
     alertOps: async (key, message) => {
       world.alerts.push({ key, message });
@@ -241,6 +247,11 @@ const input = {
   assert(w.dms.length === 1 && w.dms[0].email === manager.email, "manager DM'd");
   assert(w.dms[0].text.includes("https://slate.test/admin/ooo?request=req-1"), "DM has deep link");
   assert(w.dms[0].text.includes("Family trip"), "DM includes reason");
+  assert(w.dms[0].text.includes("Pending your approval"), "DM shows pending status");
+  assert(
+    res.ok && w.requests.get(res.request.id)?.slack_ts === "ts-dm-1",
+    "manager message ref stored on the request",
+  );
   assert(w.audits.includes("ooo.submit"), "submit audited");
 
   const dup = await submitOoo(agent, input, w.deps);
@@ -257,12 +268,17 @@ const input = {
   assert(!badWindow.ok, "zero-length window blocked");
 }
 
-// --- submit falls back to channel when manager DM undeliverable ---
+// --- submit falls back to channel when manager DM undeliverable, flagged ---
 {
   const w = makeWorld();
-  w.deps.dmUserByEmail = async () => false;
-  await submitOoo(agent, input, w.deps);
+  w.deps.dmUserByEmail = async () => null;
+  const sub = await submitOoo(agent, input, w.deps);
   assert(w.channelPosts.length === 1, "fallback channel post when DM fails");
+  assert(w.channelPosts[0].includes("Couldn't DM"), "fallback post flags the DM failure");
+  assert(
+    sub.ok && w.requests.get(sub.request.id)?.slack_channel === "C-alerts",
+    "message ref stored from the fallback post",
+  );
 }
 
 // --- approve: full happy path ---
@@ -312,6 +328,10 @@ const input = {
     "agent DM'd the approval",
   );
   assert(w.audits.includes("ooo.approve"), "approve audited");
+  assert(
+    w.edits.length === 1 && w.edits[0].text.includes("Approved"),
+    "manager notification edited to Approved",
+  );
 
   const again = await approveOoo(id, manager, w.deps);
   assert(!again.ok, "double approve blocked");
@@ -331,6 +351,10 @@ const input = {
   const block = w.busyBlocks.get(r.busy_block_id!)!;
   assert(block.source === "slate" && block.gcal_event_id === null, "slate fallback block");
   assert(w.alerts.some((a) => a.key === "ooo_agent_calendar"), "ops alerted");
+  assert(
+    w.alerts.some((a) => a.key === "ooo_busy_block_fallback"),
+    "busy-block slate fallback flagged to ops",
+  );
 }
 
 // --- approve: manager calendar inaccessible falls back to main ---
@@ -373,6 +397,10 @@ const input = {
   assert(r.rejection_note === "Coverage is too thin that week.", "note stored");
   assert(w.dms[0].text.includes("Coverage is too thin"), "agent DM includes the note");
   assert(w.createdEvents.length === 0, "no calendar events on reject");
+  assert(
+    w.edits.some((e) => e.text.includes("Declined")),
+    "manager notification edited to Declined",
+  );
 }
 {
   const w = makeWorld();
@@ -399,6 +427,10 @@ const input = {
   assert(
     w.dms.some((d) => d.email === manager.email && d.text.includes("withdrew")),
     "manager told about the withdrawal",
+  );
+  assert(
+    w.edits.some((e) => e.text.includes("Cancelled")),
+    "manager notification edited to Cancelled",
   );
 }
 

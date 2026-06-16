@@ -14,6 +14,12 @@ export interface SlackMessage {
   blocks?: unknown[];
 }
 
+/** Where a posted message landed — needed to edit it later via chat.update. */
+export interface SlackRef {
+  channel: string;
+  ts: string;
+}
+
 export function slackConfigured(): boolean {
   return slackBotToken().length > 0;
 }
@@ -68,24 +74,40 @@ export async function lookupSlackUserIdByEmail(
 export async function dmSlackUserByEmail(
   email: string,
   text: string,
-): Promise<boolean> {
+): Promise<SlackRef | null> {
   const userId = await lookupSlackUserIdByEmail(email);
-  if (!userId) return false;
+  if (!userId) return null;
   const opened = await slackApi("conversations.open", { users: userId });
   const channel = (opened.data?.channel as { id?: string } | undefined)?.id;
-  if (!opened.ok || !channel) return false;
+  if (!opened.ok || !channel) return null;
   const posted = await slackApi("chat.postMessage", {
     channel,
     text,
     unfurl_links: false,
     unfurl_media: false,
   });
-  return posted.ok;
+  const ts = posted.data?.ts as string | undefined;
+  return posted.ok && ts ? { channel, ts } : null;
+}
+
+/** Edit a previously posted message (chat.update); needs its channel + ts. */
+export async function updateSlackMessage(
+  ref: SlackRef,
+  text: string,
+): Promise<boolean> {
+  const res = await slackApi("chat.update", {
+    channel: ref.channel,
+    ts: ref.ts,
+    text,
+    unfurl_links: false,
+    unfurl_media: false,
+  });
+  return res.ok;
 }
 
 export async function postSlack(
   msg: SlackMessage,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; channel?: string; ts?: string }> {
   const token = slackBotToken();
   if (!token) return { ok: false, error: "slack-not-configured" };
   const channel = msg.channel ?? slackAlertsChannel();
@@ -106,8 +128,13 @@ export async function postSlack(
         ...(msg.blocks ? { blocks: msg.blocks } : {}),
       }),
     });
-    const data = (await res.json()) as { ok: boolean; error?: string };
-    return { ok: data.ok, error: data.error };
+    const data = (await res.json()) as {
+      ok: boolean;
+      error?: string;
+      channel?: string;
+      ts?: string;
+    };
+    return { ok: data.ok, error: data.error, channel: data.channel, ts: data.ts };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

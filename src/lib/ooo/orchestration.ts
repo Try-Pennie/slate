@@ -64,6 +64,9 @@ export type OooBusyBlockInsert = {
   calendar_id: string | null;
 };
 
+/** Coordinates of a posted Slack message, so it can be edited later. */
+export type SlackRef = { channel: string; ts: string };
+
 export interface OooDeps {
   loadRequest(id: string): Promise<OooRequest | null>;
   insertRequest(row: OooInsert): Promise<InsertOooResult>;
@@ -115,10 +118,12 @@ export interface OooDeps {
     endIso: string,
   ): Promise<string>;
 
-  /** Slack DM by email; false when undeliverable (logged inside, never throws). */
-  dmUserByEmail(email: string, text: string): Promise<boolean>;
-  /** Fallback channel post when a DM can't be delivered. */
-  postFallbackChannel(text: string): Promise<void>;
+  /** Slack DM by email; the message ref when delivered, null when undeliverable. */
+  dmUserByEmail(email: string, text: string): Promise<SlackRef | null>;
+  /** Fallback channel post when a DM can't be delivered; returns the message ref. */
+  postFallbackChannel(text: string): Promise<SlackRef | null>;
+  /** Edit a prior manager notification so it mirrors the request's new status. */
+  editMessage(ref: SlackRef, text: string): Promise<void>;
   /** Throttled ops alert (mirrors postToStatusPage_). */
   alertOps(key: string, message: string): Promise<void>;
 
@@ -213,27 +218,70 @@ export async function submitOoo(
   return { ok: true, request };
 }
 
+const STATUS_LINE = {
+  pending: ":hourglass_flowing_sand: *Pending your approval*",
+  approved: ":white_check_mark: *Approved*",
+  rejected: ":x: *Declined*",
+  cancelled: ":no_entry_sign: *Cancelled*",
+} as const;
+
+function managerNotice(
+  request: OooRequest,
+  agent: User,
+  deps: OooDeps,
+  heading: string,
+  status: keyof typeof STATUS_LINE,
+): string {
+  return (
+    `*${heading}* from ${agent.name ?? agent.email}\n` +
+    `${whenLineFor(request)}\n` +
+    `Reason: ${request.reason}` +
+    (request.notes ? `\nNotes: ${request.notes}` : "") +
+    `\n<${reviewUrl(deps, request.id)}|Review it here>\n` +
+    STATUS_LINE[status]
+  );
+}
+
 async function notifyManagerOfPending(
   request: OooRequest,
   agent: User,
   heading: string,
   deps: OooDeps,
 ): Promise<void> {
-  const text =
-    `*${heading}* from ${agent.name ?? agent.email}\n` +
-    `${whenLineFor(request)}\n` +
-    `Reason: ${request.reason}` +
-    (request.notes ? `\nNotes: ${request.notes}` : "") +
-    `\n<${reviewUrl(deps, request.id)}|Review it here>`;
+  const text = managerNotice(request, agent, deps, heading, "pending");
   const manager = request.manager_id
     ? await deps.getUser(request.manager_id)
     : null;
-  const delivered = manager
-    ? await deps.dmUserByEmail(manager.email, text)
-    : false;
-  if (!delivered) {
-    await deps.postFallbackChannel(text);
+  let ref = manager ? await deps.dmUserByEmail(manager.email, text) : null;
+  if (!ref) {
+    // The DM failed (or no manager resolved). Post to the fallback channel, and
+    // when a manager was expected, flag it so someone checks why the DM failed
+    // (usually the bot is missing users:read.email / im:write).
+    const fallbackText = manager
+      ? `:warning: *Couldn't DM ${manager.name ?? manager.email}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`
+      : text;
+    ref = await deps.postFallbackChannel(fallbackText);
   }
+  if (ref) {
+    await deps.patchRequest(request.id, {
+      slack_channel: ref.channel,
+      slack_ts: ref.ts,
+    });
+  }
+}
+
+/** Edit the stored manager notification to mirror the request's new status. */
+async function updateManagerStatus(
+  request: OooRequest,
+  agent: User,
+  deps: OooDeps,
+  status: keyof typeof STATUS_LINE,
+): Promise<void> {
+  if (!request.slack_channel || !request.slack_ts) return;
+  await deps.editMessage(
+    { channel: request.slack_channel, ts: request.slack_ts },
+    managerNotice(request, agent, deps, "Time off request", status),
+  );
 }
 
 /** Effect keys recorded in side_effects (stable: the retry path keys off them). */
@@ -365,6 +413,12 @@ async function runPostApproval(
     if (blockId) {
       patch.busy_block_id = blockId;
       effects[EFFECTS.busyBlock] = agentEventId ? "ok" : "ok (slate fallback)";
+      if (!agentEventId) {
+        await deps.alertOps(
+          "ooo_busy_block_fallback",
+          `Slate: availability for request ${request.id} was blocked with a Slate-native busy block (the calendar-linked one couldn't be used because the agent calendar event wasn't created). Availability is blocked correctly; flagging the fallback.`,
+        );
+      }
     } else {
       effects[EFFECTS.busyBlock] = "failed";
     }
@@ -489,6 +543,7 @@ export async function approveOoo(
   const updated = await runPostApproval(flipped.request, agent, deps, {
     notifyAgent: true,
   });
+  await updateManagerStatus(request, agent, deps, "approved");
   return { ok: true, request: updated };
 }
 
@@ -522,6 +577,7 @@ export async function rejectOoo(
       agent.email,
       `:x: Your time off request for ${whenLineFor(request)} was *declined*.\n\n*Note from your manager:* ${rejectionNote}`,
     );
+    await updateManagerStatus(request, agent, deps, "rejected");
   }
   return { ok: true, request: flipped.request };
 }
@@ -560,6 +616,7 @@ export async function cancelOoo(
     agent.email,
     `Your time off request for ${whenLineFor(request)} was cancelled.`,
   );
+  await updateManagerStatus(request, agent, deps, "cancelled");
   if (!wasApproved && request.manager_id) {
     const manager = await deps.getUser(request.manager_id);
     if (manager) {
