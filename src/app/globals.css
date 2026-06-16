@@ -61,6 +61,7 @@
   --bg-ink:             var(--pennie-navy);
   --surface:            var(--pennie-white);
   --surface-elevated:   var(--pennie-white);
+  --field:              var(--pennie-white); /* input wells; recessed in dark */
 
   --fg:                 var(--pennie-graphite);
   --fg-strong:          var(--pennie-charcoal-2);
@@ -173,12 +174,19 @@
 /* ---------------- Dark scope — flip SEMANTIC vars only ----------------
    accent / accent-hover / focus-ring (sky) stay the same. */
 [data-theme="dark"] {
-  --bg:               var(--pennie-navy);
-  --surface:          var(--pennie-ink-2);
-  --surface-elevated: var(--pennie-ink-2);
+  /* Warm-charcoal elevation scale: surfaces pulled well off cold blue (R/G
+     brought up near B) so dark mode feels warm, not clinical, with a wide
+     page→hero range for clear depth. Stays in the navy family (B still top). */
+  --bg:               rgb(23, 22, 26);  /* deepest — page recedes */
+  --bg-alt:           rgb(70, 68, 78);  /* hover / table-row / zebra tint (light-only otherwise → cream flash in dark) */
+  --field:            rgb(40, 39, 45);  /* recessed input wells inside cards */
+  --surface:          rgb(57, 55, 63);  /* cards float above the page */
+  --surface-elevated: rgb(74, 71, 81);  /* brightest — hero band, menus, popovers */
   --fg:               var(--pennie-beige);
   --fg-muted:         var(--pennie-line-3);
-  --border:           var(--border-ink);
+  /* Stronger than light's hairline: in dark, borders (not shadows) carry the
+     card/field edges, and inputs need a 3:1 boundary for WCAG 1.4.11. */
+  --border:           rgba(246, 246, 246, 0.38);
   --focus-ring-line:  var(--accent); /* S3: sky outline on navy (graphite stays light-only) */
   /* Rose lightened 45% toward white: base rose is 2.30:1 on ink-2 / 3.12:1 on navy (AA fail);
      this reads 4.96:1 on ink-2 and 6.72:1 on navy. */

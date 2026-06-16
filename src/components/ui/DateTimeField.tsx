@@ -160,19 +160,22 @@ export function DateTimeField({
 
   // On blur of any date segment, auto-correct it (the behavior chosen for
   // out-of-range years, extended to the whole date): month → 1..12; year → the
-  // ±2yr cap once 4 digits are in; day → the month's real length, but only once
-  // the year is known so leap days (Feb 29) aren't clamped prematurely; and a
-  // complete-but-out-of-range date is pulled to the nearest bound. The blurred
-  // segment is read from the event (fresh) since auto-advance fires blur with
-  // stale closure state. `which` is the segment that blurred, `raw` its value.
+  // ±2yr cap once 4 digits are in; day → the month's real length. When the year
+  // isn't a complete 4 digits yet we still clamp the day, using a leap year as
+  // the generous bound (so 02/31 → 02/29 immediately), then a non-leap year
+  // tightens it to 02/28 once it's typed. A complete-but-out-of-range date is
+  // pulled to the nearest bound. The blurred segment is read from the event
+  // (fresh) since auto-advance fires blur with stale closure state.
   const normalizeDate = (which: "mm" | "dd" | "yyyy", raw: string) => {
     let m = which === "mm" ? raw : mm;
     let dy = which === "dd" ? raw : dd;
     let y = which === "yyyy" ? raw : yyyy;
     if (m) m = pad(clamp(Number(m) || 1, 1, 12));
     if (y.length === 4) y = String(clamp(Number(y) || minD.year, minD.year, maxD.year));
-    if (m && dy && y.length === 4) {
-      const dim = DateTime.fromObject({ year: Number(y), month: Number(m) }).daysInMonth!;
+    if (m && dy) {
+      // Use the typed year if complete, else a leap year (2000) for the max day.
+      const yearForDim = y.length === 4 ? Number(y) : 2000;
+      const dim = DateTime.fromObject({ year: yearForDim, month: Number(m) }).daysInMonth!;
       dy = pad(clamp(Number(dy) || 1, 1, dim));
     }
     const d = dateFromParts(m, dy, y);
@@ -254,6 +257,12 @@ export function DateTimeField({
   // replaces the whole value (start fresh) instead of editing one digit.
   const selectOnFocus = (e: React.FocusEvent<HTMLInputElement>) =>
     e.currentTarget.select();
+  // Keep segments atomic: a click or drag can never select just part of the
+  // value — every mouse-up re-selects the whole segment.
+  const selectWholeOnMouseUp = (e: React.MouseEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    e.currentTarget.select();
+  };
 
   const canPrev = view.startOf("month") > minD.startOf("month");
   const canNext = view.endOf("month") < maxD.endOf("month");
@@ -263,7 +272,7 @@ export function DateTimeField({
   const segCls =
     "dt-seg rounded-sm bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted focus:bg-[var(--pennie-seg-active)]";
   const popSel =
-    "h-9 rounded-sm border border-border bg-surface px-2 text-sm text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
+    "h-9 rounded-sm border border-border bg-[var(--field)] px-2 text-sm text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
 
   return (
     <div ref={rootRef} className="relative">
@@ -276,26 +285,26 @@ export function DateTimeField({
           e.preventDefault();
           focusFirstEmpty();
         }}
-        className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-surface pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
+        className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-[var(--field)] pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
-          onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus}
+          onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => normalizeDate("mm", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "mm", mm, null, ddRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={ddRef} inputMode="numeric" aria-label={`${ariaLabel}, day`} placeholder="DD" value={dd}
-          onChange={(e) => handleSeg("dd", e.target.value, yyRef)} onFocus={selectOnFocus}
+          onChange={(e) => handleSeg("dd", e.target.value, yyRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => normalizeDate("dd", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "dd", dd, mmRef, yyRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">/</span>
         <input ref={yyRef} inputMode="numeric" aria-label={`${ariaLabel}, year`} placeholder="YYYY" value={yyyy}
-          onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)} onFocus={selectOnFocus}
+          onChange={(e) => handleSeg("yyyy", e.target.value, hhRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => normalizeDate("yyyy", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "yyyy", yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
 
         <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
 
         <input ref={hhRef} inputMode="numeric" aria-label={`${ariaLabel}, hour`} placeholder="HH" value={hh}
-          onChange={(e) => handleSeg("hh", e.target.value, miRef)} onFocus={selectOnFocus}
+          onChange={(e) => handleSeg("hh", e.target.value, miRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => {
             const v = e.currentTarget.value;
             setHh(v ? pad(clamp(Number(v) || 12, 1, 12)) : "");
@@ -306,7 +315,7 @@ export function DateTimeField({
           onKeyDown={(e) => segKeyDown(e, "hh", hh, yyRef, miRef)} className={`w-[3ch] ${segCls}`} />
         <span className="text-fg-muted">:</span>
         <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
-          onChange={(e) => handleSeg("mi", e.target.value, apRef)} onFocus={selectOnFocus}
+          onChange={(e) => handleSeg("mi", e.target.value, apRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0, round)) : ""); }}
           onKeyDown={(e) => segKeyDown(e, "mi", mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
         <input ref={apRef} aria-label={`${ariaLabel}, AM or PM`} placeholder="--" value={hh ? ap : ""}
@@ -335,7 +344,7 @@ export function DateTimeField({
 
       {open && (
         <div id={dialogId} role="dialog" aria-label={ariaLabel} aria-modal="true"
-          className="absolute left-0 z-20 mt-1 w-72 rounded-md border border-border bg-surface p-3 shadow-pop">
+          className="absolute left-0 z-20 mt-1 w-72 rounded-md border border-border bg-surface-elevated p-3 shadow-pop">
           <CalendarMonth
             month={view}
             today={today}
