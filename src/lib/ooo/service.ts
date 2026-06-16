@@ -47,6 +47,21 @@ function realDeps(): OooDeps {
       return (data as OooRequest | null) ?? null;
     },
 
+    listActiveRequests: async (userId) => {
+      const { data } = await db()
+        .from("ooo_requests")
+        .select("id, starts_at, ends_at, display_tz_id, display_tz_label")
+        .eq("user_id", userId)
+        .in("status", ["pending", "approved"]);
+      return (data ?? []) as {
+        id: string;
+        starts_at: string;
+        ends_at: string;
+        display_tz_id: string;
+        display_tz_label: string;
+      }[];
+    },
+
     insertRequest: async (row) => {
       const { data, error } = await db()
         .from("ooo_requests")

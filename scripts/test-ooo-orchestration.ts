@@ -14,7 +14,6 @@ import {
 } from "../src/lib/ooo/orchestration.ts";
 import {
   DEFAULT_REJECTION_NOTE,
-  DUPLICATE_REQUEST_MESSAGE,
   NO_MANAGER_MESSAGE,
 } from "../src/lib/ooo/core.ts";
 import type { OooRequest, User } from "../src/lib/db/types.ts";
@@ -124,6 +123,20 @@ function makeWorld(): World {
 
   world.deps = {
     loadRequest: async (id) => world.requests.get(id) ?? null,
+    listActiveRequests: async (userId) =>
+      [...world.requests.values()]
+        .filter(
+          (r) =>
+            r.user_id === userId &&
+            (r.status === "pending" || r.status === "approved"),
+        )
+        .map((r) => ({
+          id: r.id,
+          starts_at: r.starts_at,
+          ends_at: r.ends_at,
+          display_tz_id: r.display_tz_id,
+          display_tz_label: r.display_tz_label,
+        })),
     insertRequest: async (row) => {
       if (isDuplicate(row.user_id, row.starts_at, row.ends_at)) {
         return { ok: false, duplicate: true };
@@ -255,7 +268,53 @@ const input = {
   assert(w.audits.includes("ooo.submit"), "submit audited");
 
   const dup = await submitOoo(agent, input, w.deps);
-  assert(!dup.ok && dup.error === DUPLICATE_REQUEST_MESSAGE, "exact duplicate blocked");
+  assert(
+    !dup.ok && /overlaps a request you already have/.test(dup.error ?? ""),
+    "exact duplicate caught as an overlap",
+  );
+
+  // A different window that still overlaps the pending one is blocked too, and
+  // the message points the agent at the existing request to edit.
+  const overlapping = await submitOoo(
+    agent,
+    {
+      ...input,
+      startIso: "2026-07-01T18:00:00Z",
+      endIso: "2026-07-01T23:00:00Z",
+    },
+    w.deps,
+  );
+  assert(
+    !overlapping.ok && /Edit that request instead/.test(overlapping.error ?? ""),
+    "overlapping (non-identical) window blocked with edit hint",
+  );
+
+  // A window that clears the existing one entirely goes through.
+  const clear = await submitOoo(
+    agent,
+    {
+      ...input,
+      startIso: "2026-07-08T13:00:00Z",
+      endIso: "2026-07-08T21:00:00Z",
+    },
+    w.deps,
+  );
+  assert(clear.ok, "non-overlapping window accepted");
+
+  // Over the max length is rejected by validateWindow before any overlap check.
+  const tooLong = await submitOoo(
+    agent,
+    {
+      ...input,
+      startIso: "2026-01-01T00:00:00Z",
+      endIso: "2026-06-01T00:00:00Z",
+    },
+    w.deps,
+  );
+  assert(
+    !tooLong.ok && /can't be longer than/.test(tooLong.error ?? ""),
+    "over-max-length window blocked",
+  );
 
   const noMgr = await submitOoo({ ...agent, manager_id: null }, input, w.deps);
   assert(!noMgr.ok && noMgr.error === NO_MANAGER_MESSAGE, "no manager blocks submit");
@@ -538,9 +597,18 @@ const input = {
   void first;
   const res = await modifyOoo(secondId, agent, input, w.deps);
   assert(
-    !res.ok && res.error === DUPLICATE_REQUEST_MESSAGE,
-    "modify into an existing window blocked",
+    !res.ok && /overlaps a request you already have/.test(res.error ?? ""),
+    "modify into an existing window blocked as an overlap",
   );
+  // Modifying a request to a window that overlaps only ITSELF is allowed
+  // (the overlap check excludes the request being edited).
+  const selfOk = await modifyOoo(
+    secondId,
+    agent,
+    { ...input, startIso: "2026-08-01T12:00:00Z", endIso: "2026-08-01T22:00:00Z" },
+    w.deps,
+  );
+  assert(selfOk.ok, "modify overlapping only its own prior window allowed");
 }
 
 // --- retry: fills only the gaps, silently ---

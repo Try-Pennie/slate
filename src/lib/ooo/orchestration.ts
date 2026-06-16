@@ -8,6 +8,7 @@ import {
   DUPLICATE_REQUEST_MESSAGE,
   formatWhenLine,
   NO_MANAGER_MESSAGE,
+  overlaps,
   validateWindow,
 } from "./core.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -69,6 +70,15 @@ export type SlackRef = { channel: string; ts: string };
 
 export interface OooDeps {
   loadRequest(id: string): Promise<OooRequest | null>;
+  /** A user's still-active (pending/approved) requests, for overlap checks. */
+  listActiveRequests(
+    userId: string,
+  ): Promise<
+    Pick<
+      OooRequest,
+      "id" | "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label"
+    >[]
+  >;
   insertRequest(row: OooInsert): Promise<InsertOooResult>;
   /**
    * Conditional update: applies `patch` only while status is one of `from`
@@ -167,6 +177,36 @@ function reviewUrl(deps: OooDeps, requestId: string): string {
   return `${deps.appBaseUrl()}/admin/ooo?request=${requestId}`;
 }
 
+type OverlapCandidate = Pick<
+  OooRequest,
+  "id" | "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label"
+>;
+
+/** The user's first still-active request that overlaps [start, end), or null. */
+async function findOverlap(
+  userId: string,
+  startIso: string,
+  endIso: string,
+  deps: OooDeps,
+  excludeId?: string,
+): Promise<OverlapCandidate | null> {
+  const active = await deps.listActiveRequests(userId);
+  return (
+    active.find(
+      (r) =>
+        r.id !== excludeId && overlaps(startIso, endIso, r.starts_at, r.ends_at),
+    ) ?? null
+  );
+}
+
+function overlapError(r: OverlapCandidate): string {
+  return (
+    `This overlaps a request you already have for ` +
+    `${formatWhenLine(r.starts_at, r.ends_at, r.display_tz_id, r.display_tz_label)}. ` +
+    `Edit that request instead of adding a new one.`
+  );
+}
+
 export interface SubmitOooInput {
   startIso: string;
   endIso: string;
@@ -188,6 +228,9 @@ export async function submitOoo(
     return fail("Please add a short reason for your time off.");
   }
   if (!agent.manager_id) return fail(NO_MANAGER_MESSAGE);
+
+  const clash = await findOverlap(agent.id, input.startIso, input.endIso, deps);
+  if (clash) return fail(overlapError(clash));
 
   const inserted = await deps.insertRequest({
     org_id: agent.org_id,
@@ -654,6 +697,15 @@ export async function modifyOoo(
   }
   const windowError = validateWindow(input.startIso, input.endIso);
   if (windowError) return fail(windowError);
+
+  const clash = await findOverlap(
+    request.user_id,
+    input.startIso,
+    input.endIso,
+    deps,
+    requestId,
+  );
+  if (clash) return fail(overlapError(clash));
 
   const wasApproved = request.status === "approved";
   const agent = await deps.getUser(request.user_id);
