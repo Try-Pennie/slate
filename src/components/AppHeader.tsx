@@ -117,7 +117,7 @@ export async function AppHeader({
         </a>
       </div>
     )}
-    <header className="border-b border-border bg-bg">
+    <header className="sticky top-0 z-30 border-b border-border bg-bg">
       <div className="mx-auto flex min-h-16 max-w-4xl flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2">
         {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
         <img

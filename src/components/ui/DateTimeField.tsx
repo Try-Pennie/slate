@@ -172,6 +172,7 @@ export function DateTimeField({
     let y = which === "yyyy" ? raw : yyyy;
     if (m) m = pad(clamp(Number(m) || 1, 1, 12));
     if (y.length === 4) y = String(clamp(Number(y) || minD.year, minD.year, maxD.year));
+    else if (y) y = ""; // a 1-3 digit year (e.g. "265") isn't a real year — clear it
     if (m && dy) {
       // Use the typed year if complete, else a leap year (2000) for the max day.
       const yearForDim = y.length === 4 ? Number(y) : 2000;
