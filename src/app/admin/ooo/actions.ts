@@ -16,19 +16,24 @@ import type { OooActionResult } from "@/lib/ooo/orchestration";
 
 function finish(
   result: OooActionResult,
-  partialMsg?: (failedCount: number) => string,
+  opts?: { success?: string; partialMsg?: (failedCount: number) => string },
 ): void {
   revalidatePath("/admin/ooo");
   if (!result.ok) {
     redirect(`/admin/ooo?msg=${encodeURIComponent(result.error)}`);
   }
-  if (partialMsg) {
+  if (opts?.partialMsg) {
     const failed = Object.values(result.request.side_effects ?? {}).filter(
       (v) => typeof v === "string" && v.startsWith("failed"),
     );
     if (failed.length) {
-      redirect(`/admin/ooo?msg=${encodeURIComponent(partialMsg(failed.length))}`);
+      redirect(
+        `/admin/ooo?msg=${encodeURIComponent(opts.partialMsg(failed.length))}`,
+      );
     }
+  }
+  if (opts?.success) {
+    redirect(`/admin/ooo?ok=${encodeURIComponent(opts.success)}`);
   }
 }
 
@@ -36,11 +41,11 @@ export async function approveOooAction(form: FormData): Promise<void> {
   const actor = await requireManager();
   const requestId = String(form.get("request_id") ?? "");
   if (!requestId) return;
-  finish(
-    await approveOoo(requestId, actor),
-    (n) =>
+  finish(await approveOoo(requestId, actor), {
+    success: "Time off approved.",
+    partialMsg: (n) =>
       `Approved, but ${n} follow-up step${n > 1 ? "s" : ""} failed to apply. Use Retry on the request below.`,
-  );
+  });
 }
 
 export async function rejectOooAction(form: FormData): Promise<void> {
@@ -49,6 +54,7 @@ export async function rejectOooAction(form: FormData): Promise<void> {
   if (!requestId) return;
   finish(
     await rejectOoo(requestId, actor, String(form.get("rejection_note") ?? "")),
+    { success: "Request declined." },
   );
 }
 

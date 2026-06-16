@@ -21,6 +21,8 @@ import {
 import { AppHeader } from "@/components/AppHeader";
 import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
+import { DeepLinkScroll } from "@/components/ui/DeepLinkScroll";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -76,7 +78,7 @@ function buildInsights(
 export default async function OooQueuePage({
   searchParams,
 }: {
-  searchParams: Promise<{ request?: string; msg?: string }>;
+  searchParams: Promise<{ request?: string; msg?: string; ok?: string }>;
 }) {
   const sp = await searchParams;
   const me = await currentUser();
@@ -162,14 +164,18 @@ export default async function OooQueuePage({
       value: String(insights.advanceNotice),
       sub: insights.advanceNotice === 1 ? "day" : "days",
     },
-    { label: "Busiest month", value: insights.busiest },
-    company
-      ? {
-          label: "Median mgr approval",
-          value: `${company.rate}%`,
-          sub: `of ${company.managerCount}`,
-        }
-      : { label: "Awaiting you", value: String(pending.length) },
+    { label: "Most time off", value: insights.busiest },
+    // Admins get a company-wide stat here; managers don't (the count that used
+    // to sit here just duplicated the "N waiting on you" header above).
+    ...(company
+      ? [
+          {
+            label: "Median mgr approval",
+            value: `${company.rate}%`,
+            sub: `of ${company.managerCount}`,
+          },
+        ]
+      : []),
   ];
   const nameOf = (id: string | null) => {
     const u = users.find((x) => x.id === id);
@@ -224,6 +230,9 @@ export default async function OooQueuePage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
+      <DeepLinkScroll
+        targetId={sp.request ? `request-${sp.request}` : null}
+      />
       <main className="mx-auto w-full min-w-0 max-w-4xl space-y-10 px-6 py-10 sm:px-8">
         {/* Navy header carrying the actionable status: how many wait on you. */}
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
@@ -248,159 +257,22 @@ export default async function OooQueuePage({
             {sp.msg}
           </div>
         )}
-
-        {/* Pending queue — the work surface */}
-        <section>
-          <p className="pn-eyebrow text-fg-muted">
-            Waiting for review
-            {pending.length > 0 && (
-              <span className="tabular-nums"> ({pending.length})</span>
-            )}
-          </p>
-          {pending.length === 0 ? (
-            <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
-              Nothing waiting. New requests show up here and in Slack.
-            </p>
-          ) : (
-            <ul className="mt-3 divide-y divide-border overflow-hidden rounded-md bg-surface shadow-xs">
-              {pending.map((r) => {
-                const conflicts = overlapsFor(r);
-                return (
-                  <li
-                    key={r.id}
-                    id={`request-${r.id}`}
-                    className={`p-5 ${
-                      sp.request === r.id
-                        ? "outline-2 -outline-offset-2 outline-[var(--focus-ring)]"
-                        : ""
-                    }`}
-                  >
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                      <span className="font-semibold text-fg">
-                        {nameOf(r.user_id)}
-                      </span>
-                      <span className="tabular-nums text-sm text-fg-muted">
-                        {whenOf(r)}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm text-fg-muted">
-                      {r.reason}
-                      {r.notes ? ` · ${r.notes}` : ""}
-                    </p>
-                    {conflicts.length > 0 && (
-                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-                        <Pill variant="status-error">
-                          {conflicts.length} booked{" "}
-                          {conflicts.length === 1 ? "meeting" : "meetings"}
-                        </Pill>
-                        <span className="text-fg-muted">
-                          {conflicts
-                            .slice(0, 3)
-                            .map((b) =>
-                              formatWhenLine(
-                                b.starts_at,
-                                b.ends_at,
-                                r.display_tz_id,
-                                r.display_tz_label,
-                              ),
-                            )
-                            .join("; ")}
-                          {conflicts.length > 3 &&
-                            ` and ${conflicts.length - 3} more`}
-                          . Approving won&apos;t move them; rebook first.
-                        </span>
-                      </p>
-                    )}
-                    <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <form action={approveOooAction}>
-                        <input type="hidden" name="request_id" value={r.id} />
-                        <button className={btnCls}>Approve</button>
-                      </form>
-                      <form
-                        action={rejectOooAction}
-                        className="flex flex-1 flex-wrap items-center gap-2"
-                      >
-                        <input type="hidden" name="request_id" value={r.id} />
-                        <input
-                          name="rejection_note"
-                          aria-label={`Note to ${nameOf(r.user_id)} if you decline`}
-                          placeholder="Add a note (optional)"
-                          className={`${fieldBaseCls} min-w-0 flex-1`}
-                        />
-                        <button className={btnSecondaryCls}>Decline</button>
-                      </form>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        {/* Recent decisions — flat list */}
-        <section>
-          <p className="pn-eyebrow text-fg-muted">
-            Recent decisions{" "}
-            <span className="font-normal normal-case text-fg-muted">
-              · last {HISTORY_DAYS} days
+        {sp.ok && (
+          <div
+            role="status"
+            className="pn-confirm-enter flex items-center gap-3 rounded-md bg-pennie-sky-soft px-5 py-4 dark:bg-accent/15"
+          >
+            <span
+              aria-hidden="true"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-pennie-sky text-pennie-graphite"
+            >
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
             </span>
-          </p>
-          {history.length === 0 ? (
-            <p className="mt-3 text-sm text-fg-muted">Nothing decided yet.</p>
-          ) : (
-            <ul className="mt-1 divide-y divide-border">
-              {history.map((r) => {
-                const failures = failedEffects(r);
-                return (
-                  <li
-                    key={r.id}
-                    id={`request-${r.id}`}
-                    className={`flex flex-wrap items-center justify-between gap-2 py-4 ${
-                      sp.request === r.id
-                        ? "rounded-md outline-2 outline-offset-4 outline-[var(--focus-ring)]"
-                        : ""
-                    }`}
-                  >
-                    <div className="min-w-0 text-sm">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-semibold text-fg">
-                          {nameOf(r.user_id)}
-                        </span>
-                        <span className="tabular-nums text-fg-muted">
-                          {whenOf(r)}
-                        </span>
-                        <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
-                        {r.status === "approved" && failures.length > 0 && (
-                          <Pill
-                            variant="status-error"
-                            title={failures
-                              .map(([k, v]) => `${k}: ${v}`)
-                              .join("\n")}
-                          >
-                            calendar updates incomplete
-                          </Pill>
-                        )}
-                      </div>
-                      <p className="mt-0.5 text-xs text-fg-muted">
-                        {r.reason}
-                        {r.rejection_note ? ` · Note: ${r.rejection_note}` : ""}
-                        {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
-                      </p>
-                    </div>
-                    {isAdmin && r.status === "approved" && failures.length > 0 && (
-                      <form action={retryOooAction}>
-                        <input type="hidden" name="request_id" value={r.id} />
-                        <button className={btnSecondaryCls}>
-                          Retry calendar updates
-                        </button>
-                      </form>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+            <p className="font-semibold text-fg">{sp.ok}</p>
+          </div>
+        )}
 
         {/* Insights — a navy stat band, then supporting detail */}
         <section>
@@ -411,7 +283,11 @@ export default async function OooQueuePage({
             {roster.length} {roster.length === 1 ? "person" : "people"} on the
             roster. Numbers cover all requests on record.
           </p>
-          <dl className="mt-3 grid grid-cols-2 divide-x divide-y divide-pennie-beige/10 overflow-hidden rounded-xl bg-pennie-navy sm:grid-cols-4 sm:divide-y-0 dark:bg-surface dark:divide-border">
+          <dl
+            className={`mt-3 grid grid-cols-2 divide-x divide-y divide-pennie-beige/10 overflow-hidden rounded-xl bg-pennie-navy sm:divide-y-0 dark:bg-surface dark:divide-border ${
+              company ? "sm:grid-cols-4" : "sm:grid-cols-3"
+            }`}
+          >
             {stats.map((s) => (
               <Stat key={s.label} label={s.label} value={s.value} sub={s.sub} />
             ))}
@@ -490,6 +366,161 @@ export default async function OooQueuePage({
             </div>
           )}
         </section>
+
+        {/* Pending queue — the work surface */}
+        <section>
+          <p className="pn-eyebrow text-fg-muted">
+            Waiting for review
+            {pending.length > 0 && (
+              <span className="tabular-nums"> ({pending.length})</span>
+            )}
+          </p>
+          {pending.length === 0 ? (
+            <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
+              Nothing waiting. New requests show up here and in Slack.
+            </p>
+          ) : (
+            <ul className="mt-3 divide-y divide-border overflow-hidden rounded-md bg-surface shadow-xs">
+              {pending.map((r) => {
+                const conflicts = overlapsFor(r);
+                return (
+                  <li
+                    key={r.id}
+                    id={`request-${r.id}`}
+                    className={`p-5 ${sp.request === r.id ? "pn-deeplink" : ""}`}
+                  >
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="font-semibold text-fg">
+                        {nameOf(r.user_id)}
+                      </span>
+                      <span className="tabular-nums text-sm text-fg-muted">
+                        {whenOf(r)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-fg-muted">
+                      {r.reason}
+                      {r.notes ? ` · ${r.notes}` : ""}
+                    </p>
+                    {conflicts.length > 0 && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                        <Pill variant="status-error">
+                          {conflicts.length} booked{" "}
+                          {conflicts.length === 1 ? "meeting" : "meetings"}
+                        </Pill>
+                        <span className="text-fg-muted">
+                          {conflicts
+                            .slice(0, 3)
+                            .map((b) =>
+                              formatWhenLine(
+                                b.starts_at,
+                                b.ends_at,
+                                r.display_tz_id,
+                                r.display_tz_label,
+                              ),
+                            )
+                            .join("; ")}
+                          {conflicts.length > 3 &&
+                            ` and ${conflicts.length - 3} more`}
+                          . Approving won&apos;t move them; rebook first.
+                        </span>
+                      </p>
+                    )}
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <form action={approveOooAction}>
+                        <input type="hidden" name="request_id" value={r.id} />
+                        <SubmitButton className={btnCls} pendingLabel="Approving…">
+                          Approve
+                        </SubmitButton>
+                      </form>
+                      <form
+                        action={rejectOooAction}
+                        className="flex flex-1 flex-wrap items-center gap-2"
+                      >
+                        <input type="hidden" name="request_id" value={r.id} />
+                        <input
+                          name="rejection_note"
+                          aria-label={`Note to ${nameOf(r.user_id)} if you decline`}
+                          placeholder="Add a note (optional)"
+                          className={`${fieldBaseCls} min-w-0 flex-1`}
+                        />
+                        <SubmitButton
+                          className={btnSecondaryCls}
+                          pendingLabel="Declining…"
+                        >
+                          Decline
+                        </SubmitButton>
+                      </form>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {/* Recent decisions — flat list */}
+        <section>
+          <p className="pn-eyebrow text-fg-muted">
+            Recent decisions{" "}
+            <span className="font-normal normal-case text-fg-muted">
+              · last {HISTORY_DAYS} days
+            </span>
+          </p>
+          {history.length === 0 ? (
+            <p className="mt-3 text-sm text-fg-muted">Nothing decided yet.</p>
+          ) : (
+            <ul className="mt-1 divide-y divide-border">
+              {history.map((r) => {
+                const failures = failedEffects(r);
+                return (
+                  <li
+                    key={r.id}
+                    id={`request-${r.id}`}
+                    className={`flex flex-wrap items-center justify-between gap-2 py-4 ${
+                      sp.request === r.id ? "pn-deeplink" : ""
+                    }`}
+                  >
+                    <div className="min-w-0 text-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-fg">
+                          {nameOf(r.user_id)}
+                        </span>
+                        <span className="tabular-nums text-fg-muted">
+                          {whenOf(r)}
+                        </span>
+                        <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
+                        {r.status === "approved" && failures.length > 0 && (
+                          <Pill
+                            variant="status-error"
+                            title={failures
+                              .map(([k, v]) => `${k}: ${v}`)
+                              .join("\n")}
+                          >
+                            calendar updates incomplete
+                          </Pill>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-fg-muted">
+                        {r.reason}
+                        {r.rejection_note ? ` · Note: ${r.rejection_note}` : ""}
+                        {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
+                      </p>
+                    </div>
+                    {isAdmin && r.status === "approved" && failures.length > 0 && (
+                      <form action={retryOooAction}>
+                        <input type="hidden" name="request_id" value={r.id} />
+                        <button className={btnSecondaryCls}>
+                          Retry calendar updates
+                        </button>
+                      </form>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
       </main>
     </>
   );
