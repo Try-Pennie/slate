@@ -377,7 +377,7 @@ export default async function MePage({
         )}
 
         {/* Time off (shared by agents and managers viewing their own page) */}
-        <section id="time-off" className="scroll-mt-8 space-y-6">
+        <section id="time-off" className="scroll-mt-20 space-y-6">
           <header>
             <h2 className="pn-h3">
               {editing ? "Change your request" : "Request time away"}
