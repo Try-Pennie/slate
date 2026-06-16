@@ -354,21 +354,26 @@ export function DateTimeField({
 
           <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-3">
             <select aria-label={`${ariaLabel} hour`} value={hh}
-              onChange={(e) => setHh(e.target.value)} className={`${popSel} flex-1`}>
+              onChange={(e) => { const v = e.target.value; setHh(v); if (v && !mi) setMi("00"); }}
+              className={`${popSel} flex-1`}>
               <option value="">--</option>
               {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((h) => (
                 <option key={h} value={pad(h)}>{h}</option>
               ))}
             </select>
             <span aria-hidden="true" className="text-fg-muted">:</span>
-            <select aria-label={`${ariaLabel} minute`} value={pad(snapMinute(minute, round))}
+            {/* Mirror the segments: show "--" when unset, not a fake 00/AM. */}
+            <select aria-label={`${ariaLabel} minute`} value={mi ? pad(snapMinute(minute, round)) : ""}
               onChange={(e) => setMi(e.target.value)} className={`${popSel} flex-1`}>
+              <option value="">--</option>
               {[0, 15, 30, 45].map((m) => (
                 <option key={m} value={pad(m)}>{pad(m)}</option>
               ))}
             </select>
-            <select aria-label={`${ariaLabel} AM or PM`} value={ap}
-              onChange={(e) => setAp(e.target.value as "AM" | "PM")} className={`${popSel} flex-1`}>
+            <select aria-label={`${ariaLabel} AM or PM`} value={hh ? ap : ""}
+              onChange={(e) => { if (e.target.value) setAp(e.target.value as "AM" | "PM"); }}
+              className={`${popSel} flex-1`}>
+              <option value="">--</option>
               <option value="AM">AM</option>
               <option value="PM">PM</option>
             </select>
