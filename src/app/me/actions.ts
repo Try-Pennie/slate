@@ -117,7 +117,11 @@ function windowFrom(form: FormData): SubmitOooInput | { error: string } {
  * the browser's native tooltip. Success still redirects (which clears the form
  * and shows the success banner).
  */
-export type OooFormState = { error: string | null };
+export type OooFormState = {
+  error: string | null;
+  /** Set on the overlap error so the banner can link to the clashing request. */
+  conflictRequestId?: string | null;
+};
 
 export async function submitMyOoo(
   _prev: OooFormState,
@@ -128,7 +132,9 @@ export async function submitMyOoo(
   const input = windowFrom(form);
   if ("error" in input) return { error: input.error };
   const result = await submitOoo(me, input);
-  if (!result.ok) return { error: result.error };
+  if (!result.ok) {
+    return { error: result.error, conflictRequestId: result.conflictRequestId };
+  }
   done(await confirmationMessage("You're set for", result.request));
 }
 
@@ -143,7 +149,9 @@ export async function modifyMyOoo(
   const input = windowFrom(form);
   if ("error" in input) return { error: input.error };
   const result = await modifyOoo(requestId, me, input);
-  if (!result.ok) return { error: result.error };
+  if (!result.ok) {
+    return { error: result.error, conflictRequestId: result.conflictRequestId };
+  }
   done(await confirmationMessage("Updated to", result.request), "changed");
 }
 

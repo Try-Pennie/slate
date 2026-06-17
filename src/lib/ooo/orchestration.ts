@@ -163,9 +163,12 @@ export interface OooDeps {
 
 export type OooActionResult =
   | { ok: true; request: OooRequest }
-  | { ok: false; error: string };
+  // `conflictRequestId` is set only on the overlap error, so the form can link
+  // straight to the request the agent should edit instead.
+  | { ok: false; error: string; conflictRequestId?: string };
 
-const fail = (error: string): OooActionResult => ({ ok: false, error });
+const fail = (error: string, conflictRequestId?: string): OooActionResult =>
+  conflictRequestId ? { ok: false, error, conflictRequestId } : { ok: false, error };
 
 function whenLineFor(r: OooRequest): string {
   return formatWhenLine(
@@ -234,7 +237,7 @@ export async function submitOoo(
   if (!agent.manager_id) return fail(NO_MANAGER_MESSAGE);
 
   const clash = await findOverlap(agent.id, input.startIso, input.endIso, deps);
-  if (clash) return fail(overlapError(clash));
+  if (clash) return fail(overlapError(clash), clash.id);
 
   const inserted = await deps.insertRequest({
     org_id: agent.org_id,
@@ -743,7 +746,7 @@ export async function modifyOoo(
     deps,
     requestId,
   );
-  if (clash) return fail(overlapError(clash));
+  if (clash) return fail(overlapError(clash), clash.id);
 
   const wasApproved = request.status === "approved";
   const agent = await deps.getUser(request.user_id);
