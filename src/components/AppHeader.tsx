@@ -124,11 +124,23 @@ export async function AppHeader({
   // org_id for the org-wide scope, so it's a no-op without the orgId prop.
   let pendingOoo = 0;
   if (showTimeOff && userId && orgId) {
+    // Exclude requests authored by admins/super admins, mirroring the Team
+    // Requests page, so test/operator requests can't inflate the badge.
+    const { data: staff } = await supabaseAdmin()
+      .from("users")
+      .select("id")
+      .eq("org_id", orgId)
+      .in("role", ["admin", "super_admin"]);
+    const staffIds = ((staff ?? []) as { id: string }[]).map((u) => u.id);
+
     let q = supabaseAdmin()
       .from("ooo_requests")
       .select("id", { count: "exact", head: true })
       .eq("org_id", orgId)
       .eq("status", "pending");
+    if (staffIds.length > 0) {
+      q = q.not("user_id", "in", `(${staffIds.join(",")})`);
+    }
     // showTimeOff already implies isRole(r); the guard just narrows the type.
     if (isRole(r) && !canModerateAllOoo(r)) q = q.eq("manager_id", userId);
     const { count } = await q;

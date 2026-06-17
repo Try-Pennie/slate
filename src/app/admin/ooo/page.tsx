@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
+import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { formatWhenLine, overlaps } from "@/lib/ooo/core";
 import {
@@ -121,7 +121,7 @@ export default async function OooQueuePage({
     historyQuery,
     db
       .from("users")
-      .select("id, name, email, manager_id")
+      .select("id, name, email, manager_id, role")
       .eq("org_id", me.org_id),
     db
       .from("organizations")
@@ -131,25 +131,39 @@ export default async function OooQueuePage({
     // Insights run over the full request history, not just the 90-day list.
     db.from("ooo_requests").select("*").eq("org_id", me.org_id),
   ]);
-  const pending = (pendingRes.data ?? []) as OooRequest[];
-  const history = (historyRes.data ?? []) as OooRequest[];
   const users = (usersRes.data ?? []) as Pick<
     User,
-    "id" | "name" | "email" | "manager_id"
+    "id" | "name" | "email" | "manager_id" | "role"
   >[];
   const orgZone =
     (orgRes.data as { default_timezone: string } | null)?.default_timezone ??
     "America/New_York";
-  const allRequests = (allRes.data ?? []) as OooRequest[];
+
+  // Exclude OOO requests authored by admins/super admins everywhere on this
+  // page — they're operators (and the source of test requests), not part of the
+  // bookable team, so their requests would otherwise poison the queue and the
+  // insights. They still see their own on /me. (team_lead and below stay in.)
+  const staffIds = new Set(
+    users.filter((u) => atLeast(u.role, "admin")).map((u) => u.id),
+  );
+  const notStaff = (r: OooRequest) => !staffIds.has(r.user_id);
+  const pending = ((pendingRes.data ?? []) as OooRequest[]).filter(notStaff);
+  const history = ((historyRes.data ?? []) as OooRequest[]).filter(notStaff);
+  const allRequests = ((allRes.data ?? []) as OooRequest[]).filter(notStaff);
 
   // Manager view: their reports + their requests. Admin view: everyone who is
   // in the OOO system (has a manager), org-wide requests, manager breakdown.
   const toRoster = (
     u: Pick<User, "id" | "name" | "email" | "manager_id">,
   ): RosterPerson => ({ id: u.id, name: u.name ?? u.email });
-  const roster = seesAll
-    ? users.filter((u) => u.manager_id !== null).map(toRoster)
-    : users.filter((u) => u.manager_id === me.id).map(toRoster);
+  // Roster mirrors the request filter: admins/super admins are excluded so the
+  // headcount and coverage/no-time-off insights cover only the bookable team.
+  const inScope = seesAll
+    ? (u: (typeof users)[number]) => u.manager_id !== null
+    : (u: (typeof users)[number]) => u.manager_id === me.id;
+  const roster = users
+    .filter((u) => inScope(u) && !atLeast(u.role, "admin"))
+    .map(toRoster);
   const scopedRequests = seesAll
     ? allRequests
     : allRequests.filter((r) => r.manager_id === me.id);
