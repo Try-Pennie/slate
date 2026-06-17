@@ -113,8 +113,10 @@ export default async function OooQueuePage({
     .select("*")
     .eq("org_id", me.org_id)
     .in("status", ["approved", "rejected", "cancelled"])
+    // Windowed by recency of the decision (updated_at), but sorted by the time
+    // off itself — most recent / upcoming time-off dates first.
     .gte("updated_at", historySince)
-    .order("updated_at", { ascending: false })
+    .order("starts_at", { ascending: false })
     .limit(50);
   if (!seesAll) historyQuery = historyQuery.eq("manager_id", me.id);
 
