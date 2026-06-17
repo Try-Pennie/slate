@@ -230,6 +230,7 @@ export default async function OooQueuePage({
         active="ooo"
         themePreference={me.theme_preference}
         userId={me.id}
+        orgId={me.org_id}
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
