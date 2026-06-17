@@ -65,6 +65,7 @@ function windowFrom(form: FormData): SubmitOooInput | { error: string } {
     endIso: end.toUTC().toISO()!,
     displayTzId: tz,
     displayTzLabel: normalizeTzLabel(tz),
+    allDay,
     reason: String(form.get("reason") ?? ""),
     notes: String(form.get("notes") ?? "") || undefined,
   };

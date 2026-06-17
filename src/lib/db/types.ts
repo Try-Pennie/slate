@@ -68,6 +68,8 @@ export interface OooRequest {
   /** Display timezone the agent submitted in; notifications render in it. */
   display_tz_id: string;
   display_tz_label: string;
+  /** Whether the agent picked "all day" (stored, not inferred from the times). */
+  all_day: boolean;
   reason: string;
   notes: string | null;
   status: OooStatus;

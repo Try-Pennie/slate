@@ -244,6 +244,7 @@ const input = {
   endIso: "2026-07-01T21:00:00Z",
   displayTzId: "America/New_York",
   displayTzLabel: "ET",
+  allDay: false,
   reason: "Family trip",
   notes: "Back Thursday",
 };
@@ -256,6 +257,25 @@ const input = {
   if (res.ok) {
     assert(res.request.status === "pending", "submitted request is pending");
     assert(res.request.manager_id === "u-mgr", "manager snapshot stored");
+    assert(res.request.all_day === false, "all_day stored from the input");
+  }
+  // An all-day request stores all_day=true (read directly, not inferred).
+  {
+    const w2 = makeWorld();
+    const allDayRes = await submitOoo(
+      agent,
+      {
+        ...input,
+        startIso: "2026-09-01T04:00:00Z",
+        endIso: "2026-09-02T03:59:00Z",
+        allDay: true,
+      },
+      w2.deps,
+    );
+    assert(
+      allDayRes.ok && allDayRes.request.all_day === true,
+      "all-day submit stores all_day=true",
+    );
   }
   assert(w.dms.length === 1 && w.dms[0].email === manager.email, "manager DM'd");
   assert(w.dms[0].text.includes("https://slate.test/admin/ooo?request=req-1"), "DM has deep link");
