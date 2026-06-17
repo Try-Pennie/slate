@@ -45,6 +45,7 @@ export type OooInsert = {
   ends_at: string;
   display_tz_id: string;
   display_tz_label: string;
+  all_day: boolean;
   reason: string;
   notes: string | null;
   status: "pending";
@@ -214,6 +215,7 @@ export interface SubmitOooInput {
   endIso: string;
   displayTzId: string;
   displayTzLabel: string;
+  allDay: boolean;
   reason: string;
   notes?: string;
 }
@@ -242,6 +244,7 @@ export async function submitOoo(
     ends_at: input.endIso,
     display_tz_id: input.displayTzId,
     display_tz_label: input.displayTzLabel,
+    all_day: input.allDay,
     reason: input.reason.trim(),
     notes: input.notes?.trim() || null,
     status: "pending",
@@ -762,6 +765,7 @@ export async function modifyOoo(
       ends_at: input.endIso,
       display_tz_id: input.displayTzId,
       display_tz_label: input.displayTzLabel,
+      all_day: input.allDay,
       reason: input.reason.trim() || request.reason,
       notes: [baseNotes, marker].filter(Boolean).join(" "),
       decided_by: null,
