@@ -43,6 +43,7 @@ export function DateTimeField({
   max,
   todayISO,
   round = "down",
+  hideTime = false,
 }: {
   nameDate: string;
   nameTime: string;
@@ -53,6 +54,9 @@ export function DateTimeField({
   max: string;
   todayISO: string;
   round?: "down" | "up";
+  // All-day requests don't need a time — show only the date segments (the
+  // hidden time input still submits, but the server overrides it to 00:00/23:59).
+  hideTime?: boolean;
 }) {
   const minD = DateTime.fromISO(min).startOf("day");
   const maxD = DateTime.fromISO(max).startOf("day");
@@ -286,7 +290,7 @@ export function DateTimeField({
           e.preventDefault();
           focusFirstEmpty();
         }}
-        className="flex h-[44px] w-72 cursor-text items-center rounded-sm border border-border bg-[var(--field)] pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky">
+        className={`flex h-[44px] ${hideTime ? "w-48" : "w-72"} cursor-text items-center rounded-sm border border-border bg-[var(--field)] pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky`}>
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => normalizeDate("mm", e.currentTarget.value)}
@@ -302,6 +306,8 @@ export function DateTimeField({
           onBlur={(e) => normalizeDate("yyyy", e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "yyyy", yyyy, ddRef, hhRef)} className={`w-[5ch] ${segCls}`} />
 
+        {!hideTime && (
+        <>
         <span className="px-1 text-fg-muted" aria-hidden="true">&nbsp;</span>
 
         <input ref={hhRef} inputMode="numeric" aria-label={`${ariaLabel}, hour`} placeholder="HH" value={hh}
@@ -331,9 +337,11 @@ export function DateTimeField({
             else if (e.key.length === 1) e.preventDefault();
           }}
           className={`w-[3.5ch] ${segCls}`} />
+        </>
+        )}
 
         <button type="button" onClick={open ? cancel : openPopup}
-          aria-label={open ? "Close calendar" : "Open calendar and time"}
+          aria-label={open ? "Close calendar" : hideTime ? "Open calendar" : "Open calendar and time"}
           aria-haspopup="dialog" aria-expanded={open} aria-controls={dialogId}
           className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky">
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-4 w-4">
@@ -362,6 +370,7 @@ export function DateTimeField({
             }}
           />
 
+          {!hideTime && (
           <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-3">
             <select aria-label={`${ariaLabel} hour`} value={hh}
               onChange={(e) => { const v = e.target.value; setHh(v); if (v && !mi) setMi("00"); }}
@@ -388,6 +397,7 @@ export function DateTimeField({
               <option value="PM">PM</option>
             </select>
           </div>
+          )}
 
           <div className="mt-3 flex justify-end gap-2">
             <button type="button" onClick={cancel}

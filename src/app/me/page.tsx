@@ -5,7 +5,11 @@ import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
 import { cancelMyOoo, modifyMyOoo, submitMyOoo } from "@/app/me/actions";
-import { formatWhenLine, normalizeTzLabel } from "@/lib/ooo/core";
+import {
+  formatWhenLine,
+  normalizeTzLabel,
+  stripModifiedMarkers,
+} from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
@@ -232,12 +236,17 @@ export default async function MePage({
           editing.display_tz_label,
         ),
         approved: editing.status === "approved",
+        // An all-day request is stored as 00:00 → 23:59 in its display tz.
+        allDay:
+          editStart?.toFormat("HH:mm") === "00:00" &&
+          editEnd?.toFormat("HH:mm") === "23:59",
         startDate: editStart?.toISODate() ?? undefined,
         startTime: editStart?.toFormat("HH:mm") ?? undefined,
         endDate: editEnd?.toISODate() ?? undefined,
         endTime: editEnd?.toFormat("HH:mm") ?? undefined,
         reason: editing.reason,
-        notes: editing.notes ?? "",
+        // Don't surface the internal "[Modified …]" marker in the editable field.
+        notes: stripModifiedMarkers(editing.notes ?? ""),
       }
     : null;
 

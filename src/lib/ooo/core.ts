@@ -155,3 +155,18 @@ export const NO_MANAGER_MESSAGE =
 
 export const DEFAULT_REJECTION_NOTE =
   "Your manager declined this request but did not provide details. If you have questions, please follow up with them directly.";
+
+/** A short, human "Modified" stamp date (so notes don't carry raw ISO). */
+export function shortDate(iso: string): string {
+  const dt = DateTime.fromISO(iso);
+  return dt.isValid ? dt.toFormat("LLL d, yyyy") : iso;
+}
+
+/**
+ * Drop any prior "[Modified …]" markers from a notes string so edits don't
+ * stack them — applied both when prefilling the edit form and before appending
+ * the latest marker on save.
+ */
+export function stripModifiedMarkers(notes: string): string {
+  return notes.replace(/\s*\[Modified[^\]]*\]/g, "").trim();
+}

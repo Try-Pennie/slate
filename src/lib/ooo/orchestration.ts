@@ -9,6 +9,8 @@ import {
   formatWhenLine,
   NO_MANAGER_MESSAGE,
   overlaps,
+  shortDate,
+  stripModifiedMarkers,
   validateWindow,
 } from "./core.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -715,10 +717,12 @@ export async function modifyOoo(
     ? await undoPostApproval(request, agent, deps)
     : {};
 
+  const stamp = shortDate(deps.nowIso());
   const marker = wasApproved
-    ? `[Modified ${deps.nowIso()}, requires re-approval]`
-    : `[Modified ${deps.nowIso()}]`;
-  const baseNotes = input.notes?.trim() ?? request.notes ?? "";
+    ? `[Modified ${stamp}, requires re-approval]`
+    : `[Modified ${stamp}]`;
+  // Strip any prior marker so repeated edits don't stack them in the notes.
+  const baseNotes = stripModifiedMarkers(input.notes?.trim() ?? request.notes ?? "");
   const flipped = await deps.transitionRequest(requestId, ["pending", "approved"], {
       status: "pending",
       starts_at: input.startIso,
