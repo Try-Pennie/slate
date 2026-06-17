@@ -359,7 +359,14 @@
     var d = e.data || {};
     if (d.type === "slate:resize" && typeof d.height === "number" && activeIframe) {
       activeIframe.style.height = d.height + "px";
-    } else if (d.type === "slate:bookingSuccessful") {
+    } else if (
+      d.type === "slate:bookingSuccessful" &&
+      activeIframe &&
+      e.source === activeIframe.contentWindow
+    ) {
+      // Only the active booking iframe may fire success — a nested/malicious
+      // frame on the host page must not be able to spoof the host's
+      // conversion/redirect callback (parity with the slate:escape check).
       emit("bookingSuccessful", d.data);
     } else if (
       d.type === "slate:escape" &&
