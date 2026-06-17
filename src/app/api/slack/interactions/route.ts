@@ -1,5 +1,5 @@
 import { NextResponse, after, type NextRequest } from "next/server";
-import { slackSigningSecret } from "@/lib/env";
+import { appUrl, slackSigningSecret } from "@/lib/env";
 import { verifySlackSignature } from "@/lib/slack/verify";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -49,6 +49,11 @@ async function resolveActor(
   return { user: (data as User | null) ?? null, email };
 }
 
+/** Slack mrkdwn hyperlink to the request in the admin queue. */
+function requestLink(requestId: string): string {
+  return `<${appUrl()}/admin/ooo?request=${requestId}|Open it in Slate>`;
+}
+
 /** Post an ephemeral note back to the interaction's response_url (best-effort). */
 async function replyEphemeral(responseUrl: string, text: string): Promise<void> {
   try {
@@ -71,7 +76,7 @@ async function runApprove(
   if (!user) {
     await replyEphemeral(
       responseUrl,
-      "Couldn't match your Slack account to a Slate user, so the approval didn't go through. Use the link to decide in Slate.",
+      `Couldn't match your Slack account to a Slate user, so the approval didn't go through. ${requestLink(requestId)} to decide.`,
     );
     return;
   }
@@ -92,7 +97,7 @@ async function runReject(
     if (email) {
       await dmSlackUserByEmail(
         email,
-        "Couldn't match your Slack account to a Slate user, so the decline didn't go through. Open the request in Slate to decide.",
+        `Couldn't match your Slack account to a Slate user, so the decline didn't go through. ${requestLink(requestId)} to decide.`,
       );
     }
     return;
