@@ -115,6 +115,14 @@ export const oooOnlyFor = (role: string | undefined): boolean => {
   return !(isRole(r) && atLeast(r, "super_admin"));
 };
 
+// Daily OOO-approvals digest email. Comma-separated recipient list (set as a
+// wrangler var); empty = the digest no-ops. Sent from the OOO actor mailbox.
+export const oooApprovalsRecipients = (): string[] =>
+  (process.env.OOO_APPROVALS_TO ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 // Cal.com dual-write during the cutover transition. Flag off = no-op.
 export const oooCalcomDualWrite = (): boolean =>
   process.env.OOO_CALCOM_DUAL_WRITE === "true";
