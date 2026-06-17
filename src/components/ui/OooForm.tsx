@@ -184,7 +184,16 @@ export function OooForm({
             role="alert"
             className="mb-5 rounded-md border border-[var(--error)] bg-error/5 px-5 py-4 text-sm text-error"
           >
-            {state.error}
+            <p>{state.error}</p>
+            {state.conflictRequestId && (
+              <a
+                href={`/me?edit=${state.conflictRequestId}#time-off`}
+                className="mt-2 inline-flex items-center gap-1 font-semibold text-error underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+              >
+                Open that request to change it
+                <span aria-hidden="true">→</span>
+              </a>
+            )}
           </div>
         )}
 

@@ -288,6 +288,12 @@ const input = {
     !overlapping.ok && /Edit that request instead/.test(overlapping.error ?? ""),
     "overlapping (non-identical) window blocked with edit hint",
   );
+  assert(
+    !overlapping.ok &&
+      res.ok &&
+      overlapping.conflictRequestId === res.request.id,
+    "overlap error carries the clashing request id to link to",
+  );
 
   // A window that clears the existing one entirely goes through.
   const clear = await submitOoo(
@@ -614,11 +620,14 @@ const input = {
     w.deps,
   );
   const secondId = second.ok ? second.request.id : "";
-  void first;
   const res = await modifyOoo(secondId, agent, input, w.deps);
   assert(
     !res.ok && /overlaps a request you already have/.test(res.error ?? ""),
     "modify into an existing window blocked as an overlap",
+  );
+  assert(
+    !res.ok && first.ok && res.conflictRequestId === first.request.id,
+    "modify overlap error carries the clashing request id",
   );
   // Modifying a request to a window that overlaps only ITSELF is allowed
   // (the overlap check excludes the request being edited).
