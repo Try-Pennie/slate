@@ -23,6 +23,7 @@ import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { DeepLinkScroll } from "@/components/ui/DeepLinkScroll";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { DeclineConfirm } from "@/components/ui/DeclineConfirm";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -215,6 +216,27 @@ export default async function OooQueuePage({
       overlaps(r.starts_at, r.ends_at, b.starts_at, b.ends_at),
     );
 
+  // Team-coverage note (#140): who on the same team is ALREADY approved off
+  // during this request's window. Informational only — never blocks approval.
+  // "Team" = the request's manager; teammates are that manager's other reports,
+  // matched in memory over the requests already loaded (no extra query).
+  const managerByUser = new Map(users.map((u) => [u.id, u.manager_id]));
+  const teammatesOffDuring = (r: OooRequest): string[] => {
+    if (!r.manager_id) return [];
+    const names = new Set<string>();
+    for (const other of allRequests) {
+      if (
+        other.status === "approved" &&
+        other.user_id !== r.user_id &&
+        managerByUser.get(other.user_id) === r.manager_id &&
+        overlaps(r.starts_at, r.ends_at, other.starts_at, other.ends_at)
+      ) {
+        names.add(nameOf(other.user_id));
+      }
+    }
+    return [...names];
+  };
+
   const whenOf = (r: OooRequest) =>
     formatWhenLine(r.starts_at, r.ends_at, r.display_tz_id, r.display_tz_label);
   const failedEffects = (r: OooRequest) =>
@@ -230,6 +252,7 @@ export default async function OooQueuePage({
         active="ooo"
         themePreference={me.theme_preference}
         userId={me.id}
+        orgId={me.org_id}
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
@@ -386,6 +409,7 @@ export default async function OooQueuePage({
             <ul className="mt-3 divide-y divide-border overflow-hidden rounded-md bg-surface shadow-xs">
               {pending.map((r) => {
                 const conflicts = overlapsFor(r);
+                const teamOff = teammatesOffDuring(r);
                 return (
                   <li
                     key={r.id}
@@ -404,6 +428,16 @@ export default async function OooQueuePage({
                       {r.reason}
                       {r.notes ? ` · ${r.notes}` : ""}
                     </p>
+                    {r.manager_id === null && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                        <Pill variant="status-error">No manager</Pill>
+                        <span className="text-fg-muted">
+                          No manager is assigned, so no one was nudged to review
+                          it. Approve it here, and set their manager on the agent
+                          page so future requests route automatically.
+                        </span>
+                      </p>
+                    )}
                     {conflicts.length > 0 && (
                       <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                         <Pill variant="status-error">
@@ -428,6 +462,20 @@ export default async function OooQueuePage({
                         </span>
                       </p>
                     )}
+                    {teamOff.length > 0 && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                        <Pill variant="status-pending">
+                          {teamOff.length} teammate
+                          {teamOff.length === 1 ? "" : "s"} off then
+                        </Pill>
+                        <span className="text-fg-muted">
+                          {teamOff.slice(0, 3).join(", ")}
+                          {teamOff.length > 3 && ` and ${teamOff.length - 3} more`}{" "}
+                          {teamOff.length === 1 ? "is" : "are"} already approved
+                          off during this window.
+                        </span>
+                      </p>
+                    )}
                     <div className="mt-4 flex flex-wrap items-center gap-3">
                       <form action={approveOooAction}>
                         <input type="hidden" name="request_id" value={r.id} />
@@ -446,12 +494,7 @@ export default async function OooQueuePage({
                           placeholder="Add a note (optional)"
                           className={`${fieldBaseCls} min-w-0 flex-1`}
                         />
-                        <SubmitButton
-                          className={btnSecondaryCls}
-                          pendingLabel="Declining…"
-                        >
-                          Decline
-                        </SubmitButton>
+                        <DeclineConfirm agentName={nameOf(r.user_id)} />
                       </form>
                     </div>
                   </li>

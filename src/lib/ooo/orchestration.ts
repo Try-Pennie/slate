@@ -45,6 +45,7 @@ export type OooInsert = {
   ends_at: string;
   display_tz_id: string;
   display_tz_label: string;
+  all_day: boolean;
   reason: string;
   notes: string | null;
   status: "pending";
@@ -217,6 +218,7 @@ export interface SubmitOooInput {
   endIso: string;
   displayTzId: string;
   displayTzLabel: string;
+  allDay: boolean;
   reason: string;
   notes?: string;
 }
@@ -245,6 +247,7 @@ export async function submitOoo(
     ends_at: input.endIso,
     display_tz_id: input.displayTzId,
     display_tz_label: input.displayTzLabel,
+    all_day: input.allDay,
     reason: input.reason.trim(),
     notes: input.notes?.trim() || null,
     status: "pending",
@@ -271,6 +274,9 @@ const STATUS_LINE = {
   approved: ":white_check_mark: *Approved*",
   rejected: ":x: *Declined*",
   cancelled: ":no_entry_sign: *Cancelled*",
+  // The agent edited this request, so it returned to pending under a fresh
+  // message; this one is left only to mark the old window as no longer current.
+  superseded: ":arrows_counterclockwise: *Edited and resubmitted — see the latest request*",
 } as const;
 
 function managerNotice(
@@ -470,6 +476,36 @@ async function runPostApproval(
     } else {
       effects[EFFECTS.busyBlock] = "failed";
     }
+  } else if (
+    // 3b. Converge a slate fallback once a retry creates the missing agent
+    //     event (#78): the slate-source block stays, but sync would now also
+    //     mirror the new Google event into a second, overlapping gcal block.
+    //     Replace the slate block with a gcal-linked one so the next sync
+    //     upserts onto it. Insert the replacement before deleting the old block
+    //     so availability is never momentarily unblocked.
+    request.busy_block_id &&
+    patch.agent_event_id &&
+    effects[EFFECTS.busyBlock] === "ok (slate fallback)"
+  ) {
+    const convergedId = await deps.insertBusyBlock({
+      user_id: agent.id,
+      starts_at: request.starts_at,
+      ends_at: request.ends_at,
+      source: "gcal",
+      gcal_event_id: patch.agent_event_id,
+      calendar_id: await deps.agentPrimaryCalendarId(agent.id),
+    });
+    if (convergedId) {
+      await deps.deleteBusyBlock({
+        id: request.busy_block_id,
+        userId: agent.id,
+        gcalEventId: null,
+      });
+      patch.busy_block_id = convergedId;
+      effects[EFFECTS.busyBlock] = "ok";
+    }
+    // If the converging insert failed, keep the slate block (still blocking)
+    // and leave the effect as the fallback so a later retry tries again.
   }
 
   // 4. Cal.com dual-write (transition only; "skipped" when the flag is off).
@@ -732,6 +768,7 @@ export async function modifyOoo(
       ends_at: input.endIso,
       display_tz_id: input.displayTzId,
       display_tz_label: input.displayTzLabel,
+      all_day: input.allDay,
       reason: input.reason.trim() || request.reason,
       notes: [baseNotes, marker].filter(Boolean).join(" "),
       decided_by: null,
@@ -753,6 +790,13 @@ export async function modifyOoo(
     starts_at: input.startIso,
     ends_at: input.endIso,
   });
+
+  // notifyManagerOfPending posts a fresh message and overwrites the stored
+  // slack ref, so first mark the prior manager message (an 'Approved' or
+  // earlier 'Pending') as superseded — once the ref is overwritten its location
+  // is lost and it can never be edited again, leaving a stale status forever.
+  // Uses the pre-modify `request` (old window + old ref); a no-op when none.
+  await updateManagerStatus(request, agent, deps, "superseded");
 
   await notifyManagerOfPending(
     flipped.request,

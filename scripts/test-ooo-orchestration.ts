@@ -244,6 +244,7 @@ const input = {
   endIso: "2026-07-01T21:00:00Z",
   displayTzId: "America/New_York",
   displayTzLabel: "ET",
+  allDay: false,
   reason: "Family trip",
   notes: "Back Thursday",
 };
@@ -256,6 +257,25 @@ const input = {
   if (res.ok) {
     assert(res.request.status === "pending", "submitted request is pending");
     assert(res.request.manager_id === "u-mgr", "manager snapshot stored");
+    assert(res.request.all_day === false, "all_day stored from the input");
+  }
+  // An all-day request stores all_day=true (read directly, not inferred).
+  {
+    const w2 = makeWorld();
+    const allDayRes = await submitOoo(
+      agent,
+      {
+        ...input,
+        startIso: "2026-09-01T04:00:00Z",
+        endIso: "2026-09-02T03:59:00Z",
+        allDay: true,
+      },
+      w2.deps,
+    );
+    assert(
+      allDayRes.ok && allDayRes.request.all_day === true,
+      "all-day submit stores all_day=true",
+    );
   }
   assert(w.dms.length === 1 && w.dms[0].email === manager.email, "manager DM'd");
   assert(w.dms[0].text.includes("https://slate.test/admin/ooo?request=req-1"), "DM has deep link");
@@ -582,7 +602,9 @@ const input = {
   const sub = await submitOoo(agent, input, w.deps);
   const id = sub.ok ? sub.request.id : "";
   await approveOoo(id, manager, w.deps);
+  const approvedRef = { channel: w.requests.get(id)!.slack_channel, ts: w.requests.get(id)!.slack_ts };
   w.dms.length = 0;
+  w.edits.length = 0;
   const res = await modifyOoo(
     id,
     agent,
@@ -592,6 +614,17 @@ const input = {
   assert(res.ok, "modify approved succeeds");
   const r = w.requests.get(id)!;
   assert(r.status === "pending", "approved returns to pending");
+  // The old 'Approved' message is edited to 'superseded' before the fresh
+  // pending notification overwrites the stored ref (#134).
+  assert(
+    w.edits.some(
+      (e) =>
+        e.ref.ts === approvedRef.ts &&
+        e.ref.channel === approvedRef.channel &&
+        /Edited and resubmitted/.test(e.text),
+    ),
+    "prior approved Slack message superseded before reposting",
+  );
   assert(r.notes!.includes("requires re-approval"), "re-approval marker appended");
   assert(r.manager_event_id === null && r.busy_block_id === null, "artifacts cleared");
   assert(r.decided_by === null && r.decided_at === null, "decision cleared");
@@ -663,7 +696,19 @@ const input = {
     w.createdEvents.length === createdBefore + 1,
     "manager event NOT recreated on retry",
   );
-  assert(w.busyBlocks.size === blocksAfterApprove, "existing busy block kept");
+  // #78: the slate fallback block converges to a gcal-linked one pointing at
+  // the now-created agent event (so the next sync upserts onto it instead of
+  // adding a second, overlapping block) — still exactly one block.
+  assert(
+    w.busyBlocks.size === blocksAfterApprove,
+    "still exactly one busy block (converged, not duplicated)",
+  );
+  const convergedBlock = w.busyBlocks.get(r.busy_block_id!)!;
+  assert(
+    convergedBlock.source === "gcal" &&
+      convergedBlock.gcal_event_id === r.agent_event_id,
+    "slate fallback converged to a gcal-linked block on retry",
+  );
   assert(w.dms.length === 0, "silent retry sends no DMs");
   assert(w.audits.includes("ooo.retry"), "retry audited");
 }
