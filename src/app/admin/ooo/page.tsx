@@ -23,6 +23,7 @@ import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { DeepLinkScroll } from "@/components/ui/DeepLinkScroll";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { DeclineConfirm } from "@/components/ui/DeclineConfirm";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -446,12 +447,7 @@ export default async function OooQueuePage({
                           placeholder="Add a note (optional)"
                           className={`${fieldBaseCls} min-w-0 flex-1`}
                         />
-                        <SubmitButton
-                          className={btnSecondaryCls}
-                          pendingLabel="Declining…"
-                        >
-                          Decline
-                        </SubmitButton>
+                        <DeclineConfirm agentName={nameOf(r.user_id)} />
                       </form>
                     </div>
                   </li>
