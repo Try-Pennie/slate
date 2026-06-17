@@ -2,6 +2,20 @@
  * Centralized environment access. Server-only secrets are read lazily through
  * `requireEnv` so that importing this module in a client bundle never throws —
  * only actually reading a server secret (which only runs server-side) does.
+ *
+ * WHERE TO SET EACH VAR IN PRODUCTION (Cloudflare Worker):
+ * - Non-secret runtime config + launch flags (OOO_CALCOM_DUAL_WRITE,
+ *   AGENT_SCHEDULING_LIVE, CALCOM_BASE_URL, CALCOM_ORG_ID, calendar ids/emails):
+ *   put them in `wrangler.jsonc` under `vars`. They're version-controlled and
+ *   redeployed every time.
+ * - Sensitive values (SUPABASE_SECRET_KEY, SLACK_BOT_TOKEN, CALCOM_API_KEY,
+ *   GOOGLE_SA_*, SF_*): set them as Cloudflare SECRETS (`wrangler secret put`).
+ *
+ * GOTCHA: a plain variable set ONLY in the Cloudflare dashboard is NOT
+ * version-controlled and gets WIPED on the next `wrangler deploy` — the config
+ * is the source of truth for plain vars. Secrets survive deploys; dashboard
+ * plain vars don't. So never rely on a dashboard-only plain var for anything
+ * that must persist (this is exactly how the cal.com flag silently reverted).
  */
 
 import { atLeast, isRole } from "@/lib/auth/roles";
