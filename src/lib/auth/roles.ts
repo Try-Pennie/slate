@@ -103,3 +103,15 @@ export const canChangeRole = (
   }
   return true;
 };
+
+/**
+ * Self-lockout guard: an admin-or-above stripping their OWN org power would lose
+ * `/admin` access with no in-product way to restore it (recovery needs a direct
+ * DB write). Distinct from the last-admin invariant — this fires even when other
+ * admins remain. Returns true if the change is a self-demotion that must be blocked.
+ */
+export const isSelfDemotion = (
+  isSelf: boolean,
+  current: Role,
+  next: Role,
+): boolean => isSelf && atLeast(current, "admin") && !atLeast(next, "admin");

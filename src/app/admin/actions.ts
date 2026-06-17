@@ -17,6 +17,7 @@ import {
   canChangeRole,
   canSetRole,
   isRole,
+  isSelfDemotion,
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
@@ -522,6 +523,12 @@ export async function setUserRole(form: FormData): Promise<void> {
   // mint a peer above themselves nor demote one.
   if (!canSetRole(admin.role, current, next)) {
     throw new Error("Not authorized to set this role");
+  }
+
+  // Block self-lockout: an admin can't strip their own org power and orphan
+  // their /admin access (recovery would need a direct DB write).
+  if (isSelfDemotion(admin.id === userId, current, next)) {
+    throw new Error("You can't remove your own admin access");
   }
 
   const { count } = await db
