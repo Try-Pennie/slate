@@ -404,6 +404,16 @@ export default async function OooQueuePage({
                       {r.reason}
                       {r.notes ? ` · ${r.notes}` : ""}
                     </p>
+                    {r.manager_id === null && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                        <Pill variant="status-error">No manager</Pill>
+                        <span className="text-fg-muted">
+                          No manager is assigned, so no one was nudged to review
+                          it. Approve it here, and set their manager on the agent
+                          page so future requests route automatically.
+                        </span>
+                      </p>
+                    )}
                     {conflicts.length > 0 && (
                       <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                         <Pill variant="status-error">
