@@ -417,9 +417,16 @@ export default async function OooQueuePage({
                   taken no time off · last 90 days or next 30
                 </h3>
               </summary>
-              <p className="mt-2 pl-5 text-sm text-fg-muted">
-                {insights.noTimeOff.map((p) => p.name).join(", ")}
-              </p>
+              <ul className="mt-3 flex flex-wrap gap-1.5 pl-5">
+                {insights.noTimeOff.map((p) => (
+                  <li
+                    key={p.id}
+                    className="rounded-md bg-bg-alt px-2.5 py-1 text-sm text-fg dark:bg-surface"
+                  >
+                    {p.name}
+                  </li>
+                ))}
+              </ul>
             </details>
           )}
 
