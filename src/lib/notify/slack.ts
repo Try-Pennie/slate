@@ -141,14 +141,28 @@ export async function openSlackModal(
   return res.ok;
 }
 
-/** The workspace email for a Slack user id (needs users:read.email), or null. */
+/**
+ * The workspace email for a Slack user id (needs users:read + users:read.email),
+ * or null. users.info is a read method — its `user` arg must ride in the query
+ * string (GET), like users.lookupByEmail above; posting it as a JSON body is
+ * silently ignored by Slack and the lookup fails.
+ */
 export async function getSlackUserEmail(userId: string): Promise<string | null> {
-  const res = await slackApi("users.info", { user: userId });
-  if (!res.ok) return null;
-  const profile = (
-    res.data?.user as { profile?: { email?: string } } | undefined
-  )?.profile;
-  return profile?.email ?? null;
+  const token = slackBotToken();
+  if (!token) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const data = (await res.json()) as {
+      ok: boolean;
+      user?: { profile?: { email?: string } };
+    };
+    return data.ok ? (data.user?.profile?.email ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function postSlack(
