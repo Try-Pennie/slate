@@ -10,7 +10,6 @@ import {
   realCurrentUser,
   requireAdmin,
   requireManager,
-  requireSuperAdmin,
 } from "@/lib/auth";
 import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
 import {
@@ -322,7 +321,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
 }
 
 export async function setOrgDefaultHours(form: FormData): Promise<void> {
-  const admin = await requireSuperAdmin();
+  const admin = await requireAdmin();
   const weekdays = [1, 2, 3, 4, 5, 6, 7].filter((d) => form.get(`dday_${d}`));
   await supabaseAdmin()
     .from("organizations")

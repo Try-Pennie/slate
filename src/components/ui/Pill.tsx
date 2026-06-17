@@ -12,6 +12,7 @@ import type { ReactNode } from "react";
 export type PillVariant =
   | "role-agent"
   | "role-manager"
+  | "role-team_lead"
   | "role-admin"
   | "role-super_admin"
   | "status-ok"
@@ -22,6 +23,11 @@ export type PillVariant =
 const VARIANT_CLS: Record<PillVariant, string> = {
   "role-agent": "border-border text-fg",
   "role-manager": "bg-pennie-sky-soft text-pennie-navy",
+  // A step above manager: navy outline (not a fill) so it reads as elevated
+  // without competing with admin's solid fill or the manager's soft wash.
+  "role-team_lead":
+    "border border-pennie-navy text-pennie-navy " +
+    "dark:border-[var(--pennie-sky-soft)] dark:text-[var(--pennie-sky-soft)]",
   "role-admin":
     "bg-pennie-navy text-pennie-beige " +
     "dark:bg-transparent dark:border-border dark:text-[var(--pennie-sky-soft)]",

@@ -282,15 +282,16 @@ export default async function AdminPage({
       </main>
     );
   }
-  // OOO-only launch: the agent roster is part of the booking tool, so managers
-  // are limited to the OOO surfaces until scheduling goes live. Admins keep it.
+  // OOO-only launch: the agent roster is part of the booking tool, so everyone
+  // below super admin is limited to the OOO surfaces until scheduling goes live
+  // (the scheduling tool isn't ready). Super admins keep the roster/config.
   if (oooOnlyFor(me.role)) {
     redirect("/admin/ooo");
   }
-  // Managers manage the agent roster; only admins see org/app config; only
-  // super admins move the org-wide default working hours.
+  // Managers manage the agent roster; only admins see org/app config and can
+  // move the org-wide default working hours.
   const isAdmin = canEditOrgSettings(me.role);
-  const isSuperAdmin = canEditOrgDefaults(me.role);
+  const canEditDefaults = canEditOrgDefaults(me.role);
 
   const db = supabaseAdmin();
   const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes, recentRes] =
@@ -502,7 +503,7 @@ export default async function AdminPage({
       )}
 
       {/* Org default working hours (super admin only) */}
-      {isSuperAdmin && (
+      {canEditDefaults && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Default working hours</h2>
         <p className="mb-3 text-xs text-fg-muted">

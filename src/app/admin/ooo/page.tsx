@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents } from "@/lib/auth/roles";
+import { canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { formatWhenLine, overlaps } from "@/lib/ooo/core";
 import {
@@ -90,17 +90,19 @@ export default async function OooQueuePage({
       </main>
     );
   }
-  const isAdmin = me.role === "admin";
+  // Team leads, admins, and super admins moderate the whole org; a regular
+  // manager is scoped to their own reports.
+  const seesAll = canModerateAllOoo(me.role);
   const db = supabaseAdmin();
 
-  // Managers see their reports' requests; admins see the whole org.
+  // Managers see their reports' requests; team leads and up see the whole org.
   let pendingQuery = db
     .from("ooo_requests")
     .select("*")
     .eq("org_id", me.org_id)
     .eq("status", "pending")
     .order("starts_at", { ascending: true });
-  if (!isAdmin) pendingQuery = pendingQuery.eq("manager_id", me.id);
+  if (!seesAll) pendingQuery = pendingQuery.eq("manager_id", me.id);
 
   const historySince = historySinceIso();
   let historyQuery = db
@@ -111,7 +113,7 @@ export default async function OooQueuePage({
     .gte("updated_at", historySince)
     .order("updated_at", { ascending: false })
     .limit(50);
-  if (!isAdmin) historyQuery = historyQuery.eq("manager_id", me.id);
+  if (!seesAll) historyQuery = historyQuery.eq("manager_id", me.id);
 
   const [pendingRes, historyRes, usersRes, orgRes, allRes] = await Promise.all([
     pendingQuery,
@@ -144,15 +146,15 @@ export default async function OooQueuePage({
   const toRoster = (
     u: Pick<User, "id" | "name" | "email" | "manager_id">,
   ): RosterPerson => ({ id: u.id, name: u.name ?? u.email });
-  const roster = isAdmin
+  const roster = seesAll
     ? users.filter((u) => u.manager_id !== null).map(toRoster)
     : users.filter((u) => u.manager_id === me.id).map(toRoster);
-  const scopedRequests = isAdmin
+  const scopedRequests = seesAll
     ? allRequests
     : allRequests.filter((r) => r.manager_id === me.id);
   const insights = buildInsights(roster, scopedRequests, orgZone);
-  const company = isAdmin ? companyApprovalStats(allRequests) : null;
-  const breakdown = isAdmin ? managerBreakdown(allRequests) : null;
+  const company = seesAll ? companyApprovalStats(allRequests) : null;
+  const breakdown = seesAll ? managerBreakdown(allRequests) : null;
   const stats: { label: string; value: string; sub?: string }[] = [
     {
       label: "Approval rate",
@@ -165,8 +167,9 @@ export default async function OooQueuePage({
       sub: insights.advanceNotice === 1 ? "day" : "days",
     },
     { label: "Most time off", value: insights.busiest },
-    // Admins get a company-wide stat here; managers don't (the count that used
-    // to sit here just duplicated the "N waiting on you" header above).
+    // Org-wide moderators get a company-wide stat here; a scoped manager
+    // doesn't (the count that used to sit here just duplicated the "N waiting
+    // on you" header above).
     ...(company
       ? [
           {
@@ -243,7 +246,7 @@ export default async function OooQueuePage({
               : `${pending.length} waiting on you`}
           </h1>
           <p className="mt-2 text-pennie-beige/75">
-            {isAdmin
+            {seesAll
               ? "Requests across the team."
               : "Requests from your reports."}
           </p>
@@ -277,7 +280,7 @@ export default async function OooQueuePage({
         {/* Insights — a navy stat band, then supporting detail */}
         <section>
           <p className="pn-eyebrow text-fg-muted">
-            {isAdmin ? "Team insights · whole company" : "Team insights"}
+            {seesAll ? "Team insights · whole company" : "Team insights"}
           </p>
           <p className="mt-1 text-sm text-fg-muted">
             {roster.length} {roster.length === 1 ? "person" : "people"} on the
@@ -506,7 +509,7 @@ export default async function OooQueuePage({
                         {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
                       </p>
                     </div>
-                    {isAdmin && r.status === "approved" && failures.length > 0 && (
+                    {seesAll && r.status === "approved" && failures.length > 0 && (
                       <form action={retryOooAction}>
                         <input type="hidden" name="request_id" value={r.id} />
                         <button className={btnSecondaryCls}>

@@ -25,16 +25,21 @@ const agent = { id: "u-agent", role: "agent" as const };
 const manager = { id: "u-mgr", role: "manager" as const };
 const otherManager = { id: "u-mgr2", role: "manager" as const };
 const admin = { id: "u-admin", role: "admin" as const };
+const teamLead = { id: "u-lead", role: "team_lead" as const };
 const req = { user_id: "u-agent", manager_id: "u-mgr", status: "pending" as const };
 
 // --- authz ---
 assert(canModerate(manager, req), "manager of record can moderate");
 assert(!canModerate(otherManager, req), "a different manager cannot moderate");
 assert(canModerate(admin, req), "admin can moderate any request");
+assert(
+  canModerate(teamLead, req),
+  "a team lead can moderate any request (not just their reports)",
+);
 assert(!canModerate(agent, req), "the requester cannot moderate their own");
 assert(
   !canModerate(manager, { ...req, manager_id: null }),
-  "no manager of record means only admins moderate",
+  "no manager of record means only team leads and up moderate",
 );
 assert(canCancel(agent, req), "requester can cancel");
 assert(canCancel(admin, req), "admin can cancel");
