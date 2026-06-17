@@ -32,11 +32,14 @@ function apply(pref: ThemePreference) {
 }
 
 export function ThemeToggle({
-  preference = "system",
+  preference,
 }: {
-  preference?: ThemePreference;
+  preference?: ThemePreference | null;
 }) {
-  const [pref, setPref] = useState<ThemePreference>(preference);
+  // Normalize a missing/null account preference to "system" so the <select> is
+  // controlled from the very first render (otherwise React logs an
+  // uncontrolled-to-controlled warning once the value resolves).
+  const [pref, setPref] = useState<ThemePreference>(preference ?? "system");
 
   // Reconcile to the account preference on mount (covers a new device where the
   // cookie wasn't seeded yet) and, while on System, track live OS changes.
