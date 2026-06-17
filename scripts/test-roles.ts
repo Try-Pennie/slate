@@ -11,6 +11,7 @@ import {
   canSetRole,
   canManageUser,
   canChangeRole,
+  isSelfDemotion,
   roleLabel,
   isRole,
 } from "../src/lib/auth/roles.ts";
@@ -132,6 +133,24 @@ assert(
 assert(
   canChangeRole("super_admin", "admin", 1),
   "super_admin to admin keeps org power, so allowed",
+);
+
+// isSelfDemotion — self-lockout guard, independent of how many admins remain
+assert(
+  isSelfDemotion(true, "admin", "manager") && isSelfDemotion(true, "super_admin", "agent"),
+  "self-demoting below admin is blocked",
+);
+assert(
+  !isSelfDemotion(false, "admin", "manager"),
+  "demoting someone else is not self-demotion",
+);
+assert(
+  !isSelfDemotion(true, "admin", "admin") && !isSelfDemotion(true, "super_admin", "admin"),
+  "keeping org power (admin and up) is not a self-demotion",
+);
+assert(
+  !isSelfDemotion(true, "manager", "agent"),
+  "a non-admin self-change can't trigger the org-power lockout",
 );
 
 assert(
