@@ -576,7 +576,9 @@ const input = {
   const sub = await submitOoo(agent, input, w.deps);
   const id = sub.ok ? sub.request.id : "";
   await approveOoo(id, manager, w.deps);
+  const approvedRef = { channel: w.requests.get(id)!.slack_channel, ts: w.requests.get(id)!.slack_ts };
   w.dms.length = 0;
+  w.edits.length = 0;
   const res = await modifyOoo(
     id,
     agent,
@@ -586,6 +588,17 @@ const input = {
   assert(res.ok, "modify approved succeeds");
   const r = w.requests.get(id)!;
   assert(r.status === "pending", "approved returns to pending");
+  // The old 'Approved' message is edited to 'superseded' before the fresh
+  // pending notification overwrites the stored ref (#134).
+  assert(
+    w.edits.some(
+      (e) =>
+        e.ref.ts === approvedRef.ts &&
+        e.ref.channel === approvedRef.channel &&
+        /Edited and resubmitted/.test(e.text),
+    ),
+    "prior approved Slack message superseded before reposting",
+  );
   assert(r.notes!.includes("requires re-approval"), "re-approval marker appended");
   assert(r.manager_event_id === null && r.busy_block_id === null, "artifacts cleared");
   assert(r.decided_by === null && r.decided_at === null, "decision cleared");
