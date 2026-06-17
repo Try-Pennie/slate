@@ -75,10 +75,13 @@ export function OooForm({
 
   // An inline error is easy to miss if the agent is focused lower in the form,
   // so bring it into view (reduced-motion users get an instant jump via the
-  // global scroll-behavior guard).
+  // global scroll-behavior guard). Scroll to the FORM top (block:start), not the
+  // error's center — centering the error pulls the section ABOVE it (Working
+  // hours / Your availability) into view, which reads as scrolling to the wrong
+  // place. The error banner sits at the top of the form, so it lands in view.
   useEffect(() => {
     if (state.error) {
-      errorRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      formRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     }
   }, [state]);
 
