@@ -86,6 +86,10 @@ export const reassignApiKey = (): string => process.env.REASSIGN_API_KEY ?? "";
 export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>
   process.env.SLACK_ALERTS_CHANNEL ?? "";
+// Slack app signing secret — verifies inbound interaction requests (#77).
+// Empty = the /api/slack/interactions endpoint rejects everything.
+export const slackSigningSecret = (): string =>
+  process.env.SLACK_SIGNING_SECRET ?? "";
 
 export const googlePushUrl = (): string => `${appUrl()}/api/google/push`;
 

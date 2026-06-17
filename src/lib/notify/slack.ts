@@ -94,6 +94,7 @@ export async function lookupSlackUserIdByEmail(
 export async function dmSlackUserByEmail(
   email: string,
   text: string,
+  blocks?: unknown[],
 ): Promise<SlackRef | null> {
   const userId = await lookupSlackUserIdByEmail(email);
   if (!userId) return null;
@@ -105,12 +106,17 @@ export async function dmSlackUserByEmail(
     text,
     unfurl_links: false,
     unfurl_media: false,
+    ...(blocks ? { blocks } : {}),
   });
   const ts = posted.data?.ts as string | undefined;
   return posted.ok && ts ? { channel, ts } : null;
 }
 
-/** Edit a previously posted message (chat.update); needs its channel + ts. */
+/**
+ * Edit a previously posted message (chat.update); needs its channel + ts.
+ * Always clears blocks (blocks: []) so an interactive notification's buttons
+ * disappear once the request is decided, leaving only the updated status text.
+ */
 export async function updateSlackMessage(
   ref: SlackRef,
   text: string,
@@ -119,10 +125,30 @@ export async function updateSlackMessage(
     channel: ref.channel,
     ts: ref.ts,
     text,
+    blocks: [],
     unfurl_links: false,
     unfurl_media: false,
   });
   return res.ok;
+}
+
+/** Open a modal from an interaction's trigger_id (views.open). */
+export async function openSlackModal(
+  triggerId: string,
+  view: unknown,
+): Promise<boolean> {
+  const res = await slackApi("views.open", { trigger_id: triggerId, view });
+  return res.ok;
+}
+
+/** The workspace email for a Slack user id (needs users:read.email), or null. */
+export async function getSlackUserEmail(userId: string): Promise<string | null> {
+  const res = await slackApi("users.info", { user: userId });
+  if (!res.ok) return null;
+  const profile = (
+    res.data?.user as { profile?: { email?: string } } | undefined
+  )?.profile;
+  return profile?.email ?? null;
 }
 
 export async function postSlack(

@@ -15,6 +15,7 @@ import {
   postSlack,
   updateSlackMessage,
 } from "@/lib/notify/slack";
+import { approvalBlocks } from "@/lib/notify/ooo-slack-blocks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { recordAudit } from "@/lib/audit";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -178,9 +179,17 @@ function realDeps(): OooDeps {
         ? removeOooOverrides(email, startIso, endIso)
         : "skipped",
 
-    dmUserByEmail: (email, text) => dmSlackUserByEmail(email, text),
-    postFallbackChannel: async (text) => {
-      const r = await postSlack({ text });
+    dmUserByEmail: (email, text, oooRequestId) =>
+      dmSlackUserByEmail(
+        email,
+        text,
+        oooRequestId ? approvalBlocks(text, oooRequestId) : undefined,
+      ),
+    postFallbackChannel: async (text, oooRequestId) => {
+      const r = await postSlack({
+        text,
+        ...(oooRequestId ? { blocks: approvalBlocks(text, oooRequestId) } : {}),
+      });
       return r.ok && r.channel && r.ts
         ? { channel: r.channel, ts: r.ts }
         : null;
