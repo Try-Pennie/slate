@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, after, type NextRequest } from "next/server";
 import { slackSigningSecret } from "@/lib/env";
 import { verifySlackSignature } from "@/lib/slack/verify";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -117,7 +117,10 @@ export async function POST(req: NextRequest) {
       const requestId = payload.view.private_metadata ?? "";
       const note = noteFromViewState(payload.view);
       if (requestId && slackUserId) {
-        runReject(requestId, slackUserId, note).catch(() => {});
+        // after() keeps the Worker alive until the reject finishes — a plain
+        // fire-and-forget promise is killed once the response is sent on the
+        // Cloudflare runtime, so the rejection never lands (#191).
+        after(() => runReject(requestId, slackUserId, note).catch(() => {}));
       }
     }
     // Empty 200 closes the modal.
@@ -131,8 +134,10 @@ export async function POST(req: NextRequest) {
     const responseUrl = payload.response_url ?? "";
 
     if (action?.action_id === OOO_APPROVE_ACTION && requestId && slackUserId) {
-      // Ack now; the approval (Google + Slack writes) finishes in the background.
-      runApprove(requestId, slackUserId, responseUrl).catch(() => {});
+      // Ack now; the approval (Google + Slack writes) finishes after the
+      // response via after(), which keeps the Worker alive — a bare
+      // fire-and-forget promise is cut off on the Cloudflare runtime (#191).
+      after(() => runApprove(requestId, slackUserId, responseUrl).catch(() => {}));
       return new NextResponse(null, { status: 200 });
     }
 
