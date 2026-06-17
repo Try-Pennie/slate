@@ -12,8 +12,7 @@ import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { TimeField } from "@/components/ui/TimeField";
 import { OooForm } from "@/components/ui/OooForm";
-import { CancelRequestButton } from "@/components/ui/CancelRequestButton";
-import { EditRequestButton } from "@/components/ui/EditRequestButton";
+import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -115,10 +114,10 @@ function RequestList({
                 r.display_tz_label,
               )}
             </span>
-            <div className="mt-1.5">
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg-muted">
               <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
+              <span>{r.reason}</span>
             </div>
-            <p className="mt-1.5 text-sm text-fg-muted">{r.reason}</p>
             {r.status === "rejected" && r.rejection_note && (
               <p className="mt-1 text-sm text-error">{r.rejection_note}</p>
             )}
@@ -133,10 +132,7 @@ function RequestList({
                 Editing above
               </span>
             ) : (
-              <div className="flex shrink-0 items-center gap-1">
-                <EditRequestButton requestId={r.id} />
-                <CancelRequestButton action={cancelMyOoo} requestId={r.id} />
-              </div>
+              <RequestActions requestId={r.id} cancelAction={cancelMyOoo} />
             ))}
         </li>
         );
