@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { AccountMenu } from "@/components/AccountMenu";
 import { oooOnlyFor } from "@/lib/env";
-import { atLeast, canManageAgents, isRole } from "@/lib/auth/roles";
+import {
+  atLeast,
+  canManageAgents,
+  canModerateAllOoo,
+  isRole,
+} from "@/lib/auth/roles";
 import { getImpersonation } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { stopImpersonation } from "@/app/admin/actions";
@@ -27,23 +32,39 @@ function hasLiveWatch(rows: { watch_expiration: string | null }[]): boolean {
 function NavTab({
   href,
   current,
+  badge,
   children,
 }: {
   href: string;
   current: boolean;
+  /** Optional count shown as a sky-soft badge (e.g. pending approvals). */
+  badge?: number;
   children: string;
 }) {
   return (
     <Link
       href={href}
       aria-current={current ? "page" : undefined}
-      className={`flex min-h-11 min-w-11 items-center ${
+      className={`flex min-h-11 min-w-11 items-center gap-1.5 ${
         current
           ? "pn-small-bold"
           : "text-sm text-fg-muted transition-colors hover:text-fg"
       }`}
     >
       {children}
+      {!!badge && badge > 0 && (
+        <>
+          <span
+            aria-hidden="true"
+            className="inline-flex h-5 min-w-5 items-center justify-center rounded-pill bg-pennie-sky-soft px-1.5 text-xs font-semibold tabular-nums text-pennie-blue dark:bg-accent/15 dark:text-pennie-sky"
+          >
+            {badge > 99 ? "99+" : badge}
+          </span>
+          <span className="sr-only">
+            ({badge} {badge === 1 ? "request" : "requests"} pending)
+          </span>
+        </>
+      )}
     </Link>
   );
 }
@@ -54,6 +75,7 @@ export async function AppHeader({
   active,
   themePreference = "system",
   userId,
+  orgId,
   bookable,
   avatarUrl,
 }: {
@@ -62,6 +84,7 @@ export async function AppHeader({
   active: "admin" | "me" | "ooo";
   themePreference?: ThemePreference;
   userId?: string;
+  orgId?: string;
   bookable?: boolean;
   avatarUrl?: string | null;
 }) {
@@ -94,6 +117,23 @@ export async function AppHeader({
     );
   }
   const calendarUrgent = bookable === true && calendarConnected === false;
+
+  // Pending-OOO count on the Team Requests tab, so approvals don't depend on a
+  // manager catching the Slack DM or the daily digest. Scoped to the manager's
+  // own reports; team leads and up (canModerateAllOoo) see the whole org. Needs
+  // org_id for the org-wide scope, so it's a no-op without the orgId prop.
+  let pendingOoo = 0;
+  if (showTimeOff && userId && orgId) {
+    let q = supabaseAdmin()
+      .from("ooo_requests")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("status", "pending");
+    // showTimeOff already implies isRole(r); the guard just narrows the type.
+    if (isRole(r) && !canModerateAllOoo(r)) q = q.eq("manager_id", userId);
+    const { count } = await q;
+    pendingOoo = count ?? 0;
+  }
   return (
     <>
     {impersonation && (
@@ -148,7 +188,7 @@ export async function AppHeader({
             {meLabel}
           </NavTab>
           {showTimeOff && (
-            <NavTab href="/admin/ooo" current={active === "ooo"}>
+            <NavTab href="/admin/ooo" current={active === "ooo"} badge={pendingOoo}>
               Team Requests
             </NavTab>
           )}
