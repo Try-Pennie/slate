@@ -232,10 +232,7 @@ export default async function MePage({
           editing.display_tz_label,
         ),
         approved: editing.status === "approved",
-        // An all-day request is stored as 00:00 → 23:59 in its display tz.
-        allDay:
-          editStart?.toFormat("HH:mm") === "00:00" &&
-          editEnd?.toFormat("HH:mm") === "23:59",
+        allDay: editing.all_day,
         startDate: editStart?.toISODate() ?? undefined,
         startTime: editStart?.toFormat("HH:mm") ?? undefined,
         endDate: editEnd?.toISODate() ?? undefined,
@@ -263,6 +260,7 @@ export default async function MePage({
         active="me"
         themePreference={me.theme_preference}
         userId={me.id}
+        orgId={me.org_id}
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />

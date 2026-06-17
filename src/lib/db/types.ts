@@ -48,7 +48,11 @@ export interface User {
   attributes: Attributes;
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
-  /** This agent's manager (routes OOO requests). Admin-edited, not SF-synced. */
+  /**
+   * This agent's manager (routes OOO requests). Synced from Salesforce's
+   * Agent_Manager picklist (#76); admins can override and the sync never nulls
+   * an existing assignment when SF doesn't resolve one.
+   */
   manager_id: string | null;
   /** On manager rows: the manager's OOO Google calendar for approval events. */
   ooo_calendar_id: string | null;
@@ -68,6 +72,8 @@ export interface OooRequest {
   /** Display timezone the agent submitted in; notifications render in it. */
   display_tz_id: string;
   display_tz_label: string;
+  /** Whether the agent picked "all day" (stored, not inferred from the times). */
+  all_day: boolean;
   reason: string;
   notes: string | null;
   status: OooStatus;
