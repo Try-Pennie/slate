@@ -130,10 +130,21 @@ export interface OooDeps {
     endIso: string,
   ): Promise<string>;
 
-  /** Slack DM by email; the message ref when delivered, null when undeliverable. */
-  dmUserByEmail(email: string, text: string): Promise<SlackRef | null>;
+  /**
+   * Slack DM by email; the message ref when delivered, null when undeliverable.
+   * `oooRequestId` attaches interactive Approve/Decline buttons for that request
+   * (the manager notification); omit it for plain agent DMs.
+   */
+  dmUserByEmail(
+    email: string,
+    text: string,
+    oooRequestId?: string,
+  ): Promise<SlackRef | null>;
   /** Fallback channel post when a DM can't be delivered; returns the message ref. */
-  postFallbackChannel(text: string): Promise<SlackRef | null>;
+  postFallbackChannel(
+    text: string,
+    oooRequestId?: string,
+  ): Promise<SlackRef | null>;
   /** Edit a prior manager notification so it mirrors the request's new status. */
   editMessage(ref: SlackRef, text: string): Promise<void>;
   /** Throttled ops alert (mirrors postToStatusPage_). */
@@ -297,7 +308,10 @@ async function notifyManagerOfPending(
   const manager = request.manager_id
     ? await deps.getUser(request.manager_id)
     : null;
-  let ref = manager ? await deps.dmUserByEmail(manager.email, text) : null;
+  // Pass the request id so the notification carries Approve/Decline buttons.
+  let ref = manager
+    ? await deps.dmUserByEmail(manager.email, text, request.id)
+    : null;
   if (!ref) {
     // The DM failed (or no manager resolved). Post to the fallback channel, and
     // when a manager was expected, flag it so someone checks why the DM failed
@@ -305,7 +319,7 @@ async function notifyManagerOfPending(
     const fallbackText = manager
       ? `:warning: *Couldn't DM ${manager.name ?? manager.email}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`
       : text;
-    ref = await deps.postFallbackChannel(fallbackText);
+    ref = await deps.postFallbackChannel(fallbackText, request.id);
   }
   if (ref) {
     await deps.patchRequest(request.id, {
