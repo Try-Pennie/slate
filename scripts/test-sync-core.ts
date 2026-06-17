@@ -3,6 +3,7 @@
 import {
   eventWindow,
   isBusyEvent,
+  partitionBusyWrites,
   staleBlockIds,
 } from "../src/lib/google/sync-core.ts";
 
@@ -44,6 +45,30 @@ assert(
   "blocks whose event id wasn't seen are stale (null event id ignored)",
 );
 assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> nothing stale");
+
+// partitionBusyWrites — busy events become upsert rows, the rest become deletes
+{
+  const events = [
+    { id: "e1", start: { dateTime: "2026-06-08T13:00:00Z" }, end: { dateTime: "2026-06-08T13:30:00Z" } },
+    { id: "e2", status: "cancelled", start: { dateTime: "x" }, end: { dateTime: "y" } },
+    { id: "e3", transparency: "transparent", start: { dateTime: "2026-06-08T15:00:00Z" }, end: { dateTime: "2026-06-08T16:00:00Z" } },
+    { start: { dateTime: "2026-06-08T17:00:00Z" }, end: { dateTime: "2026-06-08T18:00:00Z" } }, // no id -> skipped
+  ];
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events);
+  assert(upserts.length === 1 && upserts[0].gcal_event_id === "e1", "only the busy event becomes an upsert row");
+  assert(
+    upserts[0].user_id === "u1" &&
+      upserts[0].calendar_id === "cal-1" &&
+      upserts[0].source === "gcal" &&
+      upserts[0].starts_at === "2026-06-08T13:00:00Z" &&
+      upserts[0].ends_at === "2026-06-08T13:30:00Z",
+    "upsert row carries user/calendar/source and the event window",
+  );
+  assert(
+    JSON.stringify(deletes) === JSON.stringify(["e2", "e3"]),
+    "cancelled + free events become deletes; the id-less event is skipped entirely",
+  );
+}
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

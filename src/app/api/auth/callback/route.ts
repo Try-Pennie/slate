@@ -1,8 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
-import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
-import { SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
+import { ensureWatches } from "@/lib/google/sync";
 import { canManageAgents } from "@/lib/auth/roles";
 
 export const dynamic = "force-dynamic";
@@ -40,12 +39,12 @@ export async function GET(req: NextRequest) {
     avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
   });
 
-  // Calendar is reachable via domain-wide delegation (by email), so warm the
-  // cache + watch channel for this user regardless of OAuth token.
+  // Register/refresh this user's calendar push channels (reachable via
+  // domain-wide delegation by email). We do NOT run the event sync here: a
+  // large calendar's first bootstrap is heavy, and awaiting it is exactly what
+  // hung first logins. The watch registered here + the 1-min cron backstop warm
+  // the busy-block cache within a minute, off the login hot path.
   await ensureWatches(slateUser.id); // never throws; returns a status
-  // Budgeted (#44): a fleet bootstrap must not hang the login redirect; the
-  // cron resumes any remainder within a minute.
-  await runIncrementalSync(slateUser.id, Date.now() + SYNC_TICK_BUDGET_MS).catch(() => {});
 
   // Managers + admins get the admin console; agents land on their own page.
   const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";

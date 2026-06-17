@@ -9,7 +9,11 @@ import {
   type GoogleEvent,
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
-import { eventWindow, isBusyEvent, staleBlockIds } from "@/lib/google/sync-core";
+import {
+  isBusyEvent,
+  partitionBusyWrites,
+  staleBlockIds,
+} from "@/lib/google/sync-core";
 import {
   claimWindow,
   orderCalendarsForSync,
@@ -42,6 +46,11 @@ async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
   return (data ?? []) as AgentCalendar[];
 }
 
+// Cap rows per DB call so even a huge calendar's bootstrap stays well under the
+// Worker's per-request subrequest ceiling (the old one-write-per-event loop did
+// 1,000+ serial calls and got killed mid-sync; see partitionBusyWrites).
+const WRITE_CHUNK = 500;
+
 /** Upsert/delete gcal-sourced busy blocks for a batch of events on one calendar. */
 async function applyEvents(
   userId: string,
@@ -49,37 +58,25 @@ async function applyEvents(
   events: GoogleEvent[],
 ): Promise<void> {
   const db = supabaseAdmin();
-  for (const ev of events) {
-    if (!ev.id) continue;
-    if (!isBusyEvent(ev)) {
-      const { error } = await db
-        .from("busy_blocks")
-        .delete()
-        .eq("user_id", userId)
-        .eq("gcal_event_id", ev.id);
-      if (error) {
-        throw new Error(`busy_blocks delete failed (${ev.id}): ${error.message}`);
-      }
-      continue;
-    }
-    const win = eventWindow(ev)!;
-    // Throw on failure so syncCalendar never advances the sync token past an
-    // event it failed to record - a swallowed error here loses the event for
-    // good (the delta is consumed) and the cache silently drifts from Google.
-    const { error } = await db.from("busy_blocks").upsert(
-      {
-        user_id: userId,
-        gcal_event_id: ev.id,
-        calendar_id: calendarId,
-        source: "gcal",
-        starts_at: win.start,
-        ends_at: win.end,
-      },
-      { onConflict: "user_id,gcal_event_id" },
-    );
-    if (error) {
-      throw new Error(`busy_blocks upsert failed (${ev.id}): ${error.message}`);
-    }
+  const { upserts, deletes } = partitionBusyWrites(userId, calendarId, events);
+  // Throw on any failure so syncCalendar never advances the sync token past an
+  // event it failed to record - a swallowed error loses the event for good (the
+  // delta is consumed) and the cache silently drifts from Google.
+  for (let i = 0; i < upserts.length; i += WRITE_CHUNK) {
+    const { error } = await db
+      .from("busy_blocks")
+      .upsert(upserts.slice(i, i + WRITE_CHUNK), {
+        onConflict: "user_id,gcal_event_id",
+      });
+    if (error) throw new Error(`busy_blocks bulk upsert failed: ${error.message}`);
+  }
+  for (let i = 0; i < deletes.length; i += WRITE_CHUNK) {
+    const { error } = await db
+      .from("busy_blocks")
+      .delete()
+      .eq("user_id", userId)
+      .in("gcal_event_id", deletes.slice(i, i + WRITE_CHUNK));
+    if (error) throw new Error(`busy_blocks bulk delete failed: ${error.message}`);
   }
 }
 
