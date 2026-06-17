@@ -147,9 +147,28 @@ export default async function OooQueuePage({
     users.filter((u) => atLeast(u.role, "admin")).map((u) => u.id),
   );
   const notStaff = (r: OooRequest) => !staffIds.has(r.user_id);
+
+  // Explicitly ignore the dev/operator account (Dan Hankins-Wright) as a
+  // *manager* — one agent has him set as their manager, which would otherwise
+  // surface "Dan Hankins-Wright" as a manager row in the breakdown. Scoped to
+  // this one identity by email (NOT all super admins), so his managed requests
+  // roll into "No manager" everywhere on this page.
+  const IGNORED_MANAGER_EMAILS = ["dwright@trypennie.com"];
+  const ignoredManagerIds = new Set(
+    users
+      .filter((u) => IGNORED_MANAGER_EMAILS.includes(u.email.toLowerCase()))
+      .map((u) => u.id),
+  );
+  const deOperatorManager = (r: OooRequest): OooRequest =>
+    r.manager_id && ignoredManagerIds.has(r.manager_id)
+      ? { ...r, manager_id: null }
+      : r;
+
   const pending = ((pendingRes.data ?? []) as OooRequest[]).filter(notStaff);
   const history = ((historyRes.data ?? []) as OooRequest[]).filter(notStaff);
-  const allRequests = ((allRes.data ?? []) as OooRequest[]).filter(notStaff);
+  const allRequests = ((allRes.data ?? []) as OooRequest[])
+    .filter(notStaff)
+    .map(deOperatorManager);
 
   // Manager view: their reports + their requests. Admin view: everyone who is
   // in the OOO system (has a manager), org-wide requests, manager breakdown.
