@@ -4,6 +4,7 @@ import {
   ROLE_RANK,
   atLeast,
   canManageAgents,
+  canModerateAllOoo,
   canEditOrgSettings,
   canEditOrgDefaults,
   canAssignRole,
@@ -24,9 +25,10 @@ function assert(cond: boolean, msg: string) {
 
 assert(
   ROLE_RANK.agent < ROLE_RANK.manager &&
-    ROLE_RANK.manager < ROLE_RANK.admin &&
+    ROLE_RANK.manager < ROLE_RANK.team_lead &&
+    ROLE_RANK.team_lead < ROLE_RANK.admin &&
     ROLE_RANK.admin < ROLE_RANK.super_admin,
-  "rank order: agent < manager < admin < super_admin",
+  "rank order: agent < manager < team_lead < admin < super_admin",
 );
 assert(
   atLeast("admin", "manager") && atLeast("manager", "manager") && !atLeast("agent", "manager"),
@@ -36,6 +38,23 @@ assert(
 assert(
   canManageAgents("manager") && canManageAgents("admin") && !canManageAgents("agent"),
   "canManageAgents = manager and up",
+);
+// canModerateAllOoo — team leads and up approve everybody; managers are scoped.
+assert(
+  canModerateAllOoo("team_lead") &&
+    canModerateAllOoo("admin") &&
+    canModerateAllOoo("super_admin") &&
+    !canModerateAllOoo("manager") &&
+    !canModerateAllOoo("agent"),
+  "canModerateAllOoo = team_lead and up",
+);
+// A team lead has manager powers but NO admin powers beyond org-wide OOO.
+assert(
+  canManageAgents("team_lead") &&
+    !canEditOrgSettings("team_lead") &&
+    !canEditOrgDefaults("team_lead") &&
+    !canAssignRole("team_lead"),
+  "team_lead = manager powers + moderate-all OOO, nothing else admin",
 );
 assert(
   canEditOrgSettings("admin") && !canEditOrgSettings("manager") && !canEditOrgSettings("agent"),
@@ -49,12 +68,13 @@ assert(
   "canAssignRole = admin and up",
 );
 
-// canEditOrgDefaults — super admins move the org-wide default working hours
+// canEditOrgDefaults — admins and up move the org-wide default working hours
 assert(
   canEditOrgDefaults("super_admin") &&
-    !canEditOrgDefaults("admin") &&
+    canEditOrgDefaults("admin") &&
+    !canEditOrgDefaults("team_lead") &&
     !canEditOrgDefaults("manager"),
-  "canEditOrgDefaults = super_admin only",
+  "canEditOrgDefaults = admin and up",
 );
 
 // canSetRole — only super admins grant or revoke super_admin
@@ -81,6 +101,7 @@ assert(
 );
 
 assert(roleLabel("super_admin") === "super admin", "roleLabel humanizes super_admin");
+assert(roleLabel("team_lead") === "team lead", "roleLabel humanizes team_lead");
 
 // canManageUser — the escalation guard cal.com leaves open
 assert(canManageUser("manager", "agent", false), "manager can edit an agent");
@@ -93,6 +114,11 @@ assert(
 assert(canManageUser("agent", "agent", true), "agent can edit self");
 assert(!canManageUser("agent", "agent", false), "agent cannot edit another agent");
 assert(canManageUser("manager", "manager", true), "anyone can edit self");
+// Team lead "manages the managers": outranks a manager, but a manager can't edit them.
+assert(
+  canManageUser("team_lead", "manager", false) && !canManageUser("manager", "team_lead", false),
+  "team_lead can edit a manager but not vice versa",
+);
 
 // canChangeRole — last-admin invariant (admins + super admins both hold power)
 assert(!canChangeRole("admin", "manager", 1), "cannot demote the last admin");
@@ -108,7 +134,10 @@ assert(
   "super_admin to admin keeps org power, so allowed",
 );
 
-assert(isRole("super_admin") && !isRole("superuser"), "isRole validates the enum");
+assert(
+  isRole("super_admin") && isRole("team_lead") && !isRole("superuser"),
+  "isRole validates the enum",
+);
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

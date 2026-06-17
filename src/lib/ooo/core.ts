@@ -1,4 +1,7 @@
 import { DateTime } from "luxon";
+// Relative value import so this module still runs under `node --experimental-
+// strip-types` in tests (roles.ts only type-imports "@/…", which is erased).
+import { atLeast, canModerateAllOoo } from "../auth/roles.ts";
 import type { OooRequest, OooStatus, Role } from "@/lib/db/types";
 
 /**
@@ -10,15 +13,18 @@ import type { OooRequest, OooStatus, Role } from "@/lib/db/types";
 type Actor = { id: string; role: Role };
 type RequestLike = Pick<OooRequest, "user_id" | "manager_id" | "status">;
 
-/** Approve/reject: the request's manager of record, or any admin. */
+/**
+ * Approve/reject: the request's manager of record, or anyone who can moderate
+ * all OOO (team leads, admins, super admins).
+ */
 export function canModerate(actor: Actor, request: RequestLike): boolean {
-  if (actor.role === "admin") return true;
+  if (canModerateAllOoo(actor.role)) return true;
   return request.manager_id !== null && actor.id === request.manager_id;
 }
 
 /** Cancel: the requester themselves, or an admin cleaning up. */
 export function canCancel(actor: Actor, request: RequestLike): boolean {
-  return actor.id === request.user_id || actor.role === "admin";
+  return actor.id === request.user_id || atLeast(actor.role, "admin");
 }
 
 /** Modify: only the requester (a manager who wants changes rejects instead). */

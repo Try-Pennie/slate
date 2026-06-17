@@ -103,14 +103,16 @@ export const agentSchedulingLive = (): boolean =>
 
 /**
  * The single OOO-only launch gate: until agent scheduling goes live, everyone
- * below admin (agents + managers) sees just the time-off tool, not the booking/
- * availability surfaces. Admins and super admins keep full access. Used by /me,
- * the header nav, and the admin route guards so they can't drift apart.
+ * below super admin sees just the time-off tool, not the booking/availability/
+ * roster surfaces. Only super admins keep full access in this pre-launch phase
+ * (the scheduling tool isn't ready). Used by /me, the header nav, and the admin
+ * route guards so they can't drift apart. Flip AGENT_SCHEDULING_LIVE to restore
+ * role-appropriate access for everyone at launch.
  */
 export const oooOnlyFor = (role: string | undefined): boolean => {
   if (agentSchedulingLive()) return false;
   const r = role ?? "";
-  return !(isRole(r) && atLeast(r, "admin"));
+  return !(isRole(r) && atLeast(r, "super_admin"));
 };
 
 // Cal.com dual-write during the cutover transition. Flag off = no-op.

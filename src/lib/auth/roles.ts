@@ -1,24 +1,38 @@
 import type { Role } from "@/lib/db/types";
 
-// Four fixed tiers (Slate is single-org, so no per-team membership/PBAC):
+// Five fixed tiers (Slate is single-org, so no per-team membership/PBAC):
 //   agent       - manage only their own settings/hours
 //   manager     - the above, plus edit ANY agent's settings/hours/bookable
-//   admin       - the above, plus org/app config and role assignment
-//   super_admin - the above, plus the org-wide default working hours; the only
-//                 role that can grant or revoke super_admin
+//   team_lead   - the above, plus approve/decline time off for ANY agent (not
+//                 just their reports); no other admin powers
+//   admin       - the above, plus org/app config (incl. the org-wide default
+//                 working hours) and role assignment
+//   super_admin - the above, plus the only role that can grant or revoke
+//                 super_admin
 export const ROLE_RANK: Record<Role, number> = {
   agent: 0,
   manager: 1,
-  admin: 2,
-  super_admin: 3,
+  team_lead: 2,
+  admin: 3,
+  super_admin: 4,
 };
-export const ROLES: Role[] = ["agent", "manager", "admin", "super_admin"];
+export const ROLES: Role[] = [
+  "agent",
+  "manager",
+  "team_lead",
+  "admin",
+  "super_admin",
+];
 
 export const isRole = (v: string): v is Role => (ROLES as string[]).includes(v);
 
 /** Human-facing role label (the stored value uses an underscore). */
 export const roleLabel = (role: Role): string =>
-  role === "super_admin" ? "super admin" : role;
+  role === "super_admin"
+    ? "super admin"
+    : role === "team_lead"
+      ? "team lead"
+      : role;
 
 export const atLeast = (role: Role, min: Role): boolean =>
   ROLE_RANK[role] >= ROLE_RANK[min];
@@ -26,15 +40,23 @@ export const atLeast = (role: Role, min: Role): boolean =>
 /** Managers and admins can manage the agent roster (hours/settings/bookable). */
 export const canManageAgents = (role: Role): boolean => atLeast(role, "manager");
 
+/**
+ * Approve or decline ANY agent's time off, not just your own reports. Team
+ * leads and up (admins, super admins); a regular manager stays scoped to the
+ * agents who report to them.
+ */
+export const canModerateAllOoo = (role: Role): boolean =>
+  atLeast(role, "team_lead");
+
 /** Only admins touch org/app config (event types, buckets, webhooks). */
 export const canEditOrgSettings = (role: Role): boolean => atLeast(role, "admin");
 
 /**
- * Only super admins edit the org-wide default working hours. Regular admins
- * configure everything else but can't move the company default schedule.
+ * Admins edit the org-wide default working hours (the company default
+ * schedule), alongside the rest of org config.
  */
 export const canEditOrgDefaults = (role: Role): boolean =>
-  atLeast(role, "super_admin");
+  atLeast(role, "admin");
 
 /** Admins and super admins assign roles (managers never promote/demote). */
 export const canAssignRole = (actor: Role): boolean => atLeast(actor, "admin");
