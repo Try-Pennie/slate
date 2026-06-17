@@ -28,21 +28,41 @@ export class SyncTokenExpired extends Error {
   }
 }
 
-/** Authenticated fetch against an agent's calendar via domain-wide delegation. */
+// The OOO approval/undo path waits synchronously on the calendar writes before
+// returning to the manager, so those calls are bounded (same posture as the
+// Slack and webhook calls). A timeout surfaces as an AbortError — the caller
+// records it as a failed side effect and the approval still completes.
+export const CALENDAR_WRITE_TIMEOUT_MS = 8000;
+
+/**
+ * Authenticated fetch against an agent's calendar via domain-wide delegation.
+ * Pass `timeoutMs` to abort a slow/unreachable Google (used by the OOO write
+ * calls); the read/sync hot paths leave it unbounded as before.
+ */
 async function gfetch(
   email: string,
   url: string,
   init: RequestInit = {},
+  timeoutMs?: number,
 ): Promise<Response> {
   const token = await getDelegatedToken(email);
-  return fetch(url, {
-    ...init,
-    headers: {
-      ...init.headers,
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
-  });
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller?.signal,
+      headers: {
+        ...init.headers,
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function ok(res: Response, label: string): Promise<Response> {
@@ -186,6 +206,7 @@ export async function createEventOnCalendar(
           end: { dateTime: input.end, timeZone: input.timezone },
         }),
       },
+      CALENDAR_WRITE_TIMEOUT_MS,
     ),
     "events.insert",
   );
@@ -204,6 +225,7 @@ export async function deleteEventOnCalendar(
     actorEmail,
     `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
     { method: "DELETE" },
+    CALENDAR_WRITE_TIMEOUT_MS,
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
     throw new Error(`events.delete failed: ${res.status} ${await res.text()}`);
