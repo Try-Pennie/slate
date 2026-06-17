@@ -345,8 +345,21 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       token,
       reapableRows.map((u) => u.email.toLowerCase()),
     );
+    // Never reap a user who still manages historical OOO requests — deleting
+    // them nulls those requests' manager (ON DELETE SET NULL) and loses the
+    // attribution. An offboarded manager with history stays in the DB; the OOO
+    // insights hide them as offboarded (no current reports) instead.
+    const { data: mgrRefs } = await db
+      .from("ooo_requests")
+      .select("manager_id")
+      .not("manager_id", "is", null);
+    const managesHistory = new Set(
+      ((mgrRefs ?? []) as { manager_id: string }[]).map((r) => r.manager_id),
+    );
     toDelete = reapableRows
-      .filter((u) => inactive.has(u.email.toLowerCase()))
+      .filter(
+        (u) => inactive.has(u.email.toLowerCase()) && !managesHistory.has(u.id),
+      )
       .map((u) => u.id);
     if (toDelete.length) await db.from("users").delete().in("id", toDelete);
   }
