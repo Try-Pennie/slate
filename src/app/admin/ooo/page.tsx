@@ -189,8 +189,18 @@ export default async function OooQueuePage({
     ? allRequests
     : allRequests.filter((r) => r.manager_id === me.id);
   const insights = buildInsights(roster, scopedRequests, orgZone);
-  const company = seesAll ? companyApprovalStats(allRequests) : null;
-  const breakdown = seesAll ? managerBreakdown(allRequests) : null;
+  // Active managers = anyone a current user reports to. A manager with no active
+  // reports is offboarded, so their historical rows are hidden from By manager
+  // (and dropped from the median-manager stat so the two agree).
+  const activeManagerIds = new Set(
+    users.map((u) => u.manager_id).filter((id): id is string => !!id),
+  );
+  const company = seesAll
+    ? companyApprovalStats(allRequests, activeManagerIds)
+    : null;
+  const breakdown = seesAll
+    ? managerBreakdown(allRequests, activeManagerIds)
+    : null;
   const stats: { label: string; value: string; sub?: string }[] = [
     {
       label: "Approval rate",
@@ -418,6 +428,7 @@ export default async function OooQueuePage({
                 <thead>
                   <tr className="text-left text-xs text-fg-muted">
                     <th className="py-1 font-semibold">Manager</th>
+                    <th className="py-1 font-semibold">Submitted</th>
                     <th className="py-1 font-semibold">Approved</th>
                     <th className="py-1 font-semibold">Rejected</th>
                     <th className="py-1 font-semibold">Pending</th>
@@ -432,6 +443,7 @@ export default async function OooQueuePage({
                           ? "No manager"
                           : nameOf(row.managerId)}
                       </td>
+                      <td className="py-1.5 tabular-nums">{row.total}</td>
                       <td className="py-1.5 tabular-nums">{row.approved}</td>
                       <td className="py-1.5 tabular-nums">{row.rejected}</td>
                       <td className="py-1.5 tabular-nums">{row.pending}</td>

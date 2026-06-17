@@ -50,14 +50,25 @@ const median = (sorted: number[]): number => {
     : Math.round(sorted[mid]);
 };
 
-/** Company approval rate = the MEDIAN of per-manager rates (legacy parity). */
-export function companyApprovalStats(requests: OooRequest[]): {
+/**
+ * Company approval rate = the MEDIAN of per-manager rates (legacy parity).
+ * When `activeManagerIds` is given, only those managers count — offboarded
+ * managers (no current reports) and the unassigned bucket drop out, so the
+ * figure matches the visible By-manager rows.
+ */
+export function companyApprovalStats(
+  requests: OooRequest[],
+  activeManagerIds?: Set<string>,
+): {
   rate: number;
   managerCount: number;
 } {
   const perManager = new Map<string, OooRequest[]>();
   for (const r of requests) {
     const key = r.manager_id ?? "unassigned";
+    if (activeManagerIds && (key === "unassigned" || !activeManagerIds.has(key))) {
+      continue;
+    }
     perManager.set(key, [...(perManager.get(key) ?? []), r]);
   }
   const rates = [...perManager.values()]
@@ -72,12 +83,21 @@ export interface ManagerBreakdownRow extends ApprovalStats {
   managerId: string;
 }
 
+/**
+ * Per-manager approval breakdown. When `activeManagerIds` is given, offboarded
+ * managers (no current reports) are hidden; the unassigned bucket is kept since
+ * it represents "No manager", not an offboarded person.
+ */
 export function managerBreakdown(
   requests: OooRequest[],
+  activeManagerIds?: Set<string>,
 ): ManagerBreakdownRow[] {
   const perManager = new Map<string, OooRequest[]>();
   for (const r of requests) {
     const key = r.manager_id ?? "unassigned";
+    if (activeManagerIds && key !== "unassigned" && !activeManagerIds.has(key)) {
+      continue;
+    }
     perManager.set(key, [...(perManager.get(key) ?? []), r]);
   }
   return [...perManager.entries()]
