@@ -607,6 +607,15 @@ export default async function OooQueuePage({
                           {whenOf(r)}
                         </span>
                         <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
+                        {/* Org-wide moderators (team lead+) span multiple teams,
+                            so name the managing team on each decision. */}
+                        {seesAll && (
+                          <Pill variant="outline">
+                            {r.manager_id && !ignoredManagerIds.has(r.manager_id)
+                              ? nameOf(r.manager_id)
+                              : "No manager"}
+                          </Pill>
+                        )}
                         {r.status === "approved" && failures.length > 0 && (
                           <Pill
                             variant="status-error"
