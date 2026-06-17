@@ -268,6 +268,9 @@ const STATUS_LINE = {
   approved: ":white_check_mark: *Approved*",
   rejected: ":x: *Declined*",
   cancelled: ":no_entry_sign: *Cancelled*",
+  // The agent edited this request, so it returned to pending under a fresh
+  // message; this one is left only to mark the old window as no longer current.
+  superseded: ":arrows_counterclockwise: *Edited and resubmitted — see the latest request*",
 } as const;
 
 function managerNotice(
@@ -750,6 +753,13 @@ export async function modifyOoo(
     starts_at: input.startIso,
     ends_at: input.endIso,
   });
+
+  // notifyManagerOfPending posts a fresh message and overwrites the stored
+  // slack ref, so first mark the prior manager message (an 'Approved' or
+  // earlier 'Pending') as superseded — once the ref is overwritten its location
+  // is lost and it can never be edited again, leaving a stale status forever.
+  // Uses the pre-modify `request` (old window + old ref); a no-op when none.
+  await updateManagerStatus(request, agent, deps, "superseded");
 
   await notifyManagerOfPending(
     flipped.request,
