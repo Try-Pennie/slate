@@ -654,7 +654,19 @@ const input = {
     w.createdEvents.length === createdBefore + 1,
     "manager event NOT recreated on retry",
   );
-  assert(w.busyBlocks.size === blocksAfterApprove, "existing busy block kept");
+  // #78: the slate fallback block converges to a gcal-linked one pointing at
+  // the now-created agent event (so the next sync upserts onto it instead of
+  // adding a second, overlapping block) — still exactly one block.
+  assert(
+    w.busyBlocks.size === blocksAfterApprove,
+    "still exactly one busy block (converged, not duplicated)",
+  );
+  const convergedBlock = w.busyBlocks.get(r.busy_block_id!)!;
+  assert(
+    convergedBlock.source === "gcal" &&
+      convergedBlock.gcal_event_id === r.agent_event_id,
+    "slate fallback converged to a gcal-linked block on retry",
+  );
   assert(w.dms.length === 0, "silent retry sends no DMs");
   assert(w.audits.includes("ooo.retry"), "retry audited");
 }

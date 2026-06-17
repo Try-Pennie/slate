@@ -467,6 +467,36 @@ async function runPostApproval(
     } else {
       effects[EFFECTS.busyBlock] = "failed";
     }
+  } else if (
+    // 3b. Converge a slate fallback once a retry creates the missing agent
+    //     event (#78): the slate-source block stays, but sync would now also
+    //     mirror the new Google event into a second, overlapping gcal block.
+    //     Replace the slate block with a gcal-linked one so the next sync
+    //     upserts onto it. Insert the replacement before deleting the old block
+    //     so availability is never momentarily unblocked.
+    request.busy_block_id &&
+    patch.agent_event_id &&
+    effects[EFFECTS.busyBlock] === "ok (slate fallback)"
+  ) {
+    const convergedId = await deps.insertBusyBlock({
+      user_id: agent.id,
+      starts_at: request.starts_at,
+      ends_at: request.ends_at,
+      source: "gcal",
+      gcal_event_id: patch.agent_event_id,
+      calendar_id: await deps.agentPrimaryCalendarId(agent.id),
+    });
+    if (convergedId) {
+      await deps.deleteBusyBlock({
+        id: request.busy_block_id,
+        userId: agent.id,
+        gcalEventId: null,
+      });
+      patch.busy_block_id = convergedId;
+      effects[EFFECTS.busyBlock] = "ok";
+    }
+    // If the converging insert failed, keep the slate block (still blocking)
+    // and leave the effect as the fallback so a later retry tries again.
   }
 
   // 4. Cal.com dual-write (transition only; "skipped" when the flag is off).
