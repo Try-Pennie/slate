@@ -2,7 +2,11 @@ import { NextResponse, after, type NextRequest } from "next/server";
 import { slackSigningSecret } from "@/lib/env";
 import { verifySlackSignature } from "@/lib/slack/verify";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { getSlackUserEmail, openSlackModal } from "@/lib/notify/slack";
+import {
+  dmSlackUserByEmail,
+  getSlackUserEmail,
+  openSlackModal,
+} from "@/lib/notify/slack";
 import { approveOoo, rejectOoo } from "@/lib/ooo/service";
 import { formatWhenLine } from "@/lib/ooo/core";
 import {
@@ -27,16 +31,22 @@ export const dynamic = "force-dynamic";
  * its modal synchronously, since the trigger_id expires in 3s.
  */
 
-/** Resolve the clicking Slack user to a Slate user via their workspace email. */
-async function resolveActor(slackUserId: string): Promise<User | null> {
+/**
+ * Resolve the clicking Slack user to a Slate user via their workspace email.
+ * Returns the email too (when Slack gave us one) so callers can DM feedback
+ * even when no Slate user matches.
+ */
+async function resolveActor(
+  slackUserId: string,
+): Promise<{ user: User | null; email: string | null }> {
   const email = await getSlackUserEmail(slackUserId);
-  if (!email) return null;
+  if (!email) return { user: null, email: null };
   const { data } = await supabaseAdmin()
     .from("users")
     .select("*")
     .eq("email", email.toLowerCase())
     .maybeSingle();
-  return (data as User | null) ?? null;
+  return { user: (data as User | null) ?? null, email };
 }
 
 /** Post an ephemeral note back to the interaction's response_url (best-effort). */
@@ -57,15 +67,15 @@ async function runApprove(
   slackUserId: string,
   responseUrl: string,
 ): Promise<void> {
-  const actor = await resolveActor(slackUserId);
-  if (!actor) {
+  const { user } = await resolveActor(slackUserId);
+  if (!user) {
     await replyEphemeral(
       responseUrl,
       "Couldn't match your Slack account to a Slate user, so the approval didn't go through. Use the link to decide in Slate.",
     );
     return;
   }
-  const res = await approveOoo(requestId, actor);
+  const res = await approveOoo(requestId, user);
   if (!res.ok) await replyEphemeral(responseUrl, res.error);
 }
 
@@ -74,9 +84,23 @@ async function runReject(
   slackUserId: string,
   note: string,
 ): Promise<void> {
-  const actor = await resolveActor(slackUserId);
-  if (!actor) return;
-  await rejectOoo(requestId, actor, note);
+  // The Decline modal submit has no response_url, so failures are reported by
+  // DMing the manager who clicked — otherwise the modal just closes and a failed
+  // rejection (unmatched account, not authorized, error) looks like it worked.
+  const { user, email } = await resolveActor(slackUserId);
+  if (!user) {
+    if (email) {
+      await dmSlackUserByEmail(
+        email,
+        "Couldn't match your Slack account to a Slate user, so the decline didn't go through. Open the request in Slate to decide.",
+      );
+    }
+    return;
+  }
+  const res = await rejectOoo(requestId, user, note);
+  if (!res.ok && email) {
+    await dmSlackUserByEmail(email, `Couldn't decline that request: ${res.error}`);
+  }
 }
 
 export async function POST(req: NextRequest) {
