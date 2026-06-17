@@ -72,7 +72,7 @@ function buildInsights(
     alerts: coverageAlerts(roster, requests, now, zone),
     noTimeOff: peopleWithNoTimeOff(roster, requests, now),
     advanceNotice: medianAdvanceNoticeDays(requests),
-    busiest: busiestMonth(requests, zone),
+    busiest: busiestMonth(requests, zone, now),
   };
 }
 
@@ -174,23 +174,23 @@ export default async function OooQueuePage({
     {
       label: "Approval rate",
       value: `${insights.stats.rate}%`,
-      sub: `of ${insights.stats.total}`,
+      sub: `${insights.stats.total} ${insights.stats.total === 1 ? "request" : "requests"}`,
     },
     {
       label: "Median notice",
       value: String(insights.advanceNotice),
       sub: insights.advanceNotice === 1 ? "day" : "days",
     },
-    { label: "Most time off", value: insights.busiest },
+    { label: "Most time off ahead", value: insights.busiest },
     // Org-wide moderators get a company-wide stat here; a scoped manager
     // doesn't (the count that used to sit here just duplicated the "N waiting
     // on you" header above).
     ...(company
       ? [
           {
-            label: "Median mgr approval",
+            label: "Median manager rate",
             value: `${company.rate}%`,
-            sub: `of ${company.managerCount}`,
+            sub: `${company.managerCount} ${company.managerCount === 1 ? "manager" : "managers"}`,
           },
         ]
       : []),

@@ -177,11 +177,20 @@ export function medianAdvanceNoticeDays(requests: OooRequest[]): number {
     : days[mid];
 }
 
-/** Month (in the org zone) with the most approved requests starting in it. */
-export function busiestMonth(requests: OooRequest[], zone: string): string {
+/**
+ * Upcoming month (in the org zone) with the most approved time off — forward-
+ * looking, so it answers "when is coverage thinnest next," not historical. Only
+ * approved requests starting at/after `nowMs` count.
+ */
+export function busiestMonth(
+  requests: OooRequest[],
+  zone: string,
+  nowMs: number,
+): string {
   const counts = new Map<string, number>();
   for (const r of requests) {
     if (r.status !== "approved") continue;
+    if (Date.parse(r.starts_at) < nowMs) continue;
     const key = DateTime.fromISO(r.starts_at, { zone }).toFormat("LLLL yyyy");
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
@@ -193,5 +202,5 @@ export function busiestMonth(requests: OooRequest[], zone: string): string {
       best = month;
     }
   }
-  return best || "None yet";
+  return best || "None ahead";
 }

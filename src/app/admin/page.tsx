@@ -16,6 +16,7 @@ import {
   updateBucket,
 } from "@/app/admin/actions";
 import {
+  atLeast,
   canManageAgents,
   canEditOrgSettings,
   canEditOrgDefaults,
@@ -403,10 +404,11 @@ export default async function AdminPage({
     ...new Map(
       users
         .filter((u) => u.manager_id)
-        .map((u) => {
-          const m = users.find((x) => x.id === u.manager_id);
-          return [u.manager_id as string, m ? (m.name ?? m.email) : "Unknown"];
-        }),
+        .map((u) => [u.manager_id as string, users.find((x) => x.id === u.manager_id)] as const)
+        // Admins/super admins are operators, not real managers — keep them out
+        // of the manager filter even if they're set as someone's manager_id.
+        .filter(([, m]) => m && !atLeast(m.role, "admin"))
+        .map(([id, m]) => [id, m ? (m.name ?? m.email) : "Unknown"] as [string, string]),
     ),
   ].sort((a, b) => a[1].localeCompare(b[1]));
 

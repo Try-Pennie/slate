@@ -193,19 +193,26 @@ assert(coverageAlerts([], [], NOW, ZONE).length === 0, "empty team no alerts");
   assert(medianAdvanceNoticeDays([]) === 0, "empty median 0");
 }
 
-// --- busiest month ---
+// --- busiest month (forward-looking) ---
 {
+  const NOW = Date.parse("2026-06-01T00:00:00Z");
   const b = busiestMonth(
     [
       req({ user: "a", status: "approved", start: "2026-07-02T12:00:00Z" }),
       req({ user: "b", status: "approved", start: "2026-07-20T12:00:00Z" }),
       req({ user: "c", status: "approved", start: "2026-08-02T12:00:00Z" }),
       req({ user: "d", status: "pending", start: "2026-08-03T12:00:00Z" }),
+      // three approved in May, but they're in the PAST relative to NOW so they
+      // must be excluded — otherwise May would wrongly win.
+      req({ user: "e", status: "approved", start: "2026-05-02T12:00:00Z" }),
+      req({ user: "f", status: "approved", start: "2026-05-09T12:00:00Z" }),
+      req({ user: "g", status: "approved", start: "2026-05-15T12:00:00Z" }),
     ],
     ZONE,
+    NOW,
   );
-  assert(b === "July 2026", "busiest month by approved starts");
-  assert(busiestMonth([], ZONE) === "None yet", "empty busiest month copy");
+  assert(b === "July 2026", "busiest UPCOMING month by approved starts (past excluded)");
+  assert(busiestMonth([], ZONE, NOW) === "None ahead", "empty busiest month copy");
 }
 
 if (failures) {
