@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AccountMenu } from "@/components/AccountMenu";
+import { LinkPending } from "@/components/ui/LinkPending";
 import { oooOnlyFor } from "@/lib/env";
 import {
   atLeast,
@@ -65,6 +66,7 @@ function NavTab({
           </span>
         </>
       )}
+      <LinkPending />
     </Link>
   );
 }
