@@ -1,11 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { oooApprovalsRecipients, oooCalendarActorEmail } from "@/lib/env";
+import {
+  oooApprovalsBcc,
+  oooApprovalsRecipients,
+  oooApprovalsReplyTo,
+  oooCalendarActorEmail,
+} from "@/lib/env";
 import { sendGmailEmail } from "@/lib/notify/email";
 import {
-  approvalsDisplayDate,
+  approvalsBody,
   approvalsFileDate,
+  approvalsSubject,
   buildApprovalsCsv,
   isApprovalsDigestTime,
   yesterdayEtRange,
@@ -85,16 +91,16 @@ export async function GET(req: NextRequest) {
   }));
 
   const csv = buildApprovalsCsv(rows);
-  const displayDate = approvalsDisplayDate(now);
   const filename = `${approvalsFileDate(now)} OOO Approvals.csv`;
+  const replyTo = oooApprovalsReplyTo();
 
   await sendGmailEmail({
     from: oooCalendarActorEmail(),
     to: recipients,
-    subject: `OOO approvals for ${displayDate}`,
-    body:
-      `${rows.length} time off ${rows.length === 1 ? "request was" : "requests were"} ` +
-      `approved on ${displayDate}. The full list is attached as a CSV.`,
+    bcc: oooApprovalsBcc(),
+    ...(replyTo ? { replyTo } : {}),
+    subject: approvalsSubject(now),
+    body: approvalsBody(now),
     attachments: [{ filename, content: csv, mimeType: "text/csv" }],
   });
 

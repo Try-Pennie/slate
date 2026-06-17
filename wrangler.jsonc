@@ -23,9 +23,11 @@
     "AGENT_SCHEDULING_LIVE": "false",
     "CALCOM_BASE_URL": "https://api.cal.com/v2",
     "CALCOM_ORG_ID": "19474",
-    // Comma-separated recipients of the daily 7am ET OOO-approvals email.
-    // Empty = the digest no-ops. Fill before relying on it.
-    "OOO_APPROVALS_TO": ""
+    // Daily 7am ET OOO-approvals email (port of the Pipedream flow). Empty TO
+    // = the digest no-ops. Sent from ooo@trypennie.com; replies go to systems.
+    "OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
+    "OOO_APPROVALS_BCC": "dwright@trypennie.com",
+    "OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com"
   },
   "assets": {
     "binding": "ASSETS",

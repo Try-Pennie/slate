@@ -14,6 +14,9 @@ export interface MailAttachment {
 export interface MimeMessage {
   from: string;
   to: string[];
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string;
   subject: string;
   /** Plain-text body. */
   body: string;
@@ -40,6 +43,9 @@ export function buildMimeMessage(msg: MimeMessage, boundary: string): string {
   const headers = [
     `From: ${msg.from}`,
     `To: ${msg.to.join(", ")}`,
+    ...(msg.cc?.length ? [`Cc: ${msg.cc.join(", ")}`] : []),
+    ...(msg.bcc?.length ? [`Bcc: ${msg.bcc.join(", ")}`] : []),
+    ...(msg.replyTo ? [`Reply-To: ${msg.replyTo}`] : []),
     `Subject: ${encodedSubject}`,
     "MIME-Version: 1.0",
     `Content-Type: multipart/mixed; boundary="${boundary}"`,

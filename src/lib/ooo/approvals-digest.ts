@@ -48,6 +48,14 @@ export function approvalsDisplayDate(nowMs: number): string {
   return `${d.toFormat("LLLL")} ${d.day}${ordinal(d.day)}, ${d.year}`;
 }
 
+/** Subject + body, matching the original flow's copy verbatim. */
+export function approvalsSubject(nowMs: number): string {
+  return `Yesterday's OOO Approvals ${approvalsFileDate(nowMs)}`;
+}
+export function approvalsBody(nowMs: number): string {
+  return `Please see the attached CSV with approvals from ${approvalsDisplayDate(nowMs)}`;
+}
+
 // Display-label -> IANA zone for rendering each request's times in its own tz.
 const TZ_BY_LABEL: Record<string, string> = {
   ET: "America/New_York",

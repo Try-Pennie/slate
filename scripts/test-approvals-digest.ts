@@ -5,6 +5,8 @@ import {
   yesterdayEtRange,
   approvalsFileDate,
   approvalsDisplayDate,
+  approvalsSubject,
+  approvalsBody,
   formatApprovalTime,
   buildApprovalsCsv,
   type ApprovalRow,
@@ -40,6 +42,17 @@ assert(
 assert(
   approvalsDisplayDate(Date.UTC(2026, 5, 2, 11, 0)) === "June 1st, 2026",
   "ordinal handles 1st",
+);
+
+// subject + body match the original Pipedream copy verbatim
+assert(
+  approvalsSubject(Date.UTC(2026, 5, 8, 11, 0)) === "Yesterday's OOO Approvals 260607",
+  "subject is 'Yesterday's OOO Approvals <yyMMdd>'",
+);
+assert(
+  approvalsBody(Date.UTC(2026, 5, 8, 11, 0)) ===
+    "Please see the attached CSV with approvals from June 7th, 2026",
+  "body matches the original wording",
 );
 
 // formatApprovalTime — render in the request's display timezone
