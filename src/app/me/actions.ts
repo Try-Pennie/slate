@@ -4,13 +4,15 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
-import { normalizeTzLabel } from "@/lib/ooo/core";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { formatWhenLine, normalizeTzLabel } from "@/lib/ooo/core";
 import {
   roundDownToQuarterHour,
   roundUpToQuarterHour,
 } from "@/lib/date/parse";
 import { cancelOoo, modifyOoo, submitOoo } from "@/lib/ooo/service";
 import type { SubmitOooInput } from "@/lib/ooo/service";
+import type { OooRequest } from "@/lib/db/types";
 
 /**
  * Agent self-service time off actions. Void server actions have no return
@@ -32,6 +34,43 @@ function done(message: string, kind: Outcome = "sent"): never {
 
 function failed(error: string): never {
   redirect(`/me?ooo_error=${encodeURIComponent(error)}#time-off`);
+}
+
+/** Just the request fields the confirmation copy reads. */
+type ConfirmRequest = Pick<
+  OooRequest,
+  "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label" | "manager_id"
+>;
+
+/**
+ * Warm confirmation copy that names the dates back (the Pennie DS's one
+ * specific confirmation moment), e.g. "Tue, Oct 7 2025 from 4:00pm - 6:00pm ET.
+ * Bobby will confirm." The manager's first name is resolved from the request's
+ * manager snapshot; it falls back to "Your manager" if the name isn't on file.
+ */
+async function confirmationMessage(
+  lead: "You're set for" | "Updated to",
+  request: ConfirmRequest,
+): Promise<string> {
+  const whenLine = formatWhenLine(
+    request.starts_at,
+    request.ends_at,
+    request.display_tz_id,
+    request.display_tz_label,
+  );
+  let who = "Your manager";
+  if (request.manager_id) {
+    const { data } = await supabaseAdmin()
+      .from("users")
+      .select("name")
+      .eq("id", request.manager_id)
+      .maybeSingle();
+    const first = (data as { name: string | null } | null)?.name
+      ?.trim()
+      .split(/\s+/)[0];
+    if (first) who = first;
+  }
+  return `${lead} ${whenLine}. ${who} will confirm.`;
 }
 
 /** Builds the UTC window + display tz from the form's local date/time fields. */
@@ -89,7 +128,7 @@ export async function submitMyOoo(
   if ("error" in input) return { error: input.error };
   const result = await submitOoo(me, input);
   if (!result.ok) return { error: result.error };
-  done("Your time off request was sent to your manager.");
+  done(await confirmationMessage("You're set for", result.request));
 }
 
 export async function modifyMyOoo(
@@ -104,7 +143,7 @@ export async function modifyMyOoo(
   if ("error" in input) return { error: input.error };
   const result = await modifyOoo(requestId, me, input);
   if (!result.ok) return { error: result.error };
-  done("Your changes were sent to your manager.", "changed");
+  done(await confirmationMessage("Updated to", result.request), "changed");
 }
 
 export async function cancelMyOoo(form: FormData): Promise<void> {
