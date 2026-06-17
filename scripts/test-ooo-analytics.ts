@@ -103,6 +103,34 @@ assert(approvalStats([]).rate === 0, "empty stats rate 0");
   assert(rows[1].managerId === "m1" && rows[1].rate === 0, "lowest rate last");
 }
 
+// --- offboarded managers hidden when activeManagerIds is supplied ---
+{
+  const data = [
+    req({ user: "a", manager: "m1", status: "approved", start: "2026-06-20T12:00:00Z" }),
+    req({ user: "b", manager: "gone", status: "approved", start: "2026-06-20T12:00:00Z" }),
+  ];
+  const active = new Set(["m1"]); // m1 still has reports; "gone" is offboarded
+  const rows = managerBreakdown(data, active);
+  assert(
+    rows.length === 1 && rows[0].managerId === "m1",
+    "offboarded manager row hidden",
+  );
+  const co = companyApprovalStats(data, active);
+  assert(co.managerCount === 1, "median manager count excludes offboarded");
+  // unassigned (No manager) is kept in the breakdown even with a filter
+  const withUnassigned = managerBreakdown(
+    [
+      req({ user: "a", manager: "m1", status: "approved", start: "2026-06-20T12:00:00Z" }),
+      req({ user: "c", manager: null, status: "approved", start: "2026-06-20T12:00:00Z" }),
+    ],
+    active,
+  );
+  assert(
+    withUnassigned.some((r) => r.managerId === "unassigned"),
+    "unassigned bucket kept under filter",
+  );
+}
+
 // --- coverage alerts ---
 {
   const team = [

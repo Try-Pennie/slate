@@ -48,7 +48,9 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
       <dd className="mt-1 text-xl font-semibold tabular-nums text-pennie-beige">
         {value}
         {sub && (
-          <span className="text-sm font-normal text-pennie-beige/60"> {sub}</span>
+          <span className="mt-0.5 block text-sm font-normal text-pennie-beige/60">
+            {sub}
+          </span>
         )}
       </dd>
     </div>
@@ -187,8 +189,18 @@ export default async function OooQueuePage({
     ? allRequests
     : allRequests.filter((r) => r.manager_id === me.id);
   const insights = buildInsights(roster, scopedRequests, orgZone);
-  const company = seesAll ? companyApprovalStats(allRequests) : null;
-  const breakdown = seesAll ? managerBreakdown(allRequests) : null;
+  // Active managers = anyone a current user reports to. A manager with no active
+  // reports is offboarded, so their historical rows are hidden from By manager
+  // (and dropped from the median-manager stat so the two agree).
+  const activeManagerIds = new Set(
+    users.map((u) => u.manager_id).filter((id): id is string => !!id),
+  );
+  const company = seesAll
+    ? companyApprovalStats(allRequests, activeManagerIds)
+    : null;
+  const breakdown = seesAll
+    ? managerBreakdown(allRequests, activeManagerIds)
+    : null;
   const stats: { label: string; value: string; sub?: string }[] = [
     {
       label: "Approval rate",
@@ -335,9 +347,7 @@ export default async function OooQueuePage({
 
         {/* Insights — a navy stat band, then supporting detail */}
         <section>
-          <p className="pn-eyebrow text-fg-muted">
-            {seesAll ? "Team insights · whole company" : "Team insights"}
-          </p>
+          <p className="pn-eyebrow text-fg-muted">Team insights</p>
           <p className="mt-1 text-sm text-fg-muted">
             {roster.length} {roster.length === 1 ? "person" : "people"} on the
             roster. Numbers cover all requests on record.
@@ -383,14 +393,32 @@ export default async function OooQueuePage({
           )}
 
           {insights.noTimeOff.length > 0 && (
-            <div className="mt-6">
-              <h3 className="text-xs font-semibold text-fg-muted">
-                No time off in the last 90 days or next 30
-              </h3>
-              <p className="mt-2 text-sm text-fg-muted">
+            <details className="group mt-6">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky [&::-webkit-details-marker]:hidden">
+                <svg
+                  viewBox="0 0 16 16"
+                  aria-hidden="true"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
+                >
+                  <path d="M6 4l4 4-4 4" />
+                </svg>
+                <h3 className="text-xs font-semibold text-fg-muted">
+                  <span className="tabular-nums">{insights.noTimeOff.length}</span>{" "}
+                  {insights.noTimeOff.length === 1
+                    ? "person has"
+                    : "people have"}{" "}
+                  taken no time off · last 90 days or next 30
+                </h3>
+              </summary>
+              <p className="mt-2 pl-5 text-sm text-fg-muted">
                 {insights.noTimeOff.map((p) => p.name).join(", ")}
               </p>
-            </div>
+            </details>
           )}
 
           {breakdown && breakdown.length > 0 && (
@@ -400,6 +428,7 @@ export default async function OooQueuePage({
                 <thead>
                   <tr className="text-left text-xs text-fg-muted">
                     <th className="py-1 font-semibold">Manager</th>
+                    <th className="py-1 font-semibold">Submitted</th>
                     <th className="py-1 font-semibold">Approved</th>
                     <th className="py-1 font-semibold">Rejected</th>
                     <th className="py-1 font-semibold">Pending</th>
@@ -414,6 +443,7 @@ export default async function OooQueuePage({
                           ? "No manager"
                           : nameOf(row.managerId)}
                       </td>
+                      <td className="py-1.5 tabular-nums">{row.total}</td>
                       <td className="py-1.5 tabular-nums">{row.approved}</td>
                       <td className="py-1.5 tabular-nums">{row.rejected}</td>
                       <td className="py-1.5 tabular-nums">{row.pending}</td>
