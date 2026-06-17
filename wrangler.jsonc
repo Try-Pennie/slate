@@ -4,7 +4,7 @@
   "main": "worker/index.ts",
   // Cron triggers drive worker/index.ts scheduled(); keep in lockstep with
   // worker/cron-routes.ts (scripts/test-cron-routes.ts enforces it).
-  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "0 6 * * *", "0 13 * * 1-5", "0 14 * * 1-5"] },
+  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "0 6 * * *", "0 13 * * 1-5", "0 14 * * 1-5", "0 11 * * *", "0 12 * * *"] },
   "account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
   "routes": [
     { "pattern": "slate.trypennie.dev", "custom_domain": true },
@@ -22,7 +22,12 @@
     "OOO_CALCOM_DUAL_WRITE": "true",
     "AGENT_SCHEDULING_LIVE": "false",
     "CALCOM_BASE_URL": "https://api.cal.com/v2",
-    "CALCOM_ORG_ID": "19474"
+    "CALCOM_ORG_ID": "19474",
+    // Daily 7am ET OOO-approvals email (port of the Pipedream flow). Empty TO
+    // = the digest no-ops. Sent from ooo@trypennie.com; replies go to systems.
+    "OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
+    "OOO_APPROVALS_BCC": "dwright@trypennie.com",
+    "OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com"
   },
   "assets": {
     "binding": "ASSETS",

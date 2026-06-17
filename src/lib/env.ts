@@ -115,6 +115,18 @@ export const oooOnlyFor = (role: string | undefined): boolean => {
   return !(isRole(r) && atLeast(r, "super_admin"));
 };
 
+// Daily OOO-approvals digest email (set as wrangler vars). Empty TO = the
+// digest no-ops. Sent from the OOO actor mailbox; replies route to REPLY_TO.
+const csvEnv = (name: string): string[] =>
+  (process.env[name] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+export const oooApprovalsRecipients = (): string[] => csvEnv("OOO_APPROVALS_TO");
+export const oooApprovalsBcc = (): string[] => csvEnv("OOO_APPROVALS_BCC");
+export const oooApprovalsReplyTo = (): string =>
+  process.env.OOO_APPROVALS_REPLY_TO ?? "";
+
 // Cal.com dual-write during the cutover transition. Flag off = no-op.
 export const oooCalcomDualWrite = (): boolean =>
   process.env.OOO_CALCOM_DUAL_WRITE === "true";

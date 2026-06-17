@@ -15,6 +15,10 @@ export const CRON_ROUTES: Record<string, string> = {
   // ET on weekdays; the route's isDigestTime gate lets exactly one fire.
   "0 13 * * 1-5": "/api/cron/ooo-digest",
   "0 14 * * 1-5": "/api/cron/ooo-digest",
+  // Daily 7am ET email of yesterday's OOO approvals (CSV). Two UTC slots
+  // straddle DST; the route's isApprovalsDigestTime gate lets one fire.
+  "0 11 * * *": "/api/cron/ooo-approvals",
+  "0 12 * * *": "/api/cron/ooo-approvals",
 };
 
 export function routeForCron(cron: string): string | null {
