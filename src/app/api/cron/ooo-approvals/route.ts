@@ -8,6 +8,7 @@ import {
   oooCalendarActorEmail,
 } from "@/lib/env";
 import { sendGmailEmail } from "@/lib/notify/email";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import {
   approvalsBody,
   approvalsFileDate,
@@ -19,6 +20,10 @@ import {
 } from "@/lib/ooo/approvals-digest";
 
 export const dynamic = "force-dynamic";
+
+// One report a day, so a generous cooldown — enough to never double-alert if
+// the platform retries the cron, short enough that tomorrow's failure alerts.
+const DIGEST_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Daily 7am ET digest (port of the Pipedream flow): emails a CSV of every OOO
@@ -94,15 +99,28 @@ export async function GET(req: NextRequest) {
   const filename = `${approvalsFileDate(now)} OOO Approvals.csv`;
   const replyTo = oooApprovalsReplyTo();
 
-  await sendGmailEmail({
-    from: oooCalendarActorEmail(),
-    to: recipients,
-    bcc: oooApprovalsBcc(),
-    ...(replyTo ? { replyTo } : {}),
-    subject: approvalsSubject(now),
-    body: approvalsBody(now),
-    attachments: [{ filename, content: csv, mimeType: "text/csv" }],
-  });
+  // Silent non-delivery is the worst failure mode for a report people rely on,
+  // so alert (throttled) on any send error before surfacing the 500 — a slow or
+  // disabled Gmail, a lapsed gmail.send scope, etc. The error is re-thrown so
+  // the cron still records the failure (and can retry within the time gate).
+  try {
+    await sendGmailEmail({
+      from: oooCalendarActorEmail(),
+      to: recipients,
+      bcc: oooApprovalsBcc(),
+      ...(replyTo ? { replyTo } : {}),
+      subject: approvalsSubject(now),
+      body: approvalsBody(now),
+      attachments: [{ filename, content: csv, mimeType: "text/csv" }],
+    });
+  } catch (e) {
+    await sendThrottledAlert(
+      "ooo_approvals_digest",
+      DIGEST_ALERT_COOLDOWN_MS,
+      `Slate: the daily OOO-approvals email (${rows.length} ${rows.length === 1 ? "approval" : "approvals"}) failed to send to ${recipients.length} ${recipients.length === 1 ? "recipient" : "recipients"}: ${String(e).slice(0, 200)}`,
+    ).catch(() => {});
+    throw e;
+  }
 
   return NextResponse.json({ sent: true, count: rows.length, recipients: recipients.length });
 }
