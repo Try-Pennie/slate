@@ -542,12 +542,32 @@ const input = {
   const r = w.requests.get(id)!;
   assert(r.starts_at === "2026-07-02T13:00:00Z", "window replaced");
   assert(r.status === "pending", "stays pending");
-  assert(r.notes!.includes("[Modified 2026-06-12T12:00:00Z]"), "modified marker appended");
+  assert(r.notes!.includes("[Modified Jun 12, 2026]"), "modified marker appended (humanized)");
   assert(
     w.dms.some((d) => d.email === manager.email && d.text.includes("Changed time off request")),
     "manager re-notified",
   );
   assert(w.audits.includes("ooo.modify"), "modify audited");
+
+  // Editing again must not stack a second "[Modified …]" marker — here notes is
+  // omitted so baseNotes falls back to the stored notes (which already carry the
+  // first marker), exercising the strip-on-save guard.
+  await modifyOoo(
+    id,
+    agent,
+    {
+      ...input,
+      notes: undefined,
+      startIso: "2026-07-02T14:00:00Z",
+      endIso: "2026-07-02T21:00:00Z",
+    },
+    w.deps,
+  );
+  const r2 = w.requests.get(id)!;
+  assert(
+    (r2.notes!.match(/\[Modified/g) ?? []).length === 1,
+    "modified marker does not stack across edits",
+  );
 }
 
 // --- modify: approved undoes artifacts and returns to pending ---

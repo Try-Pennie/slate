@@ -19,6 +19,7 @@ type Editing = {
   id: string;
   whenLine: string;
   approved: boolean;
+  allDay: boolean;
   startDate?: string;
   startTime?: string;
   endDate?: string;
@@ -65,7 +66,7 @@ export function OooForm({
   // so their values survive the reset (the DateTimeFields keep their own state).
   const [reason, setReason] = useState(editing?.reason ?? "");
   const [notes, setNotes] = useState(editing?.notes ?? "");
-  const [allDay, setAllDay] = useState(false);
+  const [allDay, setAllDay] = useState(editing?.allDay ?? false);
   const [timezone, setTimezone] = useState(defaultTz);
   // Watchdog: a submit should take ~1s. If it's still in flight after this, a
   // request somewhere wedged (cold server, dropped connection), so stop looking
@@ -214,33 +215,39 @@ export function OooForm({
 
         <div className="space-y-4">
           <div>
-            <label className={formLabelCls}>Start date and time</label>
+            <label className={formLabelCls}>
+              {allDay ? "Start date" : "Start date and time"}
+            </label>
             <div className="mt-1">
               <DateTimeField
                 nameDate="start_date"
                 nameTime="start_time"
-                ariaLabel="Start date and time"
+                ariaLabel={allDay ? "Start date" : "Start date and time"}
                 defaultDate={editing?.startDate}
                 defaultTime={editing?.startTime}
                 min={bounds.minISO}
                 max={bounds.maxISO}
                 todayISO={bounds.todayISO}
+                hideTime={allDay}
               />
             </div>
           </div>
           <div>
-            <label className={formLabelCls}>End date and time</label>
+            <label className={formLabelCls}>
+              {allDay ? "End date" : "End date and time"}
+            </label>
             <div className="mt-1">
               <DateTimeField
                 nameDate="end_date"
                 nameTime="end_time"
-                ariaLabel="End date and time"
+                ariaLabel={allDay ? "End date" : "End date and time"}
                 round="up"
                 defaultDate={editing?.endDate}
                 defaultTime={editing?.endTime}
                 min={bounds.minISO}
                 max={bounds.maxISO}
                 todayISO={bounds.todayISO}
+                hideTime={allDay}
               />
             </div>
           </div>
