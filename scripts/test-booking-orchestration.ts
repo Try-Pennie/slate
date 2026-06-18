@@ -94,7 +94,7 @@ function makeDeps(opts: FakeOpts) {
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
-    completeBookingIfDue: [] as string[],
+    completeBookingsIfDue: [] as string[][],
     webhooks: [] as { event: string }[],
     claimReschedule: 0,
     releaseReschedule: 0,
@@ -140,10 +140,11 @@ function makeDeps(opts: FakeOpts) {
     updateBooking: async (id, patch) => {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
     },
-    completeBookingIfDue: async (id) => {
-      calls.completeBookingIfDue.push(id);
-      // false models a row an overlapping tick already flipped to completed.
-      return !(opts.alreadyCompleted?.has(id) ?? false);
+    completeBookingsIfDue: async (ids) => {
+      calls.completeBookingsIfDue.push(ids);
+      // Return only the ids this tick flips; an id in `alreadyCompleted` models
+      // a row an overlapping tick already transitioned, so it's excluded.
+      return ids.filter((id) => !(opts.alreadyCompleted?.has(id) ?? false));
     },
     claimReschedule: async () => {
       calls.claimReschedule++;
@@ -415,10 +416,11 @@ async function run() {
     const n = await completePastBookings(deps);
     assert(n === 2, "complete: returns the count of completed bookings");
     assert(
-      calls.completeBookingIfDue.length === 2 &&
-        calls.completeBookingIfDue.includes("p1") &&
-        calls.completeBookingIfDue.includes("p2"),
-      "complete: conditionally transitions each due booking",
+      calls.completeBookingsIfDue.length === 1 &&
+        calls.completeBookingsIfDue[0].length === 2 &&
+        calls.completeBookingsIfDue[0].includes("p1") &&
+        calls.completeBookingsIfDue[0].includes("p2"),
+      "complete: transitions all due bookings in a single batched call (#164)",
     );
     assert(
       calls.webhooks.length === 2 && calls.webhooks.every((w) => w.event === "booking.completed"),

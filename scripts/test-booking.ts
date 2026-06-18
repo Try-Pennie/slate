@@ -6,8 +6,10 @@ import {
   busyBlockFor,
   eventDescription,
   idempotencyKeyFor,
+  joinBookingContexts,
   selectAgent,
 } from "../src/lib/booking/core.ts";
+import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -145,6 +147,29 @@ assert(
   "no phone -> still carries the manage link",
 );
 assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has no dashes");
+
+// --- joinBookingContexts (#164: in-memory join replaces the per-booking N+1) ---
+{
+  const b = (id: string, k: string, e: string) =>
+    ({ id, bucket_id: k, event_type_id: e }) as unknown as Booking;
+  const bookings = [b("b1", "k1", "e1"), b("b2", "k2", "e1")];
+  const buckets = [{ id: "k1" }, { id: "k2" }] as unknown as Bucket[];
+  const ets = [{ id: "e1" }] as unknown as EventType[];
+
+  const joined = joinBookingContexts(bookings, buckets, ets);
+  assert(joined.length === 2, "join: pairs every booking with its bucket + event type");
+  assert(
+    joined[0].booking.id === "b1" && joined[0].bucket.id === "k1" && joined[0].eventType.id === "e1",
+    "join: b1 -> k1/e1",
+  );
+  assert(
+    joined[1].bucket.id === "k2" && joined[1].eventType.id === "e1",
+    "join: b2 reuses the shared event type e1",
+  );
+
+  const orphan = joinBookingContexts([b("b3", "missing", "e1")], buckets, ets);
+  assert(orphan.length === 0, "join: drops a booking whose bucket isn't in the fetched set");
+}
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -35,6 +35,7 @@ async function calendarIdsForEmail(email: string): Promise<string[]> {
     .eq("user_id", (user as { id: string }).id);
   return (data ?? []).map((r) => (r as { calendar_id: string }).calendar_id);
 }
+import { joinBookingContexts } from "@/lib/booking/core";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
   BookingContext,
@@ -151,17 +152,19 @@ function realDeps(): BookingDeps {
       await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
     },
 
-    completeBookingIfDue: async (bookingId) => {
-      // Gate the flip on the row still being completable so an overlapping
-      // complete-cron tick that already transitioned it affects 0 rows here
-      // (#163). `.select` returns only rows this UPDATE actually changed.
+    completeBookingsIfDue: async (bookingIds) => {
+      if (bookingIds.length === 0) return [];
+      // One batched UPDATE for the whole sweep (#164). Gating on the row still
+      // being completable means an overlapping complete-cron tick that already
+      // transitioned some of them touches 0 of those (#163); `.select` returns
+      // only the rows this UPDATE actually changed.
       const { data } = await supabaseAdmin()
         .from("bookings")
         .update({ status: "completed" })
-        .eq("id", bookingId)
+        .in("id", bookingIds)
         .in("status", ["confirmed", "rescheduled"])
         .select("id");
-      return (data?.length ?? 0) > 0;
+      return ((data ?? []) as { id: string }[]).map((r) => r.id);
     },
 
     claimReschedule: async (bookingId, targetStartIso) => {
@@ -258,19 +261,23 @@ function realDeps(): BookingDeps {
         .lt("ends_at", nowIso)
         .limit(200);
 
-      const out: BookingContext[] = [];
-      for (const row of (rows ?? []) as Booking[]) {
-        const [{ data: bucket }, { data: eventType }] = await Promise.all([
-          db.from("buckets").select("*").eq("id", row.bucket_id).single(),
-          db.from("event_types").select("*").eq("id", row.event_type_id).single(),
-        ]);
-        out.push({
-          booking: row,
-          bucket: bucket as Bucket,
-          eventType: eventType as EventType,
-        });
-      }
-      return out;
+      const bookings = (rows ?? []) as Booking[];
+      if (bookings.length === 0) return [];
+
+      // Resolve buckets + event types with two `.in()` queries and join in
+      // memory, instead of two lookups per booking (~400 round-trips) (#164).
+      const bucketIds = [...new Set(bookings.map((b) => b.bucket_id))];
+      const eventTypeIds = [...new Set(bookings.map((b) => b.event_type_id))];
+      const [{ data: buckets }, { data: eventTypes }] = await Promise.all([
+        db.from("buckets").select("*").in("id", bucketIds),
+        db.from("event_types").select("*").in("id", eventTypeIds),
+      ]);
+
+      return joinBookingContexts(
+        bookings,
+        (buckets ?? []) as Bucket[],
+        (eventTypes ?? []) as EventType[],
+      );
     },
   };
 }
