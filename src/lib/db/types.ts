@@ -48,6 +48,8 @@ export interface User {
   attributes: Attributes;
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
+  /** When the backstop sync cron last processed this agent (#238 rotation); null = never. */
+  last_synced_at: string | null;
   /**
    * This agent's manager (routes OOO requests). Synced from Salesforce's
    * Agent_Manager picklist (#76); admins can override and the sync never nulls
