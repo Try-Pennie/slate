@@ -130,6 +130,13 @@ export interface BookingDeps {
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   /**
+   * Conditionally flips a finished booking to `completed`, returning whether
+   * THIS call performed the transition. The update is gated on the row still
+   * being in a completable status, so an overlapping cron tick that already
+   * completed it gets `false` and won't re-fire booking.completed (#163).
+   */
+  completeBookingIfDue(bookingId: string): Promise<boolean>;
+  /**
    * Reschedule idempotency lock. Claims (bookingId, target instant); returns
    * false when a concurrent reschedule to the same target already holds it, so
    * the loser of a double-submit no-ops. Stale locks (from a torn-down Worker)
@@ -585,7 +592,12 @@ export async function completePastBookings(deps: BookingDeps): Promise<number> {
 
   let count = 0;
   for (const { booking, bucket, eventType } of due) {
-    await deps.updateBooking(booking.id, { status: "completed" });
+    // Conditional transition (#163): only fire booking.completed when THIS call
+    // actually flipped the row. An overlapping cron tick that already completed
+    // it gets `false` here and skips the webhook, so we don't deliver a second
+    // booking.completed the receiver can't dedupe.
+    const transitioned = await deps.completeBookingIfDue(booking.id);
+    if (!transitioned) continue;
     await fire(
       deps,
       "booking.completed",
