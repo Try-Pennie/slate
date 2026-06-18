@@ -160,3 +160,9 @@ export function freeMembersForSlot(
     })
     .map((m) => m.userId);
 }
+
+/** Drops slot instants earlier than now + min-notice (applied after a cache read). */
+export function filterSlotsFromNow(slots: string[], nowMs: number, minNoticeMin: number): string[] {
+  const cutoff = nowMs + minNoticeMin * 60_000;
+  return slots.filter((s) => Date.parse(s) >= cutoff);
+}
