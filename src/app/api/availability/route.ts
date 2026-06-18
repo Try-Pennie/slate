@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getBucketSlots } from "@/lib/availability/service";
+import { getCachedBucketSlots } from "@/lib/availability/slot-cache";
+import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { allowRequest, clientIp, AVAILABILITY_RATE_RULES } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -27,13 +28,19 @@ export async function GET(req: NextRequest) {
 
   const now = Date.now();
   const from = params.get("from") ?? new Date(now).toISOString();
+  const toParam = params.get("to");
   const to =
-    params.get("to") ??
-    new Date(now + DEFAULT_RANGE_DAYS * 86_400_000).toISOString();
+    toParam ?? new Date(now + DEFAULT_RANGE_DAYS * 86_400_000).toISOString();
 
-  const result = await getBucketSlots(code, from, to);
+  const result = await getCachedBucketSlots(code, from);
   if (!result) {
     return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
+  }
+
+  let slots = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
+  if (toParam) {
+    const toMs = Date.parse(to);
+    slots = slots.filter((s) => Date.parse(s) <= toMs);
   }
 
   return NextResponse.json({
@@ -44,6 +51,6 @@ export async function GET(req: NextRequest) {
       description: result.eventType.description,
       durationMin: result.eventType.duration_min,
     },
-    slots: result.slots,
+    slots,
   });
 }
