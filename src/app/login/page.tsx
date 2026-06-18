@@ -32,14 +32,27 @@ export default function LoginPage() {
 
   return (
     <main className="grid min-h-dvh flex-1 grid-rows-[auto_1fr] bg-bg lg:grid-cols-2 lg:grid-rows-1">
-      <section className="hidden flex-col gap-6 bg-pennie-navy p-8 sm:flex lg:justify-between lg:p-12">
+      <section className="relative hidden flex-col gap-6 overflow-hidden bg-pennie-navy p-8 sm:flex lg:justify-between lg:p-12">
+        {/* eslint-disable-next-line @next/next/no-img-element -- decorative brand art; OpenNext/CF has no image loader */}
+        <img
+          src="/brand/login-art.jpg"
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center"
+        />
+        {/* Navy scrim: darkens the top + bottom so the cream wordmark and copy
+            stay legible, while the concrete mark breathes through the middle. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-pennie-navy/85 via-pennie-navy/25 to-pennie-navy/90"
+        />
         {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
         <img
           src="/brand/logo-pennie-cream.svg"
           alt="Pennie"
-          className="h-[22px] w-auto self-start"
+          className="relative z-10 h-[22px] w-auto self-start"
         />
-        <div className="max-w-md">
+        <div className="relative z-10 max-w-md">
           <p className="pn-h2 hidden text-pennie-beige lg:block">
             Welcome back.
           </p>
