@@ -57,12 +57,5 @@
 	},
 	"observability": {
 		"enabled": true
-	},
-	"kv_namespaces": [
-		{
-			"binding": "SLOT_CACHE",
-			"id": "86a9c4c03cf24e23883976d1000347c9",
-			"remote": true
-		}
-	]
+	}
 }
