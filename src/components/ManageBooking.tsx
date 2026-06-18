@@ -70,6 +70,8 @@ export default function ManageBooking({
   const [slots, setSlots] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [pendingIso, setPendingIso] = useState<string | null>(null);
 
   useEffect(() => {
     if (!rescheduling) return;
@@ -85,6 +87,7 @@ export default function ManageBooking({
   async function reschedule(newStart: string) {
     setBusy(true);
     setError(null);
+    setPendingIso(newStart);
     const res = await fetch(`/api/bookings/${token}/reschedule`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -97,16 +100,25 @@ export default function ManageBooking({
       setRescheduling(false);
     } else {
       const d = await res.json().catch(() => ({}));
-      setError(d.error ?? "Could not reschedule.");
+      setError(d.error ?? "Could not reschedule. Please try again.");
     }
+    setPendingIso(null);
     setBusy(false);
   }
 
   async function cancel() {
-    if (!confirm("Cancel this booking?")) return;
     setBusy(true);
+    setError(null);
     const res = await fetch(`/api/bookings/${token}/cancel`, { method: "POST" });
-    if (res.ok) setStatus("cancelled");
+    if (res.ok) {
+      setStatus("cancelled");
+      setConfirmingCancel(false);
+    } else {
+      // Previously a native confirm() with no visible failure path: a failed
+      // POST left the page looking unchanged. Surface it instead.
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "Could not cancel. Please try again.");
+    }
     setBusy(false);
   }
 
@@ -125,7 +137,7 @@ export default function ManageBooking({
           )}
         </p>
 
-        {!done && (
+        {!done && !confirmingCancel && (
           <div className="mt-6 flex flex-wrap gap-3">
             <button
               onClick={() => setRescheduling((v) => !v)}
@@ -134,13 +146,40 @@ export default function ManageBooking({
               {rescheduling ? "Close" : "Reschedule"}
             </button>
             <button
-              onClick={cancel}
+              onClick={() => {
+                setError(null);
+                setConfirmingCancel(true);
+              }}
               disabled={busy}
               className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-[var(--error)] px-5 text-sm font-semibold text-[var(--error)] transition-colors hover:bg-[rgba(196,61,61,0.06)] disabled:opacity-60"
             >
               <XIcon />
               Cancel booking
             </button>
+          </div>
+        )}
+
+        {!done && confirmingCancel && (
+          <div className="mt-6 rounded-lg border border-[var(--error)] bg-[rgba(196,61,61,0.04)] p-4">
+            <p className="text-sm font-semibold text-fg">Cancel this booking?</p>
+            <p className="mt-1 text-sm text-fg-muted">This can&apos;t be undone.</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                onClick={cancel}
+                disabled={busy}
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+              >
+                <XIcon />
+                {busy ? "Cancelling…" : "Yes, cancel"}
+              </button>
+              <button
+                onClick={() => setConfirmingCancel(false)}
+                disabled={busy}
+                className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm"
+              >
+                Keep it
+              </button>
+            </div>
           </div>
         )}
 
@@ -164,10 +203,15 @@ export default function ManageBooking({
                 <button
                   key={iso}
                   disabled={busy}
+                  aria-busy={pendingIso === iso}
                   onClick={() => reschedule(iso)}
-                  className="min-h-11 rounded-md border border-border bg-surface px-2 py-2 text-sm tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
+                  className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
+                    pendingIso === iso
+                      ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
+                      : "border-border bg-surface text-fg hover:border-fg/45"
+                  }`}
                 >
-                  {timeLabel(iso, timeZone)}
+                  {pendingIso === iso ? "Moving…" : timeLabel(iso, timeZone)}
                 </button>
               ))}
               {slots.length === 0 && (
