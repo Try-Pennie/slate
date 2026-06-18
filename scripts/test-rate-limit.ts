@@ -1,11 +1,7 @@
 // Sanity test for the rate-limit helpers (#31). The atomic counter itself is
 // a Postgres function (verified live); this covers the pure pieces.
 // Run: node --experimental-strip-types scripts/test-rate-limit.ts
-import {
-  clientIp,
-  AVAILABILITY_RATE_RULES,
-  BOOKING_RATE_RULES,
-} from "../src/lib/rate-limit-core.ts";
+import { clientIp, BOOKING_RATE_RULES } from "../src/lib/rate-limit-core.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -58,23 +54,8 @@ assert(
   "rule prefixes are distinct (separate counters)",
 );
 
-// --- availability policy (#56) ---
-const [aBurst, aSustained] = [...AVAILABILITY_RATE_RULES].sort(
-  (a, b) => a.windowSeconds - b.windowSeconds,
-);
-assert(
-  aBurst.windowSeconds < aSustained.windowSeconds && aBurst.max < aSustained.max,
-  "availability: burst window shorter and tighter than sustained",
-);
-assert(
-  aBurst.max > BOOKING_RATE_RULES[0].max,
-  "availability is looser than bookings (Booker refetches per month nav)",
-);
-assert(
-  new Set([...AVAILABILITY_RATE_RULES, ...BOOKING_RATE_RULES].map((r) => r.prefix))
-    .size === AVAILABILITY_RATE_RULES.length + BOOKING_RATE_RULES.length,
-  "availability and booking counters never share keys",
-);
+// Availability (#56) is now throttled at the edge by the AVAIL_RATE_LIMITER
+// Workers binding (wrangler.jsonc), not a DB rule — nothing pure to assert here.
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
