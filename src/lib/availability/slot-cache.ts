@@ -34,6 +34,7 @@ export async function invalidateBucketSlots(code: string): Promise<void> {
   const store = kv();
   if (!store) return;
   try {
+    // Non-atomic: a write between list() and delete() isn't cleared; the short TTL is the backstop.
     const { keys } = await store.list({ prefix: `slots:v1:${code}:` });
     await Promise.all(keys.map((k: { name: string }) => store.delete(k.name)));
   } catch { /* ignore */ }

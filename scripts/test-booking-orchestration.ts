@@ -477,6 +477,10 @@ async function run() {
     );
     assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reassign: busy block moved to the owner");
     assert(calls.webhooks.some((w) => w.event === "booking.rescheduled"), "reassign: fires booking.rescheduled");
+    assert(
+      calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
+      "reassign: invalidates cached slots for the bucket exactly once",
+    );
   }
 
   // --- reassign: unknown / offboarded agent is rejected ---

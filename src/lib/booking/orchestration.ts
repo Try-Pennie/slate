@@ -577,6 +577,7 @@ export async function reassignBooking(
   await deps.insertBusyBlock(
     busyBlockFor(agent.id, booking.starts_at, booking.ends_at, booking.id),
   );
+  await deps.invalidateSlots(bucket.code);
 
   const updated = {
     ...booking,
@@ -606,8 +607,8 @@ export async function cancelBooking(
   }
 
   await deps.deleteBusyBlocksForBooking(booking.id);
-  await deps.invalidateSlots(bucket.code);
   await deps.updateBooking(booking.id, { status: "cancelled" });
+  await deps.invalidateSlots(bucket.code);
 
   await fire(
     deps,

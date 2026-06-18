@@ -5,12 +5,21 @@ import {
   resolveBucketByCode,
   roundRobinCandidates,
 } from "@/lib/availability/service";
+import { invalidateBucketSlots } from "@/lib/availability/slot-cache";
 import {
   createEvent,
   deleteEvent,
   isFree,
   updateEventTime,
 } from "@/lib/google/calendar";
+import { joinBookingContexts } from "@/lib/booking/core";
+import * as orchestration from "@/lib/booking/orchestration";
+import type {
+  BookingContext,
+  BookingDeps,
+  BookingResult,
+  CreateBookingInput,
+} from "@/lib/booking/orchestration";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { Booking, Bucket, EventType, User } from "@/lib/db/types";
@@ -35,15 +44,6 @@ async function calendarIdsForEmail(email: string): Promise<string[]> {
     .eq("user_id", (user as { id: string }).id);
   return (data ?? []).map((r) => (r as { calendar_id: string }).calendar_id);
 }
-import { invalidateBucketSlots } from "@/lib/availability/slot-cache";
-import { joinBookingContexts } from "@/lib/booking/core";
-import * as orchestration from "@/lib/booking/orchestration";
-import type {
-  BookingContext,
-  BookingDeps,
-  BookingResult,
-  CreateBookingInput,
-} from "@/lib/booking/orchestration";
 
 export { SlotUnavailableError } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
