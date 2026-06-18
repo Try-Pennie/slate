@@ -159,6 +159,7 @@ export default function Booker({
   const [month, setMonth] = useState(() => today.startOf("month"));
   const [meta, setMeta] = useState<AvailabilityResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [hour12, setHour12] = useState(true);
@@ -183,14 +184,28 @@ export default function Booker({
   }, [selectedSlot]);
 
   const loadSlots = useCallback(async () => {
+    // Set loading here too (not just on month change) so the post-409 refetch
+    // swaps the stale slot list for skeletons instead of leaving it tappable.
+    setLoading(true);
+    setLoadError(false);
     const monthStart = month.startOf("month");
     const from = DateTime.max(monthStart, today).toUTC().toISO();
     const to = month.endOf("month").toUTC().toISO();
-    const res = await fetch(
-      `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`,
-      { cache: "no-store" },
-    );
-    if (res.ok) setMeta((await res.json()) as AvailabilityResponse);
+    try {
+      const res = await fetch(
+        `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`,
+        { cache: "no-store" },
+      );
+      if (res.ok) {
+        setMeta((await res.json()) as AvailabilityResponse);
+      } else {
+        // Distinguish a failed fetch from a genuinely empty month, so the user
+        // sees "couldn't load" + retry rather than a permanent "no availability".
+        setLoadError(true);
+      }
+    } catch {
+      setLoadError(true);
+    }
     setLoading(false);
   }, [bucketCode, month, today]);
 
@@ -428,7 +443,10 @@ export default function Booker({
             month={month}
             today={today}
             canPrev={month.startOf("month") > today.startOf("month")}
-            canNext={true}
+            // Availability is cache-limited; once a loaded month comes back
+            // empty there's nothing further to page into. Stay optimistic while
+            // a month is still loading.
+            canNext={loading || (meta?.slots.length ?? 0) > 0}
             onMonthChange={(m) => {
               setLoading(true);
               setMonth(m);
@@ -551,6 +569,23 @@ export default function Booker({
                   Array.from({ length: 6 }).map((_, i) => (
                     <div key={i} className={`h-11 animate-pulse rounded-md ${c.skeleton}`} />
                   ))
+                ) : loadError ? (
+                  <div className="space-y-2">
+                    <p className={`flex items-start gap-2 text-sm text-[var(--error)]`} role="alert">
+                      <span className="mt-0.5 shrink-0">
+                        <AlertIcon />
+                      </span>
+                      Couldn&apos;t load available times. Check your connection.
+                    </p>
+                    <button
+                      onClick={() => void loadSlots()}
+                      className={`inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`}
+                    >
+                      Try again
+                    </button>
+                  </div>
+                ) : slotsByDay.size === 0 ? (
+                  <p className={`text-sm ${c.faint}`}>No availability this month. Try another month.</p>
                 ) : daySlots.length === 0 ? (
                   <p className={`text-sm ${c.faint}`}>No times left that day, pick another.</p>
                 ) : (
