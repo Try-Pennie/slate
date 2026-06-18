@@ -82,6 +82,7 @@ interface FakeOpts {
   agentByEmail?: User | null; // getAgentByEmail (reassign)
   pastDue?: BookingContext[];
   rescheduleLocked?: boolean; // a concurrent reschedule already holds the lock
+  alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -93,6 +94,7 @@ function makeDeps(opts: FakeOpts) {
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
+    completeBookingIfDue: [] as string[],
     webhooks: [] as { event: string }[],
     claimReschedule: 0,
     releaseReschedule: 0,
@@ -137,6 +139,11 @@ function makeDeps(opts: FakeOpts) {
     },
     updateBooking: async (id, patch) => {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
+    },
+    completeBookingIfDue: async (id) => {
+      calls.completeBookingIfDue.push(id);
+      // false models a row an overlapping tick already flipped to completed.
+      return !(opts.alreadyCompleted?.has(id) ?? false);
     },
     claimReschedule: async () => {
       calls.claimReschedule++;
@@ -408,8 +415,10 @@ async function run() {
     const n = await completePastBookings(deps);
     assert(n === 2, "complete: returns the count of completed bookings");
     assert(
-      calls.updateBooking.length === 2 && calls.updateBooking.every((u) => u.patch.status === "completed"),
-      "complete: marks each due booking completed",
+      calls.completeBookingIfDue.length === 2 &&
+        calls.completeBookingIfDue.includes("p1") &&
+        calls.completeBookingIfDue.includes("p2"),
+      "complete: conditionally transitions each due booking",
     );
     assert(
       calls.webhooks.length === 2 && calls.webhooks.every((w) => w.event === "booking.completed"),
@@ -418,6 +427,19 @@ async function run() {
 
     const { deps: dEmpty } = makeDeps({ pastDue: [] });
     assert((await completePastBookings(dEmpty)) === 0, "complete: zero when nothing is due");
+
+    // #163: an overlapping cron tick already flipped p1 to completed, so the
+    // conditional transition no-ops there and booking.completed must NOT re-fire.
+    const { deps: dRace, calls: cRace } = makeDeps({
+      pastDue: due,
+      alreadyCompleted: new Set(["p1"]),
+    });
+    const raced = await completePastBookings(dRace);
+    assert(raced === 1, "complete: counts only rows this tick actually transitioned");
+    assert(
+      cRace.webhooks.length === 1 && cRace.webhooks[0].event === "booking.completed",
+      "complete: no duplicate booking.completed for an already-completed row",
+    );
   }
 
   // --- reassign: force a booking onto an owning agent (double-book allowed) ---

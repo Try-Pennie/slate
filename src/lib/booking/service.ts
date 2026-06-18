@@ -151,6 +151,19 @@ function realDeps(): BookingDeps {
       await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
     },
 
+    completeBookingIfDue: async (bookingId) => {
+      // Gate the flip on the row still being completable so an overlapping
+      // complete-cron tick that already transitioned it affects 0 rows here
+      // (#163). `.select` returns only rows this UPDATE actually changed.
+      const { data } = await supabaseAdmin()
+        .from("bookings")
+        .update({ status: "completed" })
+        .eq("id", bookingId)
+        .in("status", ["confirmed", "rescheduled"])
+        .select("id");
+      return (data?.length ?? 0) > 0;
+    },
+
     claimReschedule: async (bookingId, targetStartIso) => {
       const db = supabaseAdmin();
       // Best-effort reclaim of a lock orphaned by a torn-down Worker.
