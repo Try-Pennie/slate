@@ -4,11 +4,11 @@ let failures = 0;
 const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
 
 const k = slotCacheKey("411", "2026-06-18T16:42:07.123Z", 14);
-assert(k.key === "slots:v1:411:2026-06-18T16:00:00.000Z:14", "key rounds from down to the UTC hour");
-assert(k.fromIso === "2026-06-18T16:00:00.000Z", "fromIso is the rounded hour");
-assert(k.toIso === "2026-07-02T16:00:00.000Z", "toIso is rounded-from + 14d");
-// two timestamps in the same hour -> same key
-assert(slotCacheKey("411", "2026-06-18T16:05:00.000Z", 14).key === k.key, "same hour shares a key");
+assert(k.key === "slots:v2:411:2026-06-18T00:00:00.000Z:14", "key anchors from to the start of the UTC day");
+assert(k.fromIso === "2026-06-18T00:00:00.000Z", "fromIso is the day anchor");
+assert(k.toIso === "2026-07-02T00:00:00.000Z", "toIso is day-anchor + 14d");
+// any two timestamps on the same UTC day -> same key (one key per bucket per day)
+assert(slotCacheKey("411", "2026-06-18T23:59:00.000Z", 14).key === k.key, "same UTC day shares a key");
 
 const slots = ["2026-06-18T16:30:00.000Z", "2026-06-18T17:00:00.000Z", "2026-06-18T18:00:00.000Z"];
 const now = Date.parse("2026-06-18T16:50:00.000Z");

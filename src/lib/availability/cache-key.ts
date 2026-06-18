@@ -1,14 +1,15 @@
-/** Cache key + the normalized window to compute, so all requests within one
- *  UTC hour share a cache entry. Bump the `v1` prefix to invalidate all keys
- *  after a compute-logic change. */
+/** Cache key + the normalized window to compute. Anchoring `from` to the start
+ *  of the UTC day gives ONE key per bucket per day, so the Cache API (which has
+ *  no prefix-list) can invalidate a bucket with a single exact delete. Bump the
+ *  `v2` prefix after a compute-logic change. */
 export function slotCacheKey(
   bucketCode: string,
   fromIso: string,
   horizonDays: number,
 ): { key: string; fromIso: string; toIso: string } {
   const d = new Date(fromIso);
-  d.setUTCMinutes(0, 0, 0);
-  const roundedFrom = d.toISOString();
+  d.setUTCHours(0, 0, 0, 0);
+  const anchorFrom = d.toISOString();
   const toIso = new Date(d.getTime() + horizonDays * 86_400_000).toISOString();
-  return { key: `slots:v1:${bucketCode}:${roundedFrom}:${horizonDays}`, fromIso: roundedFrom, toIso };
+  return { key: `slots:v2:${bucketCode}:${anchorFrom}:${horizonDays}`, fromIso: anchorFrom, toIso };
 }
