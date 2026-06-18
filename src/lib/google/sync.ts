@@ -22,6 +22,7 @@ import {
   CALENDAR_CLAIM_TTL_MS,
   MAX_SYNC_PASSES,
 } from "@/lib/google/sync-coalesce";
+import type { SyncAgent } from "@/lib/google/sync-pace";
 import { googlePushUrl } from "@/lib/env";
 import type { AgentCalendar } from "@/lib/db/types";
 
@@ -44,6 +45,46 @@ async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
     .select("*")
     .eq("user_id", userId);
   return (data ?? []) as AgentCalendar[];
+}
+
+/**
+ * Every bookable agent's pacing facts for one cron tick — DB only, no Google
+ * calls. `hasCalendars` distinguishes brand-new agents (need first-time watch
+ * setup) from already-onboarded ones; `lastSyncedMs` drives rotation. Two
+ * reads: the bookable users, then which of them have any agent_calendars row.
+ */
+export async function loadSyncAgents(): Promise<SyncAgent[]> {
+  const db = supabaseAdmin();
+  const { data: users } = await db
+    .from("users")
+    .select("id, last_synced_at")
+    .eq("bookable", true);
+  const rows = (users ?? []) as { id: string; last_synced_at: string | null }[];
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => r.id);
+  const { data: cals } = await db
+    .from("agent_calendars")
+    .select("user_id")
+    .in("user_id", ids);
+  const withCalendars = new Set(
+    ((cals ?? []) as { user_id: string }[]).map((c) => c.user_id),
+  );
+
+  return rows.map((r) => ({
+    userId: r.id,
+    hasCalendars: withCalendars.has(r.id),
+    lastSyncedMs: r.last_synced_at ? Date.parse(r.last_synced_at) : null,
+  }));
+}
+
+/** Stamp users.last_synced_at = now for rotation. Best-effort; never throws. */
+export async function markAgentSynced(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin()
+    .from("users")
+    .update({ last_synced_at: new Date().toISOString() })
+    .eq("id", userId);
+  if (error) console.error(`markAgentSynced(${userId}) failed: ${error.message}`);
 }
 
 // Cap rows per DB call so even a huge calendar's bootstrap stays well under the
