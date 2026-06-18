@@ -1,39 +1,68 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "slate",
-  "main": "worker/index.ts",
-  // Cron triggers drive worker/index.ts scheduled(); keep in lockstep with
-  // worker/cron-routes.ts (scripts/test-cron-routes.ts enforces it).
-  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "0 6 * * *", "0 13 * * 1-5", "0 14 * * 1-5", "0 11 * * *", "0 12 * * *"] },
-  "account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
-  "routes": [
-    { "pattern": "slate.trypennie.dev", "custom_domain": true },
-    { "pattern": "slate.trypennie.app", "custom_domain": true }
-  ],
-  "workers_dev": true,
-  "compatibility_date": "2025-08-01",
-  // nodejs_compat is required for OpenNext + googleapis/node:crypto.
-  "compatibility_flags": ["nodejs_compat"],
-  // Non-secret runtime config lives here so deploys can't wipe it (Wrangler
-  // treats the config as the source of truth for plain vars; dashboard-only
-  // vars get overwritten on deploy). Only CALCOM_API_KEY is sensitive enough to
-  // stay a secret; the org id + base url are not secret, so they live here too.
-  "vars": {
-    "OOO_CALCOM_DUAL_WRITE": "true",
-    "AGENT_SCHEDULING_LIVE": "false",
-    "CALCOM_BASE_URL": "https://api.cal.com/v2",
-    "CALCOM_ORG_ID": "19474",
-    // Daily 7am ET OOO-approvals email (port of the Pipedream flow). Empty TO
-    // = the digest no-ops. Sent from ooo@trypennie.com; replies go to systems.
-    "OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
-    "OOO_APPROVALS_BCC": "dwright@trypennie.com",
-    "OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com"
-  },
-  "assets": {
-    "binding": "ASSETS",
-    "directory": ".open-next/assets"
-  },
-  // Run the Worker near the data (Supabase us-west) since this app is DB-bound.
-  "placement": { "mode": "smart" },
-  "observability": { "enabled": true }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "slate",
+	"main": "worker/index.ts",
+	// Cron triggers drive worker/index.ts scheduled(); keep in lockstep with
+	// worker/cron-routes.ts (scripts/test-cron-routes.ts enforces it).
+	"triggers": {
+		"crons": [
+			"* * * * *",
+			"*/5 * * * *",
+			"0 6 * * *",
+			"0 13 * * 1-5",
+			"0 14 * * 1-5",
+			"0 11 * * *",
+			"0 12 * * *"
+		]
+	},
+	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+	"routes": [
+		{
+			"pattern": "slate.trypennie.dev",
+			"custom_domain": true
+		},
+		{
+			"pattern": "slate.trypennie.app",
+			"custom_domain": true
+		}
+	],
+	"workers_dev": true,
+	"compatibility_date": "2025-08-01",
+	// nodejs_compat is required for OpenNext + googleapis/node:crypto.
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// Non-secret runtime config lives here so deploys can't wipe it (Wrangler
+	// treats the config as the source of truth for plain vars; dashboard-only
+	// vars get overwritten on deploy). Only CALCOM_API_KEY is sensitive enough to
+	// stay a secret; the org id + base url are not secret, so they live here too.
+	"vars": {
+		"OOO_CALCOM_DUAL_WRITE": "true",
+		"AGENT_SCHEDULING_LIVE": "false",
+		"CALCOM_BASE_URL": "https://api.cal.com/v2",
+		"CALCOM_ORG_ID": "19474",
+		// Daily 7am ET OOO-approvals email (port of the Pipedream flow). Empty TO
+		// = the digest no-ops. Sent from ooo@trypennie.com; replies go to systems.
+		"OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
+		"OOO_APPROVALS_BCC": "dwright@trypennie.com",
+		"OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com"
+	},
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".open-next/assets"
+	},
+	// Run the Worker near the data (Supabase us-west) since this app is DB-bound.
+	"placement": {
+		"mode": "smart"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"kv_namespaces": [
+		{
+			"binding": "SLOT_CACHE",
+			"id": "86a9c4c03cf24e23883976d1000347c9",
+			"remote": true
+		}
+	]
 }
