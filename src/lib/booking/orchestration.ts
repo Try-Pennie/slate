@@ -130,12 +130,13 @@ export interface BookingDeps {
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   /**
-   * Conditionally flips a finished booking to `completed`, returning whether
-   * THIS call performed the transition. The update is gated on the row still
-   * being in a completable status, so an overlapping cron tick that already
-   * completed it gets `false` and won't re-fire booking.completed (#163).
+   * Batch-flips finished bookings to `completed`, returning the ids THIS call
+   * actually transitioned. The update is gated on each row still being in a
+   * completable status, so an overlapping cron tick that already completed some
+   * of them won't re-fire their booking.completed (#163). One statement for the
+   * whole batch instead of a round-trip per booking (#164).
    */
-  completeBookingIfDue(bookingId: string): Promise<boolean>;
+  completeBookingsIfDue(bookingIds: string[]): Promise<string[]>;
   /**
    * Reschedule idempotency lock. Claims (bookingId, target instant); returns
    * false when a concurrent reschedule to the same target already holds it, so
@@ -232,6 +233,32 @@ async function fire(
 function manageUrl(deps: BookingDeps, token: string): string {
   return `${deps.appBaseUrl()}/booking/manage/${token}`;
 }
+
+/**
+ * Runs `task` over `items` with at most `limit` in flight at once. Keeps the
+ * completion sweep's webhook fan-out from opening one connection per booking
+ * (Cloudflare caps simultaneous subrequests), while still beating a fully
+ * serial loop. Preserves input order in the returned results.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await task(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/** Max simultaneous booking.completed deliveries (Cloudflare subrequest cap). */
+const COMPLETION_WEBHOOK_CONCURRENCY = 6;
 
 export async function createBooking(
   input: CreateBookingInput,
@@ -589,25 +616,33 @@ export async function cancelBooking(
 /** Cron sweep: mark finished bookings complete and emit booking.completed. */
 export async function completePastBookings(deps: BookingDeps): Promise<number> {
   const due = await deps.loadPastBookingsToComplete();
+  if (due.length === 0) return 0;
 
-  let count = 0;
-  for (const { booking, bucket, eventType } of due) {
-    // Conditional transition (#163): only fire booking.completed when THIS call
-    // actually flipped the row. An overlapping cron tick that already completed
-    // it gets `false` here and skips the webhook, so we don't deliver a second
-    // booking.completed the receiver can't dedupe.
-    const transitioned = await deps.completeBookingIfDue(booking.id);
-    if (!transitioned) continue;
-    await fire(
-      deps,
-      "booking.completed",
-      { ...booking, status: "completed" },
-      bucket,
-      eventType,
-    );
-    count++;
-  }
-  return count;
+  // One batched UPDATE for the whole sweep instead of a round-trip per booking
+  // (#164). The returned ids are the rows THIS call actually flipped, so an
+  // overlapping cron tick that already completed some of them won't re-fire
+  // their booking.completed — the receiver can't dedupe a second delivery (#163).
+  const transitioned = new Set(
+    await deps.completeBookingsIfDue(due.map((d) => d.booking.id)),
+  );
+  const toFire = due.filter((d) => transitioned.has(d.booking.id));
+
+  // Fan booking.completed out with bounded concurrency rather than a serial
+  // await per booking — faster under a backlog, but capped so we don't blow
+  // the Worker's simultaneous-connection ceiling.
+  await mapWithConcurrency(
+    toFire,
+    COMPLETION_WEBHOOK_CONCURRENCY,
+    ({ booking, bucket, eventType }) =>
+      fire(
+        deps,
+        "booking.completed",
+        { ...booking, status: "completed" },
+        bucket,
+        eventType,
+      ),
+  );
+  return toFire.length;
 }
 
 export async function getBookingByToken(

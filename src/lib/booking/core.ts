@@ -1,4 +1,4 @@
-import type { BusySource } from "@/lib/db/types";
+import type { Booking, Bucket, BusySource, EventType } from "@/lib/db/types";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -102,4 +102,28 @@ export function eventDescription(
   if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
   lines.push(`Reschedule or cancel: ${manageUrl}`);
   return lines.join("\n");
+}
+
+/**
+ * Pairs each booking with its bucket + event type from already-fetched sets,
+ * so the completion sweep can resolve them with two `.in()` queries instead of
+ * a round-trip per booking (#164). A booking whose bucket or event type isn't
+ * in the fetched set is dropped (FK integrity makes this unreachable in prod;
+ * dropping is the safe choice if it ever happens).
+ */
+export function joinBookingContexts(
+  bookings: Booking[],
+  buckets: Bucket[],
+  eventTypes: EventType[],
+): { booking: Booking; bucket: Bucket; eventType: EventType }[] {
+  const bucketById = new Map(buckets.map((b) => [b.id, b]));
+  const eventTypeById = new Map(eventTypes.map((e) => [e.id, e]));
+
+  const out: { booking: Booking; bucket: Bucket; eventType: EventType }[] = [];
+  for (const booking of bookings) {
+    const bucket = bucketById.get(booking.bucket_id);
+    const eventType = eventTypeById.get(booking.event_type_id);
+    if (bucket && eventType) out.push({ booking, bucket, eventType });
+  }
+  return out;
 }
