@@ -1,0 +1,45 @@
+// Timezone picker options for the booker (#172). Pure + framework-free so the
+// node-native test can import it. The booked instant is always a correct UTC
+// value; this list only drives which local label the lead sees.
+
+export interface TimezoneOption {
+  /** IANA id, e.g. "America/New_York". */
+  id: string;
+  /** Human label shown in the <select>. */
+  label: string;
+}
+
+// Curated common business zones, US-first (Pennie's leads are US debt
+// customers), plus a few international ones a traveling lead might want.
+export const CURATED_ZONES: readonly TimezoneOption[] = [
+  { id: "America/New_York", label: "Eastern time (New York)" },
+  { id: "America/Chicago", label: "Central time (Chicago)" },
+  { id: "America/Denver", label: "Mountain time (Denver)" },
+  { id: "America/Phoenix", label: "Arizona (Phoenix)" },
+  { id: "America/Los_Angeles", label: "Pacific time (Los Angeles)" },
+  { id: "America/Anchorage", label: "Alaska (Anchorage)" },
+  { id: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
+  { id: "Europe/London", label: "London" },
+  { id: "Europe/Paris", label: "Central Europe (Paris)" },
+  { id: "UTC", label: "UTC" },
+];
+
+const FALLBACK_ZONE = "America/New_York";
+
+/** "Australia/Sydney" -> "Sydney"; "UTC" -> "UTC". */
+export function humanizeZone(id: string): string {
+  const segment = id.split("/").pop() ?? id;
+  return segment.replace(/_/g, " ");
+}
+
+/**
+ * The picker's options, guaranteed to contain `detected` so the <select value>
+ * never renders blank. A detected zone outside the curated list (a traveling or
+ * misconfigured lead, the #172 use case) is prepended with a humanized label so
+ * they can still see and keep their own zone.
+ */
+export function timezoneOptions(detected: string | undefined): TimezoneOption[] {
+  const zone = detected && detected.length > 0 ? detected : FALLBACK_ZONE;
+  if (CURATED_ZONES.some((z) => z.id === zone)) return [...CURATED_ZONES];
+  return [{ id: zone, label: humanizeZone(zone) }, ...CURATED_ZONES];
+}

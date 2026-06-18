@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { timezoneOptions } from "@/lib/booking/timezones";
+
 interface ManageBookingProps {
   token: string;
   bucketCode: string;
@@ -63,7 +65,9 @@ export default function ManageBooking({
   eventName,
   theme = "light",
 }: ManageBookingProps) {
-  const timeZone = useMemo(() => tz(), []);
+  const detectedZone = useMemo(() => tz(), []);
+  const [timeZone, setTimeZone] = useState(detectedZone);
+  const zoneOptions = useMemo(() => timezoneOptions(detectedZone), [detectedZone]);
   const [start, setStart] = useState(startsAt);
   const [status, setStatus] = useState(initialStatus);
   const [rescheduling, setRescheduling] = useState(false);
@@ -131,11 +135,30 @@ export default function ManageBooking({
             <span className="text-[var(--error)]">This booking is cancelled.</span>
           ) : (
             <>
-              <span className="tabular-nums text-fg">{fmt(start, timeZone)}</span>{" "}
-              <span className="text-fg-muted">({timeZone})</span>
+              <span className="tabular-nums text-fg">{fmt(start, timeZone)}</span>
             </>
           )}
         </p>
+
+        {status !== "cancelled" && (
+          <div className="mt-2">
+            <label htmlFor="manage-tz" className="sr-only">
+              Timezone
+            </label>
+            <select
+              id="manage-tz"
+              value={timeZone}
+              onChange={(e) => setTimeZone(e.target.value)}
+              className="-ml-1 min-h-11 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 text-sm text-fg-muted hover:border-border"
+            >
+              {zoneOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {!done && !confirmingCancel && (
           <div className="mt-6 flex flex-wrap gap-3">
