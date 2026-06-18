@@ -7,6 +7,7 @@ import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { labelColorFor } from "@/lib/brand-label";
+import { timezoneOptions } from "@/lib/booking/timezones";
 
 interface Attendee {
   name: string;
@@ -144,7 +145,11 @@ export default function Booker({
   theme = "light",
   brandColor,
 }: BookerProps) {
-  const zone = useMemo(() => localZone(), []);
+  // Options derive from the *detected* zone (fixed) so a traveling lead's own
+  // zone stays in the list even after they switch the selection to a curated one.
+  const detectedZone = useMemo(() => localZone(), []);
+  const [zone, setZone] = useState(detectedZone);
+  const zoneOptions = useMemo(() => timezoneOptions(detectedZone), [detectedZone]);
   const today = useMemo(() => DateTime.now().setZone(zone).startOf("day"), [zone]);
   const c = PALETTE[theme];
   // Brand accent overrides (inline, since the hex is dynamic). Undefined = keep
@@ -377,7 +382,10 @@ export default function Booker({
     );
   }
 
-  const selectedDate = activeDay ? DateTime.fromISO(activeDay).setZone(zone) : null;
+  // `activeDay` is a bare date keyed in `zone` (see slotsByDay), so parse it back
+  // in that zone — `.setZone` on a machine-zone midnight would slide the label a
+  // day when the picked zone differs from the device's.
+  const selectedDate = activeDay ? DateTime.fromISO(activeDay, { zone }) : null;
 
   // Rose error notice; rendered in whichever right-column branch is active
   // (the 409 race resets selectedSlot, so the message must show on the slot list too).
@@ -556,13 +564,26 @@ export default function Booker({
                   ))}
                 </div>
               </div>
-              <p className={`mb-3 flex items-center gap-1.5 text-xs ${c.faint}`}>
-                <GlobeIcon />
-                <span>
-                  <span className="sr-only">Timezone: </span>
-                  {zone.replace(/_/g, " ")}
+              <div className="mb-3 flex items-center gap-1.5 text-xs">
+                <span className={c.faint}>
+                  <GlobeIcon />
                 </span>
-              </p>
+                <label htmlFor="booker-tz" className="sr-only">
+                  Timezone
+                </label>
+                <select
+                  id="booker-tz"
+                  value={zone}
+                  onChange={(e) => setZone(e.target.value)}
+                  className={`-ml-1 min-h-11 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 text-xs hover:border-border ${c.body}`}
+                >
+                  {zoneOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
               {errorAlert && <div className="mb-3">{errorAlert}</div>}
               <div className="-mx-2 -my-1 flex-1 space-y-2 overflow-y-auto px-2 py-1">
                 {loading ? (
