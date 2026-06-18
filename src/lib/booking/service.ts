@@ -35,6 +35,7 @@ async function calendarIdsForEmail(email: string): Promise<string[]> {
     .eq("user_id", (user as { id: string }).id);
   return (data ?? []).map((r) => (r as { calendar_id: string }).calendar_id);
 }
+import { invalidateBucketSlots } from "@/lib/availability/slot-cache";
 import { joinBookingContexts } from "@/lib/booking/core";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
@@ -68,6 +69,7 @@ function realDeps(): BookingDeps {
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
+    invalidateSlots: (bucketCode) => invalidateBucketSlots(bucketCode),
 
     getUser: async (userId) => {
       const { data } = await supabaseAdmin()

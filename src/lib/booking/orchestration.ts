@@ -153,6 +153,8 @@ export interface BookingDeps {
   emitWebhook(orgId: string, event: WebhookEvent, payload: BookingEventPayload): Promise<void>;
   newManageToken(): string;
   appBaseUrl(): string;
+  /** Best-effort clear of a bucket's cached availability after a booking changes it. */
+  invalidateSlots(bucketCode: string): Promise<void>;
 }
 
 /**
@@ -372,6 +374,7 @@ export async function createBooking(
 
   // Write-through: the cache reflects this booking immediately.
   await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
+  await deps.invalidateSlots(bucket.code);
 
   await fire(deps, "booking.created", booking, bucket, eventType);
 
@@ -480,6 +483,7 @@ async function applyReschedule(
   // Move the write-through busy block.
   await deps.deleteBusyBlocksForBooking(booking.id);
   await deps.insertBusyBlock(busyBlockFor(assigned, startIso, endIso, booking.id));
+  await deps.invalidateSlots(bucket.code);
 
   const updated = {
     ...booking,
@@ -602,6 +606,7 @@ export async function cancelBooking(
   }
 
   await deps.deleteBusyBlocksForBooking(booking.id);
+  await deps.invalidateSlots(bucket.code);
   await deps.updateBooking(booking.id, { status: "cancelled" });
 
   await fire(
