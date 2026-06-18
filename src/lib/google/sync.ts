@@ -80,11 +80,17 @@ export async function loadSyncAgents(): Promise<SyncAgent[]> {
 
 /** Stamp users.last_synced_at = now for rotation. Best-effort; never throws. */
 export async function markAgentSynced(userId: string): Promise<void> {
-  const { error } = await supabaseAdmin()
-    .from("users")
-    .update({ last_synced_at: new Date().toISOString() })
-    .eq("id", userId);
-  if (error) console.error(`markAgentSynced(${userId}) failed: ${error.message}`);
+  try {
+    const { error } = await supabaseAdmin()
+      .from("users")
+      .update({ last_synced_at: new Date().toISOString() })
+      .eq("id", userId);
+    if (error) console.error(`markAgentSynced(${userId}) failed: ${error.message}`);
+  } catch (err) {
+    console.error(
+      `markAgentSynced(${userId}) threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 // Cap rows per DB call so even a huge calendar's bootstrap stays well under the

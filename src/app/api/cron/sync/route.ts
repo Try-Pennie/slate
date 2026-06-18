@@ -117,7 +117,11 @@ export async function GET(req: NextRequest) {
       if (!agent.hasCalendars && !shouldOnboard(agent, onboarded)) continue;
 
       const watch = await ensureWatches(agent.userId);
-      if (!agent.hasCalendars && watch.status === "renewed") onboarded++;
+      // Count any brand-new agent whose watch setup ran the Google path (renewed
+      // OR error) against the per-tick cap — "skipped" makes no Google calls, so
+      // it doesn't consume the budget. This bounds Google-call volume even when
+      // onboarding is failing under a Google outage, not just successful setups.
+      if (!agent.hasCalendars && watch.status !== "skipped") onboarded++;
       const row: (typeof results)[number] = {
         userId: agent.userId,
         watch: watch.status,
