@@ -19,25 +19,29 @@ import type { Attributes, Bucket, EventType } from "@/lib/db/types";
 export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
   const db = supabaseAdmin();
 
-  const { data: members } = await db
-    .from("bucket_members")
-    .select("user_id")
-    .eq("bucket_id", bucket.id)
-    .eq("active", true);
+  // The manual-members and org-agents reads are independent, so fire them
+  // together: one round-trip instead of two on the availability hot path.
+  const [membersRes, agentsRes] = await Promise.all([
+    db
+      .from("bucket_members")
+      .select("user_id")
+      .eq("bucket_id", bucket.id)
+      .eq("active", true),
+    // One pass over org agents: include a bookable agent if they're a manual
+    // member OR match the criteria. Non-bookable agents never enter the pool.
+    db
+      .from("users")
+      .select("id, attributes, bookable")
+      .eq("org_id", bucket.org_id)
+      .eq("bookable", true),
+  ]);
   const manual = new Set(
-    (members ?? []).map((m) => (m as { user_id: string }).user_id),
+    (membersRes.data ?? []).map((m) => (m as { user_id: string }).user_id),
   );
 
   const criteria = bucket.criteria ?? {};
   const hasCriteria = Object.keys(criteria).length > 0;
-
-  // One pass over org agents: include a bookable agent if they're a manual
-  // member OR match the criteria. Non-bookable agents never enter the pool.
-  const { data: agents } = await db
-    .from("users")
-    .select("id, attributes, bookable")
-    .eq("org_id", bucket.org_id)
-    .eq("bookable", true);
+  const agents = agentsRes.data;
 
   return (agents ?? [])
     .filter((a) => {
@@ -173,13 +177,17 @@ export async function getBucketSlots(
   if (!resolved) return null;
   const { bucket, eventType } = resolved;
 
-  const { data: org } = await supabaseAdmin()
-    .from("organizations")
-    .select("name")
-    .eq("id", bucket.org_id)
-    .maybeSingle();
-
-  const members = await loadMembersAvailability(bucket, from, to);
+  // The org-name read doesn't depend on member availability, so overlap them
+  // instead of running the org lookup as its own sequential hop.
+  const [orgRes, members] = await Promise.all([
+    supabaseAdmin()
+      .from("organizations")
+      .select("name")
+      .eq("id", bucket.org_id)
+      .maybeSingle(),
+    loadMembersAvailability(bucket, from, to),
+  ]);
+  const org = orgRes.data;
   const slots = computeBucketSlots({
     members,
     durationMin: eventType.duration_min,
