@@ -98,6 +98,7 @@ function makeDeps(opts: FakeOpts) {
     webhooks: [] as { event: string }[],
     claimReschedule: 0,
     releaseReschedule: 0,
+    invalidateSlots: [] as string[],
   };
   let seq = 0;
   let insertAttempted = false;
@@ -162,6 +163,9 @@ function makeDeps(opts: FakeOpts) {
     },
     newManageToken: () => "tok-fixed",
     appBaseUrl: () => "https://slate.test",
+    invalidateSlots: async (bucketCode) => {
+      calls.invalidateSlots.push(bucketCode);
+    },
   };
   return { deps, calls };
 }
@@ -190,6 +194,10 @@ async function run() {
     );
     assert(calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created", "create: fires booking.created");
     assert(calls.deleteEvent.length === 0, "create: no rollback on success");
+    assert(
+      calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
+      "create: invalidates cached slots for the booked bucket exactly once",
+    );
   }
 
   // --- createBooking: rollback on persist failure ---
@@ -213,6 +221,7 @@ async function run() {
     );
     assert(calls.insertBusyBlock.length === 0, "create-fail: no busy block written");
     assert(calls.webhooks.length === 0, "create-fail: no webhook fired");
+    assert(calls.invalidateSlots.length === 0, "create-fail: no invalidation when booking throws before write-through");
   }
 
   // --- createBooking: unique-slot conflict (verify-on-book race loser) ---
