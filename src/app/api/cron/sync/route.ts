@@ -1,7 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
-import { ensureWatches, runIncrementalSync } from "@/lib/google/sync";
+import {
+  ensureWatches,
+  runIncrementalSync,
+  loadSyncAgents,
+  markAgentSynced,
+} from "@/lib/google/sync";
+import {
+  withinBudget,
+  orderAgentsForTick,
+  shouldOnboard,
+} from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -81,15 +91,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Sync calendars for bookable agents (calendar access is via delegation).
-    const { data } = await supabaseAdmin()
-      .from("users")
-      .select("id")
-      .eq("bookable", true);
-
-    const userIds = (data ?? []).map((r) => (r as { id: string }).id);
-    // One budget for the whole tick (#44): work past it resumes next minute
-    // via the per-calendar sync tokens instead of breaching Worker limits.
+    // Bookable agents with their pacing facts (DB only, no Google calls).
+    const agents = orderAgentsForTick(await loadSyncAgents());
+    // One budget for the whole tick (#44/#238): we BREAK at the deadline so
+    // watch setup can't run for every remaining agent after the budget is
+    // spent. Unreached agents are picked up next tick (rotation makes them
+    // sort first). Real-time freshness meanwhile comes from Google push.
     const deadlineMs = Date.now() + SYNC_TICK_BUDGET_MS;
     const results: {
       userId: string;
@@ -99,29 +106,47 @@ export async function GET(req: NextRequest) {
       truncated?: boolean;
       error?: string;
     }[] = [];
-    for (const userId of userIds) {
-      const watch = await ensureWatches(userId);
+    let onboarded = 0;
+    for (const agent of agents) {
+      if (!withinBudget(Date.now(), deadlineMs)) break;
+      // A brand-new agent needs ~2 Google calls to set up watches; cap how many
+      // we onboard per tick so a fresh roster drains over several minutes
+      // instead of blowing the budget in one ~100s run. Already-onboarded
+      // agents are always processed (their ensureWatches is a cheap DB read
+      // unless a renewal is genuinely due).
+      if (!agent.hasCalendars && !shouldOnboard(agent, onboarded)) continue;
+
+      const watch = await ensureWatches(agent.userId);
+      if (!agent.hasCalendars && watch.status === "renewed") onboarded++;
       const row: (typeof results)[number] = {
-        userId,
+        userId: agent.userId,
         watch: watch.status,
         ...(watch.status === "error" ? { watchError: watch.error } : {}),
       };
       try {
-        const sync = await runIncrementalSync(userId, deadlineMs);
+        const sync = await runIncrementalSync(agent.userId, deadlineMs);
         row.synced = sync.events;
         if (sync.truncated) row.truncated = true;
       } catch (err) {
         row.error = err instanceof Error ? err.message : String(err);
       }
+      await markAgentSynced(agent.userId);
       results.push(row);
     }
 
     const watchErrors = results.filter((r) => r.watch === "error").length;
-    await alertWatchLapse(watchErrors, userIds.length);
-    await alertSyncFailures(results.filter((r) => r.error), userIds.length);
+    await alertWatchLapse(watchErrors, results.length);
+    await alertSyncFailures(results.filter((r) => r.error), results.length);
 
     const truncated = results.some((r) => r.truncated);
-    return NextResponse.json({ agents: userIds.length, watchErrors, truncated, results });
+    return NextResponse.json({
+      agents: agents.length,
+      processed: results.length,
+      onboarded,
+      watchErrors,
+      truncated,
+      results,
+    });
   } finally {
     await releaseLock("cron_sync", lock);
   }
