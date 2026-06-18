@@ -18,6 +18,7 @@ import type {
   OooRequest,
   Organization,
   RateLimit,
+  RescheduleLock,
   SyncLock,
   User,
   WebhookDelivery,
@@ -55,6 +56,7 @@ export interface Database {
       audit_log: Table<AuditEntry>;
       sync_locks: Table<SyncLock>;
       rate_limits: Table<RateLimit>;
+      reschedule_locks: Table<RescheduleLock>;
     };
     Views: Record<string, never>;
     Functions: {

@@ -179,6 +179,17 @@ export interface SyncLock {
   claimed_at: string;
 }
 
+/**
+ * Short-lived idempotency lock for token reschedules (one row per in-flight
+ * booking + target instant). The winner of a double-submit holds it for the
+ * operation; the loser no-ops. Reclaimed once `claimed_at` ages out.
+ */
+export interface RescheduleLock {
+  booking_id: string;
+  target_starts_at: string;
+  claimed_at: string;
+}
+
 /** Fixed-window rate-limit counter (#31); one row per key, reset in place. */
 export interface RateLimit {
   key: string;

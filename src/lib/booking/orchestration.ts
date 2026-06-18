@@ -129,6 +129,14 @@ export interface BookingDeps {
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
+  /**
+   * Reschedule idempotency lock. Claims (bookingId, target instant); returns
+   * false when a concurrent reschedule to the same target already holds it, so
+   * the loser of a double-submit no-ops. Stale locks (from a torn-down Worker)
+   * are reclaimable. Released via `releaseReschedule` when the operation ends.
+   */
+  claimReschedule(bookingId: string, targetStartIso: string): Promise<boolean>;
+  releaseReschedule(bookingId: string, targetStartIso: string): Promise<void>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
   loadBookingById(bookingId: string): Promise<BookingContext | null>;
   getAgentByEmail(email: string): Promise<User | null>;
@@ -343,7 +351,7 @@ export async function rescheduleBooking(
 ): Promise<BookingResult> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
-  const { booking, bucket, eventType } = ctx;
+  const { booking, eventType } = ctx;
   if (booking.status === "cancelled" || booking.status === "completed") {
     throw new Error("This booking can no longer be changed");
   }
@@ -353,6 +361,35 @@ export async function rescheduleBooking(
     eventType.duration_min,
   );
 
+  // Idempotency guard 1 — sequential duplicate / no-op reschedule: if the
+  // booking already sits at the requested instant (e.g. a double-click whose
+  // first call already landed), there's nothing to move.
+  if (Date.parse(booking.starts_at) === Date.parse(startIso)) {
+    return { booking, manageUrl: manageUrl(deps, token) };
+  }
+
+  // Idempotency guard 2 — concurrent duplicate: claim a short-lived lock on
+  // (booking, target). The loser of a simultaneous double-submit returns
+  // without redoing the Google move or re-emitting booking.rescheduled.
+  if (!(await deps.claimReschedule(booking.id, startIso))) {
+    return { booking, manageUrl: manageUrl(deps, token) };
+  }
+
+  try {
+    return await applyReschedule(deps, token, ctx, startIso, endIso);
+  } finally {
+    await deps.releaseReschedule(booking.id, startIso);
+  }
+}
+
+async function applyReschedule(
+  deps: BookingDeps,
+  token: string,
+  ctx: BookingContext,
+  startIso: string,
+  endIso: string,
+): Promise<BookingResult> {
+  const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
 
   // Prefer keeping the same agent if they're free at the new time.
