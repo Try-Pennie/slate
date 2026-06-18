@@ -1,8 +1,26 @@
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
-export { clientIp, AVAILABILITY_RATE_RULES, BOOKING_RATE_RULES } from "@/lib/rate-limit-core";
+export { clientIp, BOOKING_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
+
+/**
+ * Availability throttle (#56) via the AVAIL_RATE_LIMITER Workers binding —
+ * enforced in-datacenter with no DB round-trip, so the cached slot hot path
+ * stays fast. Per-datacenter + intentionally permissive (Cloudflare's design).
+ * Fails OPEN: a limiter hiccup must never block a legitimate Booker load.
+ */
+export async function availabilityWithinLimit(ip: string): Promise<boolean> {
+  try {
+    const limiter = getCloudflareContext().env.AVAIL_RATE_LIMITER;
+    if (!limiter) return true;
+    const { success } = await limiter.limit({ key: ip });
+    return success;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Per-IP rate limiting for public endpoints (#31), backed by the

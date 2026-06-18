@@ -17,15 +17,11 @@ export const BOOKING_RATE_RULES: RateLimitRule[] = [
   { prefix: "book:h", windowSeconds: 3600, max: 10 },
 ];
 
-/**
- * Availability endpoint policy (#56): looser than bookings - the Booker
- * legitimately refetches on every month navigation - but it still caps the
- * compute a single IP can demand (member loads + slot computation per call).
- */
-export const AVAILABILITY_RATE_RULES: RateLimitRule[] = [
-  { prefix: "avail:m", windowSeconds: 60, max: 30 },
-  { prefix: "avail:h", windowSeconds: 3600, max: 400 },
-];
+// Availability (#56) no longer uses a DB rule: it's throttled at the edge by
+// the AVAIL_RATE_LIMITER Workers binding (wrangler.jsonc, 30/min per datacenter)
+// so the slot-cache hot path never makes a DB round-trip just to rate-limit. The
+// old hourly cap was dropped (low-and-slow scraping of public, cached slot data
+// is cheap); the per-minute edge limit is the protection.
 
 /**
  * The client IP for rate-limit keying. Cloudflare sets cf-connecting-ip on

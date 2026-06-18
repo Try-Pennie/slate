@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getCachedBucketSlots } from "@/lib/availability/slot-cache";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
-import { allowRequest, clientIp, AVAILABILITY_RATE_RULES } from "@/lib/rate-limit";
+import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +12,9 @@ const DEFAULT_RANGE_DAYS = 14;
  * Reads precomputed slots from the cache — no live Google calls.
  */
 export async function GET(req: NextRequest) {
-  // Throttle before any DB work (#56); fails open like the bookings limiter.
-  if (!(await allowRequest(clientIp(req.headers), AVAILABILITY_RATE_RULES))) {
+  // Edge-throttle (#56) — in-datacenter, no DB round-trip, so the cached hot
+  // path stays fast. Fails open.
+  if (!(await availabilityWithinLimit(clientIp(req.headers)))) {
     return NextResponse.json(
       { error: "Too many requests. Please try again in a moment." },
       { status: 429 },
