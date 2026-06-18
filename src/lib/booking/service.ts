@@ -16,6 +16,9 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { Booking, Bucket, EventType, User } from "@/lib/db/types";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+// A reschedule finishes in seconds; this TTL only governs reclaiming a lock
+// orphaned by a torn-down Worker, so keep it comfortably above the slowest run.
+const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 
 /** Calendar ids whose busy blocks an agent, looked up by their email. */
 async function calendarIdsForEmail(email: string): Promise<string[]> {
@@ -146,6 +149,39 @@ function realDeps(): BookingDeps {
 
     updateBooking: async (bookingId, patch) => {
       await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
+    },
+
+    claimReschedule: async (bookingId, targetStartIso) => {
+      const db = supabaseAdmin();
+      // Best-effort reclaim of a lock orphaned by a torn-down Worker.
+      const staleBefore = new Date(
+        Date.now() - RESCHEDULE_LOCK_TTL_MS,
+      ).toISOString();
+      await db
+        .from("reschedule_locks")
+        .delete()
+        .eq("booking_id", bookingId)
+        .lt("claimed_at", staleBefore);
+      // The composite-PK insert is the atomic arbiter: one concurrent caller
+      // wins, a duplicate hits a unique violation (23505) and loses.
+      const { error } = await db
+        .from("reschedule_locks")
+        .insert({ booking_id: bookingId, target_starts_at: targetStartIso });
+      if (!error) return true;
+      if (error.code === "23505") return false;
+      // An unexpected lock error must not block a legitimate reschedule.
+      console.error(
+        `reschedule lock claim failed for booking ${bookingId}: ${error.message}`,
+      );
+      return true;
+    },
+
+    releaseReschedule: async (bookingId, targetStartIso) => {
+      await supabaseAdmin()
+        .from("reschedule_locks")
+        .delete()
+        .eq("booking_id", bookingId)
+        .eq("target_starts_at", targetStartIso);
     },
 
     loadBookingContext: async (token) => {

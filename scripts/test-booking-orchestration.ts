@@ -81,6 +81,7 @@ interface FakeOpts {
   bookingById?: BookingContext | null; // loadBookingById (reassign)
   agentByEmail?: User | null; // getAgentByEmail (reassign)
   pastDue?: BookingContext[];
+  rescheduleLocked?: boolean; // a concurrent reschedule already holds the lock
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -93,6 +94,8 @@ function makeDeps(opts: FakeOpts) {
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
     webhooks: [] as { event: string }[],
+    claimReschedule: 0,
+    releaseReschedule: 0,
   };
   let seq = 0;
   let insertAttempted = false;
@@ -134,6 +137,13 @@ function makeDeps(opts: FakeOpts) {
     },
     updateBooking: async (id, patch) => {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
+    },
+    claimReschedule: async () => {
+      calls.claimReschedule++;
+      return !opts.rescheduleLocked;
+    },
+    releaseReschedule: async () => {
+      calls.releaseReschedule++;
     },
     loadBookingContext: async () => opts.existing ?? null,
     loadBookingById: async () => opts.bookingById ?? null,
@@ -290,6 +300,47 @@ async function run() {
     assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reschedule: busy block moved");
     assert(res.booking.status === "rescheduled" && res.booking.starts_at === "2026-06-09T14:00:00.000Z", "reschedule: status + new start applied");
     assert(calls.webhooks[0].event === "booking.rescheduled", "reschedule: fires booking.rescheduled");
+    assert(
+      calls.claimReschedule === 1 && calls.releaseReschedule === 1,
+      "reschedule: claims then releases the idempotency lock",
+    );
+  }
+
+  // --- reschedule idempotency: no-op when already at the requested instant ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType }; // starts 13:00Z
+    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    const res = await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", deps);
+    assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule no-op: returns the unchanged booking");
+    assert(
+      calls.claimReschedule === 0 && calls.updateEventTime.length === 0 && calls.createEvent.length === 0,
+      "reschedule no-op: skips the lock and all calendar work when already at target",
+    );
+    assert(
+      calls.updateBooking.length === 0 && calls.webhooks.length === 0,
+      "reschedule no-op: no DB write or webhook for a same-instant reschedule",
+    );
+  }
+
+  // --- reschedule idempotency: concurrent duplicate loses the lock, no-ops ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType }; // starts 13:00Z
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      freeEmails: new Set(["a@x.com"]),
+      rescheduleLocked: true, // another in-flight reschedule holds the lock
+    });
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", deps);
+    assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule dup: returns the booking without moving it");
+    assert(calls.claimReschedule === 1, "reschedule dup: attempted the claim");
+    assert(
+      calls.updateEventTime.length === 0 && calls.createEvent.length === 0 && calls.deleteEvent.length === 0,
+      "reschedule dup: no calendar churn for the lock loser",
+    );
+    assert(
+      calls.updateBooking.length === 0 && calls.webhooks.length === 0 && calls.releaseReschedule === 0,
+      "reschedule dup: no DB write, no duplicate webhook, and doesn't release a lock it never held",
+    );
   }
 
   // --- reschedule: same agent busy -> reassign to B ---
