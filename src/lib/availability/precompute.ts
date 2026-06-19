@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getBucketSlots, type BucketSlots } from "./service";
+import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
+import type { Attributes, Criteria } from "@/lib/db/types";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -53,4 +55,44 @@ export async function recomputeBucketSlots(
   }
   if (fresh) await writeBucketSlotsRow(code, fresh);
   return fresh;
+}
+
+/**
+ * The bucket codes an agent affects: org buckets where they're an active manual
+ * member, match the attribute criteria, or are the fallback agent. Mirrors
+ * resolveBucketAgentIds's eligibility so a calendar/OOO change recomputes exactly
+ * the buckets whose slots could move. One small read + an in-memory filter.
+ */
+export async function bucketsForAgent(userId: string): Promise<string[]> {
+  const db = supabaseAdmin();
+  const { data: user } = await db
+    .from("users")
+    .select("org_id, attributes")
+    .eq("id", userId)
+    .maybeSingle();
+  if (!user) return [];
+  const u = user as { org_id: string; attributes: Attributes | null };
+
+  const [bucketsRes, memberRes] = await Promise.all([
+    db.from("buckets").select("id, code, criteria, fallback_user_id").eq("org_id", u.org_id),
+    db.from("bucket_members").select("bucket_id").eq("user_id", userId).eq("active", true),
+  ]);
+  const manualBucketIds = new Set(
+    (memberRes.data ?? []).map((m) => (m as { bucket_id: string }).bucket_id),
+  );
+  const buckets: BucketForMatch[] = (bucketsRes.data ?? []).map((b) => {
+    const row = b as {
+      id: string;
+      code: string;
+      criteria: Criteria | null;
+      fallback_user_id: string | null;
+    };
+    return {
+      code: row.code,
+      criteria: row.criteria ?? {},
+      manualMemberIds: manualBucketIds.has(row.id) ? [userId] : [],
+      fallbackUserId: row.fallback_user_id,
+    };
+  });
+  return bucketsMatchingAgent(userId, u.attributes ?? {}, buckets);
 }

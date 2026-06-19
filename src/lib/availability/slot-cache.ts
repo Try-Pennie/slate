@@ -5,6 +5,7 @@ import {
   readBucketSlotsRow,
   writeBucketSlotsRow,
   recomputeBucketSlots,
+  bucketsForAgent,
 } from "./precompute";
 import { appUrl } from "@/lib/env";
 
@@ -73,18 +74,43 @@ export async function getCachedBucketSlots(
   return resolveBucketSlots(code, fromIso, horizonDays, deps);
 }
 
+// Best-effort per-isolate dedupe: collapse a burst of recompute requests for the
+// same bucket (e.g. a flurry of Google pushes) into at most one every 2s. The
+// cron backstop guarantees freshness regardless, so a skipped recompute is safe.
+const RECOMPUTE_SKIP_MS = 2000;
+const lastRecomputeAt = new Map<string, number>();
+
 /**
  * Refresh a bucket's precomputed row over the current horizon, then clear its L1
  * cache key so the next read serves the fresh row. Called by the refresh-on-change
- * writers (booking / Google sync / OOO) and the cron backstop.
+ * writers (booking / Google sync / OOO) and the cron backstop. Debounced per
+ * bucket; pass force=true (the cron) to bypass the skip.
  */
-export async function recomputeBucketSlotsForToday(code: string): Promise<void> {
+export async function recomputeBucketSlotsForToday(
+  code: string,
+  force = false,
+): Promise<void> {
+  const now = Date.now();
+  if (!force && now - (lastRecomputeAt.get(code) ?? 0) < RECOMPUTE_SKIP_MS) return;
+  lastRecomputeAt.set(code, now);
+
   const { fromIso, toIso, key } = slotCacheKey(code, new Date().toISOString(), HORIZON_DAYS);
   await recomputeBucketSlots(code, fromIso, toIso);
   const cache = slotCache();
   if (cache) {
     try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
   }
+}
+
+/**
+ * Recompute every bucket an agent affects (their calendar/OOO just changed).
+ * Best-effort and non-blocking for the caller; never throws into a push/cron path.
+ */
+export async function recomputeBucketsForAgent(userId: string): Promise<void> {
+  try {
+    const codes = await bucketsForAgent(userId);
+    for (const code of codes) await recomputeBucketSlotsForToday(code);
+  } catch { /* best-effort; the cron backstop will catch up */ }
 }
 
 /**
