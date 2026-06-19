@@ -7,6 +7,7 @@ import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { matchesCriteria } from "@/lib/availability/match";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
+import { isActive } from "@/lib/active-user";
 import {
   createBucket,
   createEventType,
@@ -390,7 +391,7 @@ export default async function AdminPage({
   const watchedUserIds = liveWatchedUserIds(
     (calsRes.data ?? []) as { user_id: string; watch_expiration: string | null }[],
   );
-  const bookableAgents = users.filter((u) => u.bookable);
+  const bookableAgents = users.filter((u) => u.bookable && isActive(u));
   const watchedCount = bookableAgents.filter((u) => watchedUserIds.has(u.id)).length;
   const pushHealthy =
     bookableAgents.length > 0 && watchedCount === bookableAgents.length;
@@ -428,6 +429,7 @@ export default async function AdminPage({
 
   const visibleAgents = users
     .filter((u) => {
+      if (!isActive(u)) return false; // hide offboarded users from the roster
       if (roleFilter && u.role !== roleFilter) return false;
       if (bookableFilter === "yes" && !u.bookable) return false;
       if (bookableFilter === "no" && u.bookable) return false;
