@@ -43,3 +43,26 @@ export function staleBuckets(
     return at === undefined || nowMs - at > staleMs;
   });
 }
+
+/**
+ * Buckets the cron should recompute this run (#294): only those never-computed
+ * or older than `freshMs`, oldest-first (never-computed sorts first). The cron
+ * no longer force-recomputes every bucket every minute — real-time push/booking
+ * keep changed buckets fresh; this lane just covers the day-window slide and the
+ * missed-push backstop, so it only re-derives buckets aging past the freshness
+ * window. Keeps work bounded and scalable.
+ */
+export function bucketsDueForRecompute(
+  known: KnownRow[],
+  allCodes: string[],
+  nowMs: number,
+  freshMs: number,
+): string[] {
+  const computedAt = new Map(known.map((k) => [k.code, k.computedAtMs]));
+  return allCodes
+    .filter((c) => {
+      const at = computedAt.get(c);
+      return at === undefined || nowMs - at > freshMs;
+    })
+    .sort((a, b) => (computedAt.get(a) ?? 0) - (computedAt.get(b) ?? 0));
+}
