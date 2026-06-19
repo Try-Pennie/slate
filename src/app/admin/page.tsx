@@ -8,6 +8,7 @@ import { matchesCriteria } from "@/lib/availability/match";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { isActive } from "@/lib/active-user";
+import { dedupeFailingAgents, type FailingCalendarRow } from "@/lib/notify/alerts";
 import {
   createBucket,
   createEventType,
@@ -45,6 +46,7 @@ import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
+import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
   AuditEntry,
   Booking,
@@ -323,7 +325,11 @@ export default async function AdminPage({
         .limit(1)
         .maybeSingle(),
       db.from("organizations").select("*").eq("id", me.org_id).single(),
-      db.from("agent_calendars").select("user_id, watch_expiration"),
+      db
+        .from("agent_calendars")
+        .select(
+          "user_id, watch_expiration, consecutive_failures, last_success_at, last_sync_error",
+        ),
       db
         .from("bookings")
         .select(
@@ -395,6 +401,38 @@ export default async function AdminPage({
   const watchedCount = bookableAgents.filter((u) => watchedUserIds.has(u.id)).length;
   const pushHealthy =
     bookableAgents.length > 0 && watchedCount === bookableAgents.length;
+
+  // Per-agent sync health (#273 Phase 1.3): which agents have a calendar in a
+  // failure streak, deduped to one entry per agent (worst calendar kept) so the
+  // operator can act without hand-querying the DB. Same logic as the named alert.
+  const calDiag = (calsRes.data ?? []) as {
+    user_id: string;
+    consecutive_failures: number | null;
+    last_success_at: string | null;
+    last_sync_error: string | null;
+  }[];
+  const userById = new Map(users.map((u) => [u.id, u]));
+  const nameByEmail = new Map(users.map((u) => [u.email, u.name]));
+  const failingRows: FailingCalendarRow[] = calDiag
+    .filter((c) => (c.consecutive_failures ?? 0) > 0)
+    .map((c) => {
+      const u = userById.get(c.user_id);
+      return {
+        consecutive_failures: c.consecutive_failures ?? 0,
+        last_success_at: c.last_success_at,
+        last_sync_error: c.last_sync_error,
+        email: u?.email ?? null,
+        bookable: u?.bookable ?? false,
+        deactivated_at: u?.deactivated_at ?? null,
+      };
+    });
+  const syncHealthRows: SyncHealthRow[] = dedupeFailingAgents(failingRows).map((a) => ({
+    email: a.email,
+    name: nameByEmail.get(a.email) ?? null,
+    consecutiveFailures: a.consecutiveFailures,
+    lastSuccessAt: a.lastSuccessAt,
+    error: a.error,
+  }));
 
   // Debt team(s) an agent belongs to (the attribute is a string or string[]).
   const teamsOf = (u: User): string[] => {
@@ -641,6 +679,11 @@ export default async function AdminPage({
             </form>
           )}
         </div>
+        {syncHealthRows.length > 0 && (
+          <div className="mb-4">
+            <SyncHealthPanel agents={syncHealthRows} />
+          </div>
+        )}
         <form method="get" className="mb-4 flex flex-wrap items-center gap-2">
           <input
             name="q"
