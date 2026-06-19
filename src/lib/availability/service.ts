@@ -28,12 +28,14 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
       .eq("bucket_id", bucket.id)
       .eq("active", true),
     // One pass over org agents: include a bookable agent if they're a manual
-    // member OR match the criteria. Non-bookable agents never enter the pool.
+    // member OR match the criteria. Non-bookable and deactivated (offboarded)
+    // agents never enter the pool.
     db
       .from("users")
       .select("id, attributes, bookable")
       .eq("org_id", bucket.org_id)
-      .eq("bookable", true),
+      .eq("bookable", true)
+      .is("deactivated_at", null),
   ]);
   const manual = new Set(
     (membersRes.data ?? []).map((m) => (m as { user_id: string }).user_id),
@@ -74,6 +76,7 @@ export async function eligibleAgentIds(
     .eq("id", bucket.fallback_user_id)
     .eq("org_id", bucket.org_id)
     .eq("bookable", true)
+    .is("deactivated_at", null)
     .maybeSingle();
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
 }

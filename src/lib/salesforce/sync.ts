@@ -6,6 +6,7 @@ import {
   matchByInitialLastName,
   resolveManagerSync,
 } from "@/lib/salesforce/manager-sync";
+import { reapableUserIds } from "@/lib/salesforce/reap";
 import type { Attributes, Role, User } from "@/lib/db/types";
 
 // SF User custom booleans -> Slate attribute values.
@@ -122,7 +123,7 @@ function toAttributes(u: SfUser): Attributes {
 export interface SyncResult {
   inserted: number;
   updated: number;
-  deleted: number;
+  deactivated: number;
   managersCreated: number;
   managersLinked: number;
   managersPromoted: number;
@@ -326,48 +327,43 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   }
 
   // Reap never-logged-in agents AND managers whose Salesforce account is
-  // INACTIVE. Absence from the active-agent query is NOT grounds for deletion:
-  // a user can be active in SF but have no debt-team flag (e.g. an OOO approver,
-  // or staff who aren't sales agents at all), so we only delete on a positive
-  // IsActive=false from Salesforce. Admins/super admins and anyone who has
-  // logged in (auth_user_id set) are never touched.
+  // INACTIVE by DEACTIVATING them (not deleting): the row is kept so OOO/booking
+  // history attribution survives, and a boomerang rehire can be reactivated.
+  // Absence from the active-agent query is NOT grounds for reaping: a user can
+  // be active in SF but have no debt-team flag (an OOO approver, or non-sales
+  // staff), so we only act on a positive IsActive=false from Salesforce.
+  // Admins/super admins and anyone who has logged in (auth_user_id set) are
+  // never touched; already-deactivated users are skipped.
   const { data: reapable } = await db
     .from("users")
     .select("id, email")
     .eq("org_id", org.id)
     .in("role", ["agent", "manager"])
-    .is("auth_user_id", null);
+    .is("auth_user_id", null)
+    .is("deactivated_at", null);
   const reapableRows = (reapable ?? []) as { id: string; email: string }[];
-  let toDelete: string[] = [];
+  let toDeactivate: string[] = [];
   if (reapableRows.length) {
     const inactive = await queryInactiveEmails(
       instanceUrl,
       token,
       reapableRows.map((u) => u.email.toLowerCase()),
     );
-    // Never reap a user who still manages historical OOO requests — deleting
-    // them nulls those requests' manager (ON DELETE SET NULL) and loses the
-    // attribution. An offboarded manager with history stays in the DB; the OOO
-    // insights hide them as offboarded (no current reports) instead.
-    const { data: mgrRefs } = await db
-      .from("ooo_requests")
-      .select("manager_id")
-      .not("manager_id", "is", null);
-    const managesHistory = new Set(
-      ((mgrRefs ?? []) as { manager_id: string }[]).map((r) => r.manager_id),
-    );
-    toDelete = reapableRows
-      .filter(
-        (u) => inactive.has(u.email.toLowerCase()) && !managesHistory.has(u.id),
-      )
-      .map((u) => u.id);
-    if (toDelete.length) await db.from("users").delete().in("id", toDelete);
+    // Deactivate every SF-inactive reapable user. No "skip OOO-history managers"
+    // carve-out anymore: deactivation preserves the row, so attribution holds.
+    toDeactivate = reapableUserIds(reapableRows, inactive);
+    if (toDeactivate.length) {
+      await db
+        .from("users")
+        .update({ deactivated_at: new Date().toISOString() })
+        .in("id", toDeactivate);
+    }
   }
 
   return {
     inserted: inserts.length,
     updated,
-    deleted: toDelete.length,
+    deactivated: toDeactivate.length,
     managersCreated: plan.managersToCreate.length,
     managersLinked,
     managersPromoted,

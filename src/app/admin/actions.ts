@@ -163,7 +163,7 @@ export async function syncSalesforceNow(): Promise<void> {
         : null,
       r.managersCreated ? `${plural(r.managersCreated, "new manager")}` : null,
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
-      r.deleted ? `${plural(r.deleted, "user")} removed` : null,
+      r.deactivated ? `${plural(r.deactivated, "user")} deactivated` : null,
     ].filter(Boolean);
     summary =
       parts.length > 1 ? parts.join(" · ") : `${parts[0]} (already up to date)`;

@@ -49,6 +49,14 @@ export interface User {
   attributes: Attributes;
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
+  /**
+   * Offboarding marker (#265): when set, the user has left and is excluded from
+   * the booking pool, round-robin, sync/watch loop, admin roster, and manager
+   * picker — but the row is retained so history (bookings, OOO) stays intact.
+   * null = active; reactivation (rehire) sets it back to null. Orthogonal to
+   * `bookable` (on-shift axis): a deactivated user is never routable regardless.
+   */
+  deactivated_at: string | null;
   /** When the backstop sync cron last processed this agent (#238 rotation); null = never. */
   last_synced_at: string | null;
   /**
