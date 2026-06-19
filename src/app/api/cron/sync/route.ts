@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
-import { runIncrementalSync, loadSyncAgents, markAgentSynced } from "@/lib/google/sync";
+import { runIncrementalSync, loadSyncAgents, markAgentsSynced } from "@/lib/google/sync";
 import {
   orderAgentsForTick,
   mapWithConcurrency,
@@ -103,11 +103,14 @@ export async function GET(req: NextRequest) {
           } catch (err) {
             row.error = err instanceof Error ? err.message : String(err);
           }
-          await markAgentSynced(agent.userId);
           return row;
         },
         { deadlineMs },
       );
+
+    // Stamp rotation for every agent we processed this tick in ONE write (#243)
+    // instead of an UPDATE per agent inside the loop.
+    await markAgentsSynced(results.map((r) => r.userId));
 
     await alertSyncFailures(results.filter((r) => r.error), results.length);
 
