@@ -11,15 +11,20 @@
  */
 /**
  * Apply a bucket's fallback: if the matched pool is non-empty use it; otherwise
- * route to the fallback agent when one is set (the cal "default route" analog).
+ * route to the fallback agent when one is set AND eligible (the cal "default
+ * route" analog). `fallbackEligible` must be the caller's verdict on whether the
+ * fallback agent is currently routable (bookable and not deactivated) — a stored
+ * `fallback_user_id` can point at an agent who has since been turned off or
+ * offboarded, and we must never hand a booking to such an agent.
  * `fallbackApplied` records which branch was taken (for the routing trace).
  */
 export function applyFallback(
   matched: string[],
   fallbackUserId: string | null,
+  fallbackEligible: boolean,
 ): { ids: string[]; fallbackApplied: boolean } {
   if (matched.length > 0) return { ids: matched, fallbackApplied: false };
-  if (fallbackUserId) return { ids: [fallbackUserId], fallbackApplied: true };
+  if (fallbackUserId && fallbackEligible) return { ids: [fallbackUserId], fallbackApplied: true };
   return { ids: [], fallbackApplied: false };
 }
 
