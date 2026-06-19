@@ -43,9 +43,13 @@ descriptor) above the event title, which leaks routing internals to leads.
 
 ## Data flow
 
-- `src/app/book/page.tsx` (server) already loads org context to render the Booker; read
-  `organizations.booker_layout` there and pass it to `<Booker layout=... />`. Falls back
-  to `'strip'` if missing.
+- `src/app/book/page.tsx` (server) currently passes only `bucketCode` (the org name
+  arrives later via `/api/availability`, unchanged). Add a small server-side read here:
+  resolve the bucket's org and its `booker_layout`, and pass it as `<Booker layout=... />`.
+  Falls back to `'strip'` if missing. (One extra indexed read on the page render, off the
+  cached availability hot path.)
+- Admin toggle fits the EXISTING org-defaults form on `/admin` (`setOrgDefaultHours`
+  server action) — extend that same pattern rather than inventing a new settings surface.
 - `Booker.tsx` takes a `layout: 'strip' | 'month'` prop and renders the middle/times
   region accordingly. The event panel, timezone/12h controls, slot list, attendee form,
   confirmed state, and all state/handlers are unchanged and shared.
