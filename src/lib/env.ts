@@ -82,6 +82,10 @@ export const googleChannelToken = (): string =>
 // Bearer key for the agent-reassign API (POST /api/bookings/reassign). Empty = disabled.
 export const reassignApiKey = (): string => process.env.REASSIGN_API_KEY ?? "";
 
+// Bearer key for the offboarding lifecycle API (POST /api/users/deactivate|reactivate),
+// called by the existing offboarding automation. Empty = endpoints disabled (503).
+export const offboardingApiKey = (): string => process.env.OFFBOARDING_API_KEY ?? "";
+
 // Slack notifier (optional). Empty = notifications are no-ops.
 export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>
