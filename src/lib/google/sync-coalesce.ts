@@ -15,6 +15,12 @@ export const CRON_LOCK_TTL_MS = 5 * 60_000;
  * freshness for the full 5-min window. Must exceed RECOMPUTE_BUDGET_MS.
  */
 export const RECOMPUTE_LOCK_TTL_MS = 2 * 60_000;
+/**
+ * Watch lane lock TTL (#273): under the 5-minute cadence so a wedged watch
+ * claim self-heals on the NEXT tick instead of skipping an extra cycle. The pass
+ * (mostly cheap DB expiry checks) finishes well inside this.
+ */
+export const WATCH_LOCK_TTL_MS = 4 * 60_000;
 /** Burst bound: how many back-to-back passes one holder will run. */
 export const MAX_SYNC_PASSES = 3;
 

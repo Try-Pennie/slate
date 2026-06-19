@@ -74,6 +74,20 @@ for (const [cron, value] of Object.entries(CRON_ROUTES)) {
   );
 }
 
+// Watch renewal moves off the 1-min tick onto its own */5 lane (watch TTL is
+// days, not minutes), sharing the */5 trigger with the completion sweep (#273).
+{
+  const fiveMin = routesForCron("*/5 * * * *");
+  assert(
+    fiveMin.includes("/api/cron/complete"),
+    "*/5 * * * * drives the completion sweep",
+  );
+  assert(
+    fiveMin.includes("/api/cron/watch"),
+    "*/5 * * * * drives the watch-renewal lane",
+  );
+}
+
 assert(routesForCron("0 0 31 2 *").length === 0, "unknown cron expressions route to nothing");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
