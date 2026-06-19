@@ -9,6 +9,12 @@
 export const CALENDAR_CLAIM_TTL_MS = 60_000;
 /** Cron lock TTL: an incremental pass finishes well inside this. */
 export const CRON_LOCK_TTL_MS = 5 * 60_000;
+/**
+ * Recompute lane lock TTL (#273): shorter than the sync lock so a wedged
+ * recompute claim self-heals within ~2 min instead of blacking out slot
+ * freshness for the full 5-min window. Must exceed RECOMPUTE_BUDGET_MS.
+ */
+export const RECOMPUTE_LOCK_TTL_MS = 2 * 60_000;
 /** Burst bound: how many back-to-back passes one holder will run. */
 export const MAX_SYNC_PASSES = 3;
 
