@@ -60,7 +60,22 @@ export async function eligibleAgentIds(
   bucket: Bucket,
 ): Promise<{ ids: string[]; fallbackApplied: boolean }> {
   const matched = await resolveBucketAgentIds(bucket);
-  return applyFallback(matched, bucket.fallback_user_id);
+  // The fallback is only consulted when the matched pool is empty, so skip the
+  // eligibility round-trip otherwise. A stored fallback_user_id can point at an
+  // agent who is no longer bookable (or, with offboarding, deactivated); never
+  // route to them just because the pool came up empty.
+  if (matched.length > 0 || !bucket.fallback_user_id) {
+    return applyFallback(matched, bucket.fallback_user_id, false);
+  }
+  const db = supabaseAdmin();
+  const { data: fallback } = await db
+    .from("users")
+    .select("id")
+    .eq("id", bucket.fallback_user_id)
+    .eq("org_id", bucket.org_id)
+    .eq("bookable", true)
+    .maybeSingle();
+  return applyFallback(matched, bucket.fallback_user_id, !!fallback);
 }
 
 export interface ResolvedBucket {
