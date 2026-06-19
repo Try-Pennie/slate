@@ -15,6 +15,16 @@ import {
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import {
+  bucketsForAgent,
+  listAllBucketCodes,
+  listKnownBucketSlotRows,
+} from "@/lib/availability/precompute";
+import {
+  orderBucketsForRecompute,
+  staleBuckets,
+} from "@/lib/availability/precompute-cron";
 import {
   formatSyncFailureAlert,
   formatWatchLapseAlert,
@@ -24,6 +34,11 @@ import {
 export const dynamic = "force-dynamic";
 
 const WATCH_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // don't re-alert within 30 min
+// Phase 3 precompute backstop: small budget AFTER the sync work, so a busy sync
+// tick can't starve the slot refresh; a bucket >90s stale trips an alert.
+const RECOMPUTE_BUDGET_MS = 10_000;
+const STALE_BUDGET_MS = 90_000;
+const STALE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /**
  * Alert when calendar sync errors on CONSECUTIVE passes (#43). The streak
@@ -142,6 +157,44 @@ export async function GET(req: NextRequest) {
     await alertWatchLapse(watchErrors, results.length);
     await alertSyncFailures(results.filter((r) => r.error), results.length);
 
+    // Phase 3 backstop: keep the precomputed bucket_slots fresh. Recompute the
+    // buckets whose agents changed this tick first, then rotate through the
+    // least-recently-computed of the rest within a small budget (which also
+    // slides the day-window forward for buckets whose agents didn't change).
+    // This is the guaranteed-freshness floor behind the best-effort push/booking/
+    // OOO recomputes; an unreached bucket sorts first next tick.
+    let recomputed = 0;
+    let staleCount = 0;
+    try {
+      const changed = results.filter((r) => (r.synced ?? 0) > 0).map((r) => r.userId);
+      const touchedSets = await Promise.all(changed.map((id) => bucketsForAgent(id)));
+      const touched = [...new Set(touchedSets.flat())];
+      const [known, allCodes] = await Promise.all([
+        listKnownBucketSlotRows(),
+        listAllBucketCodes(),
+      ]);
+      const order = orderBucketsForRecompute(touched, known, allCodes);
+      const recomputeDeadline = Date.now() + RECOMPUTE_BUDGET_MS;
+      for (const code of order) {
+        if (!withinBudget(Date.now(), recomputeDeadline)) break;
+        await recomputeBucketSlotsForToday(code, true);
+        recomputed++;
+      }
+      const stale = staleBuckets(known, allCodes, Date.now(), STALE_BUDGET_MS);
+      staleCount = stale.length;
+      if (stale.length) {
+        await sendThrottledAlert(
+          "bucket_slots_stale",
+          STALE_ALERT_COOLDOWN_MS,
+          `Slate: ${stale.length} bucket_slots row(s) stale >${STALE_BUDGET_MS / 1000}s (e.g. ${stale.slice(0, 5).join(", ")}); a precompute writer may be stuck.`,
+        ).catch(() => {});
+      }
+    } catch (err) {
+      console.error(
+        `precompute backstop failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     const truncated = results.some((r) => r.truncated);
     return NextResponse.json({
       agents: agents.length,
@@ -149,6 +202,8 @@ export async function GET(req: NextRequest) {
       onboarded,
       watchErrors,
       truncated,
+      recomputed,
+      staleBuckets: staleCount,
       results,
     });
   } finally {
