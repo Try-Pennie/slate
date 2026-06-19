@@ -5,7 +5,7 @@ import {
   resolveBucketByCode,
   roundRobinCandidates,
 } from "@/lib/availability/service";
-import { invalidateBucketSlots } from "@/lib/availability/slot-cache";
+import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import {
   createEvent,
   deleteEvent,
@@ -69,7 +69,13 @@ function realDeps(): BookingDeps {
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
-    invalidateSlots: (bucketCode) => invalidateBucketSlots(bucketCode),
+    // A booking changed the bucket's availability: recompute its precomputed
+    // row so the booked slot disappears. Fire-and-forget so the confirm isn't
+    // blocked on the recompute; the 1-min cron backstop guarantees freshness.
+    invalidateSlots: (bucketCode) => {
+      void recomputeBucketSlotsForToday(bucketCode).catch(() => {});
+      return Promise.resolve();
+    },
 
     getUser: async (userId) => {
       const { data } = await supabaseAdmin()

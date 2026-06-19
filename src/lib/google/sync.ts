@@ -9,6 +9,7 @@ import {
   type GoogleEvent,
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
+import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
 import {
   isBusyEvent,
   partitionBusyWrites,
@@ -274,6 +275,10 @@ export async function syncByChannel(
       .eq("id", cal.id)
       .eq("sync_claimed_at", claimIso);
   }
+  // The agent's calendar changed: refresh the precomputed slot rows for every
+  // bucket they affect so it shows up in <5s. Best-effort (debounced per bucket;
+  // the 1-min cron backstop guarantees it regardless).
+  void recomputeBucketsForAgent(cal.user_id).catch(() => {});
   return "synced";
 }
 

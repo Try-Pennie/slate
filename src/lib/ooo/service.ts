@@ -18,6 +18,7 @@ import {
 import { approvalBlocks } from "@/lib/notify/ooo-slack-blocks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { recordAudit } from "@/lib/audit";
+import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import * as orchestration from "@/lib/ooo/orchestration";
 import type {
@@ -141,6 +142,11 @@ function realDeps(): OooDeps {
         ).catch(() => {});
         return null;
       }
+      // OOO just blocked this agent: refresh the precomputed rows for the buckets
+      // they affect so they drop out of availability promptly (cron backstops it).
+      void recomputeBucketsForAgent(
+        (block as { user_id: string }).user_id,
+      ).catch(() => {});
       return (data as { id: string }).id;
     },
 
@@ -157,6 +163,9 @@ function realDeps(): OooDeps {
       };
       try {
         await run();
+        // OOO ended / was removed: the agent is bookable again, so refresh their
+        // buckets' precomputed rows (cron backstops it).
+        void recomputeBucketsForAgent(userId).catch(() => {});
       } catch {
         // Sync self-heals gcal-source rows once the Google event is deleted;
         // a slate-source leftover is the bad case, so alert.
