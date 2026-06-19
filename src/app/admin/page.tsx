@@ -1,9 +1,12 @@
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/auth";
+import { requireAdmin } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { matchesCriteria } from "@/lib/availability/match";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
+import { normalizeBookerLayout } from "@/lib/booking/layout";
 import {
   createBucket,
   createEventType,
@@ -15,6 +18,17 @@ import {
   syncSalesforceNow,
   updateBucket,
 } from "@/app/admin/actions";
+
+async function setOrgBookerLayout(formData: FormData): Promise<void> {
+  "use server";
+  const admin = await requireAdmin();
+  const layout = normalizeBookerLayout(formData.get("booker_layout"));
+  await supabaseAdmin()
+    .from("organizations")
+    .update({ booker_layout: layout })
+    .eq("id", admin.org_id);
+  revalidatePath("/admin");
+}
 import {
   atLeast,
   canManageAgents,
@@ -553,6 +567,42 @@ export default async function AdminPage({
             />
           </div>
           <button className={btnCls}>Save default</button>
+        </form>
+      </section>
+      )}
+
+      {/* Booker calendar layout (super admin only) */}
+      {canEditDefaults && (
+      <section className={cardCls}>
+        <h2 className="mb-2 text-sm font-semibold">Booker calendar layout</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          Controls which calendar view leads see in the booker.
+        </p>
+        <form action={setOrgBookerLayout} className="flex flex-wrap items-end gap-4">
+          <fieldset className="flex flex-wrap gap-4">
+            <legend className={`${labelCls} mb-1`}>Booker calendar layout</legend>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="booker_layout"
+                value="strip"
+                defaultChecked={normalizeBookerLayout(org.booker_layout) === "strip"}
+                className="accent-pennie-sky"
+              />
+              Compact strip (next few days)
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="booker_layout"
+                value="month"
+                defaultChecked={normalizeBookerLayout(org.booker_layout) === "month"}
+                className="accent-pennie-sky"
+              />
+              Month grid
+            </label>
+          </fieldset>
+          <button className={btnCls}>Save layout</button>
         </form>
       </section>
       )}
