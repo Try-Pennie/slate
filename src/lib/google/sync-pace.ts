@@ -10,6 +10,15 @@
 /** Cap on brand-new agents onboarded (first watch setup) per cron tick. */
 export const MAX_ONBOARDS_PER_TICK = 10;
 
+/**
+ * How many agents the sync lane processes concurrently (#242). Sequential
+ * per-agent Google I/O blew the per-tick budget well before 200 agents; a
+ * bounded pool fits far more agents per tick. Kept small so the peak
+ * subrequest count (cap × per-agent Google+DB calls) stays well under the
+ * Worker ceiling — the real ceiling is proven in the 200-agent load test.
+ */
+export const SYNC_CONCURRENCY = 8;
+
 export interface SyncAgent {
   userId: string;
   /** Whether the agent already has agent_calendars rows (DB-only check). */
@@ -81,4 +90,49 @@ export function shouldOnboard(
   cap: number = MAX_ONBOARDS_PER_TICK,
 ): boolean {
   return !agent.hasCalendars && onboardedSoFar < cap;
+}
+
+/**
+ * Process `items` through `worker` with at most `cap` in flight at once (#242).
+ * Items are started in order, so the started set is always a prefix — workers
+ * stop STARTING new items once `deadlineMs` passes (in-flight ones still
+ * finish), and `truncated` reports whether any item went unstarted (it's
+ * picked up next tick, since rotation sorts unreached agents first). `now` is
+ * injectable so the deadline behavior is testable without a real clock.
+ * Results are index-aligned to the started items.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  cap: number,
+  worker: (item: T, index: number) => Promise<R>,
+  opts: { deadlineMs?: number | null; now?: () => number } = {},
+): Promise<{ results: R[]; processed: number; truncated: boolean }> {
+  const { deadlineMs = null, now = Date.now } = opts;
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  let started = 0;
+  const limit = Math.max(1, cap);
+
+  async function runFrom(): Promise<void> {
+    // No await between reading and bumping `next`, so each item is claimed by
+    // exactly one worker (single-threaded) - started items stay contiguous.
+    while (true) {
+      if (deadlineMs !== null && now() >= deadlineMs) return;
+      const i = next;
+      if (i >= items.length) return;
+      next++;
+      started++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => runFrom()),
+  );
+
+  return {
+    results: results.slice(0, started),
+    processed: started,
+    truncated: started < items.length,
+  };
 }
