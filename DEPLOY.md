@@ -28,6 +28,7 @@ wrangler secret put GOOGLE_CLIENT_SECRET
 wrangler secret put GOOGLE_HOSTED_DOMAIN
 wrangler secret put CRON_SECRET
 wrangler secret put GOOGLE_CHANNEL_TOKEN
+wrangler secret put OFFBOARDING_API_KEY   # optional; unset = offboarding endpoints return 503
 ```
 
 ## 3. Build + deploy
@@ -36,6 +37,13 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
 ```
 
 ## 4. Post-deploy config
+- **Offboarding API (optional):** to let the offboarding automation deactivate
+  departed users, set `OFFBOARDING_API_KEY` (above), then point the automation at
+  `POST https://slate.trypennie.app/api/users/deactivate` (and `/reactivate` for a
+  rehire) with header `Authorization: Bearer <key>` and JSON body
+  `{ "email": "person@trypennie.com" }`. Deactivate-not-delete (history is kept);
+  idempotent. Unset key ⇒ the endpoints return 503 (disabled). Same pattern as
+  `REASSIGN_API_KEY`.
 - **Supabase → Authentication → URL Configuration → Redirect URLs:** add
   `https://slate.trypennie.dev/api/auth/callback`. (Set Site URL to
   `https://slate.trypennie.dev` too.)
