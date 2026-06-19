@@ -8,9 +8,13 @@
 
 Give the booker two date-picker layouts and let the org choose which one leads see:
 
-1. **Strip (default)** — the next few bookable days as chips, with the selected day's
-   full time list right below. Matches the real 0-3 day booking window so leads never
-   scan an empty month.
+1. **Strip (default)** — a rolling **7-day window starting today** (today through
+   today+6, e.g. Wed→Tue) shown as day chips, with the selected day's full time list
+   right below. A chip is **enabled only when that day has at least one open slot**;
+   every other day is shown but **disabled** — which covers both days beyond the 0-3
+   day booking window and days inside the window that are fully booked (both have no
+   slots). **Sunday is ALWAYS disabled** (Luxon weekday 7), regardless of availability.
+   The active day is the first enabled day. Keyboard nav skips disabled chips.
 2. **Month grid** — today's existing `BookerCalendar`, unchanged.
 
 Everything else (event panel, timezone picker, 12h/24h toggle, slot list, attendee
