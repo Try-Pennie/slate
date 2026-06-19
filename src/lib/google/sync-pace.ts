@@ -3,7 +3,8 @@
  * agent roster (#238). The cron is a backstop + watch renewer (real-time
  * freshness comes from Google push), so it bounds its own work per tick and
  * rotates least-recently-synced agents first instead of re-processing the same
- * head of the list every minute. Exercised by scripts/test-sync-pace.ts.
+ * head of the list every minute. Exercised by scripts/test-sync-pace.ts and
+ * scripts/test-sync-agents.ts.
  */
 
 /** Cap on brand-new agents onboarded (first watch setup) per cron tick. */
@@ -15,6 +16,34 @@ export interface SyncAgent {
   hasCalendars: boolean;
   /** users.last_synced_at as epoch ms, or null if never synced by the cron. */
   lastSyncedMs: number | null;
+}
+
+/** A users row as loaded for sync candidacy (bookable pool). */
+export interface SyncCandidateRow {
+  id: string;
+  last_synced_at: string | null;
+  deactivated_at: string | null;
+}
+
+/**
+ * Shape the bookable-user rows into per-tick pacing facts, dropping any
+ * deactivated user (#274) so the sync/watch loop never touches an offboarded
+ * account. The query already filters `deactivated_at IS NULL`; re-checking
+ * here is belt-and-braces and the node-testable seam. The `deactivated_at ==
+ * null` predicate mirrors isActive() but is kept inline so this stays a
+ * dependency-free pure module (cf. offboarding/plan.ts).
+ */
+export function toSyncAgents(
+  rows: SyncCandidateRow[],
+  calendarUserIds: Set<string>,
+): SyncAgent[] {
+  return rows
+    .filter((r) => r.deactivated_at == null)
+    .map((r) => ({
+      userId: r.id,
+      hasCalendars: calendarUserIds.has(r.id),
+      lastSyncedMs: r.last_synced_at ? Date.parse(r.last_synced_at) : null,
+    }));
 }
 
 /**
