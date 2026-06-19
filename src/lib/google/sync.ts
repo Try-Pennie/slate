@@ -113,27 +113,44 @@ export async function markAgentsSynced(userIds: string[]): Promise<void> {
  * consecutive-failure threshold so a transient one-off blip stays quiet.
  */
 export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]> {
-  const { data } = await supabaseAdmin()
+  const db = supabaseAdmin();
+  // Two reads joined in code (the codebase convention, cf. loadSyncAgents):
+  // the failing calendars, then the users they belong to.
+  const { data: cals } = await db
     .from("agent_calendars")
-    .select(
-      "consecutive_failures, last_success_at, last_sync_error, users(email, bookable, deactivated_at)",
-    )
+    .select("user_id, consecutive_failures, last_success_at, last_sync_error")
     .gte("consecutive_failures", minFailures);
-  const rows = ((data ?? []) as unknown[]).map((row) => {
-    const r = row as {
-      consecutive_failures: number;
-      last_success_at: string | null;
-      last_sync_error: string | null;
-      users: { email: string | null; bookable: boolean; deactivated_at: string | null } | null;
-    };
+  const calRows = (cals ?? []) as {
+    user_id: string;
+    consecutive_failures: number;
+    last_success_at: string | null;
+    last_sync_error: string | null;
+  }[];
+  if (calRows.length === 0) return [];
+
+  const { data: users } = await db
+    .from("users")
+    .select("id, email, bookable, deactivated_at")
+    .in("id", [...new Set(calRows.map((c) => c.user_id))]);
+  const byId = new Map(
+    ((users ?? []) as {
+      id: string;
+      email: string | null;
+      bookable: boolean;
+      deactivated_at: string | null;
+    }[]).map((u) => [u.id, u]),
+  );
+
+  const rows: FailingCalendarRow[] = calRows.map((c) => {
+    const u = byId.get(c.user_id);
     return {
-      consecutive_failures: r.consecutive_failures,
-      last_success_at: r.last_success_at,
-      last_sync_error: r.last_sync_error,
-      email: r.users?.email ?? null,
-      bookable: r.users?.bookable ?? false,
-      deactivated_at: r.users?.deactivated_at ?? null,
-    } satisfies FailingCalendarRow;
+      consecutive_failures: c.consecutive_failures,
+      last_success_at: c.last_success_at,
+      last_sync_error: c.last_sync_error,
+      email: u?.email ?? null,
+      bookable: u?.bookable ?? false,
+      deactivated_at: u?.deactivated_at ?? null,
+    };
   });
   return dedupeFailingAgents(rows);
 }
