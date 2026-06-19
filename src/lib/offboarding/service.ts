@@ -18,11 +18,14 @@ export async function applyLifecycleByEmail(
   action: LifecycleAction,
 ): Promise<LifecycleResult> {
   const db = supabaseAdmin();
-  // Stored emails may be mixed-case; match case-insensitively (no wildcards).
+  // Exact match, consistent with every other user-by-email lookup in the app
+  // (booking/service.ts, provision.ts). NOT ilike: ilike would treat `_`/`%` in
+  // the address as wildcards and could resolve the WRONG user — dangerous for a
+  // deactivate call.
   const { data } = await db
     .from("users")
     .select("id, deactivated_at")
-    .ilike("email", email.trim())
+    .eq("email", email.trim())
     .maybeSingle();
   const user = data as { id: string; deactivated_at: string | null } | null;
 
