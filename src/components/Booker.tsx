@@ -659,16 +659,19 @@ export default function Booker({
         <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
           {eventPanel}
           <div className="flex flex-col">
-            <BookerStrip
-              today={today}
-              availableDays={[...slotsByDay.keys()].sort()}
-              activeDay={activeDay}
-              zone={zone}
-              onSelect={(iso) => {
-                setSelectedDay(iso);
-                setSelectedSlot(null);
-              }}
-            />
+            {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
+            <div className="px-6 pt-6">
+              <BookerStrip
+                today={today}
+                availableDays={[...slotsByDay.keys()].sort()}
+                activeDay={activeDay}
+                zone={zone}
+                onSelect={(iso) => {
+                  setSelectedDay(iso);
+                  setSelectedSlot(null);
+                }}
+              />
+            </div>
             {timesPanel}
           </div>
         </div>
