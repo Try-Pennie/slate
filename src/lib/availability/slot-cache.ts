@@ -3,7 +3,9 @@ import { slotCacheKey } from "./cache-key";
 import { appUrl } from "@/lib/env";
 
 export const SLOT_TTL_SECONDS = 60;
-export const HORIZON_DAYS = 14;
+// Real booking window is 0-3 days, so a 4-day horizon covers it with margin.
+// ~4x smaller compute + payload than the old 14-day window. (Phase 0.)
+export const HORIZON_DAYS = 4;
 
 // `caches.default` is a Cloudflare runtime extension not in the standard lib types.
 type CfCache = {
