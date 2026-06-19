@@ -26,6 +26,7 @@ export interface Organization {
   default_start_minute: number;
   default_end_minute: number;
   default_weekdays: number[];
+  booker_layout: string;
   created_at: string;
 }
 
