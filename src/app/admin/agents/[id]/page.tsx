@@ -8,6 +8,7 @@ import {
   ROLES,
 } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { isActive } from "@/lib/active-user";
 import { oooOnlyFor } from "@/lib/env";
 import {
   setUserRole,
@@ -80,7 +81,7 @@ export default async function AgentProfilePage({
       .select("id, timezone")
       .eq("user_id", agent.id)
       .maybeSingle(),
-    db.from("users").select("id, name, email, role").eq("org_id", me.org_id),
+    db.from("users").select("id, name, email, role, deactivated_at").eq("org_id", me.org_id),
     db.from("organizations").select("*").eq("id", me.org_id).single(),
   ]);
   const sched = schedRes.data as { id: string; timezone: string } | null;
@@ -102,10 +103,14 @@ export default async function AgentProfilePage({
 
   const allUsers = (usersRes.data ?? []) as Pick<
     User,
-    "id" | "name" | "email" | "role"
+    "id" | "name" | "email" | "role" | "deactivated_at"
   >[];
+  // Deactivated users are not offered as managers. The currently-assigned
+  // manager is resolved from the full set below (and shown via the prepend even
+  // if deactivated), so an existing assignment still displays — you just can't
+  // newly assign a departed manager.
   const managers = allUsers
-    .filter((u) => u.role === "manager" || u.role === "admin")
+    .filter((u) => (u.role === "manager" || u.role === "admin") && isActive(u))
     .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
   const assignedManager = agent.manager_id
     ? allUsers.find((u) => u.id === agent.manager_id)

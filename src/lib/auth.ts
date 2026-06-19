@@ -54,13 +54,15 @@ export async function currentUser(): Promise<User | null> {
   );
   if (effectiveId === real.id) return real;
 
-  // Resolve the impersonated user, constrained to the admin's org. Fall back to
-  // the real admin if the target vanished (e.g. removed by a sync).
+  // Resolve the impersonated user, constrained to the admin's org and ACTIVE.
+  // Fall back to the real admin if the target vanished (removed by a sync) or
+  // was deactivated (offboarded) — never act as a departed user.
   const { data } = await supabaseAdmin()
     .from("users")
     .select("*")
     .eq("id", effectiveId)
     .eq("org_id", real.org_id)
+    .is("deactivated_at", null)
     .maybeSingle();
   return (data as User | null) ?? real;
 }
@@ -87,6 +89,7 @@ export async function getImpersonation(): Promise<{
     .select("*")
     .eq("id", effectiveId)
     .eq("org_id", real.org_id)
+    .is("deactivated_at", null)
     .maybeSingle();
   const target = data as User | null;
   return target ? { real, target } : null;
