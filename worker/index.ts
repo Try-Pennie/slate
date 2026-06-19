@@ -11,7 +11,7 @@
  */
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import handler from "../.open-next/worker.js";
-import { routeForCron } from "./cron-routes";
+import { routesForCron } from "./cron-routes";
 
 // Durable Object classes the generated worker exports must be re-exported
 // from the entry wrangler actually loads.
@@ -36,20 +36,27 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
-    const path = routeForCron(controller.cron);
-    if (!path) {
+    const paths = routesForCron(controller.cron);
+    if (paths.length === 0) {
       console.error(`scheduled: no route for cron "${controller.cron}"`);
       return;
     }
-    const request = new Request(`https://slate.trypennie.app${path}`, {
-      headers: { authorization: `Bearer ${env.CRON_SECRET ?? ""}` },
-    });
-    const res: Response = await handler.fetch(request, env, ctx);
-    // Surface failures in the Workers dashboard/tail; cron has no retries.
-    if (!res.ok) {
-      console.error(
-        `scheduled ${path} -> ${res.status} ${(await res.text()).slice(0, 300)}`,
-      );
-    }
+    // Fire each lane as an independent request so a co-scheduled lane's failure
+    // (or slow run) can't abort the others; each route guards itself with its
+    // own lock. settle all before returning so cron tail captures every result.
+    await Promise.allSettled(
+      paths.map(async (path) => {
+        const request = new Request(`https://slate.trypennie.app${path}`, {
+          headers: { authorization: `Bearer ${env.CRON_SECRET ?? ""}` },
+        });
+        const res: Response = await handler.fetch(request, env, ctx);
+        // Surface failures in the Workers dashboard/tail; cron has no retries.
+        if (!res.ok) {
+          console.error(
+            `scheduled ${path} -> ${res.status} ${(await res.text()).slice(0, 300)}`,
+          );
+        }
+      }),
+    );
   },
 };

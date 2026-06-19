@@ -5,7 +5,7 @@
 // Run: node --experimental-strip-types scripts/test-cron-routes.ts
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { CRON_ROUTES, routeForCron } from "../worker/cron-routes.ts";
+import { CRON_ROUTES, routesForCron } from "../worker/cron-routes.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -30,8 +30,8 @@ const routed = Object.keys(CRON_ROUTES);
 assert(configured.length > 0, "wrangler.jsonc declares cron triggers");
 for (const cron of configured) {
   assert(
-    routeForCron(cron) !== null,
-    `configured cron "${cron}" has a route in CRON_ROUTES`,
+    routesForCron(cron).length > 0,
+    `configured cron "${cron}" has at least one route in CRON_ROUTES`,
   );
 }
 for (const cron of routed) {
@@ -46,15 +46,35 @@ assert(
   "wrangler main is the custom entry that handles scheduled()",
 );
 
-for (const [cron, path] of Object.entries(CRON_ROUTES)) {
-  const routeFile = join(root, "src/app", path.replace(/^\//, ""), "route.ts");
+// A cron expression may now drive MORE THAN ONE route (independent lanes with
+// their own locks). Every routed path must still map to a real route file.
+for (const [cron, value] of Object.entries(CRON_ROUTES)) {
+  const paths = Array.isArray(value) ? value : [value];
+  for (const path of paths) {
+    const routeFile = join(root, "src/app", path.replace(/^\//, ""), "route.ts");
+    assert(
+      existsSync(routeFile),
+      `"${cron}" -> ${path} maps to a real route file`,
+    );
+  }
+}
+
+// The every-minute trigger fans out to TWO independent lanes: backstop sync and
+// bucket recompute. Splitting them (each under its own lock) stops a busy sync
+// tick from starving the slot refresh (#273).
+{
+  const minute = routesForCron("* * * * *");
   assert(
-    existsSync(routeFile),
-    `"${cron}" -> ${path} maps to a real route file`,
+    minute.includes("/api/cron/sync"),
+    "* * * * * drives the backstop sync lane",
+  );
+  assert(
+    minute.includes("/api/cron/recompute"),
+    "* * * * * drives the bucket-recompute lane",
   );
 }
 
-assert(routeForCron("0 0 31 2 *") === null, "unknown cron expressions route to null");
+assert(routesForCron("0 0 31 2 *").length === 0, "unknown cron expressions route to nothing");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
