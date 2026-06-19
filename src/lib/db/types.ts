@@ -302,3 +302,14 @@ export interface WebhookDelivery {
   created_at: string;
   updated_at: string;
 }
+
+/**
+ * SPIKE (spike/precompute-bucket-slots): one pre-unioned BucketSlots blob per
+ * bucket, read by PK on the availability hot path. `payload` is a stored
+ * BucketSlots (validated on read by shapePrecomputedRow).
+ */
+export interface BucketSlotsRow {
+  bucket_code: string;
+  payload: unknown;
+  computed_at: string;
+}

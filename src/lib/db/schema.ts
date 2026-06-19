@@ -12,6 +12,7 @@ import type {
   Booking,
   Bucket,
   BucketMember,
+  BucketSlotsRow,
   BusyBlock,
   EventType,
   GoogleCredentials,
@@ -57,6 +58,7 @@ export interface Database {
       sync_locks: Table<SyncLock>;
       rate_limits: Table<RateLimit>;
       reschedule_locks: Table<RescheduleLock>;
+      bucket_slots: Table<BucketSlotsRow>;
     };
     Views: Record<string, never>;
     Functions: {
