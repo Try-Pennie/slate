@@ -14,16 +14,77 @@ export function shouldSendAlert(
   return nowMs - lastSentAtMs >= cooldownMs;
 }
 
-/** Human-readable watch-lapse alert body. */
+/** A persistently-failing agent calendar, for the named alert (#273). */
+export interface FailingAgent {
+  email: string;
+  consecutiveFailures: number;
+  /** ISO timestamp of the last clean sync/renew, or null if never. */
+  lastSuccessAt: string | null;
+  /** Last error message, or null. */
+  error: string | null;
+}
+
+/** A joined agent_calendars + users row, as loaded for the failing-agent alert. */
+export interface FailingCalendarRow {
+  consecutive_failures: number;
+  last_success_at: string | null;
+  last_sync_error: string | null;
+  email: string | null;
+  bookable: boolean;
+  deactivated_at: string | null;
+}
+
+/**
+ * Collapse the raw failing-calendar rows to one entry per agent (#273): an
+ * agent can have several calendars, so keep the WORST (highest streak) and its
+ * error. Drop deactivated/non-bookable agents and rows with no email (no one
+ * to alert about). Sorted by streak descending so the worst are named first.
+ */
+export function dedupeFailingAgents(rows: FailingCalendarRow[]): FailingAgent[] {
+  const byEmail = new Map<string, FailingAgent>();
+  for (const r of rows) {
+    if (!r.email || !r.bookable || r.deactivated_at) continue;
+    const cur = byEmail.get(r.email);
+    if (!cur || r.consecutive_failures > cur.consecutiveFailures) {
+      byEmail.set(r.email, {
+        email: r.email,
+        consecutiveFailures: r.consecutive_failures,
+        lastSuccessAt: r.last_success_at,
+        error: r.last_sync_error,
+      });
+    }
+  }
+  return [...byEmail.values()].sort(
+    (a, b) => b.consecutiveFailures - a.consecutiveFailures,
+  );
+}
+
+/** How many agents to name inline before summarizing the rest. */
+const MAX_NAMED_AGENTS = 5;
+
+/**
+ * Human-readable watch-lapse alert that NAMES the failing agent(s) (#273
+ * Phase 1.3) — replacing the old "N of M" body that named nobody and forced a
+ * hand DB query. Lists each agent's email, consecutive-failure count, last
+ * successful sync, and error, plus the remediation, capped with a summary tail.
+ */
 export function formatWatchLapseAlert(
-  watchErrors: number,
+  failing: FailingAgent[],
   totalAgents: number,
 ): string {
+  const lines = failing.slice(0, MAX_NAMED_AGENTS).map((a) => {
+    const lastOk = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
+    const err = a.error ? ` (${a.error.slice(0, 120)})` : "";
+    const n = a.consecutiveFailures;
+    return `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, last ok ${lastOk}${err}`;
+  });
+  const extra = failing.length - MAX_NAMED_AGENTS;
+  const tail = extra > 0 ? `\n…and ${extra} more` : "";
   return (
-    `Slate: ${watchErrors} of ${totalAgents} bookable agent calendar ` +
-    `watch${watchErrors === 1 ? "" : "es"} failed to renew. Google push may be ` +
-    `degraded, so availability is falling back to the backup cron sync. ` +
-    `Check the admin page for push status.`
+    `Slate: ${failing.length} of ${totalAgents} bookable agent` +
+    `${failing.length === 1 ? "" : "s"} have a calendar failing to sync/renew ` +
+    `(Google push degraded; availability is on the backup cron). ` +
+    `Re-auth or deactivate:\n${lines.join("\n")}${tail}`
   );
 }
 

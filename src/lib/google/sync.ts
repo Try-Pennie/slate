@@ -34,6 +34,11 @@ import {
   type CalSyncHealth,
   type SyncOutcome,
 } from "@/lib/google/sync-health";
+import {
+  dedupeFailingAgents,
+  type FailingAgent,
+  type FailingCalendarRow,
+} from "@/lib/notify/alerts";
 import { googlePushUrl } from "@/lib/env";
 import type { AgentCalendar } from "@/lib/db/types";
 
@@ -100,6 +105,37 @@ export async function markAgentsSynced(userIds: string[]): Promise<void> {
     userIds,
     new Date().toISOString(),
   );
+}
+
+/**
+ * Agents whose calendars are PERSISTENTLY failing (#273): one entry per agent,
+ * worst calendar kept, for the named alert. `minFailures` matches the
+ * consecutive-failure threshold so a transient one-off blip stays quiet.
+ */
+export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]> {
+  const { data } = await supabaseAdmin()
+    .from("agent_calendars")
+    .select(
+      "consecutive_failures, last_success_at, last_sync_error, users(email, bookable, deactivated_at)",
+    )
+    .gte("consecutive_failures", minFailures);
+  const rows = ((data ?? []) as unknown[]).map((row) => {
+    const r = row as {
+      consecutive_failures: number;
+      last_success_at: string | null;
+      last_sync_error: string | null;
+      users: { email: string | null; bookable: boolean; deactivated_at: string | null } | null;
+    };
+    return {
+      consecutive_failures: r.consecutive_failures,
+      last_success_at: r.last_success_at,
+      last_sync_error: r.last_sync_error,
+      email: r.users?.email ?? null,
+      bookable: r.users?.bookable ?? false,
+      deactivated_at: r.users?.deactivated_at ?? null,
+    } satisfies FailingCalendarRow;
+  });
+  return dedupeFailingAgents(rows);
 }
 
 // Cap rows per DB call so even a huge calendar's bootstrap stays well under the
