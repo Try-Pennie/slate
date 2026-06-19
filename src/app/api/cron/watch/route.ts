@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
-import { ensureWatches, loadSyncAgents } from "@/lib/google/sync";
+import { ensureWatches, loadSyncAgents, loadFailingAgents } from "@/lib/google/sync";
 import {
   withinBudget,
   orderAgentsForTick,
@@ -9,19 +9,19 @@ import {
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { WATCH_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { formatWatchLapseAlert } from "@/lib/notify/alerts";
+import { formatWatchLapseAlert, type FailingAgent } from "@/lib/notify/alerts";
 
 export const dynamic = "force-dynamic";
 
 const WATCH_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // don't re-alert within 30 min
 
-/** Post a throttled Slack alert when watch renewals are failing. */
-async function alertWatchLapse(watchErrors: number, totalAgents: number): Promise<void> {
-  if (watchErrors === 0) return;
+/** Post a throttled Slack alert NAMING the persistently-failing agents (#273). */
+async function alertWatchLapse(failing: FailingAgent[], totalAgents: number): Promise<void> {
+  if (failing.length === 0) return;
   await sendThrottledAlert(
     "watch_lapse",
     WATCH_ALERT_COOLDOWN_MS,
-    formatWatchLapseAlert(watchErrors, totalAgents),
+    formatWatchLapseAlert(failing, totalAgents),
   );
 }
 
@@ -68,8 +68,13 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // When this tick saw watch errors, name the PERSISTENTLY-failing agents
+    // (consecutive_failures >= the threshold) from the diagnostics — a one-off
+    // blip (streak of 1) stays quiet; the 30-min cooldown bounds repeats.
     const watchErrors = results.filter((r) => r.watch === "error").length;
-    await alertWatchLapse(watchErrors, results.length);
+    if (watchErrors > 0) {
+      await alertWatchLapse(await loadFailingAgents(), agents.length);
+    }
 
     return NextResponse.json({
       agents: agents.length,
