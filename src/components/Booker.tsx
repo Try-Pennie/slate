@@ -5,7 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
+import { BookerStrip } from "@/components/BookerStrip";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
+import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import { timezoneOptions } from "@/lib/booking/timezones";
 
@@ -26,6 +28,8 @@ interface BookerProps {
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
   brandColor?: string;
+  /** Date-picker layout: a horizontal day strip (default) or the month grid. */
+  layout?: BookerLayout;
 }
 
 interface AvailabilityResponse {
@@ -144,6 +148,7 @@ export default function Booker({
   embedded = false,
   theme = "light",
   brandColor,
+  layout = "strip",
 }: BookerProps) {
   // Options derive from the *detected* zone (fixed) so a traveling lead's own
   // zone stays in the list even after they switch the selection to a curated one.
@@ -415,232 +420,259 @@ export default function Booker({
     </p>
   ) : null;
 
+  // Times / booking form — rendered once and shared by both layouts (the 420px
+  // cap is for the scrolling slot list only).
+  const timesPanel = (
+    <section className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}`}>
+      {selectedSlot ? (
+        <div className="space-y-3">
+          <button
+            onClick={() => setSelectedSlot(null)}
+            aria-label="Back to time selection"
+            className={`inline-flex min-h-9 items-center text-xs ${c.muted} ${c.backHover}`}
+          >
+            ‹ Back
+          </button>
+          <p className={`text-sm font-semibold ${c.title}`}>
+            {selectedDate?.toFormat("ccc d")} · {fmtTime(selectedSlot)}
+          </p>
+          {(["name", "email", "phone"] as const).map((field) => (
+            <div key={field}>
+              <label htmlFor={`booker-${field}`} className="sr-only">
+                {field[0].toUpperCase() + field.slice(1)}
+              </label>
+              <input
+                id={`booker-${field}`}
+                className={`min-h-12 w-full rounded-sm px-4 text-base ${c.input}`}
+                placeholder={field[0].toUpperCase() + field.slice(1)}
+                type={
+                  field === "email" ? "email" : field === "phone" ? "tel" : "text"
+                }
+                autoComplete={field === "phone" ? "tel" : field}
+                inputMode={
+                  field === "email" ? "email" : field === "phone" ? "tel" : undefined
+                }
+                aria-required="true"
+                aria-invalid={fieldErrors[field] ? true : undefined}
+                aria-describedby={
+                  fieldErrors[field] ? `booker-${field}-error` : undefined
+                }
+                value={attendee[field]}
+                onChange={(e) => {
+                  setAttendee((a) => ({ ...a, [field]: e.target.value }));
+                  setFieldErrors((f) =>
+                    f[field] ? { ...f, [field]: undefined } : f,
+                  );
+                }}
+              />
+              {fieldErrors[field] && (
+                <p
+                  id={`booker-${field}-error`}
+                  className="mt-1 text-sm text-[var(--error)]"
+                >
+                  {fieldErrors[field]}
+                </p>
+              )}
+            </div>
+          ))}
+          {errorAlert}
+          <button
+            onClick={submit}
+            disabled={submitting}
+            style={confirmStyle}
+            className={`group inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-4 text-base font-semibold ${c.confirm} active:translate-y-px disabled:opacity-60`}
+          >
+            {submitting ? "Booking your call…" : "Confirm booking"}
+            {!submitting && (
+              <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
+            )}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="mb-1 flex items-center justify-between">
+            <p className={`text-sm font-semibold tabular-nums ${c.title}`}>
+              {selectedDate ? (
+                <>
+                  {selectedDate.toFormat("ccc")}{" "}
+                  <span className={c.faint}>{selectedDate.toFormat("dd")}</span>
+                </>
+              ) : (
+                "Pick a day"
+              )}
+            </p>
+            <div className={`inline-flex rounded-md border text-xs ${c.toggleBorder}`}>
+              {[true, false].map((is12) => (
+                <button
+                  key={String(is12)}
+                  onClick={() => setHour12(is12)}
+                  aria-pressed={hour12 === is12}
+                  className={`min-h-9 px-3 tabular-nums ${is12 ? "rounded-l-[9px]" : "rounded-r-[9px]"} ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
+                >
+                  {is12 ? "12h" : "24h"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="mb-3 flex items-center gap-1.5 text-xs">
+            <span className={c.faint}>
+              <GlobeIcon />
+            </span>
+            <label htmlFor="booker-tz" className="sr-only">
+              Timezone
+            </label>
+            <select
+              id="booker-tz"
+              value={zone}
+              onChange={(e) => setZone(e.target.value)}
+              className={`-ml-1 min-h-11 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 text-xs hover:border-border ${c.body}`}
+            >
+              {zoneOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {errorAlert && <div className="mb-3">{errorAlert}</div>}
+          <div className="-mx-2 -my-1 flex-1 space-y-2 overflow-y-auto px-2 py-1">
+            {loading ? (
+              Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className={`h-11 animate-pulse rounded-md ${c.skeleton}`} />
+              ))
+            ) : loadError ? (
+              <div className="space-y-2">
+                <p className={`flex items-start gap-2 text-sm text-[var(--error)]`} role="alert">
+                  <span className="mt-0.5 shrink-0">
+                    <AlertIcon />
+                  </span>
+                  Couldn&apos;t load available times. Check your connection.
+                </p>
+                <button
+                  onClick={() => void loadSlots()}
+                  className={`inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`}
+                >
+                  Try again
+                </button>
+              </div>
+            ) : slotsByDay.size === 0 ? (
+              <p className={`text-sm ${c.faint}`}>No availability this month. Try another month.</p>
+            ) : daySlots.length === 0 ? (
+              <p className={`text-sm ${c.faint}`}>No times left that day, pick another.</p>
+            ) : (
+              daySlots.map((iso) => (
+                <button
+                  key={iso}
+                  onClick={() => setSelectedSlot(iso)}
+                  className={`flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-pennie-green"
+                    style={dotStyle}
+                  />
+                  {fmtTime(iso)}
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+
+  const eventPanel = (
+    <aside className={`border-b p-6 ${c.border} md:border-b-0 md:border-r`}>
+      <div
+        className={`mb-4 flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold ${c.avatar}`}
+        style={confirmStyle}
+      >
+        {meta ? initials(meta.orgName) : ""}
+      </div>
+      <h1 className={`mt-1 text-xl font-semibold leading-snug ${c.title}`}>
+        {meta?.eventType.name ?? "Book a call"}
+      </h1>
+      {meta?.eventType.description && (
+        <p className={`mt-3 text-sm leading-relaxed ${c.muted}`}>
+          {meta.eventType.description}
+        </p>
+      )}
+      <div className={`mt-5 space-y-2 text-sm ${c.body}`}>
+        <div className="flex items-center gap-2">
+          <span className={c.faint}>
+            <ClockIcon />
+          </span>
+          {meta ? `${meta.eventType.durationMin}m` : ""}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={c.faint}>
+            <PhoneIcon />
+          </span>
+          {attendee.phone || "Attendee phone number"}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={c.faint}>
+            <GlobeIcon />
+          </span>
+          {zone.replace(/_/g, " ")}
+        </div>
+      </div>
+    </aside>
+  );
+
+  const calendarPanel = (
+    <section className={`border-b p-6 ${c.border} md:border-b-0`}>
+      <BookerCalendar
+        month={month}
+        today={today}
+        canPrev={month.startOf("month") > today.startOf("month")}
+        // Availability is cache-limited; once a loaded month comes back
+        // empty there's nothing further to page into. Stay optimistic while
+        // a month is still loading.
+        canNext={loading || (meta?.slots.length ?? 0) > 0}
+        onMonthChange={(m) => {
+          setLoading(true);
+          setMonth(m);
+          setSelectedDay(null);
+          setSelectedSlot(null);
+        }}
+        isSelected={(d) => d.toISODate() === activeDay}
+        isDisabled={(d) => !slotsByDay.has(d.toISODate()!)}
+        onSelect={(d) => {
+          setSelectedDay(d.toISODate()!);
+          setSelectedSlot(null);
+        }}
+        selectedStyle={confirmStyle}
+        todayDotStyle={dotStyle}
+      />
+    </section>
+  );
+
   return (
     <div ref={rootRef} data-theme={theme} className={shell}>
-      <div className="grid grid-cols-1 md:grid-cols-[260px_1fr_240px]">
-        {/* Event panel */}
-        <aside className={`border-b p-6 ${c.border} md:border-b-0 md:border-r`}>
-          <div
-            className={`mb-4 flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold ${c.avatar}`}
-            style={confirmStyle}
-          >
-            {meta ? initials(meta.orgName) : ""}
+      {layout === "month" ? (
+        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr_240px]">
+          {eventPanel}
+          {calendarPanel}
+          {timesPanel}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+          {eventPanel}
+          <div className="flex flex-col">
+            <BookerStrip
+              today={today}
+              availableDays={[...slotsByDay.keys()].sort()}
+              activeDay={activeDay}
+              zone={zone}
+              onSelect={(iso) => {
+                setSelectedDay(iso);
+                setSelectedSlot(null);
+              }}
+            />
+            {timesPanel}
           </div>
-          <p className={`text-xs font-medium ${c.muted}`}>{meta?.bucket.name ?? ""}</p>
-          <h1 className={`mt-1 text-xl font-semibold leading-snug ${c.title}`}>
-            {meta?.eventType.name ?? "Book a call"}
-          </h1>
-          {meta?.eventType.description && (
-            <p className={`mt-3 text-sm leading-relaxed ${c.muted}`}>
-              {meta.eventType.description}
-            </p>
-          )}
-          <div className={`mt-5 space-y-2 text-sm ${c.body}`}>
-            <div className="flex items-center gap-2">
-              <span className={c.faint}>
-                <ClockIcon />
-              </span>
-              {meta ? `${meta.eventType.durationMin}m` : ""}
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={c.faint}>
-                <PhoneIcon />
-              </span>
-              {attendee.phone || "Attendee phone number"}
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={c.faint}>
-                <GlobeIcon />
-              </span>
-              {zone.replace(/_/g, " ")}
-            </div>
-          </div>
-        </aside>
-
-        {/* Calendar */}
-        <section className={`border-b p-6 ${c.border} md:border-b-0`}>
-          <BookerCalendar
-            month={month}
-            today={today}
-            canPrev={month.startOf("month") > today.startOf("month")}
-            // Availability is cache-limited; once a loaded month comes back
-            // empty there's nothing further to page into. Stay optimistic while
-            // a month is still loading.
-            canNext={loading || (meta?.slots.length ?? 0) > 0}
-            onMonthChange={(m) => {
-              setLoading(true);
-              setMonth(m);
-              setSelectedDay(null);
-              setSelectedSlot(null);
-            }}
-            isSelected={(d) => d.toISODate() === activeDay}
-            isDisabled={(d) => !slotsByDay.has(d.toISODate()!)}
-            onSelect={(d) => {
-              setSelectedDay(d.toISODate()!);
-              setSelectedSlot(null);
-            }}
-            selectedStyle={confirmStyle}
-            todayDotStyle={dotStyle}
-          />
-        </section>
-
-        {/* Times / booking form (the 420px cap is for the scrolling slot list only) */}
-        <section className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}`}>
-          {selectedSlot ? (
-            <div className="space-y-3">
-              <button
-                onClick={() => setSelectedSlot(null)}
-                aria-label="Back to time selection"
-                className={`inline-flex min-h-9 items-center text-xs ${c.muted} ${c.backHover}`}
-              >
-                ‹ Back
-              </button>
-              <p className={`text-sm font-semibold ${c.title}`}>
-                {selectedDate?.toFormat("ccc d")} · {fmtTime(selectedSlot)}
-              </p>
-              {(["name", "email", "phone"] as const).map((field) => (
-                <div key={field}>
-                  <label htmlFor={`booker-${field}`} className="sr-only">
-                    {field[0].toUpperCase() + field.slice(1)}
-                  </label>
-                  <input
-                    id={`booker-${field}`}
-                    className={`min-h-12 w-full rounded-sm px-4 text-base ${c.input}`}
-                    placeholder={field[0].toUpperCase() + field.slice(1)}
-                    type={
-                      field === "email" ? "email" : field === "phone" ? "tel" : "text"
-                    }
-                    autoComplete={field === "phone" ? "tel" : field}
-                    inputMode={
-                      field === "email" ? "email" : field === "phone" ? "tel" : undefined
-                    }
-                    aria-required="true"
-                    aria-invalid={fieldErrors[field] ? true : undefined}
-                    aria-describedby={
-                      fieldErrors[field] ? `booker-${field}-error` : undefined
-                    }
-                    value={attendee[field]}
-                    onChange={(e) => {
-                      setAttendee((a) => ({ ...a, [field]: e.target.value }));
-                      setFieldErrors((f) =>
-                        f[field] ? { ...f, [field]: undefined } : f,
-                      );
-                    }}
-                  />
-                  {fieldErrors[field] && (
-                    <p
-                      id={`booker-${field}-error`}
-                      className="mt-1 text-sm text-[var(--error)]"
-                    >
-                      {fieldErrors[field]}
-                    </p>
-                  )}
-                </div>
-              ))}
-              {errorAlert}
-              <button
-                onClick={submit}
-                disabled={submitting}
-                style={confirmStyle}
-                className={`group inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-4 text-base font-semibold ${c.confirm} active:translate-y-px disabled:opacity-60`}
-              >
-                {submitting ? "Booking your call…" : "Confirm booking"}
-                {!submitting && (
-                  <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
-                )}
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="mb-1 flex items-center justify-between">
-                <p className={`text-sm font-semibold tabular-nums ${c.title}`}>
-                  {selectedDate ? (
-                    <>
-                      {selectedDate.toFormat("ccc")}{" "}
-                      <span className={c.faint}>{selectedDate.toFormat("dd")}</span>
-                    </>
-                  ) : (
-                    "Pick a day"
-                  )}
-                </p>
-                <div className={`inline-flex rounded-md border text-xs ${c.toggleBorder}`}>
-                  {[true, false].map((is12) => (
-                    <button
-                      key={String(is12)}
-                      onClick={() => setHour12(is12)}
-                      aria-pressed={hour12 === is12}
-                      className={`min-h-9 px-3 tabular-nums ${is12 ? "rounded-l-[9px]" : "rounded-r-[9px]"} ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
-                    >
-                      {is12 ? "12h" : "24h"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="mb-3 flex items-center gap-1.5 text-xs">
-                <span className={c.faint}>
-                  <GlobeIcon />
-                </span>
-                <label htmlFor="booker-tz" className="sr-only">
-                  Timezone
-                </label>
-                <select
-                  id="booker-tz"
-                  value={zone}
-                  onChange={(e) => setZone(e.target.value)}
-                  className={`-ml-1 min-h-11 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 text-xs hover:border-border ${c.body}`}
-                >
-                  {zoneOptions.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {errorAlert && <div className="mb-3">{errorAlert}</div>}
-              <div className="-mx-2 -my-1 flex-1 space-y-2 overflow-y-auto px-2 py-1">
-                {loading ? (
-                  Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className={`h-11 animate-pulse rounded-md ${c.skeleton}`} />
-                  ))
-                ) : loadError ? (
-                  <div className="space-y-2">
-                    <p className={`flex items-start gap-2 text-sm text-[var(--error)]`} role="alert">
-                      <span className="mt-0.5 shrink-0">
-                        <AlertIcon />
-                      </span>
-                      Couldn&apos;t load available times. Check your connection.
-                    </p>
-                    <button
-                      onClick={() => void loadSlots()}
-                      className={`inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`}
-                    >
-                      Try again
-                    </button>
-                  </div>
-                ) : slotsByDay.size === 0 ? (
-                  <p className={`text-sm ${c.faint}`}>No availability this month. Try another month.</p>
-                ) : daySlots.length === 0 ? (
-                  <p className={`text-sm ${c.faint}`}>No times left that day, pick another.</p>
-                ) : (
-                  daySlots.map((iso) => (
-                    <button
-                      key={iso}
-                      onClick={() => setSelectedSlot(iso)}
-                      className={`flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
-                    >
-                      <span
-                        className="h-1.5 w-1.5 rounded-full bg-pennie-green"
-                        style={dotStyle}
-                      />
-                      {fmtTime(iso)}
-                    </button>
-                  ))
-                )}
-              </div>
-            </>
-          )}
-        </section>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
