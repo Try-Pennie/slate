@@ -29,6 +29,11 @@ import {
   type SyncCandidateRow,
 } from "@/lib/google/sync-pace";
 import { stampLastSynced, type SyncWritesDb } from "@/lib/google/sync-writes";
+import {
+  nextSyncState,
+  type CalSyncHealth,
+  type SyncOutcome,
+} from "@/lib/google/sync-health";
 import { googlePushUrl } from "@/lib/env";
 import type { AgentCalendar } from "@/lib/db/types";
 
@@ -161,35 +166,79 @@ async function purgeVanished(
   }
 }
 
+/** The current diagnostics snapshot for a calendar (#273). */
+function healthOf(cal: AgentCalendar): CalSyncHealth {
+  return {
+    consecutive_failures: cal.consecutive_failures,
+    last_success_at: cal.last_success_at,
+    last_sync_error: cal.last_sync_error,
+  };
+}
+
+/**
+ * Persist the next diagnostics state for one calendar, plus any extra columns
+ * (sync_token, watch fields) written in the same update. Never throws - a
+ * diagnostics write must not break or mask the sync/watch it describes.
+ */
+async function recordCalHealth(
+  calId: string,
+  prev: CalSyncHealth,
+  outcome: SyncOutcome,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    await supabaseAdmin()
+      .from("agent_calendars")
+      .update({ ...nextSyncState(prev, outcome, new Date().toISOString()), ...extra })
+      .eq("id", calId);
+  } catch (err) {
+    console.error(
+      `recordCalHealth(${calId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 /** Sync one calendar's changes into busy_blocks; advances its stored sync token. */
 async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> {
   const bootstrapMin = new Date(
     Date.now() - BOOTSTRAP_LOOKBACK_MS,
   ).toISOString();
+  const prev = healthOf(cal);
 
-  let result;
-  let full = !cal.sync_token; // bootstrap (no token) is a full sync
   try {
-    result = await syncEvents(email, cal.calendar_id, cal.sync_token, bootstrapMin);
-  } catch (err: unknown) {
-    if (err instanceof SyncTokenExpired) {
-      full = true;
-      result = await syncEvents(email, cal.calendar_id, null, bootstrapMin);
-    } else {
-      throw err;
+    let result;
+    let full = !cal.sync_token; // bootstrap (no token) is a full sync
+    try {
+      result = await syncEvents(email, cal.calendar_id, cal.sync_token, bootstrapMin);
+    } catch (err: unknown) {
+      if (err instanceof SyncTokenExpired) {
+        full = true;
+        result = await syncEvents(email, cal.calendar_id, null, bootstrapMin);
+      } else {
+        throw err;
+      }
     }
-  }
 
-  await applyEvents(cal.user_id, cal.calendar_id, result.events);
-  if (full) await purgeVanished(cal.user_id, cal.calendar_id, result.events);
+    await applyEvents(cal.user_id, cal.calendar_id, result.events);
+    if (full) await purgeVanished(cal.user_id, cal.calendar_id, result.events);
 
-  if (result.nextSyncToken) {
-    await supabaseAdmin()
-      .from("agent_calendars")
-      .update({ sync_token: result.nextSyncToken })
-      .eq("id", cal.id);
+    // Record success health, carrying the advanced sync token in the same write.
+    await recordCalHealth(
+      cal.id,
+      prev,
+      { ok: true },
+      result.nextSyncToken ? { sync_token: result.nextSyncToken } : {},
+    );
+    return result.events.length;
+  } catch (err) {
+    // Record the failure (streak + message) before rethrowing so the per-agent
+    // error handling + alert still fire and the cache never drifts silently.
+    await recordCalHealth(cal.id, prev, {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
-  return result.events.length;
 }
 
 /**
@@ -357,30 +406,39 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       await db.from("agent_calendars").delete().eq("id", c.id);
     }
 
-    // Register/renew watches for the current set.
+    // Register/renew watches for the current set. Each calendar is isolated
+    // (#273 Phase 1.2): one bad calendar (e.g. a 404 account-gone) must NOT
+    // abort the agent's other renewals, and each records its own diagnostics.
     const cals = await loadAgentCalendars(userId);
     let renewed = false;
+    let firstError: string | null = null;
     for (const cal of cals) {
       if (!dueForRenewal(cal)) continue;
-      if (cal.watch_channel_id && cal.watch_resource_id) {
-        await stopChannel(email, cal.watch_channel_id, cal.watch_resource_id).catch(() => {});
-      }
-      const channelId = nanoid();
-      const { resourceId, expiration } = await watchCalendar(
-        email,
-        cal.calendar_id,
-        channelId,
-      );
-      await db
-        .from("agent_calendars")
-        .update({
+      const prev = healthOf(cal);
+      try {
+        if (cal.watch_channel_id && cal.watch_resource_id) {
+          await stopChannel(email, cal.watch_channel_id, cal.watch_resource_id).catch(() => {});
+        }
+        const channelId = nanoid();
+        const { resourceId, expiration } = await watchCalendar(
+          email,
+          cal.calendar_id,
+          channelId,
+        );
+        await recordCalHealth(cal.id, prev, { ok: true }, {
           watch_channel_id: channelId,
           watch_resource_id: resourceId,
           watch_expiration: expiration,
-        })
-        .eq("id", cal.id);
-      renewed = true;
+        });
+        renewed = true;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        if (firstError === null) firstError = error;
+        await recordCalHealth(cal.id, prev, { ok: false, error });
+        // keep going - the agent's other calendars still need their watches.
+      }
     }
+    if (firstError !== null) return { status: "error", error: firstError };
     return renewed ? { status: "renewed" } : { status: "current" };
   } catch (err) {
     return { status: "error", error: err instanceof Error ? err.message : String(err) };

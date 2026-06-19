@@ -233,6 +233,12 @@ export interface AgentCalendar {
   sync_pending: boolean;
   /** Per-calendar sync claim; stale after CALENDAR_CLAIM_TTL_MS. */
   sync_claimed_at: string | null;
+  /** Diagnostics (#273): last error message from sync/watch, or null if healthy. */
+  last_sync_error: string | null;
+  /** Diagnostics (#273): consecutive failed passes; 0 when last attempt succeeded. */
+  consecutive_failures: number;
+  /** Diagnostics (#273): last time this calendar synced/renewed cleanly. */
+  last_success_at: string | null;
   created_at: string;
 }
 
