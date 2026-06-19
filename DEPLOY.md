@@ -55,20 +55,26 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
 - The Google OAuth client redirect URI is unchanged (it points at Supabase).
 
 ## Cron
-Implemented as a separate **`slate-cron`** Worker (`cron-worker/`) — the OpenNext
-app Worker only exports `fetch`, so a companion Worker handles `scheduled` and
-calls the app's cron endpoints with `Authorization: Bearer $CRON_SECRET`:
-- `* * * * *`   → `/api/cron/sync`     (backstop calendar sync + watch renewal)
-- `*/5 * * * *` → `/api/cron/complete` (mark-complete sweep + webhook retries)
+Cron runs entirely on the **main** Worker: `worker/index.ts` `scheduled()`
+dispatches each Cloudflare trigger through `worker/cron-routes.ts` to the app's
+cron endpoints (`Authorization: Bearer $CRON_SECRET`). Triggers live in
+`wrangler.jsonc`; `scripts/test-cron-routes.ts` pins them in lockstep. A single
+trigger may drive more than one independent lane (each guards itself with its
+own lock):
+- `* * * * *`   → `/api/cron/sync` (backstop calendar sync) **+** `/api/cron/recompute` (bucket_slots freshness)
+- `*/5 * * * *` → `/api/cron/complete` (mark-complete sweep + webhook retries) **+** `/api/cron/watch` (calendar watch renewal)
+- `0 * * * *`   → `/api/cron/agents` (hourly Salesforce roster reconcile + default hours, single locked path)
+- OOO digest / approvals slots (see `cron-routes.ts`)
 
-Deploy/update it with:
-```bash
-wrangler deploy --config cron-worker/wrangler.jsonc
-wrangler secret put CRON_SECRET --config cron-worker/wrangler.jsonc   # same value as the app
-```
-Watch it run: `wrangler tail slate-cron`. Until the domain is Google-verified,
-the per-minute sync's watch-registration attempt fails harmlessly (caught);
-real-time push starts working once verification is done.
+No secret beyond `CRON_SECRET` (already set on the app) is needed — the crons
+deploy with the app via `pnpm cf:deploy`. Until the domain is Google-verified,
+the watch-registration attempt fails harmlessly (caught); real-time push starts
+working once verification is done.
+
+> **One-time teardown (#267):** the old companion **`slate-cron`** Worker
+> (`cron-worker/`, now deleted from the repo) double-fired the every-minute and
+> 5-minute jobs and was the only place the unlocked `*/15` Salesforce sync ran.
+> After deploying the main Worker, retire it once with `wrangler delete slate-cron`.
 
 ## Verify after deploy
 1. Visit `https://slate.trypennie.dev/login` → sign in with Google → land on `/admin`.

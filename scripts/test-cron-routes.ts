@@ -88,6 +88,22 @@ for (const [cron, value] of Object.entries(CRON_ROUTES)) {
   );
 }
 
+// The Salesforce roster reconcile runs HOURLY through the single locked agents
+// path (#267). Retiring the duplicate slate-cron worker removed the unlocked
+// */15 salesforce trigger, and the daily 0 6 slot moved to hourly so a new hire
+// becomes bookable-eligible within the hour rather than next day.
+{
+  const hourly = routesForCron("0 * * * *");
+  assert(
+    hourly.includes("/api/cron/agents"),
+    "0 * * * * drives the hourly roster reconcile (single locked path)",
+  );
+  assert(
+    routesForCron("0 6 * * *").length === 0,
+    "the old daily 0 6 agents slot is retired",
+  );
+}
+
 assert(routesForCron("0 0 31 2 *").length === 0, "unknown cron expressions route to nothing");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);

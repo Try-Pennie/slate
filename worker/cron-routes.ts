@@ -18,8 +18,12 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // Booking completion sweep + webhook retry queue, plus the watch-renewal lane
   // (cron_watch): watch TTL is ~7 days, so renewals never needed the 1-min tick.
   "*/5 * * * *": ["/api/cron/complete", "/api/cron/watch"],
-  // Daily roster maintenance: Salesforce agent/team sync + default hours.
-  "0 6 * * *": "/api/cron/agents",
+  // Hourly roster reconcile: Salesforce agent/team sync (deactivate-not-delete
+  // reaper) + default hours, through the SINGLE locked path (#267). New agents
+  // arrive bookable=false; the sync never re-activates anyone. Runs hourly (was
+  // daily) so a new hire is eligible within the hour; the unlocked */15 reaper
+  // on the retired slate-cron worker is gone.
+  "0 * * * *": "/api/cron/agents",
   // Pending-OOO morning digest. Two UTC slots straddle DST so it lands at 9am
   // ET on weekdays; the route's isDigestTime gate lets exactly one fire.
   "0 13 * * 1-5": "/api/cron/ooo-digest",
