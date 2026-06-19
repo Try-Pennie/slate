@@ -28,6 +28,7 @@ import {
   type SyncAgent,
   type SyncCandidateRow,
 } from "@/lib/google/sync-pace";
+import { stampLastSynced, type SyncWritesDb } from "@/lib/google/sync-writes";
 import { googlePushUrl } from "@/lib/env";
 import type { AgentCalendar } from "@/lib/db/types";
 
@@ -83,19 +84,17 @@ export async function loadSyncAgents(): Promise<SyncAgent[]> {
   return toSyncAgents(rows, withCalendars);
 }
 
-/** Stamp users.last_synced_at = now for rotation. Best-effort; never throws. */
-export async function markAgentSynced(userId: string): Promise<void> {
-  try {
-    const { error } = await supabaseAdmin()
-      .from("users")
-      .update({ last_synced_at: new Date().toISOString() })
-      .eq("id", userId);
-    if (error) console.error(`markAgentSynced(${userId}) failed: ${error.message}`);
-  } catch (err) {
-    console.error(
-      `markAgentSynced(${userId}) threw: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+/**
+ * Stamp users.last_synced_at = now for every agent processed this tick, in ONE
+ * write (#243), for rotation. Best-effort; never throws. The batching + guards
+ * live in the dependency-free sync-writes module so they stay node-testable.
+ */
+export async function markAgentsSynced(userIds: string[]): Promise<void> {
+  await stampLastSynced(
+    supabaseAdmin() as unknown as SyncWritesDb,
+    userIds,
+    new Date().toISOString(),
+  );
 }
 
 // Cap rows per DB call so even a huge calendar's bootstrap stays well under the
