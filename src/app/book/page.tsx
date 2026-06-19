@@ -1,4 +1,6 @@
 import Booker from "@/components/Booker";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { normalizeBookerLayout } from "@/lib/booking/layout";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -39,6 +41,21 @@ export default async function BookEntry({
     );
   }
 
+  const { data: bucketRow } = await supabaseAdmin()
+    .from("buckets")
+    .select("org_id")
+    .eq("code", bucketCode)
+    .maybeSingle();
+  const orgId = bucketRow?.org_id ?? null;
+  const { data: orgRow } = orgId
+    ? await supabaseAdmin()
+        .from("organizations")
+        .select("booker_layout")
+        .eq("id", orgId)
+        .maybeSingle()
+    : { data: null };
+  const layout = normalizeBookerLayout(orgRow?.booker_layout);
+
   const phone =
     first(sp, "phone") ||
     first(sp, "attendeePhoneNumber") ||
@@ -65,6 +82,7 @@ export default async function BookEntry({
         embedded={embedded}
         theme={first(sp, "theme") === "dark" ? "dark" : "light"}
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
+        layout={layout}
       />
     </main>
   );
