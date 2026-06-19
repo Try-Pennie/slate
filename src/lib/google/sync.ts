@@ -222,13 +222,17 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
     await applyEvents(cal.user_id, cal.calendar_id, result.events);
     if (full) await purgeVanished(cal.user_id, cal.calendar_id, result.events);
 
-    // Record success health, carrying the advanced sync token in the same write.
-    await recordCalHealth(
-      cal.id,
-      prev,
-      { ok: true },
-      result.nextSyncToken ? { sync_token: result.nextSyncToken } : {},
-    );
+    // Persist the advanced sync token on its OWN write (correctness-critical:
+    // it's how the next pass resumes instead of re-bootstrapping). Kept separate
+    // from the best-effort diagnostics write so the token still saves even if
+    // the diagnostics columns aren't present yet (e.g. migration not applied).
+    if (result.nextSyncToken) {
+      await supabaseAdmin()
+        .from("agent_calendars")
+        .update({ sync_token: result.nextSyncToken })
+        .eq("id", cal.id);
+    }
+    await recordCalHealth(cal.id, prev, { ok: true });
     return result.events.length;
   } catch (err) {
     // Record the failure (streak + message) before rethrowing so the per-agent
