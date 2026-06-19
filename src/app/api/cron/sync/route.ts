@@ -2,7 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import { runIncrementalSync, loadSyncAgents, markAgentSynced } from "@/lib/google/sync";
-import { withinBudget, orderAgentsForTick } from "@/lib/google/sync-pace";
+import {
+  orderAgentsForTick,
+  mapWithConcurrency,
+  SYNC_CONCURRENCY,
+} from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -69,42 +73,50 @@ export async function GET(req: NextRequest) {
 
   try {
     // Bookable agents with their pacing facts (DB only, no Google calls).
-    const agents = orderAgentsForTick(await loadSyncAgents());
-    // One budget for the whole tick (#44/#238): we BREAK at the deadline so a
-    // long pass can't run for every remaining agent after the budget is spent.
-    // Unreached agents are picked up next tick (rotation sorts them first).
-    // Real-time freshness meanwhile comes from Google push.
+    // Brand-new agents have no calendars to sync yet — the watch lane discovers
+    // and watches them first, so skip them here until they're onboarded.
+    const agents = orderAgentsForTick(await loadSyncAgents()).filter(
+      (a) => a.hasCalendars,
+    );
+    // One budget for the whole tick (#44/#238): the pool stops STARTING new
+    // agents at the deadline so a long pass can't run for every remaining
+    // agent. Unreached agents are picked up next tick (rotation sorts them
+    // first). Real-time freshness meanwhile comes from Google push.
+    // Agents are processed CONCURRENTLY up to SYNC_CONCURRENCY (#242): the old
+    // sequential loop's per-agent Google I/O blew the budget before ~30 agents.
     const deadlineMs = Date.now() + SYNC_TICK_BUDGET_MS;
-    const results: {
-      userId: string;
-      synced?: number;
-      truncated?: boolean;
-      error?: string;
-    }[] = [];
-    for (const agent of agents) {
-      if (!withinBudget(Date.now(), deadlineMs)) break;
-      // Brand-new agents have no calendars to sync yet — the watch lane
-      // discovers and watches them first; skip until they're onboarded.
-      if (!agent.hasCalendars) continue;
-
-      const row: (typeof results)[number] = { userId: agent.userId };
-      try {
-        const sync = await runIncrementalSync(agent.userId, deadlineMs);
-        row.synced = sync.events;
-        if (sync.truncated) row.truncated = true;
-      } catch (err) {
-        row.error = err instanceof Error ? err.message : String(err);
-      }
-      await markAgentSynced(agent.userId);
-      results.push(row);
-    }
+    const { results, processed, truncated: budgetTruncated } =
+      await mapWithConcurrency(
+        agents,
+        SYNC_CONCURRENCY,
+        async (agent) => {
+          const row: {
+            userId: string;
+            synced?: number;
+            truncated?: boolean;
+            error?: string;
+          } = { userId: agent.userId };
+          try {
+            const sync = await runIncrementalSync(agent.userId, deadlineMs);
+            row.synced = sync.events;
+            if (sync.truncated) row.truncated = true;
+          } catch (err) {
+            row.error = err instanceof Error ? err.message : String(err);
+          }
+          await markAgentSynced(agent.userId);
+          return row;
+        },
+        { deadlineMs },
+      );
 
     await alertSyncFailures(results.filter((r) => r.error), results.length);
 
-    const truncated = results.some((r) => r.truncated);
+    // truncated = some agent went unreached this tick (budget) OR an agent's
+    // own calendars didn't all finish within the deadline.
+    const truncated = budgetTruncated || results.some((r) => r.truncated);
     return NextResponse.json({
       agents: agents.length,
-      processed: results.length,
+      processed,
       truncated,
       results,
     });
