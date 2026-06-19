@@ -23,6 +23,25 @@ export async function readBucketSlotsRow(
   return (data as { payload: unknown } | null) ?? null;
 }
 
+/** All bucket codes (for the cron backstop's rotation). */
+export async function listAllBucketCodes(): Promise<string[]> {
+  const { data } = await supabaseAdmin().from("buckets").select("code");
+  return (data ?? []).map((b) => (b as { code: string }).code);
+}
+
+/** Existing precomputed rows with their last-computed time (epoch ms). */
+export async function listKnownBucketSlotRows(): Promise<
+  { code: string; computedAtMs: number }[]
+> {
+  const { data } = await supabaseAdmin()
+    .from("bucket_slots")
+    .select("bucket_code, computed_at");
+  return (data ?? []).map((r) => {
+    const row = r as { bucket_code: string; computed_at: string };
+    return { code: row.bucket_code, computedAtMs: Date.parse(row.computed_at) };
+  });
+}
+
 /** Upsert a freshly computed blob for a bucket. */
 export async function writeBucketSlotsRow(
   code: string,
