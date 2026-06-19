@@ -4,7 +4,7 @@ let failures = 0;
 const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
 
 const k = slotCacheKey("411", "2026-06-18T16:42:07.123Z", 14);
-assert(k.key === "slots:v2:411:2026-06-18T00:00:00.000Z:14", "key anchors from to the start of the UTC day");
+assert(k.key === "slots:v3:411:2026-06-18T00:00:00.000Z:14", "key anchors from to the start of the UTC day");
 assert(k.fromIso === "2026-06-18T00:00:00.000Z", "fromIso is the day anchor");
 assert(k.toIso === "2026-07-02T00:00:00.000Z", "toIso is day-anchor + 14d");
 // any two timestamps on the same UTC day -> same key (one key per bucket per day)

@@ -5,7 +5,7 @@ import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_RANGE_DAYS = 14;
+const DEFAULT_RANGE_DAYS = 4;
 
 /**
  * GET /api/availability?bucket=411&from=ISO&to=ISO

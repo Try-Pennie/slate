@@ -193,9 +193,21 @@ export default function Booker({
     // swaps the stale slot list for skeletons instead of leaving it tappable.
     setLoading(true);
     setLoadError(false);
+    // Only request the precomputed window [today, today+HORIZON_DAYS] (mirrors the
+    // server constant in src/lib/availability/slot-cache.ts). A month entirely
+    // beyond the horizon has no bookable slots — render it unavailable WITHOUT a
+    // fetch that would otherwise anchor a cold compute outside the warmed window.
+    const HORIZON_DAYS = 4;
+    const horizonEnd = today.plus({ days: HORIZON_DAYS });
     const monthStart = month.startOf("month");
-    const from = DateTime.max(monthStart, today).toUTC().toISO();
-    const to = month.endOf("month").toUTC().toISO();
+    const fromDt = DateTime.max(monthStart, today);
+    if (fromDt > horizonEnd) {
+      setMeta((prev) => (prev ? { ...prev, slots: [] } : prev));
+      setLoading(false);
+      return;
+    }
+    const from = fromDt.toUTC().toISO();
+    const to = DateTime.min(month.endOf("month"), horizonEnd).toUTC().toISO();
     try {
       const res = await fetch(
         `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`,
