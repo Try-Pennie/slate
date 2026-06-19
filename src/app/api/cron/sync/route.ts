@@ -1,29 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
-import {
-  ensureWatches,
-  runIncrementalSync,
-  loadSyncAgents,
-  markAgentSynced,
-} from "@/lib/google/sync";
-import {
-  withinBudget,
-  orderAgentsForTick,
-  shouldOnboard,
-} from "@/lib/google/sync-pace";
+import { runIncrementalSync, loadSyncAgents, markAgentSynced } from "@/lib/google/sync";
+import { withinBudget, orderAgentsForTick } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import {
-  formatSyncFailureAlert,
-  formatWatchLapseAlert,
-  isConsecutiveFailure,
-} from "@/lib/notify/alerts";
+import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
 
 export const dynamic = "force-dynamic";
-
-const WATCH_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // don't re-alert within 30 min
 
 /**
  * Alert when calendar sync errors on CONSECUTIVE passes (#43). The streak
@@ -64,21 +49,11 @@ async function alertSyncFailures(
   );
 }
 
-/** Post a throttled Slack alert when watch renewals are failing. */
-async function alertWatchLapse(watchErrors: number, totalAgents: number): Promise<void> {
-  if (watchErrors === 0) return;
-  await sendThrottledAlert(
-    "watch_lapse",
-    WATCH_ALERT_COOLDOWN_MS,
-    formatWatchLapseAlert(watchErrors, totalAgents),
-  );
-}
-
 /**
  * Backstop sync (~1 min). Catches any push notification Google may have missed
- * and renews watch channels nearing expiry. Slot-cache freshness is owned by
- * the independent recompute lane (`/api/cron/recompute`, #273), so a busy sync
- * tick can no longer starve it.
+ * and reconciles cached busy_blocks with Google. Watch renewal lives in the
+ * independent watch lane (`/api/cron/watch`, #273) and slot-cache freshness in
+ * the recompute lane, so a busy sync tick can no longer starve either.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
@@ -95,40 +70,24 @@ export async function GET(req: NextRequest) {
   try {
     // Bookable agents with their pacing facts (DB only, no Google calls).
     const agents = orderAgentsForTick(await loadSyncAgents());
-    // One budget for the whole tick (#44/#238): we BREAK at the deadline so
-    // watch setup can't run for every remaining agent after the budget is
-    // spent. Unreached agents are picked up next tick (rotation makes them
-    // sort first). Real-time freshness meanwhile comes from Google push.
+    // One budget for the whole tick (#44/#238): we BREAK at the deadline so a
+    // long pass can't run for every remaining agent after the budget is spent.
+    // Unreached agents are picked up next tick (rotation sorts them first).
+    // Real-time freshness meanwhile comes from Google push.
     const deadlineMs = Date.now() + SYNC_TICK_BUDGET_MS;
     const results: {
       userId: string;
-      watch: string;
-      watchError?: string;
       synced?: number;
       truncated?: boolean;
       error?: string;
     }[] = [];
-    let onboarded = 0;
     for (const agent of agents) {
       if (!withinBudget(Date.now(), deadlineMs)) break;
-      // A brand-new agent needs ~2 Google calls to set up watches; cap how many
-      // we onboard per tick so a fresh roster drains over several minutes
-      // instead of blowing the budget in one ~100s run. Already-onboarded
-      // agents are always processed (their ensureWatches is a cheap DB read
-      // unless a renewal is genuinely due).
-      if (!agent.hasCalendars && !shouldOnboard(agent, onboarded)) continue;
+      // Brand-new agents have no calendars to sync yet — the watch lane
+      // discovers and watches them first; skip until they're onboarded.
+      if (!agent.hasCalendars) continue;
 
-      const watch = await ensureWatches(agent.userId);
-      // Count any brand-new agent whose watch setup ran the Google path (renewed
-      // OR error) against the per-tick cap — "skipped" makes no Google calls, so
-      // it doesn't consume the budget. This bounds Google-call volume even when
-      // onboarding is failing under a Google outage, not just successful setups.
-      if (!agent.hasCalendars && watch.status !== "skipped") onboarded++;
-      const row: (typeof results)[number] = {
-        userId: agent.userId,
-        watch: watch.status,
-        ...(watch.status === "error" ? { watchError: watch.error } : {}),
-      };
+      const row: (typeof results)[number] = { userId: agent.userId };
       try {
         const sync = await runIncrementalSync(agent.userId, deadlineMs);
         row.synced = sync.events;
@@ -140,16 +99,12 @@ export async function GET(req: NextRequest) {
       results.push(row);
     }
 
-    const watchErrors = results.filter((r) => r.watch === "error").length;
-    await alertWatchLapse(watchErrors, results.length);
     await alertSyncFailures(results.filter((r) => r.error), results.length);
 
     const truncated = results.some((r) => r.truncated);
     return NextResponse.json({
       agents: agents.length,
       processed: results.length,
-      onboarded,
-      watchErrors,
       truncated,
       results,
     });
