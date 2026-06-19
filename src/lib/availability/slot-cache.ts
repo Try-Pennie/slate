@@ -1,10 +1,18 @@
 import { getBucketSlots, type BucketSlots } from "./service";
 import { slotCacheKey } from "./cache-key";
+import { resolveBucketSlots, type ReadDeps } from "./precompute-core";
+import {
+  readBucketSlotsRow,
+  writeBucketSlotsRow,
+  recomputeBucketSlots,
+} from "./precompute";
 import { appUrl } from "@/lib/env";
 
-export const SLOT_TTL_SECONDS = 60;
+// Short L1 TTL: the precompute row is the source of truth, so the Cache API is
+// just a per-colo accelerator. 5s keeps a far-colo read self-healing well inside
+// the <5s display-freshness target.
+export const SLOT_TTL_SECONDS = 5;
 // Real booking window is 0-3 days, so a 4-day horizon covers it with margin.
-// ~4x smaller compute + payload than the old 14-day window. (Phase 0.)
 export const HORIZON_DAYS = 4;
 
 // `caches.default` is a Cloudflare runtime extension not in the standard lib types.
@@ -22,43 +30,67 @@ function keyRequest(key: string): Request {
   return new Request(`${appUrl()}/__slot-cache/${encodeURIComponent(key)}`);
 }
 
+/**
+ * Read path for the embed: Cache API -> precomputed `bucket_slots` row -> bounded
+ * fail-open compute. The multi-agent compute runs ONLY when no good row exists
+ * (new/never-computed bucket); the steady state is a warm cache hit or one
+ * indexed PK read. Orchestration + the "never compute when a good row exists"
+ * invariant are unit-tested in precompute-core.ts; here we only bind real IO.
+ */
 export async function getCachedBucketSlots(
   code: string,
   fromIso: string,
   horizonDays = HORIZON_DAYS,
 ): Promise<BucketSlots | null> {
-  const { key, fromIso: nf, toIso: nt } = slotCacheKey(code, fromIso, horizonDays);
   const cache = slotCache();
-  const req = keyRequest(key);
-  if (cache) {
-    try {
-      const hit = await cache.match(req);
-      if (hit) return JSON.parse(await hit.text()) as BucketSlots;
-    } catch { /* fall through to compute */ }
-  }
-  const fresh = await getBucketSlots(code, nf, nt);
-  if (cache && fresh) {
-    try {
-      await cache.put(
-        req,
-        new Response(JSON.stringify(fresh), {
-          headers: {
-            "content-type": "application/json",
-            "cache-control": `public, max-age=${SLOT_TTL_SECONDS}`,
-          },
-        }),
-      );
-    } catch { /* ignore */ }
-  }
-  return fresh;
+  const deps: ReadDeps = {
+    cacheGet: async (key) => {
+      if (!cache) return null;
+      try {
+        const hit = await cache.match(keyRequest(key));
+        if (hit) return JSON.parse(await hit.text()) as BucketSlots;
+      } catch { /* fall through */ }
+      return null;
+    },
+    cachePut: async (key, val) => {
+      if (!cache) return;
+      try {
+        await cache.put(
+          keyRequest(key),
+          new Response(JSON.stringify(val), {
+            headers: {
+              "content-type": "application/json",
+              "cache-control": `public, max-age=${SLOT_TTL_SECONDS}`,
+            },
+          }),
+        );
+      } catch { /* ignore */ }
+    },
+    readRow: (c) => readBucketSlotsRow(c),
+    compute: (c, from, to) => getBucketSlots(c, from, to),
+    writeRow: (c, val) => writeBucketSlotsRow(c, val),
+  };
+  return resolveBucketSlots(code, fromIso, horizonDays, deps);
 }
 
 /**
- * Best-effort clear of a bucket's cached slots after a booking changes it.
- * The Cache API is per-datacenter with no prefix-list, so we delete the exact
- * current-day key (the only realistically-cached one, since reads use from≈now).
- * Other datacenters / a crossed day boundary ride the 60s TTL; verify-on-book is
- * the hard double-book guard regardless.
+ * Refresh a bucket's precomputed row over the current horizon, then clear its L1
+ * cache key so the next read serves the fresh row. Called by the refresh-on-change
+ * writers (booking / Google sync / OOO) and the cron backstop.
+ */
+export async function recomputeBucketSlotsForToday(code: string): Promise<void> {
+  const { fromIso, toIso, key } = slotCacheKey(code, new Date().toISOString(), HORIZON_DAYS);
+  await recomputeBucketSlots(code, fromIso, toIso);
+  const cache = slotCache();
+  if (cache) {
+    try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Best-effort clear of a bucket's L1 cache key (per-datacenter, no prefix-list).
+ * Retained for callers that only need to drop the cache; prefer
+ * recomputeBucketSlotsForToday when the underlying availability changed.
  */
 export async function invalidateBucketSlots(code: string): Promise<void> {
   const cache = slotCache();
