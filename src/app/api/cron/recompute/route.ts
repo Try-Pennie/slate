@@ -12,6 +12,7 @@ import {
 import {
   bucketsDueForRecompute,
   staleBuckets,
+  recomputeHeadroom,
 } from "@/lib/availability/precompute-cron";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +28,10 @@ const STALE_ALARM_MS = 6 * 60_000;
 // Hard per-tick cap so a slow run can't overrun the lock TTL.
 const RECOMPUTE_BUDGET_MS = 50_000;
 const STALE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+// Early warning: flag when a run uses >= this fraction of its budget (or can't
+// drain the due set) so saturation is visible BEFORE buckets actually go stale.
+const HEADROOM_WARN_FRACTION = 0.7;
+const HEADROOM_ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000; // at most every 2h
 
 /**
  * RECOMPUTE lane: keeps the precomputed `bucket_slots` cache fresh, independent
@@ -55,12 +60,32 @@ export async function GET(req: NextRequest) {
     ]);
     // Only the buckets aging past the freshness window, oldest-first.
     const due = bucketsDueForRecompute(known, allCodes, Date.now(), RECOMPUTE_FRESH_MS);
-    const deadlineMs = Date.now() + RECOMPUTE_BUDGET_MS;
+    const startedMs = Date.now();
+    const deadlineMs = startedMs + RECOMPUTE_BUDGET_MS;
     let recomputed = 0;
     for (const code of due) {
       if (!withinBudget(Date.now(), deadlineMs)) break;
       await recomputeBucketSlotsForToday(code, true);
       recomputed++;
+    }
+    const runMs = Date.now() - startedMs;
+
+    // Early warning (no behavior change): if the run is approaching its budget
+    // or couldn't drain the due set, surface it now — before buckets go stale —
+    // so there's time to scale (widen the freshness window, or the DO fallback).
+    const headroom = recomputeHeadroom(
+      runMs,
+      RECOMPUTE_BUDGET_MS,
+      due.length,
+      recomputed,
+      HEADROOM_WARN_FRACTION,
+    );
+    if (headroom.warn) {
+      await sendThrottledAlert(
+        "recompute_headroom",
+        HEADROOM_ALERT_COOLDOWN_MS,
+        `Slate: bucket recompute is approaching capacity (used ${headroom.utilizationPct}% of its budget, refreshed ${recomputed}/${due.length} due buckets across ${allCodes.length} total). It's still keeping up, but consider scaling (widen the freshness window or move to the Durable-Objects design) before availability goes stale.`,
+      ).catch(() => {});
     }
 
     // Alarm on what's STILL stale AFTER recomputing (re-read so buckets we just
@@ -80,6 +105,8 @@ export async function GET(req: NextRequest) {
       due: due.length,
       recomputed,
       staleBuckets: stale.length,
+      utilizationPct: headroom.utilizationPct,
+      drained: headroom.drained,
     });
   } finally {
     await releaseLock("cron_recompute", lock);

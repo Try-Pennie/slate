@@ -2,6 +2,7 @@ import {
   orderBucketsForRecompute,
   staleBuckets,
   bucketsDueForRecompute,
+  recomputeHeadroom,
 } from "../src/lib/availability/precompute-cron.ts";
 
 let failures = 0;
@@ -48,6 +49,27 @@ assert(
   JSON.stringify(bucketsDueForRecompute([], ["z"], now, 90_000)) === JSON.stringify(["z"]),
   "a never-computed bucket is always due",
 );
+
+// recomputeHeadroom: early-warning that the lane is approaching its limit,
+// BEFORE buckets actually go stale. Warn if it couldn't drain the due set, or
+// if it used >= warnFraction of its per-tick budget.
+const B = 50_000;
+const healthy = recomputeHeadroom(16_000, B, 15, 15, 0.7);
+assert(healthy.warn === false, "healthy run (32% budget, fully drained) does not warn");
+assert(healthy.utilizationPct === 32, "utilization is run/budget as a percent");
+assert(healthy.drained === true, "drained when it recomputed all due buckets");
+
+const hot = recomputeHeadroom(40_000, B, 20, 20, 0.7);
+assert(hot.warn === true, "warns at high utilization (80%) even if drained");
+
+const behind = recomputeHeadroom(50_000, B, 40, 30, 0.7);
+assert(behind.drained === false && behind.warn === true, "warns when the due set wasn't drained");
+
+const edge = recomputeHeadroom(35_000, B, 10, 10, 0.7);
+assert(edge.warn === true, "warns at exactly the warn fraction (70%)");
+
+const empty = recomputeHeadroom(200, B, 0, 0, 0.7);
+assert(empty.warn === false && empty.drained === true, "nothing due is healthy, not a warning");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
