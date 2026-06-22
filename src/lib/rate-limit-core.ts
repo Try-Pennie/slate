@@ -17,6 +17,17 @@ export const BOOKING_RATE_RULES: RateLimitRule[] = [
   { prefix: "book:h", windowSeconds: 3600, max: 10 },
 ];
 
+/**
+ * Direct booking API (#355) ceiling, keyed per API KEY rather than per IP — one
+ * bot behind one IP legitimately does ~2000/day, which would instantly blow the
+ * per-IP BOOKING_RATE_RULES. Sized well above expected volume so it only ever
+ * trips on a runaway loop or a leaked key; fails open like the per-IP rules.
+ */
+export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
+  { prefix: "bookapi:m", windowSeconds: 60, max: 120 },
+  { prefix: "bookapi:h", windowSeconds: 3600, max: 6000 },
+];
+
 // Availability (#56) no longer uses a DB rule: it's throttled at the edge by
 // the AVAIL_RATE_LIMITER Workers binding (wrangler.jsonc, 30/min per datacenter)
 // so the slot-cache hot path never makes a DB round-trip just to rate-limit. The

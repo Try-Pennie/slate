@@ -1,7 +1,11 @@
 // Sanity test for the rate-limit helpers (#31). The atomic counter itself is
 // a Postgres function (verified live); this covers the pure pieces.
 // Run: node --experimental-strip-types scripts/test-rate-limit.ts
-import { clientIp, BOOKING_RATE_RULES } from "../src/lib/rate-limit-core.ts";
+import {
+  clientIp,
+  BOOKING_RATE_RULES,
+  DIRECT_BOOKING_API_RATE_RULES,
+} from "../src/lib/rate-limit-core.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -56,6 +60,28 @@ assert(
 
 // Availability (#56) is now throttled at the edge by the AVAIL_RATE_LIMITER
 // Workers binding (wrangler.jsonc), not a DB rule — nothing pure to assert here.
+
+// Direct booking API (#355): a per-KEY ceiling, generously sized above the
+// ~2000/day bot volume so it only trips on a runaway/leaked key, and keyed on
+// distinct prefixes from the per-IP booking rules so the two counters never mix.
+assert(
+  DIRECT_BOOKING_API_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
+  "direct-booking-api rules are positive",
+);
+{
+  const hourly = DIRECT_BOOKING_API_RATE_RULES.find((r) => r.windowSeconds === 3600);
+  assert(
+    !!hourly && hourly.max >= 2000,
+    "hourly ceiling sits well above the ~2000/day expected bot volume",
+  );
+}
+{
+  const apiPrefixes = new Set(DIRECT_BOOKING_API_RATE_RULES.map((r) => r.prefix));
+  assert(
+    BOOKING_RATE_RULES.every((r) => !apiPrefixes.has(r.prefix)),
+    "per-key API counters use different prefixes than the per-IP booking counters",
+  );
+}
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
