@@ -19,6 +19,18 @@ export const MAX_ONBOARDS_PER_TICK = 10;
  */
 export const SYNC_CONCURRENCY = 8;
 
+/**
+ * Max agents the sync lane processes per tick (#273 Inc 5). Caps the TOTAL
+ * outbound calls in one Worker invocation: at 200 agents the lane otherwise
+ * processes the whole roster in a single tick (~5 subrequests/agent ≈ 1000),
+ * up against Cloudflare's ~1000-subrequest-per-invocation ceiling. Capping +
+ * rotation (least-recently-synced first) drains the roster across a few ticks
+ * instead — the backstop only needs each agent covered every couple of minutes
+ * (real-time freshness comes from Google push). Distinct from SYNC_CONCURRENCY
+ * (how many run at once); this bounds how many run total per tick.
+ */
+export const MAX_AGENTS_PER_SYNC_TICK = 100;
+
 export interface SyncAgent {
   userId: string;
   /** Whether the agent already has agent_calendars rows (DB-only check). */
