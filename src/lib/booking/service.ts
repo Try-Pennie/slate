@@ -12,7 +12,7 @@ import {
   isFree,
   updateEventTime,
 } from "@/lib/google/calendar";
-import { joinBookingContexts } from "@/lib/booking/core";
+import { joinBookingContexts, calendarIdsFromResult } from "@/lib/booking/core";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
   BookingContext,
@@ -29,20 +29,31 @@ const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // orphaned by a torn-down Worker, so keep it comfortably above the slowest run.
 const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 
-/** Calendar ids whose busy blocks an agent, looked up by their email. */
-async function calendarIdsForEmail(email: string): Promise<string[]> {
+const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
+const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * Calendar ids whose busy blocks an agent, looked up by their email (#314).
+ * Reports `readFailed` so verify-on-book can tell a real DB error apart from a
+ * genuine empty: on an error we must NOT silently fall back to checking only the
+ * primary calendar (it could miss a conflict on a secondary one and double-book).
+ */
+async function calendarIdsForEmail(
+  email: string,
+): Promise<{ readFailed: boolean; ids: string[] }> {
   const db = supabaseAdmin();
-  const { data: user } = await db
+  const userRes = await db
     .from("users")
     .select("id")
     .eq("email", email)
     .maybeSingle();
-  if (!user) return [];
-  const { data } = await db
+  if (userRes.error) return { readFailed: true, ids: [] };
+  if (!userRes.data) return { readFailed: false, ids: [] };
+  const calsRes = await db
     .from("agent_calendars")
     .select("calendar_id")
-    .eq("user_id", (user as { id: string }).id);
-  return (data ?? []).map((r) => (r as { calendar_id: string }).calendar_id);
+    .eq("user_id", (userRes.data as { id: string }).id);
+  return calendarIdsFromResult(calsRes);
 }
 
 export { SlotUnavailableError } from "@/lib/booking/orchestration";
@@ -58,9 +69,21 @@ function realDeps(): BookingDeps {
     resolveBucketByCode,
     roundRobinCandidates,
     // Verify-on-book checks ALL the agent's calendars (falls back to primary
-    // before the first sync has populated agent_calendars).
+    // before the first sync has populated agent_calendars). If the calendar-list
+    // read FAILS (#314) we can't know the agent's calendar set, so skip them
+    // (return not-free → the next candidate is tried) and alert, rather than
+    // verifying against primary-only and risking a double-book. The booking only
+    // fails if every candidate's read fails.
     isFree: async (email, startIso, endIso) => {
-      const ids = await calendarIdsForEmail(email);
+      const { readFailed, ids } = await calendarIdsForEmail(email);
+      if (readFailed) {
+        await sendThrottledAlert(
+          VERIFY_READ_ALERT_KEY,
+          VERIFY_READ_ALERT_COOLDOWN_MS,
+          `Slate: verify-on-book could not read calendars for ${email}; skipping this agent for the slot to avoid a double-book. Check DB health.`,
+        ).catch(() => {});
+        return false;
+      }
       return isFree(email, startIso, endIso, ids.length ? ids : ["primary"]);
     },
     createEvent,
