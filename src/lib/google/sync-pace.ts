@@ -31,6 +31,17 @@ export const SYNC_CONCURRENCY = 8;
  */
 export const MAX_AGENTS_PER_SYNC_TICK = 100;
 
+/**
+ * Touched-bucket refresh bounds (#296). After a backstop tick, the buckets of
+ * agents that actually changed are refreshed inline so a MISSED Google push
+ * reflects in ~1 min instead of waiting for the recompute lane's freshness
+ * window. Both bounded so a burst can't blow the per-invocation subrequest
+ * ceiling; overflow falls back to the recompute lane. MAX_TOUCHED_AGENTS caps
+ * the agents we resolve buckets for; MAX_TOUCHED_BUCKETS caps the recomputes.
+ */
+export const MAX_TOUCHED_AGENTS = 50;
+export const MAX_TOUCHED_BUCKETS = 20;
+
 export interface SyncAgent {
   userId: string;
   /** Whether the agent already has agent_calendars rows (DB-only check). */
@@ -125,6 +136,22 @@ export function watchAgentsForTick(
     }
     return false;
   });
+}
+
+/**
+ * Agents whose incremental sync returned changes this tick (synced > 0), capped
+ * (#296). The backstop refreshes these agents' buckets inline so a missed push
+ * reflects fast; the cap keeps the extra work bounded under the subrequest
+ * ceiling (a burst beyond it is caught by the recompute lane).
+ */
+export function agentsWithChanges<T extends { userId: string; synced?: number }>(
+  results: T[],
+  cap: number,
+): string[] {
+  return results
+    .filter((r) => (r.synced ?? 0) > 0)
+    .map((r) => r.userId)
+    .slice(0, cap);
 }
 
 /**

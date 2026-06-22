@@ -71,7 +71,8 @@ function realDeps(): BookingDeps {
     newManageToken: () => nanoid(24),
     // A booking changed the bucket's availability: recompute its precomputed
     // row so the booked slot disappears. Fire-and-forget so the confirm isn't
-    // blocked on the recompute; the 1-min cron backstop guarantees freshness.
+    // blocked on the recompute; the recompute lane's freshness sweep is the
+    // backstop if this best-effort call is missed.
     invalidateSlots: (bucketCode) => {
       void recomputeBucketSlotsForToday(bucketCode).catch(() => {});
       return Promise.resolve();
