@@ -40,11 +40,17 @@ import {
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
 import { googlePushUrl } from "@/lib/env";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 
 const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
+// External-double-book detection (#316): only future bookings can be
+// double-booked, so scan a forward window; alert at most this often per agent.
+const COLLISION_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+const COLLISION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 async function loadAgentEmail(userId: string): Promise<string | null> {
   const { data } = await supabaseAdmin()
@@ -61,6 +67,76 @@ async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
     .select("*")
     .eq("user_id", userId);
   return (data ?? []) as AgentCalendar[];
+}
+
+/**
+ * Detect external Google double-bookings for an agent (#316): an external
+ * (`source: gcal`) event overlapping an active Slate booking on the same agent,
+ * over a forward window. Slate-vs-Slate is prevented by the unique index, and a
+ * booking's own mirrored event is excluded by id, so a hit means someone booked
+ * this agent directly in Google over a Slate-held slot. Best-effort: fires a
+ * throttled alert so a human can resolve it; never throws into the sync path.
+ */
+async function detectExternalCollisions(userId: string, email: string): Promise<void> {
+  try {
+    const db = supabaseAdmin();
+    const nowIso = new Date().toISOString();
+    const toIso = new Date(Date.now() + COLLISION_WINDOW_MS).toISOString();
+    // Active future bookings first — if none, there's nothing to collide with.
+    const { data: bookingRows } = await db
+      .from("bookings")
+      .select("id, gcal_event_id, starts_at, ends_at")
+      .eq("assigned_user_id", userId)
+      .in("status", ["confirmed", "rescheduled"])
+      .gte("starts_at", nowIso)
+      .lt("starts_at", toIso);
+    const bookings = (bookingRows ?? []) as {
+      id: string;
+      gcal_event_id: string | null;
+      starts_at: string;
+      ends_at: string;
+    }[];
+    if (bookings.length === 0) return;
+
+    const { data: blockRows } = await db
+      .from("busy_blocks")
+      .select("gcal_event_id, starts_at, ends_at")
+      .eq("user_id", userId)
+      .eq("source", "gcal")
+      .lt("starts_at", toIso)
+      .gt("ends_at", nowIso);
+    const blocks = ((blockRows ?? []) as {
+      gcal_event_id: string | null;
+      starts_at: string;
+      ends_at: string;
+    }[]).map((b) => ({
+      gcalEventId: b.gcal_event_id,
+      startMs: Date.parse(b.starts_at),
+      endMs: Date.parse(b.ends_at),
+    }));
+
+    const collisions = findExternalCollisions(
+      blocks,
+      bookings.map((b) => ({
+        id: b.id,
+        gcalEventId: b.gcal_event_id,
+        startMs: Date.parse(b.starts_at),
+        endMs: Date.parse(b.ends_at),
+      })),
+    );
+    if (collisions.length === 0) return;
+
+    const ids = collisions.map((c) => c.bookingId).join(", ");
+    await sendThrottledAlert(
+      `external_double_book:${userId}`,
+      COLLISION_ALERT_COOLDOWN_MS,
+      `Slate: possible external double-book for ${email}. ${collisions.length} active Slate booking(s) overlap a Google event booked outside Slate (booking ids: ${ids}). Check the agent's calendar and reschedule one side.`,
+    ).catch(() => {});
+  } catch (err) {
+    console.error(
+      `external-collision detection failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**
@@ -274,6 +350,14 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
 
     await applyEvents(cal.user_id, cal.calendar_id, result.events);
     if (full) await purgeVanished(cal.user_id, cal.calendar_id, result.events);
+
+    // A sync that wrote events may have just mirrored an external Google booking
+    // that collides with a Slate booking (#316). Check now (best-effort) so a
+    // cross-system double-book is detected, not silent. Covers both the cron and
+    // push paths, which both flow through here.
+    if (result.events.length > 0) {
+      await detectExternalCollisions(cal.user_id, email);
+    }
 
     // Persist the advanced sync token on its OWN write (correctness-critical:
     // it's how the next pass resumes instead of re-bootstrapping). Kept separate
