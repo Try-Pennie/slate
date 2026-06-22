@@ -1,9 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import { withinBudget } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { RECOMPUTE_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import {
   listAllBucketCodes,
@@ -28,10 +30,48 @@ const STALE_ALARM_MS = 6 * 60_000;
 // Hard per-tick cap so a slow run can't overrun the lock TTL.
 const RECOMPUTE_BUDGET_MS = 50_000;
 const STALE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
-// Early warning: flag when a run uses >= this fraction of its budget (or can't
-// drain the due set) so saturation is visible BEFORE buckets actually go stale.
-const HEADROOM_WARN_FRACTION = 0.7;
 const HEADROOM_ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000; // at most every 2h
+// "Falling behind" = a cycle couldn't drain its due set within budget. A single
+// such cycle is usually transient (e.g. a post-deploy catch-up burst), so only
+// alert when it persists on CONSECUTIVE cycles (#43-style streak): each behind
+// cycle bumps the key inside this window, a clean (drained) cycle clears it, and
+// the second consecutive bump trips the alert. Keeps the gauge quiet unless the
+// lane genuinely can't keep up.
+const RECOMPUTE_STREAK_KEY = "cron_recompute_behind";
+const RECOMPUTE_STREAK_WINDOW_S = 600;
+
+/**
+ * Alert only when the recompute lane is PERSISTENTLY behind (couldn't drain the
+ * due set on consecutive cycles). A drained cycle clears the streak and stays
+ * silent regardless of how much budget it used — keeping up is not actionable.
+ */
+async function alertIfFallingBehind(
+  headroom: { drained: boolean; utilizationPct: number },
+  recomputed: number,
+  due: number,
+  totalBuckets: number,
+): Promise<void> {
+  const db = supabaseAdmin();
+  if (headroom.drained) {
+    await db.from("rate_limits").delete().eq("key", RECOMPUTE_STREAK_KEY);
+    return;
+  }
+  const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
+    p_key: RECOMPUTE_STREAK_KEY,
+    p_window_seconds: RECOMPUTE_STREAK_WINDOW_S,
+    p_max: 1,
+  });
+  if (error) {
+    console.error(`recompute behind-streak tracking failed: ${error.message}`);
+    return;
+  }
+  if (!isConsecutiveFailure(underLimit === false ? 2 : 1)) return;
+  await sendThrottledAlert(
+    "recompute_headroom",
+    HEADROOM_ALERT_COOLDOWN_MS,
+    `Slate: bucket recompute is falling behind. Refreshed only ${recomputed} of ${due} due buckets within its time budget on consecutive cycles (${totalBuckets} buckets total, last cycle used ${headroom.utilizationPct}%). Availability may start going stale. Scale: widen the freshness window or move to the Durable-Objects design.`,
+  ).catch(() => {});
+}
 
 /**
  * RECOMPUTE lane: keeps the precomputed `bucket_slots` cache fresh, independent
@@ -70,23 +110,14 @@ export async function GET(req: NextRequest) {
     }
     const runMs = Date.now() - startedMs;
 
-    // Early warning (no behavior change): if the run is approaching its budget
-    // or couldn't drain the due set, surface it now — before buckets go stale —
-    // so there's time to scale (widen the freshness window, or the DO fallback).
-    const headroom = recomputeHeadroom(
-      runMs,
-      RECOMPUTE_BUDGET_MS,
-      due.length,
-      recomputed,
-      HEADROOM_WARN_FRACTION,
+    const headroom = recomputeHeadroom(runMs, RECOMPUTE_BUDGET_MS, due.length, recomputed);
+    // One line per cycle so the headroom TREND is visible in Worker logs without
+    // having to reconstruct it from bucket_slots timestamps after the fact.
+    console.log(
+      `recompute cycle: refreshed ${recomputed}/${due.length} due (${allCodes.length} total), ${headroom.utilizationPct}% of budget, drained=${headroom.drained}`,
     );
-    if (headroom.warn) {
-      await sendThrottledAlert(
-        "recompute_headroom",
-        HEADROOM_ALERT_COOLDOWN_MS,
-        `Slate: bucket recompute is approaching capacity (used ${headroom.utilizationPct}% of its budget, refreshed ${recomputed}/${due.length} due buckets across ${allCodes.length} total). It's still keeping up, but consider scaling (widen the freshness window or move to the Durable-Objects design) before availability goes stale.`,
-      ).catch(() => {});
-    }
+    // Alert only when PERSISTENTLY behind, not on a single busy-but-drained cycle.
+    await alertIfFallingBehind(headroom, recomputed, due.length, allCodes.length);
 
     // Alarm on what's STILL stale AFTER recomputing (re-read so buckets we just
     // refreshed don't count): that's a genuine fall-behind, not normal aging.

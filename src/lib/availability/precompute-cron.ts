@@ -68,33 +68,37 @@ export function bucketsDueForRecompute(
 }
 
 export interface RecomputeHeadroom {
-  /** Run time as a percentage of the per-tick budget. */
+  /** Run time as a percentage of the per-tick budget (for logs/observability). */
   utilizationPct: number;
   /** Whether the run recomputed every bucket that was due (didn't run out of budget). */
   drained: boolean;
-  /** True when the lane is approaching its limit and should be looked at. */
+  /**
+   * True ONLY when the lane could not drain its due set within budget, i.e. it
+   * is genuinely falling behind. A fully-drained cycle is keeping up and never
+   * warns, no matter how much of the budget it used: a high-but-drained cycle
+   * (e.g. a one-off post-deploy catch-up) is not actionable and alerting on it
+   * is just noise. The route adds a consecutive-cycle streak on top so even a
+   * single behind cycle stays quiet until it persists.
+   */
   warn: boolean;
 }
 
 /**
- * Early-warning headroom for the recompute lane (#294 follow-up): surfaces that
- * the lane is approaching its limit BEFORE buckets actually go stale. Warns if
- * it couldn't drain the due set within budget, or if it used at least
- * `warnFraction` of its per-tick budget. Pure so it's unit-tested; the route
- * times the run and feeds it in.
+ * Headroom for the recompute lane (#294 follow-up). `utilizationPct` is reported
+ * for logs; `warn` fires only when the cycle failed to drain the due set within
+ * budget. Pure so it's unit-tested; the route times the run and feeds it in.
  */
 export function recomputeHeadroom(
   runMs: number,
   budgetMs: number,
   dueCount: number,
   recomputedCount: number,
-  warnFraction: number,
 ): RecomputeHeadroom {
   const fraction = budgetMs > 0 ? runMs / budgetMs : 0;
   const drained = recomputedCount >= dueCount;
   return {
     utilizationPct: Math.round(fraction * 100),
     drained,
-    warn: !drained || fraction >= warnFraction,
+    warn: !drained,
   };
 }
