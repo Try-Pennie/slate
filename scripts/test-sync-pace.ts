@@ -2,6 +2,7 @@ import {
   withinBudget,
   orderAgentsForTick,
   shouldOnboard,
+  watchAgentsForTick,
   mapWithConcurrency,
   MAX_ONBOARDS_PER_TICK,
   MAX_AGENTS_PER_SYNC_TICK,
@@ -68,6 +69,32 @@ const oldAgent: SyncAgent = { userId: "o", hasCalendars: true, lastSyncedMs: 1 }
 ok(shouldOnboard(newAgent, 0, 3) === true, "onboard a new agent under the cap");
 ok(shouldOnboard(newAgent, 3, 3) === false, "do not onboard once the cap is reached");
 ok(shouldOnboard(oldAgent, 0, 3) === false, "never 'onboard' an already-onboarded agent");
+
+// watchAgentsForTick (#302): the watch lane runs concurrently, so the onboarding
+// cap can't be a running counter inside the loop — pre-select here instead.
+// All already-onboarded agents + at most `cap` brand-new, order preserved.
+{
+  const mixed: SyncAgent[] = [
+    { userId: "new1", hasCalendars: false, lastSyncedMs: null },
+    { userId: "old1", hasCalendars: true, lastSyncedMs: 1 },
+    { userId: "new2", hasCalendars: false, lastSyncedMs: null },
+    { userId: "old2", hasCalendars: true, lastSyncedMs: 2 },
+    { userId: "new3", hasCalendars: false, lastSyncedMs: null },
+  ];
+  const sel = watchAgentsForTick(mixed, 2).map((a) => a.userId);
+  ok(
+    JSON.stringify(sel) === JSON.stringify(["new1", "old1", "new2", "old2"]),
+    `all onboarded + first 2 new, order preserved, new3 deferred; got ${JSON.stringify(sel)}`,
+  );
+  ok(!sel.includes("new3"), "brand-new agents beyond the onboard cap are deferred to next tick");
+}
+ok(
+  watchAgentsForTick(
+    [{ userId: "o", hasCalendars: true, lastSyncedMs: 1 }],
+    0,
+  ).length === 1,
+  "already-onboarded agents are always included (onboard cap only gates new ones)",
+);
 
 // SYNC_CONCURRENCY: a small positive cap, comfortably under the Worker
 // subrequest ceiling even when every agent fans out several Google/DB calls.
