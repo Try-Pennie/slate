@@ -233,3 +233,47 @@ _Avoid_: message, send
 A Delivery that has failed past the max attempts. Retained and replayable for
 incident recovery.
 _Avoid_: failed (too generic), dropped
+
+## Booking concurrency
+
+**Verify-on-book**:
+The single live Google free/busy check at confirm time — Slate walks the
+round-robin candidates and picks the first actually-free one (one check per
+candidate). The *only* live Google call on the booking hot path; everywhere else is
+cache-first. **Best-effort**, not transactional: it guards against external Google
+conflicts but can't eliminate a booking made directly in Google in the moments
+before insert.
+_Avoid_: availability check (that's the cached read path)
+
+**Active-slot unique index**:
+The **authoritative** double-booking guard: a partial unique index over active
+bookings per agent+slot. A racing second insert hits a unique violation (`23505`)
+and loses, so two *Slate* bookings can never collide on the same agent+slot. The
+race is decided at the insert, not by check-then-act. Partial (active only), so a
+slot reopens after a cancel.
+_Avoid_: lock (it's a constraint, not a lock)
+
+**Idempotency Key**:
+A stable hash of bucket + slot + attendee identity. A double-clicked/retried submit
+with the same identity dedupes to the *same* Booking. On an insert conflict, a
+matching key means "my own retry" (success); no match means the slot is genuinely
+taken (`SlotUnavailableError`). Null only when there is no identity — unreachable via
+the Booker, which requires name + email + phone.
+_Avoid_: dedupe key, request id
+
+**Reschedule Lock**:
+A short-lived claim on (Booking, target time) via the same unique-violation trick,
+so concurrent reschedules of one Booking can't double-process.
+_Avoid_: mutex
+
+**Double-booking guarantee**:
+The canonical statement of what's guaranteed: **Slate-vs-Slate** double-booking is
+impossible (the active-slot unique index); **Slate-vs-external-Google** is minimized
+by Verify-on-book but not eliminated — an accepted, millisecond-window risk, ideally
+*detected* post-sync rather than prevented.
+_Avoid_: implying bookings are globally conflict-free
+
+**allow_double_book**:
+A deliberate override, set *only* by the reassign API, to stack a consult onto a
+busy owning Agent (contact-owner stickiness) — intentionally bypasses the free check.
+_Avoid_: treating it as a general flag
