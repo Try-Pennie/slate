@@ -66,6 +66,10 @@ export interface Database {
         Args: { p_key: string; p_window_seconds: number; p_max: number };
         Returns: boolean;
       };
+      rate_limit_refund: {
+        Args: { p_key: string };
+        Returns: undefined;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

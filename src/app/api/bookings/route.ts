@@ -6,7 +6,12 @@ import {
   VerifyUnavailableError,
 } from "@/lib/booking/service";
 import { validateAttendee } from "@/lib/attendee";
-import { allowRequest, clientIp, BOOKING_RATE_RULES } from "@/lib/rate-limit";
+import {
+  allowRequest,
+  refundRequest,
+  clientIp,
+  BOOKING_RATE_RULES,
+} from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +30,8 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  if (!(await allowRequest(clientIp(req.headers), BOOKING_RATE_RULES))) {
+  const ip = clientIp(req.headers);
+  if (!(await allowRequest(ip, BOOKING_RATE_RULES))) {
     return NextResponse.json(
       { error: "Too many booking attempts from your network. Please try again in a few minutes." },
       { status: 429 },
@@ -69,8 +75,10 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     // Couldn't verify any candidate (likely a Google/DB outage), not a full
-    // slot — tell the lead it's temporary and let them retry (#319).
+    // slot — tell the lead it's temporary and let them retry (#319). Refund the
+    // rate-limit hit: a server-side outage must not burn their booking budget.
     if (err instanceof VerifyUnavailableError) {
+      await refundRequest(ip, BOOKING_RATE_RULES);
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     if (err instanceof SlotUnavailableError) {

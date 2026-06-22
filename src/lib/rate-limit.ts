@@ -49,3 +49,24 @@ export async function allowRequest(
   }
   return true;
 }
+
+/**
+ * Give back a counted hit for every rule when the request failed for a reason
+ * that ISN'T the customer's doing (e.g. a verify-on-book outage → 503), so a
+ * server fault can't consume their booking budget (#319). Best-effort: a refund
+ * error is logged and ignored — never fails the response.
+ */
+export async function refundRequest(
+  ip: string,
+  rules: RateLimitRule[],
+): Promise<void> {
+  const db = supabaseAdmin();
+  for (const rule of rules) {
+    const { error } = await db.rpc("rate_limit_refund", {
+      p_key: `${rule.prefix}:${ip}`,
+    });
+    if (error) {
+      console.error(`rate_limit_refund failed (${rule.prefix}): ${error.message}`);
+    }
+  }
+}
