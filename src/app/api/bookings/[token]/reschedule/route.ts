@@ -1,6 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { rescheduleBooking, SlotUnavailableError } from "@/lib/booking/service";
+import {
+  rescheduleBooking,
+  SlotUnavailableError,
+  VerifyUnavailableError,
+} from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +32,10 @@ export async function POST(
       manageUrl,
     });
   } catch (err) {
+    // Outage (couldn't verify), not a full slot — retryable (#319).
+    if (err instanceof VerifyUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
     if (err instanceof SlotUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }

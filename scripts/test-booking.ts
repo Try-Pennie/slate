@@ -94,12 +94,18 @@ const loadEmails = async (ids: string[]) => {
   return m;
 };
 
-function batchVerifier(free: Set<string>) {
+// verifyFree now reports both the free subset AND which emails could NOT be
+// verified (read errors / outage), so selectAgent can tell a genuinely-full slot
+// apart from "couldn't check" (#319). `unverified` defaults to none.
+function batchVerifier(free: Set<string>, unverified: Set<string> = new Set()) {
   const waves: string[][] = [];
   return {
     fn: async (emails: string[]) => {
       waves.push(emails);
-      return new Set(emails.filter((e) => free.has(e)));
+      return {
+        free: new Set(emails.filter((e) => free.has(e))),
+        unverified: new Set(emails.filter((e) => unverified.has(e))),
+      };
     },
     waves: () => waves,
     waveCount: () => waves.length,
@@ -110,13 +116,13 @@ async function run() {
   // First free candidate wins; one wave covers both, so a single verify call.
   let v = batchVerifier(new Set(["a@x", "b@x"]));
   let r = await selectAgent(["a", "b"], loadEmails, v.fn, 50);
-  assert(r?.userId === "a" && r?.email === "a@x", "first free candidate wins");
+  assert(r.assignment?.userId === "a" && r.assignment?.email === "a@x", "first free candidate wins");
   assert(v.waveCount() === 1, "one wave when batchSize covers all candidates");
 
   // Candidate with an empty email is skipped (not passed to verifyFree).
   v = batchVerifier(new Set(["a@x"]));
   r = await selectAgent(["c", "a"], loadEmails, v.fn, 50);
-  assert(r?.userId === "a", "candidate with empty email is skipped");
+  assert(r.assignment?.userId === "a", "candidate with empty email is skipped");
   assert(
     JSON.stringify(v.waves()[0]) === JSON.stringify(["a@x"]),
     "emailless candidate is not sent to verifyFree",
@@ -125,48 +131,61 @@ async function run() {
   // Candidate with a null email is skipped.
   v = batchVerifier(new Set(["a@x"]));
   r = await selectAgent(["d", "a"], loadEmails, v.fn, 50);
-  assert(r?.userId === "a", "candidate with null email is skipped");
+  assert(r.assignment?.userId === "a", "candidate with null email is skipped");
 
   // Walks past a busy candidate to the next free one (same wave).
   v = batchVerifier(new Set(["b@x"]));
   r = await selectAgent(["a", "b"], loadEmails, v.fn, 50);
-  assert(r?.userId === "b", "walks past busy candidate to next free");
+  assert(r.assignment?.userId === "b", "walks past busy candidate to next free");
 
-  // No free candidate yields null (caller turns this into SlotUnavailable).
+  // No free candidate yields a null assignment (caller maps to SlotUnavailable).
   v = batchVerifier(new Set());
   r = await selectAgent(["a", "b"], loadEmails, v.fn, 50);
-  assert(r === null, "no free candidate yields null");
+  assert(r.assignment === null, "no free candidate yields a null assignment");
+  assert(r.anyUnverified === false, "all-busy failure is NOT flagged unverified");
 
   // Round-robin order is respected when several are free.
   v = batchVerifier(new Set(["a@x", "b@x"]));
   r = await selectAgent(["b", "a"], loadEmails, v.fn, 50);
-  assert(r?.userId === "b", "returns first free in candidate order");
+  assert(r.assignment?.userId === "b", "returns first free in candidate order");
 
   // Empty candidate list yields null with zero verify calls.
   v = batchVerifier(new Set(["a@x"]));
   r = await selectAgent([], loadEmails, v.fn, 50);
-  assert(r === null && v.waveCount() === 0, "empty candidate list yields null, no verify");
+  assert(r.assignment === null && v.waveCount() === 0, "empty candidate list yields null, no verify");
 
   // Wave batching: free agent in the first wave → later waves never verified.
   v = batchVerifier(new Set(["a@x", "b@x"]));
   r = await selectAgent(["a", "b", "c", "d", "a", "b"], loadEmails, v.fn, 2);
-  assert(r?.userId === "a", "first wave's free agent wins");
+  assert(r.assignment?.userId === "a", "first wave's free agent wins");
   assert(v.waveCount() === 1, "stops after the first wave that has a free agent");
   assert(v.waves()[0].length === 2, "a wave carries at most batchSize emails");
 
   // Wave batching: whole first wave busy → advance to the next wave.
   // Wave 1 = [a,b] (both busy), wave 2 = [a] again but now free.
-  v = batchVerifier(new Set(["b@x"]));
-  // Make a/b busy in wave 1, free in wave 2 by toggling after first wave.
   let wavesSeen = 0;
   const toggling = async (emails: string[]) => {
     wavesSeen++;
     const free = wavesSeen === 1 ? new Set<string>() : new Set(["a@x"]);
-    return new Set(emails.filter((e) => free.has(e)));
+    return {
+      free: new Set(emails.filter((e) => free.has(e))),
+      unverified: new Set<string>(),
+    };
   };
   r = await selectAgent(["a", "b", "a", "b"], loadEmails, toggling, 2);
   assert(wavesSeen === 2, "advances to the next wave when the first is all busy");
-  assert(r?.userId === "a", "returns a free agent found in a later wave");
+  assert(r.assignment?.userId === "a", "returns a free agent found in a later wave");
+
+  // Outage signal: nobody free AND a candidate couldn't be verified → anyUnverified.
+  v = batchVerifier(new Set(), new Set(["a@x"]));
+  r = await selectAgent(["a", "b"], loadEmails, v.fn, 50);
+  assert(r.assignment === null, "couldn't-verify-anyone still yields a null assignment");
+  assert(r.anyUnverified === true, "an unverifiable candidate flags anyUnverified");
+
+  // A successful assignment doesn't care about earlier unverified candidates.
+  v = batchVerifier(new Set(["b@x"]), new Set(["a@x"]));
+  r = await selectAgent(["a", "b"], loadEmails, v.fn, 50);
+  assert(r.assignment?.userId === "b", "an unverifiable candidate is skipped for a free one");
 }
 
 await run();

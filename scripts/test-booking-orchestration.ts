@@ -10,6 +10,7 @@ import {
   completePastBookings,
   reassignBooking,
   SlotUnavailableError,
+  VerifyUnavailableError,
   type BookingDeps,
   type BookingContext,
   type CreateBookingInput,
@@ -83,6 +84,7 @@ interface FakeOpts {
   pastDue?: BookingContext[];
   rescheduleLocked?: boolean; // a concurrent reschedule already holds the lock
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
+  unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -112,10 +114,14 @@ function makeDeps(opts: FakeOpts) {
       return free.has(email);
     },
     // Batched verify-on-book: one call per round-robin wave; returns the free
-    // subset. Mirrors the real dep, which reads the wave in one Google call.
+    // subset plus any emails that couldn't be checked. Mirrors the real dep.
     verifyFree: async (emails) => {
       calls.verifyFree.push(emails);
-      return new Set(emails.filter((e) => free.has(e)));
+      const unverified = opts.unverifiedEmails ?? new Set<string>();
+      return {
+        free: new Set(emails.filter((e) => free.has(e))),
+        unverified: new Set(emails.filter((e) => unverified.has(e))),
+      };
     },
     createEvent: async (email) => {
       calls.createEvent.push({ email });
@@ -320,7 +326,31 @@ async function run() {
       err = e;
     }
     assert(err instanceof SlotUnavailableError, "create: SlotUnavailableError when none free");
+    assert(
+      !(err instanceof VerifyUnavailableError),
+      "create: a genuinely-full slot is NOT an outage",
+    );
     assert(calls.createEvent.length === 0, "create: no calendar event when no agent is free");
+  }
+
+  // --- createBooking: verify-on-book outage (couldn't check) vs full slot ---
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a", "b"],
+      freeEmails: new Set(),
+      unverifiedEmails: new Set(["a@x.com"]), // a couldn't be checked (outage)
+    });
+    let err: unknown;
+    try {
+      await createBooking(input, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof VerifyUnavailableError,
+      "create: an unverifiable candidate throws VerifyUnavailableError, not SlotUnavailableError",
+    );
+    assert(calls.createEvent.length === 0, "create-outage: no calendar event written");
   }
 
   // --- reschedule: same agent free -> in-place move, no reassign, RR untouched ---

@@ -61,6 +61,27 @@ export function calendarIdsFromResult(res: {
   return { readFailed: false, ids: (res.data ?? []).map((r) => r.calendar_id) };
 }
 
+/** Subset of a verify-on-book wave that's free, plus the ones we couldn't check. */
+export interface VerifyResult {
+  /** Emails confirmed free for the slot. */
+  free: Set<string>;
+  /** Emails whose free/busy could NOT be determined (read error / outage). */
+  unverified: Set<string>;
+}
+
+/** Outcome of verify-on-book selection. */
+export interface SelectionOutcome {
+  /** The chosen agent, or null when none was free. */
+  assignment: AssignResult | null;
+  /**
+   * Only meaningful when `assignment` is null: true if at least one candidate
+   * could not be verified (read error / outage). Lets the caller distinguish a
+   * genuinely-full slot (alert nobody) from a verify-on-book outage masquerading
+   * as one (alert + retryable error) — #319.
+   */
+  anyUnverified: boolean;
+}
+
 /**
  * Verify-on-book selection: walk candidates in round-robin order, but verify a
  * WAVE of `batchSize` candidates per round-trip instead of one Google call per
@@ -72,16 +93,18 @@ export function calendarIdsFromResult(res: {
  * calls — the fix for a large agent pool (#167).
  *
  * `loadEmails` (batched userId -> email, skipping emailless) and `verifyFree`
- * (emails -> the subset confirmed free) are injected so this stays pure and
- * testable without DB/Google. Returns null when no candidate is free (the caller
- * turns that into SlotUnavailableError).
+ * (emails -> the free subset + the unverifiable subset) are injected so this
+ * stays pure and testable without DB/Google. When no candidate is free, also
+ * reports whether any candidate was unverifiable so the caller can tell a full
+ * slot from an outage (#319).
  */
 export async function selectAgent(
   candidates: string[],
   loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
-  verifyFree: (emails: string[]) => Promise<Set<string>>,
+  verifyFree: (emails: string[]) => Promise<VerifyResult>,
   batchSize: number,
-): Promise<AssignResult | null> {
+): Promise<SelectionOutcome> {
+  let anyUnverified = false;
   for (let i = 0; i < candidates.length; i += batchSize) {
     const waveIds = candidates.slice(i, i + batchSize);
     const emailById = await loadEmails(waveIds);
@@ -92,12 +115,13 @@ export async function selectAgent(
       if (email) wave.push({ userId, email });
     }
     if (wave.length === 0) continue;
-    const free = await verifyFree(wave.map((c) => c.email));
+    const { free, unverified } = await verifyFree(wave.map((c) => c.email));
+    if (unverified.size > 0) anyUnverified = true;
     for (const candidate of wave) {
-      if (free.has(candidate.email)) return candidate;
+      if (free.has(candidate.email)) return { assignment: candidate, anyUnverified };
     }
   }
-  return null;
+  return { assignment: null, anyUnverified };
 }
 
 /** Busy interval as returned by Google freeBusy (ISO start/end). */
