@@ -1,6 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { createBooking, SlotUnavailableError } from "@/lib/booking/service";
+import {
+  createBooking,
+  SlotUnavailableError,
+  VerifyUnavailableError,
+} from "@/lib/booking/service";
 import { validateAttendee } from "@/lib/attendee";
 import { allowRequest, clientIp, BOOKING_RATE_RULES } from "@/lib/rate-limit";
 
@@ -64,6 +68,11 @@ export async function POST(req: NextRequest) {
       manageUrl,
     });
   } catch (err) {
+    // Couldn't verify any candidate (likely a Google/DB outage), not a full
+    // slot — tell the lead it's temporary and let them retry (#319).
+    if (err instanceof VerifyUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
     if (err instanceof SlotUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }

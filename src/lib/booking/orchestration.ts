@@ -11,6 +11,7 @@ import {
   selectAgent,
   type AssignResult,
   type BusyBlockInsert,
+  type VerifyResult,
 } from "./core.ts";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type {
@@ -35,6 +36,19 @@ export class SlotUnavailableError extends Error {
   constructor() {
     super("That time is no longer available. Please pick another slot.");
     this.name = "SlotUnavailableError";
+  }
+}
+
+/**
+ * Thrown when a booking fails NOT because every candidate is genuinely busy, but
+ * because we couldn't verify any of them (calendar/DB read errors — a likely
+ * verify-on-book outage). Distinct from SlotUnavailableError so the caller can
+ * alert and return a retryable response instead of a generic "no times" (#319).
+ */
+export class VerifyUnavailableError extends Error {
+  constructor() {
+    super("We hit a temporary issue confirming this time. Please try again in a moment.");
+    this.name = "VerifyUnavailableError";
   }
 }
 
@@ -127,7 +141,11 @@ export interface BookingDeps {
    * whole wave's free/busy in bounded, batched Google calls instead of one
    * serial call per candidate (#167).
    */
-  verifyFree(emails: string[], startIso: string, endIso: string): Promise<Set<string>>;
+  verifyFree(
+    emails: string[],
+    startIso: string,
+    endIso: string,
+  ): Promise<VerifyResult>;
   createEvent(email: string, args: CreateEventArgs): Promise<string>;
   deleteEvent(email: string, eventId: string): Promise<void>;
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
@@ -199,14 +217,20 @@ async function assignAgent(
     Date.parse(startIso),
   );
 
-  const result = await selectAgent(
+  const { assignment, anyUnverified } = await selectAgent(
     candidates,
     (userIds) => deps.loadEmails(userIds),
     (emails) => deps.verifyFree(emails, startIso, endIso),
     VERIFY_WAVE_SIZE,
   );
-  if (!result) throw new SlotUnavailableError();
-  return { ...result, candidates };
+  if (!assignment) {
+    // No agent was free. If at least one candidate couldn't be VERIFIED (read
+    // error / outage), this isn't a genuinely-full slot — surface it distinctly
+    // so the caller alerts + lets the lead retry, rather than showing "no times".
+    if (anyUnverified) throw new VerifyUnavailableError();
+    throw new SlotUnavailableError();
+  }
+  return { ...assignment, candidates };
 }
 
 function webhookPayload(

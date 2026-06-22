@@ -39,6 +39,11 @@ const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
+// Fires when a booking/reschedule FAILS because no candidate could be verified
+// (a likely verify-on-book outage), as opposed to a genuinely full slot (#319).
+const VERIFY_OUTAGE_ALERT_KEY = "verify_on_book_outage";
+const VERIFY_OUTAGE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
+
 // Google caps a freeBusy query at 20 calendar `items` (verified live against the
 // production domain — 20 → 0 errors, 21 → tooManyCalendarsRequested), so the
 // bulk verifier chunks calendar ids at 20 per call.
@@ -135,18 +140,24 @@ async function calendarsForEmails(
   return { byEmail, readFailed };
 }
 
+/** Outcome of a single-agent verify: confirmed free, confirmed busy, or — when a
+ *  calendar couldn't be read — unverifiable (#319). `unverified` is never treated
+ *  as free (no double-book) and lets the caller flag a likely outage. */
+type AgentVerdict = "free" | "busy" | "unverified";
+
 /**
- * Direct per-agent free check (impersonates the agent, checks all their
- * calendars) — the accurate fallback for the bulk verifier when a calendar
- * couldn't be read in the cross-identity batch (#314) or the bulk call failed
- * wholesale. Mirrors the single-agent `isFree` dep's semantics, including the
- * read-failed skip-and-alert.
+ * Direct per-agent verify (impersonates the agent, checks all their calendars) —
+ * the accurate fallback for the bulk verifier when a calendar couldn't be read in
+ * the cross-identity batch (#314) or the bulk call failed wholesale. A
+ * calendar-read failure yields `unverified` (skip + alert) instead of being
+ * conflated with `busy`, so a verify-on-book outage is distinguishable from a
+ * genuinely full slot (#319).
  */
-async function isFreeForEmailDirect(
+async function checkAgentFree(
   email: string,
   startIso: string,
   endIso: string,
-): Promise<boolean> {
+): Promise<AgentVerdict> {
   const { readFailed, ids } = await calendarIdsForEmail(email);
   if (readFailed) {
     await sendThrottledAlert(
@@ -154,12 +165,17 @@ async function isFreeForEmailDirect(
       VERIFY_READ_ALERT_COOLDOWN_MS,
       `Slate: verify-on-book could not read calendars for ${email}; skipping this agent for the slot to avoid a double-book. Check DB health.`,
     ).catch(() => {});
-    return false;
+    return "unverified";
   }
-  return isFree(email, startIso, endIso, ids.length ? ids : ["primary"]);
+  return (await isFree(email, startIso, endIso, ids.length ? ids : ["primary"]))
+    ? "free"
+    : "busy";
 }
 
-export { SlotUnavailableError } from "@/lib/booking/orchestration";
+export {
+  SlotUnavailableError,
+  VerifyUnavailableError,
+} from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
 
 /**
@@ -174,8 +190,8 @@ function realDeps(): BookingDeps {
     // Single-agent free check (reschedule keep-same-agent). Checks ALL the
     // agent's calendars; on a calendar-read failure (#314) it skips + alerts
     // rather than verifying primary-only and risking a double-book.
-    isFree: (email, startIso, endIso) =>
-      isFreeForEmailDirect(email, startIso, endIso),
+    isFree: async (email, startIso, endIso) =>
+      (await checkAgentFree(email, startIso, endIso)) === "free",
     // Batched verify-on-book (#167): read the whole candidate wave's free/busy
     // in ONE cross-identity freeBusy call (chunked at Google's 20-calendar cap,
     // chunks fired with bounded concurrency) instead of one serial Google call
@@ -185,7 +201,8 @@ function realDeps(): BookingDeps {
     // so accuracy is never traded for speed.
     verifyFree: async (emails, startIso, endIso) => {
       const free = new Set<string>();
-      if (emails.length === 0) return free;
+      const unverified = new Set<string>();
+      if (emails.length === 0) return { free, unverified };
 
       const { byEmail, readFailed } = await calendarsForEmails(emails);
       const bulkAgents = emails
@@ -233,17 +250,18 @@ function realDeps(): BookingDeps {
 
       if (fallback.size > 0) {
         const list = [...fallback];
-        const results = await mapWithConcurrency(
+        const verdicts = await mapWithConcurrency(
           list,
           VERIFY_CONCURRENCY,
-          (email) => isFreeForEmailDirect(email, startIso, endIso),
+          (email) => checkAgentFree(email, startIso, endIso),
         );
         list.forEach((email, i) => {
-          if (results[i]) free.add(email);
+          if (verdicts[i] === "free") free.add(email);
+          else if (verdicts[i] === "unverified") unverified.add(email);
         });
       }
 
-      return free;
+      return { free, unverified };
     },
     createEvent,
     deleteEvent,
@@ -486,15 +504,41 @@ function realDeps(): BookingDeps {
   };
 }
 
+/**
+ * Alert (throttled) when a booking fails specifically because verify-on-book
+ * couldn't reach Google/DB for ANY candidate — an outage masquerading as a quiet
+ * day, which would otherwise go undetected (#319). Re-throws so the caller still
+ * maps it to a retryable response. Best-effort: a failed alert never masks the
+ * original error.
+ */
+async function alertOnVerifyOutage<T>(op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (err) {
+    if (err instanceof orchestration.VerifyUnavailableError) {
+      await sendThrottledAlert(
+        VERIFY_OUTAGE_ALERT_KEY,
+        VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
+        "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
+      ).catch(() => {});
+    }
+    throw err;
+  }
+}
+
 export function createBooking(input: CreateBookingInput): Promise<BookingResult> {
-  return orchestration.createBooking(input, realDeps());
+  return alertOnVerifyOutage(() =>
+    orchestration.createBooking(input, realDeps()),
+  );
 }
 
 export function rescheduleBooking(
   token: string,
   newStartIso: string,
 ): Promise<BookingResult> {
-  return orchestration.rescheduleBooking(token, newStartIso, realDeps());
+  return alertOnVerifyOutage(() =>
+    orchestration.rescheduleBooking(token, newStartIso, realDeps()),
+  );
 }
 
 export function cancelBooking(token: string): Promise<void> {
