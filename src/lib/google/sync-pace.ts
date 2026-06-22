@@ -93,6 +93,29 @@ export function shouldOnboard(
 }
 
 /**
+ * Which agents the watch lane processes this tick (#302). Every already-
+ * onboarded agent (cheap renewal check) plus at most `onboardCap` brand-new
+ * ones (the ~2-Google-call first-time setup), in the given order. The watch
+ * lane runs CONCURRENTLY, so the onboarding cap can't be a running counter
+ * inside the loop (it would race); pre-selecting here keeps it deterministic.
+ * Brand-new agents beyond the cap are picked up next tick (rotation).
+ */
+export function watchAgentsForTick(
+  ordered: SyncAgent[],
+  onboardCap: number = MAX_ONBOARDS_PER_TICK,
+): SyncAgent[] {
+  let onboards = 0;
+  return ordered.filter((a) => {
+    if (a.hasCalendars) return true;
+    if (onboards < onboardCap) {
+      onboards++;
+      return true;
+    }
+    return false;
+  });
+}
+
+/**
  * Process `items` through `worker` with at most `cap` in flight at once (#242).
  * Items are started in order, so the started set is always a prefix — workers
  * stop STARTING new items once `deadlineMs` passes (in-flight ones still

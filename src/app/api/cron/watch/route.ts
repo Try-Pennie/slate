@@ -2,9 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { ensureWatches, loadSyncAgents, loadFailingAgents } from "@/lib/google/sync";
 import {
-  withinBudget,
   orderAgentsForTick,
-  shouldOnboard,
+  watchAgentsForTick,
+  mapWithConcurrency,
+  SYNC_CONCURRENCY,
 } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { WATCH_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
@@ -45,42 +46,42 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const agents = orderAgentsForTick(await loadSyncAgents());
+    const ordered = orderAgentsForTick(await loadSyncAgents());
+    // Every already-onboarded agent + a capped batch of brand-new ones; the
+    // onboarding cap is pre-selected (not a running counter) so the lane can
+    // run CONCURRENTLY (#302) — sequential per-agent work was budget-limited to
+    // ~104/200 at scale. ensureWatches is mostly a cheap DB read on the common
+    // "current" path, so concurrency lets one tick cover the whole roster.
+    const toProcess = watchAgentsForTick(ordered);
     const deadlineMs = Date.now() + SYNC_TICK_BUDGET_MS;
-    const results: { userId: string; watch: string; watchError?: string }[] = [];
-    let onboarded = 0;
-    for (const agent of agents) {
-      if (!withinBudget(Date.now(), deadlineMs)) break;
-      // A brand-new agent needs ~2 Google calls to set up watches; cap how many
-      // we onboard per tick so a fresh roster drains over several ticks instead
-      // of blowing the budget. Already-onboarded agents are always processed
-      // (their ensureWatches is a cheap DB read unless a renewal is due).
-      if (!agent.hasCalendars && !shouldOnboard(agent, onboarded)) continue;
-
-      const watch = await ensureWatches(agent.userId);
-      // Count any brand-new agent whose setup ran the Google path (renewed OR
-      // error) against the per-tick cap — "skipped" makes no Google calls.
-      if (!agent.hasCalendars && watch.status !== "skipped") onboarded++;
-      results.push({
-        userId: agent.userId,
-        watch: watch.status,
-        ...(watch.status === "error" ? { watchError: watch.error } : {}),
-      });
-    }
+    const { results, truncated } = await mapWithConcurrency(
+      toProcess,
+      SYNC_CONCURRENCY,
+      async (agent) => {
+        const watch = await ensureWatches(agent.userId);
+        return {
+          userId: agent.userId,
+          watch: watch.status,
+          ...(watch.status === "error" ? { watchError: watch.error } : {}),
+        };
+      },
+      { deadlineMs },
+    );
 
     // When this tick saw watch errors, name the PERSISTENTLY-failing agents
     // (consecutive_failures >= the threshold) from the diagnostics — a one-off
     // blip (streak of 1) stays quiet; the 30-min cooldown bounds repeats.
     const watchErrors = results.filter((r) => r.watch === "error").length;
     if (watchErrors > 0) {
-      await alertWatchLapse(await loadFailingAgents(), agents.length);
+      await alertWatchLapse(await loadFailingAgents(), ordered.length);
     }
 
     return NextResponse.json({
-      agents: agents.length,
+      agents: ordered.length,
       processed: results.length,
-      onboarded,
+      onboarded: toProcess.filter((a) => !a.hasCalendars).length,
       watchErrors,
+      truncated,
       results,
     });
   } finally {
