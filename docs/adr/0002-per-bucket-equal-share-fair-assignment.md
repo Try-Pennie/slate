@@ -31,10 +31,26 @@ resetting on the two semi-monthly pay boundaries (no payroll lag) so routing sha
 matches what agents feel in their paychecks. All-time counting was rejected (starves
 veterans, floods new hires for months).
 
-**Cold-start: prorate to time present.** An agent who joins a Bucket's pool mid-period
-(new hire, newly-added, or reactivated) is seeded proportional to how much of the
-period they have been active — neither flooded (starting at 0) nor starved. Mirrors
-PET's existing new-rep goal proration.
+**Cold-start: seed at the pool average (not tenure proration).** An agent new to a
+Bucket's pool this period (no count this period AND no booking last period) is seeded
+at the pool's current average count, so they land mid-pack: neither flooded (starting
+at 0) nor starved. An established-but-quiet agent (count 0 but active last period) is
+NOT seeded and legitimately sorts first. The original "prorate to time present" was
+abandoned in implementation (#305): pool membership is computed live from
+`users.attributes` (the manual-member table is empty in production), so there is no
+per-bucket join timestamp to prorate against, and creating one is a heavy, drift-prone
+write path. The pool-average seed achieves the same "neither flooded nor starved" goal
+with no schema and preserves the pointer-free invariant. `users.activated_at` is held
+in reserve as a cheap precision upgrade only if time-proportional proration is ever
+proven necessary.
+
+**Resolved counting parameters (#305).** The per-period count keys on the booking's
+`starts_at` (when the meeting occurs), anchored to the pay period containing the slot
+being booked, so a next-period slot balances against next-period meetings. Manually
+reassigned / `allow_double_book` bookings ARE counted (they consume the agent's
+commission opportunity). Counted statuses: `confirmed`, `rescheduled`, `completed`.
+The target is equal absolute count per agent (the roster is full-time, so
+availability-weighting is unnecessary).
 
 ## Consequences
 

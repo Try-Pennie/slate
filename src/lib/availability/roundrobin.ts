@@ -1,14 +1,14 @@
+import { DateTime } from "luxon";
+
 /**
- * Least-recently-booked round-robin ordering (pure).
- *
- * Replaces the old mutable `rr_last_assigned_user_id` pointer: instead of
- * rotating after a stored pointer (racy under concurrency, and skewed by
- * reschedules), we order candidates by when each was last booked and pick the
- * one booked longest ago. An agent with no prior booking sorts first (most
- * "stale"). Ties break deterministically by id so concurrent callers see the
- * same order. The caller supplies each candidate's last-booked timestamp
- * (newest active booking's `created_at`, in ms); missing/null means never booked.
+ * Pure round-robin / fair-assignment ordering. Pointer-free (no stored
+ * `rr_last_assigned_user_id`): each request derives order from a per-request
+ * read, so it's concurrency-safe and immune to the reschedule double-count the
+ * old rotation had. Assignment is per-bucket equal-share (ADR 0002) — see
+ * orderByBucketShare below; ties break deterministically by id so concurrent
+ * callers agree.
  */
+
 /**
  * Apply a bucket's fallback: if the matched pool is non-empty use it; otherwise
  * route to the fallback agent when one is set AND eligible (the cal "default
@@ -28,42 +28,123 @@ export function applyFallback(
   return { ids: [], fallbackApplied: false };
 }
 
+// --- Per-bucket equal-share assignment (#305, ADR 0002) ---
+
 /**
- * Reduce a bookings read into each agent's newest-active-booking timestamp (ms),
- * the input to orderByLeastRecentlyBooked. Pure; mirrors the Supabase result
- * shape so it's node-testable.
- *
- * This read is FAIRNESS-only — it decides the ORDER agents are offered, not who
- * is available. A booking must always go through (#277, user rule), so an
- * errored read does NOT throw: it returns an empty map (everyone treated as
- * never-booked → a valid, if not strictly fair, order) and flags `degraded` so
- * the caller can fire a "possibly unfair assignment" alert instead of failing
- * the booking.
+ * The semi-monthly pay-period window [startMs, endMs) the instant `atMs` falls
+ * into: fairness "equal share this period" resets on the 15th and 25th, in `tz`
+ * (America/New_York — the roster's business timezone). Boundaries are local
+ * wall-clock midnight, computed with Luxon so they stay correct across DST (never
+ * do ms arithmetic on day numbers). An instant exactly on a boundary belongs to
+ * the period that boundary opens. The booking path anchors this on the SLOT's
+ * start (so a next-period slot balances against next-period meetings).
  */
-export function lastBookedFromResult(res: {
-  data: { assigned_user_id: string | null; created_at: string }[] | null;
-  error: unknown;
-}): { lastBookedAtMs: Record<string, number | null>; degraded: boolean } {
-  if (res.error) return { lastBookedAtMs: {}, degraded: true };
-  const lastBookedAtMs: Record<string, number | null> = {};
-  for (const r of res.data ?? []) {
-    if (r.assigned_user_id == null) continue;
-    const t = Date.parse(r.created_at);
-    const prev = lastBookedAtMs[r.assigned_user_id];
-    if (prev == null || t > prev) lastBookedAtMs[r.assigned_user_id] = t;
+export function payPeriod(
+  atMs: number,
+  tz = "America/New_York",
+): { startMs: number; endMs: number } {
+  const dt = DateTime.fromMillis(atMs, { zone: tz });
+  const at = (year: number, month: number, day: number) =>
+    DateTime.fromObject({ year, month, day }, { zone: tz }).startOf("day");
+  let start: DateTime;
+  let end: DateTime;
+  if (dt.day >= 25) {
+    start = at(dt.year, dt.month, 25);
+    end = start.plus({ months: 1 }).set({ day: 15 }).startOf("day");
+  } else if (dt.day >= 15) {
+    start = at(dt.year, dt.month, 15);
+    end = at(dt.year, dt.month, 25);
+  } else {
+    end = at(dt.year, dt.month, 15);
+    start = end.minus({ months: 1 }).set({ day: 25 }).startOf("day");
   }
-  return { lastBookedAtMs, degraded: false };
+  return { startMs: start.toMillis(), endMs: end.toMillis() };
 }
 
-export function orderByLeastRecentlyBooked(
+/** A candidate's per-bucket standing this period. `seed` shifts the effective
+ * count (the new-agent floor; future proration plugs in here too). */
+export interface AgentRankInput {
+  count: number;
+  lastBookedAtMs: number | null;
+  seed?: number;
+}
+
+/** Per-bucket booking standing reduced from one bucket's bookings over a window
+ * spanning the prior period boundary up to the slot's period end. */
+export interface BucketShare {
+  /** In-period count + newest created_at (the tiebreak), per agent. An optional
+   * `seed` (the Phase-2 proration seam) shifts the effective count if present. */
+  counts: Record<string, AgentRankInput>;
+  /** Agents with a booking in the PRIOR period — established, so not seeded. */
+  priorActiveIds: string[];
+}
+
+/**
+ * Reduce a bucket's bookings read into per-bucket equal-share standing (#305).
+ * The read spans [prior-period-start, this-period-end); `currentPeriodStartMs`
+ * splits it: rows whose meeting (`starts_at`) is in the current period count
+ * toward share; earlier rows only mark the agent established (so a brand-new
+ * agent can be told apart from an established-but-quiet one). Rows with a null
+ * assignee are skipped. A query error returns `degraded: true` with empty
+ * standing so the caller keeps a valid order and alerts (never fails a booking).
+ */
+export function bucketShareFromResult(
+  res: {
+    data: { assigned_user_id: string | null; starts_at: string; created_at: string }[] | null;
+    error: unknown;
+  },
+  currentPeriodStartMs: number,
+): { counts: BucketShare["counts"]; priorActiveIds: string[]; degraded: boolean } {
+  if (res.error) return { counts: {}, priorActiveIds: [], degraded: true };
+  const counts: BucketShare["counts"] = {};
+  const prior = new Set<string>();
+  for (const r of res.data ?? []) {
+    if (r.assigned_user_id == null) continue;
+    if (Date.parse(r.starts_at) >= currentPeriodStartMs) {
+      const made = Date.parse(r.created_at);
+      const cur = counts[r.assigned_user_id] ?? { count: 0, lastBookedAtMs: null };
+      cur.count += 1;
+      if (cur.lastBookedAtMs == null || made > cur.lastBookedAtMs) cur.lastBookedAtMs = made;
+      counts[r.assigned_user_id] = cur;
+    } else {
+      prior.add(r.assigned_user_id);
+    }
+  }
+  return { counts, priorActiveIds: [...prior], degraded: false };
+}
+
+/**
+ * Order free candidates by per-bucket equal share (#305): fewest in-period
+ * bookings first, tie-break least-recently-booked then id. A brand-new-to-the-
+ * pool agent (no count this period AND no booking last period) is seeded at the
+ * pool's current average so they land mid-pack instead of flooding at 0; an
+ * established-but-quiet agent (count 0 but active last period) is NOT seeded and
+ * legitimately sorts first. Pure, deterministic, pointer-free.
+ */
+export function orderByBucketShare(
   candidateIds: string[],
-  lastBookedAtMs: Record<string, number | null>,
+  share: BucketShare,
 ): string[] {
+  const priorActive = new Set(share.priorActiveIds);
+  const countOf = (id: string) => share.counts[id]?.count ?? 0;
+  const isEstablished = (id: string) => countOf(id) > 0 || priorActive.has(id);
+
+  // Pool average over established candidates (rounded), used to seed newcomers.
+  const established = candidateIds.filter(isEstablished);
+  const avg =
+    established.length > 0
+      ? Math.round(established.reduce((s, id) => s + countOf(id), 0) / established.length)
+      : 0;
+
+  const effective = (id: string) =>
+    countOf(id) + (share.counts[id]?.seed ?? (isEstablished(id) ? 0 : avg));
+
   return [...candidateIds].sort((a, b) => {
-    const ta = lastBookedAtMs[a] ?? Number.NEGATIVE_INFINITY;
-    const tb = lastBookedAtMs[b] ?? Number.NEGATIVE_INFINITY;
-    // NaN-safe: only subtract when the two differ; equal (incl. both -Infinity)
-    // falls through to the deterministic id tiebreak.
+    const ea = effective(a);
+    const eb = effective(b);
+    if (ea !== eb) return ea - eb;
+    const ta = share.counts[a]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
+    const tb = share.counts[b]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
     if (ta !== tb) return ta - tb;
     return a < b ? -1 : a > b ? 1 : 0;
   });
