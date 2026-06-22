@@ -155,3 +155,52 @@ from enrollment. Slate cannot witness this itself (the call happens elsewhere).
 **Where show-rate is computed is UNDECIDED** (warehouse/Salesforce join vs. Slate
 ingesting a signal) — open question, not yet modeled.
 _Avoid_: "attendance" (collides with the PET rep concept)
+
+## Calendar sync
+
+**Lane**:
+An independent cron pipeline with its own route, lock, and time budget. The three
+lanes — **Sync**, **Watch**, **Recompute** — are deliberately isolated so one can't
+starve another (the point of the #273 decomposition).
+_Avoid_: shard, job, cron (when you mean a lane)
+
+**Sync Lane**:
+The every-minute pipeline that pulls each Agent calendar's changes (incremental
+Google `events.list`) into Busy Blocks. Rotates through the roster, bounded
+concurrency, capped per tick. Acts as the **backstop** that guarantees freshness
+even if a real-time Push was missed.
+_Avoid_: polling
+
+**Watch Lane**:
+The every-5-min pipeline that registers and renews Watch Channels, and doubles as
+the onboarding / calendar-discovery path for new Agents.
+_Avoid_: bare "watch" (that's the Channel — see below)
+
+**Recompute Lane**:
+The every-minute pipeline that rebuilds the `bucket_slots` cache for Buckets past a
+freshness window. Real-time push/booking keep changed Buckets fresh; this lane owns
+the day-window slide and the missed-update backstop.
+_Avoid_: refresh, regenerate
+
+**Watch Channel** (a.k.a. Channel):
+A single calendar's Google push subscription (`watch_channel_id`,
+`watch_resource_id`, `watch_expiration`); expires ~7 days and is renewed by the
+Watch Lane. A bare "Watch" as a noun means this. Reserve "channel" strictly for
+this — never for a Lane.
+_Avoid_: subscription, hook
+
+**Push**:
+A real-time Google notification to `/api/google/push` that a calendar changed,
+triggering a coalesced Sync. The live freshness path; the Sync Lane is its backstop.
+_Avoid_: webhook (that's the outbound booking events to Regal/PET)
+
+**Sync Token**:
+Google's opaque incremental-sync cursor stored per AgentCalendar. Null means a
+bootstrap (full) sync is needed; an expired token forces a re-bootstrap.
+_Avoid_: confusing with a Booking's manage token
+
+**AgentCalendar**:
+The per-calendar sync + push state row (one per Google calendar; ~1:1 with an Agent
+in practice). Holds the Sync Token, Watch Channel fields, and sync health. Distinct
+from the Agent's Google "calendar" itself.
+_Avoid_: using "calendar" to mean this row
