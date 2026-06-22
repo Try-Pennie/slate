@@ -204,3 +204,32 @@ The per-calendar sync + push state row (one per Google calendar; ~1:1 with an Ag
 in practice). Holds the Sync Token, Watch Channel fields, and sync health. Distinct
 from the Agent's Google "calendar" itself.
 _Avoid_: using "calendar" to mean this row
+
+## Outbound notifications
+
+**Webhook**:
+Slate's outbound notifier for **Booking lifecycle events only** — `booking.created`,
+`booking.rescheduled`, `booking.cancelled`, `booking.completed`. It is **not** a
+general event bus: other outbound integrations (e.g. the PET time-off feed, #307)
+are deliberately **separate**, not new webhook event types.
+_Avoid_: using "webhook" for the inbound Google Push, or for the PET feed
+
+**Webhook Endpoint**:
+A configured downstream receiver: URL, signing secret, the subset of events it
+subscribes to, and a Format. E.g. Regal/Cadence.
+_Avoid_: subscriber, listener
+
+**Format**:
+The per-Endpoint payload shape. **generic** = Slate's own JSON; **regal** = the
+Regal/Cadence shape. Each new consumer that needs a different shape adds a Format.
+_Avoid_: schema, template
+
+**Delivery**:
+One send attempt to one Endpoint for one event. At-least-once: receivers dedupe on
+a stable delivery id; failures retry with exponential backoff.
+_Avoid_: message, send
+
+**Dead Letter**:
+A Delivery that has failed past the max attempts. Retained and replayable for
+incident recovery.
+_Avoid_: failed (too generic), dropped
