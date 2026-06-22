@@ -237,10 +237,10 @@ _Avoid_: failed (too generic), dropped
 ## Booking concurrency
 
 **Verify-on-book**:
-The single live Google free/busy check at confirm time — Slate walks the
-round-robin candidates and picks the first actually-free one (one check per
-candidate). The *only* live Google call on the booking hot path; everywhere else is
-cache-first. **Best-effort**, not transactional: it guards against external Google
+The live Google free/busy check at confirm time — Slate checks the round-robin
+candidates in **batched waves** (one Google call per wave, #167) and takes the
+first actually-free one in round-robin order. The *only* live Google call on the
+booking hot path; everywhere else is cache-first. **Best-effort**, not transactional: it guards against external Google
 conflicts but can't eliminate a booking made directly in Google in the moments
 before insert.
 _Avoid_: availability check (that's the cached read path)
