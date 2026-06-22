@@ -3,6 +3,7 @@
 import {
   orderByLeastRecentlyBooked,
   applyFallback,
+  lastBookedFromResult,
 } from "../src/lib/availability/roundrobin.ts";
 
 let failures = 0;
@@ -87,6 +88,62 @@ assert(
   JSON.stringify(applyFallback([], "f", true)) === JSON.stringify({ ids: ["f"], fallbackApplied: true }),
   "empty pool with an ELIGIBLE fallback routes to the fallback agent",
 );
+
+// --- lastBookedFromResult (#277 ordering degrade) ---
+// Builds the per-agent newest-booking map; degraded=false on a clean read.
+{
+  const { lastBookedAtMs, degraded } = lastBookedFromResult({
+    data: [
+      { assigned_user_id: "a", created_at: "2026-01-01T00:00:00Z" },
+      { assigned_user_id: "a", created_at: "2026-03-01T00:00:00Z" },
+      { assigned_user_id: "b", created_at: "2026-02-01T00:00:00Z" },
+    ],
+    error: null,
+  });
+  assert(degraded === false, "clean ordering read is not degraded");
+  assert(
+    lastBookedAtMs.a === Date.parse("2026-03-01T00:00:00Z"),
+    "keeps the NEWEST booking per agent",
+  );
+  assert(lastBookedAtMs.b === Date.parse("2026-02-01T00:00:00Z"), "maps each agent");
+}
+
+// A FAILED ordering read must NOT throw (a booking must always go through, even
+// if wildly unfair) — it returns an empty map (everyone treated never-booked)
+// and flags `degraded` so the caller can fire the potentially-unfair alert.
+{
+  const { lastBookedAtMs, degraded } = lastBookedFromResult({
+    data: null,
+    error: { message: "boom" },
+  });
+  assert(degraded === true, "an errored ordering read is flagged degraded");
+  assert(
+    Object.keys(lastBookedAtMs).length === 0,
+    "degraded read yields an empty map (ordering still produces a valid set)",
+  );
+}
+
+// assigned_user_id is nullable in the schema; rows with a null assignee don't
+// belong to any agent's recency and are skipped.
+{
+  const { lastBookedAtMs } = lastBookedFromResult({
+    data: [
+      { assigned_user_id: null, created_at: "2026-05-01T00:00:00Z" },
+      { assigned_user_id: "a", created_at: "2026-01-01T00:00:00Z" },
+    ],
+    error: null,
+  });
+  assert(
+    Object.keys(lastBookedAtMs).length === 1 && "a" in lastBookedAtMs,
+    "rows with a null assigned_user_id are skipped",
+  );
+}
+
+// Not-found / empty (no error) is a normal read, not degraded.
+{
+  const { degraded } = lastBookedFromResult({ data: null, error: null });
+  assert(degraded === false, "empty result with no error is not degraded");
+}
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
