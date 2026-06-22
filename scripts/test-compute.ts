@@ -3,6 +3,7 @@
 import {
   computeBucketSlots,
   freeMembersForSlot,
+  assembleMemberAvailability,
   type MemberAvailability,
 } from "../src/lib/availability/compute.ts";
 
@@ -85,6 +86,35 @@ const slotsNotice = computeBucketSlots({
   to,
 });
 assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${slotsNotice.length})`);
+
+// --- assembleMemberAvailability (#249: map-based join, replaces O(N*M) filters) ---
+{
+  const userIds = ["a", "b"];
+  const schedules = [{ id: "s1", user_id: "a", timezone: "America/Los_Angeles" }];
+  const rules = [
+    { schedule_id: "s1", weekday: 1, start_minute: 540, end_minute: 1020 },
+    { schedule_id: "sX", weekday: 2, start_minute: 0, end_minute: 60 }, // other schedule -> ignored
+  ];
+  const busy = [
+    { user_id: "a", starts_at: "2026-06-08T13:00:00.000Z", ends_at: "2026-06-08T13:30:00.000Z" },
+    { user_id: "b", starts_at: "2026-06-08T14:00:00.000Z", ends_at: "2026-06-08T14:30:00.000Z" },
+  ];
+  const bookings = [{ assigned_user_id: "a", starts_at: "2026-06-08T13:00:00.000Z" }];
+  const out = assembleMemberAvailability(userIds, schedules, rules, busy, bookings);
+
+  assert(out.length === 2 && out[0].userId === "a" && out[1].userId === "b", "preserves userIds order");
+  const a = out[0];
+  const b = out[1];
+  assert(a.timezone === "America/Los_Angeles", "uses the agent's schedule timezone");
+  assert(a.rules.length === 1 && a.rules[0].weekday === 1, "groups only the agent's own schedule's rules");
+  assert(
+    a.busy.length === 1 && a.busy[0].start === Date.parse("2026-06-08T13:00:00.000Z"),
+    "busy parsed to epoch-ms for the right user",
+  );
+  assert(a.bookingStartsMs.length === 1 && a.bookingStartsMs[0] === Date.parse("2026-06-08T13:00:00.000Z"), "booking starts grouped per user");
+  assert(b.timezone === "America/New_York" && b.rules.length === 0, "no schedule -> default tz + no rules");
+  assert(b.busy.length === 1 && b.bookingStartsMs.length === 0, "user b's busy grouped; no bookings");
+}
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

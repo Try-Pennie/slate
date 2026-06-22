@@ -3,6 +3,7 @@ import { unwrap } from "@/lib/db/result";
 import {
   computeBucketSlots,
   freeMembersForSlot,
+  assembleMemberAvailability,
   type MemberAvailability,
 } from "@/lib/availability/compute";
 import { matchesCriteria } from "@/lib/availability/match";
@@ -103,23 +104,22 @@ export async function resolveBucketByCode(
   code: string,
 ): Promise<ResolvedBucket | null> {
   const db = supabaseAdmin();
-  const bucket = unwrap(
-    await db.from("buckets").select("*").eq("code", code).maybeSingle(),
-    "bucket by code",
-  );
-  if (!bucket) return null;
-
-  const eventType = unwrap(
+  // Fetch the bucket WITH its event type nested (one query instead of two
+  // sequential cross-region hops) (#249). event_type_id is a FK to event_types.
+  const row = unwrap(
     await db
-      .from("event_types")
-      .select("*")
-      .eq("id", (bucket as Bucket).event_type_id)
+      .from("buckets")
+      .select("*, event_types(*)")
+      .eq("code", code)
       .maybeSingle(),
-    "event type",
-  );
+    "bucket by code",
+  ) as (Bucket & { event_types: EventType | null }) | null;
+  if (!row) return null;
+
+  const { event_types: eventType, ...bucket } = row;
   if (!eventType) return null;
 
-  return { bucket: bucket as Bucket, eventType: eventType as EventType };
+  return { bucket: bucket as Bucket, eventType };
 }
 
 /** Loads cached availability for the bucket's resolved pool over [from, to]. */
@@ -133,8 +133,15 @@ export async function loadMembersAvailability(
   const { ids: userIds } = await eligibleAgentIds(bucket);
   if (userIds.length === 0) return [];
 
+  // Fetch the schedules WITH their rules nested (one query instead of a separate
+  // sequential hop for rules), alongside busy + bookings, all in parallel (#249).
   const [schedulesRes, busyRes, bookingsRes] = await Promise.all([
-    db.from("availability_schedules").select("id, user_id, timezone").in("user_id", userIds),
+    db
+      .from("availability_schedules")
+      .select(
+        "id, user_id, timezone, availability_rules(schedule_id, weekday, start_minute, end_minute)",
+      )
+      .in("user_id", userIds),
     db
       .from("busy_blocks")
       .select("user_id, starts_at, ends_at")
@@ -153,10 +160,19 @@ export async function loadMembersAvailability(
   // Fail loud on any of these reads (#277). A swallowed busy_blocks error is
   // the worst case: an agent looks fully free and gets overbooked. Throwing
   // surfaces the broken query instead of silently degrading availability.
-  const schedules = (unwrap(schedulesRes, "availability_schedules") ?? []) as {
+  // Cast through `unknown`: our hand-written DB types don't declare PostgREST
+  // embed relationships, so the typed client can't see the nested rules; the FK
+  // makes the embed valid at runtime.
+  const schedules = (unwrap(schedulesRes, "availability_schedules") ?? []) as unknown as {
     id: string;
     user_id: string;
     timezone: string;
+    availability_rules: {
+      schedule_id: string;
+      weekday: number;
+      start_minute: number;
+      end_minute: number;
+    }[];
   }[];
   const busy = (unwrap(busyRes, "busy_blocks") ?? []) as {
     user_id: string;
@@ -167,41 +183,9 @@ export async function loadMembersAvailability(
     assigned_user_id: string;
     starts_at: string;
   }[];
-  const scheduleIds = schedules.map((s) => s.id);
 
-  const rulesRes = scheduleIds.length
-    ? await db
-        .from("availability_rules")
-        .select("schedule_id, weekday, start_minute, end_minute")
-        .in("schedule_id", scheduleIds)
-    : { data: [], error: null };
-
-  const rules = (unwrap(rulesRes, "availability_rules") ?? []) as {
-    schedule_id: string;
-    weekday: number;
-    start_minute: number;
-    end_minute: number;
-  }[];
-
-  return userIds.map((userId) => {
-    const schedule = schedules.find((s) => s.user_id === userId);
-    return {
-      userId,
-      timezone: schedule?.timezone ?? "America/New_York",
-      rules: schedule
-        ? rules.filter((r) => r.schedule_id === schedule.id)
-        : [],
-      busy: busy
-        .filter((b) => b.user_id === userId)
-        .map((b) => ({
-          start: Date.parse(b.starts_at),
-          end: Date.parse(b.ends_at),
-        })),
-      bookingStartsMs: bookingStarts
-        .filter((b) => b.assigned_user_id === userId)
-        .map((b) => Date.parse(b.starts_at)),
-    } satisfies MemberAvailability;
-  });
+  const rules = schedules.flatMap((s) => s.availability_rules ?? []);
+  return assembleMemberAvailability(userIds, schedules, rules, busy, bookingStarts);
 }
 
 export interface BucketSlots {

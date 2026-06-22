@@ -17,6 +17,57 @@ export interface MemberAvailability {
   bookingStartsMs: number[];
 }
 
+/**
+ * Stitch the per-bucket availability reads (schedules, rules, busy_blocks,
+ * bookings) into one MemberAvailability per user, in `userIds` order. Pure, and
+ * O(N+M): it indexes each read by its key once, instead of re-scanning every
+ * read for every user (the old O(users × blocks) `.filter()` join) — the cold
+ * availability recompute walks ~70 agents, so the quadratic scan added up (#249).
+ * A user with no schedule falls back to America/New_York with no working rules.
+ */
+export function assembleMemberAvailability(
+  userIds: string[],
+  schedules: { id: string; user_id: string; timezone: string }[],
+  rules: { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[],
+  busy: { user_id: string; starts_at: string; ends_at: string }[],
+  bookingStarts: { assigned_user_id: string; starts_at: string }[],
+): MemberAvailability[] {
+  const scheduleByUser = new Map<string, { id: string; timezone: string }>();
+  for (const s of schedules) scheduleByUser.set(s.user_id, { id: s.id, timezone: s.timezone });
+
+  const rulesBySchedule = new Map<string, WorkingRule[]>();
+  for (const r of rules) {
+    const list = rulesBySchedule.get(r.schedule_id) ?? [];
+    list.push({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute });
+    rulesBySchedule.set(r.schedule_id, list);
+  }
+
+  const busyByUser = new Map<string, { start: number; end: number }[]>();
+  for (const b of busy) {
+    const list = busyByUser.get(b.user_id) ?? [];
+    list.push({ start: Date.parse(b.starts_at), end: Date.parse(b.ends_at) });
+    busyByUser.set(b.user_id, list);
+  }
+
+  const bookingsByUser = new Map<string, number[]>();
+  for (const bk of bookingStarts) {
+    const list = bookingsByUser.get(bk.assigned_user_id) ?? [];
+    list.push(Date.parse(bk.starts_at));
+    bookingsByUser.set(bk.assigned_user_id, list);
+  }
+
+  return userIds.map((userId) => {
+    const schedule = scheduleByUser.get(userId);
+    return {
+      userId,
+      timezone: schedule?.timezone ?? "America/New_York",
+      rules: schedule ? (rulesBySchedule.get(schedule.id) ?? []) : [],
+      busy: busyByUser.get(userId) ?? [],
+      bookingStartsMs: bookingsByUser.get(userId) ?? [],
+    } satisfies MemberAvailability;
+  });
+}
+
 export interface SlotComputeInput {
   members: MemberAvailability[];
   durationMin: number;
