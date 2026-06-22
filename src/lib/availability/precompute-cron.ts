@@ -66,3 +66,35 @@ export function bucketsDueForRecompute(
     })
     .sort((a, b) => (computedAt.get(a) ?? 0) - (computedAt.get(b) ?? 0));
 }
+
+export interface RecomputeHeadroom {
+  /** Run time as a percentage of the per-tick budget. */
+  utilizationPct: number;
+  /** Whether the run recomputed every bucket that was due (didn't run out of budget). */
+  drained: boolean;
+  /** True when the lane is approaching its limit and should be looked at. */
+  warn: boolean;
+}
+
+/**
+ * Early-warning headroom for the recompute lane (#294 follow-up): surfaces that
+ * the lane is approaching its limit BEFORE buckets actually go stale. Warns if
+ * it couldn't drain the due set within budget, or if it used at least
+ * `warnFraction` of its per-tick budget. Pure so it's unit-tested; the route
+ * times the run and feeds it in.
+ */
+export function recomputeHeadroom(
+  runMs: number,
+  budgetMs: number,
+  dueCount: number,
+  recomputedCount: number,
+  warnFraction: number,
+): RecomputeHeadroom {
+  const fraction = budgetMs > 0 ? runMs / budgetMs : 0;
+  const drained = recomputedCount >= dueCount;
+  return {
+    utilizationPct: Math.round(fraction * 100),
+    drained,
+    warn: !drained || fraction >= warnFraction,
+  };
+}
