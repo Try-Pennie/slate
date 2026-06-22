@@ -74,6 +74,18 @@ either side). A key ending in `!` negates (the Agent must NOT hold those values;
 an unset attribute passes the negation).
 _Avoid_: filter, rules (rules means working-hours rules elsewhere)
 
+**Fair assignment (round-robin)**:
+How a Booking is assigned within a Pool. **Fair = equal share of that Bucket's
+leads, counted per bucket.** Among the agents free for the slot, the one with the
+**fewest bookings in this Bucket** wins (ties broken by least-recently-booked, then
+id; pointer-free for concurrency safety). Each Bucket is **independent** — a
+multi-tier Agent's bookings in other Buckets never affect their standing here (e.g.
+an Agent with 10 High + 0 Ultra-High bookings outranks one with 1 High + 2
+Ultra-High for an incoming Ultra-High lead). Cross-tier differences in lead volume
+are *not* a routing concern — they are a comp-plan / staffing matter.
+_Avoid_: load-balancing across buckets, global rotation; "fair" meaning equal total
+workload (it means equal share within each Bucket)
+
 ## Booking
 
 **Booking** (a.k.a. Appointment):
