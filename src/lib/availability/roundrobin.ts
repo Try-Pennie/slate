@@ -149,3 +149,58 @@ export function orderByBucketShare(
     return a < b ? -1 : a > b ? 1 : 0;
   });
 }
+
+/**
+ * The PRIOR recency ranker: order candidates least-recently-booked first,
+ * IGNORING per-period count. A never-booked agent (no recorded last-booked time)
+ * sorts first; ties break by id. Kept only to shadow-compare against the
+ * equal-share ranker before fleet cutover (#321) — it is NOT used to assign.
+ * Derived from the same `share` data, so no extra read.
+ */
+export function orderByRecency(
+  candidateIds: string[],
+  share: BucketShare,
+): string[] {
+  return [...candidateIds].sort((a, b) => {
+    const ta = share.counts[a]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
+    const tb = share.counts[b]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
+    if (ta !== tb) return ta - tb;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
+/** A booking-time comparison of the live equal-share ranker vs the prior recency
+ *  ranker, for the pre-cutover shadow run (#321). */
+export interface ShadowDivergence {
+  equalShareOrder: string[];
+  recencyOrder: string[];
+  /** The agent each ranker would put first. */
+  equalShareTop: string | null;
+  recencyTop: string | null;
+  /** True when the two rankers' top picks differ (the signal to track). */
+  diverged: boolean;
+}
+
+/**
+ * Computes both rankings over the same candidates + share and reports whether
+ * their top picks diverge (#321). Pure; the booking path logs the result so the
+ * equal-share distribution can be validated against the prior recency behavior
+ * on real traffic before the fleet relies on it. The live order is still
+ * equal-share — this only observes.
+ */
+export function shadowRankingDivergence(
+  candidateIds: string[],
+  share: BucketShare,
+): ShadowDivergence {
+  const equalShareOrder = orderByBucketShare(candidateIds, share);
+  const recencyOrder = orderByRecency(candidateIds, share);
+  const equalShareTop = equalShareOrder[0] ?? null;
+  const recencyTop = recencyOrder[0] ?? null;
+  return {
+    equalShareOrder,
+    recencyOrder,
+    equalShareTop,
+    recencyTop,
+    diverged: equalShareTop !== recencyTop,
+  };
+}
