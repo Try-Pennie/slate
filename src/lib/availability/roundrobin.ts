@@ -28,6 +28,33 @@ export function applyFallback(
   return { ids: [], fallbackApplied: false };
 }
 
+/**
+ * Reduce a bookings read into each agent's newest-active-booking timestamp (ms),
+ * the input to orderByLeastRecentlyBooked. Pure; mirrors the Supabase result
+ * shape so it's node-testable.
+ *
+ * This read is FAIRNESS-only — it decides the ORDER agents are offered, not who
+ * is available. A booking must always go through (#277, user rule), so an
+ * errored read does NOT throw: it returns an empty map (everyone treated as
+ * never-booked → a valid, if not strictly fair, order) and flags `degraded` so
+ * the caller can fire a "possibly unfair assignment" alert instead of failing
+ * the booking.
+ */
+export function lastBookedFromResult(res: {
+  data: { assigned_user_id: string | null; created_at: string }[] | null;
+  error: unknown;
+}): { lastBookedAtMs: Record<string, number | null>; degraded: boolean } {
+  if (res.error) return { lastBookedAtMs: {}, degraded: true };
+  const lastBookedAtMs: Record<string, number | null> = {};
+  for (const r of res.data ?? []) {
+    if (r.assigned_user_id == null) continue;
+    const t = Date.parse(r.created_at);
+    const prev = lastBookedAtMs[r.assigned_user_id];
+    if (prev == null || t > prev) lastBookedAtMs[r.assigned_user_id] = t;
+  }
+  return { lastBookedAtMs, degraded: false };
+}
+
 export function orderByLeastRecentlyBooked(
   candidateIds: string[],
   lastBookedAtMs: Record<string, number | null>,

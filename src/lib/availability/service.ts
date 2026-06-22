@@ -9,7 +9,9 @@ import { matchesCriteria } from "@/lib/availability/match";
 import {
   applyFallback,
   orderByLeastRecentlyBooked,
+  lastBookedFromResult,
 } from "@/lib/availability/roundrobin";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
 
 /**
@@ -286,38 +288,50 @@ export async function roundRobinCandidates(
   if (free.length <= 1) return free;
 
   // Newest active booking per free agent → least-recently-booked goes first.
-  const { data } = await supabaseAdmin()
-    .from("bookings")
-    .select("assigned_user_id, created_at")
-    .in("assigned_user_id", free)
-    .in("status", ["confirmed", "rescheduled", "completed"]);
+  // Fairness-only: never fail a booking on this read (#277). A failed read
+  // degrades to an unordered-but-valid set and alerts; it does not throw.
+  const ordering = lastBookedFromResult(
+    await supabaseAdmin()
+      .from("bookings")
+      .select("assigned_user_id, created_at")
+      .in("assigned_user_id", free)
+      .in("status", ["confirmed", "rescheduled", "completed"]),
+  );
+  if (ordering.degraded) await alertUnfairOrdering("verify-on-book candidate order");
 
-  const lastBookedAtMs: Record<string, number | null> = {};
-  for (const r of (data ?? []) as { assigned_user_id: string; created_at: string }[]) {
-    const t = Date.parse(r.created_at);
-    const prev = lastBookedAtMs[r.assigned_user_id];
-    if (prev == null || t > prev) lastBookedAtMs[r.assigned_user_id] = t;
-  }
+  return orderByLeastRecentlyBooked(free, ordering.lastBookedAtMs);
+}
 
-  return orderByLeastRecentlyBooked(free, lastBookedAtMs);
+const UNFAIR_ORDERING_ALERT_KEY = "rr_ordering_degraded";
+const UNFAIR_ORDERING_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * The fairness-ordering read failed. Per the booking-never-fails rule (#277) the
+ * booking still proceeds; the assignment just may not honor the
+ * least-recently-booked rotation. Fire a throttled alert so a potentially unfair
+ * assignment is visible. Never throws (a failed alert must not fail the booking).
+ */
+async function alertUnfairOrdering(context: string): Promise<void> {
+  await sendThrottledAlert(
+    UNFAIR_ORDERING_ALERT_KEY,
+    UNFAIR_ORDERING_COOLDOWN_MS,
+    `Slate: round-robin fairness ordering degraded (${context}). The booking still went through, but agent assignment may not be least-recently-booked. Check DB health.`,
+  ).catch(() => {});
 }
 
 /** Order agents least-recently-booked first (newest active booking's created_at). */
 async function rankByLeastRecentlyBooked(ids: string[]): Promise<string[]> {
   if (ids.length <= 1) return ids;
-  const { data } = await supabaseAdmin()
-    .from("bookings")
-    .select("assigned_user_id, created_at")
-    .in("assigned_user_id", ids)
-    .in("status", ["confirmed", "rescheduled", "completed"]);
-
-  const lastBookedAtMs: Record<string, number | null> = {};
-  for (const r of (data ?? []) as { assigned_user_id: string; created_at: string }[]) {
-    const t = Date.parse(r.created_at);
-    const prev = lastBookedAtMs[r.assigned_user_id];
-    if (prev == null || t > prev) lastBookedAtMs[r.assigned_user_id] = t;
-  }
-  return orderByLeastRecentlyBooked(ids, lastBookedAtMs);
+  // Fairness-only read; same degrade-and-alert contract as roundRobinCandidates.
+  const ordering = lastBookedFromResult(
+    await supabaseAdmin()
+      .from("bookings")
+      .select("assigned_user_id, created_at")
+      .in("assigned_user_id", ids)
+      .in("status", ["confirmed", "rescheduled", "completed"]),
+  );
+  if (ordering.degraded) await alertUnfairOrdering("routing API order");
+  return orderByLeastRecentlyBooked(ids, ordering.lastBookedAtMs);
 }
 
 export interface RoutingResolution {
