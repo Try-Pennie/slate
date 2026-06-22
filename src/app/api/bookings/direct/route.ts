@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
+import { parseDirectBookingRequest } from "@/lib/booking/api-request";
 import { allowRequest } from "@/lib/rate-limit";
 import { DIRECT_BOOKING_API_RATE_RULES } from "@/lib/rate-limit-core";
 
@@ -38,6 +39,18 @@ export async function POST(req: NextRequest) {
   // Attribution: which key served the call (the label, never the secret).
   console.log(`booking-api: authenticated request via key '${auth.keyId}'`);
 
+  const parsed = parseDirectBookingRequest(await req.json().catch(() => null));
+  if (!parsed.ok) {
+    return NextResponse.json(
+      parsed.fieldErrors
+        ? { error: parsed.error, fieldErrors: parsed.fieldErrors }
+        : { error: parsed.error },
+      { status: parsed.status },
+    );
+  }
+
+  // Body validated. The booking itself — person-level dedupe + auto-reschedule
+  // (#357) and the machine-readable success/error contract (#358) — is next.
   return NextResponse.json(
     { error: "Not implemented yet.", code: "NOT_IMPLEMENTED" },
     { status: 501 },
