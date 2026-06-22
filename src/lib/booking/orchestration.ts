@@ -87,6 +87,9 @@ export type BookingInsert = {
   agent_email: string | null;
   starts_at: string;
   ends_at: string;
+  /** Immutable original scheduled time (#300); set = starts/ends at creation. */
+  original_starts_at: string;
+  original_ends_at: string;
   timezone: string;
   status: "confirmed";
   salesforce_id: string | null;
@@ -356,6 +359,9 @@ export async function createBooking(
     agent_email: agent.email,
     starts_at: startIso,
     ends_at: endIso,
+    // Preserve the original scheduled time immutably; reschedule never moves it.
+    original_starts_at: startIso,
+    original_ends_at: endIso,
     timezone: input.timezone,
     status: "confirmed",
     salesforce_id: input.salesforceId ?? null,
