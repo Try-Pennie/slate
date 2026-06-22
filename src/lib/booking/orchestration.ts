@@ -6,16 +6,21 @@ import { mapWithConcurrency } from "../concurrency.ts";
 import {
   bookingWindow,
   busyBlockFor,
+  bookingEventFrom,
   eventDescription,
   idempotencyKeyFor,
   selectAgent,
   type AssignResult,
   type BusyBlockInsert,
+  type BookingEventInsert,
+  type ValidatedReason,
   type VerifyResult,
 } from "./core.ts";
-import type { BookingEventPayload } from "@/lib/webhooks/types";
+import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import type {
   Booking,
+  BookingEventAction,
+  BookingEventInitiator,
   Bucket,
   EventType,
   RoutingTrace,
@@ -177,6 +182,19 @@ export interface BookingDeps {
    */
   claimReschedule(bookingId: string, targetStartIso: string): Promise<boolean>;
   releaseReschedule(bookingId: string, targetStartIso: string): Promise<void>;
+  /** Append a reschedule/cancel/reassign history row (#326/#300). */
+  insertBookingEvent(row: BookingEventInsert): Promise<void>;
+  /**
+   * Whether a history row already exists for this (booking, action, target).
+   * Lets the no-op / re-cancel guards record a reason that a partially-failed
+   * first attempt never persisted, without double-recording on a true duplicate
+   * (#326). `toStartsIso` is null for cancel (one cancel per booking).
+   */
+  hasBookingEvent(
+    bookingId: string,
+    action: BookingEventAction,
+    toStartsIso: string | null,
+  ): Promise<boolean>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
   loadBookingById(bookingId: string): Promise<BookingContext | null>;
   getAgentByEmail(email: string): Promise<User | null>;
@@ -241,6 +259,7 @@ function webhookPayload(
   booking: Booking,
   bucket: Bucket,
   eventType: EventType,
+  reason: BookingReasonMeta | null,
 ): BookingEventPayload {
   return {
     booking_id: booking.id,
@@ -267,21 +286,36 @@ function webhookPayload(
     },
     prefill: booking.prefill,
     manage_url: `${deps.appBaseUrl()}/booking/manage/${booking.manage_token}`,
+    reason,
   };
 }
 
+/**
+ * Emit a booking webhook. `reason` carries the why+who for rescheduled/cancelled
+ * and is null for created/completed — passed only at those call sites so the
+ * shared builder never pollutes create/complete with empty reason fields.
+ */
 async function fire(
   deps: BookingDeps,
   event: WebhookEvent,
   booking: Booking,
   bucket: Bucket,
   eventType: EventType,
+  reason: BookingReasonMeta | null = null,
 ): Promise<void> {
   await deps.emitWebhook(
     booking.org_id,
     event,
-    webhookPayload(deps, booking, bucket, eventType),
+    webhookPayload(deps, booking, bucket, eventType, reason),
   );
+}
+
+/** The reason meta carried on a rescheduled/cancelled webhook. */
+function reasonMeta(
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
+): BookingReasonMeta {
+  return { code: reason.code, detail: reason.detail, initiator };
 }
 
 function manageUrl(deps: BookingDeps, token: string): string {
@@ -416,6 +450,8 @@ export async function createBooking(
 export async function rescheduleBooking(
   token: string,
   newStartIso: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
   deps: BookingDeps,
 ): Promise<BookingResult> {
   const ctx = await deps.loadBookingContext(token);
@@ -432,20 +468,38 @@ export async function rescheduleBooking(
 
   // Idempotency guard 1 — sequential duplicate / no-op reschedule: if the
   // booking already sits at the requested instant (e.g. a double-click whose
-  // first call already landed), there's nothing to move.
+  // first call already landed), there's nothing to move. Still ensure the
+  // reason event is recorded — a first attempt that moved the booking but died
+  // before recording it would otherwise lose the (mandatory) reason (#326).
   if (Date.parse(booking.starts_at) === Date.parse(startIso)) {
+    if (!(await deps.hasBookingEvent(booking.id, "rescheduled", startIso))) {
+      await deps.insertBookingEvent(
+        bookingEventFrom({
+          bookingId: booking.id,
+          action: "rescheduled",
+          initiator,
+          reason,
+          fromStartsIso: booking.starts_at,
+          toStartsIso: startIso,
+          fromAgentUserId: booking.assigned_user_id,
+          toAgentUserId: booking.assigned_user_id,
+          nowMs: Date.now(),
+        }),
+      );
+    }
     return { booking, manageUrl: manageUrl(deps, token) };
   }
 
   // Idempotency guard 2 — concurrent duplicate: claim a short-lived lock on
   // (booking, target). The loser of a simultaneous double-submit returns
-  // without redoing the Google move or re-emitting booking.rescheduled.
+  // without redoing the Google move or re-emitting booking.rescheduled; the
+  // lock WINNER records the reason event in applyReschedule.
   if (!(await deps.claimReschedule(booking.id, startIso))) {
     return { booking, manageUrl: manageUrl(deps, token) };
   }
 
   try {
-    return await applyReschedule(deps, token, ctx, startIso, endIso);
+    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator);
   } finally {
     await deps.releaseReschedule(booking.id, startIso);
   }
@@ -457,9 +511,14 @@ async function applyReschedule(
   ctx: BookingContext,
   startIso: string,
   endIso: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
+  // Capture the pre-move time + agent for the history row before we mutate.
+  const fromStartsIso = booking.starts_at;
+  const fromAgentUserId = booking.assigned_user_id;
 
   // Prefer keeping the same agent if they're free at the new time.
   let assigned: string | null = booking.assigned_user_id;
@@ -517,6 +576,22 @@ async function applyReschedule(
   await deps.insertBusyBlock(busyBlockFor(assigned, startIso, endIso, booking.id));
   await deps.invalidateSlots(bucket.code);
 
+  // Append the immutable history row (#326/#300) before the webhook fires, so
+  // the reason is durable even if delivery fails.
+  await deps.insertBookingEvent(
+    bookingEventFrom({
+      bookingId: booking.id,
+      action: "rescheduled",
+      initiator,
+      reason,
+      fromStartsIso,
+      toStartsIso: startIso,
+      fromAgentUserId,
+      toAgentUserId: assigned,
+      nowMs: Date.now(),
+    }),
+  );
+
   const updated = {
     ...booking,
     starts_at: startIso,
@@ -526,7 +601,7 @@ async function applyReschedule(
     agent_email: agentEmail,
     status: "rescheduled" as const,
   };
-  await fire(deps, "booking.rescheduled", updated, bucket, eventType);
+  await fire(deps, "booking.rescheduled", updated, bucket, eventType, reasonMeta(reason, initiator));
 
   return { booking: updated, manageUrl: manageUrl(deps, token) };
 }
@@ -542,6 +617,7 @@ async function applyReschedule(
 export async function reassignBooking(
   bookingId: string,
   agentEmail: string,
+  reason: ValidatedReason,
   deps: BookingDeps,
 ): Promise<BookingResult> {
   const ctx = await deps.loadBookingById(bookingId);
@@ -611,6 +687,24 @@ export async function reassignBooking(
   );
   await deps.invalidateSlots(bucket.code);
 
+  // History row: action 'reassigned' (NOT 'rescheduled') so reschedule-rate
+  // reporting reads booking_events.action and isn't inflated by reassignments,
+  // even though this still emits booking.rescheduled to preserve the Regal
+  // contract. Same time, agent change only. Initiator is the system automation.
+  await deps.insertBookingEvent(
+    bookingEventFrom({
+      bookingId: booking.id,
+      action: "reassigned",
+      initiator: "system",
+      reason,
+      fromStartsIso: booking.starts_at,
+      toStartsIso: booking.starts_at,
+      fromAgentUserId: booking.assigned_user_id,
+      toAgentUserId: agent.id,
+      nowMs: Date.now(),
+    }),
+  );
+
   const updated = {
     ...booking,
     assigned_user_id: agent.id,
@@ -621,18 +715,47 @@ export async function reassignBooking(
     allow_double_book: true,
     routing_trace: nextTrace,
   };
-  await fire(deps, "booking.rescheduled", updated, bucket, eventType);
+  await fire(
+    deps,
+    "booking.rescheduled",
+    updated,
+    bucket,
+    eventType,
+    reasonMeta(reason, "system"),
+  );
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };
 }
 
 export async function cancelBooking(
   token: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
   deps: BookingDeps,
 ): Promise<void> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
   const { booking, bucket, eventType } = ctx;
-  if (booking.status === "cancelled") return;
+  if (booking.status === "cancelled") {
+    // Already cancelled (re-submit). Ensure the reason was recorded — a first
+    // attempt that flipped the status but died before recording it would lose
+    // the mandatory reason (#326). One cancel per booking, so dedupe on action.
+    if (!(await deps.hasBookingEvent(booking.id, "cancelled", null))) {
+      await deps.insertBookingEvent(
+        bookingEventFrom({
+          bookingId: booking.id,
+          action: "cancelled",
+          initiator,
+          reason,
+          fromStartsIso: booking.starts_at,
+          toStartsIso: null,
+          fromAgentUserId: booking.assigned_user_id,
+          toAgentUserId: null,
+          nowMs: Date.now(),
+        }),
+      );
+    }
+    return;
+  }
 
   if (booking.agent_email && booking.gcal_event_id) {
     await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
@@ -642,12 +765,28 @@ export async function cancelBooking(
   await deps.updateBooking(booking.id, { status: "cancelled" });
   await deps.invalidateSlots(bucket.code);
 
+  // Append the immutable history row before the webhook fires.
+  await deps.insertBookingEvent(
+    bookingEventFrom({
+      bookingId: booking.id,
+      action: "cancelled",
+      initiator,
+      reason,
+      fromStartsIso: booking.starts_at,
+      toStartsIso: null,
+      fromAgentUserId: booking.assigned_user_id,
+      toAgentUserId: null,
+      nowMs: Date.now(),
+    }),
+  );
+
   await fire(
     deps,
     "booking.cancelled",
     { ...booking, status: "cancelled" },
     bucket,
     eventType,
+    reasonMeta(reason, initiator),
   );
 }
 
