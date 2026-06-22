@@ -44,6 +44,24 @@ export interface AssignResult {
 }
 
 /**
+ * Resolve an agent's calendar ids from the `agent_calendars` read, distinguishing
+ * a FAILED read from a genuine empty (#314). A query error returns
+ * `readFailed: true` so verify-on-book can skip the agent and alert, rather than
+ * silently treating the error as "no calendars" and checking only the primary
+ * calendar (which could miss a conflict on a secondary calendar and double-book).
+ * An empty result with no error is a clean empty (e.g. pre-first-sync) and the
+ * caller falls back to the primary calendar as before. Pure; the IO lives in
+ * `service.ts`.
+ */
+export function calendarIdsFromResult(res: {
+  data: { calendar_id: string }[] | null;
+  error: unknown;
+}): { readFailed: boolean; ids: string[] } {
+  if (res.error) return { readFailed: true, ids: [] };
+  return { readFailed: false, ids: (res.data ?? []).map((r) => r.calendar_id) };
+}
+
+/**
  * Verify-on-book selection: walk candidates in round-robin order and return the
  * first one that has an email AND is confirmed free — doing ONE free/busy check
  * per candidate (not all N up front). `loadEmail` and `isFree` are injected so
