@@ -4,6 +4,7 @@ import {
   shouldOnboard,
   mapWithConcurrency,
   MAX_ONBOARDS_PER_TICK,
+  MAX_AGENTS_PER_SYNC_TICK,
   SYNC_CONCURRENCY,
   type SyncAgent,
 } from "../src/lib/google/sync-pace.ts";
@@ -29,6 +30,25 @@ ok(
   MAX_ONBOARDS_PER_TICK > 0 && MAX_ONBOARDS_PER_TICK <= 25,
   "onboard cap is a small positive number",
 );
+
+// Per-tick agent cap (#273 Inc 5): bounds total subrequests per invocation so
+// the sync lane drains the roster across ticks instead of all-at-once at 200.
+ok(
+  MAX_AGENTS_PER_SYNC_TICK > 0 && MAX_AGENTS_PER_SYNC_TICK < 200,
+  "per-tick agent cap is positive and below the 200-agent target (so it drains across ticks)",
+);
+// orderAgentsForTick + a slice to the cap = least-recently-synced processed
+// first, the rest deferred to next tick (rotation guarantees coverage).
+{
+  const many: SyncAgent[] = Array.from({ length: 150 }, (_, i) => ({
+    userId: `u${i}`,
+    hasCalendars: true,
+    lastSyncedMs: i, // ascending => already in rotation order
+  }));
+  const thisTick = orderAgentsForTick(many).slice(0, MAX_AGENTS_PER_SYNC_TICK);
+  ok(thisTick.length === MAX_AGENTS_PER_SYNC_TICK, "a tick processes at most the cap");
+  ok(thisTick[0].userId === "u0", "oldest-synced agent is processed first (rotation)");
+}
 
 // orderAgentsForTick: never-synced first, then oldest-synced first, stable
 const agents: SyncAgent[] = [

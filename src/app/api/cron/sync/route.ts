@@ -6,6 +6,7 @@ import {
   orderAgentsForTick,
   mapWithConcurrency,
   SYNC_CONCURRENCY,
+  MAX_AGENTS_PER_SYNC_TICK,
 } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
@@ -75,9 +76,14 @@ export async function GET(req: NextRequest) {
     // Bookable agents with their pacing facts (DB only, no Google calls).
     // Brand-new agents have no calendars to sync yet — the watch lane discovers
     // and watches them first, so skip them here until they're onboarded.
-    const agents = orderAgentsForTick(await loadSyncAgents()).filter(
+    const ordered = orderAgentsForTick(await loadSyncAgents()).filter(
       (a) => a.hasCalendars,
     );
+    // Cap agents per tick (#273 Inc 5) so one invocation's total outbound calls
+    // stay under the Worker subrequest ceiling at 200 agents; the rest are
+    // picked up next tick (rotation sorts least-recently-synced first).
+    const agents = ordered.slice(0, MAX_AGENTS_PER_SYNC_TICK);
+    const deferred = ordered.length - agents.length;
     // One budget for the whole tick (#44/#238): the pool stops STARTING new
     // agents at the deadline so a long pass can't run for every remaining
     // agent. Unreached agents are picked up next tick (rotation sorts them
@@ -114,11 +120,12 @@ export async function GET(req: NextRequest) {
 
     await alertSyncFailures(results.filter((r) => r.error), results.length);
 
-    // truncated = some agent went unreached this tick (budget) OR an agent's
-    // own calendars didn't all finish within the deadline.
-    const truncated = budgetTruncated || results.some((r) => r.truncated);
+    // truncated = agents deferred by the per-tick cap, OR unreached at the
+    // budget deadline, OR an agent's own calendars didn't all finish.
+    const truncated = deferred > 0 || budgetTruncated || results.some((r) => r.truncated);
     return NextResponse.json({
       agents: agents.length,
+      deferred,
       processed,
       truncated,
       results,
