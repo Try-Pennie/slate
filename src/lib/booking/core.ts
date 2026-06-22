@@ -1,10 +1,153 @@
-import type { Booking, Bucket, BusySource, EventType } from "@/lib/db/types";
+import type {
+  Booking,
+  BookingEventAction,
+  BookingEventInitiator,
+  Bucket,
+  BusySource,
+  EventType,
+} from "@/lib/db/types";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
  * `service.ts` (which does DB writes + live Google calls) so the decision
  * logic is deterministic and unit-testable. See `scripts/test-booking.ts`.
  */
+
+// ---------------------------------------------------------------------------
+// Reschedule/cancel reason capture + history events (#326 / #300, ADR 0001).
+// ---------------------------------------------------------------------------
+
+/** A selectable reason: a stable analytics `code` + a human `label`. */
+export interface ReasonOption {
+  code: string;
+  label: string;
+}
+
+/** The two customer-facing actions that capture a reason. */
+export type ReasonAction = "reschedule" | "cancel";
+
+/** Max length of the free-text detail for the "other" option. */
+export const REASON_DETAIL_MAX = 500;
+
+/**
+ * Reason options shown in the manage-link + admin pickers. Codes are STABLE
+ * (the analytics dimension for the show-rate driver analysis, #325) — change
+ * labels freely, but never repurpose a code. "other" reveals a free-text field.
+ */
+export const RESCHEDULE_REASONS: ReasonOption[] = [
+  { code: "schedule_conflict", label: "Schedule conflict" },
+  { code: "found_better_time", label: "Found a better time" },
+  { code: "need_more_prep", label: "Need more time to prepare" },
+  { code: "other", label: "Other" },
+];
+
+export const CANCEL_REASONS: ReasonOption[] = [
+  { code: "no_longer_interested", label: "No longer interested" },
+  { code: "got_help_elsewhere", label: "Already got help elsewhere" },
+  { code: "booked_by_mistake", label: "Booked by mistake" },
+  { code: "schedule_conflict", label: "Schedule conflict" },
+  { code: "other", label: "Other" },
+];
+
+/** Raw reason input from a request (untrusted). */
+export interface ReasonInput {
+  code?: string;
+  detail?: string | null;
+}
+
+/** A validated reason ready to persist: a known code + detail only for "other". */
+export interface ValidatedReason {
+  code: string;
+  detail: string | null;
+}
+
+export type ReasonValidation =
+  | { ok: true; reason: ValidatedReason }
+  | { ok: false; error: string };
+
+/**
+ * Validates a reschedule/cancel reason. MANDATORY (#326): a missing code is
+ * rejected; the code must be one of the action's options; the "other" code
+ * requires non-empty, length-capped free text. Detail on any non-"other" code
+ * is discarded (only "other" carries free text). Pure — both the API (server
+ * enforcement) and the UI use it, so they can't drift.
+ */
+export function validateReason(
+  action: ReasonAction,
+  input: ReasonInput,
+): ReasonValidation {
+  const options = action === "reschedule" ? RESCHEDULE_REASONS : CANCEL_REASONS;
+  const code = (input.code ?? "").trim();
+  if (!code) return { ok: false, error: "Please choose a reason." };
+  if (!options.some((o) => o.code === code)) {
+    return { ok: false, error: "That reason isn't a valid choice." };
+  }
+  if (code === "other") {
+    const detail = (input.detail ?? "").trim();
+    if (!detail) return { ok: false, error: "Please tell us a bit more." };
+    if (detail.length > REASON_DETAIL_MAX) {
+      return {
+        ok: false,
+        error: `Please keep it under ${REASON_DETAIL_MAX} characters.`,
+      };
+    }
+    return { ok: true, reason: { code, detail } };
+  }
+  return { ok: true, reason: { code, detail: null } };
+}
+
+/** Inputs for building a booking_events history row (pure). */
+export interface BookingEventDraft {
+  bookingId: string;
+  action: BookingEventAction;
+  initiator: BookingEventInitiator;
+  reason: ValidatedReason;
+  /** The time the booking was scheduled for BEFORE this action (lead-time base). */
+  fromStartsIso: string | null;
+  /** The new time (reschedule); null for cancel. */
+  toStartsIso: string | null;
+  fromAgentUserId: string | null;
+  toAgentUserId: string | null;
+  nowMs: number;
+}
+
+// A `type` (index signature) so it's assignable to the Supabase insert param.
+export type BookingEventInsert = {
+  booking_id: string;
+  action: BookingEventAction;
+  initiator: BookingEventInitiator;
+  reason_code: string;
+  reason_detail: string | null;
+  from_starts_at: string | null;
+  to_starts_at: string | null;
+  from_agent_user_id: string | null;
+  to_agent_user_id: string | null;
+  lead_time_minutes: number | null;
+};
+
+/**
+ * Builds the append-only history row for a reschedule/cancel/reassign. The
+ * signed `lead_time_minutes` is minutes between the (pre-action) appointment
+ * time and now: positive = acted before the appointment, negative = after it.
+ */
+export function bookingEventFrom(d: BookingEventDraft): BookingEventInsert {
+  const lead_time_minutes =
+    d.fromStartsIso != null
+      ? Math.round((Date.parse(d.fromStartsIso) - d.nowMs) / 60_000)
+      : null;
+  return {
+    booking_id: d.bookingId,
+    action: d.action,
+    initiator: d.initiator,
+    reason_code: d.reason.code,
+    reason_detail: d.reason.detail,
+    from_starts_at: d.fromStartsIso,
+    to_starts_at: d.toStartsIso,
+    from_agent_user_id: d.fromAgentUserId,
+    to_agent_user_id: d.toAgentUserId,
+    lead_time_minutes,
+  };
+}
 
 /** Normalized [start, end) window for a slot of `durationMin` minutes. */
 export function bookingWindow(
