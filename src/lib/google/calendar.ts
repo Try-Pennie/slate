@@ -1,5 +1,12 @@
 import { getDelegatedToken } from "@/lib/google/dwd";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
+import {
+  LOADTEST,
+  stubCalendarList,
+  stubSyncEvents,
+  stubWatch,
+  stubFreeBusy,
+} from "@/lib/google/loadtest-stub";
 
 const BASE = "https://www.googleapis.com/calendar/v3";
 // Impersonating the agent, "primary" is their own calendar.
@@ -84,6 +91,7 @@ export interface CalendarListEntry {
 
 /** Lists the calendars the impersonated agent can see (for busy aggregation). */
 export async function listCalendars(email: string): Promise<CalendarListEntry[]> {
+  if (LOADTEST) return stubCalendarList();
   const entries: CalendarListEntry[] = [];
   let pageToken: string | undefined;
   do {
@@ -113,6 +121,7 @@ export async function freeBusy(
   timeMax: string,
   calendarIds: string[],
 ): Promise<Interval[]> {
+  if (LOADTEST) return stubFreeBusy();
   if (calendarIds.length === 0) return [];
   const res = await ok(
     await gfetch(email, `${BASE}/freeBusy`, {
@@ -271,6 +280,7 @@ export async function watchCalendar(
   calendarId: string,
   channelId: string,
 ): Promise<{ resourceId: string | null; expiration: string | null }> {
+  if (LOADTEST) return stubWatch(channelId, Date.now());
   const res = await ok(
     await gfetch(email, `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/watch`, {
       method: "POST",
@@ -297,6 +307,7 @@ export async function stopChannel(
   channelId: string,
   resourceId: string,
 ): Promise<void> {
+  if (LOADTEST) return;
   await gfetch(email, `${BASE}/channels/stop`, {
     method: "POST",
     body: JSON.stringify({ id: channelId, resourceId }),
@@ -318,6 +329,7 @@ export async function syncEvents(
   syncToken: string | null,
   timeMinForBootstrap: string,
 ): Promise<SyncResult> {
+  if (LOADTEST) return stubSyncEvents(syncToken, Date.now());
   const events: GoogleEvent[] = [];
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
