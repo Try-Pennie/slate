@@ -18,7 +18,7 @@ const baseProps = {
 
 type FetchResult = { ok: boolean; body?: unknown };
 function mockFetch(routes: { cancel?: FetchResult; reschedule?: FetchResult; availability?: FetchResult }) {
-  const fn = vi.fn(async (url: RequestInfo | URL) => {
+  const fn = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
     const u = String(url);
     const pick = u.includes("/cancel")
       ? routes.cancel

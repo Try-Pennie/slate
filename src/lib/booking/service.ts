@@ -598,6 +598,44 @@ export function reassignBooking(
   return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps());
 }
 
+/** Resolve a booking's manage token by id, so admin actions can reuse the
+ *  token-based reschedule/cancel flow (#326 admin screen). */
+async function manageTokenForBooking(bookingId: string): Promise<string | null> {
+  const { data } = await supabaseAdmin()
+    .from("bookings")
+    .select("manage_token")
+    .eq("id", bookingId)
+    .maybeSingle();
+  return (data as { manage_token: string } | null)?.manage_token ?? null;
+}
+
+/**
+ * Admin reschedule by booking id (#326): a staff member acts on a booking from
+ * the admin screen. Reuses the customer reschedule flow (verify-on-book, history,
+ * webhook) but stamps initiator='admin'. The route is requireAdmin-gated.
+ */
+export async function adminRescheduleBooking(
+  bookingId: string,
+  newStartIso: string,
+  reason: ValidatedReason,
+): Promise<BookingResult> {
+  const token = await manageTokenForBooking(bookingId);
+  if (!token) throw new Error("Booking not found");
+  return alertOnVerifyOutage(() =>
+    orchestration.rescheduleBooking(token, newStartIso, reason, "admin", realDeps()),
+  );
+}
+
+/** Admin cancel by booking id (#326), initiator='admin'. requireAdmin-gated. */
+export async function adminCancelBooking(
+  bookingId: string,
+  reason: ValidatedReason,
+): Promise<void> {
+  const token = await manageTokenForBooking(bookingId);
+  if (!token) throw new Error("Booking not found");
+  return orchestration.cancelBooking(token, reason, "admin", realDeps());
+}
+
 export function completePastBookings(): Promise<number> {
   return orchestration.completePastBookings(realDeps());
 }

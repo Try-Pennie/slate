@@ -46,6 +46,7 @@ import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
+import AdminBookingActions from "@/components/AdminBookingActions";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
   AuditEntry,
@@ -82,6 +83,7 @@ type TraceRow = Pick<
   | "attendee_phone"
   | "starts_at"
   | "assigned_user_id"
+  | "status"
 > & { routing_trace: RoutingTrace | null };
 
 export const dynamic = "force-dynamic";
@@ -333,7 +335,7 @@ export default async function AdminPage({
       db
         .from("bookings")
         .select(
-          "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, routing_trace",
+          "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, status, routing_trace",
         )
         .eq("org_id", me.org_id)
         .order("created_at", { ascending: false })
@@ -953,7 +955,8 @@ export default async function AdminPage({
                   <th className="py-1 pr-3 font-semibold">Lead</th>
                   <th className="py-1 pr-3 font-semibold">Bucket</th>
                   <th className="py-1 pr-3 font-semibold">Routed to</th>
-                  <th className="py-1 font-semibold">Trace</th>
+                  <th className="py-1 pr-3 font-semibold">Trace</th>
+                  <th className="py-1 font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -990,6 +993,13 @@ export default async function AdminPage({
                         ) : (
                           "no trace"
                         )}
+                      </td>
+                      <td className="py-1.5 align-top">
+                        <AdminBookingActions
+                          bookingId={b.id}
+                          bucketCode={t?.bucket_code ?? null}
+                          status={b.status}
+                        />
                       </td>
                     </tr>
                   );
