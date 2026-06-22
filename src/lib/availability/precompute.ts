@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import { getBucketSlots, type BucketSlots } from "./service";
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import type { Attributes, Criteria } from "@/lib/db/types";
@@ -91,11 +92,14 @@ export async function recomputeBucketSlots(
  */
 export async function bucketsForAgent(userId: string): Promise<string[]> {
   const db = supabaseAdmin();
-  const { data: user } = await db
-    .from("users")
-    .select("org_id, attributes")
-    .eq("id", userId)
-    .maybeSingle();
+  // Fail loud on a query error (#313, same class as #277): swallowing a failed
+  // read here returned no buckets, so a changed agent's buckets silently never
+  // recomputed. Throw instead; the best-effort caller logs and the freshness
+  // sweep still backstops.
+  const user = unwrap(
+    await db.from("users").select("org_id, attributes").eq("id", userId).maybeSingle(),
+    "bucketsForAgent user",
+  );
   if (!user) return [];
   const u = user as { org_id: string; attributes: Attributes | null };
 
@@ -104,9 +108,11 @@ export async function bucketsForAgent(userId: string): Promise<string[]> {
     db.from("bucket_members").select("bucket_id").eq("user_id", userId).eq("active", true),
   ]);
   const manualBucketIds = new Set(
-    (memberRes.data ?? []).map((m) => (m as { bucket_id: string }).bucket_id),
+    (unwrap(memberRes, "bucketsForAgent members") ?? []).map(
+      (m) => (m as { bucket_id: string }).bucket_id,
+    ),
   );
-  const buckets: BucketForMatch[] = (bucketsRes.data ?? []).map((b) => {
+  const buckets: BucketForMatch[] = (unwrap(bucketsRes, "bucketsForAgent buckets") ?? []).map((b) => {
     const row = b as {
       id: string;
       code: string;

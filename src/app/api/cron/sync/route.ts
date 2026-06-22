@@ -145,7 +145,16 @@ export async function GET(req: NextRequest) {
     if (changed.length > 0) {
       const touched = new Set<string>();
       for (const id of changed) {
-        for (const code of await bucketsForAgent(id)) touched.add(code);
+        // bucketsForAgent now fails loud on a DB error (#313); isolate it per
+        // agent so one bad lookup logs and is skipped instead of failing the
+        // whole tick (the recompute lane's freshness sweep still backstops).
+        try {
+          for (const code of await bucketsForAgent(id)) touched.add(code);
+        } catch (err) {
+          console.error(
+            `touched-bucket lookup failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
       for (const code of [...touched].slice(0, MAX_TOUCHED_BUCKETS)) {
         await recomputeBucketSlotsForToday(code, true).catch(() => {});
