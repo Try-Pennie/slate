@@ -34,11 +34,39 @@ assert(
   `~blocksPerAgentPerDay * windowDays * agents busy_blocks; got ${seed.busyBlocks.length}`,
 );
 
-// Attributes span all five debt tiers so buckets across every tier get a pool.
-const tiers = new Set(seed.users.map((u) => u.attributes.debt_team));
+// Faithful to prod (#273 calibration): debt_team is CUMULATIVE (an agent on a
+// tier also carries the ones below), which is what makes low-tier buckets large
+// and concentrates recompute cost there. A single-tier-each seed would understate
+// that load and risk a false pass.
+const debtArrays = seed.users.map(
+  (u) => (u.attributes.debt_team as string[] | undefined) ?? [],
+);
+const allTiers = new Set(debtArrays.flat());
 assert(
-  ["low", "medium", "high", "very_high", "ultra_high"].every((t) => tiers.has(t)),
-  "agent attributes cover all five debt tiers",
+  ["low", "medium", "high", "very_high", "ultra_high"].every((t) => allTiers.has(t)),
+  "debt-team values across agents cover all five tiers",
+);
+assert(
+  debtArrays.some((a) => a.length >= 3),
+  "some agents carry cumulative multi-tier debt arrays (like prod)",
+);
+const lowCount = debtArrays.filter((a) => a.includes("low")).length;
+const ultraCount = debtArrays.filter((a) => a.includes("ultra_high")).length;
+assert(
+  lowCount > ultraCount,
+  "low tier appears in far more agents than ultra_high (the cumulative, lopsided prod shape)",
+);
+const unrouted = debtArrays.filter((a) => a.length === 0).length;
+assert(
+  unrouted >= 200 * 0.05 && unrouted <= 200 * 0.2,
+  `~10% of agents have no debt_team (unrouted, mirroring prod); got ${unrouted}`,
+);
+const backends = new Set(
+  seed.users.flatMap((u) => (u.attributes.backend_service as string[] | undefined) ?? []),
+);
+assert(
+  backends.has("beyond") && backends.has("achieve"),
+  "backend_service spans beyond and achieve like prod",
 );
 
 // Every user is bookable + active (so the lanes actually process them).

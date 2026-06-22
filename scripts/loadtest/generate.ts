@@ -3,8 +3,6 @@
 // realistic work against a seeded (isolated) DB. No DB/network here — seed.ts
 // inserts what this returns. Deterministic (index-derived, no randomness) so a
 // load run is repeatable. Exercised by scripts/test-loadtest-generate.ts.
-import { allXbcCodes, bucketSpecForXbc } from "../../src/lib/xbc.ts";
-
 export interface SeedParams {
   agentCount: number;
   orgId: string;
@@ -23,7 +21,7 @@ export interface SeedUser {
   email: string;
   name: string;
   role: string;
-  attributes: Record<string, string>;
+  attributes: Record<string, string | string[]>;
   bookable: boolean;
   deactivated_at: string | null;
 }
@@ -62,29 +60,45 @@ const hex12 = (n: number) => n.toString(16).padStart(12, "0");
 // Deterministic, valid 8-4-4-4-12 hex UUIDs, namespaced by row kind.
 const uuid = (prefix: string, n: number) => `${prefix}0000000-0000-4000-8000-${hex12(n)}`;
 
-/**
- * Invert a bucket's criteria into agent attributes that SATISFY it, so the agent
- * lands in that bucket (and others it overlaps). Positive keys copy through; a
- * negated key (e.g. `legal_eligible!: "N"`) is satisfied by setting a different
- * value, so the agent passes the "does not equal" filter.
- */
-function attributesForCode(code: string): Record<string, string> {
-  const spec = bucketSpecForXbc(code);
-  const criteria = spec?.criteria ?? {};
-  const attrs: Record<string, string> = {};
-  for (const [key, value] of Object.entries(criteria)) {
-    if (key.endsWith("!")) {
-      // negated: set the real attribute to something other than the excluded value
-      attrs[key.slice(0, -1)] = value === "N" ? "Y" : "N";
-    } else {
-      attrs[key] = String(value);
-    }
-  }
-  return attrs;
+// Production attribute distribution (bookable+active, ~111 agents, measured
+// 2026-06-22 for #273 load-test calibration). debt_team is CUMULATIVE — an agent
+// on a tier also carries the tiers below — which is what makes the low-tier
+// buckets pull large overlapping pools and concentrates recompute cost there. A
+// single-tier-each seed would miss those hot buckets and understate the load.
+const DEBT_PROFILES: { team: string[] | null; weight: number }[] = [
+  { team: ["low"], weight: 33 },
+  { team: ["medium", "low"], weight: 24 },
+  { team: ["high", "medium", "low"], weight: 14 },
+  { team: null, weight: 12 }, // unrouted: no debt_team (and no backend, below)
+  { team: ["very_high", "high", "medium"], weight: 12 },
+  { team: ["ultra_high", "very_high", "high", "medium"], weight: 8 },
+  { team: ["high", "medium"], weight: 3 },
+  { team: ["ultra_high", "very_high"], weight: 2 },
+  { team: ["very_high", "high", "medium", "low"], weight: 1 },
+  { team: ["very_high", "high"], weight: 1 },
+  { team: ["ultra_high", "very_high", "high"], weight: 1 },
+];
+// backend_service among agents that HAVE a debt_team (the null-debt 12 also have
+// no backend). legal_eligible is null for everyone in prod, so it's omitted.
+const BACKEND_PROFILES: { svc: string[]; weight: number }[] = [
+  { svc: ["beyond"], weight: 60 },
+  { svc: ["achieve"], weight: 38 },
+  { svc: ["beyond", "achieve"], weight: 1 },
+];
+
+/** Expand weighted profiles into exactly n deterministic index picks (proportional). */
+function proportionalPicks(weights: number[], n: number): number[] {
+  const total = weights.reduce((s, w) => s + w, 0);
+  const picks: number[] = [];
+  weights.forEach((w, idx) => {
+    const count = Math.round((w / total) * n);
+    for (let k = 0; k < count && picks.length < n; k++) picks.push(idx);
+  });
+  while (picks.length < n) picks.push(weights.length - 1); // pad rounding shortfall
+  return picks.slice(0, n);
 }
 
 export function generateSeed(p: SeedParams): GeneratedSeed {
-  const codes = allXbcCodes();
   const calsPerAgent = p.calendarsPerAgent ?? 1;
   const users: SeedUser[] = [];
   const schedules: SeedSchedule[] = [];
@@ -92,11 +106,20 @@ export function generateSeed(p: SeedParams): GeneratedSeed {
   const agentCalendars: SeedCalendar[] = [];
   const busyBlocks: SeedBusyBlock[] = [];
 
+  // Assign attributes by the measured prod distribution so per-bucket pool sizes
+  // (the recompute cost driver) match reality, not an even spread.
+  const debtPicks = proportionalPicks(DEBT_PROFILES.map((d) => d.weight), p.agentCount);
+  const backendPicks = proportionalPicks(BACKEND_PROFILES.map((b) => b.weight), p.agentCount);
+
   for (let i = 0; i < p.agentCount; i++) {
     const userId = uuid("a", i);
     const scheduleId = uuid("b", i);
-    // Spread agents across the XBC attribute space so all 60 buckets get a pool.
-    const attrs = attributesForCode(codes[i % codes.length]);
+    const team = DEBT_PROFILES[debtPicks[i]].team;
+    const attrs: Record<string, string | string[]> = {};
+    if (team) {
+      attrs.debt_team = team;
+      attrs.backend_service = BACKEND_PROFILES[backendPicks[i]].svc; // only routed agents have a backend
+    }
 
     users.push({
       id: userId,
