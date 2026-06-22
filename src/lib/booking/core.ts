@@ -62,23 +62,138 @@ export function calendarIdsFromResult(res: {
 }
 
 /**
- * Verify-on-book selection: walk candidates in round-robin order and return the
- * first one that has an email AND is confirmed free — doing ONE free/busy check
- * per candidate (not all N up front). `loadEmail` and `isFree` are injected so
- * this is testable without DB/Google. Returns null when no candidate is free
- * (the caller turns that into SlotUnavailableError).
+ * Verify-on-book selection: walk candidates in round-robin order, but verify a
+ * WAVE of `batchSize` candidates per round-trip instead of one Google call per
+ * candidate. Each wave is a single batched `verifyFree(emails)` call; the first
+ * candidate in round-robin order confirmed free wins. Only advances to the next
+ * wave when a whole wave is busy. This bounds verify-on-book latency to ~one
+ * round-trip in the common case (a free agent in the first wave) and at most
+ * ceil(N / batchSize) sequential waves worst case, instead of up to N serial
+ * calls — the fix for a large agent pool (#167).
+ *
+ * `loadEmails` (batched userId -> email, skipping emailless) and `verifyFree`
+ * (emails -> the subset confirmed free) are injected so this stays pure and
+ * testable without DB/Google. Returns null when no candidate is free (the caller
+ * turns that into SlotUnavailableError).
  */
 export async function selectAgent(
   candidates: string[],
-  loadEmail: (userId: string) => Promise<string | null>,
-  isFree: (email: string) => Promise<boolean>,
+  loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
+  verifyFree: (emails: string[]) => Promise<Set<string>>,
+  batchSize: number,
 ): Promise<AssignResult | null> {
-  for (const userId of candidates) {
-    const email = await loadEmail(userId);
-    if (!email) continue;
-    if (await isFree(email)) return { userId, email };
+  for (let i = 0; i < candidates.length; i += batchSize) {
+    const waveIds = candidates.slice(i, i + batchSize);
+    const emailById = await loadEmails(waveIds);
+    // Preserve round-robin order; drop candidates with no resolvable email.
+    const wave: AssignResult[] = [];
+    for (const userId of waveIds) {
+      const email = emailById.get(userId);
+      if (email) wave.push({ userId, email });
+    }
+    if (wave.length === 0) continue;
+    const free = await verifyFree(wave.map((c) => c.email));
+    for (const candidate of wave) {
+      if (free.has(candidate.email)) return candidate;
+    }
   }
   return null;
+}
+
+/** Busy interval as returned by Google freeBusy (ISO start/end). */
+export interface BusyInterval {
+  start: string;
+  end: string;
+}
+
+/** Per-calendar outcome of a bulk freeBusy query: busy ranges or an error. */
+export interface CalendarBusy {
+  busy: BusyInterval[];
+  /** True when this calendar could not be read (the slot must not be trusted). */
+  error: boolean;
+}
+
+/**
+ * Parses a Google freeBusy response into a per-calendar busy/error map, keyed by
+ * the calendar ids that were REQUESTED. Any requested calendar that's absent from
+ * the response, or that Google flagged with an `errors` entry (e.g. access denied,
+ * `tooManyCalendarsRequested`), is marked `error: true` so the classifier never
+ * assumes it free and risks a double-book (#167). Pure; the IO lives in
+ * `calendar.ts`'s `freeBusyMany`.
+ */
+export function busyByCalendarFromResponse(
+  calendarIds: string[],
+  calendars:
+    | Record<
+        string,
+        { busy?: { start?: string; end?: string }[]; errors?: unknown[] }
+      >
+    | undefined,
+): Map<string, CalendarBusy> {
+  const out = new Map<string, CalendarBusy>();
+  const cals = calendars ?? {};
+  for (const id of calendarIds) {
+    const cal = cals[id];
+    if (!cal || (cal.errors && cal.errors.length > 0)) {
+      out.set(id, { busy: [], error: true });
+      continue;
+    }
+    const busy: BusyInterval[] = [];
+    for (const b of cal.busy ?? []) {
+      if (b.start && b.end) busy.push({ start: b.start, end: b.end });
+    }
+    out.set(id, { busy, error: false });
+  }
+  return out;
+}
+
+/**
+ * Maps a bulk cross-identity freeBusy response back to per-agent availability
+ * (#167). The single-call verifier queries many agents' calendars in one
+ * `freeBusy` call keyed by calendar id; this pure step classifies each agent:
+ *  - `free`: EVERY one of their calendars read cleanly AND none overlaps the slot.
+ *  - busy (in neither set): all calendars read cleanly but at least one overlaps.
+ *  - `needsFallback`: at least one of their calendars was missing from the
+ *    response or returned an error — we can't tell, so the caller must do a
+ *    direct per-agent check rather than risk a double-book by assuming free.
+ * Boundaries are exclusive: a busy block starting exactly at the slot end (or
+ * ending exactly at the slot start) does not overlap.
+ */
+export function freeAgentsFromBusy(
+  agents: { email: string; calendarIds: string[] }[],
+  busyByCalendar: Map<string, CalendarBusy>,
+  startMs: number,
+  endMs: number,
+): { free: Set<string>; needsFallback: Set<string> } {
+  const free = new Set<string>();
+  const needsFallback = new Set<string>();
+
+  for (const agent of agents) {
+    if (agent.calendarIds.length === 0) {
+      needsFallback.add(agent.email);
+      continue;
+    }
+    let allClean = true;
+    let anyOverlap = false;
+    for (const calId of agent.calendarIds) {
+      const entry = busyByCalendar.get(calId);
+      if (!entry || entry.error) {
+        allClean = false;
+        break;
+      }
+      if (
+        entry.busy.some(
+          (b) => Date.parse(b.start) < endMs && Date.parse(b.end) > startMs,
+        )
+      ) {
+        anyOverlap = true;
+      }
+    }
+    if (!allClean) needsFallback.add(agent.email);
+    else if (!anyOverlap) free.add(agent.email);
+  }
+
+  return { free, needsFallback };
 }
 
 // A `type` (not `interface`) so it gains an implicit index signature and stays

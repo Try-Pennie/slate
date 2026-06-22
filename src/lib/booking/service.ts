@@ -9,10 +9,17 @@ import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import {
   createEvent,
   deleteEvent,
+  freeBusyMany,
   isFree,
   updateEventTime,
 } from "@/lib/google/calendar";
-import { joinBookingContexts, calendarIdsFromResult } from "@/lib/booking/core";
+import {
+  joinBookingContexts,
+  calendarIdsFromResult,
+  freeAgentsFromBusy,
+  type CalendarBusy,
+} from "@/lib/booking/core";
+import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
   BookingContext,
@@ -31,6 +38,14 @@ const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+// Google caps a freeBusy query at 20 calendar `items` (verified live against the
+// production domain — 20 → 0 errors, 21 → tooManyCalendarsRequested), so the
+// bulk verifier chunks calendar ids at 20 per call.
+const FREEBUSY_MAX_ITEMS = 20;
+// Max simultaneous freeBusy calls (Cloudflare's simultaneous-connection ceiling,
+// same bound the completion-sweep webhook fan-out uses).
+const VERIFY_CONCURRENCY = 6;
 
 /**
  * Calendar ids whose busy blocks an agent, looked up by their email (#314).
@@ -56,6 +71,94 @@ async function calendarIdsForEmail(
   return calendarIdsFromResult(calsRes);
 }
 
+/**
+ * Batched cousin of `calendarIdsForEmail` for the verify-on-book wave: resolves
+ * EVERY candidate's concrete calendar ids in two `.in()` queries (one users, one
+ * agent_calendars) instead of two per agent. Returns each email's calendar ids
+ * (their primary calendar id IS their email; secondaries come from
+ * agent_calendars), plus the set of emails whose read FAILED — those route to the
+ * accurate per-agent fallback rather than being assumed free (#314). A query
+ * error fails the whole wave's reads (the caller falls back per agent).
+ *
+ * Note: the bulk freeBusy is read as ONE identity, so calendar ids must be
+ * CONCRETE (the agent's email / real calendar id) — never the literal "primary",
+ * which would resolve to the impersonator's own calendar.
+ */
+async function calendarsForEmails(
+  emails: string[],
+): Promise<{ byEmail: Map<string, string[]>; readFailed: Set<string> }> {
+  const byEmail = new Map<string, string[]>();
+  const readFailed = new Set<string>();
+  if (emails.length === 0) return { byEmail, readFailed };
+
+  const db = supabaseAdmin();
+  const usersRes = await db
+    .from("users")
+    .select("id, email")
+    .in("email", emails);
+  if (usersRes.error) {
+    // Can't map any agent to their calendars — fall back per agent for all.
+    for (const e of emails) readFailed.add(e);
+    return { byEmail, readFailed };
+  }
+  const userRows = (usersRes.data ?? []) as { id: string; email: string }[];
+  const idByEmail = new Map(userRows.map((r) => [r.email, r.id]));
+
+  const calsRes = await db
+    .from("agent_calendars")
+    .select("user_id, calendar_id")
+    .in(
+      "user_id",
+      userRows.map((r) => r.id),
+    );
+  if (calsRes.error) {
+    for (const e of emails) readFailed.add(e);
+    return { byEmail, readFailed };
+  }
+  const calsByUser = new Map<string, string[]>();
+  for (const row of (calsRes.data ?? []) as {
+    user_id: string;
+    calendar_id: string;
+  }[]) {
+    const list = calsByUser.get(row.user_id) ?? [];
+    list.push(row.calendar_id);
+    calsByUser.set(row.user_id, list);
+  }
+
+  for (const email of emails) {
+    const userId = idByEmail.get(email);
+    const cals = userId ? calsByUser.get(userId) : undefined;
+    // Clean empty (pre-first-sync) or unknown user → the email IS the primary
+    // calendar id, which the bulk query can read cross-identity.
+    byEmail.set(email, cals && cals.length ? cals : [email]);
+  }
+  return { byEmail, readFailed };
+}
+
+/**
+ * Direct per-agent free check (impersonates the agent, checks all their
+ * calendars) — the accurate fallback for the bulk verifier when a calendar
+ * couldn't be read in the cross-identity batch (#314) or the bulk call failed
+ * wholesale. Mirrors the single-agent `isFree` dep's semantics, including the
+ * read-failed skip-and-alert.
+ */
+async function isFreeForEmailDirect(
+  email: string,
+  startIso: string,
+  endIso: string,
+): Promise<boolean> {
+  const { readFailed, ids } = await calendarIdsForEmail(email);
+  if (readFailed) {
+    await sendThrottledAlert(
+      VERIFY_READ_ALERT_KEY,
+      VERIFY_READ_ALERT_COOLDOWN_MS,
+      `Slate: verify-on-book could not read calendars for ${email}; skipping this agent for the slot to avoid a double-book. Check DB health.`,
+    ).catch(() => {});
+    return false;
+  }
+  return isFree(email, startIso, endIso, ids.length ? ids : ["primary"]);
+}
+
 export { SlotUnavailableError } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
 
@@ -68,23 +171,79 @@ function realDeps(): BookingDeps {
   return {
     resolveBucketByCode,
     roundRobinCandidates,
-    // Verify-on-book checks ALL the agent's calendars (falls back to primary
-    // before the first sync has populated agent_calendars). If the calendar-list
-    // read FAILS (#314) we can't know the agent's calendar set, so skip them
-    // (return not-free → the next candidate is tried) and alert, rather than
-    // verifying against primary-only and risking a double-book. The booking only
-    // fails if every candidate's read fails.
-    isFree: async (email, startIso, endIso) => {
-      const { readFailed, ids } = await calendarIdsForEmail(email);
-      if (readFailed) {
-        await sendThrottledAlert(
-          VERIFY_READ_ALERT_KEY,
-          VERIFY_READ_ALERT_COOLDOWN_MS,
-          `Slate: verify-on-book could not read calendars for ${email}; skipping this agent for the slot to avoid a double-book. Check DB health.`,
-        ).catch(() => {});
-        return false;
+    // Single-agent free check (reschedule keep-same-agent). Checks ALL the
+    // agent's calendars; on a calendar-read failure (#314) it skips + alerts
+    // rather than verifying primary-only and risking a double-book.
+    isFree: (email, startIso, endIso) =>
+      isFreeForEmailDirect(email, startIso, endIso),
+    // Batched verify-on-book (#167): read the whole candidate wave's free/busy
+    // in ONE cross-identity freeBusy call (chunked at Google's 20-calendar cap,
+    // chunks fired with bounded concurrency) instead of one serial Google call
+    // per candidate. An agent is free only if EVERY one of their calendars read
+    // cleanly and none overlaps; any unread/errored calendar — or a wholesale
+    // bulk failure — routes that agent to the accurate direct per-agent check,
+    // so accuracy is never traded for speed.
+    verifyFree: async (emails, startIso, endIso) => {
+      const free = new Set<string>();
+      if (emails.length === 0) return free;
+
+      const { byEmail, readFailed } = await calendarsForEmails(emails);
+      const bulkAgents = emails
+        .filter((e) => !readFailed.has(e))
+        .map((e) => ({ email: e, calendarIds: byEmail.get(e) ?? [e] }));
+      const fallback = new Set<string>(readFailed);
+
+      if (bulkAgents.length > 0) {
+        try {
+          // Read as one candidate's identity — domain free/busy is cross-visible.
+          const subject = bulkAgents[0].email;
+          const allCalIds = [
+            ...new Set(bulkAgents.flatMap((a) => a.calendarIds)),
+          ];
+          const chunks: string[][] = [];
+          for (let i = 0; i < allCalIds.length; i += FREEBUSY_MAX_ITEMS) {
+            chunks.push(allCalIds.slice(i, i + FREEBUSY_MAX_ITEMS));
+          }
+          const maps = await mapWithConcurrency(
+            chunks,
+            VERIFY_CONCURRENCY,
+            (chunk) => freeBusyMany(subject, startIso, endIso, chunk),
+          );
+          const busyByCalendar = new Map<string, CalendarBusy>();
+          for (const m of maps) for (const [k, v] of m) busyByCalendar.set(k, v);
+
+          const res = freeAgentsFromBusy(
+            bulkAgents,
+            busyByCalendar,
+            Date.parse(startIso),
+            Date.parse(endIso),
+          );
+          for (const e of res.free) free.add(e);
+          for (const e of res.needsFallback) fallback.add(e);
+        } catch (err) {
+          // Total bulk failure (e.g. the subject's delegated token couldn't be
+          // minted) — verify everyone directly per agent rather than fail.
+          console.error(
+            "verify-on-book bulk freeBusy failed; falling back to per-agent:",
+            err instanceof Error ? err.message : err,
+          );
+          for (const a of bulkAgents) fallback.add(a.email);
+        }
       }
-      return isFree(email, startIso, endIso, ids.length ? ids : ["primary"]);
+
+      if (fallback.size > 0) {
+        const list = [...fallback];
+        const results = await mapWithConcurrency(
+          list,
+          VERIFY_CONCURRENCY,
+          (email) => isFreeForEmailDirect(email, startIso, endIso),
+        );
+        list.forEach((email, i) => {
+          if (results[i]) free.add(email);
+        });
+      }
+
+      return free;
     },
     createEvent,
     deleteEvent,
@@ -108,6 +267,19 @@ function realDeps(): BookingDeps {
         .eq("id", userId)
         .single();
       return data as User;
+    },
+
+    loadEmails: async (userIds) => {
+      const m = new Map<string, string>();
+      if (userIds.length === 0) return m;
+      const { data } = await supabaseAdmin()
+        .from("users")
+        .select("id, email")
+        .in("id", userIds);
+      for (const row of (data ?? []) as { id: string; email: string | null }[]) {
+        if (row.email) m.set(row.id, row.email);
+      }
+      return m;
     },
 
     findBookingByIdempotencyKey: async (key) => {
