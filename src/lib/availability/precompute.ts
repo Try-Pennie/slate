@@ -69,7 +69,14 @@ export async function recomputeBucketSlots(
   let fresh: BucketSlots | null = null;
   try {
     fresh = await getBucketSlots(code, fromIso, toIso);
-  } catch {
+  } catch (err) {
+    // A failed availability read (#277) must NOT write an empty slot row — that
+    // is the silent "no availability" degrade. Skip the write so the prior row
+    // stands and the recompute lane's stale-bucket alarm surfaces it; log the
+    // cause here so the alarm isn't the only trace of WHY the bucket went stale.
+    console.error(
+      `recompute skipped for bucket ${code}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     fresh = null;
   }
   if (fresh) await writeBucketSlotsRow(code, fresh);

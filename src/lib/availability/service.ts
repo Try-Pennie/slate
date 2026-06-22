@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import {
   computeBucketSlots,
   freeMembersForSlot,
@@ -37,13 +38,17 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
       .eq("bookable", true)
       .is("deactivated_at", null),
   ]);
+  // Fail loud on a query error (#277): a broken read here used to swallow into
+  // an empty pool and silently show no availability. Throw instead.
   const manual = new Set(
-    (membersRes.data ?? []).map((m) => (m as { user_id: string }).user_id),
+    (unwrap(membersRes, "bucket_members") ?? []).map(
+      (m) => (m as { user_id: string }).user_id,
+    ),
   );
 
   const criteria = bucket.criteria ?? {};
   const hasCriteria = Object.keys(criteria).length > 0;
-  const agents = agentsRes.data;
+  const agents = unwrap(agentsRes, "bucket pool agents");
 
   return (agents ?? [])
     .filter((a) => {
@@ -70,14 +75,17 @@ export async function eligibleAgentIds(
     return applyFallback(matched, bucket.fallback_user_id, false);
   }
   const db = supabaseAdmin();
-  const { data: fallback } = await db
-    .from("users")
-    .select("id")
-    .eq("id", bucket.fallback_user_id)
-    .eq("org_id", bucket.org_id)
-    .eq("bookable", true)
-    .is("deactivated_at", null)
-    .maybeSingle();
+  const fallback = unwrap(
+    await db
+      .from("users")
+      .select("id")
+      .eq("id", bucket.fallback_user_id)
+      .eq("org_id", bucket.org_id)
+      .eq("bookable", true)
+      .is("deactivated_at", null)
+      .maybeSingle(),
+    "fallback agent",
+  );
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
 }
 
@@ -91,18 +99,20 @@ export async function resolveBucketByCode(
   code: string,
 ): Promise<ResolvedBucket | null> {
   const db = supabaseAdmin();
-  const { data: bucket } = await db
-    .from("buckets")
-    .select("*")
-    .eq("code", code)
-    .maybeSingle();
+  const bucket = unwrap(
+    await db.from("buckets").select("*").eq("code", code).maybeSingle(),
+    "bucket by code",
+  );
   if (!bucket) return null;
 
-  const { data: eventType } = await db
-    .from("event_types")
-    .select("*")
-    .eq("id", (bucket as Bucket).event_type_id)
-    .maybeSingle();
+  const eventType = unwrap(
+    await db
+      .from("event_types")
+      .select("*")
+      .eq("id", (bucket as Bucket).event_type_id)
+      .maybeSingle(),
+    "event type",
+  );
   if (!eventType) return null;
 
   return { bucket: bucket as Bucket, eventType: eventType as EventType };
@@ -136,21 +146,33 @@ export async function loadMembersAvailability(
       .lte("starts_at", to),
   ]);
 
-  const schedules = (schedulesRes.data ?? []) as {
+  // Fail loud on any of these reads (#277). A swallowed busy_blocks error is
+  // the worst case: an agent looks fully free and gets overbooked. Throwing
+  // surfaces the broken query instead of silently degrading availability.
+  const schedules = (unwrap(schedulesRes, "availability_schedules") ?? []) as {
     id: string;
     user_id: string;
     timezone: string;
   }[];
+  const busy = (unwrap(busyRes, "busy_blocks") ?? []) as {
+    user_id: string;
+    starts_at: string;
+    ends_at: string;
+  }[];
+  const bookingStarts = (unwrap(bookingsRes, "bookings") ?? []) as {
+    assigned_user_id: string;
+    starts_at: string;
+  }[];
   const scheduleIds = schedules.map((s) => s.id);
 
-  const { data: rulesData } = scheduleIds.length
+  const rulesRes = scheduleIds.length
     ? await db
         .from("availability_rules")
         .select("schedule_id, weekday, start_minute, end_minute")
         .in("schedule_id", scheduleIds)
-    : { data: [] };
+    : { data: [], error: null };
 
-  const rules = (rulesData ?? []) as {
+  const rules = (unwrap(rulesRes, "availability_rules") ?? []) as {
     schedule_id: string;
     weekday: number;
     start_minute: number;
@@ -165,15 +187,15 @@ export async function loadMembersAvailability(
       rules: schedule
         ? rules.filter((r) => r.schedule_id === schedule.id)
         : [],
-      busy: (busyRes.data ?? [])
-        .filter((b) => (b as { user_id: string }).user_id === userId)
-        .map((b) => {
-          const row = b as { starts_at: string; ends_at: string };
-          return { start: Date.parse(row.starts_at), end: Date.parse(row.ends_at) };
-        }),
-      bookingStartsMs: (bookingsRes.data ?? [])
-        .filter((b) => (b as { assigned_user_id: string }).assigned_user_id === userId)
-        .map((b) => Date.parse((b as { starts_at: string }).starts_at)),
+      busy: busy
+        .filter((b) => b.user_id === userId)
+        .map((b) => ({
+          start: Date.parse(b.starts_at),
+          end: Date.parse(b.ends_at),
+        })),
+      bookingStartsMs: bookingStarts
+        .filter((b) => b.assigned_user_id === userId)
+        .map((b) => Date.parse(b.starts_at)),
     } satisfies MemberAvailability;
   });
 }
