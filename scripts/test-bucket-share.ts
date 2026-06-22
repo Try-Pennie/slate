@@ -7,6 +7,8 @@
 import {
   bucketShareFromResult,
   orderByBucketShare,
+  orderByRecency,
+  shadowRankingDivergence,
 } from "../src/lib/availability/roundrobin.ts";
 
 let failed = 0;
@@ -98,6 +100,49 @@ ok(
 // Empty / single pass through.
 ok(eq(orderByBucketShare([], { counts: {}, priorActiveIds: [] }), []), "empty input yields empty");
 ok(eq(orderByBucketShare(["solo"], { counts: {}, priorActiveIds: [] }), ["solo"]), "single candidate passes through");
+
+// --- orderByRecency (the prior recency ranker, for shadow comparison, #321) ---
+// Pure least-recently-booked: ignores count; never-booked sorts first; tie by id.
+ok(
+  eq(
+    orderByRecency(["a", "b", "c"], {
+      counts: { a: { count: 5, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 500 } },
+      priorActiveIds: ["a", "b"],
+    }),
+    ["c", "a", "b"],
+  ),
+  "recency: never-booked first, then least-recently-booked (count ignored)",
+);
+ok(
+  eq(
+    orderByRecency(["b", "a"], {
+      counts: { a: { count: 0, lastBookedAtMs: 200 }, b: { count: 0, lastBookedAtMs: 200 } },
+      priorActiveIds: [],
+    }),
+    ["a", "b"],
+  ),
+  "recency: equal recency breaks to id",
+);
+
+// --- shadowRankingDivergence (#321): equal-share order + recency order + diverge ---
+{
+  // count favors b (fewest); recency favors c (never-booked). Tops differ.
+  const share = {
+    counts: { a: { count: 4, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 500 } },
+    priorActiveIds: ["a", "b"],
+  };
+  const d = shadowRankingDivergence(["a", "b", "c"], share);
+  ok(d.equalShareTop === "b", "divergence: equal-share top is the fewest-count agent");
+  ok(d.recencyTop === "c", "divergence: recency top is the never-booked agent");
+  ok(d.diverged === true, "divergence: flagged when the two rankers' tops differ");
+  ok(eq(d.recencyOrder, orderByRecency(["a", "b", "c"], share)), "divergence: carries the full recency order");
+}
+{
+  // When both rankers agree on the top, diverged is false.
+  const share = { counts: { a: { count: 0, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] };
+  const d = shadowRankingDivergence(["a", "b"], share);
+  ok(d.diverged === false, "divergence: not flagged when tops agree");
+}
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

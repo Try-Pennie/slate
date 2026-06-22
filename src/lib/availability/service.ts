@@ -11,6 +11,7 @@ import {
   payPeriod,
   bucketShareFromResult,
   orderByBucketShare,
+  shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
@@ -288,8 +289,16 @@ export async function roundRobinCandidates(
   );
   if (free.length <= 1) return free;
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
-  // next-period slot balances against next-period meetings.
-  return rankBucketShare(bucket.id, free, startMs, "verify-on-book candidate order");
+  // next-period slot balances against next-period meetings. shadowLog=true: this
+  // is the real assignment path, so log the equal-share vs recency divergence
+  // (#321) for pre-cutover validation.
+  return rankBucketShare(
+    bucket.id,
+    free,
+    startMs,
+    "verify-on-book candidate order",
+    true,
+  );
 }
 
 const UNFAIR_ORDERING_ALERT_KEY = "rr_ordering_degraded";
@@ -324,6 +333,7 @@ async function rankBucketShare(
   candidateIds: string[],
   anchorMs: number,
   context: string,
+  shadowLog = false,
 ): Promise<string[]> {
   if (candidateIds.length <= 1) return candidateIds;
   const period = payPeriod(anchorMs);
@@ -340,6 +350,29 @@ async function rankBucketShare(
     period.startMs,
   );
   if (share.degraded) await alertUnfairOrdering(context);
+
+  // Pre-cutover shadow run (#321): on the real assignment path, log how the live
+  // equal-share order compares to the prior recency order, so the equal-share
+  // distribution can be validated against real traffic before the fleet relies
+  // on it. Structured line for Cloudflare observability; assignment is unaffected
+  // (the live order is always equal-share). Skipped for the routing-API preview.
+  if (shadowLog && !share.degraded) {
+    const div = shadowRankingDivergence(candidateIds, share);
+    console.log(
+      JSON.stringify({
+        tag: "routing_shadow",
+        bucket_id: bucketId,
+        anchor_ms: anchorMs,
+        candidates: candidateIds.length,
+        diverged: div.diverged,
+        equal_share_top: div.equalShareTop,
+        recency_top: div.recencyTop,
+        equal_share_order: div.equalShareOrder,
+        recency_order: div.recencyOrder,
+      }),
+    );
+    return div.equalShareOrder;
+  }
   return orderByBucketShare(candidateIds, share);
 }
 
