@@ -33,7 +33,8 @@ interface BookerProps {
 }
 
 interface AvailabilityResponse {
-  bucket: { code: string; name: string };
+  // Only the routing code is exposed to leads — never the internal bucket name (#259).
+  bucket: { code: string };
   orgName: string;
   eventType: { name: string; description: string | null; durationMin: number };
   slots: string[];

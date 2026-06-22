@@ -45,7 +45,10 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
-    bucket: { code: result.bucket.code, name: result.bucket.name },
+    // Lead-facing response: expose only the routing CODE, never the internal
+    // bucket NAME (the XBC routing descriptor, e.g. "Very High | Both | Legal").
+    // Leads must never see routing internals, even in the network payload (#259).
+    bucket: { code: result.bucket.code },
     orgName: result.orgName,
     eventType: {
       name: result.eventType.name,
