@@ -1,7 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
-import { runIncrementalSync, loadSyncAgents, markAgentsSynced } from "@/lib/google/sync";
+import {
+  runIncrementalSync,
+  loadSyncAgents,
+  markAgentsSynced,
+  loadFailingAgents,
+} from "@/lib/google/sync";
 import {
   orderAgentsForTick,
   mapWithConcurrency,
@@ -47,10 +52,15 @@ async function alertSyncFailures(
   // rate_limit_hit returns false once the count exceeds 1 in the window,
   // i.e. from the second consecutive failing pass onward.
   if (!isConsecutiveFailure(underLimit === false ? 2 : 1)) return;
+  // Name the persistently-failing agents from the diagnostics (#293), same as
+  // the watch-lapse alert — not an anonymous count. If none are at the streak
+  // threshold yet, stay quiet rather than send an empty-named alert.
+  const failing = await loadFailingAgents();
+  if (failing.length === 0) return;
   await sendThrottledAlert(
     "sync_failures",
     SYNC_ALERT_COOLDOWN_MS,
-    formatSyncFailureAlert(failed.length, totalAgents, failed[0]?.error ?? null),
+    formatSyncFailureAlert(failing, totalAgents),
   );
 }
 
@@ -118,7 +128,7 @@ export async function GET(req: NextRequest) {
     // instead of an UPDATE per agent inside the loop.
     await markAgentsSynced(results.map((r) => r.userId));
 
-    await alertSyncFailures(results.filter((r) => r.error), results.length);
+    await alertSyncFailures(results.filter((r) => r.error), ordered.length);
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.

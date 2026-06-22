@@ -62,6 +62,18 @@ export function dedupeFailingAgents(rows: FailingCalendarRow[]): FailingAgent[] 
 /** How many agents to name inline before summarizing the rest. */
 const MAX_NAMED_AGENTS = 5;
 
+/** The bulleted, capped per-agent lines shared by the named alerts (#293). */
+function failingAgentLines(failing: FailingAgent[]): string {
+  const lines = failing.slice(0, MAX_NAMED_AGENTS).map((a) => {
+    const lastOk = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
+    const err = a.error ? ` (${a.error.slice(0, 120)})` : "";
+    const n = a.consecutiveFailures;
+    return `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, last ok ${lastOk}${err}`;
+  });
+  const extra = failing.length - MAX_NAMED_AGENTS;
+  return lines.join("\n") + (extra > 0 ? `\n…and ${extra} more` : "");
+}
+
 /**
  * Human-readable watch-lapse alert that NAMES the failing agent(s) (#273
  * Phase 1.3) — replacing the old "N of M" body that named nobody and forced a
@@ -72,33 +84,28 @@ export function formatWatchLapseAlert(
   failing: FailingAgent[],
   totalAgents: number,
 ): string {
-  const lines = failing.slice(0, MAX_NAMED_AGENTS).map((a) => {
-    const lastOk = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
-    const err = a.error ? ` (${a.error.slice(0, 120)})` : "";
-    const n = a.consecutiveFailures;
-    return `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, last ok ${lastOk}${err}`;
-  });
-  const extra = failing.length - MAX_NAMED_AGENTS;
-  const tail = extra > 0 ? `\n…and ${extra} more` : "";
   return (
     `Slate: ${failing.length} of ${totalAgents} bookable agent` +
     `${failing.length === 1 ? "" : "s"} have a calendar failing to sync/renew ` +
     `(Google push degraded; availability is on the backup cron). ` +
-    `Re-auth or deactivate:\n${lines.join("\n")}${tail}`
+    `Re-auth or deactivate:\n${failingAgentLines(failing)}`
   );
 }
 
-/** First error string from a cron sync pass, for the alert body. */
+/**
+ * Named sync-failure alert (#293): the backstop sync errored on consecutive
+ * passes — name the failing agent(s) (same shape as the watch alert) instead
+ * of an anonymous count, so the cache-drift can be acted on without a DB query.
+ */
 export function formatSyncFailureAlert(
-  syncErrors: number,
+  failing: FailingAgent[],
   totalAgents: number,
-  firstError: string | null,
 ): string {
   return (
-    `Slate: calendar sync failed for ${syncErrors} of ${totalAgents} bookable ` +
-    `agent${syncErrors === 1 ? "" : "s"} on consecutive cron passes. The ` +
-    `availability cache may be drifting from Google.` +
-    (firstError ? ` First error: ${firstError.slice(0, 300)}` : "")
+    `Slate: calendar sync is failing for ${failing.length} of ${totalAgents} ` +
+    `bookable agent${failing.length === 1 ? "" : "s"} on consecutive passes ` +
+    `(the availability cache may be drifting from Google). Re-auth or deactivate:` +
+    `\n${failingAgentLines(failing)}`
   );
 }
 
