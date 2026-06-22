@@ -252,6 +252,14 @@ export interface Booking {
   agent_email: string | null;
   starts_at: string;
   ends_at: string;
+  /**
+   * The ORIGINAL scheduled time, preserved immutably across reschedules so
+   * show-rate can be measured against it (#300/ADR 0001). Set at creation;
+   * reschedule never touches it. Null for historical rows whose original time
+   * predates this column and is unrecoverable (see migration 0041).
+   */
+  original_starts_at: string | null;
+  original_ends_at: string | null;
   timezone: string;
   status: BookingStatus;
   salesforce_id: string | null;
@@ -279,6 +287,35 @@ export interface RoutingTrace {
   fallback_applied: boolean;
   /** Manual overrides via the reassign API, in order (contact-owner stickiness). */
   reassignments?: { from: string | null; to: string; at: string }[];
+}
+
+/** What a booking_events row records. */
+export type BookingEventAction = "rescheduled" | "cancelled" | "reassigned";
+/** Who drove a booking_events row. */
+export type BookingEventInitiator = "customer" | "agent" | "admin" | "system";
+
+/**
+ * Append-only history of how a booking moved (#326/#300, ADR 0001): one row per
+ * reschedule / cancel / reassign, with the reason, who did it, the time change,
+ * and any agent change. Reporting reads `action` (a reassign also emits
+ * booking.rescheduled but must NOT count as a customer reschedule).
+ */
+export interface BookingEvent {
+  id: string;
+  booking_id: string;
+  action: BookingEventAction;
+  initiator: BookingEventInitiator;
+  /** Stable analytics code; one of the action's reason options (or "other"). */
+  reason_code: string;
+  /** Free text for the "Other" option; null otherwise. */
+  reason_detail: string | null;
+  from_starts_at: string | null;
+  to_starts_at: string | null;
+  from_agent_user_id: string | null;
+  to_agent_user_id: string | null;
+  /** Signed minutes from the action to the appointment; negative = after it. */
+  lead_time_minutes: number | null;
+  created_at: string;
 }
 
 export type WebhookFormat = "generic" | "regal";

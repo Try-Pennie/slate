@@ -198,6 +198,11 @@ async function run() {
     const res = await createBooking(input, deps);
     assert(res.booking.id === "bk-new", "create returns the persisted booking");
     assert(
+      res.booking.original_starts_at === "2026-06-08T13:00:00.000Z" &&
+        res.booking.original_ends_at === "2026-06-08T13:30:00.000Z",
+      "create: preserves the original scheduled time on the booking (#300)",
+    );
+    assert(
       res.manageUrl === "https://slate.test/booking/manage/tok-fixed",
       "manage URL uses base + manage token",
     );

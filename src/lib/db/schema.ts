@@ -10,6 +10,7 @@ import type {
   AvailabilityRule,
   AvailabilitySchedule,
   Booking,
+  BookingEvent,
   Bucket,
   BucketMember,
   BucketSlotsRow,
@@ -49,6 +50,7 @@ export interface Database {
       availability_rules: Table<AvailabilityRule>;
       busy_blocks: Table<BusyBlock>;
       bookings: Table<Booking>;
+      booking_events: Table<BookingEvent>;
       ooo_requests: Table<OooRequest>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
