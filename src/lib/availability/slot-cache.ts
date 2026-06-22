@@ -110,7 +110,13 @@ export async function recomputeBucketsForAgent(userId: string): Promise<void> {
   try {
     const codes = await bucketsForAgent(userId);
     for (const code of codes) await recomputeBucketSlotsForToday(code);
-  } catch { /* best-effort; the cron backstop will catch up */ }
+  } catch (err) {
+    // Best-effort: the recompute lane's freshness sweep still backstops. Log the
+    // cause (#313) so a failed fan-out isn't wholly silent.
+    console.error(
+      `recomputeBucketsForAgent failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**
