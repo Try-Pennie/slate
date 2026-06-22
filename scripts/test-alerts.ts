@@ -86,17 +86,29 @@ assert(!isConsecutiveFailure(1), "a single failing pass stays quiet (transient b
 assert(isConsecutiveFailure(2), "second consecutive failing pass alerts");
 assert(isConsecutiveFailure(5), "longer streaks keep alerting (throttle handles spam)");
 
-const syncMsg = formatSyncFailureAlert(2, 7, "freeBusy failed: 503");
-assert(syncMsg.includes("2 of 7"), "sync alert includes the failure count");
-assert(syncMsg.includes("consecutive"), "sync alert says it is a streak");
-assert(syncMsg.includes("freeBusy failed: 503"), "sync alert carries the first error");
+// Named sync-failure alert (#293): like the watch alert, name the failing
+// agent(s) instead of an anonymous count, reusing the FailingAgent shape.
+const syncFailing = [
+  {
+    email: "sync1@pennie.com",
+    consecutiveFailures: 4,
+    lastSuccessAt: "2026-06-20T09:00:00Z",
+    error: "freeBusy failed: 503",
+  },
+];
+const syncMsg = formatSyncFailureAlert(syncFailing, 110);
+assert(syncMsg.includes("sync1@pennie.com"), "sync alert names the failing agent");
+assert(syncMsg.includes("1 of 110"), "sync alert shows failing/total context");
+assert(syncMsg.includes("4 consecutive failures"), "sync alert shows the consecutive-failure count");
+assert(syncMsg.includes("2026-06-20"), "sync alert shows the last successful sync date");
+assert(syncMsg.includes("freeBusy failed: 503"), "sync alert carries the error");
+assert(/re-?auth|deactivate/i.test(syncMsg), "sync alert includes the remediation");
 assert(
-  formatSyncFailureAlert(1, 7, null).includes("1 of 7 bookable agent on"),
-  "singular agent copy + no error suffix when absent",
-);
-assert(
-  formatSyncFailureAlert(2, 7, "x".repeat(500)).length < 500,
-  "error detail is truncated",
+  formatSyncFailureAlert(
+    [{ email: "a@b.com", consecutiveFailures: 2, lastSuccessAt: null, error: "x".repeat(500) }],
+    110,
+  ).length < 600,
+  "sync alert truncates per-agent error detail",
 );
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
