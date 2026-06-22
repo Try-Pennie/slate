@@ -22,6 +22,9 @@ export interface DirectBookingRequest {
   salesforceId: string | null;
   prefill: Record<string, string>;
   externalId: string;
+  /** Set by the bot on a follow-up call after it asked the lead, so a
+   *  low-confidence (single-field) person match may still auto-reschedule (#357). */
+  confirmReschedule: boolean;
 }
 
 export type ParseResult =
@@ -44,6 +47,7 @@ const schema = z.object({
   // Required for the API (the bot's stable per-person id); blank/whitespace is
   // not an id. `.trim()` collapses "  " to "" so .min(1) rejects it.
   externalId: z.string().trim().min(1),
+  confirmReschedule: z.boolean().default(false),
 });
 
 const INVALID = { ok: false as const, status: 400 as const, error: "Invalid request" };
@@ -88,6 +92,7 @@ export function parseDirectBookingRequest(raw: unknown): ParseResult {
       salesforceId: data.salesforceId ?? null,
       prefill: data.prefill,
       externalId: data.externalId,
+      confirmReschedule: data.confirmReschedule,
     },
   };
 }

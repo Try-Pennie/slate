@@ -2,6 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { parseDirectBookingRequest } from "@/lib/booking/api-request";
+import {
+  bookViaApi,
+  SlotUnavailableError,
+  VerifyUnavailableError,
+} from "@/lib/booking/service";
 import { allowRequest } from "@/lib/rate-limit";
 import { DIRECT_BOOKING_API_RATE_RULES } from "@/lib/rate-limit-core";
 
@@ -49,10 +54,48 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Body validated. The booking itself — person-level dedupe + auto-reschedule
-  // (#357) and the machine-readable success/error contract (#358) — is next.
-  return NextResponse.json(
-    { error: "Not implemented yet.", code: "NOT_IMPLEMENTED" },
-    { status: 501 },
-  );
+  const v = parsed.value;
+  try {
+    const result = await bookViaApi({
+      bucketCode: v.bucketCode,
+      startIso: v.startIso,
+      timezone: v.timezone,
+      salesforceId: v.salesforceId,
+      attendee: v.attendee,
+      prefill: v.prefill,
+      externalId: v.externalId,
+      confirmReschedule: v.confirmReschedule,
+    });
+
+    const body = {
+      outcome: result.outcome,
+      booking: {
+        id: result.booking.id,
+        externalId: result.booking.external_id,
+        startsAt: result.booking.starts_at,
+        endsAt: result.booking.ends_at,
+        status: result.booking.status,
+        agent: { name: result.booking.agent_name, email: result.booking.agent_email },
+        manageUrl: result.manageUrl,
+      },
+    };
+
+    // The lead already has an appointment and the match wasn't strong enough to
+    // move it silently — 409 so the bot asks the lead, then retries with
+    // confirmReschedule:true. Everything else is a success.
+    const status = result.outcome === "confirm_required" ? 409 : 200;
+    return NextResponse.json(body, { status });
+  } catch (err) {
+    // Interim error mapping; the full machine-readable error contract is #358.
+    if (err instanceof VerifyUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    if (err instanceof SlotUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Booking failed" },
+      { status: 500 },
+    );
+  }
 }

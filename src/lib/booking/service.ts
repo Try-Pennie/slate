@@ -23,11 +23,14 @@ import {
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
+  ApiBookingInput,
+  ApiBookingResult,
   BookingContext,
   BookingDeps,
   BookingResult,
   CreateBookingInput,
 } from "@/lib/booking/orchestration";
+import { toE164 } from "@/lib/phone";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type {
@@ -482,6 +485,33 @@ function realDeps(): BookingDeps {
       };
     },
 
+    // Direct booking API person lookup (#357). One small indexed query PER
+    // supplied identifier (not a single `.or(...)` string) so caller-supplied
+    // values are parameterized by .eq/.ilike and can't inject PostgREST filter
+    // syntax; results merge by id. The matcher re-grades confidence, so an
+    // over-broad row here is harmless.
+    findActiveBookingsForPerson: async (identity) => {
+      const active = ["confirmed", "rescheduled"] as const;
+      const base = () =>
+        supabaseAdmin().from("bookings").select("*").in("status", active).limit(20);
+      const queries: PromiseLike<{ data: unknown }>[] = [];
+      if (identity.externalId)
+        queries.push(base().eq("external_id", identity.externalId));
+      if (identity.salesforceId)
+        queries.push(base().eq("salesforce_id", identity.salesforceId));
+      const email = identity.email?.trim();
+      if (email) queries.push(base().ilike("attendee_email", email));
+      const phone = toE164(identity.phone);
+      if (phone) queries.push(base().eq("attendee_phone", phone));
+      if (queries.length === 0) return [];
+
+      const results = await Promise.all(queries);
+      const byId = new Map<string, Booking>();
+      for (const r of results)
+        for (const row of (r.data ?? []) as Booking[]) byId.set(row.id, row);
+      return [...byId.values()];
+    },
+
     loadBookingById: async (bookingId) => {
       const db = supabaseAdmin();
       const { data: booking } = await db
@@ -569,6 +599,16 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
   return alertOnVerifyOutage(() =>
     orchestration.createBooking(input, realDeps()),
   );
+}
+
+/**
+ * Direct booking API entry (#357): "one active appointment per person" — create,
+ * dedupe, auto-reschedule, or ask-to-confirm. Wraps the orchestration in the same
+ * verify-outage alerting as createBooking (the create/reschedule paths it dispatches
+ * to both verify-on-book).
+ */
+export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
+  return alertOnVerifyOutage(() => orchestration.bookViaApi(input, realDeps()));
 }
 
 export function rescheduleBooking(
