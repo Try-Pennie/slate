@@ -17,13 +17,24 @@ vi.mock("@/lib/rate-limit", () => rateLimit);
 
 import { POST } from "./route";
 
-function post(authorization?: string) {
+const VALID_BODY = {
+  bucketCode: "411",
+  start: "2026-07-01T15:00:00.000Z",
+  timezone: "America/New_York",
+  attendee: { name: "Dana Lee", email: "dana@example.com", phone: "2155550100" },
+  salesforceId: "00Q5x000001abcEAA",
+  externalId: "lead-abc-123",
+};
+
+function post(authorization?: string, body?: unknown) {
   const headers = new Headers();
   if (authorization) headers.set("authorization", authorization);
+  if (body !== undefined) headers.set("content-type", "application/json");
   return POST(
     new Request("http://localhost/api/bookings/direct", {
       method: "POST",
       headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
     }) as never,
   );
 }
@@ -55,7 +66,7 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
   it("authenticates the secondary key too (zero-downtime rotation)", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("old-secret");
     env.bookingApiKeySecondary.mockReturnValue("new-secret");
-    const res = await post("Bearer new-secret");
+    const res = await post("Bearer new-secret", VALID_BODY);
     expect(res.status).toBe(501);
   });
 
@@ -75,9 +86,26 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     );
   });
 
+  it("returns 400 for an authenticated call with an invalid body", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const { externalId: _drop, ...noExternalId } = VALID_BODY;
+    const res = await post("Bearer real-secret", noExternalId);
+    expect(res.status).toBe(400);
+  });
+
+  it("surfaces attendee field errors on a bad-contact body", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", {
+      ...VALID_BODY,
+      attendee: { name: "Dana", email: "", phone: "2155550100" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ fieldErrors: { email: expect.any(String) } });
+  });
+
   it("returns 501 for a valid, in-budget call until the body is implemented", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-    const res = await post("Bearer real-secret");
+    const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(501);
     expect(await res.json()).toMatchObject({ code: "NOT_IMPLEMENTED" });
   });
