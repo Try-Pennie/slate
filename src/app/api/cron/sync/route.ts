@@ -10,9 +10,14 @@ import {
 import {
   orderAgentsForTick,
   mapWithConcurrency,
+  agentsWithChanges,
   SYNC_CONCURRENCY,
   MAX_AGENTS_PER_SYNC_TICK,
+  MAX_TOUCHED_AGENTS,
+  MAX_TOUCHED_BUCKETS,
 } from "@/lib/google/sync-pace";
+import { bucketsForAgent } from "@/lib/availability/precompute";
+import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -129,6 +134,23 @@ export async function GET(req: NextRequest) {
     await markAgentsSynced(results.map((r) => r.userId));
 
     await alertSyncFailures(results.filter((r) => r.error), ordered.length);
+
+    // A missed Google push means the change only surfaced now, via this
+    // backstop. Refresh the affected buckets inline (#296) so it shows in ~1 min
+    // instead of waiting for the recompute lane's freshness window. Deduped
+    // across agents and bounded (MAX_TOUCHED_*) so a burst can't blow the
+    // subrequest ceiling; any overflow is caught by the recompute lane. Usually
+    // a no-op — most ticks have no changes (push handles the common case).
+    const changed = agentsWithChanges(results, MAX_TOUCHED_AGENTS);
+    if (changed.length > 0) {
+      const touched = new Set<string>();
+      for (const id of changed) {
+        for (const code of await bucketsForAgent(id)) touched.add(code);
+      }
+      for (const code of [...touched].slice(0, MAX_TOUCHED_BUCKETS)) {
+        await recomputeBucketSlotsForToday(code, true).catch(() => {});
+      }
+    }
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.

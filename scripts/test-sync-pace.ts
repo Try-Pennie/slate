@@ -3,9 +3,11 @@ import {
   orderAgentsForTick,
   shouldOnboard,
   watchAgentsForTick,
+  agentsWithChanges,
   mapWithConcurrency,
   MAX_ONBOARDS_PER_TICK,
   MAX_AGENTS_PER_SYNC_TICK,
+  MAX_TOUCHED_AGENTS,
   SYNC_CONCURRENCY,
   type SyncAgent,
 } from "../src/lib/google/sync-pace.ts";
@@ -95,6 +97,24 @@ ok(
   ).length === 1,
   "already-onboarded agents are always included (onboard cap only gates new ones)",
 );
+
+// agentsWithChanges (#296): after a sync tick, which agents actually had a
+// calendar change (synced > 0) — those whose buckets the backstop should
+// refresh now (capped, so a burst can't blow the subrequest budget).
+{
+  const results = [
+    { userId: "a", synced: 0 },
+    { userId: "b", synced: 3 },
+    { userId: "c" }, // undefined synced (errored) -> not a change
+    { userId: "d", synced: 1 },
+  ];
+  ok(
+    JSON.stringify(agentsWithChanges(results, 10)) === JSON.stringify(["b", "d"]),
+    "only agents whose sync returned changes (synced > 0)",
+  );
+  ok(agentsWithChanges(results, 1).length === 1, "capped to the limit");
+  ok(MAX_TOUCHED_AGENTS > 0, "touched-agent cap is a positive bound");
+}
 
 // SYNC_CONCURRENCY: a small positive cap, comfortably under the Worker
 // subrequest ceiling even when every agent fans out several Google/DB calls.
