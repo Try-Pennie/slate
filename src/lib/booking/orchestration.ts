@@ -1,7 +1,8 @@
-// Relative (not "@/") for the two VALUE imports so this module is runnable
+// Relative (not "@/") for the VALUE imports so this module is runnable
 // under `node --experimental-strip-types` in tests — node doesn't resolve
 // tsconfig path aliases, and type-only "@/" imports below are erased anyway.
 import { toE164 } from "../phone.ts";
+import { mapWithConcurrency } from "../concurrency.ts";
 import {
   bookingWindow,
   busyBlockFor,
@@ -118,12 +119,22 @@ export interface BookingDeps {
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
   roundRobinCandidates(bucket: Bucket, eventType: EventType, startMs: number): Promise<string[]>;
   // google calendar
+  /** Single-agent free check — used by reschedule to keep the same agent. */
   isFree(email: string, startIso: string, endIso: string): Promise<boolean>;
+  /**
+   * Batched verify-on-book free check: given a wave of candidate emails, return
+   * the subset confirmed free for [startIso, endIso). The real impl reads the
+   * whole wave's free/busy in bounded, batched Google calls instead of one
+   * serial call per candidate (#167).
+   */
+  verifyFree(emails: string[], startIso: string, endIso: string): Promise<Set<string>>;
   createEvent(email: string, args: CreateEventArgs): Promise<string>;
   deleteEvent(email: string, eventId: string): Promise<void>;
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
+  /** Batched userId -> email resolver for a verify-on-book wave (skips emailless). */
+  loadEmails(userIds: string[]): Promise<Map<string, string>>;
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
@@ -158,8 +169,21 @@ export interface BookingDeps {
 }
 
 /**
- * Verify-on-book: walk the round-robin candidate order and do ONE live Google
- * free/busy check per candidate. First confirmed-free agent wins. Selection
+ * Verify-on-book wave size: how many round-robin candidates to confirm per
+ * batched free/busy round-trip. The real verifier reads the whole wave's
+ * free/busy in one (or, for multi-calendar agents, a few parallel) Google
+ * call(s) and returns the free subset; `selectAgent` returns the first free
+ * candidate in round-robin order, only advancing to the next wave if the whole
+ * wave is busy. Sized to Google's 20-calendar freeBusy cap so a wave of
+ * single-calendar agents is one round-trip (#167).
+ */
+const VERIFY_WAVE_SIZE = 20;
+
+/**
+ * Verify-on-book: confirm round-robin candidates against live Google free/busy
+ * in WAVES (one batched check per wave) rather than one serial call each, so a
+ * large candidate pool can't chain many slow Google calls onto the lead's
+ * confirm tap. First confirmed-free agent in round-robin order wins. Selection
  * core is `selectAgent` (pure/tested); this wires it to DB + Google.
  */
 async function assignAgent(
@@ -177,8 +201,9 @@ async function assignAgent(
 
   const result = await selectAgent(
     candidates,
-    async (userId) => (await deps.getUser(userId)).email,
-    (email) => deps.isFree(email, startIso, endIso),
+    (userIds) => deps.loadEmails(userIds),
+    (emails) => deps.verifyFree(emails, startIso, endIso),
+    VERIFY_WAVE_SIZE,
   );
   if (!result) throw new SlotUnavailableError();
   return { ...result, candidates };
@@ -234,29 +259,6 @@ async function fire(
 
 function manageUrl(deps: BookingDeps, token: string): string {
   return `${deps.appBaseUrl()}/booking/manage/${token}`;
-}
-
-/**
- * Runs `task` over `items` with at most `limit` in flight at once. Keeps the
- * completion sweep's webhook fan-out from opening one connection per booking
- * (Cloudflare caps simultaneous subrequests), while still beating a fully
- * serial loop. Preserves input order in the returned results.
- */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  task: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await task(items[i]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 /** Max simultaneous booking.completed deliveries (Cloudflare subrequest cap). */

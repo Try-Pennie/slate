@@ -1,4 +1,8 @@
 import { getDelegatedToken } from "@/lib/google/dwd";
+import {
+  busyByCalendarFromResponse,
+  type CalendarBusy,
+} from "@/lib/booking/core";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
 import {
   LOADTEST,
@@ -156,6 +160,47 @@ export async function isFree(
   const s = Date.parse(start);
   const e = Date.parse(end);
   return !busy.some((b) => Date.parse(b.start) < e && Date.parse(b.end) > s);
+}
+
+/**
+ * Bulk free/busy across MANY calendars in a SINGLE query, read as one
+ * domain-wide-delegation identity (`subject`) instead of impersonating each
+ * agent — the scale path for verify-on-book (#167). Within a Workspace domain,
+ * free/busy is visible across users, so one identity can read the whole
+ * candidate pool. Google caps a freeBusy query at 20 calendar `items`, so the
+ * caller must chunk; this issues exactly one call. Returns a per-calendar map;
+ * any calendar Google reported an error for (e.g. access denied) — or that's
+ * absent from the response — is marked `error: true` so the caller never assumes
+ * it free. Response parsing is the pure, tested `busyByCalendarFromResponse`.
+ */
+export async function freeBusyMany(
+  subject: string,
+  timeMin: string,
+  timeMax: string,
+  calendarIds: string[],
+): Promise<Map<string, CalendarBusy>> {
+  if (calendarIds.length === 0) return new Map();
+  if (LOADTEST) {
+    return new Map(calendarIds.map((id) => [id, { busy: [], error: false }]));
+  }
+  const res = await ok(
+    await gfetch(subject, `${BASE}/freeBusy`, {
+      method: "POST",
+      body: JSON.stringify({
+        timeMin,
+        timeMax,
+        items: calendarIds.map((id) => ({ id })),
+      }),
+    }),
+    "freeBusy.many",
+  );
+  const data = (await res.json()) as {
+    calendars?: Record<
+      string,
+      { busy?: { start?: string; end?: string }[]; errors?: unknown[] }
+    >;
+  };
+  return busyByCalendarFromResponse(calendarIds, data.calendars);
 }
 
 export interface CreateEventInput {

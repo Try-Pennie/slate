@@ -88,6 +88,7 @@ interface FakeOpts {
 function makeDeps(opts: FakeOpts) {
   const calls = {
     isFree: [] as string[],
+    verifyFree: [] as string[][],
     createEvent: [] as { email: string }[],
     deleteEvent: [] as { id: string }[],
     updateEventTime: [] as { id: string }[],
@@ -110,6 +111,12 @@ function makeDeps(opts: FakeOpts) {
       calls.isFree.push(email);
       return free.has(email);
     },
+    // Batched verify-on-book: one call per round-robin wave; returns the free
+    // subset. Mirrors the real dep, which reads the wave in one Google call.
+    verifyFree: async (emails) => {
+      calls.verifyFree.push(emails);
+      return new Set(emails.filter((e) => free.has(e)));
+    },
     createEvent: async (email) => {
       calls.createEvent.push({ email });
       return `gcal-${++seq}`;
@@ -121,6 +128,14 @@ function makeDeps(opts: FakeOpts) {
       calls.updateEventTime.push({ id });
     },
     getUser: async (id) => users[id],
+    loadEmails: async (ids) => {
+      const m = new Map<string, string>();
+      for (const id of ids) {
+        const email = users[id]?.email;
+        if (email) m.set(id, email);
+      }
+      return m;
+    },
     // Before any insert: idempotency pre-check (existingByKey). After an insert
     // conflict: the key-winner lookup (conflictWinner). Lets one fake model the
     // "nobody yet → race → winner found" sequence.
@@ -288,7 +303,11 @@ async function run() {
     const { deps, calls } = makeDeps({ candidates: ["a", "b"], freeEmails: new Set(["b@x.com"]) });
     const res = await createBooking(input, deps);
     assert(res.booking.assigned_user_id === "b", "create: skips busy A, books free B");
-    assert(calls.isFree.length === 2, "create: checked A then B (one free-check each)");
+    assert(
+      calls.verifyFree.length === 1 &&
+        JSON.stringify(calls.verifyFree[0]) === JSON.stringify(["a@x.com", "b@x.com"]),
+      "create: verifies A and B together in one batched wave",
+    );
   }
 
   // --- createBooking: no free candidate ---
