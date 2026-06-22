@@ -127,10 +127,16 @@ export function buildRegalEvent(
 
   if (event === "booking.rescheduled") {
     regal.properties.rescheduleId = p.booking_id;
+    // #326: carry the captured reason + who did it (null if somehow absent).
+    regal.properties.rescheduleReason = p.reason?.code ?? null;
+    regal.properties.rescheduleReasonDetail = p.reason?.detail ?? null;
+    regal.properties.rescheduledBy = p.reason?.initiator ?? null;
   }
   if (event === "booking.cancelled") {
-    regal.properties.cancellationReason = null;
-    regal.properties.cancelledBy = null;
+    // #326: real reason/initiator now flow through (was hardcoded null).
+    regal.properties.cancellationReason = p.reason?.code ?? null;
+    regal.properties.cancellationReasonDetail = p.reason?.detail ?? null;
+    regal.properties.cancelledBy = p.reason?.initiator ?? null;
   }
 
   return regal;

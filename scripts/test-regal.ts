@@ -30,6 +30,7 @@ const payload: BookingEventPayload = {
   },
   prefill: { xbc: "411", loanRequest: "160000" },
   manage_url: "https://slate.app/booking/manage/tok123",
+  reason: null,
 };
 
 const created = buildRegalEvent("booking.created", payload);
@@ -70,9 +71,29 @@ assert(
   "non-created phone trait has no opt-in",
 );
 assert("cancelledBy" in cancelled.properties, "cancel includes cancelledBy property");
+// No reason on the payload -> the reason properties are null (not omitted).
+assert(cancelled.properties.cancellationReason === null, "cancel reason null when payload has none");
+
+// #326: a captured reason flows through to the Regal payload (the consumer).
+const cancelledWithReason = buildRegalEvent("booking.cancelled", {
+  ...payload,
+  status: "cancelled",
+  reason: { code: "booked_by_mistake", detail: null, initiator: "customer" },
+});
+assert(cancelledWithReason.properties.cancellationReason === "booked_by_mistake", "cancel reason code maps to cancellationReason");
+assert(cancelledWithReason.properties.cancelledBy === "customer", "cancel initiator maps to cancelledBy");
 
 const resched = buildRegalEvent("booking.rescheduled", { ...payload, status: "rescheduled" });
 assert(resched.properties.rescheduleId === payload.booking_id, "reschedule includes rescheduleId");
+
+const reschedWithReason = buildRegalEvent("booking.rescheduled", {
+  ...payload,
+  status: "rescheduled",
+  reason: { code: "found_better_time", detail: "earlier slot opened up", initiator: "customer" },
+});
+assert(reschedWithReason.properties.rescheduleReason === "found_better_time", "reschedule reason code maps to rescheduleReason");
+assert(reschedWithReason.properties.rescheduleReasonDetail === "earlier slot opened up", "reschedule detail maps through");
+assert(reschedWithReason.properties.rescheduledBy === "customer", "reschedule initiator maps to rescheduledBy");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

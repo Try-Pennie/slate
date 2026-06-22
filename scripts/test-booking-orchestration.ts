@@ -98,7 +98,18 @@ function makeDeps(opts: FakeOpts) {
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
     completeBookingsIfDue: [] as string[][],
-    webhooks: [] as { event: string }[],
+    webhooks: [] as { event: string; reason: unknown }[],
+    bookingEvents: [] as {
+      booking_id: string;
+      action: string;
+      initiator: string;
+      reason_code: string;
+      reason_detail: string | null;
+      from_starts_at: string | null;
+      to_starts_at: string | null;
+      to_agent_user_id: string | null;
+      lead_time_minutes: number | null;
+    }[],
     claimReschedule: 0,
     releaseReschedule: 0,
     invalidateSlots: [] as string[],
@@ -175,12 +186,22 @@ function makeDeps(opts: FakeOpts) {
     releaseReschedule: async () => {
       calls.releaseReschedule++;
     },
+    insertBookingEvent: async (row) => {
+      calls.bookingEvents.push(row);
+    },
+    hasBookingEvent: async (bookingId, action, toStartsIso) =>
+      calls.bookingEvents.some(
+        (e) =>
+          e.booking_id === bookingId &&
+          e.action === action &&
+          e.to_starts_at === toStartsIso,
+      ),
     loadBookingContext: async () => opts.existing ?? null,
     loadBookingById: async () => opts.bookingById ?? null,
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
-    emitWebhook: async (_orgId, event) => {
-      calls.webhooks.push({ event });
+    emitWebhook: async (_orgId, event, payload) => {
+      calls.webhooks.push({ event, reason: payload.reason });
     },
     newManageToken: () => "tok-fixed",
     appBaseUrl: () => "https://slate.test",
@@ -190,6 +211,11 @@ function makeDeps(opts: FakeOpts) {
   };
   return { deps, calls };
 }
+
+// Validated reasons for the changed reschedule/cancel/reassign signatures.
+const RR = { code: "schedule_conflict", detail: null }; // reschedule
+const CR = { code: "no_longer_interested", detail: null }; // cancel
+const SYS = { code: "owner_reassignment", detail: null }; // reassign (system)
 
 async function run() {
   // --- createBooking: happy path ---
@@ -362,7 +388,7 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     assert(
       calls.updateEventTime.length === 1 && calls.updateEventTime[0].id === "gcal-old",
       "reschedule(same agent): moves the existing event in place",
@@ -375,13 +401,32 @@ async function run() {
       calls.claimReschedule === 1 && calls.releaseReschedule === 1,
       "reschedule: claims then releases the idempotency lock",
     );
+    // #326: records the reason as a history event + carries it on the webhook.
+    assert(
+      calls.bookingEvents.length === 1 &&
+        calls.bookingEvents[0].action === "rescheduled" &&
+        calls.bookingEvents[0].initiator === "customer" &&
+        calls.bookingEvents[0].reason_code === "schedule_conflict",
+      "reschedule: records one 'rescheduled' history event with the reason + initiator",
+    );
+    assert(
+      calls.bookingEvents[0].from_starts_at === "2026-06-08T13:00:00.000Z" &&
+        calls.bookingEvents[0].to_starts_at === "2026-06-09T14:00:00.000Z" &&
+        calls.bookingEvents[0].to_agent_user_id === "a",
+      "reschedule: history event carries from/to time and the (kept) agent",
+    );
+    assert(
+      JSON.stringify(calls.webhooks[0].reason) ===
+        JSON.stringify({ code: "schedule_conflict", detail: null, initiator: "customer" }),
+      "reschedule: webhook payload carries the reason + initiator",
+    );
   }
 
-  // --- reschedule idempotency: no-op when already at the requested instant ---
+  // --- reschedule no-op / retry: records the reason ONCE, no move/webhook (#326 C1) ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType }; // starts 13:00Z
     const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
-    const res = await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", RR, "customer", deps);
     assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule no-op: returns the unchanged booking");
     assert(
       calls.claimReschedule === 0 && calls.updateEventTime.length === 0 && calls.createEvent.length === 0,
@@ -390,6 +435,17 @@ async function run() {
     assert(
       calls.updateBooking.length === 0 && calls.webhooks.length === 0,
       "reschedule no-op: no DB write or webhook for a same-instant reschedule",
+    );
+    // The mandatory reason must NOT be silently dropped on the no-op path: it's
+    // recorded once. A retry (same target) must not double-record it.
+    assert(
+      calls.bookingEvents.length === 1 && calls.bookingEvents[0].reason_code === "schedule_conflict",
+      "reschedule no-op: records the reason once (never silently dropped)",
+    );
+    await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", RR, "customer", deps);
+    assert(
+      calls.bookingEvents.length === 1,
+      "reschedule retry: does not double-record the reason (idempotent)",
     );
   }
 
@@ -401,7 +457,7 @@ async function run() {
       freeEmails: new Set(["a@x.com"]),
       rescheduleLocked: true, // another in-flight reschedule holds the lock
     });
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule dup: returns the booking without moving it");
     assert(calls.claimReschedule === 1, "reschedule dup: attempted the claim");
     assert(
@@ -418,7 +474,7 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     assert(res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com", "reschedule(reassign): moves to free agent B");
     assert(calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-old", "reschedule(reassign): old event deleted");
     assert(calls.createEvent.length === 1, "reschedule(reassign): new event created for B");
@@ -431,7 +487,7 @@ async function run() {
     const { deps } = makeDeps({ existing: ctx });
     let threw = false;
     try {
-      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", deps);
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     } catch {
       threw = true;
     }
@@ -440,7 +496,7 @@ async function run() {
     const { deps: deps2 } = makeDeps({ existing: null });
     let threw2 = false;
     try {
-      await rescheduleBooking("nope", "2026-06-09T14:00:00.000Z", deps2);
+      await rescheduleBooking("nope", "2026-06-09T14:00:00.000Z", RR, "customer", deps2);
     } catch {
       threw2 = true;
     }
@@ -451,7 +507,7 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx });
-    await cancelBooking("tok1", deps);
+    await cancelBooking("tok1", CR, "customer", deps);
     assert(calls.deleteEvent.length === 1, "cancel: deletes the calendar event");
     assert(calls.deleteBusyBlocks.length === 1, "cancel: removes the busy block");
     assert(
@@ -459,13 +515,33 @@ async function run() {
       "cancel: marks the booking cancelled",
     );
     assert(calls.webhooks[0].event === "booking.cancelled", "cancel: fires booking.cancelled");
+    // #326: records a 'cancelled' history event (no to-time) + reason on webhook.
+    assert(
+      calls.bookingEvents.length === 1 &&
+        calls.bookingEvents[0].action === "cancelled" &&
+        calls.bookingEvents[0].initiator === "customer" &&
+        calls.bookingEvents[0].reason_code === "no_longer_interested" &&
+        calls.bookingEvents[0].to_starts_at === null,
+      "cancel: records one 'cancelled' history event with the reason and no to-time",
+    );
+    assert(
+      JSON.stringify(calls.webhooks[0].reason) ===
+        JSON.stringify({ code: "no_longer_interested", detail: null, initiator: "customer" }),
+      "cancel: webhook payload carries the reason + initiator",
+    );
 
     const ctx2 = { booking: makeBooking({ status: "cancelled" }), bucket, eventType };
     const { deps: d2, calls: c2 } = makeDeps({ existing: ctx2 });
-    await cancelBooking("tok1", d2);
+    await cancelBooking("tok1", CR, "customer", d2);
     assert(
       c2.deleteEvent.length === 0 && c2.updateBooking.length === 0 && c2.webhooks.length === 0,
-      "cancel: no-op when already cancelled",
+      "cancel: no-op when already cancelled (no re-delete / re-webhook)",
+    );
+    // But the mandatory reason is still captured once for the already-cancelled
+    // re-submit (covers a first attempt that flipped status but lost the reason).
+    assert(
+      c2.bookingEvents.length === 1 && c2.bookingEvents[0].action === "cancelled",
+      "cancel re-submit: records the reason once for an already-cancelled booking",
     );
   }
 
@@ -512,7 +588,7 @@ async function run() {
     const ctx = { booking: makeBooking({}), bucket, eventType }; // assigned to "a"@a@x.com
     const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
-    const res = await reassignBooking("bk1", "b@x.com", deps);
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
       res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
       "reassign: booking moved to the owning agent",
@@ -535,6 +611,16 @@ async function run() {
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "reassign: invalidates cached slots for the bucket exactly once",
     );
+    // #326: recorded as 'reassigned' (NOT 'rescheduled') so it doesn't inflate
+    // the reschedule rate, initiator 'system', same time, agent change to B.
+    assert(
+      calls.bookingEvents.length === 1 &&
+        calls.bookingEvents[0].action === "reassigned" &&
+        calls.bookingEvents[0].initiator === "system" &&
+        calls.bookingEvents[0].to_agent_user_id === "b" &&
+        calls.bookingEvents[0].to_starts_at === calls.bookingEvents[0].from_starts_at,
+      "reassign: records a 'reassigned' (not 'rescheduled') system event, same time, new agent",
+    );
   }
 
   // --- reassign: unknown / offboarded agent is rejected ---
@@ -542,7 +628,7 @@ async function run() {
     const { deps } = makeDeps({ bookingById: { booking: makeBooking({}), bucket, eventType }, agentByEmail: null });
     let threw = false;
     try {
-      await reassignBooking("bk1", "ghost@x.com", deps);
+      await reassignBooking("bk1", "ghost@x.com", SYS, deps);
     } catch {
       threw = true;
     }
@@ -554,7 +640,7 @@ async function run() {
     const { deps } = makeDeps({ bookingById: null });
     let threw = false;
     try {
-      await reassignBooking("nope", "b@x.com", deps);
+      await reassignBooking("nope", "b@x.com", SYS, deps);
     } catch {
       threw = true;
     }
@@ -566,7 +652,7 @@ async function run() {
     const ctx = { booking: makeBooking({ assigned_user_id: "b", agent_email: "b@x.com" }), bucket, eventType };
     const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
-    await reassignBooking("bk1", "b@x.com", deps);
+    await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
       calls.createEvent.length === 0 && calls.updateBooking.length === 0 && calls.webhooks.length === 0,
       "reassign: no-op when already the owning agent",

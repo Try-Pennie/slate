@@ -25,6 +25,8 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as {
     bookingId?: string;
     agentEmail?: string;
+    reasonCode?: string;
+    reasonDetail?: string;
   };
   const bookingId = String(body.bookingId ?? "").trim();
   const agentEmail = String(body.agentEmail ?? "").trim();
@@ -32,8 +34,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "bookingId and agentEmail are required" }, { status: 400 });
   }
 
+  // Machine-to-machine path: the reason isn't picked from the customer lists, so
+  // it's built directly (default = the contact-owner override) and recorded as a
+  // 'reassigned' history event (#326), not validated against the picker options.
+  const reasonCode = String(body.reasonCode ?? "").trim() || "owner_reassignment";
+  const reasonDetail = String(body.reasonDetail ?? "").trim().slice(0, 500) || null;
+
   try {
-    const result = await reassignBooking(bookingId, agentEmail);
+    const result = await reassignBooking(bookingId, agentEmail, {
+      code: reasonCode,
+      detail: reasonDetail,
+    });
     return NextResponse.json({
       booking: {
         id: result.booking.id,

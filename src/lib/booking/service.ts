@@ -18,6 +18,7 @@ import {
   calendarIdsFromResult,
   freeAgentsFromBusy,
   type CalendarBusy,
+  type ValidatedReason,
 } from "@/lib/booking/core";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
@@ -29,7 +30,13 @@ import type {
 } from "@/lib/booking/orchestration";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import type { Booking, Bucket, EventType, User } from "@/lib/db/types";
+import type {
+  Booking,
+  BookingEventInitiator,
+  Bucket,
+  EventType,
+  User,
+} from "@/lib/db/types";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // A reschedule finishes in seconds; this TTL only governs reclaiming a lock
@@ -422,6 +429,38 @@ function realDeps(): BookingDeps {
         .eq("target_starts_at", targetStartIso);
     },
 
+    // Append-only reschedule/cancel/reassign history (#326/#300). A failed
+    // insert must NOT fail the booking change (the move already happened) — log
+    // + throttled alert, like the busy_blocks write-through (#34). The reason is
+    // analytics, not a safety guard, so losing it to a rare DB error is OK.
+    insertBookingEvent: async (row) => {
+      const { error } = await supabaseAdmin().from("booking_events").insert(row);
+      if (error) {
+        console.error(
+          `booking_events insert failed for booking ${row.booking_id} (${row.action}): ${error.message}`,
+        );
+        await sendThrottledAlert(
+          "booking_event_insert",
+          CACHE_ALERT_COOLDOWN_MS,
+          `Slate: booking_events INSERT failed for booking ${row.booking_id} (${row.action}, ${error.message}). The reschedule/cancel reason for this action was not recorded.`,
+        ).catch(() => {});
+      }
+    },
+
+    hasBookingEvent: async (bookingId, action, toStartsIso) => {
+      const base = supabaseAdmin()
+        .from("booking_events")
+        .select("id")
+        .eq("booking_id", bookingId)
+        .eq("action", action);
+      const q =
+        toStartsIso === null
+          ? base.is("to_starts_at", null)
+          : base.eq("to_starts_at", toStartsIso);
+      const { data } = await q.limit(1).maybeSingle();
+      return data != null;
+    },
+
     loadBookingContext: async (token) => {
       const db = supabaseAdmin();
       const { data: booking } = await db
@@ -535,21 +574,28 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
 export function rescheduleBooking(
   token: string,
   newStartIso: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
 ): Promise<BookingResult> {
   return alertOnVerifyOutage(() =>
-    orchestration.rescheduleBooking(token, newStartIso, realDeps()),
+    orchestration.rescheduleBooking(token, newStartIso, reason, initiator, realDeps()),
   );
 }
 
-export function cancelBooking(token: string): Promise<void> {
-  return orchestration.cancelBooking(token, realDeps());
+export function cancelBooking(
+  token: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
+): Promise<void> {
+  return orchestration.cancelBooking(token, reason, initiator, realDeps());
 }
 
 export function reassignBooking(
   bookingId: string,
   agentEmail: string,
+  reason: ValidatedReason,
 ): Promise<BookingResult> {
-  return orchestration.reassignBooking(bookingId, agentEmail, realDeps());
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps());
 }
 
 export function completePastBookings(): Promise<number> {
