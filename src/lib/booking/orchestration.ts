@@ -16,6 +16,11 @@ import {
   type ValidatedReason,
   type VerifyResult,
 } from "./core.ts";
+import {
+  findPersonMatch,
+  decidePersonBooking,
+  type PersonIdentity,
+} from "./person-dedupe.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import type {
   Booking,
@@ -66,6 +71,8 @@ export interface CreateBookingInput {
   prefill: Record<string, string>;
   /** Optional caller-supplied key; falls back to a derived bucket+slot+attendee key. */
   idempotencyKey?: string;
+  /** External caller's stable per-person id (direct booking API, #357). */
+  externalId?: string | null;
 }
 
 export interface BookingResult {
@@ -105,6 +112,7 @@ export type BookingInsert = {
   gcal_event_id: string;
   manage_token: string;
   idempotency_key: string | null;
+  external_id: string | null;
   routing_trace: RoutingTrace;
 };
 
@@ -197,6 +205,13 @@ export interface BookingDeps {
   ): Promise<boolean>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
   loadBookingById(bookingId: string): Promise<BookingContext | null>;
+  /**
+   * Active bookings that may belong to this person, for the direct booking API's
+   * "one active appointment per person" dedupe (#357). The real impl matches on
+   * external_id / salesforce_id / attendee email / attendee phone across active
+   * rows; `findPersonMatch` then grades each candidate's confidence.
+   */
+  findActiveBookingsForPerson(identity: PersonIdentity): Promise<Booking[]>;
   getAgentByEmail(email: string): Promise<User | null>;
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
@@ -406,6 +421,7 @@ export async function createBooking(
     gcal_event_id: gcalEventId,
     manage_token: manageToken,
     idempotency_key: idempotencyKey,
+    external_id: input.externalId ?? null,
     routing_trace: {
       bucket_code: input.bucketCode,
       bucket_id: bucket.id,
@@ -445,6 +461,84 @@ export async function createBooking(
   await fire(deps, "booking.created", booking, bucket, eventType);
 
   return { booking, manageUrl: manageUrl(deps, manageToken) };
+}
+
+/** Input for the direct booking API path: a normal booking plus the external
+ *  caller's required per-person id and the confirm-reschedule flag (#357). */
+export interface ApiBookingInput extends CreateBookingInput {
+  externalId: string;
+  confirmReschedule: boolean;
+}
+
+export type ApiBookingOutcome =
+  | "created"
+  | "deduped"
+  | "rescheduled"
+  | "confirm_required";
+
+export interface ApiBookingResult {
+  outcome: ApiBookingOutcome;
+  booking: Booking;
+  manageUrl: string;
+}
+
+// Machine-to-machine rebooking reason; recorded on the reschedule history row.
+const API_REBOOK_REASON: ValidatedReason = { code: "api_rebooking", detail: null };
+
+/**
+ * Direct booking API entry (#357): enforce "one active appointment per person".
+ * Look the lead up across active bookings, grade the match, then create / dedupe
+ * / auto-reschedule / ask-to-confirm. Auto-reschedule reuses the full reschedule
+ * path (verify-on-book, history, booking.rescheduled webhook); it moves the
+ * EXISTING booking's time and keeps its bucket (a cross-bucket rebook is the
+ * documented v1 edge — the original bucket wins).
+ */
+export async function bookViaApi(
+  input: ApiBookingInput,
+  deps: BookingDeps,
+): Promise<ApiBookingResult> {
+  const identity: PersonIdentity = {
+    externalId: input.externalId,
+    salesforceId: input.salesforceId ?? null,
+    email: input.attendee.email ?? null,
+    phone: input.attendee.phone ?? null,
+  };
+  const candidates = await deps.findActiveBookingsForPerson(identity);
+  const match = findPersonMatch(identity, candidates);
+  const decision = decidePersonBooking({
+    startIso: input.startIso,
+    match,
+    confirmReschedule: input.confirmReschedule,
+  });
+
+  switch (decision.action) {
+    case "create": {
+      const res = await createBooking(input, deps);
+      return { outcome: "created", booking: res.booking, manageUrl: res.manageUrl };
+    }
+    case "dedupe":
+      return {
+        outcome: "deduped",
+        booking: decision.booking,
+        manageUrl: manageUrl(deps, decision.booking.manage_token),
+      };
+    case "reschedule": {
+      const res = await rescheduleBooking(
+        decision.booking.manage_token,
+        input.startIso,
+        API_REBOOK_REASON,
+        "system",
+        deps,
+      );
+      return { outcome: "rescheduled", booking: res.booking, manageUrl: res.manageUrl };
+    }
+    case "confirm_required":
+      return {
+        outcome: "confirm_required",
+        booking: decision.booking,
+        manageUrl: manageUrl(deps, decision.booking.manage_token),
+      };
+  }
 }
 
 export async function rescheduleBooking(

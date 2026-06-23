@@ -270,6 +270,9 @@ export interface Booking {
   gcal_event_id: string | null;
   manage_token: string;
   idempotency_key: string | null;
+  /** External caller's stable per-person id (direct booking API, #357). Null for
+   *  embed/human bookings, which are matched by identity instead. */
+  external_id: string | null;
   routing_trace: RoutingTrace | null;
   /** Set ONLY by the reassign API to stack a consult onto a busy owning agent. */
   allow_double_book: boolean;

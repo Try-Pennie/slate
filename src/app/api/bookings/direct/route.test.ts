@@ -11,11 +11,33 @@ const env = vi.hoisted(() => ({
   bookingApiKeySecondary: vi.fn(() => ""),
 }));
 const rateLimit = vi.hoisted(() => ({ allowRequest: vi.fn(async () => true) }));
+const service = vi.hoisted(() => {
+  class SlotUnavailableError extends Error {}
+  class VerifyUnavailableError extends Error {}
+  return { bookViaApi: vi.fn(), SlotUnavailableError, VerifyUnavailableError };
+});
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
+vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
+
+function result(outcome: string) {
+  return {
+    outcome,
+    booking: {
+      id: "bk-1",
+      external_id: "lead-abc-123",
+      starts_at: "2026-07-01T15:00:00.000Z",
+      ends_at: "2026-07-01T15:30:00.000Z",
+      status: "confirmed",
+      agent_name: "Agent A",
+      agent_email: "a@x.com",
+    },
+    manageUrl: "https://slate.test/booking/manage/tok",
+  };
+}
 
 const VALID_BODY = {
   bucketCode: "411",
@@ -44,6 +66,8 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     env.bookingApiKeyPrimary.mockReturnValue("");
     env.bookingApiKeySecondary.mockReturnValue("");
     rateLimit.allowRequest.mockResolvedValue(true);
+    service.bookViaApi.mockReset();
+    service.bookViaApi.mockResolvedValue(result("created"));
   });
 
   it("returns 503 when no key is configured (endpoint disabled)", async () => {
@@ -67,7 +91,7 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     env.bookingApiKeyPrimary.mockReturnValue("old-secret");
     env.bookingApiKeySecondary.mockReturnValue("new-secret");
     const res = await post("Bearer new-secret", VALID_BODY);
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
   });
 
   it("trips 429 when the per-key ceiling is exceeded", async () => {
@@ -103,10 +127,32 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     expect(await res.json()).toMatchObject({ fieldErrors: { email: expect.any(String) } });
   });
 
-  it("returns 501 for a valid, in-budget call until the body is implemented", async () => {
+  it("returns 200 with the booking on a created/deduped/rescheduled outcome", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    for (const outcome of ["created", "deduped", "rescheduled"]) {
+      service.bookViaApi.mockResolvedValue(result(outcome));
+      const res = await post("Bearer real-secret", VALID_BODY);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        outcome,
+        booking: { id: "bk-1", externalId: "lead-abc-123" },
+      });
+    }
+  });
+
+  it("returns 409 on confirm_required so the bot can ask the lead first", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockResolvedValue(result("confirm_required"));
     const res = await post("Bearer real-secret", VALID_BODY);
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({ code: "NOT_IMPLEMENTED" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ outcome: "confirm_required" });
+  });
+
+  it("maps a slot-taken error to 409 and a verify outage to 503", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    expect((await post("Bearer real-secret", VALID_BODY)).status).toBe(409);
+    service.bookViaApi.mockRejectedValueOnce(new service.VerifyUnavailableError("outage"));
+    expect((await post("Bearer real-secret", VALID_BODY)).status).toBe(503);
   });
 });

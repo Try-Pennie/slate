@@ -9,11 +9,13 @@ import {
   cancelBooking,
   completePastBookings,
   reassignBooking,
+  bookViaApi,
   SlotUnavailableError,
   VerifyUnavailableError,
   type BookingDeps,
   type BookingContext,
   type CreateBookingInput,
+  type ApiBookingInput,
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType, User } from "../src/lib/db/types.ts";
 
@@ -85,6 +87,7 @@ interface FakeOpts {
   rescheduleLocked?: boolean; // a concurrent reschedule already holds the lock
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
+  personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -198,6 +201,7 @@ function makeDeps(opts: FakeOpts) {
       ),
     loadBookingContext: async () => opts.existing ?? null,
     loadBookingById: async () => opts.bookingById ?? null,
+    findActiveBookingsForPerson: async () => opts.personBookings ?? [],
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
     emitWebhook: async (_orgId, event, payload) => {
@@ -657,6 +661,109 @@ async function run() {
       calls.createEvent.length === 0 && calls.updateBooking.length === 0 && calls.webhooks.length === 0,
       "reassign: no-op when already the owning agent",
     );
+  }
+
+  // --- bookViaApi: no existing appointment -> create (#357) ---
+  {
+    const apiInput: ApiBookingInput = { ...input, externalId: "ext-new", confirmReschedule: false };
+    const { deps, calls } = makeDeps({ personBookings: [] });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "created", "bookViaApi: no match -> created");
+    assert(calls.createEvent.length === 1, "bookViaApi create: a calendar event was created");
+  }
+
+  // --- bookViaApi: same person, SAME slot -> dedupe (no new booking) ---
+  {
+    const existingB = makeBooking({ id: "bk-existing", external_id: "ext-1", manage_token: "tokX" });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: existingB.starts_at,
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({ personBookings: [existingB] });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "deduped", "bookViaApi: external_id + same slot -> deduped");
+    assert(res.booking.id === "bk-existing", "bookViaApi dedupe: returns the existing booking");
+    assert(calls.createEvent.length === 0, "bookViaApi dedupe: creates no new calendar event");
+  }
+
+  // --- bookViaApi: same person (strong id), DIFFERENT time -> auto-reschedule ---
+  {
+    const existingB = makeBooking({ id: "bk-existing", external_id: "ext-1", starts_at: "2026-06-08T13:00:00.000Z" });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: "2026-06-09T14:00:00.000Z",
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({
+      personBookings: [existingB],
+      existing: { booking: existingB, bucket, eventType },
+    });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "rescheduled", "bookViaApi: strong match + new time -> rescheduled");
+    assert(
+      res.booking.starts_at === "2026-06-09T14:00:00.000Z",
+      "bookViaApi reschedule: moved to the requested time",
+    );
+    assert(
+      calls.webhooks.some((w) => w.event === "booking.rescheduled"),
+      "bookViaApi reschedule: emits booking.rescheduled",
+    );
+  }
+
+  // --- bookViaApi: WEAK match (email only), different time -> confirm_required ---
+  {
+    const existingB = makeBooking({
+      id: "bk-existing",
+      external_id: null,
+      salesforce_id: "sf-other",
+      attendee_email: "k@x.com",
+      attendee_phone: "+19999999999",
+      starts_at: "2026-06-08T13:00:00.000Z",
+    });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: "2026-06-09T14:00:00.000Z",
+      externalId: "ext-new",
+      salesforceId: "sf-different",
+      attendee: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({ personBookings: [existingB] });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "confirm_required", "bookViaApi: weak match + new time -> confirm_required");
+    assert(
+      calls.createEvent.length === 0 && calls.updateBooking.length === 0,
+      "bookViaApi confirm_required: makes NO changes (no silent move of the wrong person)",
+    );
+  }
+
+  // --- bookViaApi: WEAK match but bot confirmed -> reschedule ---
+  {
+    const existingB = makeBooking({
+      id: "bk-existing",
+      external_id: null,
+      salesforce_id: "sf-other",
+      attendee_email: "k@x.com",
+      attendee_phone: "+19999999999",
+      starts_at: "2026-06-08T13:00:00.000Z",
+    });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: "2026-06-09T14:00:00.000Z",
+      externalId: "ext-new",
+      salesforceId: "sf-different",
+      attendee: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
+      confirmReschedule: true,
+    };
+    const { deps } = makeDeps({
+      personBookings: [existingB],
+      existing: { booking: existingB, bucket, eventType },
+    });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "rescheduled", "bookViaApi: weak match + confirmReschedule -> rescheduled");
   }
 }
 
