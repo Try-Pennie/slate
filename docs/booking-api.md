@@ -125,6 +125,7 @@ Every failure returns `{ "error": "<message>", "code": "<CODE>" }` (plus
 | `code` | HTTP | Meaning | What to do |
 |---|---|---|---|
 | `VALIDATION` | 400 | Bad request body | Fix the request; don't retry as-is. |
+| `NOT_FOUND` | 404 | Booking not found / not owned / not active (GET/DELETE only) | Check the booking id and ownership; booking may be cancelled or completed. |
 | `UNKNOWN_BUCKET` | 422 | Bucket code resolves to nothing | Config error — stop, escalate. |
 | `NO_ELIGIBLE_AGENTS` | 409 | Bucket has zero eligible agents | Config error (e.g. unsynced XBC) — stop, escalate. |
 | `SLOT_TAKEN` | 409 | The slot filled before booking | Re-query availability, pick another slot. |
@@ -158,3 +159,59 @@ alert.
 
 Retrying with the same `externalId` + slot is safe: the same call dedupes to the
 existing booking (`deduped`) rather than creating a second one.
+
+---
+
+## 3. Look up a booking — `GET /api/bookings/direct` (key-authed)
+
+Resolve a lead's booking(s) by the same `external_id` used to create them — no
+need to retain the per-booking manage token.
+
+```
+GET /api/bookings/direct?externalId=<id>                 # list active bookings
+GET /api/bookings/direct?externalId=<id>&bookingId=<id>  # one booking, any status
+GET /api/bookings/direct?externalId=<id>&bookingId=<id>&status=confirmed  # assert state
+```
+
+- `externalId` (required) — the lead's stable id (the Salesforce id). Optionally
+  pass `salesforceId` too; resolution is by **strong id only**.
+- `bookingId` (optional) — return just that booking. Without it, returns the
+  person's **active** bookings (`confirmed`/`rescheduled`).
+- `status` (optional, by-id only) — `confirmed` | `rescheduled` | `cancelled` |
+  `completed`. Returns the booking only if it is in that status, else `404`.
+
+Response (list): `{ "bookings": [ <booking>, ... ] }` — empty array if none.
+Response (by id): `{ "booking": <booking> }`.
+
+```jsonc
+// <booking>
+{
+  "id": "…",
+  "externalId": "…",
+  "salesforceId": "…",
+  "startsAt": "2026-07-01T15:00:00.000Z",
+  "endsAt":   "2026-07-01T15:30:00.000Z",
+  "status":   "confirmed",
+  "agent":    { "name": "…", "email": "…" },
+  "manageUrl": "https://…/booking/manage/<token>"
+}
+```
+
+By-id not found / not owned / status mismatch → `404 { "code": "NOT_FOUND" }`.
+
+## 4. Cancel a booking — `DELETE /api/bookings/direct` (key-authed)
+
+```
+DELETE /api/bookings/direct?externalId=<id>&bookingId=<uuid>
+```
+
+- Requires **`bookingId`** and a strong id (`externalId` **or** `salesforceId`).
+  The booking must be owned by that person and currently active.
+- Optional `reason` (a `CANCEL_REASONS` code; `other` needs `reasonDetail`);
+  defaults to `api_cancellation`. Recorded with initiator `customer`.
+
+Success → `200 { "outcome": "cancelled", "booking": <booking> }`. Deletes the
+Google event, frees the slot, and fires the `booking.cancelled` webhook.
+
+Not found / not owned / not active → `404 { "code": "NOT_FOUND" }` (a repeat
+cancel of an already-cancelled booking therefore returns `404`).
