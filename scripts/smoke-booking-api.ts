@@ -204,7 +204,11 @@ async function scenarioConfirm(slotsA: string[]) {
 async function scenarioLookupAndCancel(slotsA: string[]) {
   console.log("\n[4] GET list / GET by-id / GET by-id+status / DELETE by-id");
   const id = uniq("lookup");
-  const phone = "+12155550102";
+  // Unique phone per run too (not just externalId/email): a fixed phone lets a
+  // leftover active booking from an earlier run weak-match this seed and turn it
+  // into confirm_required, breaking the scenario. The 555-01xx range is reserved
+  // for test use; the run timestamp keeps each run's number distinct.
+  const phone = `+1215555${String(Date.now()).slice(-4)}`;
 
   const created = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone });
   check(created.status === 200 && created.body.outcome === "created", `seed booking -> created (got ${created.status}/${created.body.outcome})`);
@@ -213,6 +217,10 @@ async function scenarioLookupAndCancel(slotsA: string[]) {
     check(false, "seed booking returned a booking id (needed for lookup checks)");
     return;
   }
+  // Fallback cleanup: DELETE-by-id below is the primary cleanup, but if it fails
+  // (e.g. the endpoint isn't deployed yet) track the seed so the final cleanup()
+  // still cancels it instead of leaking an active booking into the next run.
+  trackForCleanup(created.body);
 
   // GET list — the booked person has at least one active booking.
   const listRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}`);
