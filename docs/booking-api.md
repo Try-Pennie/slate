@@ -215,3 +215,44 @@ Google event, frees the slot, and fires the `booking.cancelled` webhook.
 
 Not found / not owned / not active → `404 { "code": "NOT_FOUND" }` (a repeat
 cancel of an already-cancelled booking therefore returns `404`).
+
+## 5. Reschedule or move a booking — re-submit `POST /api/bookings/direct`
+
+There is **no separate reschedule endpoint** and you never need the per-booking
+manage token. To move a lead's appointment, re-submit the same booking with the
+new details: `POST /api/bookings/direct` with the **same `externalId`**, a new
+`start`, the same required attendee fields, and optionally a different
+`bucketCode`. The "one active appointment per person" engine recognises the
+returning lead by strong id and **moves the existing appointment** instead of
+creating a second one.
+
+```jsonc
+POST /api/bookings/direct
+Authorization: Bearer <key>
+{
+  "externalId": "lead-abc-123",   // same id as the original booking
+  "bucketCode": "411",            // same bucket = time change; different = move teams
+  "start": "2026-07-03T15:00:00Z",// the new time
+  "timezone": "America/New_York",
+  "attendee": { "name": "…", "email": "…", "phone": "…" }
+}
+```
+
+| You send | `outcome` | What happens |
+|---|---|---|
+| Same `bucketCode`, new `start` | `rescheduled` | The appointment's **time is shifted in place** (same agent/bucket). |
+| Different `bucketCode`, new `start` | `rescheduled` | The lead is **moved to the new team**: a fresh booking is created there and the old one cancelled (#364). |
+| Same `externalId`, same slot | `deduped` | No change — the existing booking is returned. |
+
+Because the bot always carries a strong id (`externalId`/`salesforceId`), a
+reschedule is **deterministic** — it never returns `confirm_required` (that
+outcome is only for weak email/phone-only matches). The move reuses the full
+reschedule path: verify-on-book, a history row, and the `booking.rescheduled`
+webhook (a cross-bucket move emits `booking.cancelled` + `booking.created`).
+Errors are the same `code`s as a normal create (`SLOT_TAKEN`,
+`VERIFY_UNAVAILABLE`, `UNKNOWN_BUCKET`, `NO_ELIGIBLE_AGENTS`, `VALIDATION`).
+
+> **Leads still self-serve via their manage link.** End-users reschedule or
+> cancel from the emailed `…/booking/manage/<token>` link without logging in —
+> that token-based flow is for humans and is unaffected by (and unnecessary for)
+> the key-authed bot, which acts by `externalId` instead.
