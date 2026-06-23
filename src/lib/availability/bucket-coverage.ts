@@ -20,16 +20,16 @@ export function emptyBuckets(coverage: BucketCoverage[]): string[] {
 }
 
 /**
- * Throttled-alert text for the proactive sweep, or null when every bucket has at
- * least one eligible agent (nothing to alert).
+ * Per-bucket proactive-alert text. The sweep sends ONE throttled alert per dead
+ * bucket (keyed by code) rather than a single combined alert, so two buckets
+ * going empty close together each surface under their own throttle instead of
+ * the second being suppressed by a shared key.
  */
-export function emptyBucketAlert(coverage: BucketCoverage[]): string | null {
-  const empty = emptyBuckets(coverage);
-  if (empty.length === 0) return null;
+export function emptyBucketMessage(code: string): string {
   return (
-    `Slate: ${empty.length} booking bucket(s) have NO eligible bookable agents and ` +
-    `cannot route a lead: ${empty.join(", ")}. Check agent attributes, bookable ` +
-    `flags, and schedules for these buckets before customers hit them.`
+    `Slate: booking bucket ${code} has NO eligible bookable agents and cannot ` +
+    `route a lead. Check its agent attributes, bookable flags, and schedules ` +
+    `before customers hit it.`
   );
 }
 

@@ -607,7 +607,8 @@ export function bookingFailureAlert(
   }
   if (err instanceof orchestration.NoEligibleAgentsError) {
     return {
-      key: NO_ELIGIBLE_AGENTS_ALERT_KEY,
+      // Per-bucket key so a second dead bucket isn't suppressed by the first's throttle.
+      key: `${NO_ELIGIBLE_AGENTS_ALERT_KEY}:${err.bucketCode ?? "unknown"}`,
       cooldownMs: NO_ELIGIBLE_AGENTS_COOLDOWN_MS,
       message: noEligibleAgentsAlert(err.bucketCode),
     };

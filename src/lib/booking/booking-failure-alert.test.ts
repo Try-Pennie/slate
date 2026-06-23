@@ -10,9 +10,10 @@ import {
 // alert (#319): which silent-outage failures warrant a throttled alert, and
 // which ordinary failures (a taken slot) do not.
 describe("bookingFailureAlert", () => {
-  it("alerts on a no-eligible-agents failure, naming the bucket", () => {
+  it("alerts on a no-eligible-agents failure, keyed + named per bucket", () => {
     const spec = bookingFailureAlert(new NoEligibleAgentsError("412"));
-    expect(spec?.key).toBe("no_eligible_agents");
+    // Per-bucket key so two dead buckets don't suppress each other's alert.
+    expect(spec?.key).toBe("no_eligible_agents:412");
     expect(spec?.message).toContain("412");
   });
 
