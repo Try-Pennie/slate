@@ -5,7 +5,7 @@
 // external_id (the bot's stable per-person id). Normalizes (trims, defaults
 // prefill) so the booking layer gets clean input.
 // Run: node --experimental-strip-types scripts/test-booking-api-request.ts
-import { parseDirectBookingRequest } from "../src/lib/booking/api-request.ts";
+import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery } from "../src/lib/booking/api-request.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -169,6 +169,32 @@ for (const body of [null, undefined, "string", 42, []]) {
     "an explicit salesforceId is kept as-is",
   );
 }
+
+// --- parseLookupQuery (#386) ---
+const lqOk = parseLookupQuery(new URLSearchParams("externalId=ext-1"));
+assert(lqOk.ok && lqOk.value.externalId === "ext-1" && lqOk.value.bookingId === null && lqOk.value.status === null,
+  "lookup: externalId only is valid, no bookingId/status");
+const lqMiss = parseLookupQuery(new URLSearchParams(""));
+assert(!lqMiss.ok && lqMiss.status === 400, "lookup: missing externalId = 400");
+const lqId = parseLookupQuery(new URLSearchParams("externalId=ext-1&bookingId=bk-7&status=confirmed"));
+assert(lqId.ok && lqId.value.bookingId === "bk-7" && lqId.value.status === "confirmed",
+  "lookup: bookingId + valid status parsed");
+const lqBadStatus = parseLookupQuery(new URLSearchParams("externalId=ext-1&status=pending"));
+assert(!lqBadStatus.ok && lqBadStatus.status === 400, "lookup: unknown status = 400");
+
+// --- parseCancelQuery (#386) ---
+const cqOk = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1"));
+assert(cqOk.ok && cqOk.value.bookingId === "bk-7" && cqOk.value.externalId === "ext-1" && cqOk.value.reason === null,
+  "cancel: bookingId + externalId valid, reason defaults null");
+const cqNoBooking = parseCancelQuery(new URLSearchParams("externalId=ext-1"));
+assert(!cqNoBooking.ok && cqNoBooking.status === 400, "cancel: missing bookingId = 400");
+const cqNoId = parseCancelQuery(new URLSearchParams("bookingId=bk-7"));
+assert(!cqNoId.ok && cqNoId.status === 400, "cancel: missing both ids = 400");
+const cqReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&salesforceId=sf-9&reason=no_longer_interested"));
+assert(cqReason.ok && cqReason.value.reason?.code === "no_longer_interested",
+  "cancel: valid reason code accepted");
+const cqBadReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1&reason=not_a_reason"));
+assert(!cqBadReason.ok && cqBadReason.status === 400, "cancel: invalid reason = 400");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
