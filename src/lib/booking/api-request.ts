@@ -25,6 +25,9 @@ export interface DirectBookingRequest {
   /** Set by the bot on a follow-up call after it asked the lead, so a
    *  low-confidence (single-field) person match may still auto-reschedule (#357). */
   confirmReschedule: boolean;
+  /** Dry run (#380): report what WOULD happen (routing + would-be agent) without
+   *  creating a calendar event, booking, or webhook. */
+  dryRun: boolean;
 }
 
 export type ParseResult =
@@ -48,6 +51,7 @@ const schema = z.object({
   // not an id. `.trim()` collapses "  " to "" so .min(1) rejects it.
   externalId: z.string().trim().min(1),
   confirmReschedule: z.boolean().default(false),
+  dryRun: z.boolean().default(false),
 });
 
 const INVALID = { ok: false as const, status: 400 as const, error: "Invalid request" };
@@ -100,6 +104,7 @@ export function parseDirectBookingRequest(raw: unknown): ParseResult {
       prefill: data.prefill,
       externalId: data.externalId,
       confirmReschedule: data.confirmReschedule,
+      dryRun: data.dryRun,
     },
   };
 }

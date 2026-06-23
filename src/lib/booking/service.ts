@@ -25,6 +25,7 @@ import * as orchestration from "@/lib/booking/orchestration";
 import type {
   ApiBookingInput,
   ApiBookingResult,
+  ApiBookingPreview,
   BookingContext,
   BookingDeps,
   BookingResult,
@@ -642,6 +643,15 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
  */
 export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
   return alertOnBookingFailure(() => orchestration.bookViaApi(input, realDeps()));
+}
+
+/**
+ * Dry run (#380): preview what an API booking would do without side effects.
+ * NOT wrapped in the outage alerting — a dry run is a test, not a real lead, so
+ * a dead-bucket preview shouldn't page anyone (the route still returns its code).
+ */
+export function previewBooking(input: ApiBookingInput): Promise<ApiBookingPreview> {
+  return orchestration.previewBooking(input, realDeps());
 }
 
 export function rescheduleBooking(

@@ -4,6 +4,7 @@ import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { parseDirectBookingRequest } from "@/lib/booking/api-request";
 import {
   bookViaApi,
+  previewBooking,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -57,6 +58,30 @@ export async function POST(req: NextRequest) {
   }
 
   const v = parsed.value;
+
+  // Dry run (#380): report what WOULD happen, no calendar event / booking / webhook.
+  if (v.dryRun) {
+    try {
+      const preview = await previewBooking({
+        bucketCode: v.bucketCode,
+        startIso: v.startIso,
+        timezone: v.timezone,
+        salesforceId: v.salesforceId,
+        attendee: v.attendee,
+        prefill: v.prefill,
+        externalId: v.externalId,
+        confirmReschedule: v.confirmReschedule,
+      });
+      return NextResponse.json(preview);
+    } catch (err) {
+      const { status, code } = mapBookingError(err);
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Preview failed", code },
+        { status },
+      );
+    }
+  }
+
   try {
     const result = await bookViaApi({
       bucketCode: v.bucketCode,

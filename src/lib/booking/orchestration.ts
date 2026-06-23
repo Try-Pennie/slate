@@ -498,6 +498,16 @@ export interface ApiBookingInput extends CreateBookingInput {
   confirmReschedule: boolean;
 }
 
+/** Read-only preview of what an API booking WOULD do (dry run, #380). */
+export interface ApiBookingPreview {
+  dryRun: true;
+  outcome: ApiBookingOutcome;
+  /** For a would-be create: the agent round-robin + verify-on-book would assign. */
+  wouldAssign: { id: string; name: string | null; email: string | null } | null;
+  /** For dedupe/reschedule/confirm: the existing booking the person matched. */
+  existingBookingId: string | null;
+}
+
 export type ApiBookingOutcome =
   | "created"
   | "deduped"
@@ -521,10 +531,11 @@ const API_REBOOK_REASON: ValidatedReason = { code: "api_rebooking", detail: null
  * EXISTING booking's time and keeps its bucket (a cross-bucket rebook is the
  * documented v1 edge — the original bucket wins).
  */
-export async function bookViaApi(
+/** Shared person-dedupe decision used by both the real book and the dry run. */
+async function resolvePersonDecision(
   input: ApiBookingInput,
   deps: BookingDeps,
-): Promise<ApiBookingResult> {
+) {
   const identity: PersonIdentity = {
     externalId: input.externalId,
     salesforceId: input.salesforceId ?? null,
@@ -533,11 +544,50 @@ export async function bookViaApi(
   };
   const candidates = await deps.findActiveBookingsForPerson(identity);
   const match = findPersonMatch(identity, candidates);
-  const decision = decidePersonBooking({
+  return decidePersonBooking({
     startIso: input.startIso,
     match,
     confirmReschedule: input.confirmReschedule,
   });
+}
+
+/**
+ * Dry run (#380): run the full decision — person match, and for a would-be
+ * create the real round-robin + verify-on-book — and report what WOULD happen,
+ * writing nothing (no calendar event, no booking, no webhook). Routing failures
+ * (e.g. NoEligibleAgentsError) still surface, so the caller can validate a bucket.
+ */
+export async function previewBooking(
+  input: ApiBookingInput,
+  deps: BookingDeps,
+): Promise<ApiBookingPreview> {
+  const decision = await resolvePersonDecision(input, deps);
+  if (decision.action === "create") {
+    const resolved = await deps.resolveBucketByCode(input.bucketCode);
+    if (!resolved) throw new UnknownBucketError();
+    const { startIso, endIso } = bookingWindow(
+      input.startIso,
+      resolved.eventType.duration_min,
+    );
+    const { userId } = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso);
+    const agent = await deps.getUser(userId);
+    return {
+      dryRun: true,
+      outcome: "created",
+      wouldAssign: { id: agent.id, name: agent.name, email: agent.email },
+      existingBookingId: null,
+    };
+  }
+  const outcome: ApiBookingOutcome =
+    decision.action === "dedupe" ? "deduped" : decision.action === "reschedule" ? "rescheduled" : "confirm_required";
+  return { dryRun: true, outcome, wouldAssign: null, existingBookingId: decision.booking.id };
+}
+
+export async function bookViaApi(
+  input: ApiBookingInput,
+  deps: BookingDeps,
+): Promise<ApiBookingResult> {
+  const decision = await resolvePersonDecision(input, deps);
 
   switch (decision.action) {
     case "create": {
