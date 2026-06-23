@@ -95,8 +95,10 @@ ends up double-booked, even across channels (an embed booking carries no
 silently moving the wrong person (shared household phone, recycled id).
 
 > A "different time" rebook **moves the existing appointment** rather than making
-> a second one. The reschedule keeps the original booking's bucket (a cross-bucket
-> rebook is a known v1 limitation; see #364).
+> a second one. If the rebook targets the **same bucket**, the appointment's time
+> is shifted in place. If it targets a **different bucket**, the lead is **moved to
+> the new bucket** (a fresh booking is created there and the old one is cancelled),
+> so they route to the team matching their new request (#364).
 
 ### Success / confirm response
 

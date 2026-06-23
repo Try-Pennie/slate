@@ -551,6 +551,19 @@ export async function bookViaApi(
         manageUrl: manageUrl(deps, decision.booking.manage_token),
       };
     case "reschedule": {
+      // #364: if the rebook targets a DIFFERENT bucket than the existing
+      // appointment, move the lead to the new bucket rather than just shifting
+      // the time within the original one (so they route to the team matching
+      // their new request).
+      const resolved = await deps.resolveBucketByCode(input.bucketCode);
+      if (!resolved) throw new UnknownBucketError();
+      if (resolved.bucket.id !== decision.booking.bucket_id) {
+        // Create in the new bucket FIRST so a failure (e.g. no eligible agents
+        // there) leaves the existing appointment intact, THEN cancel the old.
+        const created = await createBooking(input, deps);
+        await cancelBooking(decision.booking.manage_token, API_REBOOK_REASON, "system", deps);
+        return { outcome: "rescheduled", booking: created.booking, manageUrl: created.manageUrl };
+      }
       const res = await rescheduleBooking(
         decision.booking.manage_token,
         input.startIso,
