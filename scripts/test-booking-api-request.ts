@@ -71,6 +71,19 @@ for (const start of ["not-a-date", "", "2026-13-45T99:99:99Z"]) {
   assert(r.ok === false && r.status === 400, `unparseable start ${JSON.stringify(start)} -> 400`);
 }
 
+// --- start must carry an explicit timezone offset (#358): a bare local time
+// would be read as server time and could book the wrong hour. ---
+for (const start of ["2026-07-01T15:00:00", "2026-07-01T15:00:00.000", "2026-07-01"]) {
+  const r = parseDirectBookingRequest({ ...valid, start });
+  assert(r.ok === false && r.status === 400, `zoneless start ${JSON.stringify(start)} -> 400`);
+}
+for (const start of ["2026-07-01T15:00:00Z", "2026-07-01T15:00:00-04:00", "2026-07-01T15:00:00+0000"]) {
+  assert(
+    parseDirectBookingRequest({ ...valid, start }).ok === true,
+    `start with explicit offset ${JSON.stringify(start)} is accepted`,
+  );
+}
+
 // --- strict attendee: all three required, with field-level errors ---
 {
   const noEmail = parseDirectBookingRequest({

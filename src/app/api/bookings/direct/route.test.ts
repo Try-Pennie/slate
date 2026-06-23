@@ -14,7 +14,15 @@ const rateLimit = vi.hoisted(() => ({ allowRequest: vi.fn(async () => true) }));
 const service = vi.hoisted(() => {
   class SlotUnavailableError extends Error {}
   class VerifyUnavailableError extends Error {}
-  return { bookViaApi: vi.fn(), SlotUnavailableError, VerifyUnavailableError };
+  class NoEligibleAgentsError extends Error {}
+  class UnknownBucketError extends Error {}
+  return {
+    bookViaApi: vi.fn(),
+    SlotUnavailableError,
+    VerifyUnavailableError,
+    NoEligibleAgentsError,
+    UnknownBucketError,
+  };
 });
 
 vi.mock("@/lib/env", () => env);
@@ -148,11 +156,28 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     expect(await res.json()).toMatchObject({ outcome: "confirm_required" });
   });
 
-  it("maps a slot-taken error to 409 and a verify outage to 503", async () => {
+  it("maps each booking error to a stable status + machine code", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-    service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
-    expect((await post("Bearer real-secret", VALID_BODY)).status).toBe(409);
-    service.bookViaApi.mockRejectedValueOnce(new service.VerifyUnavailableError("outage"));
-    expect((await post("Bearer real-secret", VALID_BODY)).status).toBe(503);
+    const cases: [Error, number, string][] = [
+      [new service.UnknownBucketError("nope"), 422, "UNKNOWN_BUCKET"],
+      [new service.NoEligibleAgentsError("empty"), 409, "NO_ELIGIBLE_AGENTS"],
+      [new service.SlotUnavailableError("taken"), 409, "SLOT_TAKEN"],
+      [new service.VerifyUnavailableError("outage"), 503, "VERIFY_UNAVAILABLE"],
+      [new Error("boom"), 500, "INTERNAL"],
+    ];
+    for (const [err, status, code] of cases) {
+      service.bookViaApi.mockRejectedValueOnce(err);
+      const res = await post("Bearer real-secret", VALID_BODY);
+      expect(res.status).toBe(status);
+      expect(await res.json()).toMatchObject({ code });
+    }
+  });
+
+  it("tags an invalid body with the VALIDATION code", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const { externalId: _drop, ...noExternalId } = VALID_BODY;
+    const res = await post("Bearer real-secret", noExternalId);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "VALIDATION" });
   });
 });

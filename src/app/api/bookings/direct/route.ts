@@ -6,6 +6,8 @@ import {
   bookViaApi,
   SlotUnavailableError,
   VerifyUnavailableError,
+  NoEligibleAgentsError,
+  UnknownBucketError,
 } from "@/lib/booking/service";
 import { allowRequest } from "@/lib/rate-limit";
 import { DIRECT_BOOKING_API_RATE_RULES } from "@/lib/rate-limit-core";
@@ -48,8 +50,8 @@ export async function POST(req: NextRequest) {
   if (!parsed.ok) {
     return NextResponse.json(
       parsed.fieldErrors
-        ? { error: parsed.error, fieldErrors: parsed.fieldErrors }
-        : { error: parsed.error },
+        ? { error: parsed.error, code: "VALIDATION", fieldErrors: parsed.fieldErrors }
+        : { error: parsed.error, code: "VALIDATION" },
       { status: parsed.status },
     );
   }
@@ -86,16 +88,27 @@ export async function POST(req: NextRequest) {
     const status = result.outcome === "confirm_required" ? 409 : 200;
     return NextResponse.json(body, { status });
   } catch (err) {
-    // Interim error mapping; the full machine-readable error contract is #358.
-    if (err instanceof VerifyUnavailableError) {
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    if (err instanceof SlotUnavailableError) {
-      return NextResponse.json({ error: err.message }, { status: 409 });
-    }
+    const { status, code } = mapBookingError(err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Booking failed" },
-      { status: 500 },
+      { error: err instanceof Error ? err.message : "Booking failed", code },
+      { status },
     );
   }
+}
+
+/**
+ * Stable, machine-readable error contract (#358) so the bot can act on the
+ * outcome without parsing prose: a config error (UNKNOWN_BUCKET /
+ * NO_ELIGIBLE_AGENTS) means stop retrying and escalate; SLOT_TAKEN means pick
+ * another slot; VERIFY_UNAVAILABLE is transient (retry); INTERNAL is unexpected.
+ */
+function mapBookingError(err: unknown): {
+  status: number;
+  code: "UNKNOWN_BUCKET" | "NO_ELIGIBLE_AGENTS" | "SLOT_TAKEN" | "VERIFY_UNAVAILABLE" | "INTERNAL";
+} {
+  if (err instanceof UnknownBucketError) return { status: 422, code: "UNKNOWN_BUCKET" };
+  if (err instanceof NoEligibleAgentsError) return { status: 409, code: "NO_ELIGIBLE_AGENTS" };
+  if (err instanceof SlotUnavailableError) return { status: 409, code: "SLOT_TAKEN" };
+  if (err instanceof VerifyUnavailableError) return { status: 503, code: "VERIFY_UNAVAILABLE" };
+  return { status: 500, code: "INTERNAL" };
 }

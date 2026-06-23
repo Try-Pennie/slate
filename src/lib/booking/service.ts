@@ -185,6 +185,8 @@ async function checkAgentFree(
 export {
   SlotUnavailableError,
   VerifyUnavailableError,
+  NoEligibleAgentsError,
+  UnknownBucketError,
 } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
 
