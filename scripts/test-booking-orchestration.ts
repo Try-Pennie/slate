@@ -14,6 +14,8 @@ import {
   lookupPersonBookings,
   getPersonBookingById,
   cancelDirectBooking,
+  processPendingEventDeletions,
+  PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
   SlotUnavailableError,
   VerifyUnavailableError,
@@ -23,6 +25,7 @@ import {
   type BookingContext,
   type CreateBookingInput,
   type ApiBookingInput,
+  type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType, User } from "../src/lib/db/types.ts";
 
@@ -97,6 +100,7 @@ interface FakeOpts {
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
   unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
   deleteEventThrows?: boolean;
+  pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -127,6 +131,8 @@ function makeDeps(opts: FakeOpts) {
     releaseReschedule: 0,
     invalidateSlots: [] as string[],
     roundRobinPreview: [] as (boolean | undefined)[],
+    removePendingEventDeletion: [] as string[],
+    bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
   };
   let seq = 0;
   let insertAttempted = false;
@@ -230,6 +236,9 @@ function makeDeps(opts: FakeOpts) {
     invalidateSlots: async (bucketCode) => {
       calls.invalidateSlots.push(bucketCode);
     },
+    loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
+    removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
+    bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },
   };
   return { deps, calls };
 }
@@ -1007,6 +1016,27 @@ async function run() {
       );
     } catch (e) { threw = e instanceof BookingNotFoundError; }
     assert(threw, "cancel of a non-active booking → BookingNotFoundError");
+  }
+
+  // --- #401 drain ---
+  {
+    const rows: PendingEventDeletion[] = [
+      { id: "p1", calendar_email: "a@x.com", gcal_event_id: "e1", booking_id: null, attempts: 0, last_error: null, created_at: "2026-06-23T00:00:00.000Z", updated_at: "2026-06-23T00:00:00.000Z" },
+      { id: "p2", calendar_email: "b@x.com", gcal_event_id: "e2", booking_id: null, attempts: 0, last_error: null, created_at: "2026-06-23T00:00:00.000Z", updated_at: "2026-06-23T00:00:00.000Z" },
+    ];
+    const { deps, calls } = makeDeps({ pending: rows }); // deleteEvent succeeds
+    const res = await processPendingEventDeletions(deps, 50);
+    assert(res.deleted === 2 && res.failed === 0, "drain deletes all and removes them");
+    assert(calls.removePendingEventDeletion.length === 2, "successful deletes remove the rows");
+  }
+  {
+    const rows: PendingEventDeletion[] = [{ id: "p3", calendar_email: "a@x.com", gcal_event_id: "e3", booking_id: null, attempts: PENDING_DELETION_ALERT_AFTER - 1, last_error: "x", created_at: "2026-06-23T00:00:00.000Z", updated_at: "2026-06-23T00:00:00.000Z" }];
+    const { deps, calls } = makeDeps({ pending: rows, deleteEventThrows: true });
+    const res = await processPendingEventDeletions(deps, 50);
+    assert(res.failed === 1 && res.deleted === 0, "a failing delete is counted, not removed");
+    assert(calls.bumpPendingEventDeletion[0].attempts === PENDING_DELETION_ALERT_AFTER, "bump records attempts+1");
+    assert(res.stuck.length === 1, "a row crossing the alert threshold is reported as stuck");
+    assert(calls.removePendingEventDeletion.length === 0, "a failing delete is NOT removed");
   }
 }
 

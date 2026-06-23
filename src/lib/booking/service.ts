@@ -295,6 +295,23 @@ function realDeps(): BookingDeps {
           { onConflict: "calendar_email,gcal_event_id", ignoreDuplicates: true },
         );
     },
+    loadPendingEventDeletions: async (limit) => {
+      const { data } = await supabaseAdmin()
+        .from("pending_event_deletions")
+        .select("*")
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      return (data ?? []) as orchestration.PendingEventDeletion[];
+    },
+    removePendingEventDeletion: async (id) => {
+      await supabaseAdmin().from("pending_event_deletions").delete().eq("id", id);
+    },
+    bumpPendingEventDeletion: async (id, attempts, error) => {
+      await supabaseAdmin()
+        .from("pending_event_deletions")
+        .update({ attempts, last_error: error })
+        .eq("id", id);
+    },
     updateEventTime,
     emitWebhook,
     appBaseUrl: appUrl,

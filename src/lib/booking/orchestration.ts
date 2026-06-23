@@ -30,10 +30,13 @@ import type {
   BookingStatus,
   Bucket,
   EventType,
+  PendingEventDeletion,
   RoutingTrace,
   User,
   WebhookEvent,
 } from "@/lib/db/types";
+
+export type { PendingEventDeletion };
 
 /**
  * Booking orchestration (create / reschedule / cancel / complete), split out
@@ -224,6 +227,12 @@ export interface BookingDeps {
   deleteEvent(email: string, eventId: string): Promise<void>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
+  /** #401: load pending event deletions for the retry drain. */
+  loadPendingEventDeletions(limit: number): Promise<PendingEventDeletion[]>;
+  /** #401: remove a successfully-deleted pending event deletion row. */
+  removePendingEventDeletion(id: string): Promise<void>;
+  /** #401: bump the attempt count and record the error for a failed deletion. */
+  bumpPendingEventDeletion(id: string, attempts: number, error: string): Promise<void>;
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
@@ -280,6 +289,38 @@ export interface BookingDeps {
   appBaseUrl(): string;
   /** Best-effort clear of a bucket's cached availability after a booking changes it. */
   invalidateSlots(bucketCode: string): Promise<void>;
+}
+
+/** Alert once a queued deletion has failed this many times. */
+export const PENDING_DELETION_ALERT_AFTER = 5;
+
+/**
+ * Drain a batch of the deletion retry queue (#401): re-attempt each delete;
+ * remove on success (404/410 already-gone counts as success); on failure bump
+ * the attempt count and report rows that crossed the alert threshold. Pure —
+ * the caller (sync lane) sends the throttled alert for `stuck`.
+ */
+export async function processPendingEventDeletions(
+  deps: BookingDeps,
+  limit: number,
+): Promise<{ deleted: number; failed: number; stuck: PendingEventDeletion[] }> {
+  const rows = await deps.loadPendingEventDeletions(limit);
+  let deleted = 0;
+  let failed = 0;
+  const stuck: PendingEventDeletion[] = [];
+  for (const row of rows) {
+    try {
+      await deps.deleteEvent(row.calendar_email, row.gcal_event_id);
+      await deps.removePendingEventDeletion(row.id);
+      deleted++;
+    } catch (err) {
+      const attempts = row.attempts + 1;
+      await deps.bumpPendingEventDeletion(row.id, attempts, err instanceof Error ? err.message : String(err));
+      failed++;
+      if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
+    }
+  }
+  return { deleted, failed, stuck };
 }
 
 /**
