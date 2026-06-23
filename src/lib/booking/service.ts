@@ -287,6 +287,14 @@ function realDeps(): BookingDeps {
     },
     createEvent,
     deleteEvent,
+    enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
+      await supabaseAdmin()
+        .from("pending_event_deletions")
+        .upsert(
+          { calendar_email: calendarEmail, gcal_event_id: gcalEventId, booking_id: bookingId },
+          { onConflict: "calendar_email,gcal_event_id", ignoreDuplicates: true },
+        );
+    },
     updateEventTime,
     emitWebhook,
     appBaseUrl: appUrl,

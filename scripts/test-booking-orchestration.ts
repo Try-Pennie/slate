@@ -96,6 +96,7 @@ interface FakeOpts {
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
   unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
+  deleteEventThrows?: boolean;
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -104,6 +105,7 @@ function makeDeps(opts: FakeOpts) {
     verifyFree: [] as string[][],
     createEvent: [] as { email: string }[],
     deleteEvent: [] as { id: string }[],
+    enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     deleteBusyBlocks: [] as string[],
@@ -154,7 +156,11 @@ function makeDeps(opts: FakeOpts) {
       return `gcal-${++seq}`;
     },
     deleteEvent: async (_email, id) => {
+      if (opts.deleteEventThrows) throw new Error("google 503");
       calls.deleteEvent.push({ id });
+    },
+    enqueueEventDeletion: async (email, eventId, bookingId) => {
+      calls.enqueueEventDeletion.push({ email, eventId, bookingId });
     },
     updateEventTime: async (_email, id) => {
       calls.updateEventTime.push({ id });
@@ -954,6 +960,25 @@ async function run() {
       );
     } catch (e) { threw = e instanceof BookingNotFoundError; }
     assert(threw, "get-by-id missing booking → BookingNotFoundError");
+  }
+
+  // --- #401: cancel enqueues the event deletion when Google delete fails ---
+  {
+    const bk = makeBooking({ id: "bkX", status: "confirmed", gcal_event_id: "gE", agent_email: "a@x.com" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, deleteEventThrows: true });
+    await cancelBooking("tok1", CR, "customer", deps);
+    assert(calls.enqueueEventDeletion.length === 1, "cancel enqueues a deletion when deleteEvent fails");
+    assert(calls.enqueueEventDeletion[0].eventId === "gE" && calls.enqueueEventDeletion[0].bookingId === "bkX",
+      "enqueue carries the event id + booking id");
+  }
+  {
+    // success path: no enqueue
+    const bk = makeBooking({ id: "bkY", status: "confirmed", gcal_event_id: "gE2", agent_email: "a@x.com" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    await cancelBooking("tok1", CR, "customer", deps);
+    assert(calls.enqueueEventDeletion.length === 0, "cancel does NOT enqueue when deleteEvent succeeds");
   }
 
   // --- cancelDirectBooking (#386) ---

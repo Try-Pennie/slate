@@ -97,6 +97,22 @@ export class BookingNotFoundError extends Error {
   }
 }
 
+/** Delete a calendar event, and if the delete FAILS, enqueue it for the retry
+ *  drain (#401) instead of silently dropping it. Never throws to the caller —
+ *  the booking flow proceeds; the queue is the durable net. */
+async function deleteEventBestEffort(
+  deps: BookingDeps,
+  email: string,
+  eventId: string,
+  bookingId: string | null,
+): Promise<void> {
+  try {
+    await deps.deleteEvent(email, eventId);
+  } catch {
+    await deps.enqueueEventDeletion(email, eventId, bookingId).catch(() => {});
+  }
+}
+
 export interface CreateBookingInput {
   bucketCode: string;
   startIso: string;
@@ -206,6 +222,8 @@ export interface BookingDeps {
   ): Promise<VerifyResult>;
   createEvent(email: string, args: CreateEventArgs): Promise<string>;
   deleteEvent(email: string, eventId: string): Promise<void>;
+  /** #401: record a Google event deletion that failed, for the retry drain. */
+  enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
@@ -484,7 +502,7 @@ export async function createBooking(
 
   if (!inserted.ok) {
     // Roll back the calendar event so we don't orphan a hold.
-    await deps.deleteEvent(email, gcalEventId).catch(() => {});
+    await deleteEventBestEffort(deps, email, gcalEventId, null);
     if (inserted.conflict) {
       // Either a concurrent duplicate of THIS submit won the idempotency race
       // (return their booking), or a different attendee took the slot first
@@ -827,7 +845,7 @@ async function applyReschedule(
     agentName = newAgent.name;
     agentEmail = newAgent.email;
     if (currentEmail && booking.gcal_event_id) {
-      await deps.deleteEvent(currentEmail, booking.gcal_event_id).catch(() => {});
+      await deleteEventBestEffort(deps, currentEmail, booking.gcal_event_id, booking.id);
     }
     const newEventId = await deps.createEvent(next.email, {
       summary: `${eventType.name}${
@@ -925,7 +943,7 @@ export async function reassignBooking(
   // Move the calendar event to the owning agent at the same time. No free check:
   // this path intentionally double-books, gated only by `allow_double_book`.
   if (booking.agent_email && booking.gcal_event_id) {
-    await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
+    await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
   }
   const newEventId = await deps.createEvent(agent.email, {
     summary: `${eventType.name}${
@@ -1045,7 +1063,7 @@ export async function cancelBooking(
   }
 
   if (booking.agent_email && booking.gcal_event_id) {
-    await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
+    await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
   }
 
   await deps.deleteBusyBlocksForBooking(booking.id);
