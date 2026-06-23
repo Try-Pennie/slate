@@ -256,3 +256,25 @@ Errors are the same `code`s as a normal create (`SLOT_TAKEN`,
 > cancel from the emailed `…/booking/manage/<token>` link without logging in —
 > that token-based flow is for humans and is unaffected by (and unnecessary for)
 > the key-authed bot, which acts by `externalId` instead.
+
+---
+
+## Ops: Clearing existing orphaned events (#401)
+
+When a booking is cancelled Slate now enqueues the Google Calendar event for
+deletion and retries on each sync tick. For bookings that were cancelled
+**before** this queue existed, run the following SQL once in Supabase to seed
+the retry queue from already-cancelled bookings. The next sync tick(s) will
+delete the events idempotently — no local Google credentials required.
+
+```sql
+insert into pending_event_deletions (calendar_email, gcal_event_id, booking_id)
+select agent_email, gcal_event_id, id
+from bookings
+where status = 'cancelled' and gcal_event_id is not null and agent_email is not null
+  and starts_at > now() - interval '14 days'
+on conflict (calendar_email, gcal_event_id) do nothing;
+```
+
+This is a queue-seed only (DB write, no Google calls). The deployed drain in the
+sync cron handles the actual deletions.

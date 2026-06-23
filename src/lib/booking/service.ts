@@ -789,3 +789,19 @@ export function completePastBookings(): Promise<number> {
 export function getBookingByToken(token: string): Promise<BookingContext | null> {
   return orchestration.getBookingByToken(token, realDeps());
 }
+
+const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";
+const PENDING_DELETION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/** #401: drain the deletion retry queue and alert if any deletion is stuck. */
+export async function processPendingEventDeletions(limit: number) {
+  const res = await orchestration.processPendingEventDeletions(realDeps(), limit);
+  if (res.stuck.length > 0) {
+    await sendThrottledAlert(
+      PENDING_DELETION_ALERT_KEY,
+      PENDING_DELETION_ALERT_COOLDOWN_MS,
+      `Slate: ${res.stuck.length} calendar event deletion(s) have failed ${orchestration.PENDING_DELETION_ALERT_AFTER}+ times and may be firing orphaned reminders. Check Google Calendar API health. Event ids: ${res.stuck.slice(0, 5).map((r) => r.gcal_event_id).join(", ")}`,
+    ).catch(() => {});
+  }
+  return res;
+}
