@@ -15,6 +15,7 @@ import {
   bucketsDueForRecompute,
   staleBuckets,
   recomputeHeadroom,
+  recomputeDueBuckets,
 } from "@/lib/availability/precompute-cron";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +30,11 @@ const RECOMPUTE_FRESH_MS = 4 * 60_000;
 const STALE_ALARM_MS = 6 * 60_000;
 // Hard per-tick cap so a slow run can't overrun the lock TTL.
 const RECOMPUTE_BUDGET_MS = 50_000;
+// Recompute buckets in bounded-concurrency waves (the recompute is DB-only) so
+// the lane drains its due set within budget at fleet scale (#297) — the old
+// one-at-a-time loop fell ~1 bucket behind per cycle once ~110 agents were live.
+// 6 matches the Cloudflare simultaneous-connection bound used elsewhere.
+const RECOMPUTE_CONCURRENCY = 6;
 const STALE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const HEADROOM_ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000; // at most every 2h
 // "Falling behind" = a cycle couldn't drain its due set within budget. A single
@@ -102,12 +108,12 @@ export async function GET(req: NextRequest) {
     const due = bucketsDueForRecompute(known, allCodes, Date.now(), RECOMPUTE_FRESH_MS);
     const startedMs = Date.now();
     const deadlineMs = startedMs + RECOMPUTE_BUDGET_MS;
-    let recomputed = 0;
-    for (const code of due) {
-      if (!withinBudget(Date.now(), deadlineMs)) break;
-      await recomputeBucketSlotsForToday(code, true);
-      recomputed++;
-    }
+    const recomputed = await recomputeDueBuckets(
+      due,
+      (code) => recomputeBucketSlotsForToday(code, true),
+      () => withinBudget(Date.now(), deadlineMs),
+      RECOMPUTE_CONCURRENCY,
+    );
     const runMs = Date.now() - startedMs;
 
     const headroom = recomputeHeadroom(runMs, RECOMPUTE_BUDGET_MS, due.length, recomputed);

@@ -102,3 +102,41 @@ export function recomputeHeadroom(
     warn: !drained,
   };
 }
+
+/**
+ * Drain the due-bucket set in BOUNDED-CONCURRENCY waves within the time budget.
+ * The recompute is DB-only (reads the busy_blocks cache + schedules, no live
+ * Google), so several buckets recompute safely at once — which keeps the lane
+ * draining the due set at fleet scale (#297) instead of the old one-at-a-time
+ * loop that fell ~1 bucket behind per cycle once ~110 agents were live.
+ *
+ * Budget is checked BEFORE each wave (so it never overruns by more than one
+ * wave), and a single bucket's failure is isolated (logged, not counted) rather
+ * than aborting the whole cycle. Returns how many buckets were refreshed. Pure
+ * (injected `recompute` + `withinBudget`) so it's unit-tested without IO.
+ */
+export async function recomputeDueBuckets(
+  due: string[],
+  recompute: (code: string) => Promise<void>,
+  withinBudget: () => boolean,
+  concurrency: number,
+): Promise<number> {
+  let recomputed = 0;
+  for (let i = 0; i < due.length; i += concurrency) {
+    if (!withinBudget()) break;
+    const wave = due.slice(i, i + concurrency);
+    const results = await Promise.allSettled(wave.map((code) => recompute(code)));
+    results.forEach((r, j) => {
+      if (r.status === "fulfilled") {
+        recomputed++;
+      } else {
+        console.error(
+          `recompute failed for bucket ${wave[j]}: ${
+            r.reason instanceof Error ? r.reason.message : r.reason
+          }`,
+        );
+      }
+    });
+  }
+  return recomputed;
+}
