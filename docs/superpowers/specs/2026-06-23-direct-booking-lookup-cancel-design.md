@@ -33,6 +33,21 @@ error) so the three handlers don't duplicate it.
 | `?externalId=<id>` (optionally `&salesforceId=<id>`) | **List** the person's **active** bookings (`confirmed`/`rescheduled`). |
 | `?externalId=<id>&bookingId=<uuid>` | Return **that one** booking, **any status** (so the bot can poll a cancelled/completed booking's status). |
 
+**Optional `status` filter** (by-id mode only): an optional `&status=<value>`
+query param where value is a real booking status (`confirmed`, `rescheduled`,
+`cancelled`, `completed`). It lets the bot *assert* a state — e.g. "is booking
+123 still an upcoming `confirmed` appointment?".
+
+- **By-id with `status`:** return the booking only if its status matches;
+  otherwise `404 NOT_FOUND` (the answer to "is it still confirmed?" is "no").
+- **By-id without `status`:** return the booking at any status.
+- An unrecognized `status` value → `400 VALIDATION`.
+- The status filter applies to **by-id only**. List mode always returns the
+  active set (`confirmed`/`rescheduled`) — broader cross-status / cross-person
+  filtering is the separate list-bookings endpoint (#392), out of scope here.
+  This keeps by-id on a single `loadBookingById` + in-memory status compare (no
+  new query path).
+
 - Person resolution uses `findActiveBookingsForPerson` with **only the strong
   identifiers** (`externalId`, optional `salesforceId`) set — every returned row
   is therefore a strong-id match, so a shared email/phone can never surface
@@ -89,9 +104,10 @@ List mode returns `{ "bookings": [ <item>, ... ] }`; by-id mode returns
 ### Pure (testable under `node --experimental-strip-types`)
 
 - `parseLookupQuery(params: URLSearchParams)` in `api-request.ts` — requires
-  `externalId` (trim, min 1); optional `salesforceId`, `bookingId`. Returns
-  `{ ok, value: { externalId, salesforceId, bookingId } } | { ok:false,
-  status:400, error, code:"VALIDATION" }`.
+  `externalId` (trim, min 1); optional `salesforceId`, `bookingId`, and `status`
+  (must be a valid booking status, else `400 VALIDATION`; only meaningful with
+  `bookingId`). Returns `{ ok, value: { externalId, salesforceId, bookingId,
+  status } } | { ok:false, status:400, error, code:"VALIDATION" }`.
 - `parseCancelQuery(params)` in `api-request.ts` — requires `bookingId` AND at
   least one of `externalId`/`salesforceId`; optional `reason` validated via the
   shared `validateReason("cancel", …)`. Same result union.
@@ -104,8 +120,9 @@ List mode returns `{ "bookings": [ <item>, ... ] }`; by-id mode returns
 - `class BookingNotFoundError extends Error` — maps to `404 NOT_FOUND`.
 - `lookupPersonBookings(identity, deps): Promise<Booking[]>` — thin wrapper over
   `deps.findActiveBookingsForPerson` (list mode).
-- `getPersonBookingById({ bookingId, identity }, deps): Promise<Booking>` — load
-  by id, throw `BookingNotFoundError` if missing or not owned (by-id mode).
+- `getPersonBookingById({ bookingId, identity, status }, deps): Promise<Booking>`
+  — load by id, throw `BookingNotFoundError` if missing, not owned, or (when a
+  `status` filter is supplied) status doesn't match (by-id mode).
 - `cancelDirectBooking({ bookingId, identity, reason }, deps): Promise<Booking>`
   — load by id; throw `BookingNotFoundError` if missing, not owned, or not
   active; else `cancelBooking(token, reason, "customer", deps)`; return the
