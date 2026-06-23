@@ -10,6 +10,7 @@ import {
   completePastBookings,
   reassignBooking,
   bookViaApi,
+  previewBooking,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -816,6 +817,47 @@ async function run() {
       calls.createEvent.length === 0 && calls.updateBooking.length === 0,
       "bookViaApi confirm_required: makes NO changes (no silent move of the wrong person)",
     );
+  }
+
+  // --- previewBooking (#380 dry run): preview WITHOUT any side effects ---
+  {
+    // No existing booking -> would create; returns the would-be agent, writes nothing.
+    const dry: ApiBookingInput = { ...input, externalId: "ext-dry", confirmReschedule: false };
+    const { deps, calls } = makeDeps({ personBookings: [] });
+    const preview = await previewBooking(dry, deps);
+    assert(preview.dryRun === true && preview.outcome === "created", "previewBooking: no match -> would create");
+    assert(preview.wouldAssign?.email === "a@x.com", "previewBooking: returns the agent who WOULD be assigned");
+    assert(
+      calls.createEvent.length === 0 && calls.webhooks.length === 0,
+      "previewBooking: creates NO calendar event and fires NO webhook",
+    );
+  }
+  {
+    // Existing same-slot match -> would dedupe; no routing, no writes.
+    const existingB = makeBooking({ id: "bk-existing", external_id: "ext-1", manage_token: "tokX" });
+    const dry: ApiBookingInput = {
+      ...input,
+      startIso: existingB.starts_at,
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({ personBookings: [existingB] });
+    const preview = await previewBooking(dry, deps);
+    assert(preview.outcome === "deduped", "previewBooking: same slot -> would dedupe");
+    assert(preview.existingBookingId === "bk-existing", "previewBooking dedupe: names the existing booking");
+    assert(calls.createEvent.length === 0, "previewBooking dedupe: no side effects");
+  }
+  {
+    // Empty pool -> the dry run still surfaces the routing failure.
+    const dry: ApiBookingInput = { ...input, externalId: "ext-dry2", confirmReschedule: false };
+    const { deps } = makeDeps({ personBookings: [], candidates: [] });
+    let err: unknown;
+    try {
+      await previewBooking(dry, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err instanceof NoEligibleAgentsError, "previewBooking: surfaces NoEligibleAgentsError for a dead bucket");
   }
 
   // --- bookViaApi: WEAK match but bot confirmed -> reschedule ---

@@ -141,6 +141,14 @@ for (const body of [null, undefined, "string", 42, []]) {
   assert(r.ok === false && r.status === 400, `non-object body ${JSON.stringify(body)} -> 400`);
 }
 
+// --- dryRun defaults false, accepts true (#380) ---
+{
+  const def = parseDirectBookingRequest(valid);
+  assert(def.ok === true && def.value.dryRun === false, "dryRun defaults to false");
+  const on = parseDirectBookingRequest({ ...valid, dryRun: true });
+  assert(on.ok === true && on.value.dryRun === true, "dryRun: true is accepted");
+}
+
 // --- salesforceId is optional -> null when absent ---
 {
   const { salesforceId: _omit, ...noSf } = valid;

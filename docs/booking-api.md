@@ -135,6 +135,25 @@ Every failure returns `{ "error": "<message>", "code": "<CODE>" }` (plus
 `SLOT_TAKEN` so a misconfigured bucket makes you **stop and escalate** instead of
 retrying a never-bookable slot forever.
 
+### Dry run (test mode)
+
+Add `"dryRun": true` to any request to preview **what would happen** without
+creating a calendar event, a booking, or firing a webhook. It runs the real
+routing — person match, round-robin, and verify-on-book — and returns the
+outcome plus, for a would-be create, the agent who **would** be assigned:
+
+```json
+{ "dryRun": true, "outcome": "created",
+  "wouldAssign": { "id": "…", "name": "…", "email": "…" },
+  "existingBookingId": null }
+```
+
+For `deduped` / `rescheduled` / `confirm_required`, `wouldAssign` is null and
+`existingBookingId` names the matched appointment. Routing failures still surface
+as their normal error code (e.g. `NO_ELIGIBLE_AGENTS`), so a dry run is a safe way
+to check that a bucket is bookable. A dry run is side-effect-free and does not
+alert.
+
 ### Idempotency
 
 Retrying with the same `externalId` + slot is safe: the same call dedupes to the

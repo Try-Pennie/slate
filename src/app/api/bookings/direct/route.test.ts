@@ -18,6 +18,7 @@ const service = vi.hoisted(() => {
   class UnknownBucketError extends Error {}
   return {
     bookViaApi: vi.fn(),
+    previewBooking: vi.fn(),
     SlotUnavailableError,
     VerifyUnavailableError,
     NoEligibleAgentsError,
@@ -76,6 +77,13 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     rateLimit.allowRequest.mockResolvedValue(true);
     service.bookViaApi.mockReset();
     service.bookViaApi.mockResolvedValue(result("created"));
+    service.previewBooking.mockReset();
+    service.previewBooking.mockResolvedValue({
+      dryRun: true,
+      outcome: "created",
+      wouldAssign: { id: "u1", name: "Agent A", email: "a@x.com" },
+      existingBookingId: null,
+    });
   });
 
   it("returns 503 when no key is configured (endpoint disabled)", async () => {
@@ -133,6 +141,15 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ fieldErrors: { email: expect.any(String) } });
+  });
+
+  it("routes a dryRun call to previewBooking and returns the preview (no booking)", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
+    expect(res.status).toBe(200);
+    expect(service.previewBooking).toHaveBeenCalledOnce();
+    expect(service.bookViaApi).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({ dryRun: true, outcome: "created", wouldAssign: { email: "a@x.com" } });
   });
 
   it("returns 200 with the booking on a created/deduped/rescheduled outcome", async () => {
