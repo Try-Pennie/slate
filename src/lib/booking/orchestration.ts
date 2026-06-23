@@ -19,6 +19,7 @@ import {
 import {
   findPersonMatch,
   decidePersonBooking,
+  bookingBelongsToPerson,
   type PersonIdentity,
 } from "./person-dedupe.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
@@ -26,6 +27,7 @@ import type {
   Booking,
   BookingEventAction,
   BookingEventInitiator,
+  BookingStatus,
   Bucket,
   EventType,
   RoutingTrace,
@@ -84,6 +86,14 @@ export class UnknownBucketError extends Error {
   constructor() {
     super("Unknown booking bucket");
     this.name = "UnknownBucketError";
+  }
+}
+
+/** Thrown when a lookup/cancel can't resolve an owned booking by id (#386). */
+export class BookingNotFoundError extends Error {
+  constructor() {
+    super("Booking not found");
+    this.name = "BookingNotFoundError";
   }
 }
 
@@ -640,6 +650,88 @@ export async function bookViaApi(
         manageUrl: manageUrl(deps, decision.booking.manage_token),
       };
   }
+}
+
+/** Active statuses a person can still cancel (#386). */
+const CANCELLABLE_STATUSES: readonly BookingStatus[] = ["confirmed", "rescheduled"];
+
+/** Outward-facing view of a booking for the lookup/cancel API (#386). */
+export interface ApiBookingView {
+  id: string;
+  externalId: string | null;
+  salesforceId: string | null;
+  startsAt: string;
+  endsAt: string;
+  status: BookingStatus;
+  agent: { name: string | null; email: string | null };
+  manageUrl: string;
+}
+
+function toApiBookingView(b: Booking, deps: BookingDeps): ApiBookingView {
+  return {
+    id: b.id,
+    externalId: b.external_id,
+    salesforceId: b.salesforce_id,
+    startsAt: b.starts_at,
+    endsAt: b.ends_at,
+    status: b.status,
+    agent: { name: b.agent_name, email: b.agent_email },
+    manageUrl: manageUrl(deps, b.manage_token),
+  };
+}
+
+/** List a person's ACTIVE bookings for the lookup API (#386). Strong-id only:
+ *  the identity passed in carries no email/phone, so every match is strong. */
+export async function lookupPersonBookings(
+  identity: PersonIdentity,
+  deps: BookingDeps,
+): Promise<ApiBookingView[]> {
+  const bookings = await deps.findActiveBookingsForPerson(identity);
+  return bookings.map((b) => toApiBookingView(b, deps));
+}
+
+/** Read ONE booking by id for the lookup API (#386), at any status (so the bot
+ *  can poll a cancelled/completed one). Throws BookingNotFoundError if missing,
+ *  not owned by the caller, or (when `status` is set) not in that status. */
+export async function getPersonBookingById(
+  input: {
+    bookingId: string;
+    identity: Pick<PersonIdentity, "externalId" | "salesforceId">;
+    status: BookingStatus | null;
+  },
+  deps: BookingDeps,
+): Promise<ApiBookingView> {
+  const ctx = await deps.loadBookingById(input.bookingId);
+  if (!ctx || !bookingBelongsToPerson(ctx.booking, input.identity)) {
+    throw new BookingNotFoundError();
+  }
+  if (input.status && ctx.booking.status !== input.status) {
+    throw new BookingNotFoundError();
+  }
+  return toApiBookingView(ctx.booking, deps);
+}
+
+/** Cancel ONE booking by id for the cancel API (#386). Requires the booking to
+ *  exist, be owned by the caller (strong id), and be active; else
+ *  BookingNotFoundError. Reuses the standard cancel path (gcal delete, busy-block
+ *  clear, history row, booking.cancelled webhook), stamped initiator=customer. */
+export async function cancelDirectBooking(
+  input: {
+    bookingId: string;
+    identity: Pick<PersonIdentity, "externalId" | "salesforceId">;
+    reason: ValidatedReason;
+  },
+  deps: BookingDeps,
+): Promise<ApiBookingView> {
+  const ctx = await deps.loadBookingById(input.bookingId);
+  if (!ctx || !bookingBelongsToPerson(ctx.booking, input.identity)) {
+    throw new BookingNotFoundError();
+  }
+  if (!CANCELLABLE_STATUSES.includes(ctx.booking.status)) {
+    throw new BookingNotFoundError();
+  }
+  await cancelBooking(ctx.booking.manage_token, input.reason, "customer", deps);
+  return toApiBookingView({ ...ctx.booking, status: "cancelled" }, deps);
 }
 
 export async function rescheduleBooking(
