@@ -309,6 +309,7 @@ export async function roundRobinCandidates(
   bucket: Bucket,
   eventType: EventType,
   startMs: number,
+  preview = false,
 ): Promise<string[]> {
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
@@ -334,15 +335,17 @@ export async function roundRobinCandidates(
   );
   if (free.length <= 1) return free;
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
-  // next-period slot balances against next-period meetings. shadowLog=true: this
-  // is the real assignment path, so log the equal-share vs recency divergence
-  // (#321) for pre-cutover validation.
+  // next-period slot balances against next-period meetings. On the real assignment
+  // path, log the equal-share vs recency divergence (#321) for pre-cutover
+  // validation; a dry-run preview (#380) suppresses both that log and the
+  // unfair-ordering alert so previews never pollute real-assignment data.
   return rankBucketShare(
     bucket.id,
     free,
     startMs,
     "verify-on-book candidate order",
-    true,
+    !preview,
+    preview,
   );
 }
 
@@ -379,6 +382,7 @@ async function rankBucketShare(
   anchorMs: number,
   context: string,
   shadowLog = false,
+  preview = false,
 ): Promise<string[]> {
   if (candidateIds.length <= 1) return candidateIds;
   const period = payPeriod(anchorMs);
@@ -394,7 +398,9 @@ async function rankBucketShare(
       .in("status", ["confirmed", "rescheduled", "completed"]),
     period.startMs,
   );
-  if (share.degraded) await alertUnfairOrdering(context);
+  // A dry-run preview (#380) is not a real assignment, so it must not page on a
+  // degraded share (nor log the shadow line below).
+  if (share.degraded && !preview) await alertUnfairOrdering(context);
 
   // Pre-cutover shadow run (#321): on the real assignment path, log how the live
   // equal-share order compares to the prior recency order, so the equal-share

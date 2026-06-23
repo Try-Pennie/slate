@@ -172,7 +172,14 @@ export interface BookingContext {
 export interface BookingDeps {
   // availability / routing
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
-  roundRobinCandidates(bucket: Bucket, eventType: EventType, startMs: number): Promise<string[]>;
+  /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
+   *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
+  roundRobinCandidates(
+    bucket: Bucket,
+    eventType: EventType,
+    startMs: number,
+    preview?: boolean,
+  ): Promise<string[]>;
   // google calendar
   /** Single-agent free check — used by reschedule to keep the same agent. */
   isFree(email: string, startIso: string, endIso: string): Promise<boolean>;
@@ -271,11 +278,13 @@ async function assignAgent(
   eventType: EventType,
   startIso: string,
   endIso: string,
+  preview = false,
 ): Promise<AssignResult & { candidates: string[] }> {
   const candidates = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
+    preview,
   );
 
   const { assignment, anyUnverified } = await selectAgent(
@@ -569,7 +578,8 @@ export async function previewBooking(
       input.startIso,
       resolved.eventType.duration_min,
     );
-    const { userId } = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso);
+    // preview=true: route read-only, no shadow-study log / unfair-ordering alert.
+    const { userId } = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso, true);
     const agent = await deps.getUser(userId);
     return {
       dryRun: true,
