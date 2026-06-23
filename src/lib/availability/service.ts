@@ -15,7 +15,18 @@ import {
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import {
+  emptyBucketAlert,
+  emptyBuckets,
+  type BucketCoverage,
+} from "@/lib/availability/bucket-coverage";
+import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
+
+const EMPTY_BUCKETS_ALERT_KEY = "empty_buckets";
+const EMPTY_BUCKETS_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+// Bounded fan-out for the per-bucket eligibility resolves (each hits the DB).
+const COVERAGE_CONCURRENCY = 6;
 
 /**
  * Resolves a bucket's round-robin pool: active manual members UNION agents in
@@ -92,6 +103,53 @@ export async function eligibleAgentIds(
     "fallback agent",
   );
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
+}
+
+/** IO the empty-bucket sweep needs; defaulted to real impls, injectable in tests. */
+export interface EmptyBucketDeps {
+  loadBuckets(): Promise<Bucket[]>;
+  countEligible(bucket: Bucket): Promise<number>;
+  sendAlert(message: string): Promise<void>;
+}
+
+const realEmptyBucketDeps: EmptyBucketDeps = {
+  loadBuckets: async () =>
+    ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
+  countEligible: async (bucket) => (await eligibleAgentIds(bucket)).ids.length,
+  sendAlert: (message) =>
+    sendThrottledAlert(
+      EMPTY_BUCKETS_ALERT_KEY,
+      EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
+      message,
+    ).then(() => {}),
+};
+
+/**
+ * Proactive routing dead-zone monitor (#327): resolve every bucket's eligible
+ * pool and throttled-alert if any route to ZERO agents (matched pool empty AND
+ * no usable fallback), so a misconfigured bucket is caught before a lead hits
+ * it. Best-effort — called from the hourly roster cron after the reconcile.
+ * Returns the empty codes for the cron's response/log. Deps are injectable so
+ * the decision-and-fan-out is unit-tested without DB/Slack.
+ */
+export async function alertOnEmptyBuckets(
+  deps: EmptyBucketDeps = realEmptyBucketDeps,
+): Promise<{ empty: string[] }> {
+  const buckets = await deps.loadBuckets();
+  if (buckets.length === 0) return { empty: [] };
+
+  const coverage: BucketCoverage[] = await mapWithConcurrency(
+    buckets,
+    COVERAGE_CONCURRENCY,
+    async (bucket) => ({
+      code: bucket.code,
+      eligibleCount: await deps.countEligible(bucket),
+    }),
+  );
+
+  const message = emptyBucketAlert(coverage);
+  if (message) await deps.sendAlert(message).catch(() => {});
+  return { empty: emptyBuckets(coverage) };
 }
 
 export interface ResolvedBucket {

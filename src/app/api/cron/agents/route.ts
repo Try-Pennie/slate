@@ -3,6 +3,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { ensureDefaultSchedules } from "@/lib/schedule";
+import { alertOnEmptyBuckets } from "@/lib/availability/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 
@@ -30,7 +31,10 @@ export async function GET(req: NextRequest) {
     const sync = await syncSalesforceAgents();
     const org = await ensureDefaultOrg();
     const hoursApplied = await ensureDefaultSchedules(org.id);
-    return NextResponse.json({ ...sync, hoursApplied });
+    // After the roster settles, flag any bucket that now routes to nobody (#327).
+    // Best-effort: a monitoring miss must never fail the roster reconcile.
+    const coverage = await alertOnEmptyBuckets().catch(() => ({ empty: [] }));
+    return NextResponse.json({ ...sync, hoursApplied, emptyBuckets: coverage.empty });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`agents cron failed: ${message}`);

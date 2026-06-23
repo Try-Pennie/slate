@@ -31,6 +31,7 @@ import type {
   CreateBookingInput,
 } from "@/lib/booking/orchestration";
 import { toE164 } from "@/lib/phone";
+import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type {
@@ -53,6 +54,12 @@ const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // (a likely verify-on-book outage), as opposed to a genuinely full slot (#319).
 const VERIFY_OUTAGE_ALERT_KEY = "verify_on_book_outage";
 const VERIFY_OUTAGE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
+
+// Fires when a live booking hits a bucket with NO eligible agents — the reactive
+// half of the routing dead-zone monitor (#327); the proactive hourly sweep is in
+// availability/service.ts.
+const NO_ELIGIBLE_AGENTS_ALERT_KEY = "no_eligible_agents";
+const NO_ELIGIBLE_AGENTS_COOLDOWN_MS = 60 * 60 * 1000;
 
 // Google caps a freeBusy query at 20 calendar `items` (verified live against the
 // production domain — 20 → 0 errors, 21 → tooManyCalendarsRequested), so the
@@ -576,29 +583,52 @@ function realDeps(): BookingDeps {
 }
 
 /**
- * Alert (throttled) when a booking fails specifically because verify-on-book
- * couldn't reach Google/DB for ANY candidate — an outage masquerading as a quiet
- * day, which would otherwise go undetected (#319). Re-throws so the caller still
- * maps it to a retryable response. Best-effort: a failed alert never masks the
- * original error.
+ * Throttled alerting around a booking attempt, for the two failure modes that
+ * are silent outages rather than ordinary "slot taken": verify-on-book couldn't
+ * reach Google/DB for ANY candidate (#319), or the bucket has NO eligible agents
+ * to route to (#327). Re-throws so the caller still maps the error to a response.
+ * Best-effort: a failed alert never masks the original error.
  */
-async function alertOnVerifyOutage<T>(op: () => Promise<T>): Promise<T> {
+/**
+ * Which throttled alert (if any) a booking failure warrants — pure so the
+ * error→alert mapping is unit-tested without IO. Returns null for ordinary
+ * failures (e.g. a genuinely taken slot) that aren't a silent outage.
+ */
+export function bookingFailureAlert(
+  err: unknown,
+): { key: string; cooldownMs: number; message: string } | null {
+  if (err instanceof orchestration.VerifyUnavailableError) {
+    return {
+      key: VERIFY_OUTAGE_ALERT_KEY,
+      cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
+      message:
+        "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
+    };
+  }
+  if (err instanceof orchestration.NoEligibleAgentsError) {
+    return {
+      key: NO_ELIGIBLE_AGENTS_ALERT_KEY,
+      cooldownMs: NO_ELIGIBLE_AGENTS_COOLDOWN_MS,
+      message: noEligibleAgentsAlert(err.bucketCode),
+    };
+  }
+  return null;
+}
+
+async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (err) {
-    if (err instanceof orchestration.VerifyUnavailableError) {
-      await sendThrottledAlert(
-        VERIFY_OUTAGE_ALERT_KEY,
-        VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
-        "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
-      ).catch(() => {});
+    const spec = bookingFailureAlert(err);
+    if (spec) {
+      await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(() => {});
     }
     throw err;
   }
 }
 
 export function createBooking(input: CreateBookingInput): Promise<BookingResult> {
-  return alertOnVerifyOutage(() =>
+  return alertOnBookingFailure(() =>
     orchestration.createBooking(input, realDeps()),
   );
 }
@@ -610,7 +640,7 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
  * to both verify-on-book).
  */
 export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
-  return alertOnVerifyOutage(() => orchestration.bookViaApi(input, realDeps()));
+  return alertOnBookingFailure(() => orchestration.bookViaApi(input, realDeps()));
 }
 
 export function rescheduleBooking(
@@ -619,7 +649,7 @@ export function rescheduleBooking(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
 ): Promise<BookingResult> {
-  return alertOnVerifyOutage(() =>
+  return alertOnBookingFailure(() =>
     orchestration.rescheduleBooking(token, newStartIso, reason, initiator, realDeps()),
   );
 }
@@ -663,7 +693,7 @@ export async function adminRescheduleBooking(
 ): Promise<BookingResult> {
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
-  return alertOnVerifyOutage(() =>
+  return alertOnBookingFailure(() =>
     orchestration.rescheduleBooking(token, newStartIso, reason, "admin", realDeps()),
   );
 }
