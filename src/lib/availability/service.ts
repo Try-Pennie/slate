@@ -16,7 +16,7 @@ import {
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import {
-  emptyBucketAlert,
+  emptyBucketMessage,
   emptyBuckets,
   type BucketCoverage,
 } from "@/lib/availability/bucket-coverage";
@@ -109,16 +109,17 @@ export async function eligibleAgentIds(
 export interface EmptyBucketDeps {
   loadBuckets(): Promise<Bucket[]>;
   countEligible(bucket: Bucket): Promise<number>;
-  sendAlert(message: string): Promise<void>;
+  /** One throttled alert per dead bucket, keyed by code so each surfaces independently. */
+  sendAlert(code: string, message: string): Promise<void>;
 }
 
 const realEmptyBucketDeps: EmptyBucketDeps = {
   loadBuckets: async () =>
     ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
   countEligible: async (bucket) => (await eligibleAgentIds(bucket)).ids.length,
-  sendAlert: (message) =>
+  sendAlert: (code, message) =>
     sendThrottledAlert(
-      EMPTY_BUCKETS_ALERT_KEY,
+      `${EMPTY_BUCKETS_ALERT_KEY}:${code}`,
       EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
       message,
     ).then(() => {}),
@@ -147,9 +148,11 @@ export async function alertOnEmptyBuckets(
     }),
   );
 
-  const message = emptyBucketAlert(coverage);
-  if (message) await deps.sendAlert(message).catch(() => {});
-  return { empty: emptyBuckets(coverage) };
+  const empty = emptyBuckets(coverage);
+  for (const code of empty) {
+    await deps.sendAlert(code, emptyBucketMessage(code)).catch(() => {});
+  }
+  return { empty };
 }
 
 export interface ResolvedBucket {

@@ -4,7 +4,7 @@
 // Run: node --experimental-strip-types scripts/test-bucket-coverage.ts
 import {
   emptyBuckets,
-  emptyBucketAlert,
+  emptyBucketMessage,
   noEligibleAgentsAlert,
 } from "../src/lib/availability/bucket-coverage.ts";
 
@@ -35,19 +35,13 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-// --- emptyBucketAlert: a throttled message only when something is empty ---
+// --- emptyBucketMessage: per-bucket proactive copy (one alert per dead bucket,
+// so simultaneous dead zones each surface under their own throttle) ---
 {
-  assert(
-    emptyBucketAlert([{ code: "411", eligibleCount: 2 }]) === null,
-    "no empty buckets -> no alert (null)",
-  );
-  const msg = emptyBucketAlert([
-    { code: "412", eligibleCount: 0 },
-    { code: "511", eligibleCount: 0 },
-  ]);
-  assert(msg !== null, "empty buckets -> an alert string");
-  assert(!!msg && msg.includes("412") && msg.includes("511"), "alert names the empty buckets");
-  assert(!!msg && /slate/i.test(msg), "alert is Slate-branded for the channel");
+  const msg = emptyBucketMessage("412");
+  assert(msg.includes("412"), "proactive message names the specific bucket");
+  assert(/no eligible|no bookable|no advisors/i.test(msg), "proactive message explains the cause");
+  assert(/slate/i.test(msg), "proactive message is Slate-branded for the channel");
 }
 
 // --- noEligibleAgentsAlert: the reactive (booking hit an empty bucket) copy ---
