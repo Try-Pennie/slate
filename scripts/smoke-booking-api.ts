@@ -1,58 +1,169 @@
 // Manual smoke test for the live direct booking API (#253/#250). NOT a CI test
-// (it hits production and creates a REAL, then-cancelled booking) — run it by
+// (it hits production and creates REAL, then-cancelled bookings) — run it by
 // hand to validate the endpoint end to end after setting BOOKING_API_KEY.
 //
 //   BOOKING_API_KEY=xxx node --experimental-strip-types scripts/smoke-booking-api.ts
 //
-// Optional env: SLATE_BASE_URL (default https://slate.trypennie.app),
-//               SMOKE_BUCKET (default 411).
+// Optional env:
+//   SLATE_BASE_URL  (default https://slate.trypennie.app)
+//   SMOKE_BUCKET    (default 411)        — the primary bucket
+//   SMOKE_BUCKET_B  (default unset)      — a SECOND bucket your test agent also
+//                                          serves; enables the cross-bucket move
+//                                          scenario. Skipped if unset/no slots.
 //
-// It runs the full contract: find a slot -> book (created) -> rebook same slot
-// (deduped) -> rebook a different time (rescheduled) -> cancel to clean up.
-// Each run uses a unique external id + email so it never collides with another.
+// Scenarios (each uses a fresh identity + cleans up its bookings):
+//   1. create -> deduped (same slot) -> rescheduled (different time), same bucket
+//   2. cross-bucket move: book in A, rebook the same person into B -> new booking
+//   3. confirm path: a weak (email-only) match on a new time -> confirm_required,
+//      then the same call with confirmReschedule:true -> rescheduled
 
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
-const BUCKET = process.env.SMOKE_BUCKET ?? "411";
+const BUCKET_A = process.env.SMOKE_BUCKET ?? "411";
+const BUCKET_B = process.env.SMOKE_BUCKET_B ?? "";
 const KEY = process.env.BOOKING_API_KEY ?? "";
-
-const runId = `smoke-${Date.now()}`;
-const attendee = {
-  name: "Smoke Test",
-  email: `smoke+${Date.now()}@trypennie.com`,
-  phone: "+12155550100",
-};
 
 let failures = 0;
 function check(cond: boolean, msg: string) {
   console.log(`${cond ? "PASS" : "FAIL"}: ${msg}`);
   if (!cond) failures++;
 }
+function skip(msg: string) {
+  console.log(`SKIP: ${msg}`);
+}
 
-async function book(start: string) {
+type BookBody = {
+  outcome?: string;
+  booking?: { id?: string; manageUrl?: string };
+  error?: string;
+  code?: string;
+};
+
+async function slotsFor(bucket: string): Promise<string[]> {
+  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(bucket)}`);
+  const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
+  return res.status === 200 ? body.slots ?? [] : [];
+}
+
+async function book(args: {
+  bucket: string;
+  start: string;
+  externalId: string;
+  email: string;
+  phone: string;
+  confirmReschedule?: boolean;
+}): Promise<{ status: number; body: BookBody }> {
   const res = await fetch(`${BASE}/api/bookings/direct`, {
     method: "POST",
     headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
     body: JSON.stringify({
-      bucketCode: BUCKET,
-      start,
+      bucketCode: args.bucket,
+      start: args.start,
       timezone: "America/New_York",
-      attendee,
-      externalId: runId,
+      attendee: { name: "Smoke Test", email: args.email, phone: args.phone },
+      externalId: args.externalId,
+      confirmReschedule: args.confirmReschedule ?? false,
     }),
   });
-  const body = (await res.json().catch(() => ({}))) as {
-    outcome?: string;
-    booking?: { id?: string; manageUrl?: string };
-    error?: string;
-    code?: string;
-  };
-  return { status: res.status, body };
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as BookBody };
 }
 
-function tokenFromManageUrl(url: string | undefined): string | null {
-  if (!url) return null;
-  const m = url.match(/\/booking\/manage\/([^/?#]+)/);
-  return m ? m[1] : null;
+const tokensToClean: string[] = [];
+function trackForCleanup(body: BookBody) {
+  const m = (body.booking?.manageUrl ?? "").match(/\/booking\/manage\/([^/?#]+)/);
+  if (m) tokensToClean.push(m[1]);
+}
+async function cleanup() {
+  for (const token of [...new Set(tokensToClean)]) {
+    await fetch(`${BASE}/api/bookings/${token}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "no_longer_interested" }),
+    }).catch(() => {});
+  }
+  tokensToClean.length = 0;
+}
+
+function uniq(tag: string) {
+  const n = Date.now();
+  return { externalId: `smoke-${tag}-${n}`, email: `smoke+${tag}-${n}@trypennie.com` };
+}
+
+// --- Scenario 1: create / dedupe / reschedule within one bucket ---
+async function scenarioMain(slotsA: string[]) {
+  console.log("\n[1] create -> deduped -> rescheduled (same bucket)");
+  const id = uniq("main");
+  // Distinct slot per scenario (the single test agent is shared); cleanup runs
+  // between scenarios, so holds release before the next one books.
+  const [slotA, slotB] = [slotsA[0], slotsA[1]];
+  const phone = "+12155550100";
+
+  const created = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
+  trackForCleanup(created.body);
+  check(created.status === 200 && created.body.outcome === "created", `book -> created (got ${created.status}/${created.body.outcome})`);
+
+  const dup = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
+  check(dup.body.outcome === "deduped" && dup.body.booking?.id === created.body.booking?.id, "same slot -> deduped (same booking id)");
+
+  const moved = await book({ bucket: BUCKET_A, start: slotB, ...id, phone });
+  trackForCleanup(moved.body);
+  check(moved.body.outcome === "rescheduled", `different time -> rescheduled (got ${moved.body.outcome})`);
+  check(moved.body.booking?.id === created.body.booking?.id, "same-bucket reschedule keeps the same booking id");
+}
+
+// --- Scenario 2: cross-bucket move (book in A, rebook same person into B) ---
+async function scenarioCrossBucket(slotsA: string[]) {
+  console.log("\n[2] cross-bucket move (rebook same person into a different bucket)");
+  if (!BUCKET_B) {
+    skip("SMOKE_BUCKET_B not set — set it to a second bucket your test agent serves to run this");
+    return;
+  }
+  const slotsB = await slotsFor(BUCKET_B);
+  if (slotsB.length === 0) {
+    skip(`bucket ${BUCKET_B} has no open slots`);
+    return;
+  }
+  const id = uniq("xbucket");
+  const phone = "+12155550101";
+
+  const inA = await book({ bucket: BUCKET_A, start: slotsA[2], ...id, phone });
+  trackForCleanup(inA.body);
+  check(inA.body.outcome === "created", `book in bucket ${BUCKET_A} -> created (got ${inA.body.outcome})`);
+
+  const inB = await book({ bucket: BUCKET_B, start: slotsB[0], ...id, phone });
+  trackForCleanup(inB.body);
+  check(inB.body.outcome === "rescheduled", `rebook into bucket ${BUCKET_B} -> rescheduled (got ${inB.body.outcome})`);
+  check(
+    !!inB.body.booking?.id && inB.body.booking?.id !== inA.body.booking?.id,
+    "cross-bucket move creates a NEW booking (different id), not an in-place reschedule",
+  );
+}
+
+// --- Scenario 3: weak (email-only) match -> confirm_required, then confirm ---
+async function scenarioConfirm(slotsA: string[]) {
+  console.log("\n[3] weak match -> confirm_required -> confirm -> rescheduled");
+  const id1 = uniq("confirm");
+  const [slotA, slotB] = [slotsA[3], slotsA[4]];
+
+  // Existing appointment for this email (phone P1, externalId E1).
+  const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: "+12155550110" });
+  trackForCleanup(created.body);
+  check(created.body.outcome === "created", `seed booking -> created (got ${created.body.outcome})`);
+
+  // New call: SAME email, DIFFERENT externalId + phone, different time -> weak match.
+  const weak = {
+    bucket: BUCKET_A,
+    start: slotB,
+    externalId: `${id1.externalId}-other`,
+    email: id1.email,
+    phone: "+12155550999",
+  };
+  const asked = await book({ ...weak, confirmReschedule: false });
+  check(asked.status === 409 && asked.body.outcome === "confirm_required", `weak match + new time -> 409 confirm_required (got ${asked.status}/${asked.body.outcome})`);
+  check(asked.body.booking?.id === created.body.booking?.id, "confirm_required returns the EXISTING booking (no new one created)");
+
+  const confirmed = await book({ ...weak, confirmReschedule: true });
+  trackForCleanup(confirmed.body);
+  check(confirmed.body.outcome === "rescheduled", `same call with confirmReschedule:true -> rescheduled (got ${confirmed.body.outcome})`);
 }
 
 async function main() {
@@ -60,49 +171,26 @@ async function main() {
     console.error("Set BOOKING_API_KEY in the environment first.");
     process.exit(2);
   }
-  console.log(`Smoke test against ${BASE} (bucket ${BUCKET}) as ${runId}\n`);
+  console.log(`Smoke test against ${BASE} (bucket ${BUCKET_A}${BUCKET_B ? `, cross-bucket ${BUCKET_B}` : ""})`);
 
-  // 1) Find two distinct open slots.
-  const availRes = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(BUCKET)}`);
-  const avail = (await availRes.json().catch(() => ({}))) as { slots?: string[] };
-  const slots = avail.slots ?? [];
-  check(availRes.status === 200, `availability returned 200 (got ${availRes.status})`);
-  check(slots.length >= 2, `bucket ${BUCKET} has at least 2 open slots (got ${slots.length})`);
-  if (slots.length < 2) {
-    console.log("\nNot enough slots to test — pick a bucket with availability via SMOKE_BUCKET.");
+  const slotsA = await slotsFor(BUCKET_A);
+  check(slotsA.length >= 5, `bucket ${BUCKET_A} has enough open slots (got ${slotsA.length})`);
+  if (slotsA.length < 5) {
+    console.log("\nNot enough slots — pick a bucket with availability via SMOKE_BUCKET.");
     process.exit(1);
   }
-  const slotA = slots[0];
-  const slotB = slots[Math.min(10, slots.length - 1)];
 
-  // 2) Book slotA -> created.
-  const created = await book(slotA);
-  check(created.status === 200, `book slotA -> 200 (got ${created.status} ${created.body.code ?? created.body.error ?? ""})`);
-  check(created.body.outcome === "created", `book slotA -> outcome "created" (got "${created.body.outcome}")`);
-
-  // 3) Re-book the SAME slot, same person -> deduped (no second booking).
-  const dup = await book(slotA);
-  check(dup.body.outcome === "deduped", `re-book same slot -> outcome "deduped" (got "${dup.body.outcome}")`);
-  check(
-    dup.body.booking?.id === created.body.booking?.id,
-    "deduped returns the SAME booking id",
-  );
-
-  // 4) Re-book a DIFFERENT time, same person -> rescheduled (moved, not duplicated).
-  const moved = await book(slotB);
-  check(moved.body.outcome === "rescheduled", `re-book different time -> outcome "rescheduled" (got "${moved.body.outcome}")`);
-
-  // 5) Clean up: cancel the resulting booking so no real appointment lingers.
-  const token = tokenFromManageUrl(moved.body.booking?.manageUrl ?? created.body.booking?.manageUrl);
-  if (token) {
-    const cancelRes = await fetch(`${BASE}/api/bookings/${token}/cancel`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason: "no_longer_interested" }),
-    });
-    check(cancelRes.status === 200, `cleanup cancel -> 200 (got ${cancelRes.status})`);
-  } else {
-    check(false, "could not resolve a manage token to clean up — cancel the test booking manually");
+  // Clean up between scenarios (not just at the end): the single test agent is
+  // shared, so releasing each scenario's holds keeps the next one's slots free.
+  try {
+    await scenarioMain(slotsA);
+    await cleanup();
+    await scenarioCrossBucket(slotsA);
+    await cleanup();
+    await scenarioConfirm(slotsA);
+  } finally {
+    console.log("\nCleaning up test bookings...");
+    await cleanup();
   }
 
   console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
