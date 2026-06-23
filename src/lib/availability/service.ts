@@ -105,35 +105,50 @@ export async function eligibleAgentIds(
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
 }
 
+/** IO the empty-bucket sweep needs; defaulted to real impls, injectable in tests. */
+export interface EmptyBucketDeps {
+  loadBuckets(): Promise<Bucket[]>;
+  countEligible(bucket: Bucket): Promise<number>;
+  sendAlert(message: string): Promise<void>;
+}
+
+const realEmptyBucketDeps: EmptyBucketDeps = {
+  loadBuckets: async () =>
+    ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
+  countEligible: async (bucket) => (await eligibleAgentIds(bucket)).ids.length,
+  sendAlert: (message) =>
+    sendThrottledAlert(
+      EMPTY_BUCKETS_ALERT_KEY,
+      EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
+      message,
+    ).then(() => {}),
+};
+
 /**
  * Proactive routing dead-zone monitor (#327): resolve every bucket's eligible
  * pool and throttled-alert if any route to ZERO agents (matched pool empty AND
  * no usable fallback), so a misconfigured bucket is caught before a lead hits
  * it. Best-effort — called from the hourly roster cron after the reconcile.
- * Returns the empty codes for the cron's response/log.
+ * Returns the empty codes for the cron's response/log. Deps are injectable so
+ * the decision-and-fan-out is unit-tested without DB/Slack.
  */
-export async function alertOnEmptyBuckets(): Promise<{ empty: string[] }> {
-  const { data } = await supabaseAdmin().from("buckets").select("*");
-  const buckets = (data ?? []) as Bucket[];
+export async function alertOnEmptyBuckets(
+  deps: EmptyBucketDeps = realEmptyBucketDeps,
+): Promise<{ empty: string[] }> {
+  const buckets = await deps.loadBuckets();
   if (buckets.length === 0) return { empty: [] };
 
   const coverage: BucketCoverage[] = await mapWithConcurrency(
     buckets,
     COVERAGE_CONCURRENCY,
-    async (bucket) => {
-      const { ids } = await eligibleAgentIds(bucket);
-      return { code: bucket.code, eligibleCount: ids.length };
-    },
+    async (bucket) => ({
+      code: bucket.code,
+      eligibleCount: await deps.countEligible(bucket),
+    }),
   );
 
   const message = emptyBucketAlert(coverage);
-  if (message) {
-    await sendThrottledAlert(
-      EMPTY_BUCKETS_ALERT_KEY,
-      EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
-      message,
-    ).catch(() => {});
-  }
+  if (message) await deps.sendAlert(message).catch(() => {});
   return { empty: emptyBuckets(coverage) };
 }
 

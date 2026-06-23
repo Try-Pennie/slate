@@ -589,22 +589,39 @@ function realDeps(): BookingDeps {
  * to route to (#327). Re-throws so the caller still maps the error to a response.
  * Best-effort: a failed alert never masks the original error.
  */
+/**
+ * Which throttled alert (if any) a booking failure warrants — pure so the
+ * error→alert mapping is unit-tested without IO. Returns null for ordinary
+ * failures (e.g. a genuinely taken slot) that aren't a silent outage.
+ */
+export function bookingFailureAlert(
+  err: unknown,
+): { key: string; cooldownMs: number; message: string } | null {
+  if (err instanceof orchestration.VerifyUnavailableError) {
+    return {
+      key: VERIFY_OUTAGE_ALERT_KEY,
+      cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
+      message:
+        "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
+    };
+  }
+  if (err instanceof orchestration.NoEligibleAgentsError) {
+    return {
+      key: NO_ELIGIBLE_AGENTS_ALERT_KEY,
+      cooldownMs: NO_ELIGIBLE_AGENTS_COOLDOWN_MS,
+      message: noEligibleAgentsAlert(err.bucketCode),
+    };
+  }
+  return null;
+}
+
 async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (err) {
-    if (err instanceof orchestration.VerifyUnavailableError) {
-      await sendThrottledAlert(
-        VERIFY_OUTAGE_ALERT_KEY,
-        VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
-        "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
-      ).catch(() => {});
-    } else if (err instanceof orchestration.NoEligibleAgentsError) {
-      await sendThrottledAlert(
-        NO_ELIGIBLE_AGENTS_ALERT_KEY,
-        NO_ELIGIBLE_AGENTS_COOLDOWN_MS,
-        noEligibleAgentsAlert(err.bucketCode),
-      ).catch(() => {});
+    const spec = bookingFailureAlert(err);
+    if (spec) {
+      await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(() => {});
     }
     throw err;
   }
