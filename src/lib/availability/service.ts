@@ -15,7 +15,18 @@ import {
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import {
+  emptyBucketAlert,
+  emptyBuckets,
+  type BucketCoverage,
+} from "@/lib/availability/bucket-coverage";
+import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
+
+const EMPTY_BUCKETS_ALERT_KEY = "empty_buckets";
+const EMPTY_BUCKETS_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+// Bounded fan-out for the per-bucket eligibility resolves (each hits the DB).
+const COVERAGE_CONCURRENCY = 6;
 
 /**
  * Resolves a bucket's round-robin pool: active manual members UNION agents in
@@ -92,6 +103,38 @@ export async function eligibleAgentIds(
     "fallback agent",
   );
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
+}
+
+/**
+ * Proactive routing dead-zone monitor (#327): resolve every bucket's eligible
+ * pool and throttled-alert if any route to ZERO agents (matched pool empty AND
+ * no usable fallback), so a misconfigured bucket is caught before a lead hits
+ * it. Best-effort — called from the hourly roster cron after the reconcile.
+ * Returns the empty codes for the cron's response/log.
+ */
+export async function alertOnEmptyBuckets(): Promise<{ empty: string[] }> {
+  const { data } = await supabaseAdmin().from("buckets").select("*");
+  const buckets = (data ?? []) as Bucket[];
+  if (buckets.length === 0) return { empty: [] };
+
+  const coverage: BucketCoverage[] = await mapWithConcurrency(
+    buckets,
+    COVERAGE_CONCURRENCY,
+    async (bucket) => {
+      const { ids } = await eligibleAgentIds(bucket);
+      return { code: bucket.code, eligibleCount: ids.length };
+    },
+  );
+
+  const message = emptyBucketAlert(coverage);
+  if (message) {
+    await sendThrottledAlert(
+      EMPTY_BUCKETS_ALERT_KEY,
+      EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
+      message,
+    ).catch(() => {});
+  }
+  return { empty: emptyBuckets(coverage) };
 }
 
 export interface ResolvedBucket {

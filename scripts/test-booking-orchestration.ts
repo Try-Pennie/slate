@@ -385,6 +385,10 @@ async function run() {
       "create: NoEligibleAgentsError when the bucket has zero eligible agents",
     );
     assert(
+      err instanceof NoEligibleAgentsError && err.bucketCode === "411",
+      "create: NoEligibleAgentsError carries the bucket code (for the #327 alert)",
+    );
+    assert(
       !(err instanceof SlotUnavailableError),
       "create: an empty pool is DISTINCT from a genuinely-full slot",
     );
