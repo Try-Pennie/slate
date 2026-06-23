@@ -10,8 +10,11 @@
 //   SMOKE_BUCKET_B  (default unset)      — a SECOND bucket your test agent also
 //                                          serves; enables the cross-bucket move
 //                                          scenario. Skipped if unset/no slots.
+//   SMOKE_DRY_RUN_ONLY (default unset)   — run ONLY scenario 0 (zero side effects);
+//                                          a safe health check against the live fleet.
 //
 // Scenarios (each uses a fresh identity + cleans up its bookings):
+//   0. dry run -> validates routing with NO booking/event/webhook (side-effect-free)
 //   1. create -> deduped (same slot) -> rescheduled (different time), same bucket
 //   2. cross-bucket move: book in A, rebook the same person into B -> new booking
 //   3. confirm path: a weak (email-only) match on a new time -> confirm_required,
@@ -34,6 +37,8 @@ function skip(msg: string) {
 type BookBody = {
   outcome?: string;
   booking?: { id?: string; manageUrl?: string };
+  dryRun?: boolean;
+  wouldAssign?: { id?: string; name?: string | null; email?: string | null } | null;
   error?: string;
   code?: string;
 };
@@ -51,6 +56,7 @@ async function book(args: {
   email: string;
   phone: string;
   confirmReschedule?: boolean;
+  dryRun?: boolean;
 }): Promise<{ status: number; body: BookBody }> {
   const res = await fetch(`${BASE}/api/bookings/direct`, {
     method: "POST",
@@ -62,6 +68,7 @@ async function book(args: {
       attendee: { name: "Smoke Test", email: args.email, phone: args.phone },
       externalId: args.externalId,
       confirmReschedule: args.confirmReschedule ?? false,
+      dryRun: args.dryRun ?? false,
     }),
   });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as BookBody };
@@ -86,6 +93,17 @@ async function cleanup() {
 function uniq(tag: string) {
   const n = Date.now();
   return { externalId: `smoke-${tag}-${n}`, email: `smoke+${tag}-${n}@trypennie.com` };
+}
+
+// --- Scenario 0: dry run — validate routing with ZERO side effects ---
+async function scenarioDryRun(slotsA: string[]) {
+  console.log("\n[0] dry run (no calendar event, no booking, no webhook)");
+  const id = uniq("dryrun");
+  const res = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone: "+12155550100", dryRun: true });
+  check(res.status === 200 && res.body.dryRun === true, `dry run -> 200 dryRun:true (got ${res.status}/${res.body.dryRun})`);
+  check(res.body.outcome === "created", `dry run -> would create (got ${res.body.outcome})`);
+  check(!!res.body.wouldAssign?.email, `dry run names the agent who WOULD be assigned (${res.body.wouldAssign?.email ?? "none"})`);
+  check(!res.body.booking, "dry run returns NO booking (nothing was created)");
 }
 
 // --- Scenario 1: create / dedupe / reschedule within one bucket ---
@@ -180,9 +198,18 @@ async function main() {
     process.exit(1);
   }
 
+  // SMOKE_DRY_RUN_ONLY=1 runs ONLY the side-effect-free dry-run check — a safe
+  // health check you can run anytime against the live fleet (no real bookings).
+  if (process.env.SMOKE_DRY_RUN_ONLY) {
+    await scenarioDryRun(slotsA);
+    console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
+    process.exit(failures === 0 ? 0 : 1);
+  }
+
   // Clean up between scenarios (not just at the end): the single test agent is
   // shared, so releasing each scenario's holds keeps the next one's slots free.
   try {
+    await scenarioDryRun(slotsA);
     await scenarioMain(slotsA);
     await cleanup();
     await scenarioCrossBucket(slotsA);
