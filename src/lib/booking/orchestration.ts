@@ -294,6 +294,10 @@ export interface BookingDeps {
 /** Alert once a queued deletion has failed this many times. */
 export const PENDING_DELETION_ALERT_AFTER = 5;
 
+/** Stop retrying a deletion after this many attempts (it stays in the table,
+ *  diagnosable via last_error, and already alerted at PENDING_DELETION_ALERT_AFTER). */
+export const PENDING_DELETION_GIVE_UP_AT = 50;
+
 /**
  * Drain a batch of the deletion retry queue (#401): re-attempt each delete;
  * remove on success (404/410 already-gone counts as success); on failure bump

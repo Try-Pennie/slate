@@ -17,3 +17,7 @@ create unique index if not exists pending_event_deletions_uniq
 
 create trigger set_updated_at before update on public.pending_event_deletions
   for each row execute function set_updated_at();
+
+-- Default-deny like the rest of the schema: the server uses the secret key
+-- (supabaseAdmin, bypasses RLS); no client ever reads this table.
+alter table public.pending_event_deletions enable row level security;

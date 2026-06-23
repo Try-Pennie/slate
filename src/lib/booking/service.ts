@@ -299,6 +299,8 @@ function realDeps(): BookingDeps {
       const { data } = await supabaseAdmin()
         .from("pending_event_deletions")
         .select("*")
+        .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
+        .order("attempts", { ascending: true })
         .order("created_at", { ascending: true })
         .limit(limit);
       return (data ?? []) as orchestration.PendingEventDeletion[];
