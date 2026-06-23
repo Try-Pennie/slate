@@ -149,12 +149,25 @@ for (const body of [null, undefined, "string", 42, []]) {
   assert(on.ok === true && on.value.dryRun === true, "dryRun: true is accepted");
 }
 
-// --- salesforceId is optional -> null when absent ---
+// --- external_id IS the lead's Salesforce id (#363/#377): when salesforceId is
+// not sent separately, default it from external_id so cross-channel dedupe
+// matches an API booking against a website booking via salesforce_id. ---
 {
   const { salesforceId: _omit, ...noSf } = valid;
   const r = parseDirectBookingRequest(noSf);
   assert(r.ok === true, "salesforceId is optional");
-  if (r.ok) assert(r.value.salesforceId === null, "absent salesforceId normalizes to null");
+  if (r.ok)
+    assert(
+      r.value.salesforceId === valid.externalId,
+      `absent salesforceId defaults to external_id (got ${r.ok ? r.value.salesforceId : "?"})`,
+    );
+
+  // An explicitly-sent salesforceId is preserved (it's the same value anyway).
+  const explicit = parseDirectBookingRequest({ ...valid, externalId: "EXT9", salesforceId: "SF9" });
+  assert(
+    explicit.ok === true && explicit.value.salesforceId === "SF9",
+    "an explicit salesforceId is kept as-is",
+  );
 }
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);

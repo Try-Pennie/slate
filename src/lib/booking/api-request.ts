@@ -100,7 +100,11 @@ export function parseDirectBookingRequest(raw: unknown): ParseResult {
         email: (data.attendee.email ?? "").trim(),
         phone: (data.attendee.phone ?? "").trim(),
       },
-      salesforceId: data.salesforceId ?? null,
+      // external_id IS the lead's Salesforce id (every lead has one; same value).
+      // Default salesforce_id from it when not sent separately, so an API booking
+      // dedupes against a website booking via salesforce_id regardless of which
+      // field the caller populated (#363/#377).
+      salesforceId: data.salesforceId ?? data.externalId,
       prefill: data.prefill,
       externalId: data.externalId,
       confirmReschedule: data.confirmReschedule,
