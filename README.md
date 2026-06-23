@@ -75,6 +75,13 @@ Both require `Authorization: Bearer $CRON_SECRET`.
 - `xbc` — resolves to the bucket / round-robin pool.
 - Everything else prefills the form and is forwarded in the webhook payload.
 
+## Programmatic booking
+
+For AI / programmatic booking without the embed, use the key-authed
+**[Direct Booking API](docs/booking-api.md)** (`GET /api/availability` to find
+slots + `POST /api/bookings/direct` to book), which applies the same routing,
+round-robin, verify-on-book, and one-appointment-per-person dedupe.
+
 ## Embed
 
 ```html
