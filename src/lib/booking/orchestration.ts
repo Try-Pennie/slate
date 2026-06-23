@@ -62,6 +62,28 @@ export class VerifyUnavailableError extends Error {
   }
 }
 
+/**
+ * Thrown when a bucket has ZERO eligible agents (an empty/misconfigured pool —
+ * e.g. an XBC code the attribute sync hasn't populated), as opposed to every
+ * agent being genuinely busy (SlotUnavailableError). Distinct so a machine caller
+ * can stop retrying and escalate, instead of treating a config error as a
+ * transiently-full slot (#358).
+ */
+export class NoEligibleAgentsError extends Error {
+  constructor() {
+    super("No advisors are configured for this booking type.");
+    this.name = "NoEligibleAgentsError";
+  }
+}
+
+/** Thrown when the bucket code resolves to no bucket/event type (#358). */
+export class UnknownBucketError extends Error {
+  constructor() {
+    super("Unknown booking bucket");
+    this.name = "UnknownBucketError";
+  }
+}
+
 export interface CreateBookingInput {
   bucketCode: string;
   startIso: string;
@@ -260,6 +282,9 @@ async function assignAgent(
     VERIFY_WAVE_SIZE,
   );
   if (!assignment) {
+    // Zero candidates means the bucket pool is empty/misconfigured — a different
+    // failure (and a different caller action) than a full slot (#358).
+    if (candidates.length === 0) throw new NoEligibleAgentsError();
     // No agent was free. If at least one candidate couldn't be VERIFIED (read
     // error / outage), this isn't a genuinely-full slot — surface it distinctly
     // so the caller alerts + lets the lead retry, rather than showing "no times".
@@ -364,7 +389,7 @@ export async function createBooking(
   }
 
   const resolved = await deps.resolveBucketByCode(input.bucketCode);
-  if (!resolved) throw new Error("Unknown booking bucket");
+  if (!resolved) throw new UnknownBucketError();
   const { bucket, eventType } = resolved;
 
   const { startIso, endIso } = bookingWindow(

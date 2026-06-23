@@ -12,6 +12,8 @@ import {
   bookViaApi,
   SlotUnavailableError,
   VerifyUnavailableError,
+  NoEligibleAgentsError,
+  UnknownBucketError,
   type BookingDeps,
   type BookingContext,
   type CreateBookingInput,
@@ -88,6 +90,7 @@ interface FakeOpts {
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
+  unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -121,7 +124,7 @@ function makeDeps(opts: FakeOpts) {
   let insertAttempted = false;
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   const deps: BookingDeps = {
-    resolveBucketByCode: async () => ({ bucket, eventType }),
+    resolveBucketByCode: async () => (opts.unknownBucket ? null : { bucket, eventType }),
     roundRobinCandidates: async () => opts.candidates ?? ["a"],
     isFree: async (email) => {
       calls.isFree.push(email);
@@ -366,6 +369,41 @@ async function run() {
       "create: a genuinely-full slot is NOT an outage",
     );
     assert(calls.createEvent.length === 0, "create: no calendar event when no agent is free");
+  }
+
+  // --- createBooking: EMPTY pool (misconfigured bucket) vs full slot (#358) ---
+  {
+    const { deps, calls } = makeDeps({ candidates: [], freeEmails: new Set() });
+    let err: unknown;
+    try {
+      await createBooking(input, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof NoEligibleAgentsError,
+      "create: NoEligibleAgentsError when the bucket has zero eligible agents",
+    );
+    assert(
+      !(err instanceof SlotUnavailableError),
+      "create: an empty pool is DISTINCT from a genuinely-full slot",
+    );
+    assert(calls.createEvent.length === 0, "create-empty-pool: no calendar event");
+  }
+
+  // --- createBooking: unknown bucket code (#358) ---
+  {
+    const { deps } = makeDeps({ unknownBucket: true });
+    let err: unknown;
+    try {
+      await createBooking(input, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof UnknownBucketError,
+      "create: UnknownBucketError when the bucket code resolves to nothing",
+    );
   }
 
   // --- createBooking: verify-on-book outage (couldn't check) vs full slot ---

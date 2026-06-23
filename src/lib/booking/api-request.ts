@@ -62,9 +62,16 @@ export function parseDirectBookingRequest(raw: unknown): ParseResult {
     return { ...INVALID, error: "Invalid timezone (expected an IANA zone, e.g. America/New_York)" };
   }
 
-  // A parseable instant. Luxon is stricter than Date.parse about junk.
-  if (!DateTime.fromISO(data.start, { setZone: true }).isValid) {
-    return { ...INVALID, error: "Invalid start (expected an ISO 8601 instant)" };
+  // A parseable instant that carries an explicit offset (Z or ±HH:MM). A bare
+  // local time ("2026-07-01T15:00:00") has no zone, so it'd be read as server
+  // time and could book the wrong hour — require the offset (#358).
+  const hasOffset = /(Z|[+-]\d{2}:?\d{2})$/.test(data.start.trim());
+  if (!hasOffset || !DateTime.fromISO(data.start, { setZone: true }).isValid) {
+    return {
+      ...INVALID,
+      error:
+        "Invalid start (expected an ISO 8601 instant with a timezone offset, e.g. 2026-07-01T15:00:00Z)",
+    };
   }
 
   const attendeeErrors = validateAttendee(data.attendee);

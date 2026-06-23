@@ -4,6 +4,7 @@ import {
   createBooking,
   SlotUnavailableError,
   VerifyUnavailableError,
+  NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateAttendee } from "@/lib/attendee";
 import {
@@ -81,7 +82,9 @@ export async function POST(req: NextRequest) {
       await refundRequest(ip, BOOKING_RATE_RULES);
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
-    if (err instanceof SlotUnavailableError) {
+    // A genuinely-full slot OR an empty/misconfigured pool both surface to the
+    // consumer as "no times" (409); the API route (#358) distinguishes them.
+    if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     return NextResponse.json(
