@@ -65,8 +65,8 @@ Authorization: Bearer <BOOKING_API_KEY>
     "email": "dana@example.com",
     "phone": "+12155550100"
   },
-  "externalId": "lead-abc-123",              // required — your stable per-person id
-  "salesforceId": "00Q5x000001abcEAA",       // optional
+  "externalId": "00Q5x000001abcEAA",         // required — the lead's Salesforce id
+  "salesforceId": "00Q5x000001abcEAA",       // optional — defaults to external_id
   "prefill": { "utm_source": "regal" },      // optional — forwarded in webhooks
   "confirmReschedule": false                 // optional — see "rebook" below
 }
