@@ -43,6 +43,22 @@ type BookBody = {
   code?: string;
 };
 
+type DirectBody = {
+  bookings?: Array<{ id: string; manageUrl?: string; status?: string }>;
+  booking?: { id: string; manageUrl?: string; status?: string };
+  outcome?: string;
+  code?: string;
+  error?: string;
+};
+
+async function req(method: string, path: string): Promise<{ status: number; body: DirectBody }> {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${KEY}` },
+  });
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as DirectBody };
+}
+
 async function slotsFor(bucket: string): Promise<string[]> {
   const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(bucket)}`);
   const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
@@ -184,6 +200,47 @@ async function scenarioConfirm(slotsA: string[]) {
   check(confirmed.body.outcome === "rescheduled", `same call with confirmReschedule:true -> rescheduled (got ${confirmed.body.outcome})`);
 }
 
+// --- Scenario 4: GET lookup (list + by-id + status filter) + DELETE-by-id ---
+async function scenarioLookupAndCancel(slotsA: string[]) {
+  console.log("\n[4] GET list / GET by-id / GET by-id+status / DELETE by-id");
+  const id = uniq("lookup");
+  const phone = "+12155550102";
+
+  const created = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone });
+  check(created.status === 200 && created.body.outcome === "created", `seed booking -> created (got ${created.status}/${created.body.outcome})`);
+  const bookingId = created.body.booking?.id;
+  if (!bookingId) {
+    check(false, "seed booking returned a booking id (needed for lookup checks)");
+    return;
+  }
+
+  // GET list — the booked person has at least one active booking.
+  const listRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}`);
+  check(
+    listRes.status === 200 && Array.isArray(listRes.body.bookings) && (listRes.body.bookings?.length ?? 0) >= 1,
+    "GET list returns the person's active booking(s)",
+  );
+
+  // GET by id — returns that one booking with a manageUrl.
+  const oneRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  check(
+    oneRes.status === 200 && oneRes.body.booking?.id === bookingId && !!oneRes.body.booking?.manageUrl,
+    "GET by id returns the booking + manageUrl",
+  );
+
+  // GET by id with a non-matching status assertion → 404.
+  const missRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}&status=cancelled`);
+  check(missRes.status === 404 && missRes.body.code === "NOT_FOUND", "GET by id with mismatched status filter -> 404 NOT_FOUND");
+
+  // DELETE by id — cancels (this is also the cleanup for this scenario).
+  const delRes = await req("DELETE", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  check(delRes.status === 200 && delRes.body.outcome === "cancelled", "DELETE by id cancels the booking");
+
+  // Repeat DELETE → 404 (no longer active).
+  const delAgain = await req("DELETE", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  check(delAgain.status === 404 && delAgain.body.code === "NOT_FOUND", "second DELETE -> 404 NOT_FOUND (already cancelled)");
+}
+
 async function main() {
   if (!KEY) {
     console.error("Set BOOKING_API_KEY in the environment first.");
@@ -208,6 +265,7 @@ async function main() {
 
   // Clean up between scenarios (not just at the end): the single test agent is
   // shared, so releasing each scenario's holds keeps the next one's slots free.
+  // Scenario 4 (lookup + cancel) uses DELETE-by-id for its own cleanup.
   try {
     await scenarioDryRun(slotsA);
     await scenarioMain(slotsA);
@@ -215,6 +273,8 @@ async function main() {
     await scenarioCrossBucket(slotsA);
     await cleanup();
     await scenarioConfirm(slotsA);
+    await cleanup();
+    await scenarioLookupAndCancel(slotsA);
   } finally {
     console.log("\nCleaning up test bookings...");
     await cleanup();

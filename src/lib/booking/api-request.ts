@@ -13,6 +13,8 @@
 import { z } from "zod";
 import { IANAZone, DateTime } from "luxon";
 import { validateAttendee, type AttendeeErrors } from "../attendee.ts";
+import { validateReason, type ValidatedReason } from "./core.ts";
+import type { BookingStatus } from "../db/types.ts";
 
 export interface DirectBookingRequest {
   bucketCode: string;
@@ -111,4 +113,86 @@ export function parseDirectBookingRequest(raw: unknown): ParseResult {
       dryRun: data.dryRun,
     },
   };
+}
+
+const BOOKING_STATUSES: readonly BookingStatus[] = [
+  "confirmed",
+  "rescheduled",
+  "cancelled",
+  "completed",
+];
+
+export interface LookupQuery {
+  externalId: string;
+  salesforceId: string | null;
+  bookingId: string | null;
+  status: BookingStatus | null;
+}
+
+export type LookupParseResult =
+  | { ok: true; value: LookupQuery }
+  | { ok: false; status: 400; error: string };
+
+/**
+ * Parse a GET /api/bookings/direct lookup query (#386). `externalId` is required
+ * (the bot's stable per-person id). `bookingId` selects one booking; `status` is
+ * an optional assertion meaningful only with `bookingId` (the by-id handler
+ * applies it). An unrecognized `status` is a 400.
+ */
+export function parseLookupQuery(params: URLSearchParams): LookupParseResult {
+  const externalId = (params.get("externalId") ?? "").trim();
+  if (!externalId) {
+    return { ok: false, status: 400, error: "externalId is required" };
+  }
+  const salesforceId = (params.get("salesforceId") ?? "").trim() || null;
+  const bookingId = (params.get("bookingId") ?? "").trim() || null;
+
+  let status: BookingStatus | null = null;
+  const statusRaw = (params.get("status") ?? "").trim();
+  if (statusRaw) {
+    if (!BOOKING_STATUSES.includes(statusRaw as BookingStatus)) {
+      return { ok: false, status: 400, error: "Invalid status filter" };
+    }
+    status = statusRaw as BookingStatus;
+  }
+  return { ok: true, value: { externalId, salesforceId, bookingId, status } };
+}
+
+export interface CancelQuery {
+  bookingId: string;
+  externalId: string | null;
+  salesforceId: string | null;
+  reason: ValidatedReason | null;
+}
+
+export type CancelParseResult =
+  | { ok: true; value: CancelQuery }
+  | { ok: false; status: 400; error: string };
+
+/**
+ * Parse a DELETE /api/bookings/direct cancel query (#386). Requires an explicit
+ * `bookingId` AND a strong id (`externalId` or `salesforceId`) so the caller
+ * targets exactly one ownership-checked booking. Optional `reason` (+
+ * `reasonDetail` for the "other" code) is validated against CANCEL_REASONS;
+ * absent → null (the service substitutes the default api_cancellation reason).
+ */
+export function parseCancelQuery(params: URLSearchParams): CancelParseResult {
+  const bookingId = (params.get("bookingId") ?? "").trim();
+  if (!bookingId) {
+    return { ok: false, status: 400, error: "bookingId is required" };
+  }
+  const externalId = (params.get("externalId") ?? "").trim() || null;
+  const salesforceId = (params.get("salesforceId") ?? "").trim() || null;
+  if (!externalId && !salesforceId) {
+    return { ok: false, status: 400, error: "externalId or salesforceId is required" };
+  }
+
+  let reason: ValidatedReason | null = null;
+  const reasonCode = (params.get("reason") ?? "").trim();
+  if (reasonCode) {
+    const v = validateReason("cancel", { code: reasonCode, detail: params.get("reasonDetail") });
+    if (!v.ok) return { ok: false, status: 400, error: v.error };
+    reason = v.reason;
+  }
+  return { ok: true, value: { bookingId, externalId, salesforceId, reason } };
 }

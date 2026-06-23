@@ -11,6 +11,10 @@ import {
   reassignBooking,
   bookViaApi,
   previewBooking,
+  lookupPersonBookings,
+  getPersonBookingById,
+  cancelDirectBooking,
+  BookingNotFoundError,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -896,6 +900,88 @@ async function run() {
     });
     const res = await bookViaApi(apiInput, deps);
     assert(res.outcome === "rescheduled", "bookViaApi: weak match + confirmReschedule -> rescheduled");
+  }
+
+  // --- lookupPersonBookings (#386): maps active rows to API views ---
+  {
+    const bk = makeBooking({ id: "bkL", external_id: "ext-1", salesforce_id: "sf-9" });
+    const { deps } = makeDeps({ personBookings: [bk] });
+    const views = await lookupPersonBookings(
+      { externalId: "ext-1", salesforceId: null, email: null, phone: null },
+      deps,
+    );
+    assert(views.length === 1 && views[0].id === "bkL", "lookup returns one view");
+    assert(views[0].manageUrl === "https://slate.test/booking/manage/tok1", "lookup view has manageUrl");
+    assert(views[0].externalId === "ext-1" && views[0].status === "confirmed", "lookup view fields mapped");
+  }
+
+  // --- getPersonBookingById (#386) ---
+  {
+    const bk = makeBooking({ id: "bkG", external_id: "ext-1", status: "cancelled" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps } = makeDeps({ bookingById: ctx });
+    const view = await getPersonBookingById(
+      { bookingId: "bkG", identity: { externalId: "ext-1", salesforceId: null }, status: null },
+      deps,
+    );
+    assert(view.id === "bkG" && view.status === "cancelled", "get-by-id returns any status when no filter");
+
+    let threw = false;
+    try {
+      await getPersonBookingById(
+        { bookingId: "bkG", identity: { externalId: "ext-1", salesforceId: null }, status: "confirmed" },
+        deps,
+      );
+    } catch (e) { threw = e instanceof BookingNotFoundError; }
+    assert(threw, "get-by-id status filter mismatch → BookingNotFoundError");
+
+    let threwOwner = false;
+    try {
+      await getPersonBookingById(
+        { bookingId: "bkG", identity: { externalId: "stranger", salesforceId: null }, status: null },
+        deps,
+      );
+    } catch (e) { threwOwner = e instanceof BookingNotFoundError; }
+    assert(threwOwner, "get-by-id wrong owner → BookingNotFoundError");
+  }
+  {
+    const { deps } = makeDeps({ bookingById: null });
+    let threw = false;
+    try {
+      await getPersonBookingById(
+        { bookingId: "nope", identity: { externalId: "ext-1", salesforceId: null }, status: null },
+        deps,
+      );
+    } catch (e) { threw = e instanceof BookingNotFoundError; }
+    assert(threw, "get-by-id missing booking → BookingNotFoundError");
+  }
+
+  // --- cancelDirectBooking (#386) ---
+  {
+    const bk = makeBooking({ id: "bkC", external_id: "ext-1", status: "confirmed", gcal_event_id: "g1" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps, calls } = makeDeps({ bookingById: ctx, existing: ctx });
+    const view = await cancelDirectBooking(
+      { bookingId: "bkC", identity: { externalId: "ext-1", salesforceId: null }, reason: { code: "api_cancellation", detail: null } },
+      deps,
+    );
+    assert(view.status === "cancelled", "cancel returns the cancelled view");
+    assert(calls.webhooks.some((w) => w.event === "booking.cancelled"), "cancel fires booking.cancelled");
+    assert(calls.bookingEvents.some((e) => e.action === "cancelled" && e.initiator === "customer"),
+      "cancel records a customer-initiated history row");
+  }
+  {
+    const bk = makeBooking({ id: "bkD", external_id: "ext-1", status: "completed" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps } = makeDeps({ bookingById: ctx });
+    let threw = false;
+    try {
+      await cancelDirectBooking(
+        { bookingId: "bkD", identity: { externalId: "ext-1", salesforceId: null }, reason: { code: "api_cancellation", detail: null } },
+        deps,
+      );
+    } catch (e) { threw = e instanceof BookingNotFoundError; }
+    assert(threw, "cancel of a non-active booking → BookingNotFoundError");
   }
 }
 

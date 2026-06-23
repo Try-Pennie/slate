@@ -12,6 +12,7 @@
 import {
   findPersonMatch,
   decidePersonBooking,
+  bookingBelongsToPerson,
   type PersonIdentity,
 } from "../src/lib/booking/person-dedupe.ts";
 import type { Booking } from "../src/lib/db/types.ts";
@@ -147,6 +148,20 @@ assert(
   const m = findPersonMatch(id({ externalId: "lead-1", email: "dana@example.com" }), candidates);
   assert(m?.booking.id === "strong" && m?.strength === "strong", "strong id match beats a weak email match");
 }
+
+// --- bookingBelongsToPerson (strong-id ownership, #386) ---
+const ownExt = { external_id: "ext-1", salesforce_id: null } as unknown as import("../src/lib/db/types.ts").Booking;
+const ownSf = { external_id: null, salesforce_id: "sf-9" } as unknown as import("../src/lib/db/types.ts").Booking;
+const stranger = { external_id: "other", salesforce_id: "other-sf" } as unknown as import("../src/lib/db/types.ts").Booking;
+
+assert(bookingBelongsToPerson(ownExt, { externalId: "ext-1", salesforceId: null }) === true,
+  "owns by external_id");
+assert(bookingBelongsToPerson(ownSf, { externalId: null, salesforceId: "sf-9" }) === true,
+  "owns by salesforce_id");
+assert(bookingBelongsToPerson(stranger, { externalId: "ext-1", salesforceId: "sf-9" }) === false,
+  "different person on both ids = not owned");
+assert(bookingBelongsToPerson(ownExt, { externalId: null, salesforceId: null }) === false,
+  "no ids supplied = not owned");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

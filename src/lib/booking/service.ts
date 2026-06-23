@@ -38,6 +38,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type {
   Booking,
   BookingEventInitiator,
+  BookingStatus,
   Bucket,
   EventType,
   User,
@@ -195,6 +196,7 @@ export {
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
+  BookingNotFoundError,
 } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
 
@@ -652,6 +654,42 @@ export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
  */
 export function previewBooking(input: ApiBookingInput): Promise<ApiBookingPreview> {
   return orchestration.previewBooking(input, realDeps());
+}
+
+/** Default reason stamped on an API cancel when the bot supplies none (#386). */
+const API_CANCEL_REASON: ValidatedReason = { code: "api_cancellation", detail: null };
+
+/** Lookup API (#386): a person's active bookings by strong id (email/phone null
+ *  so only strong matches surface). */
+export function lookupPersonBookings(identity: {
+  externalId: string;
+  salesforceId: string | null;
+}): Promise<orchestration.ApiBookingView[]> {
+  return orchestration.lookupPersonBookings(
+    { externalId: identity.externalId, salesforceId: identity.salesforceId, email: null, phone: null },
+    realDeps(),
+  );
+}
+
+/** Lookup API (#386): one booking by id (any status, or asserted `status`). */
+export function getPersonBookingById(input: {
+  bookingId: string;
+  identity: { externalId: string | null; salesforceId: string | null };
+  status: BookingStatus | null;
+}): Promise<orchestration.ApiBookingView> {
+  return orchestration.getPersonBookingById(input, realDeps());
+}
+
+/** Cancel API (#386): cancel one owned booking by id. */
+export function cancelDirectBooking(input: {
+  bookingId: string;
+  identity: { externalId: string | null; salesforceId: string | null };
+  reason: ValidatedReason | null;
+}): Promise<orchestration.ApiBookingView> {
+  return orchestration.cancelDirectBooking(
+    { bookingId: input.bookingId, identity: input.identity, reason: input.reason ?? API_CANCEL_REASON },
+    realDeps(),
+  );
 }
 
 export function rescheduleBooking(

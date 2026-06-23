@@ -1,19 +1,46 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
-import { parseDirectBookingRequest } from "@/lib/booking/api-request";
+import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery } from "@/lib/booking/api-request";
 import {
   bookViaApi,
   previewBooking,
+  lookupPersonBookings,
+  getPersonBookingById,
+  cancelDirectBooking,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
+  BookingNotFoundError,
 } from "@/lib/booking/service";
 import { allowRequest } from "@/lib/rate-limit";
 import { DIRECT_BOOKING_API_RATE_RULES } from "@/lib/rate-limit-core";
 
 export const dynamic = "force-dynamic";
+
+type AuthOutcome =
+  | { ok: true; keyId: "primary" | "secondary" }
+  | { ok: false; response: NextResponse };
+
+/** Shared auth + per-key rate-limit gate for every method on this route (#386). */
+async function authorize(req: NextRequest): Promise<AuthOutcome> {
+  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
+  const auth = authenticateBearer(req.headers.get("authorization"), keys);
+  if (!auth.ok) {
+    return { ok: false, response: NextResponse.json({ error: auth.error }, { status: auth.status }) };
+  }
+  if (!(await allowRequest(`key:${auth.keyId}`, DIRECT_BOOKING_API_RATE_RULES))) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Rate limit exceeded for this API key." },
+        { status: 429 },
+      ),
+    };
+  }
+  return { ok: true, keyId: auth.keyId };
+}
 
 /**
  * Direct booking API (#253/#250, milestone #2). A key-authed endpoint the
@@ -29,23 +56,9 @@ export const dynamic = "force-dynamic";
  *   POST (Bearer BOOKING_API_KEY[_2]) -> 501 | 401 | 429 | 503
  */
 export async function POST(req: NextRequest) {
-  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
-  const auth = authenticateBearer(req.headers.get("authorization"), keys);
-  if (!auth.ok) {
-    return NextResponse.json({ error: auth.error }, { status: auth.status });
-  }
-
-  // Per-KEY ceiling (not per-IP): one bot behind one IP legitimately does
-  // ~2000/day. Generous runaway/leaked-key backstop; fails open (allowRequest).
-  if (!(await allowRequest(`key:${auth.keyId}`, DIRECT_BOOKING_API_RATE_RULES))) {
-    return NextResponse.json(
-      { error: "Rate limit exceeded for this API key." },
-      { status: 429 },
-    );
-  }
-
-  // Attribution: which key served the call (the label, never the secret).
-  console.log(`booking-api: authenticated request via key '${auth.keyId}'`);
+  const authd = await authorize(req);
+  if (!authd.ok) return authd.response;
+  console.log(`booking-api: authenticated request via key '${authd.keyId}'`);
 
   const parsed = parseDirectBookingRequest(await req.json().catch(() => null));
   if (!parsed.ok) {
@@ -119,6 +132,81 @@ export async function POST(req: NextRequest) {
       { status },
     );
   }
+}
+
+/**
+ * Lookup (#386). `?externalId=` lists the person's active bookings;
+ * `&bookingId=` returns that one (any status, or asserted `&status=`). Strong-id
+ * resolution only — a shared email/phone never surfaces another person's booking.
+ */
+export async function GET(req: NextRequest) {
+  const authd = await authorize(req);
+  if (!authd.ok) return authd.response;
+
+  const parsed = parseLookupQuery(req.nextUrl.searchParams);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
+  }
+  const { externalId, salesforceId, bookingId, status } = parsed.value;
+
+  try {
+    if (bookingId) {
+      const booking = await getPersonBookingById({
+        bookingId,
+        identity: { externalId, salesforceId },
+        status,
+      });
+      return NextResponse.json({ booking });
+    }
+    const bookings = await lookupPersonBookings({ externalId, salesforceId });
+    return NextResponse.json({ bookings });
+  } catch (err) {
+    const { httpStatus, code } = mapLookupError(err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Lookup failed", code },
+      { status: httpStatus },
+    );
+  }
+}
+
+/**
+ * Cancel one booking by id (#386). Requires `bookingId` + a strong id; cancels
+ * only if the booking is owned and active, else 404 NOT_FOUND.
+ */
+export async function DELETE(req: NextRequest) {
+  const authd = await authorize(req);
+  if (!authd.ok) return authd.response;
+
+  const parsed = parseCancelQuery(req.nextUrl.searchParams);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
+  }
+  const { bookingId, externalId, salesforceId, reason } = parsed.value;
+
+  try {
+    const booking = await cancelDirectBooking({
+      bookingId,
+      identity: { externalId, salesforceId },
+      reason,
+    });
+    return NextResponse.json({ outcome: "cancelled", booking });
+  } catch (err) {
+    const { httpStatus, code } = mapLookupError(err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Cancel failed", code },
+      { status: httpStatus },
+    );
+  }
+}
+
+/** Error→code map for the lookup/cancel paths (#386): a missing/unowned booking
+ *  is NOT_FOUND; anything else is an unexpected INTERNAL. */
+function mapLookupError(err: unknown): {
+  httpStatus: number;
+  code: "NOT_FOUND" | "INTERNAL";
+} {
+  if (err instanceof BookingNotFoundError) return { httpStatus: 404, code: "NOT_FOUND" };
+  return { httpStatus: 500, code: "INTERNAL" };
 }
 
 /**
