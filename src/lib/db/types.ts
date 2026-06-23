@@ -368,3 +368,14 @@ export interface BucketSlotsRow {
   payload: unknown;
   computed_at: string;
 }
+
+export interface PendingEventDeletion {
+  id: string;
+  calendar_email: string;
+  gcal_event_id: string;
+  booking_id: string | null;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}

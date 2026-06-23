@@ -14,6 +14,8 @@ import {
   lookupPersonBookings,
   getPersonBookingById,
   cancelDirectBooking,
+  processPendingEventDeletions,
+  PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
   SlotUnavailableError,
   VerifyUnavailableError,
@@ -23,6 +25,7 @@ import {
   type BookingContext,
   type CreateBookingInput,
   type ApiBookingInput,
+  type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType, User } from "../src/lib/db/types.ts";
 
@@ -96,6 +99,8 @@ interface FakeOpts {
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
   unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
+  deleteEventThrows?: boolean;
+  pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -104,6 +109,7 @@ function makeDeps(opts: FakeOpts) {
     verifyFree: [] as string[][],
     createEvent: [] as { email: string }[],
     deleteEvent: [] as { id: string }[],
+    enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     deleteBusyBlocks: [] as string[],
@@ -125,6 +131,8 @@ function makeDeps(opts: FakeOpts) {
     releaseReschedule: 0,
     invalidateSlots: [] as string[],
     roundRobinPreview: [] as (boolean | undefined)[],
+    removePendingEventDeletion: [] as string[],
+    bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
   };
   let seq = 0;
   let insertAttempted = false;
@@ -154,7 +162,11 @@ function makeDeps(opts: FakeOpts) {
       return `gcal-${++seq}`;
     },
     deleteEvent: async (_email, id) => {
+      if (opts.deleteEventThrows) throw new Error("google 503");
       calls.deleteEvent.push({ id });
+    },
+    enqueueEventDeletion: async (email, eventId, bookingId) => {
+      calls.enqueueEventDeletion.push({ email, eventId, bookingId });
     },
     updateEventTime: async (_email, id) => {
       calls.updateEventTime.push({ id });
@@ -224,6 +236,9 @@ function makeDeps(opts: FakeOpts) {
     invalidateSlots: async (bucketCode) => {
       calls.invalidateSlots.push(bucketCode);
     },
+    loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
+    removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
+    bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },
   };
   return { deps, calls };
 }
@@ -956,6 +971,25 @@ async function run() {
     assert(threw, "get-by-id missing booking → BookingNotFoundError");
   }
 
+  // --- #401: cancel enqueues the event deletion when Google delete fails ---
+  {
+    const bk = makeBooking({ id: "bkX", status: "confirmed", gcal_event_id: "gE", agent_email: "a@x.com" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, deleteEventThrows: true });
+    await cancelBooking("tok1", CR, "customer", deps);
+    assert(calls.enqueueEventDeletion.length === 1, "cancel enqueues a deletion when deleteEvent fails");
+    assert(calls.enqueueEventDeletion[0].eventId === "gE" && calls.enqueueEventDeletion[0].bookingId === "bkX",
+      "enqueue carries the event id + booking id");
+  }
+  {
+    // success path: no enqueue
+    const bk = makeBooking({ id: "bkY", status: "confirmed", gcal_event_id: "gE2", agent_email: "a@x.com" });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    await cancelBooking("tok1", CR, "customer", deps);
+    assert(calls.enqueueEventDeletion.length === 0, "cancel does NOT enqueue when deleteEvent succeeds");
+  }
+
   // --- cancelDirectBooking (#386) ---
   {
     const bk = makeBooking({ id: "bkC", external_id: "ext-1", status: "confirmed", gcal_event_id: "g1" });
@@ -982,6 +1016,27 @@ async function run() {
       );
     } catch (e) { threw = e instanceof BookingNotFoundError; }
     assert(threw, "cancel of a non-active booking → BookingNotFoundError");
+  }
+
+  // --- #401 drain ---
+  {
+    const rows: PendingEventDeletion[] = [
+      { id: "p1", calendar_email: "a@x.com", gcal_event_id: "e1", booking_id: null, attempts: 0, last_error: null, created_at: "2026-06-23T00:00:00.000Z", updated_at: "2026-06-23T00:00:00.000Z" },
+      { id: "p2", calendar_email: "b@x.com", gcal_event_id: "e2", booking_id: null, attempts: 0, last_error: null, created_at: "2026-06-23T00:00:00.000Z", updated_at: "2026-06-23T00:00:00.000Z" },
+    ];
+    const { deps, calls } = makeDeps({ pending: rows }); // deleteEvent succeeds
+    const res = await processPendingEventDeletions(deps, 50);
+    assert(res.deleted === 2 && res.failed === 0, "drain deletes all and removes them");
+    assert(calls.removePendingEventDeletion.length === 2, "successful deletes remove the rows");
+  }
+  {
+    const rows: PendingEventDeletion[] = [{ id: "p3", calendar_email: "a@x.com", gcal_event_id: "e3", booking_id: null, attempts: PENDING_DELETION_ALERT_AFTER - 1, last_error: "x", created_at: "2026-06-23T00:00:00.000Z", updated_at: "2026-06-23T00:00:00.000Z" }];
+    const { deps, calls } = makeDeps({ pending: rows, deleteEventThrows: true });
+    const res = await processPendingEventDeletions(deps, 50);
+    assert(res.failed === 1 && res.deleted === 0, "a failing delete is counted, not removed");
+    assert(calls.bumpPendingEventDeletion[0].attempts === PENDING_DELETION_ALERT_AFTER, "bump records attempts+1");
+    assert(res.stuck.length === 1, "a row crossing the alert threshold is reported as stuck");
+    assert(calls.removePendingEventDeletion.length === 0, "a failing delete is NOT removed");
   }
 }
 

@@ -30,10 +30,13 @@ import type {
   BookingStatus,
   Bucket,
   EventType,
+  PendingEventDeletion,
   RoutingTrace,
   User,
   WebhookEvent,
 } from "@/lib/db/types";
+
+export type { PendingEventDeletion };
 
 /**
  * Booking orchestration (create / reschedule / cancel / complete), split out
@@ -94,6 +97,22 @@ export class BookingNotFoundError extends Error {
   constructor() {
     super("Booking not found");
     this.name = "BookingNotFoundError";
+  }
+}
+
+/** Delete a calendar event, and if the delete FAILS, enqueue it for the retry
+ *  drain (#401) instead of silently dropping it. Never throws to the caller —
+ *  the booking flow proceeds; the queue is the durable net. */
+async function deleteEventBestEffort(
+  deps: BookingDeps,
+  email: string,
+  eventId: string,
+  bookingId: string | null,
+): Promise<void> {
+  try {
+    await deps.deleteEvent(email, eventId);
+  } catch {
+    await deps.enqueueEventDeletion(email, eventId, bookingId).catch(() => {});
   }
 }
 
@@ -206,6 +225,14 @@ export interface BookingDeps {
   ): Promise<VerifyResult>;
   createEvent(email: string, args: CreateEventArgs): Promise<string>;
   deleteEvent(email: string, eventId: string): Promise<void>;
+  /** #401: record a Google event deletion that failed, for the retry drain. */
+  enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
+  /** #401: load pending event deletions for the retry drain. */
+  loadPendingEventDeletions(limit: number): Promise<PendingEventDeletion[]>;
+  /** #401: remove a successfully-deleted pending event deletion row. */
+  removePendingEventDeletion(id: string): Promise<void>;
+  /** #401: bump the attempt count and record the error for a failed deletion. */
+  bumpPendingEventDeletion(id: string, attempts: number, error: string): Promise<void>;
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
@@ -262,6 +289,42 @@ export interface BookingDeps {
   appBaseUrl(): string;
   /** Best-effort clear of a bucket's cached availability after a booking changes it. */
   invalidateSlots(bucketCode: string): Promise<void>;
+}
+
+/** Alert once a queued deletion has failed this many times. */
+export const PENDING_DELETION_ALERT_AFTER = 5;
+
+/** Stop retrying a deletion after this many attempts (it stays in the table,
+ *  diagnosable via last_error, and already alerted at PENDING_DELETION_ALERT_AFTER). */
+export const PENDING_DELETION_GIVE_UP_AT = 50;
+
+/**
+ * Drain a batch of the deletion retry queue (#401): re-attempt each delete;
+ * remove on success (404/410 already-gone counts as success); on failure bump
+ * the attempt count and report rows that crossed the alert threshold. Pure —
+ * the caller (sync lane) sends the throttled alert for `stuck`.
+ */
+export async function processPendingEventDeletions(
+  deps: BookingDeps,
+  limit: number,
+): Promise<{ deleted: number; failed: number; stuck: PendingEventDeletion[] }> {
+  const rows = await deps.loadPendingEventDeletions(limit);
+  let deleted = 0;
+  let failed = 0;
+  const stuck: PendingEventDeletion[] = [];
+  for (const row of rows) {
+    try {
+      await deps.deleteEvent(row.calendar_email, row.gcal_event_id);
+      await deps.removePendingEventDeletion(row.id);
+      deleted++;
+    } catch (err) {
+      const attempts = row.attempts + 1;
+      await deps.bumpPendingEventDeletion(row.id, attempts, err instanceof Error ? err.message : String(err));
+      failed++;
+      if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
+    }
+  }
+  return { deleted, failed, stuck };
 }
 
 /**
@@ -484,7 +547,7 @@ export async function createBooking(
 
   if (!inserted.ok) {
     // Roll back the calendar event so we don't orphan a hold.
-    await deps.deleteEvent(email, gcalEventId).catch(() => {});
+    await deleteEventBestEffort(deps, email, gcalEventId, null);
     if (inserted.conflict) {
       // Either a concurrent duplicate of THIS submit won the idempotency race
       // (return their booking), or a different attendee took the slot first
@@ -827,7 +890,7 @@ async function applyReschedule(
     agentName = newAgent.name;
     agentEmail = newAgent.email;
     if (currentEmail && booking.gcal_event_id) {
-      await deps.deleteEvent(currentEmail, booking.gcal_event_id).catch(() => {});
+      await deleteEventBestEffort(deps, currentEmail, booking.gcal_event_id, booking.id);
     }
     const newEventId = await deps.createEvent(next.email, {
       summary: `${eventType.name}${
@@ -925,7 +988,7 @@ export async function reassignBooking(
   // Move the calendar event to the owning agent at the same time. No free check:
   // this path intentionally double-books, gated only by `allow_double_book`.
   if (booking.agent_email && booking.gcal_event_id) {
-    await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
+    await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
   }
   const newEventId = await deps.createEvent(agent.email, {
     summary: `${eventType.name}${
@@ -1045,7 +1108,7 @@ export async function cancelBooking(
   }
 
   if (booking.agent_email && booking.gcal_event_id) {
-    await deps.deleteEvent(booking.agent_email, booking.gcal_event_id).catch(() => {});
+    await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
   }
 
   await deps.deleteBusyBlocksForBooking(booking.id);
