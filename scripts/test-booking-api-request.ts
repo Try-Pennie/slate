@@ -5,7 +5,7 @@
 // external_id (the bot's stable per-person id). Normalizes (trims, defaults
 // prefill) so the booking layer gets clean input.
 // Run: node --experimental-strip-types scripts/test-booking-api-request.ts
-import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery } from "../src/lib/booking/api-request.ts";
+import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, encodeCursor, decodeCursor } from "../src/lib/booking/api-request.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -195,6 +195,35 @@ assert(cqReason.ok && cqReason.value.reason?.code === "no_longer_interested",
   "cancel: valid reason code accepted");
 const cqBadReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1&reason=not_a_reason"));
 assert(!cqBadReason.ok && cqBadReason.status === 400, "cancel: invalid reason = 400");
+
+// --- list query parser (#392) ---
+assert(decodeCursor(encodeCursor(150)) === 150, "cursor round-trips an offset");
+assert(decodeCursor("!!!not-base64-int") === null, "garbage cursor -> null");
+
+const lOk = parseListQuery(new URLSearchParams("status=confirmed&limit=10"));
+assert(lOk.ok && lOk.value.status === "confirmed" && lOk.value.limit === 10 && lOk.value.offset === 0,
+  "list: status + limit parsed, offset defaults 0");
+const lDefault = parseListQuery(new URLSearchParams(""));
+assert(lDefault.ok && lDefault.value.limit === 50 && lDefault.value.status === null,
+  "list: empty query is valid, default limit 50, no status");
+const lClamp = parseListQuery(new URLSearchParams("limit=10000"));
+assert(lClamp.ok && lClamp.value.limit === 100, "list: limit clamps to 100");
+const lBadStatus = parseListQuery(new URLSearchParams("status=pending"));
+assert(!lBadStatus.ok && lBadStatus.status === 400, "list: bad status -> 400");
+const lBadDate = parseListQuery(new URLSearchParams("afterStart=2026-07-01T15:00:00"));
+assert(!lBadDate.ok && lBadDate.status === 400, "list: zoneless afterStart -> 400");
+const lOkDate = parseListQuery(new URLSearchParams("afterStart=2026-07-01T15:00:00Z&updatedSince=2026-06-01T00:00:00Z"));
+assert(lOkDate.ok && lOkDate.value.afterStart === "2026-07-01T15:00:00Z" && lOkDate.value.updatedSince === "2026-06-01T00:00:00Z",
+  "list: offset-bearing ISO dates accepted");
+const lCursor = parseListQuery(new URLSearchParams(`cursor=${encodeCursor(50)}`));
+assert(lCursor.ok && lCursor.value.offset === 50, "list: cursor decodes to offset");
+const lBadCursor = parseListQuery(new URLSearchParams("cursor=@@@"));
+assert(!lBadCursor.ok && lBadCursor.status === 400, "list: bad cursor -> 400");
+const lCap = parseListQuery(new URLSearchParams(`cursor=${encodeCursor(20000)}`));
+assert(!lCap.ok && lCap.status === 400, "list: offset past 10000 cap -> 400");
+const lBucketAgent = parseListQuery(new URLSearchParams("bucket=411&agentEmail=a@x.com"));
+assert(lBucketAgent.ok && lBucketAgent.value.bucketCode === "411" && lBucketAgent.value.agentEmail === "a@x.com",
+  "list: bucket + agentEmail parsed");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
