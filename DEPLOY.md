@@ -29,6 +29,8 @@ wrangler secret put GOOGLE_HOSTED_DOMAIN
 wrangler secret put CRON_SECRET
 wrangler secret put GOOGLE_CHANNEL_TOKEN
 wrangler secret put OFFBOARDING_API_KEY   # optional; unset = offboarding endpoints return 503
+wrangler secret put BOOKING_API_KEY        # optional; unset = direct booking API returns 503
+# wrangler secret put BOOKING_API_KEY_2    # optional 2nd key — set only when rotating
 ```
 
 ## 3. Build + deploy
@@ -44,6 +46,11 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
   `{ "email": "person@trypennie.com" }`. Deactivate-not-delete (history is kept);
   idempotent. Unset key ⇒ the endpoints return 503 (disabled). Same pattern as
   `REASSIGN_API_KEY`.
+- **Direct booking API (optional):** to let the programmatic/AI auto-booker book
+  without the embed, set `BOOKING_API_KEY` (above) and share it with the
+  integrator. Unset ⇒ `POST /api/bookings/direct` returns 503. Set a second
+  `BOOKING_API_KEY_2` only when rotating (both keys are accepted at once). Full
+  request/response/error contract: `docs/booking-api.md`.
 - **Supabase → Authentication → URL Configuration → Redirect URLs:** add
   `https://slate.trypennie.dev/api/auth/callback`. (Set Site URL to
   `https://slate.trypennie.dev` too.)
