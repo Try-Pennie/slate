@@ -755,6 +755,42 @@ async function run() {
     );
   }
 
+  // --- bookViaApi: CROSS-BUCKET rebook -> move to the new bucket (#364) ---
+  {
+    // Existing appointment in a DIFFERENT bucket than the incoming request
+    // (resolveBucketByCode resolves to bkt1; the existing booking is in bkt-OLD).
+    const existingB = makeBooking({
+      id: "bk-existing",
+      external_id: "ext-1",
+      bucket_id: "bkt-OLD",
+      starts_at: "2026-06-08T13:00:00.000Z",
+    });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: "2026-06-09T14:00:00.000Z",
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({
+      personBookings: [existingB],
+      existing: { booking: existingB, bucket, eventType },
+    });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "rescheduled", "bookViaApi cross-bucket -> rescheduled outcome");
+    assert(
+      res.booking.id === "bk-new",
+      "bookViaApi cross-bucket: returns the NEW booking created in the new bucket",
+    );
+    assert(
+      calls.webhooks.some((w) => w.event === "booking.created"),
+      "bookViaApi cross-bucket: a new booking is created in the target bucket",
+    );
+    assert(
+      calls.webhooks.some((w) => w.event === "booking.cancelled"),
+      "bookViaApi cross-bucket: the old appointment is cancelled",
+    );
+  }
+
   // --- bookViaApi: WEAK match (email only), different time -> confirm_required ---
   {
     const existingB = makeBooking({
