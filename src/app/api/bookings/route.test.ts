@@ -19,6 +19,7 @@ const service = vi.hoisted(() => {
   return {
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
+    listBookings: vi.fn(),
     SlotUnavailableError,
     VerifyUnavailableError,
     NoEligibleAgentsError,
@@ -30,7 +31,7 @@ vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/booking/service", () => service);
 
-import { POST } from "./route";
+import { POST, GET } from "./route";
 
 function result(outcome: string) {
   return {
@@ -62,7 +63,7 @@ function post(authorization?: string, body?: unknown) {
   if (authorization) headers.set("authorization", authorization);
   if (body !== undefined) headers.set("content-type", "application/json");
   return POST(
-    new Request("http://localhost/api/bookings/direct", {
+    new Request("http://localhost/api/bookings", {
       method: "POST",
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -70,7 +71,7 @@ function post(authorization?: string, body?: unknown) {
   );
 }
 
-describe("POST /api/bookings/direct (auth skeleton)", () => {
+describe("POST /api/bookings (auth skeleton)", () => {
   beforeEach(() => {
     env.bookingApiKeyPrimary.mockReturnValue("");
     env.bookingApiKeySecondary.mockReturnValue("");
@@ -84,6 +85,8 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
       wouldAssign: { id: "u1", name: "Agent A", email: "a@x.com" },
       existingBookingId: null,
     });
+    service.listBookings.mockReset();
+    service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
   });
 
   it("returns 503 when no key is configured (endpoint disabled)", async () => {
@@ -196,5 +199,42 @@ describe("POST /api/bookings/direct (auth skeleton)", () => {
     const res = await post("Bearer real-secret", noExternalId);
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: "VALIDATION" });
+  });
+});
+
+describe("GET /api/bookings — list mode + lookup mode", () => {
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    service.listBookings.mockReset();
+    service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
+  });
+
+  function authedGet(url: string) {
+    return GET(new Request(url, { headers: { authorization: "Bearer real-secret" } }) as never);
+  }
+
+  it("GET list mode (no externalId) returns the list payload", async () => {
+    service.listBookings.mockResolvedValue({ items: [{ id: "bk-1", bucketCode: "411" }], nextCursor: null });
+    const res = await authedGet("http://localhost/api/bookings?status=confirmed");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ bookings: [{ id: "bk-1" }], nextCursor: null });
+  });
+
+  it("GET with blank externalId -> 400", async () => {
+    const res = await authedGet("http://localhost/api/bookings?externalId=");
+    expect(res.status).toBe(400);
+  });
+
+  it("GET with externalId + a list filter -> 400", async () => {
+    const res = await authedGet("http://localhost/api/bookings?externalId=x&afterStart=2026-07-01T00:00:00Z");
+    expect(res.status).toBe(400);
+  });
+
+  it("GET list mode requires auth (no key -> 401/503)", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("");
+    const res = await GET(new Request("http://localhost/api/bookings") as never);
+    expect([401, 503]).toContain(res.status);
   });
 });

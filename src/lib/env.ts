@@ -86,7 +86,7 @@ export const reassignApiKey = (): string => process.env.REASSIGN_API_KEY ?? "";
 // called by the existing offboarding automation. Empty = endpoints disabled (503).
 export const offboardingApiKey = (): string => process.env.OFFBOARDING_API_KEY ?? "";
 
-// Bearer keys for the direct booking API (POST /api/bookings/direct), called by
+// Bearer keys for the direct booking API (POST /api/bookings), called by
 // the external AI auto-booker (#355). TWO slots so the secret rotates with zero
 // downtime: add the new key as _2, point the caller at it, then retire the old
 // primary. Both empty = endpoint disabled (503).

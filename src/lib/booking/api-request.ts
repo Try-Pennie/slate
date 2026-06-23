@@ -134,7 +134,7 @@ export type LookupParseResult =
   | { ok: false; status: 400; error: string };
 
 /**
- * Parse a GET /api/bookings/direct lookup query (#386). `externalId` is required
+ * Parse a GET /api/bookings lookup query (#386). `externalId` is required
  * (the bot's stable per-person id). `bookingId` selects one booking; `status` is
  * an optional assertion meaningful only with `bookingId` (the by-id handler
  * applies it). An unrecognized `status` is a 400.
@@ -170,7 +170,7 @@ export type CancelParseResult =
   | { ok: false; status: 400; error: string };
 
 /**
- * Parse a DELETE /api/bookings/direct cancel query (#386). Requires an explicit
+ * Parse a DELETE /api/bookings cancel query (#386). Requires an explicit
  * `bookingId` AND a strong id (`externalId` or `salesforceId`) so the caller
  * targets exactly one ownership-checked booking. Optional `reason` (+
  * `reasonDetail` for the "other" code) is validated against CANCEL_REASONS;

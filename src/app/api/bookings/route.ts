@@ -1,13 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
-import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery } from "@/lib/booking/api-request";
+import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import {
   bookViaApi,
   previewBooking,
   lookupPersonBookings,
   getPersonBookingById,
   cancelDirectBooking,
+  listBookings,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -135,31 +136,53 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * Lookup (#386). `?externalId=` lists the person's active bookings;
- * `&bookingId=` returns that one (any status, or asserted `&status=`). Strong-id
- * resolution only — a shared email/phone never surfaces another person's booking.
+ * Lookup (#386) + List (#392). No `externalId` key → list mode (paginated,
+ * cross-person); `externalId` present → per-person lookup. Rejects blank
+ * externalId and list filters mixed into a lookup request.
  */
 export async function GET(req: NextRequest) {
   const authd = await authorize(req);
   if (!authd.ok) return authd.response;
 
-  const parsed = parseLookupQuery(req.nextUrl.searchParams);
+  const sp = new URL(req.url).searchParams;
+  const externalIdKeyPresent = sp.has("externalId");
+
+  // List mode: the externalId KEY is absent entirely.
+  if (!externalIdKeyPresent) {
+    const parsed = parseListQuery(sp);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
+    }
+    const { bookings, nextCursor } = await listBookings(parsed.value).then((r) => ({
+      bookings: r.items,
+      nextCursor: r.nextCursor,
+    }));
+    return NextResponse.json({ bookings, nextCursor });
+  }
+
+  // Lookup mode: externalId present. Reject blank, and reject list filters mixed in.
+  if ((sp.get("externalId") ?? "").trim() === "") {
+    return NextResponse.json({ error: "externalId is required", code: "VALIDATION" }, { status: 400 });
+  }
+  if (LIST_ONLY_PARAMS.some((k) => sp.has(k))) {
+    return NextResponse.json(
+      { error: "externalId selects per-person lookup; remove list filters or omit externalId", code: "VALIDATION" },
+      { status: 400 },
+    );
+  }
+
+  const parsed = parseLookupQuery(sp);
   if (!parsed.ok) {
     return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
   }
   const { externalId, salesforceId, bookingId, status } = parsed.value;
-
   try {
     if (bookingId) {
-      const booking = await getPersonBookingById({
-        bookingId,
-        identity: { externalId, salesforceId },
-        status,
-      });
+      const booking = await getPersonBookingById({ bookingId, identity: { externalId, salesforceId }, status });
       return NextResponse.json({ booking });
     }
-    const bookings = await lookupPersonBookings({ externalId, salesforceId });
-    return NextResponse.json({ bookings });
+    const list = await lookupPersonBookings({ externalId, salesforceId });
+    return NextResponse.json({ bookings: list });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
     return NextResponse.json(
