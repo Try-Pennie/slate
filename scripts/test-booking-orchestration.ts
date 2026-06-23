@@ -120,13 +120,17 @@ function makeDeps(opts: FakeOpts) {
     claimReschedule: 0,
     releaseReschedule: 0,
     invalidateSlots: [] as string[],
+    roundRobinPreview: [] as (boolean | undefined)[],
   };
   let seq = 0;
   let insertAttempted = false;
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   const deps: BookingDeps = {
     resolveBucketByCode: async () => (opts.unknownBucket ? null : { bucket, eventType }),
-    roundRobinCandidates: async () => opts.candidates ?? ["a"],
+    roundRobinCandidates: async (_b, _e, _ms, preview) => {
+      calls.roundRobinPreview.push(preview);
+      return opts.candidates ?? ["a"];
+    },
     isFree: async (email) => {
       calls.isFree.push(email);
       return free.has(email);
@@ -231,6 +235,10 @@ async function run() {
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     const res = await createBooking(input, deps);
     assert(res.booking.id === "bk-new", "create returns the persisted booking");
+    assert(
+      calls.roundRobinPreview.at(-1) !== true,
+      "real create routes in NON-preview mode (the shadow study sees only real assignments)",
+    );
     assert(
       res.booking.original_starts_at === "2026-06-08T13:00:00.000Z" &&
         res.booking.original_ends_at === "2026-06-08T13:30:00.000Z",
@@ -830,6 +838,10 @@ async function run() {
     assert(
       calls.createEvent.length === 0 && calls.webhooks.length === 0,
       "previewBooking: creates NO calendar event and fires NO webhook",
+    );
+    assert(
+      calls.roundRobinPreview.at(-1) === true,
+      "previewBooking: routes in PREVIEW mode (so it skips the #321 shadow-study log + unfair-ordering alert)",
     );
   }
   {
