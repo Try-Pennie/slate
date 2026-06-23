@@ -3,6 +3,7 @@ import {
   staleBuckets,
   bucketsDueForRecompute,
   recomputeHeadroom,
+  recomputeDueBuckets,
 } from "../src/lib/availability/precompute-cron.ts";
 
 let failures = 0;
@@ -74,6 +75,62 @@ assert(behind.drained === false && behind.warn === true, "warns ONLY when the du
 
 const empty = recomputeHeadroom(200, B, 0, 0);
 assert(empty.warn === false && empty.drained === true, "nothing due is healthy, not a warning");
+
+// recomputeDueBuckets: drain the due set in BOUNDED-CONCURRENCY waves within a
+// time budget, so the lane keeps up at fleet scale (#297 follow-up) instead of
+// the old one-at-a-time loop that fell ~1 bucket behind per cycle at ~110 agents.
+await (async () => {
+  // Drains everything when budget allows, and actually runs concurrently up to
+  // the limit (never beyond it).
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const recomputed = await recomputeDueBuckets(
+    ["a", "b", "c", "d", "e", "f", "g"],
+    async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 0));
+      inFlight--;
+    },
+    () => true,
+    3,
+  );
+  assert(recomputed === 7, `drains all due buckets when in budget (got ${recomputed})`);
+  assert(maxInFlight === 3, `runs concurrently up to the limit and no further (max ${maxInFlight})`);
+})();
+
+await (async () => {
+  // Stops launching new waves once the budget is exhausted (budget true for the
+  // first wave only -> only the first wave runs).
+  let allow = true;
+  let calls = 0;
+  const recomputed = await recomputeDueBuckets(
+    ["a", "b", "c", "d", "e", "f"],
+    async () => {
+      calls++;
+    },
+    () => {
+      const a = allow;
+      allow = false;
+      return a;
+    },
+    3,
+  );
+  assert(recomputed === 3 && calls === 3, `stops when the budget is gone (got ${recomputed}/${calls})`);
+})();
+
+await (async () => {
+  // A failing bucket is isolated: it isn't counted, but the others still are.
+  const recomputed = await recomputeDueBuckets(
+    ["ok1", "bad", "ok2"],
+    async (code) => {
+      if (code === "bad") throw new Error("boom");
+    },
+    () => true,
+    3,
+  );
+  assert(recomputed === 2, `a failing bucket is isolated; others still recompute (got ${recomputed})`);
+})();
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
