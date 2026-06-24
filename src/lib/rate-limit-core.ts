@@ -28,6 +28,18 @@ export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:h", windowSeconds: 3600, max: 6000 },
 ];
 
+/**
+ * Read endpoints (lookup/list, #386/#392) get their OWN ceiling, with distinct
+ * key prefixes so they draw from a separate bucket than writes (#393). Status
+ * polling is cheap and bursty — frequent reads must never eat into the write
+ * budget and throttle the booking path they exist to support. Sized ~5x the
+ * write ceiling; fails open like the rest.
+ */
+export const DIRECT_BOOKING_API_READ_RATE_RULES: RateLimitRule[] = [
+  { prefix: "bookapi:read:m", windowSeconds: 60, max: 600 },
+  { prefix: "bookapi:read:h", windowSeconds: 3600, max: 30000 },
+];
+
 // Availability (#56) no longer uses a DB rule: it's throttled at the edge by
 // the AVAIL_RATE_LIMITER Workers binding (wrangler.jsonc, 30/min per datacenter)
 // so the slot-cache hot path never makes a DB round-trip just to rate-limit. The

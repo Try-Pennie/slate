@@ -55,8 +55,10 @@ Authorization: Bearer <BOOKING_API_KEY>
   `BOOKING_API_KEY_2`) so the secret rotates with **zero downtime**: add the new
   key as the secondary, point the caller at it, then retire the old primary.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
-- **Rate limit:** per-key, generous (120/min, 6000/hr) — a runaway/leaked-key
-  backstop, not a per-request throttle. Over the ceiling → `429`.
+- **Rate limit:** per-key, generous, a runaway/leaked-key backstop rather than a
+  per-request throttle. Writes (`POST`/`DELETE`) and reads (`GET`) draw from
+  **separate** ceilings, so frequent status polling can't throttle the booking
+  path: writes 120/min · 6000/hr, reads 600/min · 30000/hr. Over a ceiling → `429`.
 
 ### Request body
 

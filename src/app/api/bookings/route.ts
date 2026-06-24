@@ -16,7 +16,8 @@ import {
   BookingNotFoundError,
 } from "@/lib/booking/service";
 import { allowRequest } from "@/lib/rate-limit";
-import { DIRECT_BOOKING_API_RATE_RULES } from "@/lib/rate-limit-core";
+import { DIRECT_BOOKING_API_RATE_RULES, DIRECT_BOOKING_API_READ_RATE_RULES } from "@/lib/rate-limit-core";
+import type { RateLimitRule } from "@/lib/rate-limit-core";
 
 export const dynamic = "force-dynamic";
 
@@ -24,14 +25,19 @@ type AuthOutcome =
   | { ok: true; keyId: "primary" | "secondary" }
   | { ok: false; response: NextResponse };
 
-/** Shared auth + per-key rate-limit gate for every method on this route (#386). */
-async function authorize(req: NextRequest): Promise<AuthOutcome> {
+/** Shared auth + per-key rate-limit gate for every method on this route (#386).
+ *  `rules` selects the ceiling: writes use the default; reads (GET) pass the
+ *  separate read ceiling so status polling can't starve the booking path (#393). */
+async function authorize(
+  req: NextRequest,
+  rules: RateLimitRule[] = DIRECT_BOOKING_API_RATE_RULES,
+): Promise<AuthOutcome> {
   const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
     return { ok: false, response: NextResponse.json({ error: auth.error }, { status: auth.status }) };
   }
-  if (!(await allowRequest(`key:${auth.keyId}`, DIRECT_BOOKING_API_RATE_RULES))) {
+  if (!(await allowRequest(`key:${auth.keyId}`, rules))) {
     return {
       ok: false,
       response: NextResponse.json(
@@ -141,7 +147,7 @@ export async function POST(req: NextRequest) {
  * externalId and list filters mixed into a lookup request.
  */
 export async function GET(req: NextRequest) {
-  const authd = await authorize(req);
+  const authd = await authorize(req, DIRECT_BOOKING_API_READ_RATE_RULES);
   if (!authd.ok) return authd.response;
 
   const sp = new URL(req.url).searchParams;
