@@ -14,6 +14,12 @@ branch fresh and cherry-pick. A `pre-push` hook (`.githooks/pre-push`, enabled b
 the `prepare` script) blocks pushing onto an already-merged/closed PR branch;
 override only when intentional with `ALLOW_MERGED_PUSH=1`.
 
+The same hook also runs CI's fast checks before every push — `tsc --noEmit`,
+`pnpm lint`, and `pnpm test` (the unit suite, which includes the copy/dash lint
+and the migration invariants) — so a CI-only failure is caught locally instead
+of breaking main after merge. It's ~10s on a clean tree; skip it in a pinch with
+`SKIP_PREPUSH_CHECKS=1`. The heavy Cloudflare build stays in CI.
+
 # Screenshotting the dev UI (Playwright/Peekaboo)
 
 Screenshots against `next dev` hang and time out — element shots wait forever on
