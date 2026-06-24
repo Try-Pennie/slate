@@ -15,9 +15,11 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // + watch renewals (cron_sync), and bucket_slots recompute (cron_recompute).
   // Splitting them stops a busy sync tick from starving the slot refresh.
   "* * * * *": ["/api/cron/sync", "/api/cron/recompute"],
-  // Booking completion sweep + webhook retry queue, plus the watch-renewal lane
-  // (cron_watch): watch TTL is ~7 days, so renewals never needed the 1-min tick.
-  "*/5 * * * *": ["/api/cron/complete", "/api/cron/watch"],
+  // Booking completion sweep + webhook retry queue, the watch-renewal lane
+  // (cron_watch): watch TTL is ~7 days, so renewals never needed the 1-min tick,
+  // and the availability-health probe (cron_monitor, #371): a DB-only check that
+  // a should-be-bookable bucket isn't silently serving empty availability.
+  "*/5 * * * *": ["/api/cron/complete", "/api/cron/watch", "/api/cron/monitor"],
   // Hourly roster reconcile: Salesforce agent/team sync (deactivate-not-delete
   // reaper) + default hours, through the SINGLE locked path (#267). New agents
   // arrive bookable=false; the sync never re-activates anyone. Runs hourly (was
