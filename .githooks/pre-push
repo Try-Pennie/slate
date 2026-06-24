@@ -1,28 +1,58 @@
 #!/usr/bin/env bash
-# Pre-push guard against the "merge-gap": pushing a follow-up commit onto a
-# branch whose PR has already merged/closed silently strands the commit (it
-# never reaches main). This refuses such a push and tells you to branch fresh
-# off main instead. Override with ALLOW_MERGED_PUSH=1 if you really mean it.
+# Pre-push guards. Two independent checks run before any push:
+#
+#   1. Merge-gap guard — refuses to push a follow-up commit onto a branch whose
+#      PR has already merged/closed (the commit would silently strand and never
+#      reach main). Override with ALLOW_MERGED_PUSH=1.
+#
+#   2. CI parity checks — runs the same fast checks CI runs (tsc, lint, the unit
+#      suite) so a CI-only failure is caught here instead of breaking main after
+#      merge. The unit suite includes the copy/dash lint and the migration
+#      invariants, both of which have broken main when they only ran in CI.
+#      Override with SKIP_PREPUSH_CHECKS=1. (The heavy Cloudflare build is left
+#      to CI — it's minutes-long and isn't what regresses.)
 #
 # Enabled via `git config core.hooksPath .githooks` (the package.json "prepare"
-# script sets this on install). No-ops when gh is missing or no PR exists.
+# script sets this on install). No-ops the merge guard when gh is missing.
 set -euo pipefail
 
 branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
-[ -z "$branch" ] && exit 0
-[ "$branch" = "main" ] && exit 0
-[ "${ALLOW_MERGED_PUSH:-}" = "1" ] && exit 0
-command -v gh >/dev/null 2>&1 || exit 0
 
-state="$(gh pr view "$branch" --json state --jq .state 2>/dev/null || echo '')"
-if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
-  echo "" >&2
-  echo "✋ pre-push blocked: the PR for '$branch' is already $state." >&2
-  echo "   Pushing here strands the commit — it won't reach main." >&2
-  echo "   Branch fresh off main instead, e.g.:" >&2
-  echo "     git checkout -b <new-branch> origin/main && git cherry-pick <sha>" >&2
-  echo "   Or, if intentional: ALLOW_MERGED_PUSH=1 git push ..." >&2
-  echo "" >&2
-  exit 1
+# --- 1. Merge-gap guard -----------------------------------------------------
+merge_gap_guard() {
+  [ -z "$branch" ] && return 0
+  [ "$branch" = "main" ] && return 0
+  [ "${ALLOW_MERGED_PUSH:-}" = "1" ] && return 0
+  command -v gh >/dev/null 2>&1 || return 0
+
+  local state
+  state="$(gh pr view "$branch" --json state --jq .state 2>/dev/null || echo '')"
+  if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
+    echo "" >&2
+    echo "✋ pre-push blocked: the PR for '$branch' is already $state." >&2
+    echo "   Pushing here strands the commit — it won't reach main." >&2
+    echo "   Branch fresh off main instead, e.g.:" >&2
+    echo "     git checkout -b <new-branch> origin/main && git cherry-pick <sha>" >&2
+    echo "   Or, if intentional: ALLOW_MERGED_PUSH=1 git push ..." >&2
+    echo "" >&2
+    exit 1
+  fi
+}
+merge_gap_guard
+
+# --- 2. CI parity checks ----------------------------------------------------
+if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
+  exit 0
 fi
+
+cd "$(git rev-parse --show-toplevel)"
+echo "▶ pre-push: running CI parity checks (tsc · lint · tests). Skip with SKIP_PREPUSH_CHECKS=1." >&2
+
+# Stale Next.js route-type stubs make a clean tree fail tsc; clear them first.
+rm -rf .next/types 2>/dev/null || true
+
+pnpm exec tsc --noEmit
+pnpm lint
+pnpm test
+
 exit 0
