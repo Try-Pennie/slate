@@ -32,6 +32,7 @@ vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST, GET } from "./route";
+import { DIRECT_BOOKING_API_RATE_RULES, DIRECT_BOOKING_API_READ_RATE_RULES } from "@/lib/rate-limit-core";
 
 function result(outcome: string) {
   return {
@@ -206,6 +207,7 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
   beforeEach(() => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
     env.bookingApiKeySecondary.mockReturnValue("");
+    rateLimit.allowRequest.mockClear();
     rateLimit.allowRequest.mockResolvedValue(true);
     service.listBookings.mockReset();
     service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
@@ -236,5 +238,11 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
     env.bookingApiKeyPrimary.mockReturnValue("");
     const res = await GET(new Request("http://localhost/api/bookings") as never);
     expect([401, 503]).toContain(res.status);
+  });
+
+  it("GET (read) draws from the separate read rate ceiling, not the write one", async () => {
+    await authedGet("http://localhost/api/bookings?status=confirmed");
+    expect(rateLimit.allowRequest).toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_READ_RATE_RULES);
+    expect(rateLimit.allowRequest).not.toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_RATE_RULES);
   });
 });

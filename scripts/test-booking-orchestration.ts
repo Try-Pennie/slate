@@ -1025,6 +1025,26 @@ async function run() {
     } catch (e) { threw = e instanceof BookingNotFoundError; }
     assert(threw, "cancel of a non-active booking → BookingNotFoundError");
   }
+  {
+    // Concurrent double-cancel (#398): both callers pass the active pre-check,
+    // but the loser re-reads an already-cancelled row inside cancelBooking. It
+    // must surface 404, not a second 200 { cancelled }.
+    const active = makeBooking({ id: "bkE", external_id: "ext-1", status: "confirmed", gcal_event_id: "g1" });
+    const cancelled = makeBooking({ id: "bkE", external_id: "ext-1", status: "cancelled", gcal_event_id: "g1" });
+    const { deps, calls } = makeDeps({
+      bookingById: { booking: active, bucket, eventType },   // pre-check sees active
+      existing: { booking: cancelled, bucket, eventType },   // cancelBooking re-load sees cancelled
+    });
+    let threw = false;
+    try {
+      await cancelDirectBooking(
+        { bookingId: "bkE", identity: { externalId: "ext-1", salesforceId: null }, reason: { code: "api_cancellation", detail: null } },
+        deps,
+      );
+    } catch (e) { threw = e instanceof BookingNotFoundError; }
+    assert(threw, "concurrent double-cancel: losing racer → BookingNotFoundError (not 200)");
+    assert(calls.webhooks.length === 0, "losing racer fires no second booking.cancelled webhook");
+  }
 
   // --- listBookings (#392) ---
   {
