@@ -14,6 +14,7 @@ import {
   lookupPersonBookings,
   getPersonBookingById,
   cancelDirectBooking,
+  listBookings,
   processPendingEventDeletions,
   PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
@@ -25,6 +26,7 @@ import {
   type BookingContext,
   type CreateBookingInput,
   type ApiBookingInput,
+  type ApiBookingListItem,
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType, User } from "../src/lib/db/types.ts";
@@ -99,6 +101,7 @@ interface FakeOpts {
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
   unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
+  listResult?: { rows: Booking[]; buckets: Bucket[] }; // queryBookings result (#392)
   deleteEventThrows?: boolean;
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
 }
@@ -131,6 +134,7 @@ function makeDeps(opts: FakeOpts) {
     releaseReschedule: 0,
     invalidateSlots: [] as string[],
     roundRobinPreview: [] as (boolean | undefined)[],
+    queryBookings: [] as unknown[],
     removePendingEventDeletion: [] as string[],
     bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
   };
@@ -226,6 +230,10 @@ function makeDeps(opts: FakeOpts) {
     loadBookingContext: async () => opts.existing ?? null,
     loadBookingById: async () => opts.bookingById ?? null,
     findActiveBookingsForPerson: async () => opts.personBookings ?? [],
+    queryBookings: async (filter) => {
+      calls.queryBookings.push(filter);
+      return opts.listResult ?? { rows: [], buckets: [] };
+    },
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
     emitWebhook: async (_orgId, event, payload) => {
@@ -1018,6 +1026,54 @@ async function run() {
     assert(threw, "cancel of a non-active booking → BookingNotFoundError");
   }
 
+  // --- listBookings (#392) ---
+  {
+    const b1 = makeBooking({ id: "L1", bucket_id: "bkt1", starts_at: "2026-06-08T13:00:00.000Z" });
+    const b2 = makeBooking({ id: "L2", bucket_id: "bkt1", starts_at: "2026-06-08T14:00:00.000Z" });
+    const { deps, calls } = makeDeps({ listResult: { rows: [b1, b2], buckets: [bucket] } });
+    const res = await listBookings(
+      { status: "confirmed", afterStart: null, beforeEnd: null, updatedSince: null,
+        bucketCode: null, agentEmail: null, limit: 2, offset: 0 },
+      deps,
+    );
+    assert(res.items.length === 2 && res.items[0].id === "L1", "list returns the rows as views");
+    assert(res.items[0].bucketCode === "411", "list item carries bucketCode from the buckets join");
+    assert(res.nextCursor !== null, "full page (rows == limit) sets a nextCursor");
+    assert((calls.queryBookings[0] as { orderBy: string }).orderBy === "starts_at",
+      "default order is starts_at");
+  }
+  {
+    const b1 = makeBooking({ id: "L3", bucket_id: "bkt1" });
+    const { deps } = makeDeps({ listResult: { rows: [b1], buckets: [bucket] } });
+    const res = await listBookings(
+      { status: null, afterStart: null, beforeEnd: null, updatedSince: null,
+        bucketCode: null, agentEmail: null, limit: 50, offset: 0 },
+      deps,
+    );
+    assert(res.nextCursor === null, "partial page (rows < limit) -> nextCursor null");
+  }
+  {
+    // updatedSince switches the order key
+    const { deps, calls } = makeDeps({ listResult: { rows: [], buckets: [] } });
+    await listBookings(
+      { status: null, afterStart: null, beforeEnd: null, updatedSince: "2026-06-01T00:00:00Z",
+        bucketCode: null, agentEmail: null, limit: 50, offset: 0 },
+      deps,
+    );
+    assert((calls.queryBookings[0] as { orderBy: string }).orderBy === "updated_at",
+      "updatedSince selects updated_at order");
+  }
+  {
+    // unknown bucket -> empty, no queryBookings scan
+    const { deps, calls } = makeDeps({ unknownBucket: true });
+    const res = await listBookings(
+      { status: null, afterStart: null, beforeEnd: null, updatedSince: null,
+        bucketCode: "999", agentEmail: null, limit: 50, offset: 0 },
+      deps,
+    );
+    assert(res.items.length === 0 && res.nextCursor === null, "unknown bucket -> empty page");
+    assert(calls.queryBookings.length === 0, "unknown bucket -> no DB scan");
+  }
   // --- #401 drain ---
   {
     const rows: PendingEventDeletion[] = [

@@ -22,6 +22,7 @@ import {
   bookingBelongsToPerson,
   type PersonIdentity,
 } from "./person-dedupe.ts";
+import { encodeCursor, type ListQuery } from "./api-request.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import type {
   Booking,
@@ -281,6 +282,9 @@ export interface BookingDeps {
    * rows; `findPersonMatch` then grades each candidate's confidence.
    */
   findActiveBookingsForPerson(identity: PersonIdentity): Promise<Booking[]>;
+  /** #392 list: filtered, ordered, offset-paginated booking page + the buckets
+   *  referenced by that page (for bucketCode), resolved in one .in() query. */
+  queryBookings(filter: ListFilter): Promise<{ rows: Booking[]; buckets: Bucket[] }>;
   getAgentByEmail(email: string): Promise<User | null>;
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
@@ -718,6 +722,19 @@ export async function bookViaApi(
 /** Active statuses a person can still cancel (#386). */
 const CANCELLABLE_STATUSES: readonly BookingStatus[] = ["confirmed", "rescheduled"];
 
+/** Resolved list filter handed to the DB dep (codes already resolved to ids). */
+export interface ListFilter {
+  status: BookingStatus | null;
+  afterStart: string | null;
+  beforeEnd: string | null;
+  updatedSince: string | null;
+  bucketId: string | null;
+  assignedUserId: string | null;
+  limit: number;
+  offset: number;
+  orderBy: "starts_at" | "updated_at";
+}
+
 /** Outward-facing view of a booking for the lookup/cancel API (#386). */
 export interface ApiBookingView {
   id: string;
@@ -728,6 +745,11 @@ export interface ApiBookingView {
   status: BookingStatus;
   agent: { name: string | null; email: string | null };
   manageUrl: string;
+}
+
+/** A list row: the lookup view plus its bucket code (#392). */
+export interface ApiBookingListItem extends ApiBookingView {
+  bucketCode: string | null;
 }
 
 function toApiBookingView(b: Booking, deps: BookingDeps): ApiBookingView {
@@ -741,6 +763,50 @@ function toApiBookingView(b: Booking, deps: BookingDeps): ApiBookingView {
     agent: { name: b.agent_name, email: b.agent_email },
     manageUrl: manageUrl(deps, b.manage_token),
   };
+}
+
+/**
+ * #392 cross-person list. Resolves the bucket/agent filters to ids (an unknown
+ * code/email yields an empty page with no DB scan), queries one offset page, and
+ * tags each row with its bucket code from the joined buckets. nextCursor is set
+ * only when the page came back full.
+ */
+export async function listBookings(
+  query: ListQuery,
+  deps: BookingDeps,
+): Promise<{ items: ApiBookingListItem[]; nextCursor: string | null }> {
+  let bucketId: string | null = null;
+  if (query.bucketCode) {
+    const resolved = await deps.resolveBucketByCode(query.bucketCode);
+    if (!resolved) return { items: [], nextCursor: null };
+    bucketId = resolved.bucket.id;
+  }
+  let assignedUserId: string | null = null;
+  if (query.agentEmail) {
+    const agent = await deps.getAgentByEmail(query.agentEmail);
+    if (!agent) return { items: [], nextCursor: null };
+    assignedUserId = agent.id;
+  }
+
+  const { rows, buckets } = await deps.queryBookings({
+    status: query.status,
+    afterStart: query.afterStart,
+    beforeEnd: query.beforeEnd,
+    updatedSince: query.updatedSince,
+    bucketId,
+    assignedUserId,
+    limit: query.limit,
+    offset: query.offset,
+    orderBy: query.updatedSince ? "updated_at" : "starts_at",
+  });
+
+  const codeById = new Map(buckets.map((b) => [b.id, b.code]));
+  const items: ApiBookingListItem[] = rows.map((b) => ({
+    ...toApiBookingView(b, deps),
+    bucketCode: codeById.get(b.bucket_id) ?? null,
+  }));
+  const nextCursor = rows.length === query.limit ? encodeCursor(query.offset + query.limit) : null;
+  return { items, nextCursor };
 }
 
 /** List a person's ACTIVE bookings for the lookup API (#386). Strong-id only:

@@ -134,7 +134,7 @@ export type LookupParseResult =
   | { ok: false; status: 400; error: string };
 
 /**
- * Parse a GET /api/bookings/direct lookup query (#386). `externalId` is required
+ * Parse a GET /api/bookings lookup query (#386). `externalId` is required
  * (the bot's stable per-person id). `bookingId` selects one booking; `status` is
  * an optional assertion meaningful only with `bookingId` (the by-id handler
  * applies it). An unrecognized `status` is a 400.
@@ -170,7 +170,7 @@ export type CancelParseResult =
   | { ok: false; status: 400; error: string };
 
 /**
- * Parse a DELETE /api/bookings/direct cancel query (#386). Requires an explicit
+ * Parse a DELETE /api/bookings cancel query (#386). Requires an explicit
  * `bookingId` AND a strong id (`externalId` or `salesforceId`) so the caller
  * targets exactly one ownership-checked booking. Optional `reason` (+
  * `reasonDetail` for the "other" code) is validated against CANCEL_REASONS;
@@ -196,3 +196,103 @@ export function parseCancelQuery(params: URLSearchParams): CancelParseResult {
   }
   return { ok: true, value: { bookingId, externalId, salesforceId, reason } };
 }
+
+const MAX_LIST_OFFSET = 10000;
+
+/** Opaque page token (base64 of a non-negative integer offset). btoa/atob are
+ *  global in Node and the Worker runtime. */
+export function encodeCursor(offset: number): string {
+  return btoa(String(offset));
+}
+export function decodeCursor(s: string): number | null {
+  try {
+    const n = Number(atob(s));
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ListQuery {
+  status: BookingStatus | null;
+  afterStart: string | null;
+  beforeEnd: string | null;
+  updatedSince: string | null;
+  bucketCode: string | null;
+  agentEmail: string | null;
+  limit: number;
+  offset: number;
+}
+
+export type ListParseResult =
+  | { ok: true; value: ListQuery }
+  | { ok: false; status: 400; error: string };
+
+function isoWithOffset(v: string): boolean {
+  const hasOffset = /(Z|[+-]\d{2}:?\d{2})$/.test(v.trim());
+  return hasOffset && DateTime.fromISO(v, { setZone: true }).isValid;
+}
+
+/**
+ * Parse the #392 list query (GET /api/bookings without an externalId key). All
+ * filters optional; OFFSET pagination via an opaque cursor; max offset capped.
+ * The externalId-vs-list mode decision is the route's job, not this parser's.
+ */
+export function parseListQuery(params: URLSearchParams): ListParseResult {
+  const bad = (error: string): ListParseResult => ({ ok: false, status: 400, error });
+
+  const status = (params.get("status") ?? "").trim();
+  if (status && !BOOKING_STATUSES.includes(status as BookingStatus)) {
+    return bad("Invalid status filter");
+  }
+  for (const k of ["afterStart", "beforeEnd", "updatedSince"] as const) {
+    const v = (params.get(k) ?? "").trim();
+    if (v && !isoWithOffset(v)) {
+      return bad(`Invalid ${k} (expected an ISO 8601 instant with a timezone offset)`);
+    }
+  }
+
+  let limit = 50;
+  const limitRaw = (params.get("limit") ?? "").trim();
+  if (limitRaw) {
+    const n = Number(limitRaw);
+    if (!Number.isInteger(n) || n < 1) return bad("Invalid limit");
+    limit = Math.min(n, 100);
+  }
+
+  let offset = 0;
+  const cursor = (params.get("cursor") ?? "").trim();
+  if (cursor) {
+    const decoded = decodeCursor(cursor);
+    if (decoded === null) return bad("Invalid cursor");
+    offset = decoded;
+  }
+  if (offset > MAX_LIST_OFFSET) {
+    return bad("Result window too large — narrow your filters (use afterStart/beforeEnd or updatedSince)");
+  }
+
+  return {
+    ok: true,
+    value: {
+      status: status ? (status as BookingStatus) : null,
+      afterStart: (params.get("afterStart") ?? "").trim() || null,
+      beforeEnd: (params.get("beforeEnd") ?? "").trim() || null,
+      updatedSince: (params.get("updatedSince") ?? "").trim() || null,
+      bucketCode: (params.get("bucket") ?? "").trim() || null,
+      agentEmail: (params.get("agentEmail") ?? "").trim() || null,
+      limit,
+      offset,
+    },
+  };
+}
+
+/** The list-only query keys; the route 400s if any appear alongside externalId. */
+export const LIST_ONLY_PARAMS = [
+  "afterStart",
+  "beforeEnd",
+  "updatedSince",
+  "bucket",
+  "agentEmail",
+  "cursor",
+  "limit",
+] as const;

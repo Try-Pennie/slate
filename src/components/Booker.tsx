@@ -308,7 +308,7 @@ export default function Booker({
 
     setSubmitting(true);
     setError(null);
-    const res = await fetch("/api/bookings", {
+    const res = await fetch("/booking", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

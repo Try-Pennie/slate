@@ -524,11 +524,29 @@ function realDeps(): BookingDeps {
       };
     },
 
-    // Direct booking API person lookup (#357). One small indexed query PER
-    // supplied identifier (not a single `.or(...)` string) so caller-supplied
-    // values are parameterized by .eq/.ilike and can't inject PostgREST filter
-    // syntax; results merge by id. The matcher re-grades confidence, so an
-    // over-broad row here is harmless.
+    // #392 cross-person list: one parameterized, offset-paginated scan (every
+    // filter via .eq/.gte/.lte/.gt, ordered + .range — never an interpolated
+    // .or() string), plus a single .in() buckets join for each row's bucketCode.
+    queryBookings: async (filter) => {
+      let q = supabaseAdmin().from("bookings").select("*");
+      if (filter.status) q = q.eq("status", filter.status);
+      if (filter.afterStart) q = q.gte("starts_at", filter.afterStart);
+      if (filter.beforeEnd) q = q.lte("starts_at", filter.beforeEnd);
+      if (filter.updatedSince) q = q.gt("updated_at", filter.updatedSince);
+      if (filter.bucketId) q = q.eq("bucket_id", filter.bucketId);
+      if (filter.assignedUserId) q = q.eq("assigned_user_id", filter.assignedUserId);
+      const { data } = await q
+        .order(filter.orderBy, { ascending: true })
+        .order("id", { ascending: true })
+        .range(filter.offset, filter.offset + filter.limit - 1);
+      const rows = (data ?? []) as Booking[];
+      const bucketIds = [...new Set(rows.map((b) => b.bucket_id))];
+      const buckets = bucketIds.length
+        ? (((await supabaseAdmin().from("buckets").select("*").in("id", bucketIds)).data ?? []) as Bucket[])
+        : [];
+      return { rows, buckets };
+    },
+
     findActiveBookingsForPerson: async (identity) => {
       const active = ["confirmed", "rescheduled"] as const;
       const base = () =>
@@ -717,6 +735,11 @@ export function cancelDirectBooking(input: {
     { bookingId: input.bookingId, identity: input.identity, reason: input.reason ?? API_CANCEL_REASON },
     realDeps(),
   );
+}
+
+/** #392 list (key-authed): cross-person filtered, paginated bookings. */
+export function listBookings(query: import("@/lib/booking/api-request").ListQuery) {
+  return orchestration.listBookings(query, realDeps());
 }
 
 export function rescheduleBooking(
