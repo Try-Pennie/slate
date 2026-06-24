@@ -202,7 +202,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 });
 
-describe("GET /api/bookings — list mode + lookup mode", () => {
+describe("GET /api/bookings (list mode + lookup mode)", () => {
   beforeEach(() => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
     env.bookingApiKeySecondary.mockReturnValue("");
