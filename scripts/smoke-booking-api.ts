@@ -12,6 +12,15 @@
 //                                          scenario. Skipped if unset/no slots.
 //   SMOKE_DRY_RUN_ONLY (default unset)   — run ONLY scenario 0 (zero side effects);
 //                                          a safe health check against the live fleet.
+//   SMOKE_STRICT       (default unset)   — treat any SKIPped scenario as a failure
+//                                          (non-zero exit), so CI/cron can require
+//                                          full coverage rather than a quiet skip.
+//
+// Teardown: each scenario cancels its own bookings, and a guaranteed sweep
+// cancels every active booking under every identity it booked under — running
+// from a finally block, so a partway failure never leaks a live booking onto the
+// fleet. Point SMOKE_BUCKET at an isolated test bucket to keep real round-robin
+// fairness data clean (a dedicated test agent/bucket is the remaining #396 step).
 //
 // Scenarios (each uses a fresh identity + cleans up its bookings):
 //   0. dry run -> validates routing with NO booking/event/webhook (side-effect-free)
@@ -26,12 +35,23 @@ const BUCKET_B = process.env.SMOKE_BUCKET_B ?? "";
 const KEY = process.env.BOOKING_API_KEY ?? "";
 
 let failures = 0;
+let skipped = 0;
 function check(cond: boolean, msg: string) {
   console.log(`${cond ? "PASS" : "FAIL"}: ${msg}`);
   if (!cond) failures++;
 }
 function skip(msg: string) {
   console.log(`SKIP: ${msg}`);
+  skipped++;
+}
+
+/** Final line. Skips are surfaced loudly so a clean run is never mistaken for
+ *  full coverage (#397); SMOKE_STRICT=1 makes any skip a non-zero exit. */
+function printSummaryAndExit() {
+  const skipNote = skipped > 0 ? ` (${skipped} SKIPPED — coverage incomplete)` : "";
+  console.log(failures === 0 ? `\nALL CHECKS PASSED${skipNote}` : `\n${failures} CHECK(S) FAILED${skipNote}`);
+  const strictFail = !!process.env.SMOKE_STRICT && skipped > 0;
+  process.exit(failures === 0 && !strictFail ? 0 : 1);
 }
 
 type BookBody = {
@@ -74,6 +94,9 @@ async function book(args: {
   confirmReschedule?: boolean;
   dryRun?: boolean;
 }): Promise<{ status: number; body: BookBody }> {
+  // Record the identity up front (even for a dry run or a call that errors) so
+  // the guaranteed teardown (#396) can sweep it regardless of what came back.
+  if (!args.dryRun) identitiesToClean.add(args.externalId);
   const res = await fetch(`${BASE}/api/bookings`, {
     method: "POST",
     headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
@@ -91,11 +114,14 @@ async function book(args: {
 }
 
 const tokensToClean: string[] = [];
+// Every identity (externalId) we book under, swept on teardown (#396).
+const identitiesToClean = new Set<string>();
 function trackForCleanup(body: BookBody) {
   const m = (body.booking?.manageUrl ?? "").match(/\/booking\/manage\/([^/?#]+)/);
   if (m) tokensToClean.push(m[1]);
 }
 async function cleanup() {
+  // Primary: cancel tracked manage tokens.
   for (const token of [...new Set(tokensToClean)]) {
     await fetch(`${BASE}/api/bookings/${token}/cancel`, {
       method: "POST",
@@ -104,6 +130,19 @@ async function cleanup() {
     }).catch(() => {});
   }
   tokensToClean.length = 0;
+
+  // Guaranteed teardown (#396): sweep every identity we booked under and cancel
+  // any still-active booking by id — including ones we never tracked (e.g. a
+  // response whose manageUrl we couldn't parse). This runs from the finally
+  // block too, so a partway failure never leaks a live booking onto the fleet.
+  for (const externalId of identitiesToClean) {
+    const list = await req("GET", `/api/bookings?externalId=${encodeURIComponent(externalId)}`).catch(() => null);
+    for (const b of list?.body.bookings ?? []) {
+      if (!b.id) continue;
+      await req("DELETE", `/api/bookings?externalId=${encodeURIComponent(externalId)}&bookingId=${b.id}`).catch(() => {});
+    }
+  }
+  identitiesToClean.clear();
 }
 
 function uniq(tag: string) {
@@ -279,8 +318,7 @@ async function main() {
   // health check you can run anytime against the live fleet (no real bookings).
   if (process.env.SMOKE_DRY_RUN_ONLY) {
     await scenarioDryRun(slotsA);
-    console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
-    process.exit(failures === 0 ? 0 : 1);
+    printSummaryAndExit();
   }
 
   // Clean up between scenarios (not just at the end): the single test agent is
@@ -301,8 +339,7 @@ async function main() {
     await cleanup();
   }
 
-  console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  printSummaryAndExit();
 }
 
 void main();

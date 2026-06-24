@@ -1008,6 +1008,10 @@ async function run() {
       deps,
     );
     assert(view.status === "cancelled", "cancel returns the cancelled view");
+    // #402: assert the calendar side effect, not just the API verdict — a cancel
+    // that returns {cancelled} but skips the gcal delete is exactly the #401
+    // orphan bug. The booking's event id is "g1".
+    assert(calls.deleteEvent.some((d) => d.id === "g1"), "cancel actually deletes the agent's calendar event");
     assert(calls.webhooks.some((w) => w.event === "booking.cancelled"), "cancel fires booking.cancelled");
     assert(calls.bookingEvents.some((e) => e.action === "cancelled" && e.initiator === "customer"),
       "cancel records a customer-initiated history row");
