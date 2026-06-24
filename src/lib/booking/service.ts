@@ -423,6 +423,19 @@ function realDeps(): BookingDeps {
       await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
     },
 
+    claimCancellation: async (bookingId) => {
+      // Atomic flip active->cancelled (#413). Gating on the row not already being
+      // cancelled means a concurrent cancel that already won touches 0 rows;
+      // `.select` returns the row only when THIS call made the transition.
+      const { data } = await supabaseAdmin()
+        .from("bookings")
+        .update({ status: "cancelled" })
+        .eq("id", bookingId)
+        .neq("status", "cancelled")
+        .select("id");
+      return ((data ?? []) as { id: string }[]).length > 0;
+    },
+
     completeBookingsIfDue: async (bookingIds) => {
       if (bookingIds.length === 0) return [];
       // One batched UPDATE for the whole sweep (#164). Gating on the row still
