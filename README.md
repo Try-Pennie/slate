@@ -79,7 +79,7 @@ Both require `Authorization: Bearer $CRON_SECRET`.
 
 For AI / programmatic booking without the embed, use the key-authed
 **[Direct Booking API](docs/booking-api.md)** (`GET /api/availability` to find
-slots + `POST /api/bookings/direct` to book), which applies the same routing,
+slots + `POST /api/bookings` to book), which applies the same routing,
 round-robin, verify-on-book, and one-appointment-per-person dedupe.
 
 ## Embed

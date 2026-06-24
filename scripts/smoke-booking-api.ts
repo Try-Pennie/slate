@@ -44,7 +44,7 @@ type BookBody = {
 };
 
 type DirectBody = {
-  bookings?: Array<{ id: string; manageUrl?: string; status?: string }>;
+  bookings?: Array<{ id: string; manageUrl?: string; status?: string; bucketCode?: string }>;
   booking?: { id: string; manageUrl?: string; status?: string };
   outcome?: string;
   code?: string;
@@ -74,7 +74,7 @@ async function book(args: {
   confirmReschedule?: boolean;
   dryRun?: boolean;
 }): Promise<{ status: number; body: BookBody }> {
-  const res = await fetch(`${BASE}/api/bookings/direct`, {
+  const res = await fetch(`${BASE}/api/bookings`, {
     method: "POST",
     headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
     body: JSON.stringify({
@@ -223,30 +223,42 @@ async function scenarioLookupAndCancel(slotsA: string[]) {
   trackForCleanup(created.body);
 
   // GET list — the booked person has at least one active booking.
-  const listRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}`);
+  const listRes = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}`);
   check(
     listRes.status === 200 && Array.isArray(listRes.body.bookings) && (listRes.body.bookings?.length ?? 0) >= 1,
     "GET list returns the person's active booking(s)",
   );
 
   // GET by id — returns that one booking with a manageUrl.
-  const oneRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  const oneRes = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
   check(
     oneRes.status === 200 && oneRes.body.booking?.id === bookingId && !!oneRes.body.booking?.manageUrl,
     "GET by id returns the booking + manageUrl",
   );
 
   // GET by id with a non-matching status assertion → 404.
-  const missRes = await req("GET", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}&status=cancelled`);
+  const missRes = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}&status=cancelled`);
   check(missRes.status === 404 && missRes.body.code === "NOT_FOUND", "GET by id with mismatched status filter -> 404 NOT_FOUND");
 
   // DELETE by id — cancels (this is also the cleanup for this scenario).
-  const delRes = await req("DELETE", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  const delRes = await req("DELETE", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
   check(delRes.status === 200 && delRes.body.outcome === "cancelled", "DELETE by id cancels the booking");
 
   // Repeat DELETE → 404 (no longer active).
-  const delAgain = await req("DELETE", `/api/bookings/direct?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  const delAgain = await req("DELETE", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
   check(delAgain.status === 404 && delAgain.body.code === "NOT_FOUND", "second DELETE -> 404 NOT_FOUND (already cancelled)");
+}
+
+// --- Scenario 5: list mode (cross-person, no externalId) ---
+async function scenarioListMode() {
+  console.log("\n[5] list mode (cross-person)");
+  const listRes = await req("GET", `/api/bookings?bucket=${BUCKET_A}&limit=5`);
+  check(listRes.status === 200 && Array.isArray(listRes.body.bookings),
+    "GET list (no externalId) returns a bookings array");
+  check(listRes.body.bookings?.every((b) => b.bucketCode === BUCKET_A) ?? true,
+    "list rows are tagged with the filtered bucketCode");
+  const blankExt = await req("GET", `/api/bookings?externalId=`);
+  check(blankExt.status === 400, "blank externalId -> 400 (not a cross-person dump)");
 }
 
 async function main() {
@@ -283,6 +295,7 @@ async function main() {
     await scenarioConfirm(slotsA);
     await cleanup();
     await scenarioLookupAndCancel(slotsA);
+    await scenarioListMode();
   } finally {
     console.log("\nCleaning up test bookings...");
     await cleanup();

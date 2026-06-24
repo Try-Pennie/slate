@@ -48,7 +48,7 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
   `REASSIGN_API_KEY`.
 - **Direct booking API (optional):** to let the programmatic/AI auto-booker book
   without the embed, set `BOOKING_API_KEY` (above) and share it with the
-  integrator. Unset ⇒ `POST /api/bookings/direct` returns 503. Set a second
+  integrator. Unset ⇒ `POST /api/bookings` returns 503. Set a second
   `BOOKING_API_KEY_2` only when rotating (both keys are accepted at once). Full
   request/response/error contract: `docs/booking-api.md`.
 - **Supabase → Authentication → URL Configuration → Redirect URLs:** add

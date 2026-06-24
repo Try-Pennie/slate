@@ -1,14 +1,20 @@
-# Direct Booking API
+# Booking API
 
 A key-authed HTTP API for programmatic / AI booking. It applies the **same XBC
 bucket routing, round-robin assignment, and verify-on-book** as the embed, and
 creates the booking server-side in one call — no browser automation. (Replaces
 the old headless embed-scraping auto-booker. Refs #253/#250.)
 
-Two calls cover the flow:
+> **Two surfaces:**
+> - **Public create** — `POST /booking` (keyless; same as the embed form submit).
+> - **Key-authed API** — everything under `POST|GET|DELETE /api/bookings`
+>   (requires `Authorization: Bearer <BOOKING_API_KEY>`).
+
+Three calls cover the full flow:
 
 1. **Find slots** — `GET /api/availability` (public, cached).
-2. **Book a slot** — `POST /api/bookings/direct` (key-authed).
+2. **Book a slot** — `POST /api/bookings` (key-authed).
+3. **Look up / list / cancel** — `GET /api/bookings` / `DELETE /api/bookings` (key-authed).
 
 ---
 
@@ -37,7 +43,7 @@ Response:
 
 ---
 
-## 2. Book a slot — `POST /api/bookings/direct`
+## 2. Book a slot — `POST /api/bookings`
 
 ### Auth
 
@@ -162,15 +168,15 @@ existing booking (`deduped`) rather than creating a second one.
 
 ---
 
-## 3. Look up a booking — `GET /api/bookings/direct` (key-authed)
+## 3. Look up a booking — `GET /api/bookings` with `externalId` (key-authed)
 
 Resolve a lead's booking(s) by the same `external_id` used to create them — no
 need to retain the per-booking manage token.
 
 ```
-GET /api/bookings/direct?externalId=<id>                 # list active bookings
-GET /api/bookings/direct?externalId=<id>&bookingId=<id>  # one booking, any status
-GET /api/bookings/direct?externalId=<id>&bookingId=<id>&status=confirmed  # assert state
+GET /api/bookings?externalId=<id>                 # list active bookings
+GET /api/bookings?externalId=<id>&bookingId=<id>  # one booking, any status
+GET /api/bookings?externalId=<id>&bookingId=<id>&status=confirmed  # assert state
 ```
 
 - `externalId` (required) — the lead's stable id (the Salesforce id). Optionally
@@ -199,10 +205,74 @@ Response (by id): `{ "booking": <booking> }`.
 
 By-id not found / not owned / status mismatch → `404 { "code": "NOT_FOUND" }`.
 
-## 4. Cancel a booking — `DELETE /api/bookings/direct` (key-authed)
+---
+
+## 4. List bookings — `GET /api/bookings` (no `externalId`)
+
+When `externalId` is absent, the endpoint switches to **cross-person list mode**
+(admin / ops / reporting use). All filters are optional.
 
 ```
-DELETE /api/bookings/direct?externalId=<id>&bookingId=<uuid>
+GET /api/bookings?bucket=411&limit=20
+GET /api/bookings?status=confirmed&afterStart=2026-07-01T00:00:00Z
+GET /api/bookings?updatedSince=2026-07-01T00:00:00Z&cursor=<opaque>
+GET /api/bookings?agentEmail=agent@trypennie.com&limit=50
+```
+
+### Filters
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `bucket` | string | Filter to a single XBC bucket code. |
+| `agentEmail` | string | Filter to a single agent. |
+| `status` | string | `confirmed` \| `rescheduled` \| `cancelled` \| `completed` |
+| `afterStart` | ISO instant | Bookings whose `starts_at` is ≥ this value. |
+| `beforeEnd` | ISO instant | Bookings whose `starts_at` is < this value. |
+| `updatedSince` | ISO instant | Bookings updated at or after this instant; switches ordering to `updated_at ASC` (see below). |
+| `limit` | integer | Page size (default 50, max 200). |
+| `cursor` | string | Opaque offset cursor from the previous page's `nextCursor`. |
+
+### Ordering
+
+- **Default** (`updatedSince` absent): ordered by `starts_at ASC`.
+- **`updatedSince` present**: ordered by `updated_at ASC` — use this for
+  incremental polling (you'll see every modified row since the last poll, in
+  modification order).
+
+### Pagination
+
+```json
+{
+  "bookings": [ … ],
+  "nextCursor": "<opaque>"
+}
+```
+
+- `nextCursor` is absent (or `null`) when there are no further pages.
+- Pass `cursor=<nextCursor>` to fetch the next page; keep all other filter
+  parameters unchanged.
+- Cursors are single-use; the offset cap is 10 000 rows (returns `VALIDATION`
+  if exceeded — use a tighter date range instead).
+
+### `bucketCode` field
+
+Each item in the returned array includes a `bucketCode` field (the XBC bucket
+the booking belongs to) in addition to the standard booking fields.
+
+### 400 cases
+
+| Condition | `code` | Notes |
+|---|---|---|
+| `externalId` is present but blank (`externalId=`) | `VALIDATION` | An empty string is not a valid id — omit the param entirely to use list mode. |
+| `externalId` present **and** list-only filter present (`bucket`, `agentEmail`, `afterStart`, `beforeEnd`, `updatedSince`) | `VALIDATION` | These filter modes are mutually exclusive. |
+| `cursor` is malformed / expired | `VALIDATION` | Re-query from page 1. |
+
+---
+
+## 5. Cancel a booking — `DELETE /api/bookings` (key-authed)
+
+```
+DELETE /api/bookings?externalId=<id>&bookingId=<uuid>
 ```
 
 - Requires **`bookingId`** and a strong id (`externalId` **or** `salesforceId`).
@@ -216,18 +286,18 @@ Google event, frees the slot, and fires the `booking.cancelled` webhook.
 Not found / not owned / not active → `404 { "code": "NOT_FOUND" }` (a repeat
 cancel of an already-cancelled booking therefore returns `404`).
 
-## 5. Reschedule or move a booking — re-submit `POST /api/bookings/direct`
+## 6. Reschedule or move a booking — re-submit `POST /api/bookings`
 
 There is **no separate reschedule endpoint** and you never need the per-booking
 manage token. To move a lead's appointment, re-submit the same booking with the
-new details: `POST /api/bookings/direct` with the **same `externalId`**, a new
+new details: `POST /api/bookings` with the **same `externalId`**, a new
 `start`, the same required attendee fields, and optionally a different
 `bucketCode`. The "one active appointment per person" engine recognises the
 returning lead by strong id and **moves the existing appointment** instead of
 creating a second one.
 
 ```jsonc
-POST /api/bookings/direct
+POST /api/bookings
 Authorization: Bearer <key>
 {
   "externalId": "lead-abc-123",   // same id as the original booking
