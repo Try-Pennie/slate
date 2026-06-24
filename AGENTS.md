@@ -14,11 +14,12 @@ branch fresh and cherry-pick. A `pre-push` hook (`.githooks/pre-push`, enabled b
 the `prepare` script) blocks pushing onto an already-merged/closed PR branch;
 override only when intentional with `ALLOW_MERGED_PUSH=1`.
 
-The same hook also runs CI's fast checks before every push — `tsc --noEmit`,
-`pnpm lint`, and `pnpm test` (the unit suite, which includes the copy/dash lint
-and the migration invariants) — so a CI-only failure is caught locally instead
-of breaking main after merge. It's ~10s on a clean tree; skip it in a pinch with
-`SKIP_PREPUSH_CHECKS=1`. The heavy Cloudflare build stays in CI.
+The same hook also runs CI's checks before every push — `tsc --noEmit`,
+`pnpm lint`, `pnpm test` (the unit suite, which includes the copy/dash lint and
+the migration invariants), and `pnpm cf:build` (the full Cloudflare/OpenNext
+build, #412) — so a CI-only failure (including a build-only break) is caught
+locally instead of breaking main after merge. It's ~20s on a warm cache; skip it
+in a pinch with `SKIP_PREPUSH_CHECKS=1`.
 
 # Screenshotting the dev UI (Playwright/Peekaboo)
 

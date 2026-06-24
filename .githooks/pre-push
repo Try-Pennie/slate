@@ -46,7 +46,7 @@ if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
 fi
 
 cd "$(git rev-parse --show-toplevel)"
-echo "▶ pre-push: running CI parity checks (tsc · lint · tests). Skip with SKIP_PREPUSH_CHECKS=1." >&2
+echo "▶ pre-push: running CI parity checks (tsc · lint · tests · build). Skip with SKIP_PREPUSH_CHECKS=1." >&2
 
 # Stale Next.js route-type stubs make a clean tree fail tsc; clear them first.
 rm -rf .next/types 2>/dev/null || true
@@ -54,5 +54,9 @@ rm -rf .next/types 2>/dev/null || true
 pnpm exec tsc --noEmit
 pnpm lint
 pnpm test
+# The full Cloudflare/OpenNext build (#412): catches build-only breaks (e.g. an
+# edge-incompatible import tsc accepts) before they reach main and skip the
+# deploy. ~10s on a warm cache; the build cache makes repeat runs cheap.
+pnpm cf:build
 
 exit 0
