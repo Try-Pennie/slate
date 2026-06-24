@@ -15,6 +15,7 @@ import {
   UnknownBucketError,
   BookingNotFoundError,
 } from "@/lib/booking/service";
+import { formatOutcomeLine } from "@/lib/monitor/booking-api-outcome";
 import { allowRequest } from "@/lib/rate-limit";
 import { DIRECT_BOOKING_API_RATE_RULES, DIRECT_BOOKING_API_READ_RATE_RULES } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
@@ -131,9 +132,15 @@ export async function POST(req: NextRequest) {
     // move it silently — 409 so the bot asks the lead, then retries with
     // confirmReschedule:true. Everything else is a success.
     const status = result.outcome === "confirm_required" ? 409 : 200;
+    console.log(
+      formatOutcomeLine({ outcome: result.outcome, bucketCode: v.bucketCode, keyId: authd.keyId, status }),
+    );
     return NextResponse.json(body, { status });
   } catch (err) {
     const { status, code } = mapBookingError(err);
+    console.log(
+      formatOutcomeLine({ outcome: "error", bucketCode: v.bucketCode, keyId: authd.keyId, status, code }),
+    );
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Booking failed", code },
       { status },
