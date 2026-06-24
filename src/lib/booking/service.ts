@@ -753,12 +753,14 @@ export function rescheduleBooking(
   );
 }
 
-export function cancelBooking(
+export async function cancelBooking(
   token: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
 ): Promise<void> {
-  return orchestration.cancelBooking(token, reason, initiator, realDeps());
+  // Manage-link/admin cancel is idempotent: a re-cancel is a fine no-op, so the
+  // transition flag is discarded here (only the direct API maps it to 404, #398).
+  await orchestration.cancelBooking(token, reason, initiator, realDeps());
 }
 
 export function reassignBooking(
@@ -804,7 +806,7 @@ export async function adminCancelBooking(
 ): Promise<void> {
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
-  return orchestration.cancelBooking(token, reason, "admin", realDeps());
+  await orchestration.cancelBooking(token, reason, "admin", realDeps());
 }
 
 export function completePastBookings(): Promise<number> {

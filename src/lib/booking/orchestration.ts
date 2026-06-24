@@ -859,7 +859,11 @@ export async function cancelDirectBooking(
   if (!CANCELLABLE_STATUSES.includes(ctx.booking.status)) {
     throw new BookingNotFoundError();
   }
-  await cancelBooking(ctx.booking.manage_token, input.reason, "customer", deps);
+  // Re-checks status under a fresh read; false means another cancel already
+  // won the race (the row was cancelled between our pre-check and here), so
+  // this call is the loser and must 404 rather than report a second success.
+  const transitioned = await cancelBooking(ctx.booking.manage_token, input.reason, "customer", deps);
+  if (!transitioned) throw new BookingNotFoundError();
   return toApiBookingView({ ...ctx.booking, status: "cancelled" }, deps);
 }
 
@@ -1142,12 +1146,16 @@ export async function reassignBooking(
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };
 }
 
+/** Cancel a booking by token. Returns true if THIS call transitioned the row
+ *  to cancelled, false if it no-op'd an already-cancelled row (idempotent
+ *  re-submit, or the losing side of a concurrent double-cancel). Callers that
+ *  treat cancel as non-idempotent (the direct API, #398) map false to 404. */
 export async function cancelBooking(
   token: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   deps: BookingDeps,
-): Promise<void> {
+): Promise<boolean> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
   const { booking, bucket, eventType } = ctx;
@@ -1170,7 +1178,7 @@ export async function cancelBooking(
         }),
       );
     }
-    return;
+    return false;
   }
 
   if (booking.agent_email && booking.gcal_event_id) {
@@ -1204,6 +1212,7 @@ export async function cancelBooking(
     eventType,
     reasonMeta(reason, initiator),
   );
+  return true;
 }
 
 /** Cron sweep: mark finished bookings complete and emit booking.completed. */
