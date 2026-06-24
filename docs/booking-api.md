@@ -227,7 +227,7 @@ GET /api/bookings?agentEmail=agent@trypennie.com&limit=50
 | `agentEmail` | string | Filter to a single agent. |
 | `status` | string | `confirmed` \| `rescheduled` \| `cancelled` \| `completed` |
 | `afterStart` | ISO instant | Bookings whose `starts_at` is ≥ this value. |
-| `beforeEnd` | ISO instant | Bookings whose `starts_at` is < this value. |
+| `beforeEnd` | ISO instant | Bookings whose `starts_at` is ≤ this value. |
 | `updatedSince` | ISO instant | Bookings updated at or after this instant; switches ordering to `updated_at ASC` (see below). |
 | `limit` | integer | Page size (default 50, max 200). |
 | `cursor` | string | Opaque offset cursor from the previous page's `nextCursor`. |

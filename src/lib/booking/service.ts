@@ -524,11 +524,9 @@ function realDeps(): BookingDeps {
       };
     },
 
-    // Direct booking API person lookup (#357). One small indexed query PER
-    // supplied identifier (not a single `.or(...)` string) so caller-supplied
-    // values are parameterized by .eq/.ilike and can't inject PostgREST filter
-    // syntax; results merge by id. The matcher re-grades confidence, so an
-    // over-broad row here is harmless.
+    // #392 cross-person list: one parameterized, offset-paginated scan (every
+    // filter via .eq/.gte/.lte/.gt, ordered + .range — never an interpolated
+    // .or() string), plus a single .in() buckets join for each row's bucketCode.
     queryBookings: async (filter) => {
       let q = supabaseAdmin().from("bookings").select("*");
       if (filter.status) q = q.eq("status", filter.status);
