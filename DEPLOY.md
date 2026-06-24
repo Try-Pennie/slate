@@ -51,6 +51,14 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
   integrator. Unset ⇒ `POST /api/bookings` returns 503. Set a second
   `BOOKING_API_KEY_2` only when rotating (both keys are accepted at once). Full
   request/response/error contract: `docs/booking-api.md`.
+- **Low-volume booking alert (#370, arm at cutover):** the monitor lane counts
+  bookings every 5 min during Eastern business hours, but the Slack alert is
+  DISARMED by default so it can't cry wolf during the cal.com to Slate ramp (low
+  volume is expected then). When Slate owns roughly full traffic, set
+  `BOOKING_VOLUME_ALERT_ARMED=1` to enable it, and tune the expected floors
+  `BOOKING_VOLUME_FLOOR_30` / `BOOKING_VOLUME_FLOOR_120` (defaults 5 / 20) to the
+  real volume. Until armed it still logs the counts each tick (visible in Worker
+  logs) so you can calibrate the floors before turning it on.
 - **Supabase → Authentication → URL Configuration → Redirect URLs:** add
   `https://slate.trypennie.dev/api/auth/callback`. (Set Site URL to
   `https://slate.trypennie.dev` too.)

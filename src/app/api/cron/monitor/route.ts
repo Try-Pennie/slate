@@ -12,6 +12,13 @@ import {
   type BucketHealth,
   type WorkingRule,
 } from "@/lib/monitor/availability-health";
+import {
+  isBusinessHours,
+  lowVolumeBreaches,
+  formatLowVolumeAlert,
+  type BusinessHoursConfig,
+  type VolumeWindow,
+} from "@/lib/monitor/booking-volume";
 import type { Bucket } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +40,38 @@ const EMPTY_AVAIL_ALERT_KEY = "empty_availability";
 /** Default zone for an agent with no schedule row, matching how the availability
  *  compute treats a scheduleless agent (America/New_York, no working rules). */
 const DEFAULT_ZONE = "America/New_York";
+
+// --- Low booking volume (#370) ---
+// Eastern weekday daytime: outside these hours low volume is normal, so the
+// volume alarm stays silent (the availability probe above still runs 24/7).
+const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
+  zone: DEFAULT_ZONE,
+  weekdays: [1, 2, 3, 4, 5],
+  startHour: 8,
+  endHour: 20,
+};
+// Expected-minimum booking counts per window, env-tunable. Defaults are
+// conservative placeholders; tune them when ARMING at cutover. During the
+// cal.com to Slate ramp the alert is DISARMED, so these don't fire yet.
+const VOLUME_FLOOR_30 = Number(process.env.BOOKING_VOLUME_FLOOR_30 ?? "5");
+const VOLUME_FLOOR_120 = Number(process.env.BOOKING_VOLUME_FLOOR_120 ?? "20");
+// Disarmed by default: count and log, but never alert, until Slate owns roughly
+// full traffic. Set BOOKING_VOLUME_ALERT_ARMED=1 at cutover to enable alerting.
+const volumeAlertArmed = (): boolean => process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
+const VOLUME_ALERT_KEY = "low_booking_volume";
+const VOLUME_ALERT_COOLDOWN_MS = 30 * 60_000;
+
+/** Count bookings created at or after `sinceIso` (head-only, no rows). */
+async function bookingsCreatedSince(
+  db: ReturnType<typeof supabaseAdmin>,
+  sinceIso: string,
+): Promise<number> {
+  const { count } = await db
+    .from("bookings")
+    .select("*", { count: "exact", head: true })
+    .gte("created_at", sinceIso);
+  return count ?? 0;
+}
 
 /**
  * Availability-health probe (#371). DB-only: for every bucket with an eligible
@@ -134,11 +173,39 @@ export async function GET(req: NextRequest) {
         (truncated ? " [scan truncated by budget]" : ""),
     );
 
+    // --- Low booking volume (#370): only during business hours; disarmed until
+    // cutover (counts + logs but does not alert) so the ramp can't cry wolf. ---
+    let volume: { armed: boolean; windows: VolumeWindow[]; breaches: number } | null = null;
+    if (isBusinessHours(now, VOLUME_BUSINESS_HOURS)) {
+      const [count30, count120] = await Promise.all([
+        bookingsCreatedSince(db, new Date(now - 30 * 60_000).toISOString()),
+        bookingsCreatedSince(db, new Date(now - 120 * 60_000).toISOString()),
+      ]);
+      const windows: VolumeWindow[] = [
+        { label: "30 min", count: count30, floor: VOLUME_FLOOR_30 },
+        { label: "120 min", count: count120, floor: VOLUME_FLOOR_120 },
+      ];
+      const breaches = lowVolumeBreaches(windows);
+      const armed = volumeAlertArmed();
+      if (breaches.length && armed) {
+        await sendThrottledAlert(
+          VOLUME_ALERT_KEY,
+          VOLUME_ALERT_COOLDOWN_MS,
+          formatLowVolumeAlert(breaches),
+        ).catch(() => {});
+      }
+      console.log(
+        `monitor volume: 30m=${count30} 120m=${count120}, ${breaches.length} below floor, armed=${armed}`,
+      );
+      volume = { armed, windows, breaches: breaches.length };
+    }
+
     return NextResponse.json({
       buckets: buckets.length,
       failing: failing.length,
       codes: failing,
       truncated,
+      volume,
     });
   } finally {
     await releaseLock("cron_monitor", lock);
