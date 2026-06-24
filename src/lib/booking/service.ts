@@ -287,6 +287,33 @@ function realDeps(): BookingDeps {
     },
     createEvent,
     deleteEvent,
+    enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
+      await supabaseAdmin()
+        .from("pending_event_deletions")
+        .upsert(
+          { calendar_email: calendarEmail, gcal_event_id: gcalEventId, booking_id: bookingId },
+          { onConflict: "calendar_email,gcal_event_id", ignoreDuplicates: true },
+        );
+    },
+    loadPendingEventDeletions: async (limit) => {
+      const { data } = await supabaseAdmin()
+        .from("pending_event_deletions")
+        .select("*")
+        .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
+        .order("attempts", { ascending: true })
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      return (data ?? []) as orchestration.PendingEventDeletion[];
+    },
+    removePendingEventDeletion: async (id) => {
+      await supabaseAdmin().from("pending_event_deletions").delete().eq("id", id);
+    },
+    bumpPendingEventDeletion: async (id, attempts, error) => {
+      await supabaseAdmin()
+        .from("pending_event_deletions")
+        .update({ attempts, last_error: error })
+        .eq("id", id);
+    },
     updateEventTime,
     emitWebhook,
     appBaseUrl: appUrl,
@@ -788,4 +815,20 @@ export function completePastBookings(): Promise<number> {
 
 export function getBookingByToken(token: string): Promise<BookingContext | null> {
   return orchestration.getBookingByToken(token, realDeps());
+}
+
+const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";
+const PENDING_DELETION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/** #401: drain the deletion retry queue and alert if any deletion is stuck. */
+export async function processPendingEventDeletions(limit: number) {
+  const res = await orchestration.processPendingEventDeletions(realDeps(), limit);
+  if (res.stuck.length > 0) {
+    await sendThrottledAlert(
+      PENDING_DELETION_ALERT_KEY,
+      PENDING_DELETION_ALERT_COOLDOWN_MS,
+      `Slate: ${res.stuck.length} calendar event deletion(s) have failed ${orchestration.PENDING_DELETION_ALERT_AFTER}+ times and may be firing orphaned reminders. Check Google Calendar API health. Event ids: ${res.stuck.slice(0, 5).map((r) => r.gcal_event_id).join(", ")}`,
+    ).catch(() => {});
+  }
+  return res;
 }

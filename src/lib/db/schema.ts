@@ -19,6 +19,7 @@ import type {
   GoogleCredentials,
   OooRequest,
   Organization,
+  PendingEventDeletion,
   RateLimit,
   RescheduleLock,
   SyncLock,
@@ -61,6 +62,7 @@ export interface Database {
       rate_limits: Table<RateLimit>;
       reschedule_locks: Table<RescheduleLock>;
       bucket_slots: Table<BucketSlotsRow>;
+      pending_event_deletions: Table<PendingEventDeletion>;
     };
     Views: Record<string, never>;
     Functions: {

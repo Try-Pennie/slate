@@ -22,6 +22,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
+import { processPendingEventDeletions } from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
 
@@ -160,6 +161,10 @@ export async function GET(req: NextRequest) {
         await recomputeBucketSlotsForToday(code, true).catch(() => {});
       }
     }
+
+    // Drain a small batch of failed-event-deletion retries (#401). Best-effort:
+    // a failure here must never break the sync lane.
+    await processPendingEventDeletions(20).catch(() => {});
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.
