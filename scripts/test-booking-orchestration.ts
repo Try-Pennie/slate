@@ -117,6 +117,7 @@ function makeDeps(opts: FakeOpts) {
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
+    claimCancellation: [] as string[],
     completeBookingsIfDue: [] as string[][],
     webhooks: [] as { event: string; reason: unknown }[],
     bookingEvents: [] as {
@@ -204,6 +205,17 @@ function makeDeps(opts: FakeOpts) {
     updateBooking: async (id, patch) => {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
     },
+    // Atomic cancel claim (#413): the FIRST call for an id wins (flips
+    // active->cancelled), every later call loses — models the conditional UPDATE.
+    claimCancellation: (() => {
+      const claimed = new Set<string>();
+      return async (id: string) => {
+        calls.claimCancellation.push(id);
+        if (claimed.has(id)) return false;
+        claimed.add(id);
+        return true;
+      };
+    })(),
     completeBookingsIfDue: async (ids) => {
       calls.completeBookingsIfDue.push(ids);
       // Return only the ids this tick flips; an id in `alreadyCompleted` models
@@ -593,8 +605,8 @@ async function run() {
     assert(calls.deleteEvent.length === 1, "cancel: deletes the calendar event");
     assert(calls.deleteBusyBlocks.length === 1, "cancel: removes the busy block");
     assert(
-      calls.updateBooking.length === 1 && calls.updateBooking[0].patch.status === "cancelled",
-      "cancel: marks the booking cancelled",
+      calls.claimCancellation.length === 1 && calls.claimCancellation[0] === ctx.booking.id,
+      "cancel: marks the booking cancelled (via the atomic claim)",
     );
     assert(calls.webhooks[0].event === "booking.cancelled", "cancel: fires booking.cancelled");
     // #326: records a 'cancelled' history event (no to-time) + reason on webhook.
@@ -1048,6 +1060,24 @@ async function run() {
     } catch (e) { threw = e instanceof BookingNotFoundError; }
     assert(threw, "concurrent double-cancel: losing racer → BookingNotFoundError (not 200)");
     assert(calls.webhooks.length === 0, "losing racer fires no second booking.cancelled webhook");
+  }
+
+  {
+    // Atomic double-cancel (#413): BOTH callers load an active context (neither
+    // saw the other's write), so the read-then-write guard can't separate them.
+    // The atomic claim must: exactly one wins (true), the other loses (false),
+    // and the side effects (webhook, history) fire exactly once.
+    const active = makeBooking({ id: "bkRace", status: "confirmed", gcal_event_id: "g1" });
+    const ctx = { booking: active, bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    const first = await cancelBooking("tokRace", CR, "customer", deps);
+    const second = await cancelBooking("tokRace", CR, "customer", deps);
+    assert(first === true, "atomic cancel: first caller wins the claim (true)");
+    assert(second === false, "atomic cancel: second caller loses the claim (false), not a second success");
+    assert(calls.webhooks.filter((w) => w.event === "booking.cancelled").length === 1,
+      "atomic cancel: booking.cancelled fires exactly once");
+    assert(calls.bookingEvents.filter((e) => e.action === "cancelled").length === 1,
+      "atomic cancel: exactly one cancelled history row");
   }
 
   // --- listBookings (#392) ---

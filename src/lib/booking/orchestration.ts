@@ -245,6 +245,14 @@ export interface BookingDeps {
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   /**
+   * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in
+   * one statement, returning true only if THIS call made the transition. A second
+   * concurrent cancel that already lost the claim gets false, so the non-idempotent
+   * direct API can 404 it and the side effects (gcal delete, history, webhook) fire
+   * exactly once. Same gated-update pattern as `completeBookingsIfDue`.
+   */
+  claimCancellation(bookingId: string): Promise<boolean>;
+  /**
    * Batch-flips finished bookings to `completed`, returning the ids THIS call
    * actually transitioned. The update is gated on each row still being in a
    * completable status, so an overlapping cron tick that already completed some
@@ -1181,12 +1189,18 @@ export async function cancelBooking(
     return false;
   }
 
+  // Atomically claim the transition BEFORE any side effect (#413). Two cancels
+  // racing both read `active` above; the conditional flip lets exactly one win,
+  // so the side effects below run once and the loser returns false (404 for the
+  // non-idempotent direct API). A failed gcal delete still enqueues (#401), so
+  // flipping status first never strands an event.
+  if (!(await deps.claimCancellation(booking.id))) return false;
+
   if (booking.agent_email && booking.gcal_event_id) {
     await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
   }
 
   await deps.deleteBusyBlocksForBooking(booking.id);
-  await deps.updateBooking(booking.id, { status: "cancelled" });
   await deps.invalidateSlots(bucket.code);
 
   // Append the immutable history row before the webhook fires.
