@@ -1626,16 +1626,31 @@ export async function reassignBooking(
   if (booking.agent_email && booking.gcal_event_id) {
     await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
   }
-  const newEventId = await deps.createEvent(agent.email, {
-    summary: `${eventType.name}${
-      booking.attendee_name ? ` with ${booking.attendee_name}` : ""
-    }`,
-    start: booking.starts_at,
-    end: booking.ends_at,
-    timezone: booking.timezone,
-    attendeeEmail: booking.attendee_email ?? undefined,
-    attendeeName: booking.attendee_name ?? undefined,
-  });
+  // P4 (#439): a deterministic client id keyed on the booking, the TARGET agent
+  // (deterministicEventId mixes agent.id into the hash, so a cross-agent move
+  // can't collide on the target calendar), and the reassignment ordinal (so a
+  // later A->B->A move doesn't reuse a tombstoned id). The reassign target is
+  // caller-supplied, so a crash-retry recomputes the same id and createEvent
+  // reuses the event (Google 409) instead of spawning a duplicate.
+  const reassignOrdinal = booking.routing_trace?.reassignments?.length ?? 0;
+  const gcalClientId = await deterministicEventId(
+    `reassign:${booking.id}:${reassignOrdinal}`,
+    agent.id,
+  );
+  const newEventId = await deps.createEvent(
+    agent.email,
+    {
+      summary: `${eventType.name}${
+        booking.attendee_name ? ` with ${booking.attendee_name}` : ""
+      }`,
+      start: booking.starts_at,
+      end: booking.ends_at,
+      timezone: booking.timezone,
+      attendeeEmail: booking.attendee_email ?? undefined,
+      attendeeName: booking.attendee_name ?? undefined,
+    },
+    gcalClientId,
+  );
 
   // Record the override on the trace so the viewer can show who reassigned whom.
   const reassignment = {
