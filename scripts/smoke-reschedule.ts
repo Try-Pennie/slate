@@ -53,10 +53,13 @@ async function main(): Promise<void> {
   }
   console.log(`# reschedule smoke vs ${BASE} (bucket ${BUCKET})`);
   const open = await slots();
-  // Need 4 distinct future slots: book[0], reschedule->[1], then race [2] vs [3].
-  check(open.length >= 4, `SMOKE has >= 4 future slots (got ${open.length})`);
-  if (open.length < 4) process.exit(1);
-  const [s0, s1, s2, s3] = open;
+  // Need 4 WELL-SPACED future slots: SMOKE slots are 10 min apart but the
+  // appointment is longer, so adjacent slots overlap the booking's own time
+  // (the agent looks busy -> reassign -> no other agent). Space them 6 slots
+  // (~1h) apart so each reschedule target is genuinely free.
+  check(open.length >= 19, `SMOKE has >= 19 future slots (got ${open.length})`);
+  if (open.length < 19) process.exit(1);
+  const s0 = open[0], s1 = open[6], s2 = open[12], s3 = open[18];
 
   const externalId = `smoke-resched-${open[0]}`;
   const email = `smoketest+resched@trypennie.com`;
@@ -84,7 +87,7 @@ async function main(): Promise<void> {
 
     // 2. A normal reschedule to a different time must succeed (new code + real DB).
     const moved = await jpost(`/api/bookings/${token}/reschedule`, { start: s1, reason: REASON });
-    check(moved.status === 200, `reschedule -> 200 (got ${moved.status})`);
+    check(moved.status === 200, `reschedule -> 200 (got ${moved.status}${moved.status !== 200 ? ` err=${moved.body.error}` : ""})`);
     check(moved.body.startsAt === s1, `reschedule lands on the new time (${moved.body.startsAt} == ${s1})`);
 
     // 3. Two DIFFERENT-target reschedules at once: exactly one wins, the other 409s.
