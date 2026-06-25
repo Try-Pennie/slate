@@ -6,21 +6,30 @@
 //
 // Optional env:
 //   SLATE_BASE_URL  (default https://slate.trypennie.app)
-//   SMOKE_BUCKET    (default 411)        — the primary bucket
-//   SMOKE_BUCKET_B  (default unset)      — a SECOND bucket your test agent also
-//                                          serves; enables the cross-bucket move
-//                                          scenario. Skipped if unset/no slots.
+//   SMOKE_BUCKET    (default SMOKE)      — the primary bucket. Defaults to the
+//                                          ISOLATED test bucket (sole member:
+//                                          smoketest@trypennie.com), so a run
+//                                          never books a real round-robin agent.
+//   SMOKE_BUCKET_B  (default SMOKE2)     — a SECOND isolated bucket the test
+//                                          agent also serves; enables the
+//                                          cross-bucket move scenario.
 //   SMOKE_DRY_RUN_ONLY (default unset)   — run ONLY scenario 0 (zero side effects);
 //                                          a safe health check against the live fleet.
 //   SMOKE_STRICT       (default unset)   — treat any SKIPped scenario as a failure
 //                                          (non-zero exit), so CI/cron can require
 //                                          full coverage rather than a quiet skip.
 //
+// Isolation (#396): the default buckets route only to the dedicated test agent,
+// whose email is the real smoketest@trypennie.com mailbox; synthetic attendees
+// are plus-aliases of it (smoketest+<tag>@), so invite/cancel emails deliver
+// into that inbox instead of bouncing "undeliverable" notices onto a real agent.
+// Seed the agent + buckets with scripts/seed-smoke-test.ts. Override SMOKE_BUCKET
+// only to deliberately exercise a live bucket.
+//
 // Teardown: each scenario cancels its own bookings, and a guaranteed sweep
 // cancels every active booking under every identity it booked under — running
 // from a finally block, so a partway failure never leaks a live booking onto the
-// fleet. Point SMOKE_BUCKET at an isolated test bucket to keep real round-robin
-// fairness data clean (a dedicated test agent/bucket is the remaining #396 step).
+// fleet.
 //
 // Scenarios (each uses a fresh identity + cleans up its bookings):
 //   0. dry run -> validates routing with NO booking/event/webhook (side-effect-free)
@@ -30,8 +39,13 @@
 //      then the same call with confirmReschedule:true -> rescheduled
 
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
-const BUCKET_A = process.env.SMOKE_BUCKET ?? "411";
-const BUCKET_B = process.env.SMOKE_BUCKET_B ?? "";
+// Default to the ISOLATED test buckets (#396): they have a single dedicated
+// member (smoketest@trypennie.com) so a smoke run never books a real
+// round-robin agent. Override SMOKE_BUCKET/SMOKE_BUCKET_B only to deliberately
+// exercise a live bucket. (Booking real agents with the synthetic smoke+
+// attendee is what bounced "undeliverable" notices onto agents like marnold.)
+const BUCKET_A = process.env.SMOKE_BUCKET ?? "SMOKE";
+const BUCKET_B = process.env.SMOKE_BUCKET_B ?? "SMOKE2";
 const KEY = process.env.BOOKING_API_KEY ?? "";
 
 let failures = 0;
@@ -147,7 +161,10 @@ async function cleanup() {
 
 function uniq(tag: string) {
   const n = Date.now();
-  return { externalId: `smoke-${tag}-${n}`, email: `smoke+${tag}-${n}@trypennie.com` };
+  // Attendee address is a plus-alias of the real smoketest@trypennie.com mailbox
+  // (the test agent itself), so Google's invite/cancel emails DELIVER into that
+  // inbox instead of bouncing an "undeliverable" notice onto the organizer (#396).
+  return { externalId: `smoke-${tag}-${n}`, email: `smoketest+${tag}-${n}@trypennie.com` };
 }
 
 // --- Scenario 0: dry run — validate routing with ZERO side effects ---
