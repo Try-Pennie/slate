@@ -115,6 +115,7 @@ function makeDeps(opts: FakeOpts) {
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
+    moveBusyBlock: [] as { userId: string; startIso: string; endIso: string; bookingId: string }[],
     deleteBusyBlocks: [] as string[],
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
     claimCancellation: [] as string[],
@@ -198,6 +199,9 @@ function makeDeps(opts: FakeOpts) {
     },
     insertBusyBlock: async (block) => {
       calls.insertBusyBlock.push(block);
+    },
+    moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
+      calls.moveBusyBlock.push({ userId, startIso, endIso, bookingId });
     },
     deleteBusyBlocksForBooking: async (id) => {
       calls.deleteBusyBlocks.push(id);
@@ -490,7 +494,14 @@ async function run() {
       "reschedule(same agent): moves the existing event in place",
     );
     assert(calls.createEvent.length === 0 && calls.deleteEvent.length === 0, "reschedule(same agent): no new/old event churn");
-    assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reschedule: busy block moved");
+    assert(
+      calls.moveBusyBlock.length === 1 &&
+        calls.moveBusyBlock[0].bookingId === res.booking.id &&
+        calls.moveBusyBlock[0].startIso === "2026-06-09T14:00:00.000Z" &&
+        calls.deleteBusyBlocks.length === 0 &&
+        calls.insertBusyBlock.length === 0,
+      "reschedule: busy block moved atomically (#429 P3)",
+    );
     assert(res.booking.status === "rescheduled" && res.booking.starts_at === "2026-06-09T14:00:00.000Z", "reschedule: status + new start applied");
     assert(calls.webhooks[0].event === "booking.rescheduled", "reschedule: fires booking.rescheduled");
     assert(
@@ -705,7 +716,13 @@ async function run() {
         patch?.routing_trace?.reassignments?.[0]?.to === "b",
       "reassign: records the override in routing_trace",
     );
-    assert(calls.deleteBusyBlocks.length === 1 && calls.insertBusyBlock.length === 1, "reassign: busy block moved to the owner");
+    assert(
+      calls.moveBusyBlock.length === 1 &&
+        calls.moveBusyBlock[0].userId === "b" &&
+        calls.deleteBusyBlocks.length === 0 &&
+        calls.insertBusyBlock.length === 0,
+      "reassign: busy block moved atomically to the owner (#429 P3)",
+    );
     assert(calls.webhooks.some((w) => w.event === "booking.rescheduled"), "reassign: fires booking.rescheduled");
     assert(
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",

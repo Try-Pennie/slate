@@ -410,6 +410,28 @@ function realDeps(): BookingDeps {
       }
     },
 
+    moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
+      // Atomic delete-by-booking + insert in one SQL function (#429 P3). Same
+      // write-through posture as insert/delete: a failure must not fail the
+      // booking change (the move already happened) — log + throttled alert.
+      const { error } = await supabaseAdmin().rpc("move_busy_block", {
+        p_booking_id: bookingId,
+        p_user_id: userId,
+        p_starts_at: startIso,
+        p_ends_at: endIso,
+      });
+      if (error) {
+        console.error(
+          `busy_blocks move failed for booking ${bookingId}: ${error.message}`,
+        );
+        await sendThrottledAlert(
+          "busy_block_write_through",
+          CACHE_ALERT_COOLDOWN_MS,
+          `Slate: busy_blocks move (move_busy_block) failed for booking ${bookingId} (${error.message}). The slot cache may be stale until the next sync pass.`,
+        ).catch(() => {});
+      }
+    },
+
     deleteBusyBlocksForBooking: async (bookingId) => {
       const del = () =>
         supabaseAdmin().from("busy_blocks").delete().eq("booking_id", bookingId);
