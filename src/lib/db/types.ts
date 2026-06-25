@@ -438,3 +438,82 @@ export interface BookingOutboxInsert {
   steps: OutboxStep[];
   payload: OutboxPayload;
 }
+
+/** The row createBooking persists. (Lives here, not orchestration, so the
+ *  reservation payload can reference it without a circular import.) */
+export type BookingInsert = {
+  org_id: string;
+  bucket_id: string;
+  event_type_id: string;
+  assigned_user_id: string;
+  agent_name: string | null;
+  agent_email: string | null;
+  starts_at: string;
+  ends_at: string;
+  /** Immutable original scheduled time (#300); set = starts/ends at creation. */
+  original_starts_at: string;
+  original_ends_at: string;
+  timezone: string;
+  status: "confirmed";
+  salesforce_id: string | null;
+  attendee_name: string | null;
+  attendee_email: string | null;
+  attendee_phone: string | null;
+  prefill: Record<string, string>;
+  gcal_event_id: string;
+  manage_token: string;
+  idempotency_key: string | null;
+  external_id: string | null;
+  routing_trace: RoutingTrace;
+};
+
+/** The calendar-event input, captured in a reservation so a resume re-creates
+ *  the SAME event (with the pinned client id) without re-deriving it. */
+export interface ReservationEventInput {
+  summary: string;
+  description: string;
+  start: string;
+  end: string;
+  timezone: string;
+  attendeeEmail?: string | null;
+  attendeeName?: string | null;
+}
+
+/** Everything a resume needs to complete the booking WITHOUT re-running the
+ *  non-deterministic assignAgent (#429 P4): the exact booking row to insert (its
+ *  gcal_event_id is the pinned client id), the calendar-event input, and the
+ *  bucket code (to recompute + re-resolve bucket/eventType for the webhook). */
+export interface ReservationPayload {
+  booking: BookingInsert;
+  event: ReservationEventInput;
+  bucketCode: string;
+}
+
+/**
+ * Intent-first create reservation (#429 P4). Written as the FIRST durable act of
+ * a booking; pins the agent + a deterministic Google client event id before the
+ * calendar event exists. Deleted on successful delivery; the drain resumes any
+ * left pending. `idempotency_key` is UNIQUE — the concurrency arbiter.
+ */
+export interface BookingReservation {
+  id: string;
+  idempotency_key: string;
+  pinned_user_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string;
+  payload: ReservationPayload;
+  status: "pending" | "delivered";
+  lease_until: string | null;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BookingReservationInsert = {
+  idempotency_key: string;
+  pinned_user_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string;
+  payload: ReservationPayload;
+};

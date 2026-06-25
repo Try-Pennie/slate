@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
-import { drainBookingOutbox } from "@/lib/booking/service";
+import { drainBookingOutbox, drainBookingReservations } from "@/lib/booking/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 
@@ -26,8 +26,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const result = await drainBookingOutbox();
-    return NextResponse.json(result);
+    const outbox = await drainBookingOutbox();
+    // Same lane resumes crashed create reservations (#429 P4) + sweeps abandoned
+    // ones. Best-effort: a failure here must not break the outbox drain.
+    const reservations = await drainBookingReservations().catch(() => null);
+    return NextResponse.json({ outbox, reservations });
   } finally {
     await releaseLock("cron_outbox", lock);
   }

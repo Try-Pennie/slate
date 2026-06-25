@@ -12,6 +12,7 @@ import type {
   Booking,
   BookingEvent,
   BookingOutbox,
+  BookingReservation,
   Bucket,
   BucketMember,
   BucketSlotsRow,
@@ -65,6 +66,7 @@ export interface Database {
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
+      booking_reservations: Table<BookingReservation>;
     };
     Views: Record<string, never>;
     Functions: {

@@ -7,6 +7,7 @@ import {
   bookingWindow,
   busyBlockFor,
   bookingEventFrom,
+  deterministicEventId,
   eventDescription,
   idempotencyKeyFor,
   selectAgent,
@@ -30,20 +31,24 @@ import type {
   Booking,
   BookingEventAction,
   BookingEventInitiator,
+  BookingInsert,
   BookingStatus,
   BookingOutbox,
   BookingOutboxInsert,
+  BookingReservation,
+  BookingReservationInsert,
   Bucket,
   BusyBlock,
   EventType,
   OutboxStep,
   PendingEventDeletion,
+  ReservationPayload,
   RoutingTrace,
   User,
   WebhookEvent,
 } from "@/lib/db/types";
 
-export type { PendingEventDeletion };
+export type { PendingEventDeletion, BookingInsert };
 
 /**
  * Booking orchestration (create / reschedule / cancel / complete), split out
@@ -155,32 +160,6 @@ export interface CreateEventArgs {
   attendeeName?: string;
 }
 
-export type BookingInsert = {
-  org_id: string;
-  bucket_id: string;
-  event_type_id: string;
-  assigned_user_id: string;
-  agent_name: string | null;
-  agent_email: string | null;
-  starts_at: string;
-  ends_at: string;
-  /** Immutable original scheduled time (#300); set = starts/ends at creation. */
-  original_starts_at: string;
-  original_ends_at: string;
-  timezone: string;
-  status: "confirmed";
-  salesforce_id: string | null;
-  attendee_name: string | null;
-  attendee_email: string | null;
-  attendee_phone: string | null;
-  prefill: Record<string, string>;
-  gcal_event_id: string;
-  manage_token: string;
-  idempotency_key: string | null;
-  external_id: string | null;
-  routing_trace: RoutingTrace;
-};
-
 /**
  * insertBooking outcome. `conflict` means the active-slot unique index rejected
  * the row (23505) — another booking won the verify-on-book race for this
@@ -234,7 +213,7 @@ export interface BookingDeps {
     startIso: string,
     endIso: string,
   ): Promise<VerifyResult>;
-  createEvent(email: string, args: CreateEventArgs): Promise<string>;
+  createEvent(email: string, args: CreateEventArgs, clientId?: string): Promise<string>;
   deleteEvent(email: string, eventId: string): Promise<void>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
@@ -293,6 +272,23 @@ export interface BookingDeps {
   markOutboxDelivered(id: string): Promise<void>;
   /** Clear the lease so the row is reclaimable (run in a finally). */
   releaseOutboxLease(id: string): Promise<void>;
+  // --- Create reservations (#429 P4): intent-first crash-safe create ---
+  /** Insert the reservation, OR — if another create with the same idempotency_key
+   *  already won the UNIQUE race — return THAT existing reservation, so the loser
+   *  adopts the winner's pinned agent + client id (never creating a 2nd event). */
+  insertReservation(row: BookingReservationInsert): Promise<BookingReservation>;
+  /** The reservation for an idempotency_key, or null (re-submit resume lookup). */
+  loadReservationByKey(idempotencyKey: string): Promise<BookingReservation | null>;
+  /** Delete a reservation (delete-on-deliver, once the booking is persisted). */
+  deleteReservation(id: string): Promise<void>;
+  /** Pending reservations whose lease is free/expired, for the drain. */
+  loadDrainableReservations(limit: number): Promise<BookingReservation[]>;
+  /** Gated lease claim; true if THIS call took it (drain vs inline guard). */
+  leaseReservation(id: string): Promise<boolean>;
+  releaseReservationLease(id: string): Promise<void>;
+  /** Retention: delete up to `limit` pending reservations older than the cutoff
+   *  (abandoned rows whose booking never completed). */
+  deleteExpiredReservations(olderThanIso: string, limit: number): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   /**
    * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in
@@ -856,6 +852,22 @@ export async function createBooking(
     eventType.duration_min,
   );
 
+  // Anonymous bookings (no email/phone/salesforceId → no stable key) can't be
+  // pinned, so they keep the legacy non-crash-safe create (accepted gap, #439).
+  if (!idempotencyKey) {
+    return legacyCreateBooking(deps, input, bucket, eventType, startIso, endIso);
+  }
+
+  // Resume an in-flight reservation: a re-submit after a crash mid-create reuses
+  // the SAME pinned agent + event id instead of re-running assignAgent (which
+  // could land on a different agent and duplicate the calendar event).
+  const inFlight = await deps.loadReservationByKey(idempotencyKey);
+  if (inFlight) return completeReservation(deps, inFlight);
+
+  // Fresh create: assign, pin the agent + a deterministic event id, RESERVE
+  // (the first durable act), then complete. assignAgent runs before the
+  // reservation, but no event is created until completeReservation, so a crash
+  // here strands nothing.
   const { userId, email, candidates } = await assignAgent(
     deps,
     bucket,
@@ -863,13 +875,166 @@ export async function createBooking(
     startIso,
     endIso,
   );
-
-  // Snapshot the agent's identity so booking history survives agent deletion.
   const agent = await deps.getUser(userId);
-  // Normalize once so the stored row and every webhook carry E.164.
   const phone = toE164(input.attendee.phone);
+  const manageToken = deps.newManageToken();
+  const gcalClientId = await deterministicEventId(idempotencyKey, userId);
 
-  // Minted before the event so the invite can carry the manage link.
+  const bookingInsert: BookingInsert = {
+    org_id: bucket.org_id,
+    bucket_id: bucket.id,
+    event_type_id: eventType.id,
+    assigned_user_id: userId,
+    agent_name: agent.name,
+    agent_email: agent.email,
+    starts_at: startIso,
+    ends_at: endIso,
+    original_starts_at: startIso,
+    original_ends_at: endIso,
+    timezone: input.timezone,
+    status: "confirmed",
+    salesforce_id: input.salesforceId ?? null,
+    attendee_name: input.attendee.name ?? null,
+    attendee_email: input.attendee.email ?? null,
+    attendee_phone: phone,
+    prefill: input.prefill,
+    gcal_event_id: gcalClientId, // the pinned client id IS the stored event id
+    manage_token: manageToken,
+    idempotency_key: idempotencyKey,
+    external_id: input.externalId ?? null,
+    routing_trace: {
+      bucket_code: input.bucketCode,
+      bucket_id: bucket.id,
+      considered: candidates,
+      chosen_user_id: userId,
+      fallback_applied:
+        bucket.fallback_user_id != null &&
+        candidates.length > 0 &&
+        candidates.every((id) => id === bucket.fallback_user_id),
+    },
+  };
+  const event: ReservationPayload["event"] = {
+    summary: `${eventType.name}${
+      input.attendee.name ? ` with ${input.attendee.name}` : ""
+    }`,
+    description: eventDescription(phone, manageUrl(deps, manageToken)),
+    start: startIso,
+    end: endIso,
+    timezone: input.timezone,
+    attendeeEmail: input.attendee.email,
+    attendeeName: input.attendee.name,
+  };
+
+  // The UNIQUE(idempotency_key) on the reservation is the concurrency arbiter:
+  // a same-key racer that already won is returned here, so we adopt ITS pin.
+  const reservation = await deps.insertReservation({
+    idempotency_key: idempotencyKey,
+    pinned_user_id: userId,
+    pinned_agent_email: email,
+    gcal_client_id: gcalClientId,
+    payload: { booking: bookingInsert, event, bucketCode: input.bucketCode },
+  });
+
+  return completeReservation(deps, reservation);
+}
+
+/**
+ * Complete a booking from its reservation (#429 P4). Shared by the fresh create,
+ * the re-submit resume, and the drain — so a crash anywhere resumes to the same
+ * end state. Idempotent: createEvent reuses the event (deterministic id → 409),
+ * a booking already inserted short-circuits, and insertBooking keeps the
+ * active-slot 23505 handling. Deletes the reservation on success.
+ */
+async function completeReservation(
+  deps: BookingDeps,
+  reservation: BookingReservation,
+): Promise<BookingResult> {
+  const { booking: bookingInsert, event, bucketCode } = reservation.payload;
+  const key = bookingInsert.idempotency_key;
+
+  // Already completed (a resume after insert but before the reservation was
+  // deleted): return the booking, clean up the reservation.
+  if (key) {
+    const already = await deps.findBookingByIdempotencyKey(key);
+    if (already) {
+      await deps.deleteReservation(reservation.id);
+      return { booking: already, manageUrl: manageUrl(deps, already.manage_token) };
+    }
+  }
+
+  // Create OR reuse the calendar event with the pinned client id.
+  const gcalEventId = await deps.createEvent(
+    reservation.pinned_agent_email,
+    {
+      summary: event.summary,
+      description: event.description,
+      start: event.start,
+      end: event.end,
+      timezone: event.timezone,
+      attendeeEmail: event.attendeeEmail ?? undefined,
+      attendeeName: event.attendeeName ?? undefined,
+    },
+    reservation.gcal_client_id,
+  );
+
+  const inserted = await deps.insertBooking({ ...bookingInsert, gcal_event_id: gcalEventId });
+  if (!inserted.ok) {
+    if (inserted.conflict) {
+      // A concurrent duplicate won the idempotency race, or the slot was taken.
+      if (key) {
+        const winner = await deps.findBookingByIdempotencyKey(key);
+        if (winner) {
+          await deps.deleteReservation(reservation.id);
+          return { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) };
+        }
+      }
+      // Genuinely unavailable: roll back the event + reservation.
+      await deleteEventBestEffort(deps, reservation.pinned_agent_email, gcalEventId, null);
+      await deps.deleteReservation(reservation.id);
+      throw new SlotUnavailableError();
+    }
+    // Generic (likely transient) failure: roll back the event (a resume
+    // re-creates it via the same deterministic id), but LEAVE the reservation
+    // pending so the drain retries the insert.
+    await deleteEventBestEffort(deps, reservation.pinned_agent_email, gcalEventId, null);
+    throw new Error("Failed to persist booking");
+  }
+  const booking = inserted.booking;
+
+  await deps.insertBusyBlock(
+    busyBlockFor(reservation.pinned_user_id, bookingInsert.starts_at, bookingInsert.ends_at, booking.id),
+  );
+  await deps.invalidateSlots(bucketCode);
+
+  // Re-resolve bucket + eventType for the webhook (works on the drain path too).
+  const resolved = await deps.resolveBucketByCode(bucketCode);
+  if (resolved) {
+    await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
+  }
+
+  await deps.deleteReservation(reservation.id);
+  return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
+}
+
+/** The pre-#429-P4 create: event-then-insert with best-effort rollback. Kept for
+ *  anonymous bookings that have no idempotency key to pin a reservation by. */
+async function legacyCreateBooking(
+  deps: BookingDeps,
+  input: CreateBookingInput,
+  bucket: Bucket,
+  eventType: EventType,
+  startIso: string,
+  endIso: string,
+): Promise<BookingResult> {
+  const { userId, email, candidates } = await assignAgent(
+    deps,
+    bucket,
+    eventType,
+    startIso,
+    endIso,
+  );
+  const agent = await deps.getUser(userId);
+  const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
 
   const gcalEventId = await deps.createEvent(email, {
@@ -892,7 +1057,6 @@ export async function createBooking(
     agent_email: agent.email,
     starts_at: startIso,
     ends_at: endIso,
-    // Preserve the original scheduled time immutably; reschedule never moves it.
     original_starts_at: startIso,
     original_ends_at: endIso,
     timezone: input.timezone,
@@ -904,14 +1068,13 @@ export async function createBooking(
     prefill: input.prefill,
     gcal_event_id: gcalEventId,
     manage_token: manageToken,
-    idempotency_key: idempotencyKey,
+    idempotency_key: null,
     external_id: input.externalId ?? null,
     routing_trace: {
       bucket_code: input.bucketCode,
       bucket_id: bucket.id,
       considered: candidates,
       chosen_user_id: userId,
-      // True when the only agent(s) considered were the bucket's fallback.
       fallback_applied:
         bucket.fallback_user_id != null &&
         candidates.length > 0 &&
@@ -920,31 +1083,44 @@ export async function createBooking(
   });
 
   if (!inserted.ok) {
-    // Roll back the calendar event so we don't orphan a hold.
     await deleteEventBestEffort(deps, email, gcalEventId, null);
-    if (inserted.conflict) {
-      // Either a concurrent duplicate of THIS submit won the idempotency race
-      // (return their booking), or a different attendee took the slot first
-      // (genuinely unavailable). Disambiguate by the idempotency key.
-      if (idempotencyKey) {
-        const winner = await deps.findBookingByIdempotencyKey(idempotencyKey);
-        if (winner) {
-          return { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) };
-        }
-      }
-      throw new SlotUnavailableError();
-    }
+    if (inserted.conflict) throw new SlotUnavailableError();
     throw new Error("Failed to persist booking");
   }
   const booking = inserted.booking;
-
-  // Write-through: the cache reflects this booking immediately.
   await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
   await deps.invalidateSlots(bucket.code);
-
   await fire(deps, "booking.created", booking, bucket, eventType);
-
   return { booking, manageUrl: manageUrl(deps, manageToken) };
+}
+
+/**
+ * Drain pending create reservations (#429 P4 / Phase C): a booking whose create
+ * crashed after the reservation was written resumes here. Each row is leased
+ * (so the drain and an inline re-submit can't both run it), then completed
+ * idempotently — completeReservation reuses the pinned event + deletes the row
+ * on success. A failure releases the lease so the next tick retries.
+ */
+export async function processBookingReservations(
+  deps: BookingDeps,
+  limit: number,
+): Promise<{ processed: number; completed: number; failed: number }> {
+  const rows = await deps.loadDrainableReservations(limit);
+  let completed = 0;
+  let failed = 0;
+  for (const reservation of rows) {
+    if (!(await deps.leaseReservation(reservation.id))) continue;
+    try {
+      await completeReservation(deps, reservation);
+      completed++;
+    } catch {
+      // completeReservation deletes the row on a genuine SlotUnavailable; a
+      // transient failure leaves it pending — release the lease so we retry.
+      failed++;
+      await deps.releaseReservationLease(reservation.id);
+    }
+  }
+  return { processed: rows.length, completed, failed };
 }
 
 /** Input for the direct booking API path: a normal booking plus the external
