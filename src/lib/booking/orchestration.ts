@@ -30,6 +30,7 @@ import type {
   BookingEventInitiator,
   BookingStatus,
   Bucket,
+  BusyBlock,
   EventType,
   PendingEventDeletion,
   RoutingTrace,
@@ -243,6 +244,19 @@ export interface BookingDeps {
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
+  /**
+   * Reconcile sweep (#428): candidate busy_blocks to check for a stuck slot.
+   * The real impl returns only upcoming `slate`-sourced rows (a past block can't
+   * block a bookable future slot, and `gcal` mirrors are never freed here), so
+   * the scan stays bounded by concurrent future bookings.
+   */
+  loadReconcilableBusyBlocks(
+    limit: number,
+  ): Promise<Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[]>;
+  /** Status of each booking by id (absent from the map = the booking is gone). */
+  loadBookingStatuses(bookingIds: string[]): Promise<Map<string, BookingStatus>>;
+  /** Delete busy_blocks by id (the reconcile sweep's targeted cleanup). */
+  deleteBusyBlocksByIds(ids: string[]): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   /**
    * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in
@@ -337,6 +351,56 @@ export async function processPendingEventDeletions(
     }
   }
   return { deleted, failed, stuck };
+}
+
+/** Booking statuses that keep a slot legitimately busy (must NOT be freed).
+ *  `rescheduled` moves in place and is still active; `completed` happened. */
+const ACTIVE_BUSY_STATUSES: ReadonlySet<BookingStatus> = new Set<BookingStatus>([
+  "confirmed",
+  "rescheduled",
+  "completed",
+]);
+
+/**
+ * Reconcile sweep (#428): a cancel runs its steps sequentially (atomic claim,
+ * gcal delete, busy_block delete, ...), so a crash or a swallowed delete BEFORE
+ * the busy_block step leaves the slot silently stuck as busy. This frees the
+ * stuck rows so the slot self-heals. Pure — the caller (sync lane) does the
+ * bounded recompute for `userIds` and the throttled alert for `freed`.
+ *
+ * SAFETY: only frees `slate`-sourced rows whose booking is cancelled or gone. A
+ * `gcal` mirror is NEVER freed (it tracks a real external-calendar event;
+ * freeing it would reopen a slot the agent is genuinely busy on, risking a
+ * double-book), and an active booking's row is kept.
+ */
+export async function reconcileCancelledBusyBlocks(
+  deps: BookingDeps,
+  limit: number,
+): Promise<{ freed: number; userIds: string[] }> {
+  const rows = await deps.loadReconcilableBusyBlocks(limit);
+  const bookingIds = [
+    ...new Set(
+      rows
+        .filter((r) => r.source === "slate" && r.booking_id !== null)
+        .map((r) => r.booking_id as string),
+    ),
+  ];
+  const statuses = bookingIds.length
+    ? await deps.loadBookingStatuses(bookingIds)
+    : new Map<string, BookingStatus>();
+
+  const stuck = rows.filter((r) => {
+    if (r.source !== "slate") return false; // never free a gcal mirror
+    if (r.booking_id === null) return true; // orphan: no booking owns this slot
+    const status = statuses.get(r.booking_id);
+    // Missing booking (not in the map) or an explicitly cancelled one is stuck;
+    // anything still active stays busy.
+    return status === undefined || !ACTIVE_BUSY_STATUSES.has(status);
+  });
+
+  if (stuck.length === 0) return { freed: 0, userIds: [] };
+  await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id));
+  return { freed: stuck.length, userIds: [...new Set(stuck.map((r) => r.user_id))] };
 }
 
 /**

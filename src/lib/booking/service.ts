@@ -6,6 +6,7 @@ import {
   roundRobinCandidates,
 } from "@/lib/availability/service";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { bucketsForAgent } from "@/lib/availability/precompute";
 import {
   createEvent,
   deleteEvent,
@@ -416,6 +417,60 @@ function realDeps(): BookingDeps {
           CACHE_ALERT_COOLDOWN_MS,
           `Slate: busy_blocks DELETE failed for booking ${bookingId} (${error.message}). The cancelled slot will keep showing as busy until cleaned up.`,
         ).catch(() => {});
+      }
+    },
+
+    loadReconcilableBusyBlocks: async (limit) => {
+      // Only upcoming slate rows: a past block can't block a bookable future
+      // slot, and gcal mirrors are never freed by the reconcile sweep (#428).
+      // Scoping to ends_at >= now keeps the scan bounded by concurrent future
+      // bookings instead of the whole table.
+      const { data, error } = await supabaseAdmin()
+        .from("busy_blocks")
+        .select("id, user_id, booking_id, source")
+        .eq("source", "slate")
+        .gte("ends_at", new Date().toISOString())
+        .order("ends_at", { ascending: true })
+        .limit(limit);
+      if (error) {
+        console.error(`reconcile: loadReconcilableBusyBlocks failed: ${error.message}`);
+        return [];
+      }
+      return (data ?? []) as {
+        id: string;
+        user_id: string;
+        booking_id: string | null;
+        source: "slate" | "gcal";
+      }[];
+    },
+
+    loadBookingStatuses: async (bookingIds) => {
+      const map = new Map<string, BookingStatus>();
+      if (bookingIds.length === 0) return map;
+      const { data, error } = await supabaseAdmin()
+        .from("bookings")
+        .select("id, status")
+        .in("id", bookingIds);
+      if (error) {
+        // Fail safe: an empty map would mark every booking "missing" and free
+        // its slot. Throw so the sweep aborts this tick rather than over-delete.
+        throw new Error(`reconcile: loadBookingStatuses failed: ${error.message}`);
+      }
+      for (const r of (data ?? []) as { id: string; status: BookingStatus }[]) {
+        map.set(r.id, r.status);
+      }
+      return map;
+    },
+
+    deleteBusyBlocksByIds: async (ids) => {
+      if (ids.length === 0) return;
+      const { error } = await supabaseAdmin()
+        .from("busy_blocks")
+        .delete()
+        .in("id", ids);
+      if (error) {
+        // Best-effort: the next tick re-finds and retries these rows.
+        console.error(`reconcile: deleteBusyBlocksByIds failed: ${error.message}`);
       }
     },
 
@@ -843,5 +898,46 @@ export async function processPendingEventDeletions(limit: number) {
       `Slate: ${res.stuck.length} calendar event deletion(s) have failed ${orchestration.PENDING_DELETION_ALERT_AFTER}+ times and may be firing orphaned reminders. Check Google Calendar API health. Event ids: ${res.stuck.slice(0, 5).map((r) => r.gcal_event_id).join(", ")}`,
     ).catch(() => {});
   }
+  return res;
+}
+
+const RECONCILE_ALERT_KEY = "reconcile_busy_blocks";
+const RECONCILE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+/** Bound the recompute fan-out so one sweep can't blow the subrequest ceiling;
+ *  any overflow buckets are caught by the recompute lane's freshness window. */
+const RECONCILE_MAX_TOUCHED_BUCKETS = 25;
+
+/**
+ * #428 reconcile sweep: free busy_blocks whose booking is cancelled/missing so a
+ * slot stuck busy after a crash self-heals, then recompute the affected buckets
+ * (bounded) so the reopened slot shows in the embed promptly. Freeing anything
+ * means a write-through delete was missed, so a throttled Slack note flags it
+ * for visibility (not a page).
+ */
+export async function reconcileCancelledBusyBlocks(limit: number) {
+  const res = await orchestration.reconcileCancelledBusyBlocks(realDeps(), limit);
+  if (res.freed === 0) return res;
+
+  // Map freed agents -> their buckets, dedupe, bound, recompute today's slots.
+  const touched = new Set<string>();
+  for (const userId of res.userIds) {
+    try {
+      for (const code of await bucketsForAgent(userId)) touched.add(code);
+    } catch (err) {
+      console.error(
+        `reconcile: bucket lookup failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  for (const code of [...touched].slice(0, RECONCILE_MAX_TOUCHED_BUCKETS)) {
+    await recomputeBucketSlotsForToday(code, true).catch(() => {});
+  }
+
+  await sendThrottledAlert(
+    RECONCILE_ALERT_KEY,
+    RECONCILE_ALERT_COOLDOWN_MS,
+    `Slate: reconcile freed ${res.freed} stuck busy_block(s) whose booking was cancelled/missing across ${res.userIds.length} agent(s). The slot(s) are now bookable again, but a write-through delete was missed. Check cancel-path health.`,
+  ).catch(() => {});
+
   return res;
 }

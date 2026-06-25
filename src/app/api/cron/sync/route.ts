@@ -22,7 +22,10 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
-import { processPendingEventDeletions } from "@/lib/booking/service";
+import {
+  processPendingEventDeletions,
+  reconcileCancelledBusyBlocks,
+} from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
 
@@ -165,6 +168,11 @@ export async function GET(req: NextRequest) {
     // Drain a small batch of failed-event-deletion retries (#401). Best-effort:
     // a failure here must never break the sync lane.
     await processPendingEventDeletions(20).catch(() => {});
+
+    // Reconcile sweep (#428): free any busy_block whose booking is now
+    // cancelled/missing (a crash mid-cancel can leave the slot stuck busy), so
+    // the slot self-heals. Best-effort, same as the deletion drain.
+    await reconcileCancelledBusyBlocks(200).catch(() => {});
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.
