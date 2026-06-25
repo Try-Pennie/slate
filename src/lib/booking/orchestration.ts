@@ -67,6 +67,60 @@ export class SlotUnavailableError extends Error {
 }
 
 /**
+ * Thrown when a reschedule loses a CONCURRENT race to a DIFFERENT target time —
+ * another in-flight reschedule holds a fresh lease on this booking (#439). The
+ * loser is told the booking moved under it instead of silently no-opping, so the
+ * actor knows to refresh. Distinct from SlotUnavailableError; both map to 409.
+ */
+export class RescheduleConflictError extends Error {
+  constructor() {
+    super("This booking was just changed. Refresh and try again.");
+    this.name = "RescheduleConflictError";
+  }
+}
+
+/**
+ * The durable per-booking reschedule pin (#439, migration 0053). Written to the
+ * reschedule_locks row BEFORE the Google call, then read back verbatim on a
+ * crash-resume so the retry reuses the SAME agent + branch + deterministic event
+ * id (never recomputed — recomputing reopens the duplicate/oscillation windows).
+ */
+export interface ReschedulePin {
+  reschedule_seq: number;
+  branch: "in_place" | "reassign";
+  pinned_user_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string;
+  target_starts_at: string;
+}
+
+/**
+ * Outcome of claiming the per-booking reschedule lease (#439). The lease is the
+ * single arbiter of concurrency AND crash-resume: `won` = no holder (fresh
+ * attempt); `resume`/`fresh-after-abandon` = a crashed holder's expired lease is
+ * taken over (adopt the pin); `idempotent`/`noop` = a same-target no-op (the
+ * booking already sits at the target or a same-target double-submit); `conflict`
+ * = a different-target holder still holds a FRESH lease (throw, don't no-op).
+ */
+export type RescheduleClaim =
+  | { outcome: "won" }
+  | { outcome: "resume"; pin: ReschedulePin }
+  | { outcome: "fresh-after-abandon"; pin: ReschedulePin }
+  | { outcome: "noop" }
+  | { outcome: "conflict" }
+  | { outcome: "idempotent" };
+
+/** A reschedule lease-pin past its lease (a crashed, never-retried holder), with
+ *  the booking's CURRENT event id, for the abandoned-pin GC sweep (#439). */
+export interface AbandonedReschedulePin {
+  booking_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string | null;
+  branch: "in_place" | "reassign" | null;
+  booking_gcal_event_id: string | null;
+}
+
+/**
  * Thrown when a booking fails NOT because every candidate is genuinely busy, but
  * because we couldn't verify any of them (calendar/DB read errors — a likely
  * verify-on-book outage). Distinct from SlotUnavailableError so the caller can
@@ -179,6 +233,7 @@ export type BookingUpdate = {
   gcal_event_id?: string | null;
   allow_double_book?: boolean;
   routing_trace?: RoutingTrace | null;
+  reschedule_seq?: number;
 };
 
 export interface BookingContext {
@@ -307,13 +362,23 @@ export interface BookingDeps {
    */
   completeBookingsIfDue(bookingIds: string[]): Promise<string[]>;
   /**
-   * Reschedule idempotency lock. Claims (bookingId, target instant); returns
-   * false when a concurrent reschedule to the same target already holds it, so
-   * the loser of a double-submit no-ops. Stale locks (from a torn-down Worker)
-   * are reclaimable. Released via `releaseReschedule` when the operation ends.
+   * Claim the per-booking reschedule lease (#439, migration 0053). One lease per
+   * booking: the discriminated outcome tells the caller whether it won a fresh
+   * attempt, is resuming a crashed holder's pin, must conflict, or no-ops. See
+   * `RescheduleClaim`. Fails CLOSED (throws a retriable error) on an unexpected
+   * DB error, so a claim we can't trust never re-opens the concurrent window.
    */
-  claimReschedule(bookingId: string, targetStartIso: string): Promise<boolean>;
-  releaseReschedule(bookingId: string, targetStartIso: string): Promise<void>;
+  claimReschedule(bookingId: string, targetStartIso: string): Promise<RescheduleClaim>;
+  /** Persist the pin onto the booking's lease row BEFORE the Google call, so a
+   *  crash-resume reuses the same agent + branch + deterministic event id. */
+  writeReschedulePin(bookingId: string, pin: ReschedulePin): Promise<void>;
+  /** Read the current lease pin for a booking, or null. */
+  readReschedulePin(bookingId: string): Promise<ReschedulePin | null>;
+  /** Release the per-booking lease (keyed on booking_id alone now). */
+  releaseReschedule(bookingId: string): Promise<void>;
+  /** Lease-pins past `lease_until + graceMs`, each with the booking's live
+   *  gcal_event_id, for the abandoned-pin GC sweep (#439). */
+  loadAbandonedReschedulePins(graceMs: number): Promise<AbandonedReschedulePin[]>;
   /** Append a reschedule/cancel/reassign history row (#326/#300). */
   /** Append a history row; returns the new row id (or null if the best-effort
    *  insert failed) so the caller can use it as the webhook dedupe key (#436). */
@@ -1123,6 +1188,37 @@ export async function processBookingReservations(
   return { processed: rows.length, completed, failed };
 }
 
+/**
+ * GC sweep for abandoned reschedule lease-pins (#439, milestone #7). A crash +
+ * never-retried reassign leaves a stray Google event — cosmetic, since
+ * availability is busy_blocks-cache-first and never reads live Google, and the
+ * expired lease already unblocks the booking. For each lease past its
+ * `lease_until + grace` whose REASSIGN pin was never adopted (its
+ * `gcal_client_id` isn't the booking's live event), enqueue the orphaned event
+ * for durable deletion, then delete the lock row. Cleanup ONLY — it never
+ * completes or reassigns a booking, so it does not violate the "no completion
+ * drain" decision. Runs on the existing /api/cron/outbox lane.
+ */
+export async function processAbandonedReschedulePins(
+  deps: BookingDeps,
+  graceMs: number,
+): Promise<{ swept: number; enqueued: number }> {
+  const rows = await deps.loadAbandonedReschedulePins(graceMs);
+  let enqueued = 0;
+  for (const row of rows) {
+    if (
+      row.branch === "reassign" &&
+      row.gcal_client_id &&
+      row.gcal_client_id !== row.booking_gcal_event_id
+    ) {
+      await deps.enqueueEventDeletion(row.pinned_agent_email, row.gcal_client_id, row.booking_id);
+      enqueued += 1;
+    }
+    await deps.releaseReschedule(row.booking_id);
+  }
+  return { swept: rows.length, enqueued };
+}
+
 /** Input for the direct booking API path: a normal booking plus the external
  *  caller's required per-person id and the confirm-reschedule flag (#357). */
 export interface ApiBookingInput extends CreateBookingInput {
@@ -1437,6 +1533,7 @@ export async function rescheduleBooking(
   // first call already landed), there's nothing to move. Still ensure the
   // reason event is recorded — a first attempt that moved the booking but died
   // before recording it would otherwise lose the (mandatory) reason (#326).
+  // Non-holder early return (never claimed -> never releases).
   if (Date.parse(booking.starts_at) === Date.parse(startIso)) {
     if (!(await deps.hasBookingEvent(booking.id, "rescheduled", startIso))) {
       await deps.insertBookingEvent(
@@ -1453,21 +1550,33 @@ export async function rescheduleBooking(
         }),
       );
     }
+    // Conditionally clean up a lock row a commit-then-crash may have left for
+    // THIS now-committed target. Only when the pin's target matches ours: a
+    // concurrent different-target holder will have re-pinned to its own target,
+    // so this never clobbers an active different-target lease.
+    const lingering = await deps.readReschedulePin(booking.id);
+    if (lingering && Date.parse(lingering.target_starts_at) === Date.parse(startIso)) {
+      await deps.releaseReschedule(booking.id);
+    }
     return { booking, manageUrl: manageUrl(deps, token) };
   }
 
-  // Idempotency guard 2 — concurrent duplicate: claim a short-lived lock on
-  // (booking, target). The loser of a simultaneous double-submit returns
-  // without redoing the Google move or re-emitting booking.rescheduled; the
-  // lock WINNER records the reason event in applyReschedule.
-  if (!(await deps.claimReschedule(booking.id, startIso))) {
+  // Idempotency guard 2 — claim the per-booking lease (#439). The discriminated
+  // outcome drives everything: a non-holder (idempotent/noop/conflict) returns or
+  // throws WITHOUT touching the finally; only a holder (won/resume/
+  // fresh-after-abandon) enters the try/finally, so the release rule holds.
+  const claim = await deps.claimReschedule(booking.id, startIso);
+  if (claim.outcome === "idempotent" || claim.outcome === "noop") {
     return { booking, manageUrl: manageUrl(deps, token) };
+  }
+  if (claim.outcome === "conflict") {
+    throw new RescheduleConflictError();
   }
 
   try {
-    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator);
+    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator, claim);
   } finally {
-    await deps.releaseReschedule(booking.id, startIso);
+    await deps.releaseReschedule(booking.id);
   }
 }
 
@@ -1479,6 +1588,7 @@ async function applyReschedule(
   endIso: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
+  claim: Extract<RescheduleClaim, { outcome: "won" | "resume" | "fresh-after-abandon" }>,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -1486,48 +1596,97 @@ async function applyReschedule(
   const fromStartsIso = booking.starts_at;
   const fromAgentUserId = booking.assigned_user_id;
 
-  // Prefer keeping the same agent if they're free at the new time.
-  let assigned: string | null = booking.assigned_user_id;
-  let agentName = booking.agent_name;
-  let agentEmail = booking.agent_email;
-  if (currentEmail && (await deps.isFree(currentEmail, startIso, endIso))) {
-    await deps.updateEventTime(
-      currentEmail,
-      booking.gcal_event_id!,
-      startIso,
-      endIso,
-      booking.timezone,
-    );
+  // Resolve the pin. RESUME reads it verbatim — NEVER recompute the agent/branch/
+  // event id (recomputing reopens window a + the oscillation ghost). A fresh
+  // attempt (won) or fresh-after-abandon computes a new pin and writes it BEFORE
+  // any Google call (the load-bearing crash-safety invariant).
+  let pin: ReschedulePin;
+  if (claim.outcome === "resume") {
+    pin = claim.pin;
   } else {
-    // Reassign via round-robin; create a fresh event, drop the old one.
-    const next = await assignAgent(deps, bucket, eventType, startIso, endIso);
-    assigned = next.userId;
-    const newAgent = await deps.getUser(next.userId);
-    agentName = newAgent.name;
-    agentEmail = newAgent.email;
-    if (currentEmail && booking.gcal_event_id) {
-      await deleteEventBestEffort(deps, currentEmail, booking.gcal_event_id, booking.id);
+    // fresh-after-abandon keys the new seq off the ABANDONED pin's seq (+1), not
+    // booking.reschedule_seq, so the new id can't collide with the abandoned one.
+    const baseSeq =
+      claim.outcome === "fresh-after-abandon" ? claim.pin.reschedule_seq : booking.reschedule_seq;
+    const seq = baseSeq + 1;
+
+    // fresh-after-abandon: the stale pin's event (for a DIFFERENT target) is
+    // orphaned — enqueue it for durable deletion if it isn't the live event.
+    if (claim.outcome === "fresh-after-abandon") {
+      const stale = claim.pin;
+      if (stale.gcal_client_id && stale.gcal_client_id !== booking.gcal_event_id) {
+        await deps.enqueueEventDeletion(stale.pinned_agent_email, stale.gcal_client_id, booking.id);
+      }
     }
-    const newEventId = await deps.createEvent(next.email, {
-      summary: `${eventType.name}${
-        booking.attendee_name ? ` with ${booking.attendee_name}` : ""
-      }`,
-      description: eventDescription(
-        booking.attendee_phone,
-        manageUrl(deps, token),
-      ),
-      start: startIso,
-      end: endIso,
-      timezone: booking.timezone,
-      attendeeEmail: booking.attendee_email ?? undefined,
-      attendeeName: booking.attendee_name ?? undefined,
-    });
-    await deps.updateBooking(booking.id, { gcal_event_id: newEventId });
-    booking.gcal_event_id = newEventId;
+
+    // Branch decision — the ONLY place isFree / assignAgent run, and only on a
+    // FRESH attempt. A resume never reaches here, so a poisoned freeBusy can't
+    // flip a same-agent move to a new agent (window b).
+    if (currentEmail && booking.assigned_user_id && (await deps.isFree(currentEmail, startIso, endIso))) {
+      pin = {
+        reschedule_seq: seq,
+        branch: "in_place",
+        pinned_user_id: booking.assigned_user_id,
+        pinned_agent_email: currentEmail,
+        gcal_client_id: booking.gcal_event_id!, // in-place re-PATCHes the existing event
+        target_starts_at: startIso,
+      };
+    } else {
+      const next = await assignAgent(deps, bucket, eventType, startIso, endIso);
+      pin = {
+        reschedule_seq: seq,
+        branch: "reassign",
+        pinned_user_id: next.userId,
+        pinned_agent_email: next.email,
+        gcal_client_id: await deterministicEventId(`reschedule:${booking.id}:${seq}`, next.userId),
+        target_starts_at: startIso,
+      };
+    }
+    await deps.writeReschedulePin(booking.id, pin);
   }
 
-  if (!assigned) throw new SlotUnavailableError();
+  // Execute the pinned branch.
+  let newGcalEventId = booking.gcal_event_id;
+  if (pin.branch === "in_place") {
+    // Idempotent PATCH — a resume simply re-PATCHes the same event to the same
+    // time. No createEvent / 409-reuse here; the pin stores the existing event id.
+    await deps.updateEventTime(pin.pinned_agent_email, pin.gcal_client_id, startIso, endIso, booking.timezone);
+    newGcalEventId = pin.gcal_client_id;
+  } else {
+    // reassign: delete-first the old event, then create the new with the pinned
+    // deterministic id (a resume's repeat insert 409s and GET-and-reuses it ->
+    // no duplicate, window a). On a generic failure, delete the new event and let
+    // the pinned id 409-re-create it on resume (mirrors completeReservation ~996).
+    if (currentEmail && booking.gcal_event_id && booking.gcal_event_id !== pin.gcal_client_id) {
+      await deleteEventBestEffort(deps, currentEmail, booking.gcal_event_id, booking.id);
+    }
+    try {
+      newGcalEventId = await deps.createEvent(
+        pin.pinned_agent_email,
+        {
+          summary: `${eventType.name}${booking.attendee_name ? ` with ${booking.attendee_name}` : ""}`,
+          description: eventDescription(booking.attendee_phone, manageUrl(deps, token)),
+          start: startIso,
+          end: endIso,
+          timezone: booking.timezone,
+          attendeeEmail: booking.attendee_email ?? undefined,
+          attendeeName: booking.attendee_name ?? undefined,
+        },
+        pin.gcal_client_id,
+      );
+    } catch (err) {
+      await deleteEventBestEffort(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+      throw err;
+    }
+  }
 
+  const agentName =
+    pin.branch === "in_place" ? booking.agent_name : (await deps.getUser(pin.pinned_user_id)).name;
+  const agentEmail = pin.pinned_agent_email;
+  const assigned = pin.pinned_user_id;
+
+  // Single atomic commit at the new time/agent, advancing the ordinal ONLY on
+  // success (so a crash-retry recomputes the same seq -> same deterministic id).
   await deps.updateBooking(booking.id, {
     starts_at: startIso,
     ends_at: endIso,
@@ -1535,7 +1694,10 @@ async function applyReschedule(
     agent_name: agentName,
     agent_email: agentEmail,
     status: "rescheduled",
+    gcal_event_id: newGcalEventId,
+    reschedule_seq: pin.reschedule_seq,
   });
+  booking.gcal_event_id = newGcalEventId;
 
   const updated = {
     ...booking,

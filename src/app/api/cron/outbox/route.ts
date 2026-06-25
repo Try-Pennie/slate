@@ -1,6 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
-import { drainBookingOutbox, drainBookingReservations } from "@/lib/booking/service";
+import {
+  drainBookingOutbox,
+  drainBookingReservations,
+  sweepAbandonedReschedulePins,
+} from "@/lib/booking/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 
@@ -30,7 +34,9 @@ export async function GET(req: NextRequest) {
     // Same lane resumes crashed create reservations (#429 P4) + sweeps abandoned
     // ones. Best-effort: a failure here must not break the outbox drain.
     const reservations = await drainBookingReservations().catch(() => null);
-    return NextResponse.json({ outbox, reservations });
+    // GC abandoned reschedule lease-pins (#439): cleanup only, best-effort.
+    const reschedulePins = await sweepAbandonedReschedulePins().catch(() => null);
+    return NextResponse.json({ outbox, reservations, reschedulePins });
   } finally {
     await releaseLock("cron_outbox", lock);
   }
