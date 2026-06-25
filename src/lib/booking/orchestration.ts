@@ -23,6 +23,7 @@ import {
   type PersonIdentity,
 } from "./person-dedupe.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
+import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import type {
   Booking,
@@ -283,7 +284,9 @@ export interface BookingDeps {
   claimReschedule(bookingId: string, targetStartIso: string): Promise<boolean>;
   releaseReschedule(bookingId: string, targetStartIso: string): Promise<void>;
   /** Append a reschedule/cancel/reassign history row (#326/#300). */
-  insertBookingEvent(row: BookingEventInsert): Promise<void>;
+  /** Append a history row; returns the new row id (or null if the best-effort
+   *  insert failed) so the caller can use it as the webhook dedupe key (#436). */
+  insertBookingEvent(row: BookingEventInsert): Promise<string | null>;
   /**
    * Whether a history row already exists for this (booking, action, target).
    * Lets the no-op / re-cancel guards record a reason that a partially-failed
@@ -310,7 +313,12 @@ export interface BookingDeps {
   getAgentByEmail(email: string): Promise<User | null>;
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
-  emitWebhook(orgId: string, event: WebhookEvent, payload: BookingEventPayload): Promise<void>;
+  emitWebhook(
+    orgId: string,
+    event: WebhookEvent,
+    payload: BookingEventPayload,
+    dedupeKey: string | null,
+  ): Promise<void>;
   newManageToken(): string;
   appBaseUrl(): string;
   /** Best-effort clear of a bucket's cached availability after a booking changes it. */
@@ -503,11 +511,13 @@ async function fire(
   bucket: Bucket,
   eventType: EventType,
   reason: BookingReasonMeta | null = null,
+  bookingEventId: string | null = null,
 ): Promise<void> {
   await deps.emitWebhook(
     booking.org_id,
     event,
     webhookPayload(deps, booking, bucket, eventType, reason),
+    webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
   );
 }
 
@@ -1070,7 +1080,7 @@ async function applyReschedule(
 
   // Append the immutable history row (#326/#300) before the webhook fires, so
   // the reason is durable even if delivery fails.
-  await deps.insertBookingEvent(
+  const bookingEventId = await deps.insertBookingEvent(
     bookingEventFrom({
       bookingId: booking.id,
       action: "rescheduled",
@@ -1093,7 +1103,7 @@ async function applyReschedule(
     agent_email: agentEmail,
     status: "rescheduled" as const,
   };
-  await fire(deps, "booking.rescheduled", updated, bucket, eventType, reasonMeta(reason, initiator));
+  await fire(deps, "booking.rescheduled", updated, bucket, eventType, reasonMeta(reason, initiator), bookingEventId);
 
   return { booking: updated, manageUrl: manageUrl(deps, token) };
 }
@@ -1183,7 +1193,7 @@ export async function reassignBooking(
   // reporting reads booking_events.action and isn't inflated by reassignments,
   // even though this still emits booking.rescheduled to preserve the Regal
   // contract. Same time, agent change only. Initiator is the system automation.
-  await deps.insertBookingEvent(
+  const bookingEventId = await deps.insertBookingEvent(
     bookingEventFrom({
       bookingId: booking.id,
       action: "reassigned",
@@ -1214,6 +1224,7 @@ export async function reassignBooking(
     bucket,
     eventType,
     reasonMeta(reason, "system"),
+    bookingEventId,
   );
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };
 }
@@ -1268,7 +1279,7 @@ export async function cancelBooking(
   await deps.invalidateSlots(bucket.code);
 
   // Append the immutable history row before the webhook fires.
-  await deps.insertBookingEvent(
+  const bookingEventId = await deps.insertBookingEvent(
     bookingEventFrom({
       bookingId: booking.id,
       action: "cancelled",
@@ -1289,6 +1300,7 @@ export async function cancelBooking(
     bucket,
     eventType,
     reasonMeta(reason, initiator),
+    bookingEventId,
   );
   return true;
 }

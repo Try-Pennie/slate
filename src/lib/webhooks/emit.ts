@@ -62,11 +62,19 @@ async function send(
  * Records and fires a webhook to every active endpoint subscribed to `event`.
  * The send is bounded by a timeout so a slow subscriber can't block the booking;
  * any failure is retried with backoff by the cron sweep.
+ *
+ * `dedupeKey` makes the call idempotent (#436): the row is written under the
+ * partial UNIQUE (endpoint_id, event, dedupe_key), so a re-enqueue of the same
+ * logical event hits a 23505 and we skip both the second row and the second POST
+ * — exactly-once to Regal/Cadence. The FIRST call still sends inline (no added
+ * latency). A null `dedupeKey` opts out of dedup (the partial index ignores
+ * nulls) and behaves exactly as before (at-least-once).
  */
 export async function emitWebhook(
   orgId: string,
   event: WebhookEvent,
   payload: BookingEventPayload,
+  dedupeKey: string | null = null,
 ): Promise<void> {
   const db = supabaseAdmin();
   const { data: endpoints } = await db
@@ -78,16 +86,21 @@ export async function emitWebhook(
 
   await Promise.all(
     ((endpoints ?? []) as WebhookEndpoint[]).map(async (endpoint) => {
-      const { data: delivery } = await db
+      const { data: delivery, error } = await db
         .from("webhook_deliveries")
         .insert({
           endpoint_id: endpoint.id,
           event,
           payload: payload as unknown as Record<string, unknown>,
           status: "pending",
+          dedupe_key: dedupeKey,
         })
         .select("id")
         .single();
+      // 23505 = this (endpoint, event, dedupe_key) was already enqueued by a
+      // prior call: the original delivery owns the send/retry, so skip — never
+      // double-fire. Any other insert error leaves no row, same as before.
+      if (error) return;
       if (delivery) {
         await send(endpoint, (delivery as { id: string }).id, event, payload, 1);
       }

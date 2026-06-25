@@ -544,7 +544,14 @@ function realDeps(): BookingDeps {
     // + throttled alert, like the busy_blocks write-through (#34). The reason is
     // analytics, not a safety guard, so losing it to a rare DB error is OK.
     insertBookingEvent: async (row) => {
-      const { error } = await supabaseAdmin().from("booking_events").insert(row);
+      // Return the new row id for use as the webhook dedupe key (#436). A failed
+      // insert returns null: the webhook then falls back to no-dedup so it still
+      // fires (at-least-once) rather than being keyed to a missing row.
+      const { data, error } = await supabaseAdmin()
+        .from("booking_events")
+        .insert(row)
+        .select("id")
+        .single();
       if (error) {
         console.error(
           `booking_events insert failed for booking ${row.booking_id} (${row.action}): ${error.message}`,
@@ -554,7 +561,9 @@ function realDeps(): BookingDeps {
           CACHE_ALERT_COOLDOWN_MS,
           `Slate: booking_events INSERT failed for booking ${row.booking_id} (${row.action}, ${error.message}). The reschedule/cancel reason for this action was not recorded.`,
         ).catch(() => {});
+        return null;
       }
+      return (data as { id: string }).id;
     },
 
     hasBookingEvent: async (bookingId, action, toStartsIso) => {
