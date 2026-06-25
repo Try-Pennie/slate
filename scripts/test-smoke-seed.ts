@@ -33,6 +33,7 @@ assert(
   Object.keys(seed.user.attributes).length === 0,
   "agent has no routing attributes (matches empty-criteria buckets)",
 );
+assert(seed.user.is_test === true, "agent is flagged is_test (hidden from UI, real leads can't book)");
 
 // --- Schedule + rules (so the agent actually has open slots) ---
 assert(seed.schedule.user_id === seed.user.id, "schedule belongs to the agent");
@@ -68,6 +69,10 @@ assert(
 assert(
   seed.buckets.every((b) => b.event_type_id === "evt-smoke" && b.org_id === "org-smoke"),
   "buckets reference the org's event type",
+);
+assert(
+  seed.buckets.every((b) => b.is_test === true),
+  "buckets are flagged is_test (hidden from public availability/book, unbookable by real leads)",
 );
 
 // --- Membership: the agent is the sole member of EVERY bucket ---

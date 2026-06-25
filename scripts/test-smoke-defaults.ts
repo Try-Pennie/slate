@@ -46,5 +46,14 @@ assert(
   "the old non-deliverable smoke+ attendee address is gone",
 );
 
+// Test buckets are hidden from anonymous availability reads (#396), so the
+// smoke test must send its booking key when fetching slots — otherwise it'd 404
+// on its own SMOKE bucket.
+const slotsForFn = src.match(/async function slotsFor[\s\S]*?\n}/);
+assert(
+  !!slotsForFn && /authorization/i.test(slotsForFn[0]),
+  "slotsFor sends the booking key (so it can read its hidden test-bucket slots)",
+);
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

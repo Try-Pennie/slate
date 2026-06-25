@@ -106,6 +106,7 @@ interface FakeOpts {
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
   unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
+  testBucket?: boolean; // resolveBucketByCode returns an is_test bucket (#396)
   listResult?: { rows: Booking[]; buckets: Bucket[] }; // queryBookings result (#392)
   deleteEventThrows?: boolean;
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
@@ -149,7 +150,13 @@ function makeDeps(opts: FakeOpts) {
   let insertAttempted = false;
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   const deps: BookingDeps = {
-    resolveBucketByCode: async () => (opts.unknownBucket ? null : { bucket, eventType }),
+    resolveBucketByCode: async () =>
+      opts.unknownBucket
+        ? null
+        : {
+            bucket: opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket,
+            eventType,
+          },
     roundRobinCandidates: async (_b, _e, _ms, preview) => {
       calls.roundRobinPreview.push(preview);
       return opts.candidates ?? ["a"];
@@ -336,6 +343,43 @@ async function run() {
     assert(
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "create: invalidates cached slots for the booked bucket exactly once",
+    );
+  }
+
+  // --- createBooking: a test bucket is unbookable on the public path (#396) ---
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      testBucket: true,
+    });
+    let err: unknown;
+    try {
+      await createBooking(input, deps); // no allowTestBuckets -> public lead
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof UnknownBucketError,
+      "create: public path rejects a test bucket as Unknown (real leads can't book it)",
+    );
+    assert(
+      calls.createEvent.length === 0 && calls.webhooks.length === 0,
+      "create: test-bucket rejection happens before any calendar event / webhook",
+    );
+  }
+
+  // --- createBooking: the authed smoke key CAN book a test bucket (#396) ---
+  {
+    const { deps } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      testBucket: true,
+    });
+    const res = await createBooking({ ...input, allowTestBuckets: true }, deps);
+    assert(
+      res.booking.id === "bk-new",
+      "create: allowTestBuckets lets the key-authed smoke test book a test bucket",
     );
   }
 

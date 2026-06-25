@@ -43,9 +43,20 @@ export default async function BookEntry({
 
   const { data: bucketRow } = await supabaseAdmin()
     .from("buckets")
-    .select("org_id")
+    .select("org_id, is_test")
     .eq("code", bucketCode)
     .maybeSingle();
+  // A synthetic test bucket (#396) has no public booking page — treat its code
+  // like a misconfigured link rather than rendering an (empty) Booker for it.
+  if (bucketRow?.is_test) {
+    return (
+      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
+        <p className="max-w-md text-sm text-fg-muted">
+          This booking link is not available.
+        </p>
+      </main>
+    );
+  }
   const orgId = bucketRow?.org_id ?? null;
   const { data: orgRow } = orgId
     ? await supabaseAdmin()

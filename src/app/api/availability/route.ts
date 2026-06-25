@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getCachedBucketSlots } from "@/lib/availability/slot-cache";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
+import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
+import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +38,17 @@ export async function GET(req: NextRequest) {
   const result = await getCachedBucketSlots(code, from);
   if (!result) {
     return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
+  }
+
+  // A synthetic test bucket (#396) is invisible to the public: only the
+  // key-authed smoke test may read its slots. To everyone else it 404s exactly
+  // like an unknown code — no signal that a hidden bucket exists.
+  if (result.bucket.is_test) {
+    const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
+    const auth = authenticateBearer(req.headers.get("authorization"), keys);
+    if (!auth.ok) {
+      return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
+    }
   }
 
   let slots = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);

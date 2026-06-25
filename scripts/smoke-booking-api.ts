@@ -94,7 +94,11 @@ async function req(method: string, path: string): Promise<{ status: number; body
 }
 
 async function slotsFor(bucket: string): Promise<string[]> {
-  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(bucket)}`);
+  // Send the booking key: the default SMOKE/SMOKE2 buckets are test buckets,
+  // hidden from anonymous availability reads (#396), so an unauthed GET 404s.
+  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(bucket)}`, {
+    headers: { authorization: `Bearer ${KEY}` },
+  });
   const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
   return res.status === 200 ? body.slots ?? [] : [];
 }

@@ -81,7 +81,8 @@ export default async function AgentProfilePage({
       .select("id, timezone")
       .eq("user_id", agent.id)
       .maybeSingle(),
-    db.from("users").select("id, name, email, role, deactivated_at").eq("org_id", me.org_id),
+    // Hide the synthetic smoke-test agent (#396) from the manager picker.
+    db.from("users").select("id, name, email, role, deactivated_at").eq("org_id", me.org_id).eq("is_test", false),
     db.from("organizations").select("*").eq("id", me.org_id).single(),
   ]);
   const sched = schedRes.data as { id: string; timezone: string } | null;

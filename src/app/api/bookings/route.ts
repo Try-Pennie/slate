@@ -92,6 +92,8 @@ export async function POST(req: NextRequest) {
         prefill: v.prefill,
         externalId: v.externalId,
         confirmReschedule: v.confirmReschedule,
+        // Key-authed path: may exercise the synthetic smoke-test buckets (#396).
+        allowTestBuckets: true,
       });
       return NextResponse.json(preview);
     } catch (err) {
@@ -113,6 +115,8 @@ export async function POST(req: NextRequest) {
       prefill: v.prefill,
       externalId: v.externalId,
       confirmReschedule: v.confirmReschedule,
+      // Key-authed path: may exercise the synthetic smoke-test buckets (#396).
+      allowTestBuckets: true,
     });
 
     const body = {
