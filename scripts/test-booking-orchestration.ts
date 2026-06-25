@@ -18,6 +18,7 @@ import {
   processPendingEventDeletions,
   OUTBOX_HANDLERS,
   processBookingReservations,
+  processAbandonedReschedulePins,
   cancelOutboxSteps,
   rescheduleOutboxSteps,
   reassignOutboxSteps,
@@ -30,6 +31,7 @@ import {
   type BookingDeps,
   type BookingContext,
   type ReschedulePin,
+  type AbandonedReschedulePin,
   type CreateBookingInput,
   type ApiBookingInput,
   type ApiBookingListItem,
@@ -118,6 +120,7 @@ interface FakeOpts {
   // holder. `target` = the instant it's reaching for (same as the request ->
   // idempotent no-op; different -> conflict); `expired` = a crashed holder.
   heldLease?: { target: string; expired?: boolean; pin?: ReschedulePin };
+  abandonedPins?: AbandonedReschedulePin[]; // for the GC sweep (#476)
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
@@ -317,6 +320,7 @@ function makeDeps(opts: FakeOpts) {
       calls.releaseReschedule++;
       locks.delete(bookingId);
     },
+    loadAbandonedReschedulePins: async () => opts.abandonedPins ?? [],
     insertBookingEvent: async (row) => {
       calls.bookingEvents.push(row);
       return `evt-${calls.bookingEvents.length}`;
@@ -1041,6 +1045,27 @@ async function run() {
       calls.enqueueEventDeletion.length >= 1,
       "headline-gap: the orphaned T1 calendar event is enqueued into pending_event_deletions",
     );
+  }
+
+  // --- abandoned-pin GC sweep (#439, #476): cleanup only ---
+  {
+    const { deps, calls } = makeDeps({
+      abandonedPins: [
+        // never-adopted reassign pin -> enqueue its orphaned event, free the lock
+        { booking_id: "bk1", pinned_agent_email: "b@x.com", gcal_client_id: "slateorphan", branch: "reassign", booking_gcal_event_id: "gcal-old" },
+        // in-place pin -> no orphan event, just free the lock
+        { booking_id: "bk2", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-old", branch: "in_place", booking_gcal_event_id: "gcal-old" },
+        // reassign pin that WAS adopted (client id == the live event) -> no enqueue
+        { booking_id: "bk3", pinned_agent_email: "c@x.com", gcal_client_id: "gcal-live", branch: "reassign", booking_gcal_event_id: "gcal-live" },
+      ],
+    });
+    const res = await processAbandonedReschedulePins(deps, 0);
+    assert(res.swept === 3 && res.enqueued === 1, "sweep: enqueues only the never-adopted reassign orphan");
+    assert(
+      calls.enqueueEventDeletion.length === 1 && calls.enqueueEventDeletion[0].eventId === "slateorphan",
+      "sweep: enqueues the orphaned reassign event for durable deletion",
+    );
+    assert(calls.releaseReschedule === 3, "sweep: frees every swept lock row");
   }
 
   // --- reschedule: terminal states / not found ---

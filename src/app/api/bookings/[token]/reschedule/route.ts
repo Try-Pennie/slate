@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   rescheduleBooking,
   SlotUnavailableError,
+  RescheduleConflictError,
   VerifyUnavailableError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
@@ -51,6 +52,11 @@ export async function POST(
     // Outage (couldn't verify), not a full slot — retryable (#319).
     if (err instanceof VerifyUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    // A concurrent reschedule moved this booking under us (#439). 409 like a slot
+    // conflict; the distinct message tells the actor to refresh.
+    if (err instanceof RescheduleConflictError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
     }
     if (err instanceof SlotUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 409 });

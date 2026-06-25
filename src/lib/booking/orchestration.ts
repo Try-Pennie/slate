@@ -110,6 +110,16 @@ export type RescheduleClaim =
   | { outcome: "conflict" }
   | { outcome: "idempotent" };
 
+/** A reschedule lease-pin past its lease (a crashed, never-retried holder), with
+ *  the booking's CURRENT event id, for the abandoned-pin GC sweep (#439). */
+export interface AbandonedReschedulePin {
+  booking_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string | null;
+  branch: "in_place" | "reassign" | null;
+  booking_gcal_event_id: string | null;
+}
+
 /**
  * Thrown when a booking fails NOT because every candidate is genuinely busy, but
  * because we couldn't verify any of them (calendar/DB read errors — a likely
@@ -366,6 +376,9 @@ export interface BookingDeps {
   readReschedulePin(bookingId: string): Promise<ReschedulePin | null>;
   /** Release the per-booking lease (keyed on booking_id alone now). */
   releaseReschedule(bookingId: string): Promise<void>;
+  /** Lease-pins past `lease_until + graceMs`, each with the booking's live
+   *  gcal_event_id, for the abandoned-pin GC sweep (#439). */
+  loadAbandonedReschedulePins(graceMs: number): Promise<AbandonedReschedulePin[]>;
   /** Append a reschedule/cancel/reassign history row (#326/#300). */
   /** Append a history row; returns the new row id (or null if the best-effort
    *  insert failed) so the caller can use it as the webhook dedupe key (#436). */
@@ -1173,6 +1186,37 @@ export async function processBookingReservations(
     }
   }
   return { processed: rows.length, completed, failed };
+}
+
+/**
+ * GC sweep for abandoned reschedule lease-pins (#439, milestone #7). A crash +
+ * never-retried reassign leaves a stray Google event — cosmetic, since
+ * availability is busy_blocks-cache-first and never reads live Google, and the
+ * expired lease already unblocks the booking. For each lease past its
+ * `lease_until + grace` whose REASSIGN pin was never adopted (its
+ * `gcal_client_id` isn't the booking's live event), enqueue the orphaned event
+ * for durable deletion, then delete the lock row. Cleanup ONLY — it never
+ * completes or reassigns a booking, so it does not violate the "no completion
+ * drain" decision. Runs on the existing /api/cron/outbox lane.
+ */
+export async function processAbandonedReschedulePins(
+  deps: BookingDeps,
+  graceMs: number,
+): Promise<{ swept: number; enqueued: number }> {
+  const rows = await deps.loadAbandonedReschedulePins(graceMs);
+  let enqueued = 0;
+  for (const row of rows) {
+    if (
+      row.branch === "reassign" &&
+      row.gcal_client_id &&
+      row.gcal_client_id !== row.booking_gcal_event_id
+    ) {
+      await deps.enqueueEventDeletion(row.pinned_agent_email, row.gcal_client_id, row.booking_id);
+      enqueued += 1;
+    }
+    await deps.releaseReschedule(row.booking_id);
+  }
+  return { swept: rows.length, enqueued };
 }
 
 /** Input for the direct booking API path: a normal booking plus the external

@@ -110,6 +110,32 @@ describe("ManageBooking", () => {
     expect(await screen.findByText("That time was just taken.")).toBeTruthy();
   });
 
+  it("shows the conflict message and does NOT enter the success state on a 409 reschedule conflict", async () => {
+    // #439: a concurrent reschedule moved the booking; the loser gets a 409 with
+    // the distinct conflict message and must NOT render the "rescheduled" success
+    // state at the new time.
+    mockFetch({
+      availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },
+      reschedule: {
+        ok: false,
+        body: { error: "This booking was just changed. Refresh and try again." },
+      },
+    });
+    const { container } = render(<ManageBooking {...baseProps} />);
+    const headerTimeBefore = container.querySelector("p span.tabular-nums")?.textContent;
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    const slot = await screen.findByRole("button", { name: /Sun/i });
+    await userEvent.click(slot);
+
+    expect(
+      await screen.findByText("This booking was just changed. Refresh and try again."),
+    ).toBeTruthy();
+    // Success NOT entered: the header time is unchanged (no setStart to the new slot).
+    expect(container.querySelector("p span.tabular-nums")?.textContent).toBe(headerTimeBefore);
+  });
+
   it("requires a reason before a reschedule slot can be picked, and sends it", async () => {
     const fn = mockFetch({
       availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },

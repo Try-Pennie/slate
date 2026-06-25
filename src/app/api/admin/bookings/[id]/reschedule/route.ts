@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/auth";
 import {
   adminRescheduleBooking,
   SlotUnavailableError,
+  RescheduleConflictError,
   VerifyUnavailableError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
@@ -46,6 +47,11 @@ export async function POST(
   } catch (err) {
     if (err instanceof VerifyUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    // A concurrent reschedule moved this booking under us (#439): 409 + a distinct
+    // refresh message.
+    if (err instanceof RescheduleConflictError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
     }
     if (err instanceof SlotUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 409 });

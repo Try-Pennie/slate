@@ -53,6 +53,9 @@ const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // A reschedule finishes in seconds; this TTL only governs reclaiming a lock
 // orphaned by a torn-down Worker, so keep it comfortably above the slowest run.
 const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
+// Extra buffer past lease expiry before the GC sweep treats a pin as abandoned
+// (#439) — well clear of any in-flight retry that's about to take over the lease.
+const ABANDONED_PIN_GRACE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
@@ -208,6 +211,7 @@ async function checkAgentFree(
 
 export {
   SlotUnavailableError,
+  RescheduleConflictError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
@@ -809,6 +813,28 @@ function realDeps(): BookingDeps {
       await supabaseAdmin().from("reschedule_locks").delete().eq("booking_id", bookingId);
     },
 
+    loadAbandonedReschedulePins: async (graceMs) => {
+      const db = supabaseAdmin();
+      const cutoff = new Date(Date.now() - graceMs).toISOString();
+      const { data: rows } = await db
+        .from("reschedule_locks")
+        .select("booking_id, pinned_agent_email, gcal_client_id, branch")
+        .lt("lease_until", cutoff)
+        .not("gcal_client_id", "is", null);
+      const locks = rows ?? [];
+      if (locks.length === 0) return [];
+      const ids = locks.map((r) => r.booking_id);
+      const { data: bks } = await db.from("bookings").select("id, gcal_event_id").in("id", ids);
+      const liveById = new Map((bks ?? []).map((b) => [b.id, b.gcal_event_id]));
+      return locks.map((r) => ({
+        booking_id: r.booking_id,
+        pinned_agent_email: r.pinned_agent_email ?? "",
+        gcal_client_id: r.gcal_client_id,
+        branch: r.branch,
+        booking_gcal_event_id: liveById.get(r.booking_id) ?? null,
+      }));
+    },
+
     // Append-only reschedule/cancel/reassign history (#326/#300). A failed
     // insert must NOT fail the booking change (the move already happened) — log
     // + throttled alert, like the busy_blocks write-through (#34). The reason is
@@ -1264,4 +1290,13 @@ export async function drainBookingReservations() {
   const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();
   await deps.deleteExpiredReservations(cutoff, RESERVATION_DRAIN_LIMIT).catch(() => {});
   return result;
+}
+
+/**
+ * GC abandoned reschedule lease-pins (#439, milestone #7) on the /api/cron/outbox
+ * lane. Cleanup ONLY — enqueues a never-adopted reassign event for deletion and
+ * frees the stale lock; it never completes or reassigns a booking.
+ */
+export async function sweepAbandonedReschedulePins() {
+  return orchestration.processAbandonedReschedulePins(realDeps(), ABANDONED_PIN_GRACE_MS);
 }
