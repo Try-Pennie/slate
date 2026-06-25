@@ -392,6 +392,18 @@ export interface OutboxStep {
 }
 
 /**
+ * Mutation context carried on an outbox row so a drained step doesn't depend on
+ * booking state the mutation already changed. Fields are per-action and optional.
+ */
+export interface OutboxPayload {
+  reasonCode?: string;
+  reasonDetail?: string | null;
+  initiator?: BookingEventInitiator;
+  fromStartsIso?: string;
+  fromAgentUserId?: string | null;
+}
+
+/**
  * Durable intent record for a booking mutation (#429 P2). Written at the
  * mutation's atomic commit point; a dedicated drain lane resumes any row that
  * isn't `delivered`, re-running only its not-`done` steps idempotently. `steps`
@@ -405,6 +417,7 @@ export interface BookingOutbox {
   action: BookingOutboxAction;
   status: "pending" | "delivered";
   steps: OutboxStep[];
+  payload: OutboxPayload;
   lease_until: string | null;
   attempts: number;
   last_error: string | null;
@@ -416,4 +429,5 @@ export interface BookingOutboxInsert {
   booking_id: string | null;
   action: BookingOutboxAction;
   steps: OutboxStep[];
+  payload: OutboxPayload;
 }
