@@ -127,7 +127,7 @@ function makeDeps(opts: FakeOpts) {
   const calls = {
     isFree: [] as string[],
     verifyFree: [] as string[][],
-    createEvent: [] as { email: string }[],
+    createEvent: [] as { email: string; clientId?: string }[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
@@ -161,6 +161,9 @@ function makeDeps(opts: FakeOpts) {
   };
   let seq = 0;
   let insertAttempted = false;
+  // Mirror Google's deterministic-client-id behavior: a repeat insert with the
+  // same client id returns the SAME event (409-as-success reuse), not a second.
+  const gcalByClientId = new Map<string, string>();
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   const deps: BookingDeps = {
     resolveBucketByCode: async () =>
@@ -188,8 +191,15 @@ function makeDeps(opts: FakeOpts) {
         unverified: new Set(emails.filter((e) => unverified.has(e))),
       };
     },
-    createEvent: async (email) => {
-      calls.createEvent.push({ email });
+    createEvent: async (email, _args, clientId) => {
+      calls.createEvent.push({ email, clientId });
+      if (clientId) {
+        const reused = gcalByClientId.get(clientId);
+        if (reused) return reused;
+        const id = `gcal-${++seq}`;
+        gcalByClientId.set(clientId, id);
+        return id;
+      }
       return `gcal-${++seq}`;
     },
     deleteEvent: async (_email, id) => {
@@ -1096,6 +1106,41 @@ async function run() {
         calls.bookingEvents[0].to_agent_user_id === "b" &&
         calls.bookingEvents[0].to_starts_at === calls.bookingEvents[0].from_starts_at,
       "reassign: records a 'reassigned' (not 'rescheduled') system event, same time, new agent",
+    );
+  }
+
+  // --- reassign: new event uses a deterministic, target-keyed client id (#439 P4) ---
+  // The reassign target is caller-supplied (deterministic), so a crash between the
+  // create and the booking commit must reuse the SAME Google event on retry rather
+  // than spawn a second. That requires a deterministic client id keyed on the
+  // TARGET agent (so cross-agent moves don't collide) and on the booking.
+  {
+    const owner = (id: string, email: string) =>
+      ({ id, name: `Owner ${id}`, email, bookable: true } as unknown as User);
+
+    const dB = makeDeps({ bookingById: { booking: makeBooking({ id: "bk1" }), bucket, eventType }, agentByEmail: owner("b", "b@x.com") });
+    await reassignBooking("bk1", "b@x.com", SYS, dB.deps);
+    const clientB = dB.calls.createEvent[0]?.clientId;
+
+    const dC = makeDeps({ bookingById: { booking: makeBooking({ id: "bk1" }), bucket, eventType }, agentByEmail: owner("c", "c@x.com") });
+    await reassignBooking("bk1", "c@x.com", SYS, dC.deps);
+    const clientC = dC.calls.createEvent[0]?.clientId;
+
+    const d2 = makeDeps({ bookingById: { booking: makeBooking({ id: "bk2" }), bucket, eventType }, agentByEmail: owner("b", "b@x.com") });
+    await reassignBooking("bk2", "b@x.com", SYS, d2.deps);
+    const client2 = d2.calls.createEvent[0]?.clientId;
+
+    assert(!!clientB && clientB.startsWith("slate"), "reassign: new event uses a deterministic 'slate' client id");
+    assert(clientB !== clientC, "reassign: client id is keyed on the TARGET agent (B != C)");
+    assert(clientB !== client2, "reassign: client id is keyed on the booking (bk1 != bk2)");
+
+    // Determinism: the same booking + same target recomputes the SAME id, so a
+    // crash-retry of this exact reassign reuses the event (Google 409) not a dup.
+    const dB2 = makeDeps({ bookingById: { booking: makeBooking({ id: "bk1" }), bucket, eventType }, agentByEmail: owner("b", "b@x.com") });
+    await reassignBooking("bk1", "b@x.com", SYS, dB2.deps);
+    assert(
+      dB2.calls.createEvent[0]?.clientId === clientB,
+      "reassign: same booking+target yields the SAME client id (idempotent retry)",
     );
   }
 
