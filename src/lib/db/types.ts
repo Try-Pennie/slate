@@ -206,6 +206,15 @@ export interface RescheduleLock {
   booking_id: string;
   target_starts_at: string;
   claimed_at: string;
+  // #439 (migration 0053): per-booking lease-pin. Null until a reschedule pins
+  // its chosen target agent + deterministic Google client id; read back verbatim
+  // on a crash-resume so the retry reuses the SAME agent + event (never recompute).
+  pinned_user_id: string | null;
+  pinned_agent_email: string | null;
+  gcal_client_id: string | null;
+  branch: "in_place" | "reassign" | null;
+  reschedule_seq: number | null;
+  lease_until: string | null;
 }
 
 /** Fixed-window rate-limit counter (#31); one row per key, reset in place. */
@@ -283,6 +292,10 @@ export interface Booking {
   routing_trace: RoutingTrace | null;
   /** Set ONLY by the reassign API to stack a consult onto a busy owning agent. */
   allow_double_book: boolean;
+  /** Monotonic count of COMMITTED reschedules (#439, migration 0053). Mixed into
+   *  the deterministic reschedule event id so an oscillating reschedule can't
+   *  reuse a tombstoned Google id. 0 for a never-rescheduled booking. */
+  reschedule_seq: number;
   created_at: string;
   updated_at: string;
 }
