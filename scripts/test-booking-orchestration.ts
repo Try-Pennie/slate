@@ -119,7 +119,7 @@ function makeDeps(opts: FakeOpts) {
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
     claimCancellation: [] as string[],
     completeBookingsIfDue: [] as string[][],
-    webhooks: [] as { event: string; reason: unknown }[],
+    webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null }[],
     bookingEvents: [] as {
       booking_id: string;
       action: string;
@@ -231,6 +231,7 @@ function makeDeps(opts: FakeOpts) {
     },
     insertBookingEvent: async (row) => {
       calls.bookingEvents.push(row);
+      return `evt-${calls.bookingEvents.length}`;
     },
     hasBookingEvent: async (bookingId, action, toStartsIso) =>
       calls.bookingEvents.some(
@@ -248,8 +249,8 @@ function makeDeps(opts: FakeOpts) {
     },
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
-    emitWebhook: async (_orgId, event, payload) => {
-      calls.webhooks.push({ event, reason: payload.reason });
+    emitWebhook: async (_orgId, event, payload, dedupeKey) => {
+      calls.webhooks.push({ event, reason: payload.reason, dedupeKey });
     },
     newManageToken: () => "tok-fixed",
     appBaseUrl: () => "https://slate.test",
@@ -300,6 +301,7 @@ async function run() {
       "create: busy block spans the booked slot (30m)",
     );
     assert(calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created", "create: fires booking.created");
+    assert(calls.webhooks[0].dedupeKey === res.booking.id, "create: webhook dedupe key is the booking id (#436)");
     assert(calls.deleteEvent.length === 0, "create: no rollback on success");
     assert(
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
@@ -609,6 +611,10 @@ async function run() {
       "cancel: marks the booking cancelled (via the atomic claim)",
     );
     assert(calls.webhooks[0].event === "booking.cancelled", "cancel: fires booking.cancelled");
+    assert(
+      calls.webhooks[0].dedupeKey === "evt-1" && calls.bookingEvents.length === 1,
+      "cancel: webhook dedupe key is the booking_events row id (#436)",
+    );
     // #326: records a 'cancelled' history event (no to-time) + reason on webhook.
     assert(
       calls.bookingEvents.length === 1 &&
