@@ -823,6 +823,143 @@ async function run() {
     assert(calls.updateEventTime.length === 0, "reschedule(reassign): no in-place move");
   }
 
+  // ===================================================================
+  // Phase 0 (#471): crash-injection RED tests for crash-safe reschedule.
+  // These assert the END-STATE invariants the lease-pin design must give
+  // (windows a/b/c + oscillation + the headline abandoned-pin gap). They
+  // fail against today's applyReschedule and go green as Phases 1-3 land.
+  // ===================================================================
+
+  // Make a deps method throw on its first invocation, then delegate — a crash
+  // injected mid-sequence. The retry runs on the SAME deps so the simulated
+  // Google state (the clientId->event reuse map) persists across the crash.
+  const crashOnce = (deps: BookingDeps, method: keyof BookingDeps): void => {
+    let fired = false;
+    const original = (deps[method] as (...args: unknown[]) => Promise<unknown>).bind(deps);
+    (deps as Record<string, unknown>)[method as string] = async (...args: unknown[]) => {
+      if (!fired) {
+        fired = true;
+        throw new Error(`injected crash: ${String(method)}`);
+      }
+      return original(...args);
+    };
+  };
+
+  // --- window (a): crash in the reassign branch after createEvent, before commit ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
+    crashOnce(deps, "updateBooking"); // first updateBooking = the gcal_event_id write, right after createEvent
+    let crashed = false;
+    try {
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    } catch {
+      crashed = true;
+    }
+    assert(crashed, "window(a): reassign-branch reschedule crashes after createEvent, before commit");
+    // Retry on the SAME deps. A crash-safe create reuses ONE event id.
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    const clientIds = new Set(calls.createEvent.map((c) => c.clientId));
+    assert(
+      calls.createEvent.length >= 2 &&
+        calls.createEvent.every((c) => typeof c.clientId === "string" && c.clientId.startsWith("slate")) &&
+        clientIds.size === 1,
+      "window(a): crash + retry reuse ONE deterministic event id (no duplicate Google event)",
+    );
+  }
+
+  // --- window (b): crash in the same-agent in-place branch, before commit ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const free = new Set(["a@x.com", "b@x.com"]); // a free at first -> in-place branch
+    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["a", "b"], freeEmails: free });
+    crashOnce(deps, "updateBooking"); // first updateBooking in the in-place branch is the commit
+    let crashed = false;
+    try {
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    } catch {
+      crashed = true;
+    }
+    assert(crashed, "window(b): same-agent in-place reschedule crashes after updateEventTime, before commit");
+    // Poison freeBusy: on retry the agent's OWN moved event makes isFree(a) read false.
+    free.delete("a@x.com");
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    assert(
+      res.booking.assigned_user_id === "a" && calls.createEvent.length === 0,
+      "window(b): retry stays on the SAME agent (no silent bump) and creates no new event",
+    );
+  }
+
+  // --- window (c): concurrent different-target reschedule must CONFLICT, not no-op ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]), rescheduleLocked: true });
+    let err: unknown;
+    try {
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err != null && (err as Error).name === "RescheduleConflictError",
+      "window(c): a concurrent different-target reschedule throws RescheduleConflictError (not a silent no-op)",
+    );
+    assert(
+      calls.updateEventTime.length === 0 && calls.createEvent.length === 0,
+      "window(c): the conflict loser makes no Google move",
+    );
+  }
+
+  // --- oscillation guard: reassign-branch create must use a deterministic seq-keyed id ---
+  // (A->T1->T2->T1 must not reuse a tombstoned id; the full seq-increment assertion
+  //  lands in Phase 2/3 unit tests once reschedule_seq exists. Here we pin the core:
+  //  the reassign create carries a deterministic 'slate' client id at all.)
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    assert(
+      calls.createEvent.length === 1 &&
+        typeof calls.createEvent[0].clientId === "string" &&
+        calls.createEvent[0].clientId!.startsWith("slate"),
+      "oscillation guard: reassign-branch reschedule uses a deterministic 'slate' client id",
+    );
+  }
+
+  // --- sequential reschedule after release: a later different-target move is VALID, not a false conflict ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps); // committed + released
+    let err: unknown;
+    try {
+      await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err == null, "sequential after release: a later different-target reschedule is valid, NOT a false conflict");
+  }
+
+  // --- headline gap: different-target reschedule after an ABANDONED same-booking crash ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b", "c"], freeEmails: new Set(["b@x.com", "c@x.com"]) });
+    crashOnce(deps, "updateBooking"); // abandon the A->T1 reassign right after createEvent
+    let crashed = false;
+    try {
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    } catch {
+      crashed = true;
+    }
+    assert(crashed, "headline-gap: A->T1 reschedule crashes after createEvent (abandoned pin)");
+    const res = await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps);
+    assert(res.booking.starts_at === "2026-06-10T15:00:00.000Z", "headline-gap: booking lands on T2, not the abandoned T1");
+    assert(
+      calls.enqueueEventDeletion.length >= 1,
+      "headline-gap: the orphaned T1 calendar event is enqueued into pending_event_deletions",
+    );
+  }
+
   // --- reschedule: terminal states / not found ---
   {
     const ctx = { booking: makeBooking({ status: "cancelled" }), bucket, eventType };
