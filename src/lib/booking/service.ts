@@ -45,7 +45,7 @@ import type {
   EventType,
   User,
 } from "@/lib/db/types";
-import { processBookingOutbox, type OutboxHandlers } from "@/lib/booking/outbox";
+import { processBookingOutbox } from "@/lib/booking/outbox";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // A reschedule finishes in seconds; this TTL only governs reclaiming a lock
@@ -55,9 +55,6 @@ const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
 const OUTBOX_DRAIN_LIMIT = 50;
-// Step-name -> idempotent handler. EMPTY in P2 (no producers write rows yet);
-// P3/P4 register the real gcal/busy_block/webhook/recompute handlers here.
-const OUTBOX_HANDLERS: OutboxHandlers = {};
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -509,7 +506,12 @@ function realDeps(): BookingDeps {
     enqueueOutbox: async (row) => {
       const { data } = await supabaseAdmin()
         .from("booking_outbox")
-        .insert({ booking_id: row.booking_id, action: row.action, steps: row.steps })
+        .insert({
+          booking_id: row.booking_id,
+          action: row.action,
+          steps: row.steps,
+          payload: row.payload,
+        })
         .select("id")
         .single();
       if (!data) throw new Error("enqueueOutbox: insert returned no row");
@@ -674,6 +676,20 @@ function realDeps(): BookingDeps {
           : base.eq("to_starts_at", toStartsIso);
       const { data } = await q.limit(1).maybeSingle();
       return data != null;
+    },
+
+    getBookingEventId: async (bookingId, action, toStartsIso) => {
+      const base = supabaseAdmin()
+        .from("booking_events")
+        .select("id")
+        .eq("booking_id", bookingId)
+        .eq("action", action);
+      const q =
+        toStartsIso === null
+          ? base.is("to_starts_at", null)
+          : base.eq("to_starts_at", toStartsIso);
+      const { data } = await q.limit(1).maybeSingle();
+      return data ? (data as { id: string }).id : null;
     },
 
     loadBookingContext: async (token) => {
@@ -1053,5 +1069,9 @@ export async function reconcileCancelledBusyBlocks(limit: number) {
  * no-op until producers (P3/P4) write rows and register handlers.
  */
 export async function drainBookingOutbox() {
-  return processBookingOutbox(realDeps(), OUTBOX_DRAIN_LIMIT, OUTBOX_HANDLERS);
+  return processBookingOutbox(
+    realDeps(),
+    OUTBOX_DRAIN_LIMIT,
+    orchestration.OUTBOX_HANDLERS,
+  );
 }

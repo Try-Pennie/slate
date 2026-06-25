@@ -16,6 +16,8 @@ import {
   cancelDirectBooking,
   listBookings,
   processPendingEventDeletions,
+  OUTBOX_HANDLERS,
+  cancelOutboxSteps,
   PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
   SlotUnavailableError,
@@ -29,7 +31,8 @@ import {
   type ApiBookingListItem,
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
-import type { Booking, Bucket, EventType, User } from "../src/lib/db/types.ts";
+import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
+import type { Booking, Bucket, EventType, User, BookingOutbox } from "../src/lib/db/types.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -245,7 +248,23 @@ function makeDeps(opts: FakeOpts) {
           e.to_starts_at === toStartsIso,
       ),
     loadBookingContext: async () => opts.existing ?? null,
-    loadBookingById: async () => opts.bookingById ?? null,
+    // The outbox cancel handlers re-load by id; fall back to the same context
+    // loadBookingContext returns so the inline run has the booking to act on.
+    loadBookingById: async () => opts.bookingById ?? opts.existing ?? null,
+    getBookingEventId: async (bookingId, action, toStartsIso) => {
+      const e = calls.bookingEvents.findIndex(
+        (ev) =>
+          ev.booking_id === bookingId &&
+          ev.action === action &&
+          ev.to_starts_at === toStartsIso,
+      );
+      return e === -1 ? null : `evt-${e + 1}`;
+    },
+    enqueueOutbox: async () => "ob-test",
+    leaseOutbox: async () => true,
+    releaseOutboxLease: async () => {},
+    saveOutboxSteps: async () => {},
+    markOutboxDelivered: async () => {},
     findActiveBookingsForPerson: async () => opts.personBookings ?? [],
     queryBookings: async (filter) => {
       calls.queryBookings.push(filter);
@@ -653,6 +672,45 @@ async function run() {
     assert(
       c2.bookingEvents.length === 1 && c2.bookingEvents[0].action === "cancelled",
       "cancel re-submit: records the reason once for an already-cancelled booking",
+    );
+  }
+
+  // --- outbox cancel resume after a crash (#429 P3) ---
+  {
+    const ctx = { booking: makeBooking({ status: "cancelled" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    // Simulate a crash that finished gcal_delete + busyblock_delete inline, then
+    // died before recompute/notify. The drain re-runs the row with those done.
+    const steps = cancelOutboxSteps();
+    steps[0].state = "done"; // cancel:gcal_delete
+    steps[1].state = "done"; // cancel:busyblock_delete
+    const row: BookingOutbox = {
+      id: "ob-resume",
+      booking_id: ctx.booking.id,
+      action: "cancel",
+      status: "pending",
+      steps,
+      payload: {
+        reasonCode: "no_longer_interested",
+        reasonDetail: null,
+        initiator: "customer",
+        fromStartsIso: ctx.booking.starts_at,
+        fromAgentUserId: ctx.booking.assigned_user_id,
+      },
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const res = await runOutboxSteps(deps, row, OUTBOX_HANDLERS);
+    assert(res.delivered === true, "resume: the row reaches delivered");
+    assert(calls.deleteEvent.length === 0, "resume: does NOT re-delete the already-done gcal event");
+    assert(calls.deleteBusyBlocks.length === 0, "resume: does NOT re-delete the already-done busy block");
+    assert(calls.invalidateSlots.length === 1, "resume: runs the pending recompute step");
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.cancelled",
+      "resume: fires the pending webhook exactly once",
     );
   }
 

@@ -24,6 +24,7 @@ import {
 } from "./person-dedupe.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
+import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import type {
   Booking,
@@ -328,6 +329,14 @@ export interface BookingDeps {
     action: BookingEventAction,
     toStartsIso: string | null,
   ): Promise<boolean>;
+  /** The id of an existing history row for (booking, action, target), or null.
+   *  Lets the idempotent outbox notify step reuse the same webhook dedupe key on
+   *  a drain re-run instead of inserting a duplicate history row (#429 P3). */
+  getBookingEventId(
+    bookingId: string,
+    action: BookingEventAction,
+    toStartsIso: string | null,
+  ): Promise<string | null>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
   loadBookingById(bookingId: string): Promise<BookingContext | null>;
   /**
@@ -558,6 +567,89 @@ function reasonMeta(
 ): BookingReasonMeta {
   return { code: reason.code, detail: reason.detail, initiator };
 }
+
+// --- Outbox step handlers (#429 P3) -----------------------------------------
+// Each handler is idempotent and derives everything from the booking id + the
+// outbox row's payload, so the inline run and a drain re-run after a crash reach
+// the same end state. The registry is shared by the producers (run inline) and
+// the /api/cron/outbox drain.
+
+const CANCEL_STEPS = {
+  GCAL_DELETE: "cancel:gcal_delete",
+  BUSYBLOCK_DELETE: "cancel:busyblock_delete",
+  RECOMPUTE: "cancel:recompute",
+  NOTIFY: "cancel:notify",
+} as const;
+
+/** The ordered steps a cancel must deliver. */
+export function cancelOutboxSteps(): OutboxStep[] {
+  return [
+    { name: CANCEL_STEPS.GCAL_DELETE, state: "pending" },
+    { name: CANCEL_STEPS.BUSYBLOCK_DELETE, state: "pending" },
+    { name: CANCEL_STEPS.RECOMPUTE, state: "pending" },
+    { name: CANCEL_STEPS.NOTIFY, state: "pending" },
+  ];
+}
+
+export const OUTBOX_HANDLERS: OutboxHandlers = {
+  [CANCEL_STEPS.GCAL_DELETE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return; // booking gone -> nothing to delete
+    const { booking } = ctx;
+    if (booking.agent_email && booking.gcal_event_id) {
+      await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
+    }
+  },
+  [CANCEL_STEPS.BUSYBLOCK_DELETE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    await deps.deleteBusyBlocksForBooking(row.booking_id);
+  },
+  [CANCEL_STEPS.RECOMPUTE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+  },
+  [CANCEL_STEPS.NOTIFY]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return;
+    const { booking, bucket, eventType } = ctx;
+    const p = row.payload;
+    const reason: ValidatedReason = {
+      code: p.reasonCode ?? "",
+      detail: p.reasonDetail ?? null,
+    };
+    const initiator: BookingEventInitiator = p.initiator ?? "system";
+    // Record history idempotently: reuse the existing row's id on a drain re-run
+    // (so the webhook dedupe key is stable) instead of inserting a duplicate.
+    let eventId = await deps.getBookingEventId(booking.id, "cancelled", null);
+    if (!eventId) {
+      eventId = await deps.insertBookingEvent(
+        bookingEventFrom({
+          bookingId: booking.id,
+          action: "cancelled",
+          initiator,
+          reason,
+          fromStartsIso: p.fromStartsIso ?? booking.starts_at,
+          toStartsIso: null,
+          fromAgentUserId: p.fromAgentUserId ?? booking.assigned_user_id,
+          toAgentUserId: null,
+          nowMs: Date.now(),
+        }),
+      );
+    }
+    await fire(
+      deps,
+      "booking.cancelled",
+      booking,
+      bucket,
+      eventType,
+      reasonMeta(reason, initiator),
+      eventId,
+    );
+  },
+};
 
 function manageUrl(deps: BookingDeps, token: string): string {
   return `${deps.appBaseUrl()}/booking/manage/${token}`;
@@ -1269,7 +1361,7 @@ export async function cancelBooking(
 ): Promise<boolean> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
-  const { booking, bucket, eventType } = ctx;
+  const { booking } = ctx;
   if (booking.status === "cancelled") {
     // Already cancelled (re-submit). Ensure the reason was recorded — a first
     // attempt that flipped the status but died before recording it would lose
@@ -1299,37 +1391,51 @@ export async function cancelBooking(
   // flipping status first never strands an event.
   if (!(await deps.claimCancellation(booking.id))) return false;
 
-  if (booking.agent_email && booking.gcal_event_id) {
-    await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
+  // Record the cancel's intent durably, then deliver every side effect through
+  // the idempotent outbox executor (#429 P3). The row is enqueued right after the
+  // claim, so a crash mid-cancel resumes via the /api/cron/outbox drain instead
+  // of stranding the gcal event or dropping the webhook. The inline run keeps the
+  // happy path's latency; each step is idempotent so inline + drain never double-act.
+  const steps = cancelOutboxSteps();
+  const payload = {
+    reasonCode: reason.code,
+    reasonDetail: reason.detail,
+    initiator,
+    fromStartsIso: booking.starts_at,
+    fromAgentUserId: booking.assigned_user_id,
+  };
+  const outboxId = await deps.enqueueOutbox({
+    booking_id: booking.id,
+    action: "cancel",
+    steps,
+    payload,
+  });
+  // Lease the row before the inline run so a drain tick firing in the gap can't
+  // run the same steps concurrently (which could double-insert history and so
+  // double-fire the webhook). Released in finally; a crash leaves the lease to
+  // expire so the drain reclaims it.
+  await deps.leaseOutbox(outboxId);
+  try {
+    await runOutboxSteps(
+      deps,
+      {
+        id: outboxId,
+        booking_id: booking.id,
+        action: "cancel",
+        status: "pending",
+        steps,
+        payload,
+        lease_until: null,
+        attempts: 0,
+        last_error: null,
+        created_at: "",
+        updated_at: "",
+      },
+      OUTBOX_HANDLERS,
+    );
+  } finally {
+    await deps.releaseOutboxLease(outboxId);
   }
-
-  await deps.deleteBusyBlocksForBooking(booking.id);
-  await deps.invalidateSlots(bucket.code);
-
-  // Append the immutable history row before the webhook fires.
-  const bookingEventId = await deps.insertBookingEvent(
-    bookingEventFrom({
-      bookingId: booking.id,
-      action: "cancelled",
-      initiator,
-      reason,
-      fromStartsIso: booking.starts_at,
-      toStartsIso: null,
-      fromAgentUserId: booking.assigned_user_id,
-      toAgentUserId: null,
-      nowMs: Date.now(),
-    }),
-  );
-
-  await fire(
-    deps,
-    "booking.cancelled",
-    { ...booking, status: "cancelled" },
-    bucket,
-    eventType,
-    reasonMeta(reason, initiator),
-    bookingEventId,
-  );
   return true;
 }
 
