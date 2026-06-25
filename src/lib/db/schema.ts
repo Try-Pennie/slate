@@ -76,6 +76,15 @@ export interface Database {
         Args: { p_key: string };
         Returns: undefined;
       };
+      move_busy_block: {
+        Args: {
+          p_booking_id: string;
+          p_user_id: string;
+          p_starts_at: string;
+          p_ends_at: string;
+        };
+        Returns: undefined;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

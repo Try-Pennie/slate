@@ -247,6 +247,18 @@ export interface BookingDeps {
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
+  /**
+   * Atomically move a booking's slate busy_block to a new slot (#429 P3): delete
+   * by booking_id + insert, in ONE statement, so a crash between can't leave the
+   * slot momentarily free (re-opening the double-book window the reschedule path
+   * closed). Used by reschedule/reassign in place of separate delete+insert.
+   */
+  moveBusyBlock(
+    userId: string,
+    startIso: string,
+    endIso: string,
+    bookingId: string,
+  ): Promise<void>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   /**
    * Reconcile sweep (#428): candidate busy_blocks to check for a stuck slot.
@@ -1091,9 +1103,9 @@ async function applyReschedule(
     status: "rescheduled",
   });
 
-  // Move the write-through busy block.
-  await deps.deleteBusyBlocksForBooking(booking.id);
-  await deps.insertBusyBlock(busyBlockFor(assigned, startIso, endIso, booking.id));
+  // Move the write-through busy block atomically (#429 P3): one statement, so a
+  // crash between delete and insert can't leave the slot momentarily free.
+  await deps.moveBusyBlock(assigned, startIso, endIso, booking.id);
   await deps.invalidateSlots(bucket.code);
 
   // Append the immutable history row (#326/#300) before the webhook fires, so
@@ -1201,10 +1213,8 @@ export async function reassignBooking(
     routing_trace: nextTrace,
   });
 
-  await deps.deleteBusyBlocksForBooking(booking.id);
-  await deps.insertBusyBlock(
-    busyBlockFor(agent.id, booking.starts_at, booking.ends_at, booking.id),
-  );
+  // Atomic move (#429 P3): delete-by-booking + insert in one statement.
+  await deps.moveBusyBlock(agent.id, booking.starts_at, booking.ends_at, booking.id);
   await deps.invalidateSlots(bucket.code);
 
   // History row: action 'reassigned' (NOT 'rescheduled') so reschedule-rate
