@@ -40,15 +40,24 @@ import type {
   Booking,
   BookingEventInitiator,
   BookingStatus,
+  BookingOutbox,
   Bucket,
   EventType,
   User,
 } from "@/lib/db/types";
+import { processBookingOutbox, type OutboxHandlers } from "@/lib/booking/outbox";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // A reschedule finishes in seconds; this TTL only governs reclaiming a lock
 // orphaned by a torn-down Worker, so keep it comfortably above the slowest run.
 const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
+// Lease held while a drain processes one outbox row; only governs reclaiming a
+// row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
+const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
+const OUTBOX_DRAIN_LIMIT = 50;
+// Step-name -> idempotent handler. EMPTY in P2 (no producers write rows yet);
+// P3/P4 register the real gcal/busy_block/webhook/recompute handlers here.
+const OUTBOX_HANDLERS: OutboxHandlers = {};
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -472,6 +481,71 @@ function realDeps(): BookingDeps {
         // Best-effort: the next tick re-finds and retries these rows.
         console.error(`reconcile: deleteBusyBlocksByIds failed: ${error.message}`);
       }
+    },
+
+    // --- Outbox (#429 P2) ---
+    enqueueOutbox: async (row) => {
+      const { data } = await supabaseAdmin()
+        .from("booking_outbox")
+        .insert({ booking_id: row.booking_id, action: row.action, steps: row.steps })
+        .select("id")
+        .single();
+      if (!data) throw new Error("enqueueOutbox: insert returned no row");
+      return (data as { id: string }).id;
+    },
+
+    loadDrainableOutbox: async (limit) => {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await supabaseAdmin()
+        .from("booking_outbox")
+        .select("*")
+        .eq("status", "pending")
+        .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      if (error) {
+        console.error(`outbox: loadDrainableOutbox failed: ${error.message}`);
+        return [];
+      }
+      return (data ?? []) as BookingOutbox[];
+    },
+
+    leaseOutbox: async (id) => {
+      // Atomic claim: the WHERE gates on the lease being free/expired, so two
+      // concurrent drains can't both take it (the loser updates 0 rows).
+      const now = Date.now();
+      const { data } = await supabaseAdmin()
+        .from("booking_outbox")
+        .update({ lease_until: new Date(now + OUTBOX_LEASE_TTL_MS).toISOString() })
+        .eq("id", id)
+        .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
+        .select("id");
+      return ((data ?? []) as unknown[]).length > 0;
+    },
+
+    saveOutboxSteps: async (id, steps) => {
+      await supabaseAdmin()
+        .from("booking_outbox")
+        .update({ steps, updated_at: new Date().toISOString() })
+        .eq("id", id);
+    },
+
+    markOutboxDelivered: async (id) => {
+      await supabaseAdmin()
+        .from("booking_outbox")
+        .update({
+          status: "delivered",
+          lease_until: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+    },
+
+    releaseOutboxLease: async (id) => {
+      await supabaseAdmin()
+        .from("booking_outbox")
+        .update({ lease_until: null })
+        .eq("id", id);
     },
 
     updateBooking: async (bookingId, patch) => {
@@ -949,4 +1023,13 @@ export async function reconcileCancelledBusyBlocks(limit: number) {
   ).catch(() => {});
 
   return res;
+}
+
+/**
+ * #429 P2 drain: resume any undelivered booking-outbox row, re-running only its
+ * not-done steps idempotently. Driven by the dedicated /api/cron/outbox lane. A
+ * no-op until producers (P3/P4) write rows and register handlers.
+ */
+export async function drainBookingOutbox() {
+  return processBookingOutbox(realDeps(), OUTBOX_DRAIN_LIMIT, OUTBOX_HANDLERS);
 }

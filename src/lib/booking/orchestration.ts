@@ -30,9 +30,12 @@ import type {
   BookingEventAction,
   BookingEventInitiator,
   BookingStatus,
+  BookingOutbox,
+  BookingOutboxInsert,
   Bucket,
   BusyBlock,
   EventType,
+  OutboxStep,
   PendingEventDeletion,
   RoutingTrace,
   User,
@@ -258,6 +261,21 @@ export interface BookingDeps {
   loadBookingStatuses(bookingIds: string[]): Promise<Map<string, BookingStatus>>;
   /** Delete busy_blocks by id (the reconcile sweep's targeted cleanup). */
   deleteBusyBlocksByIds(ids: string[]): Promise<void>;
+  // --- Outbox (#429 P2): durable intent + idempotent drain ---
+  /** Write a durable mutation-intent row; returns its id. */
+  enqueueOutbox(row: BookingOutboxInsert): Promise<string>;
+  /** Undelivered rows whose lease is free or expired, for the drain. */
+  loadDrainableOutbox(limit: number): Promise<BookingOutbox[]>;
+  /** Gated claim of one row (set lease_until only if free/expired); true if THIS
+   *  call took the lease, so the drain and inline path never double-run a row. */
+  leaseOutbox(id: string): Promise<boolean>;
+  /** Persist the row's steps array after a transition (whole-array write; the
+   *  row is leased during the run so there's no concurrent writer). */
+  saveOutboxSteps(id: string, steps: OutboxStep[]): Promise<void>;
+  /** Flip the row to delivered once all its steps are done. */
+  markOutboxDelivered(id: string): Promise<void>;
+  /** Clear the lease so the row is reclaimable (run in a finally). */
+  releaseOutboxLease(id: string): Promise<void>;
   updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
   /**
    * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in

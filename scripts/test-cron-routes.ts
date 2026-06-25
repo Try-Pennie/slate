@@ -72,6 +72,10 @@ for (const [cron, value] of Object.entries(CRON_ROUTES)) {
     minute.includes("/api/cron/recompute"),
     "* * * * * drives the bucket-recompute lane",
   );
+  assert(
+    minute.includes("/api/cron/outbox"),
+    "* * * * * drives the booking-outbox drain lane (#429)",
+  );
 }
 
 // Watch renewal moves off the 1-min tick onto its own */5 lane (watch TTL is
