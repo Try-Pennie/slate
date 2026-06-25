@@ -19,6 +19,7 @@ import {
   OUTBOX_HANDLERS,
   cancelOutboxSteps,
   rescheduleOutboxSteps,
+  reassignOutboxSteps,
   PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
   SlotUnavailableError,
@@ -212,6 +213,11 @@ function makeDeps(opts: FakeOpts) {
     },
     updateBooking: async (id, patch) => {
       calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
+      // Mirror production: persist the patch so a later loadBookingById (e.g. the
+      // outbox handlers re-reading after the commit) sees the updated booking.
+      for (const c of [opts.bookingById, opts.existing]) {
+        if (c?.booking && c.booking.id === id) Object.assign(c.booking, patch);
+      }
     },
     // Atomic cancel claim (#413): the FIRST call for an id wins (flips
     // active->cancelled), every later call loses — models the conditional UPDATE.
@@ -778,6 +784,51 @@ async function run() {
       calls.bookingEvents.length === 1 &&
         calls.bookingEvents[0].to_starts_at === "2026-06-09T14:00:00.000Z",
       "resched resume: history records the NEW time as to_starts_at",
+    );
+  }
+
+  // --- outbox reassign resume after a crash (#429 P3) ---
+  {
+    const reassigned = {
+      booking: makeBooking({ assigned_user_id: "b", status: "rescheduled" }),
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({ existing: reassigned, bookingById: reassigned });
+    const steps = reassignOutboxSteps();
+    steps[0].state = "done"; // reassign:busyblock_move
+    const row: BookingOutbox = {
+      id: "ob-reassign-resume",
+      booking_id: reassigned.booking.id,
+      action: "reassign",
+      status: "pending",
+      steps,
+      payload: {
+        reasonCode: "contact_owner",
+        reasonDetail: null,
+        initiator: "system",
+        fromStartsIso: reassigned.booking.starts_at,
+        fromAgentUserId: "a",
+      },
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const res = await runOutboxSteps(deps, row, OUTBOX_HANDLERS);
+    assert(res.delivered === true, "reassign resume: row reaches delivered");
+    assert(calls.moveBusyBlock.length === 0, "reassign resume: does NOT re-move the already-done busy block");
+    assert(calls.invalidateSlots.length === 1, "reassign resume: runs the pending recompute");
+    assert(
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.rescheduled" &&
+        calls.webhooks[0].dedupeKey === "ob-reassign-resume",
+      "reassign resume: fires booking.rescheduled once, keyed on the outbox row id",
+    );
+    assert(
+      calls.bookingEvents.length === 1 && calls.bookingEvents[0].action === "reassigned",
+      "reassign resume: records a 'reassigned' history row",
     );
   }
 
