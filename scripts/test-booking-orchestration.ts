@@ -18,6 +18,7 @@ import {
   processPendingEventDeletions,
   OUTBOX_HANDLERS,
   cancelOutboxSteps,
+  rescheduleOutboxSteps,
   PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
   SlotUnavailableError,
@@ -506,7 +507,23 @@ async function run() {
   // --- reschedule: same agent free -> in-place move, no reassign, RR untouched ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
-    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    // The outbox handlers re-load by id AFTER updateBooking, so loadBookingById
+    // must return the committed (new-time) booking, mirroring production.
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-09T14:00:00.000Z",
+        ends_at: "2026-06-09T14:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      freeEmails: new Set(["a@x.com"]),
+    });
     const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     assert(
       calls.updateEventTime.length === 1 && calls.updateEventTime[0].id === "gcal-old",
@@ -711,6 +728,56 @@ async function run() {
     assert(
       calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.cancelled",
       "resume: fires the pending webhook exactly once",
+    );
+  }
+
+  // --- outbox reschedule resume after a crash (#429 P3) ---
+  {
+    const rescheduled = {
+      booking: makeBooking({
+        starts_at: "2026-06-09T14:00:00.000Z",
+        ends_at: "2026-06-09T14:30:00.000Z",
+        status: "rescheduled",
+      }),
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({ existing: rescheduled, bookingById: rescheduled });
+    // Crash finished busyblock_move, died before recompute/notify; drain resumes.
+    const steps = rescheduleOutboxSteps();
+    steps[0].state = "done"; // reschedule:busyblock_move
+    const row: BookingOutbox = {
+      id: "ob-resched-resume",
+      booking_id: rescheduled.booking.id,
+      action: "reschedule",
+      status: "pending",
+      steps,
+      payload: {
+        reasonCode: "schedule_conflict",
+        reasonDetail: null,
+        initiator: "customer",
+        fromStartsIso: "2026-06-08T13:00:00.000Z",
+        fromAgentUserId: "a",
+      },
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const res = await runOutboxSteps(deps, row, OUTBOX_HANDLERS);
+    assert(res.delivered === true, "resched resume: row reaches delivered");
+    assert(calls.moveBusyBlock.length === 0, "resched resume: does NOT re-move the already-done busy block");
+    assert(calls.invalidateSlots.length === 1, "resched resume: runs the pending recompute");
+    assert(
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.rescheduled",
+      "resched resume: fires the rescheduled webhook exactly once",
+    );
+    assert(
+      calls.bookingEvents.length === 1 &&
+        calls.bookingEvents[0].to_starts_at === "2026-06-09T14:00:00.000Z",
+      "resched resume: history records the NEW time as to_starts_at",
     );
   }
 
