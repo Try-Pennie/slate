@@ -608,6 +608,23 @@ export function rescheduleOutboxSteps(): OutboxStep[] {
   ];
 }
 
+const REASSIGN_STEPS = {
+  BUSYBLOCK_MOVE: "reassign:busyblock_move",
+  RECOMPUTE: "reassign:recompute",
+  NOTIFY: "reassign:notify",
+} as const;
+
+/** Post-commit steps for a contact-owner reassign (#9). Like reschedule, the
+ *  gcal delete-old + create-new stays inline (create-idempotency is P4); the
+ *  outbox covers the slot move, recompute, and the booking.rescheduled webhook. */
+export function reassignOutboxSteps(): OutboxStep[] {
+  return [
+    { name: REASSIGN_STEPS.BUSYBLOCK_MOVE, state: "pending" },
+    { name: REASSIGN_STEPS.RECOMPUTE, state: "pending" },
+    { name: REASSIGN_STEPS.NOTIFY, state: "pending" },
+  ];
+}
+
 export const OUTBOX_HANDLERS: OutboxHandlers = {
   [CANCEL_STEPS.GCAL_DELETE]: async (deps, row) => {
     if (!row.booking_id) return;
@@ -724,6 +741,68 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       eventType,
       reasonMeta(reason, initiator),
       eventId,
+    );
+  },
+
+  // Reassign post-commit steps. Move/recompute mirror reschedule (re-read the
+  // booking, now at the new agent). Notify differs: the history action is
+  // 'reassigned' (so it doesn't inflate reschedule-rate) but the webhook stays
+  // booking.rescheduled (Regal contract), and the time is UNCHANGED — so there's
+  // no time to version the dedupe key by; we key the webhook on the outbox row
+  // id (stable per reassign, so a resume re-fire is deduped — exactly-once).
+  [REASSIGN_STEPS.BUSYBLOCK_MOVE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx || !ctx.booking.assigned_user_id) return;
+    await deps.moveBusyBlock(
+      ctx.booking.assigned_user_id,
+      ctx.booking.starts_at,
+      ctx.booking.ends_at,
+      ctx.booking.id,
+    );
+  },
+  [REASSIGN_STEPS.RECOMPUTE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+  },
+  [REASSIGN_STEPS.NOTIFY]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return;
+    const { booking, bucket, eventType } = ctx;
+    const p = row.payload;
+    const reason: ValidatedReason = {
+      code: p.reasonCode ?? "",
+      detail: p.reasonDetail ?? null,
+    };
+    // Record the override audit row (action 'reassigned'). Not guarded for
+    // idempotent resume because a reassign has no natural per-operation key in
+    // booking_events; a duplicate on the rare within-step crash is acceptable
+    // (audit only). The webhook below stays exactly-once via the row-id key.
+    await deps.insertBookingEvent(
+      bookingEventFrom({
+        bookingId: booking.id,
+        action: "reassigned",
+        initiator: "system",
+        reason,
+        fromStartsIso: booking.starts_at,
+        toStartsIso: booking.starts_at,
+        fromAgentUserId: p.fromAgentUserId ?? null,
+        toAgentUserId: booking.assigned_user_id,
+        nowMs: Date.now(),
+      }),
+    );
+    // Dedupe key = the outbox row id: stable across inline run + drain resume,
+    // so the booking.rescheduled webhook fires exactly once.
+    await fire(
+      deps,
+      "booking.rescheduled",
+      booking,
+      bucket,
+      eventType,
+      reasonMeta(reason, "system"),
+      row.id,
     );
   },
 };
@@ -1402,28 +1481,6 @@ export async function reassignBooking(
     routing_trace: nextTrace,
   });
 
-  // Atomic move (#429 P3): delete-by-booking + insert in one statement.
-  await deps.moveBusyBlock(agent.id, booking.starts_at, booking.ends_at, booking.id);
-  await deps.invalidateSlots(bucket.code);
-
-  // History row: action 'reassigned' (NOT 'rescheduled') so reschedule-rate
-  // reporting reads booking_events.action and isn't inflated by reassignments,
-  // even though this still emits booking.rescheduled to preserve the Regal
-  // contract. Same time, agent change only. Initiator is the system automation.
-  const bookingEventId = await deps.insertBookingEvent(
-    bookingEventFrom({
-      bookingId: booking.id,
-      action: "reassigned",
-      initiator: "system",
-      reason,
-      fromStartsIso: booking.starts_at,
-      toStartsIso: booking.starts_at,
-      fromAgentUserId: booking.assigned_user_id,
-      toAgentUserId: agent.id,
-      nowMs: Date.now(),
-    }),
-  );
-
   const updated = {
     ...booking,
     assigned_user_id: agent.id,
@@ -1434,15 +1491,49 @@ export async function reassignBooking(
     allow_double_book: true,
     routing_trace: nextTrace,
   };
-  await fire(
-    deps,
-    "booking.rescheduled",
-    updated,
-    bucket,
-    eventType,
-    reasonMeta(reason, "system"),
-    bookingEventId,
-  );
+
+  // Deliver the post-commit side effects (slot move, recompute, the
+  // booking.rescheduled webhook + 'reassigned' history) through the idempotent
+  // outbox executor (#429 P3), so a crash here resumes via the drain. The gcal
+  // delete-old + create-new above stay inline (create-idempotency is P4). Leased
+  // around the inline run so a drain tick can't double-run it. The payload's
+  // fromAgentUserId captures the PRE-reassign agent for the history row.
+  const steps = reassignOutboxSteps();
+  const payload = {
+    reasonCode: reason.code,
+    reasonDetail: reason.detail,
+    initiator: "system" as const,
+    fromStartsIso: booking.starts_at,
+    fromAgentUserId: booking.assigned_user_id,
+  };
+  const outboxId = await deps.enqueueOutbox({
+    booking_id: booking.id,
+    action: "reassign",
+    steps,
+    payload,
+  });
+  await deps.leaseOutbox(outboxId);
+  try {
+    await runOutboxSteps(
+      deps,
+      {
+        id: outboxId,
+        booking_id: booking.id,
+        action: "reassign",
+        status: "pending",
+        steps,
+        payload,
+        lease_until: null,
+        attempts: 0,
+        last_error: null,
+        created_at: "",
+        updated_at: "",
+      },
+      OUTBOX_HANDLERS,
+    );
+  } finally {
+    await deps.releaseOutboxLease(outboxId);
+  }
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };
 }
 
