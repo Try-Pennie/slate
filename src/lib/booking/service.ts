@@ -31,6 +31,7 @@ import type {
   BookingDeps,
   BookingResult,
   CreateBookingInput,
+  ReschedulePin,
 } from "@/lib/booking/orchestration";
 import { toE164 } from "@/lib/phone";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
@@ -691,37 +692,121 @@ function realDeps(): BookingDeps {
       return ((data ?? []) as { id: string }[]).map((r) => r.id);
     },
 
+    // Per-booking reschedule lease (#439, migration 0053). The booking_id PK is
+    // the atomic arbiter: at most one in-flight reschedule per booking. The
+    // discriminated outcome distinguishes a fresh win, a crash-resume (expired
+    // lease + a written pin), a different-target abandon, a same-target no-op, and
+    // a different-target conflict. Fails CLOSED on an unexpected DB error (user
+    // escalation decision): throws a retriable error rather than proceeding, so a
+    // claim we can't trust never re-opens the concurrent-duplicate window.
     claimReschedule: async (bookingId, targetStartIso) => {
       const db = supabaseAdmin();
-      // Best-effort reclaim of a lock orphaned by a torn-down Worker.
-      const staleBefore = new Date(
-        Date.now() - RESCHEDULE_LOCK_TTL_MS,
-      ).toISOString();
+      const now = Date.now();
+      const leaseUntil = new Date(now + RESCHEDULE_LOCK_TTL_MS).toISOString();
+      const { error } = await db.from("reschedule_locks").insert({
+        booking_id: bookingId,
+        target_starts_at: targetStartIso,
+        claimed_at: new Date(now).toISOString(),
+        lease_until: leaseUntil,
+      });
+      if (!error) return { outcome: "won" };
+      if (error.code !== "23505") {
+        // Fail CLOSED on an unexpected DB error (user escalation decision): block
+        // with a retriable error rather than proceed, so a claim we can't trust
+        // never re-opens the concurrent-duplicate window. No lock is held yet (the
+        // claim is before the wrapper's try/finally), so nothing to release.
+        console.error(`reschedule lock claim failed for booking ${bookingId}: ${error.message}`);
+        throw new Error("Could not lock this booking for reschedule. Please try again.");
+      }
+      // A lease already exists — load it (+ the booking) to decide.
+      const { data: lock } = await db
+        .from("reschedule_locks")
+        .select(
+          "target_starts_at, lease_until, pinned_user_id, pinned_agent_email, gcal_client_id, branch, reschedule_seq",
+        )
+        .eq("booking_id", bookingId)
+        .maybeSingle();
+      if (!lock) return { outcome: "won" }; // released between insert + read; retry as fresh
+      const { data: bk } = await db
+        .from("bookings")
+        .select("starts_at")
+        .eq("id", bookingId)
+        .maybeSingle();
+      if (bk && Date.parse(bk.starts_at) === Date.parse(targetStartIso)) {
+        return { outcome: "idempotent" }; // already at target (a holder committed)
+      }
+      const expired = !lock.lease_until || Date.parse(lock.lease_until) <= now;
+      const sameTarget = Date.parse(lock.target_starts_at) === Date.parse(targetStartIso);
+      if (!expired) {
+        return sameTarget ? { outcome: "idempotent" } : { outcome: "conflict" };
+      }
+      // Expired lease = a crashed holder. Take it over (re-lease).
       await db
         .from("reschedule_locks")
-        .delete()
-        .eq("booking_id", bookingId)
-        .lt("claimed_at", staleBefore);
-      // The composite-PK insert is the atomic arbiter: one concurrent caller
-      // wins, a duplicate hits a unique violation (23505) and loses.
-      const { error } = await db
-        .from("reschedule_locks")
-        .insert({ booking_id: bookingId, target_starts_at: targetStartIso });
-      if (!error) return true;
-      if (error.code === "23505") return false;
-      // An unexpected lock error must not block a legitimate reschedule.
-      console.error(
-        `reschedule lock claim failed for booking ${bookingId}: ${error.message}`,
-      );
-      return true;
+        .update({ claimed_at: new Date(now).toISOString(), lease_until: leaseUntil })
+        .eq("booking_id", bookingId);
+      const hasPin =
+        lock.gcal_client_id != null &&
+        lock.pinned_user_id != null &&
+        lock.pinned_agent_email != null &&
+        lock.branch != null &&
+        lock.reschedule_seq != null;
+      if (!hasPin) return { outcome: "won" }; // crashed before any Google call -> fresh
+      const pin: ReschedulePin = {
+        reschedule_seq: lock.reschedule_seq!,
+        branch: lock.branch as "in_place" | "reassign",
+        pinned_user_id: lock.pinned_user_id!,
+        pinned_agent_email: lock.pinned_agent_email!,
+        gcal_client_id: lock.gcal_client_id!,
+        target_starts_at: lock.target_starts_at,
+      };
+      return sameTarget ? { outcome: "resume", pin } : { outcome: "fresh-after-abandon", pin };
     },
 
-    releaseReschedule: async (bookingId, targetStartIso) => {
+    writeReschedulePin: async (bookingId, pin) => {
       await supabaseAdmin()
         .from("reschedule_locks")
-        .delete()
+        .update({
+          pinned_user_id: pin.pinned_user_id,
+          pinned_agent_email: pin.pinned_agent_email,
+          gcal_client_id: pin.gcal_client_id,
+          branch: pin.branch,
+          reschedule_seq: pin.reschedule_seq,
+          target_starts_at: pin.target_starts_at,
+        })
+        .eq("booking_id", bookingId);
+    },
+
+    readReschedulePin: async (bookingId) => {
+      const { data } = await supabaseAdmin()
+        .from("reschedule_locks")
+        .select(
+          "pinned_user_id, pinned_agent_email, gcal_client_id, branch, reschedule_seq, target_starts_at",
+        )
         .eq("booking_id", bookingId)
-        .eq("target_starts_at", targetStartIso);
+        .maybeSingle();
+      if (
+        !data ||
+        data.gcal_client_id == null ||
+        data.pinned_user_id == null ||
+        data.pinned_agent_email == null ||
+        data.branch == null ||
+        data.reschedule_seq == null
+      ) {
+        return null;
+      }
+      return {
+        reschedule_seq: data.reschedule_seq,
+        branch: data.branch as "in_place" | "reassign",
+        pinned_user_id: data.pinned_user_id,
+        pinned_agent_email: data.pinned_agent_email,
+        gcal_client_id: data.gcal_client_id,
+        target_starts_at: data.target_starts_at,
+      };
+    },
+
+    releaseReschedule: async (bookingId) => {
+      await supabaseAdmin().from("reschedule_locks").delete().eq("booking_id", bookingId);
     },
 
     // Append-only reschedule/cancel/reassign history (#326/#300). A failed

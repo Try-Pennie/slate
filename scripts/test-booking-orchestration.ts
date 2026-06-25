@@ -29,6 +29,7 @@ import {
   UnknownBucketError,
   type BookingDeps,
   type BookingContext,
+  type ReschedulePin,
   type CreateBookingInput,
   type ApiBookingInput,
   type ApiBookingListItem,
@@ -88,6 +89,7 @@ function makeBooking(over: Partial<Booking>): Booking {
     timezone: "America/New_York",
     status: "confirmed",
     gcal_event_id: "gcal-old",
+    reschedule_seq: 0,
     manage_token: "tok1",
     salesforce_id: "sf1",
     attendee_name: "Kris",
@@ -112,7 +114,10 @@ interface FakeOpts {
   bookingById?: BookingContext | null; // loadBookingById (reassign)
   agentByEmail?: User | null; // getAgentByEmail (reassign)
   pastDue?: BookingContext[];
-  rescheduleLocked?: boolean; // a concurrent reschedule already holds the lock
+  // A reschedule lease already held for the booking (#439): models a concurrent
+  // holder. `target` = the instant it's reaching for (same as the request ->
+  // idempotent no-op; different -> conflict); `expired` = a crashed holder.
+  heldLease?: { target: string; expired?: boolean; pin?: ReschedulePin };
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
@@ -164,6 +169,16 @@ function makeDeps(opts: FakeOpts) {
   // Mirror Google's deterministic-client-id behavior: a repeat insert with the
   // same client id returns the SAME event (409-as-success reuse), not a second.
   const gcalByClientId = new Map<string, string>();
+  // In-memory reschedule_locks table for the per-booking lease state machine.
+  const RESCHEDULE_TTL = 2 * 60 * 1000;
+  const locks = new Map<string, { target: string; leaseUntilMs: number; pin: ReschedulePin | null }>();
+  if (opts.heldLease && opts.existing) {
+    locks.set(opts.existing.booking.id, {
+      target: opts.heldLease.target,
+      leaseUntilMs: opts.heldLease.expired ? Date.now() - 1000 : Date.now() + RESCHEDULE_TTL,
+      pin: opts.heldLease.pin ?? null,
+    });
+  }
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   const deps: BookingDeps = {
     resolveBucketByCode: async () =>
@@ -266,12 +281,41 @@ function makeDeps(opts: FakeOpts) {
       // a row an overlapping tick already transitioned, so it's excluded.
       return ids.filter((id) => !(opts.alreadyCompleted?.has(id) ?? false));
     },
-    claimReschedule: async () => {
+    // Per-booking reschedule lease state machine (#439), mirroring service.ts so
+    // the crash tests exercise the real resume/conflict/abandon logic.
+    claimReschedule: async (bookingId, target) => {
       calls.claimReschedule++;
-      return !opts.rescheduleLocked;
+      const now = Date.now();
+      const existing = locks.get(bookingId);
+      if (!existing) {
+        locks.set(bookingId, { target, leaseUntilMs: now + RESCHEDULE_TTL, pin: null });
+        return { outcome: "won" };
+      }
+      const bkStarts =
+        opts.existing?.booking.id === bookingId ? opts.existing.booking.starts_at : undefined;
+      if (bkStarts && Date.parse(bkStarts) === Date.parse(target)) return { outcome: "idempotent" };
+      const expired = existing.leaseUntilMs <= now;
+      const sameTarget = Date.parse(existing.target) === Date.parse(target);
+      if (!expired) return sameTarget ? { outcome: "idempotent" } : { outcome: "conflict" };
+      existing.leaseUntilMs = now + RESCHEDULE_TTL; // take over the crashed lease
+      if (!existing.pin) return { outcome: "won" };
+      return sameTarget
+        ? { outcome: "resume", pin: existing.pin }
+        : { outcome: "fresh-after-abandon", pin: existing.pin };
     },
-    releaseReschedule: async () => {
+    writeReschedulePin: async (bookingId, pin) => {
+      const l = locks.get(bookingId);
+      if (l) {
+        l.pin = pin;
+        l.target = pin.target_starts_at;
+      } else {
+        locks.set(bookingId, { target: pin.target_starts_at, leaseUntilMs: Date.now() + RESCHEDULE_TTL, pin });
+      }
+    },
+    readReschedulePin: async (bookingId) => locks.get(bookingId)?.pin ?? null,
+    releaseReschedule: async (bookingId) => {
       calls.releaseReschedule++;
+      locks.delete(bookingId);
     },
     insertBookingEvent: async (row) => {
       calls.bookingEvents.push(row);
@@ -354,7 +398,13 @@ function makeDeps(opts: FakeOpts) {
     removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
     bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },
   };
-  return { deps, calls };
+  // Test helper: expire a booking's reschedule lease so the next claim treats the
+  // holder as crashed (resume / fresh-after-abandon), per #471's crash scenarios.
+  const expireLease = (bookingId: string): void => {
+    const l = locks.get(bookingId);
+    if (l) l.leaseUntilMs = Date.now() - 1000;
+  };
+  return { deps, calls, expireLease };
 }
 
 // Validated reasons for the changed reschedule/cancel/reassign signatures.
@@ -797,7 +847,9 @@ async function run() {
     const { deps, calls } = makeDeps({
       existing: ctx,
       freeEmails: new Set(["a@x.com"]),
-      rescheduleLocked: true, // another in-flight reschedule holds the lock
+      // Another in-flight reschedule holds a FRESH lease for the SAME target -> a
+      // same-target double-submit is an idempotent no-op (not a conflict).
+      heldLease: { target: "2026-06-09T14:00:00.000Z" },
     });
     const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule dup: returns the booking without moving it");
@@ -845,11 +897,29 @@ async function run() {
     };
   };
 
+  // Model a PROCESS crash at the commit: updateBooking throws once, AND the
+  // crashed attempt's `finally`-release is suppressed (a dead process never runs
+  // its finally), so the lease is left behind for the retry to resume — exactly
+  // the crashed-holder state the design recovers from. The retry's own release
+  // still works.
+  const crashAtCommit = (deps: BookingDeps): void => {
+    crashOnce(deps, "updateBooking");
+    let suppressed = false;
+    const release = deps.releaseReschedule.bind(deps);
+    deps.releaseReschedule = async (bookingId: string) => {
+      if (!suppressed) {
+        suppressed = true;
+        return;
+      }
+      return release(bookingId);
+    };
+  };
+
   // --- window (a): crash in the reassign branch after createEvent, before commit ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
-    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
-    crashOnce(deps, "updateBooking"); // first updateBooking = the gcal_event_id write, right after createEvent
+    const { deps, calls, expireLease } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
+    crashAtCommit(deps); // crash at the commit, after the pin write + createEvent
     let crashed = false;
     try {
       await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
@@ -857,7 +927,9 @@ async function run() {
       crashed = true;
     }
     assert(crashed, "window(a): reassign-branch reschedule crashes after createEvent, before commit");
-    // Retry on the SAME deps. A crash-safe create reuses ONE event id.
+    // The crashed holder's lease must EXPIRE before a retry resumes (a fresh-lease
+    // same-target retry is a deliberate no-op); then the retry adopts the pin.
+    expireLease("bk1");
     await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     const clientIds = new Set(calls.createEvent.map((c) => c.clientId));
     assert(
@@ -872,8 +944,8 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const free = new Set(["a@x.com", "b@x.com"]); // a free at first -> in-place branch
-    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["a", "b"], freeEmails: free });
-    crashOnce(deps, "updateBooking"); // first updateBooking in the in-place branch is the commit
+    const { deps, calls, expireLease } = makeDeps({ existing: ctx, candidates: ["a", "b"], freeEmails: free });
+    crashAtCommit(deps); // crash at the commit, after the in-place pin write + updateEventTime
     let crashed = false;
     try {
       await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
@@ -881,19 +953,28 @@ async function run() {
       crashed = true;
     }
     assert(crashed, "window(b): same-agent in-place reschedule crashes after updateEventTime, before commit");
-    // Poison freeBusy: on retry the agent's OWN moved event makes isFree(a) read false.
+    // Poison freeBusy AND expire the lease: on a resume the pin's branch=in_place
+    // must short-circuit isFree entirely, so the poisoned read can't bump the agent.
     free.delete("a@x.com");
+    expireLease("bk1");
     const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
     assert(
-      res.booking.assigned_user_id === "a" && calls.createEvent.length === 0,
-      "window(b): retry stays on the SAME agent (no silent bump) and creates no new event",
+      res.booking.assigned_user_id === "a" &&
+        res.booking.starts_at === "2026-06-09T14:00:00.000Z" &&
+        calls.createEvent.length === 0,
+      "window(b): resume stays on the SAME agent, completes the move, creates no new event",
     );
   }
 
   // --- window (c): concurrent different-target reschedule must CONFLICT, not no-op ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
-    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]), rescheduleLocked: true });
+    // Another in-flight reschedule holds a FRESH lease for a DIFFERENT target.
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      freeEmails: new Set(["a@x.com"]),
+      heldLease: { target: "2026-06-09T09:00:00.000Z" },
+    });
     let err: unknown;
     try {
       await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
@@ -943,8 +1024,8 @@ async function run() {
   // --- headline gap: different-target reschedule after an ABANDONED same-booking crash ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
-    const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b", "c"], freeEmails: new Set(["b@x.com", "c@x.com"]) });
-    crashOnce(deps, "updateBooking"); // abandon the A->T1 reassign right after createEvent
+    const { deps, calls, expireLease } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
+    crashAtCommit(deps); // abandon the A->T1 reassign at the commit
     let crashed = false;
     try {
       await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
@@ -952,6 +1033,8 @@ async function run() {
       crashed = true;
     }
     assert(crashed, "headline-gap: A->T1 reschedule crashes after createEvent (abandoned pin)");
+    // The abandoned holder's lease expires; a DIFFERENT-target retry adopts its seq.
+    expireLease("bk1");
     const res = await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps);
     assert(res.booking.starts_at === "2026-06-10T15:00:00.000Z", "headline-gap: booking lands on T2, not the abandoned T1");
     assert(
