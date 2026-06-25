@@ -126,7 +126,9 @@ export default async function OooQueuePage({
     db
       .from("users")
       .select("id, name, email, manager_id, role")
-      .eq("org_id", me.org_id),
+      .eq("org_id", me.org_id)
+      // Hide the synthetic smoke-test agent (#396) from the OOO roster + insights.
+      .eq("is_test", false),
     db
       .from("organizations")
       .select("default_timezone")

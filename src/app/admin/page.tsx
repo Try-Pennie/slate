@@ -316,7 +316,9 @@ export default async function AdminPage({
   const db = supabaseAdmin();
   const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes, recentRes] =
     await Promise.all([
-      db.from("users").select("*").eq("org_id", me.org_id),
+      // Exclude the synthetic smoke-test agent (#396) from the roster, the
+      // bookable count, and the bucket member / fallback pickers fed by it.
+      db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
       db.from("event_types").select("*").eq("org_id", me.org_id),
       db.from("buckets").select("*").eq("org_id", me.org_id),
       db.from("bucket_members").select("*"),

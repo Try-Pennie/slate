@@ -69,6 +69,9 @@ export interface User {
   ooo_calendar_id: string | null;
   /** Account-tied UI theme; 'system' follows the device setting. */
   theme_preference: ThemePreference;
+  /** Synthetic smoke-test agent (#396): hidden from internal UI; stays bookable
+   *  only inside its own test buckets via the key-authed smoke test. */
+  is_test: boolean;
   created_at: string;
 }
 
@@ -151,6 +154,10 @@ export interface Bucket {
   routing_form_id: string | null;
   /** Agent to route to when no agent matches the bucket's criteria/members. */
   fallback_user_id: string | null;
+  /** Synthetic smoke-test bucket (#396): hidden from public availability + the
+   *  /book page, and unbookable via the public path; only the key-authed smoke
+   *  test may book it. */
+  is_test: boolean;
   created_at: string;
 }
 

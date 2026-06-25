@@ -29,6 +29,8 @@ export interface SmokeSeedUser {
   attributes: Record<string, never>;
   bookable: boolean;
   deactivated_at: null;
+  /** Hides it from internal UI and blocks real-lead bookings of its buckets (#396). */
+  is_test: true;
 }
 export interface SmokeSeedSchedule {
   id: string;
@@ -48,6 +50,8 @@ export interface SmokeSeedBucket {
   event_type_id: string;
   assignment: "round_robin";
   criteria: Record<string, never>;
+  /** Hidden from public availability/book; only the key-authed smoke test books it (#396). */
+  is_test: true;
 }
 export interface SmokeSeedMember {
   /** Resolved to bucket_id by the I/O layer after the buckets upsert. */
@@ -80,6 +84,7 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     attributes: {},
     bookable: true,
     deactivated_at: null,
+    is_test: true,
   };
 
   const schedule: SmokeSeedSchedule = {
@@ -104,6 +109,7 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     event_type_id: p.eventTypeId,
     assignment: "round_robin",
     criteria: {},
+    is_test: true,
   }));
 
   const members: SmokeSeedMember[] = p.bucketCodes.map((bucketCode) => ({

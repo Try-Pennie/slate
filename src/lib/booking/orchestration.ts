@@ -134,6 +134,10 @@ export interface CreateBookingInput {
   idempotencyKey?: string;
   /** External caller's stable per-person id (direct booking API, #357). */
   externalId?: string | null;
+  /** Allow booking a synthetic test bucket (#396). Only the key-authed direct
+   *  booking API sets this; the public /booking path leaves it falsy, so real
+   *  leads can never book a test bucket. */
+  allowTestBuckets?: boolean;
 }
 
 export interface BookingResult {
@@ -840,6 +844,12 @@ export async function createBooking(
   const resolved = await deps.resolveBucketByCode(input.bucketCode);
   if (!resolved) throw new UnknownBucketError();
   const { bucket, eventType } = resolved;
+
+  // A synthetic test bucket (#396) is unbookable on the public path: only the
+  // key-authed direct booking API sets allowTestBuckets. To a real lead it must
+  // look like the bucket doesn't exist (same error as an unknown code — no hint
+  // that a hidden bucket is there).
+  if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
 
   const { startIso, endIso } = bookingWindow(
     input.startIso,
