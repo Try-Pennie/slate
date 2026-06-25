@@ -591,6 +591,23 @@ export function cancelOutboxSteps(): OutboxStep[] {
   ];
 }
 
+const RESCHEDULE_STEPS = {
+  BUSYBLOCK_MOVE: "reschedule:busyblock_move",
+  RECOMPUTE: "reschedule:recompute",
+  NOTIFY: "reschedule:notify",
+} as const;
+
+/** The ordered POST-commit steps a reschedule must deliver. The agent decision
+ *  + gcal create/update stay inline (the create-idempotency is P4, #439); the
+ *  outbox covers the slot move, recompute, and the rescheduled webhook. */
+export function rescheduleOutboxSteps(): OutboxStep[] {
+  return [
+    { name: RESCHEDULE_STEPS.BUSYBLOCK_MOVE, state: "pending" },
+    { name: RESCHEDULE_STEPS.RECOMPUTE, state: "pending" },
+    { name: RESCHEDULE_STEPS.NOTIFY, state: "pending" },
+  ];
+}
+
 export const OUTBOX_HANDLERS: OutboxHandlers = {
   [CANCEL_STEPS.GCAL_DELETE]: async (deps, row) => {
     if (!row.booking_id) return;
@@ -642,6 +659,66 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
     await fire(
       deps,
       "booking.cancelled",
+      booking,
+      bucket,
+      eventType,
+      reasonMeta(reason, initiator),
+      eventId,
+    );
+  },
+
+  // Reschedule post-commit steps. Handlers re-read the booking, which already
+  // holds the NEW time/agent (updateBooking ran before the row was enqueued), so
+  // the move/recompute target the new slot and the webhook carries the new time.
+  [RESCHEDULE_STEPS.BUSYBLOCK_MOVE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx || !ctx.booking.assigned_user_id) return;
+    await deps.moveBusyBlock(
+      ctx.booking.assigned_user_id,
+      ctx.booking.starts_at,
+      ctx.booking.ends_at,
+      ctx.booking.id,
+    );
+  },
+  [RESCHEDULE_STEPS.RECOMPUTE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+  },
+  [RESCHEDULE_STEPS.NOTIFY]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return;
+    const { booking, bucket, eventType } = ctx;
+    const p = row.payload;
+    const reason: ValidatedReason = {
+      code: p.reasonCode ?? "",
+      detail: p.reasonDetail ?? null,
+    };
+    const initiator: BookingEventInitiator = p.initiator ?? "system";
+    const toStartsIso = booking.starts_at; // the new time (already committed)
+    // Versioned by to_starts_at: a later reschedule to a different time gets a
+    // fresh history row + dedupe key, so its webhook isn't swallowed.
+    let eventId = await deps.getBookingEventId(booking.id, "rescheduled", toStartsIso);
+    if (!eventId) {
+      eventId = await deps.insertBookingEvent(
+        bookingEventFrom({
+          bookingId: booking.id,
+          action: "rescheduled",
+          initiator,
+          reason,
+          fromStartsIso: p.fromStartsIso ?? booking.starts_at,
+          toStartsIso,
+          fromAgentUserId: p.fromAgentUserId ?? null,
+          toAgentUserId: booking.assigned_user_id,
+          nowMs: Date.now(),
+        }),
+      );
+    }
+    await fire(
+      deps,
+      "booking.rescheduled",
       booking,
       bucket,
       eventType,
@@ -1195,27 +1272,6 @@ async function applyReschedule(
     status: "rescheduled",
   });
 
-  // Move the write-through busy block atomically (#429 P3): one statement, so a
-  // crash between delete and insert can't leave the slot momentarily free.
-  await deps.moveBusyBlock(assigned, startIso, endIso, booking.id);
-  await deps.invalidateSlots(bucket.code);
-
-  // Append the immutable history row (#326/#300) before the webhook fires, so
-  // the reason is durable even if delivery fails.
-  const bookingEventId = await deps.insertBookingEvent(
-    bookingEventFrom({
-      bookingId: booking.id,
-      action: "rescheduled",
-      initiator,
-      reason,
-      fromStartsIso,
-      toStartsIso: startIso,
-      fromAgentUserId,
-      toAgentUserId: assigned,
-      nowMs: Date.now(),
-    }),
-  );
-
   const updated = {
     ...booking,
     starts_at: startIso,
@@ -1225,7 +1281,48 @@ async function applyReschedule(
     agent_email: agentEmail,
     status: "rescheduled" as const,
   };
-  await fire(deps, "booking.rescheduled", updated, bucket, eventType, reasonMeta(reason, initiator), bookingEventId);
+
+  // The booking is committed (updateBooking above) at the NEW time/agent. Deliver
+  // the post-commit side effects (slot move, recompute, rescheduled webhook)
+  // through the idempotent outbox executor (#429 P3), so a crash here resumes via
+  // the drain instead of dropping the webhook or stranding the old slot. Leased
+  // around the inline run so a drain tick can't double-run it.
+  const steps = rescheduleOutboxSteps();
+  const payload = {
+    reasonCode: reason.code,
+    reasonDetail: reason.detail,
+    initiator,
+    fromStartsIso,
+    fromAgentUserId,
+  };
+  const outboxId = await deps.enqueueOutbox({
+    booking_id: booking.id,
+    action: "reschedule",
+    steps,
+    payload,
+  });
+  await deps.leaseOutbox(outboxId);
+  try {
+    await runOutboxSteps(
+      deps,
+      {
+        id: outboxId,
+        booking_id: booking.id,
+        action: "reschedule",
+        status: "pending",
+        steps,
+        payload,
+        lease_until: null,
+        attempts: 0,
+        last_error: null,
+        created_at: "",
+        updated_at: "",
+      },
+      OUTBOX_HANDLERS,
+    );
+  } finally {
+    await deps.releaseOutboxLease(outboxId);
+  }
 
   return { booking: updated, manageUrl: manageUrl(deps, token) };
 }
