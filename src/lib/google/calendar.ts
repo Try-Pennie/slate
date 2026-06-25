@@ -216,22 +216,39 @@ export interface CreateEventInput {
 export async function createEvent(
   email: string,
   input: CreateEventInput,
+  clientId?: string,
 ): Promise<string> {
-  const res = await ok(
-    await gfetch(email, `${BASE}/calendars/${CAL}/events?sendUpdates=all`, {
-      method: "POST",
-      body: JSON.stringify({
-        summary: input.summary,
-        description: input.description,
-        start: { dateTime: input.start, timeZone: input.timezone },
-        end: { dateTime: input.end, timeZone: input.timezone },
-        attendees: input.attendeeEmail
-          ? [{ email: input.attendeeEmail, displayName: input.attendeeName }]
-          : undefined,
-      }),
+  const res = await gfetch(email, `${BASE}/calendars/${CAL}/events?sendUpdates=all`, {
+    method: "POST",
+    body: JSON.stringify({
+      // P4 (#439): a deterministic client-supplied id makes the create
+      // idempotent — a retry sends the same id and Google 409s the duplicate.
+      ...(clientId ? { id: clientId } : {}),
+      summary: input.summary,
+      description: input.description,
+      start: { dateTime: input.start, timeZone: input.timezone },
+      end: { dateTime: input.end, timeZone: input.timezone },
+      attendees: input.attendeeEmail
+        ? [{ email: input.attendeeEmail, displayName: input.attendeeName }]
+        : undefined,
     }),
-    "events.insert",
-  );
+  });
+
+  // 409-as-success: a duplicate client id means THIS event already exists (a
+  // retry of the same intent on the same agent). GET it and return it — no
+  // second insert, so no second attendee invite. Inspect the raw 409 BEFORE the
+  // shared ok() (which would throw); ok() is left untouched for all other calls.
+  if (clientId && res.status === 409) {
+    const existing = await ok(
+      await gfetch(email, `${BASE}/calendars/${CAL}/events/${encodeURIComponent(clientId)}`),
+      "events.get (409 reuse)",
+    );
+    const reused = (await existing.json()) as { id?: string };
+    if (!reused.id) throw new Error("Google did not return an event id on reuse");
+    return reused.id;
+  }
+
+  await ok(res, "events.insert");
   const data = (await res.json()) as { id?: string };
   if (!data.id) throw new Error("Google did not return an event id");
   return data.id;
