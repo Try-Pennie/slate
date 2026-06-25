@@ -181,6 +181,28 @@ export function idempotencyKeyFor(parts: {
   return [parts.bucketCode, start, email, phone, sf].join("|");
 }
 
+/**
+ * Deterministic Google client event id for the intent-first create (#439 P4).
+ * SHA-256 of `idempotencyKey:agentUserId`, hex-encoded (hex 0-9a-f ⊆ base32hex
+ * 0-9a-v, so it's a valid Google client id) behind a "slate" prefix. Keyed on the
+ * ASSIGNED AGENT: a retry that lands on the SAME agent reuses the event (Google
+ * 409s the duplicate id), while a different agent gets a different id — a client
+ * id is unique per calendar, so keying on the agent is what stops the
+ * "same id on two calendars = duplicate event" failure. Async (Web Crypto on
+ * Workers + Node).
+ */
+export async function deterministicEventId(
+  idempotencyKey: string,
+  agentUserId: string,
+): Promise<string> {
+  const data = new TextEncoder().encode(`${idempotencyKey}:${agentUserId}`);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `slate${hex}`;
+}
+
 export interface AssignResult {
   userId: string;
   email: string;
