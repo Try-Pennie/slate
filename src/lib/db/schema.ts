@@ -11,6 +11,7 @@ import type {
   AvailabilitySchedule,
   Booking,
   BookingEvent,
+  BookingOutbox,
   Bucket,
   BucketMember,
   BucketSlotsRow,
@@ -63,6 +64,7 @@ export interface Database {
       reschedule_locks: Table<RescheduleLock>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
+      booking_outbox: Table<BookingOutbox>;
     };
     Views: Record<string, never>;
     Functions: {

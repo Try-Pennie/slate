@@ -379,3 +379,41 @@ export interface PendingEventDeletion {
   created_at: string;
   updated_at: string;
 }
+
+/** The booking change-path mutation an outbox row drives to completion (#429). */
+export type BookingOutboxAction = "create" | "cancel" | "reschedule" | "reassign";
+export type OutboxStepState = "pending" | "done" | "failed";
+
+/** One side effect of a mutation, tracked so the drain resumes only what's left. */
+export interface OutboxStep {
+  name: string;
+  state: OutboxStepState;
+  error?: string | null;
+}
+
+/**
+ * Durable intent record for a booking mutation (#429 P2). Written at the
+ * mutation's atomic commit point; a dedicated drain lane resumes any row that
+ * isn't `delivered`, re-running only its not-`done` steps idempotently. `steps`
+ * carries every datum the drain needs to resume without re-reading mutable
+ * booking state. `booking_id` is nullable for the create-reservation case (the
+ * row exists before the booking does).
+ */
+export interface BookingOutbox {
+  id: string;
+  booking_id: string | null;
+  action: BookingOutboxAction;
+  status: "pending" | "delivered";
+  steps: OutboxStep[];
+  lease_until: string | null;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BookingOutboxInsert {
+  booking_id: string | null;
+  action: BookingOutboxAction;
+  steps: OutboxStep[];
+}
