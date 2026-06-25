@@ -17,6 +17,7 @@ import {
   listBookings,
   processPendingEventDeletions,
   OUTBOX_HANDLERS,
+  processBookingReservations,
   cancelOutboxSteps,
   rescheduleOutboxSteps,
   reassignOutboxSteps,
@@ -34,7 +35,14 @@ import {
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
-import type { Booking, Bucket, EventType, User, BookingOutbox } from "../src/lib/db/types.ts";
+import type {
+  Booking,
+  Bucket,
+  EventType,
+  User,
+  BookingOutbox,
+  BookingReservation,
+} from "../src/lib/db/types.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -97,6 +105,9 @@ interface FakeOpts {
   insertBookingConflict?: boolean;
   existingByKey?: Booking | null; // idempotency hit on the pre-check
   conflictWinner?: Booking | null; // booking found by key AFTER an insert conflict
+  reservation?: BookingReservation | null; // loadReservationByKey (re-submit resume)
+  reservationWinner?: BookingReservation; // insertReservation returns this (race adopt)
+  drainableReservations?: BookingReservation[]; // the create-reservation drain
   existing?: BookingContext | null;
   bookingById?: BookingContext | null; // loadBookingById (reassign)
   agentByEmail?: User | null; // getAgentByEmail (reassign)
@@ -126,6 +137,8 @@ function makeDeps(opts: FakeOpts) {
     updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
     claimCancellation: [] as string[],
     completeBookingsIfDue: [] as string[][],
+    reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
+    deletedReservations: [] as string[],
     webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -279,6 +292,39 @@ function makeDeps(opts: FakeOpts) {
     releaseOutboxLease: async () => {},
     saveOutboxSteps: async () => {},
     markOutboxDelivered: async () => {},
+    insertReservation: async (row) => {
+      calls.reservations.push({
+        idempotency_key: row.idempotency_key,
+        pinned_user_id: row.pinned_user_id,
+        gcal_client_id: row.gcal_client_id,
+      });
+      // No winner -> this call's reservation is authoritative (override via
+      // opts.reservationWinner to model a same-key race adopting the winner).
+      return (
+        opts.reservationWinner ?? {
+          id: "resv-1",
+          idempotency_key: row.idempotency_key,
+          pinned_user_id: row.pinned_user_id,
+          pinned_agent_email: row.pinned_agent_email,
+          gcal_client_id: row.gcal_client_id,
+          payload: row.payload,
+          status: "pending" as const,
+          lease_until: null,
+          attempts: 0,
+          last_error: null,
+          created_at: "",
+          updated_at: "",
+        }
+      );
+    },
+    loadReservationByKey: async () => opts.reservation ?? null,
+    deleteReservation: async (id) => {
+      calls.deletedReservations.push(id);
+    },
+    loadDrainableReservations: async () => opts.drainableReservations ?? [],
+    leaseReservation: async () => true,
+    releaseReservationLease: async () => {},
+    deleteExpiredReservations: async () => {},
     findActiveBookingsForPerson: async () => opts.personBookings ?? [],
     queryBookings: async (filter) => {
       calls.queryBookings.push(filter);
@@ -326,6 +372,18 @@ async function run() {
       "manage URL uses base + manage token",
     );
     assert(calls.createEvent.length === 1, "create: one calendar event");
+    // #429 P4: reservation-first — pins the agent + a deterministic client id
+    // BEFORE the event, then deletes the reservation once the booking persists.
+    assert(
+      calls.reservations.length === 1 &&
+        calls.reservations[0].pinned_user_id === "a" &&
+        calls.reservations[0].gcal_client_id.startsWith("slate"),
+      "create: writes a reservation pinning the agent + deterministic client id",
+    );
+    assert(
+      calls.deletedReservations.length === 1,
+      "create: deletes the reservation on success (delete-on-deliver)",
+    );
     assert(
       calls.insertBusyBlock.length === 1 &&
         calls.insertBusyBlock[0].user_id === "a" &&
@@ -460,9 +518,90 @@ async function run() {
       res.manageUrl === "https://slate.test/booking/manage/tok-winner",
       "idempotency race: manage URL points at the winner",
     );
+    // #429 P4: the loser adopts the winner's reservation (same pinned agent +
+    // deterministic client id), so its createEvent REUSES the winner's event
+    // (Google 409) rather than making a separate one. The event id is therefore
+    // shared with the winner — it must NOT be rolled back (that would delete the
+    // winner's event). The loser just returns the winner and cleans up its row.
     assert(
-      calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
-      "idempotency race: the loser's calendar event was rolled back",
+      calls.deleteEvent.length === 0,
+      "idempotency race: loser reuses the winner's event, nothing rolled back",
+    );
+    assert(
+      calls.deletedReservations.length === 1,
+      "idempotency race: loser cleans up the reservation",
+    );
+  }
+
+  // --- create reservation drain resume after a crash (#429 P4 Phase C) ---
+  {
+    const reservation: BookingReservation = {
+      id: "resv-crash",
+      idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+      pinned_user_id: "a",
+      pinned_agent_email: "a@x.com",
+      gcal_client_id: "slatedeadbeef",
+      payload: {
+        booking: {
+          org_id: "org1",
+          bucket_id: "bkt1",
+          event_type_id: "et1",
+          assigned_user_id: "a",
+          agent_name: "Agent A",
+          agent_email: "a@x.com",
+          starts_at: "2026-06-08T13:00:00.000Z",
+          ends_at: "2026-06-08T13:30:00.000Z",
+          original_starts_at: "2026-06-08T13:00:00.000Z",
+          original_ends_at: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          status: "confirmed",
+          salesforce_id: "sf1",
+          attendee_name: "Kris",
+          attendee_email: "k@x.com",
+          attendee_phone: "+12035615295",
+          prefill: {},
+          gcal_event_id: "slatedeadbeef",
+          manage_token: "tok-resv",
+          idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+          external_id: null,
+          routing_trace: {
+            bucket_code: "411",
+            bucket_id: "bkt1",
+            considered: ["a"],
+            chosen_user_id: "a",
+            fallback_applied: false,
+          },
+        },
+        event: {
+          summary: "Senior Loan Advisor Call with Kris",
+          description: "desc",
+          start: "2026-06-08T13:00:00.000Z",
+          end: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          attendeeEmail: "k@x.com",
+          attendeeName: "Kris",
+        },
+        bucketCode: "411",
+      },
+      status: "pending",
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const { deps, calls } = makeDeps({ drainableReservations: [reservation] });
+    const res = await processBookingReservations(deps, 15);
+    assert(res.processed === 1 && res.completed === 1, "drain: completes the crashed reservation");
+    assert(calls.createEvent.length === 1, "drain: re-creates (reuses) the pinned calendar event");
+    assert(calls.insertBusyBlock.length === 1, "drain: writes the write-through busy block");
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created",
+      "drain: fires booking.created exactly once",
+    );
+    assert(
+      calls.deletedReservations.length === 1 && calls.deletedReservations[0] === "resv-crash",
+      "drain: deletes the reservation on success",
     );
   }
 

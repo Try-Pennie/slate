@@ -41,6 +41,7 @@ import type {
   BookingEventInitiator,
   BookingStatus,
   BookingOutbox,
+  BookingReservation,
   Bucket,
   EventType,
   User,
@@ -55,6 +56,12 @@ const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
 const OUTBOX_DRAIN_LIMIT = 50;
+// Reservation lease + drain bounds (#429 P4). Crash-during-create is rare, so a
+// small cap with a multi-tick backlog is fine; bounds Worker CPU. Retention
+// deletes abandoned pending reservations older than the TTL.
+const RESERVATION_LEASE_TTL_MS = 2 * 60 * 1000;
+const RESERVATION_DRAIN_LIMIT = 15;
+const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -572,6 +579,86 @@ function realDeps(): BookingDeps {
         .eq("id", id);
     },
 
+    // --- Create reservations (#429 P4) ---
+    insertReservation: async (row) => {
+      const db = supabaseAdmin();
+      const { data, error } = await db
+        .from("booking_reservations")
+        .insert(row)
+        .select("*")
+        .single();
+      if (!error && data) return data as BookingReservation;
+      // UNIQUE(idempotency_key) violation: another create won the race. Its row
+      // is committed (the unique check waits on the in-flight insert), so load +
+      // adopt it — both creates converge on ONE pinned agent + client id.
+      const { data: winner } = await db
+        .from("booking_reservations")
+        .select("*")
+        .eq("idempotency_key", row.idempotency_key)
+        .single();
+      if (winner) return winner as BookingReservation;
+      throw new Error(`insertReservation failed: ${error?.message ?? "no row returned"}`);
+    },
+
+    loadReservationByKey: async (idempotencyKey) => {
+      const { data } = await supabaseAdmin()
+        .from("booking_reservations")
+        .select("*")
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      return data ? (data as BookingReservation) : null;
+    },
+
+    deleteReservation: async (id) => {
+      await supabaseAdmin().from("booking_reservations").delete().eq("id", id);
+    },
+
+    loadDrainableReservations: async (limit) => {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await supabaseAdmin()
+        .from("booking_reservations")
+        .select("*")
+        .eq("status", "pending")
+        .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      if (error) {
+        console.error(`reservations: loadDrainable failed: ${error.message}`);
+        return [];
+      }
+      return (data ?? []) as BookingReservation[];
+    },
+
+    leaseReservation: async (id) => {
+      const now = Date.now();
+      const { data } = await supabaseAdmin()
+        .from("booking_reservations")
+        .update({ lease_until: new Date(now + RESERVATION_LEASE_TTL_MS).toISOString() })
+        .eq("id", id)
+        .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
+        .select("id");
+      return ((data ?? []) as unknown[]).length > 0;
+    },
+
+    releaseReservationLease: async (id) => {
+      await supabaseAdmin()
+        .from("booking_reservations")
+        .update({ lease_until: null })
+        .eq("id", id);
+    },
+
+    deleteExpiredReservations: async (olderThanIso, limit) => {
+      const db = supabaseAdmin();
+      const { data } = await db
+        .from("booking_reservations")
+        .select("id")
+        .eq("status", "pending")
+        .lt("created_at", olderThanIso)
+        .limit(limit);
+      const ids = ((data ?? []) as { id: string }[]).map((r) => r.id);
+      if (ids.length) await db.from("booking_reservations").delete().in("id", ids);
+    },
+
     updateBooking: async (bookingId, patch) => {
       await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
     },
@@ -1074,4 +1161,22 @@ export async function drainBookingOutbox() {
     OUTBOX_DRAIN_LIMIT,
     orchestration.OUTBOX_HANDLERS,
   );
+}
+
+/**
+ * #429 P4 (Phase C): resume create reservations whose booking crashed mid-create,
+ * then sweep abandoned ones (delete-on-deliver keeps delivered rows from
+ * lingering; this clears the rest, PII included). Driven by the /api/cron/outbox
+ * lane next to the outbox drain.
+ */
+export async function drainBookingReservations() {
+  const deps = realDeps();
+  const result = await orchestration.processBookingReservations(
+    deps,
+    RESERVATION_DRAIN_LIMIT,
+  );
+  // Retention: delete up to a batch of pending reservations older than the TTL.
+  const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();
+  await deps.deleteExpiredReservations(cutoff, RESERVATION_DRAIN_LIMIT).catch(() => {});
+  return result;
 }
