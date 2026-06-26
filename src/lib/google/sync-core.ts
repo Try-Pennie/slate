@@ -47,11 +47,18 @@ export function partitionBusyWrites(
   userId: string,
   calendarId: string,
   events: GoogleEvent[],
+  slateEventIds: Set<string> = new Set(),
 ): { upserts: BusyBlockRow[]; deletes: string[] } {
   const upserts: BusyBlockRow[] = [];
   const deletes: string[] = [];
   for (const ev of events) {
     if (!ev.id) continue;
+    // #166: an event Slate itself created for a booking is already represented by
+    // that booking's source=slate block (the single owner of the slot). Skip it
+    // entirely — never mirror it into a second source=gcal block (the double-count
+    // bug), and never queue it for delete, since the booking flow owns the block's
+    // lifecycle (cancel/reschedule remove it by booking_id, not via the sync).
+    if (slateEventIds.has(ev.id)) continue;
     if (!isBusyEvent(ev)) {
       deletes.push(ev.id);
       continue;

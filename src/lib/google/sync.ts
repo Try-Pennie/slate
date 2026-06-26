@@ -236,14 +236,41 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
 // 1,000+ serial calls and got killed mid-sync; see partitionBusyWrites).
 const WRITE_CHUNK = 500;
 
+/**
+ * Event ids of this agent's active Slate bookings (#166) — the Google events
+ * Slate created itself. The sync skips these so a Slate booking isn't mirrored
+ * into a second source=gcal block alongside its own source=slate block (the
+ * double-count). Matched by the booking's stored gcal_event_id (exact, not a
+ * name heuristic), so there are no false skips of externally-booked events.
+ */
+async function loadSlateBookingEventIds(userId: string): Promise<Set<string>> {
+  const { data } = await supabaseAdmin()
+    .from("bookings")
+    .select("gcal_event_id")
+    .eq("assigned_user_id", userId)
+    .in("status", ["confirmed", "rescheduled"])
+    .not("gcal_event_id", "is", null);
+  return new Set(
+    ((data ?? []) as { gcal_event_id: string | null }[])
+      .map((r) => r.gcal_event_id)
+      .filter((id): id is string => !!id),
+  );
+}
+
 /** Upsert/delete gcal-sourced busy blocks for a batch of events on one calendar. */
 async function applyEvents(
   userId: string,
   calendarId: string,
   events: GoogleEvent[],
+  slateEventIds: Set<string>,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { upserts, deletes } = partitionBusyWrites(userId, calendarId, events);
+  const { upserts, deletes } = partitionBusyWrites(
+    userId,
+    calendarId,
+    events,
+    slateEventIds,
+  );
   // Throw on any failure so syncCalendar never advances the sync token past an
   // event it failed to record - a swallowed error loses the event for good (the
   // delta is consumed) and the cache silently drifts from Google.
@@ -275,10 +302,17 @@ async function purgeVanished(
   userId: string,
   calendarId: string,
   events: GoogleEvent[],
+  slateEventIds: Set<string>,
 ): Promise<void> {
   const db = supabaseAdmin();
+  // Exclude Slate-owned events from `seen` (#166): they should never have a
+  // gcal mirror, so a legacy one left from before the fix is treated as stale
+  // and purged on the next full resync (the source=slate block is untouched —
+  // this query only deletes source=gcal rows).
   const seen = new Set(
-    events.filter((e) => e.id && isBusyEvent(e)).map((e) => e.id as string),
+    events
+      .filter((e) => e.id && isBusyEvent(e) && !slateEventIds.has(e.id))
+      .map((e) => e.id as string),
   );
   const { data } = await db
     .from("busy_blocks")
@@ -348,8 +382,16 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
       }
     }
 
-    await applyEvents(cal.user_id, cal.calendar_id, result.events);
-    if (full) await purgeVanished(cal.user_id, cal.calendar_id, result.events);
+    // The agent's own Slate-booking event ids, so the sync skips mirroring them
+    // into a duplicate gcal block (#166). Only load when there's something to
+    // apply — the common incremental tick has no events, so it skips the query.
+    const slateEventIds =
+      result.events.length > 0
+        ? await loadSlateBookingEventIds(cal.user_id)
+        : new Set<string>();
+    await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds);
+    if (full)
+      await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds);
 
     // A sync that wrote events may have just mirrored an external Google booking
     // that collides with a Slate booking (#316). Check now (best-effort) so a
