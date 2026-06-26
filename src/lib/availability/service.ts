@@ -22,6 +22,10 @@ import {
 } from "@/lib/availability/bucket-coverage";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
+// Lazy circular-safe import: eligible-cache.ts imports eligibleAgentIds from
+// this module, but since both modules only export functions (no module-level
+// execution), ESM live bindings ensure the reference is valid by call time.
+import { eligibleAgentIdsCached } from "./eligible-cache.ts";
 
 export { agentIdsFromPool } from "@/lib/availability/pool";
 
@@ -121,7 +125,9 @@ export interface EmptyBucketDeps {
 const realEmptyBucketDeps: EmptyBucketDeps = {
   loadBuckets: async () =>
     ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
-  countEligible: async (bucket) => (await eligibleAgentIds(bucket)).ids.length,
+  // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
+  // one eligibility read per bucket rather than each re-querying the DB.
+  countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
   sendAlert: (code, message) =>
     sendThrottledAlert(
       `${EMPTY_BUCKETS_ALERT_KEY}:${code}`,

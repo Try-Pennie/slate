@@ -3,7 +3,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { mapWithConcurrency } from "@/lib/google/sync-pace";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { eligibleAgentIds } from "@/lib/availability/service";
+import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   anyOnShift,
@@ -147,7 +147,7 @@ export async function GET(req: NextRequest) {
       PROBE_CONCURRENCY,
       async (bucket) => {
         const slot = slotByCode.get(bucket.code);
-        const { ids } = await eligibleAgentIds(bucket);
+        const { ids } = await eligibleAgentIdsCached(bucket);
         return {
           code: bucket.code,
           eligibleCount: ids.length,
