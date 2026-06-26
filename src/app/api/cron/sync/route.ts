@@ -177,7 +177,7 @@ export async function GET(req: NextRequest) {
 
     // Dead-man's switch (#420): check whether the monitor lane is still running.
     // The monitor lane stamps a heartbeat each tick; if it hasn't run in >15 min
-    // (3 missed 5-min ticks) the booker/sync alarms may be dark — alert here
+    // (3 missed 5-min ticks) the booker/sync alarms may be dark, so alert here
     // since the sync lane runs every minute and is more reliable.
     // Entirely best-effort: a read or alert failure must never break sync.
     const MONITOR_HEARTBEAT_MAX_STALE_MS = 15 * 60_000;
@@ -189,7 +189,7 @@ export async function GET(req: NextRequest) {
           await sendThrottledAlert(
             "monitor_lane_down",
             30 * 60_000,
-            `Slate: the monitor lane has not run since ${lastRanAt} (>15m). The booker/sync/low-volume alarms may be dark — check the cron_monitor lock and the /5 cron trigger.`,
+            `Slate: the monitor lane has not run since ${lastRanAt} (>15m). The booker/sync/low-volume alarms may be dark. Check the cron_monitor lock and the /5 cron trigger.`,
           ).catch(() => {});
         }
       } catch {
