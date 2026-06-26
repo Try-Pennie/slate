@@ -45,9 +45,14 @@ export interface BucketFairness {
 
 export interface AgentRollup {
   userId: string;
+  /** Bookings credited to this agent by the router (ranker decisions only). */
   received: number;
   expected: number;
   deviation: number;
+  /** ALL bookings currently assigned to this agent in the period, including
+   *  ones gained via manual reassign or reschedule (which carry no routing
+   *  candidacy). The commission-relevant count; `received` understates it. */
+  rawReceived: number;
 }
 
 export interface FairnessReport {
@@ -66,10 +71,17 @@ function emptyTally(): Tally {
   return { opportunities: 0, received: 0, expected: 0 };
 }
 
-/** Compute availability-corrected fairness per bucket and per agent. */
+/**
+ * Compute availability-corrected fairness per bucket and per agent.
+ *
+ * @param opts.rawAssignments - Optional list of the current `assigned_user_id`
+ *   for EVERY commission-relevant booking in the period (regardless of
+ *   routing_trace). When supplied, each agent rollup reports `rawReceived` and
+ *   agents who only received bookings via reassign/reschedule still appear.
+ */
 export function computeFairness(
   rows: TraceRow[],
-  opts: { minBookings: number },
+  opts: { minBookings: number; rawAssignments?: string[] },
 ): FairnessReport {
   const perBucket = new Map<string, Map<string, Tally>>();
   const bookingCount = new Map<string, number>();
@@ -115,13 +127,29 @@ export function computeFairness(
     })
     .sort((a, b) => (a.bucketCode < b.bucketCode ? -1 : a.bucketCode > b.bucketCode ? 1 : 0));
 
-  const byAgent: AgentRollup[] = [...overall.entries()]
-    .map(([userId, t]) => ({
-      userId,
-      received: t.received,
-      expected: t.expected,
-      deviation: t.received - t.expected,
-    }))
+  // Raw bookings-received count per agent (#424): counts the current
+  // assigned_user_id of every booking, so reassign/reschedule credit is not
+  // lost the way the ranker-only `received` total loses it.
+  const rawCount = new Map<string, number>();
+  for (const id of opts.rawAssignments ?? []) {
+    if (!id) continue;
+    rawCount.set(id, (rawCount.get(id) ?? 0) + 1);
+  }
+
+  // Union of ranker-credited agents and raw-assigned agents, so an agent who
+  // only ever received via a manual reassign still surfaces in the rollup.
+  const rollupIds = new Set<string>([...overall.keys(), ...rawCount.keys()]);
+  const byAgent: AgentRollup[] = [...rollupIds]
+    .map((userId) => {
+      const t = overall.get(userId) ?? emptyTally();
+      return {
+        userId,
+        received: t.received,
+        expected: t.expected,
+        deviation: t.received - t.expected,
+        rawReceived: rawCount.get(userId) ?? 0,
+      };
+    })
     .sort((a, b) => a.deviation - b.deviation);
 
   return { buckets, byAgent };

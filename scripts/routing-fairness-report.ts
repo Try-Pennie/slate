@@ -59,11 +59,14 @@ async function main() {
   const fromIso = new Date(period.startMs).toISOString();
   const toIso = new Date(period.endMs).toISOString();
 
-  // Match the ranker's own counting: same status filter + starts_at window.
+  // Match the ranker's own counting: same status filter + starts_at window. We
+  // fetch ALL commission-relevant bookings (no routing_trace filter) so the raw
+  // bookings-received total (#424) sees reassign/reschedule rows the ranker math
+  // skips; assigned_user_id is the CURRENT owner, reflecting manual reassigns.
   const rowsRaw = (await get(
-    `bookings?select=routing_trace&starts_at=gte.${fromIso}&starts_at=lt.${toIso}` +
-      `&status=in.(confirmed,rescheduled,completed)&routing_trace=not.is.null&limit=100000`,
-  )) as { routing_trace: RoutingTrace | null }[];
+    `bookings?select=routing_trace,assigned_user_id&starts_at=gte.${fromIso}&starts_at=lt.${toIso}` +
+      `&status=in.(confirmed,rescheduled,completed)&limit=100000`,
+  )) as { routing_trace: RoutingTrace | null; assigned_user_id: string | null }[];
 
   // Only original ranker decisions: a reschedule blanks `considered`, so those
   // rows carry no candidacy and are skipped (they did not exercise the ranker).
@@ -72,11 +75,17 @@ async function main() {
     .filter((t): t is RoutingTrace => !!t && Array.isArray(t.considered) && t.considered.length > 0)
     .map((t) => ({ bucketCode: t.bucket_code, chosenUserId: t.chosen_user_id, considered: t.considered }));
 
+  // Raw bookings-received: every booking's current owner, including ones gained
+  // via reassign/reschedule that never exercised the ranker (#424).
+  const rawAssignments = rowsRaw
+    .map((r) => r.assigned_user_id)
+    .filter((id): id is string => !!id);
+
   const users = (await get("users?select=id,name,email")) as { id: string; name: string | null; email: string | null }[];
   const label = new Map(users.map((u) => [u.id, u.name || u.email || u.id]));
   const who = (id: string) => label.get(id) ?? id;
 
-  const report = computeFairness(rows, { minBookings });
+  const report = computeFairness(rows, { minBookings, rawAssignments });
 
   console.log(`\nRouting fairness  period ${fromIso.slice(0, 10)} to ${toIso.slice(0, 10)}  (${rows.length} ranker decisions)\n`);
   console.log("Negative deviation = under-served (got fewer than a fair split would give, accounting for availability).\n");
@@ -91,10 +100,14 @@ async function main() {
     console.log("");
   }
 
-  console.log("Per-agent total across all buckets (commission-relevant):");
-  console.log(`  ${pad("agent", 32)} ${pad("got", 7)} ${pad("fair", 7)} ${pad("deviation", 9)}`);
+  console.log("Per-agent total across all buckets:");
+  console.log("  got/fair/deviation = router-assigned only (ranker decisions).");
+  console.log("  raw = ALL bookings received incl. reassign/reschedule (the commission-relevant count).");
+  console.log(`  ${pad("agent", 32)} ${pad("got", 7)} ${pad("fair", 7)} ${pad("deviation", 9)} ${pad("raw", 7)}`);
   for (const a of report.byAgent) {
-    console.log(`  ${pad(who(a.userId), 32)} ${String(a.received).padStart(7)} ${num(a.expected)} ${num(a.deviation, 9)}`);
+    console.log(
+      `  ${pad(who(a.userId), 32)} ${String(a.received).padStart(7)} ${num(a.expected)} ${num(a.deviation, 9)} ${String(a.rawReceived).padStart(7)}`,
+    );
   }
   console.log("");
 }
