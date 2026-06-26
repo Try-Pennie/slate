@@ -71,5 +71,16 @@ assert(
   "intentional empty-pool fallback is not a misroute",
 );
 
+// empty criteria means open-pool bucket — any agent is a valid pick, never a misroute
+assert(
+  isMisroute({
+    chosenAttributes: { debt_team: "ultra_high" },
+    criteria: {},
+    emptyPoolFallback: false,
+    tierFallback: false,
+  }) === false,
+  "open-pool (empty criteria) is not a misroute",
+);
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

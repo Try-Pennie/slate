@@ -5,10 +5,10 @@
 
 create table routing_decisions (
   id                  uuid primary key default gen_random_uuid(),
-  org_id              uuid not null,
+  org_id              uuid not null references organizations(id) on delete cascade,
   booking_id          uuid references bookings(id) on delete set null,
   bucket_code         text not null,
-  bucket_id           uuid,
+  bucket_id           uuid references buckets(id) on delete set null,
   requested_tier      text,
   booked_tier         text,
   chosen_user_id      uuid,
