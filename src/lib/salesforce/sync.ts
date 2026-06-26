@@ -7,6 +7,7 @@ import {
   resolveManagerSync,
 } from "@/lib/salesforce/manager-sync";
 import { reapableUserIds } from "@/lib/salesforce/reap";
+import { fetchSfWithRetry } from "@/lib/salesforce/retry";
 import type { Attributes, Role, User } from "@/lib/db/types";
 
 // SF User custom booleans -> Slate attribute values.
@@ -41,7 +42,7 @@ interface SfUser {
 }
 
 async function sfToken(): Promise<{ token: string; instanceUrl: string }> {
-  const res = await fetch(`${sfInstanceUrl()}/services/oauth2/token`, {
+  const res = await fetchSfWithRetry(`${sfInstanceUrl()}/services/oauth2/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -63,7 +64,7 @@ async function queryAll(
   const records: SfUser[] = [];
   let url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`;
   for (;;) {
-    const res = await fetch(url, {
+    const res = await fetchSfWithRetry(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) throw new Error(`SF query failed: ${res.status} ${await res.text()}`);
