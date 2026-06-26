@@ -48,7 +48,9 @@ import type {
   Booking,
   BookingReservation,
   BookingStatus,
+  Bucket,
   EventType,
+  User,
   WebhookEvent,
 } from "@/lib/db/types";
 
@@ -254,7 +256,7 @@ function buildDeps(
     if (!row) return null;
     const { event_types: eventType, ...bucket } = row;
     if (!eventType) return null;
-    return { bucket: bucket as any, eventType };
+    return { bucket: bucket as Bucket, eventType };
   }
 
   return {
@@ -297,7 +299,7 @@ function buildDeps(
     // --- DB-backed deps ---
     getUser: async (userId) => {
       const res = await db().from("users").select("*").eq("id", userId).single();
-      return res.data as any;
+      return res.data as User;
     },
 
     loadEmails: async (userIds) => {
@@ -424,7 +426,7 @@ function buildDeps(
         db().from("event_types").select("*").eq("id", b.event_type_id).single(),
       ]);
       if (!bkRes.data || !etRes.data) return null;
-      return { booking: b, bucket: bkRes.data as any, eventType: etRes.data as EventType };
+      return { booking: b, bucket: bkRes.data as Bucket, eventType: etRes.data as EventType };
     },
 
     findActiveBookingsForPerson: async () => [],
