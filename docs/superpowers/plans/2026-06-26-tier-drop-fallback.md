@@ -4,7 +4,7 @@
 
 **Goal:** When a bucket has zero bookable slots across the whole booking window, surface the next debt-tier-down bucket's slots in the booker, cascading down the tier ladder until a tier has availability, and record/stamp/alert on the drop so it is explainable and Regal can suppress its alert.
 
-**Architecture:** A pure tier-ladder helper turns an XBC code into the ordered list of lower-tier codes to try (511 → 411 → 311 → 211 → 111). A server cascade calls the existing cached per-bucket slot fetch for each code in turn and returns the first tier with slots, plus a routing descriptor. The availability API returns the effective (possibly lower) bucket code; the Booker books against that effective code while passing the original requested code so the booking path can stamp `tier_fallback` into `routing_trace`, record the decision (Plan 1's recorder), and fire a tiered Slack alert (one-rung drop = throttled notice, two-plus = escalated).
+**Architecture:** A pure tier-ladder helper turns an XBC code into the ordered list of lower-tier codes to try (511 → 411 → 311 → 211 → 111). For DISPLAY, a server cascade calls the existing cached per-bucket slot fetch for each code in turn and returns the first tier with slots, so the booker shows lower-tier slots transparently under the customer's original code. For BOOKING, the server is authoritative: the booker books with the ORIGINAL code only, and the create-booking path re-derives the tier itself — it tries to assign in the requested bucket for the chosen slot, and only if that bucket has no agent free for that slot does it cascade down the ladder, assigning in the first lower bucket that can serve the slot. The bucket it actually books determines `tier_fallback`/`requested_tier`/`booked_tier`/`rungs_dropped`, which are stamped into `routing_trace`, recorded via Plan 1's recorder, and drive a tiered Slack alert (one-rung = throttled notice, two-plus = escalated). The client never tells the server which tier to use, so a spoofed request cannot mis-route or double-book.
 
 **Tech Stack:** Next.js 16 (App Router, TS), Supabase (`supabaseAdmin`), Luxon, node `--experimental-strip-types` tests + Vitest, Playwright MCP for visual verification, Cloudflare Workers.
 
@@ -298,17 +298,19 @@ git commit -m "Cascade to lower tier when a bucket's window is empty"
 
 ---
 
-### Task 4: Booker consumes the effective tier
+### Task 4: Booker renders fallback slots (no booking change)
 
 **Files:**
-- Modify: `src/components/Booker.tsx` (`AvailabilityResponse` ~35-41; availability fetch ~218-223; booking submit ~311-326)
+- Modify: `src/components/Booker.tsx` (`AvailabilityResponse` ~35-41 — type only, optional)
 - Test: Visual verification via Playwright MCP (no node-native test for React UI here)
 
 **Interfaces:**
-- Consumes: the `routing` block on the availability response (Task 3).
-- Produces: booking `POST /booking` body now includes `requestedBucketCode` when a fallback occurred; books against the effective code.
+- Consumes: the availability response's `slots` (already lower-tier when a display fallback occurred, Task 3).
+- Produces: nothing new on the booking submit. The booker continues to book with its original `bucketCode` prop; the server re-derives the tier (Task 5).
 
-- [ ] **Step 1: Extend `AvailabilityResponse` (Booker.tsx ~35-41)**
+In the strict model the booker does NOT change how it books. The availability cascade (Task 3) already returns lower-tier slots in `slots`, so the booker renders them transparently under the customer's original code, and books that original code via the unchanged `POST /booking` body at `Booker.tsx:311-326`. The only optional edit is documenting the new informational `routing` field on the response type. The customer never sees tier labels; the fallback is silent per spec.
+
+- [ ] **Step 1: (Optional) document the informational `routing` field on `AvailabilityResponse` (Booker.tsx ~35-41)**
 
 ```typescript
 interface AvailabilityResponse {
@@ -316,6 +318,8 @@ interface AvailabilityResponse {
   orgName: string;
   eventType: { name: string; description: string | null; durationMin: number };
   slots: string[];
+  // Informational only — the booker still books with its original bucketCode;
+  // the server re-derives the tier at booking time (see Plan 2 Task 5).
   routing?: {
     requested_code: string;
     effective_code: string;
@@ -325,56 +329,39 @@ interface AvailabilityResponse {
 }
 ```
 
-- [ ] **Step 2: Track the effective code from the response**
+Do NOT change the `POST /booking` body. Leave `bucketCode` as the component's original prop.
 
-Where the response is stored (`setMeta(...)` ~line 223), the effective booking code is `meta.routing?.effective_code ?? bucketCode`. Add a derived value near where the component reads `meta`:
-
-```typescript
-  const effectiveCode = meta?.routing?.effective_code ?? bucketCode;
-  const didTierFallback = !!meta?.routing?.tier_fallback;
-```
-
-The customer-facing UI does NOT change (no tier label shown); the fallback is silent per spec. `effectiveCode` is used only for the booking submit.
-
-- [ ] **Step 3: Book against the effective code, pass the requested code**
-
-In the `POST /booking` body (~314-325), replace `bucketCode,` with:
-
-```typescript
-        bucketCode: effectiveCode,
-        requestedBucketCode: didTierFallback ? bucketCode : undefined,
-```
-
-(Leave the rest of the body unchanged. When no fallback, `requestedBucketCode` is omitted and behavior is identical to today.)
-
-- [ ] **Step 4: Visual verification — normal path unaffected**
+- [ ] **Step 2: Visual verification — normal path unaffected**
 
 Start the app (`/run` or `pnpm dev`), open a booker for a bucket WITH availability. Inject the motion-freeze style (AGENTS.md snippet) via `browser_evaluate`, then `browser_take_screenshot` (JPEG). Confirm slots render and a booking still succeeds. Save the capture outside the repo.
 
-- [ ] **Step 5: Visual verification — fallback path**
+- [ ] **Step 3: Visual verification — display fallback path**
 
-Point the booker at a bucket whose entire 4-day horizon is empty but whose next tier down has slots (set this up by temporarily marking the requested tier's agents unavailable, or against a known-empty test bucket). Confirm the booker shows slots (sourced from the lower tier) and that submitting books successfully. In the network panel confirm the `POST /booking` body carries `requestedBucketCode` (the original) and `bucketCode` (the lower/effective). Screenshot.
+Point the booker at a bucket whose entire 4-day horizon is empty but whose next tier down has slots (temporarily mark the requested tier's agents unavailable, or use a known-empty test bucket). Confirm the booker shows slots (sourced from the lower tier) and that submitting books successfully. In the network panel confirm the `POST /booking` body still carries only the ORIGINAL `bucketCode` (no effective/requested split — the server resolves the tier). Screenshot.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit (only if the optional type edit was made)**
 
 ```bash
 git add src/components/Booker.tsx
-git commit -m "Booker books against the effective fallback tier"
+git commit -m "Document informational routing field on availability response"
 ```
+
+If no code changed (you skipped Step 1), there is nothing to commit for this task; the verification screenshots are the deliverable.
 
 ---
 
 ### Task 5: Stamp + record + alert on the tier-drop at booking time
 
+No change to `/booking` or its zod schema, and none to the booker — the server re-derives the tier, so no new request field is added.
+
 **Files:**
-- Modify: `src/app/booking/route.ts` (zod `schema` ~before line 33; pass `requestedBucketCode` into `createBooking`, ~58-70)
-- Modify: `src/lib/booking/service.ts` (`createBooking` input type ~1066) and `src/lib/booking/orchestration.ts` (thread `requestedBucketCode`; stamp `routing_trace`; alert)
 - Create: `src/lib/routing/tier-alert.ts` (pure alert selector)
+- Modify: `src/lib/booking/orchestration.ts` (add `assignAgentWithTierFallback`; use it in `createBooking` ~905-979 and `legacyCreateBooking` ~1094-1138; stamp `routing_trace`; record + alert)
 - Test: `scripts/test-tier-alert.ts`
 
 **Interfaces:**
-- Consumes: `tierKeyOf`, `tierLadder` (Task 1); `recordRoutingDecision` (Plan 1, `src/lib/routing/record.ts`); `sendThrottledAlert`.
-- Produces: `tierFallbackAlert({ requestedCode, effectiveCode, rungsDropped }): { key: string; cooldownMs: number; text: string } | null`.
+- Consumes: `tierKeyOf`, `tierLadder` (Task 1); `resolveBucketByCode`, `assignAgent`, `bookingWindow` (existing in orchestration); `recordRoutingDecision` (Plan 1, `src/lib/routing/record.ts`); `resolveBucketPool` (Plan 1 Task 6); `sendThrottledAlert`.
+- Produces: `assignAgentWithTierFallback(...)` (internal to orchestration); `tierFallbackAlert({ requestedCode, effectiveCode, rungsDropped }): { key: string; cooldownMs: number; text: string } | null`.
 
 - [ ] **Step 1: Write the failing test `scripts/test-tier-alert.ts`**
 
@@ -443,66 +430,138 @@ export function tierFallbackAlert(input: {
 Run: `node --experimental-strip-types scripts/test-tier-alert.ts`
 Expected: PASS — `ALL PASSED`.
 
-- [ ] **Step 5: Accept `requestedBucketCode` at the `/booking` boundary**
+- [ ] **Step 5: Add the server-side cascade `assignAgentWithTierFallback` in `src/lib/booking/orchestration.ts`**
 
-In `src/app/booking/route.ts`, add `requestedBucketCode` to the zod `schema` as an optional string (mirror the existing `bucketCode` field's validation), and pass it into `createBooking` (after line 69):
+Place it next to `assignAgent` (~536). It tries the requested bucket, and only on a genuine "no availability for this slot" outcome cascades down the ladder. It does NOT cascade on a verify outage (a transient calendar-read failure must not be mistaken for an exhausted tier).
 
 ```typescript
-      prefill: parsed.data.prefill,
-      requestedBucketCode: parsed.data.requestedBucketCode ?? null,
+interface TierAssignResult {
+  bucket: Bucket;
+  eventType: EventType;
+  startIso: string;
+  endIso: string;
+  userId: string;
+  email: string;
+  candidates: string[];
+  rungsDropped: number;
+}
+
+/**
+ * Assign for the requested bucket; if that bucket has no agent free for the
+ * slot, cascade down the debt-tier ladder and assign in the first lower bucket
+ * that can serve it. The server is the authority here — the client never says
+ * which tier to use. Cascades only on SlotUnavailable / NoEligibleAgents (the
+ * tier is genuinely exhausted), never on VerifyUnavailable (a transient outage),
+ * which is rethrown so an outage can't masquerade as a tier-drop.
+ */
+async function assignAgentWithTierFallback(
+  deps: BookingDeps,
+  requested: { bucket: Bucket; eventType: EventType },
+  startInstantIso: string,
+  allowTestBuckets: boolean,
+): Promise<TierAssignResult> {
+  const ladder = tierLadder(requested.bucket.code);
+  let lastErr: unknown = null;
+  for (let i = 0; i < ladder.length; i++) {
+    const resolved = i === 0 ? requested : await deps.resolveBucketByCode(ladder[i]);
+    if (!resolved) continue; // a lower tier with no bucket row: skip
+    if (resolved.bucket.is_test && !allowTestBuckets) continue;
+    const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
+    try {
+      const { userId, email, candidates } = await assignAgent(
+        deps, resolved.bucket, resolved.eventType, startIso, endIso,
+      );
+      return {
+        bucket: resolved.bucket, eventType: resolved.eventType,
+        startIso, endIso, userId, email, candidates, rungsDropped: i,
+      };
+    } catch (err) {
+      if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
+        lastErr = err; // this tier can't serve the slot; drop a rung
+        continue;
+      }
+      throw err; // VerifyUnavailableError and anything unexpected: do not mask
+    }
+  }
+  throw lastErr ?? new SlotUnavailableError();
+}
 ```
 
-- [ ] **Step 6: Thread + stamp in the orchestration**
+(Import `tierLadder` from `@/lib/routing/tiers`. `BookingDeps` already exposes `resolveBucketByCode` — confirm; it is used at `orchestration.ts:905`.)
 
-In `src/lib/booking/service.ts`, add `requestedBucketCode?: string | null` to the `createBooking` input type and forward it to `orchestration.createBooking`. In `src/lib/booking/orchestration.ts`, where the `routing_trace` literal is built (~970 and ~1138 — already extended in Plan 1), compute the tier-drop fields from `input.requestedBucketCode` vs `input.bucketCode`:
+- [ ] **Step 6: Use the cascade in `createBooking` and book against the resolved bucket**
+
+In `createBooking` (`orchestration.ts`), the requested bucket is resolved at line 905 (`bucket`, `eventType`) and the window at 915. Replace the single `assignAgent(...)` call at 936-942 with the cascade, then rebind `bucket`/`eventType`/`startIso`/`endIso` to the RESOLVED (possibly lower) tier so the booking insert and reservation use the booked bucket:
 
 ```typescript
-      // Tier-drop stamp: requested code (original tier the customer came in on)
-      // vs the bucket actually booked. Same code => no drop.
-      tier_fallback:
-        input.requestedBucketCode != null &&
-        input.requestedBucketCode !== input.bucketCode,
-      requested_tier: tierKeyOf(input.requestedBucketCode ?? input.bucketCode),
-      booked_tier: tierKeyOf(input.bucketCode),
-      rungs_dropped:
-        input.requestedBucketCode != null
-          ? tierLadder(input.requestedBucketCode).indexOf(input.bucketCode)
-          : 0,
+  const tier = await assignAgentWithTierFallback(
+    deps,
+    { bucket, eventType },
+    input.startIso,
+    input.allowTestBuckets ?? false,
+  );
+  const bookedBucket = tier.bucket;
+  const bookedEventType = tier.eventType;
+  const { userId, email, candidates } = tier;
+  const startIso = tier.startIso;
+  const endIso = tier.endIso;
 ```
 
-(Import `tierKeyOf`, `tierLadder` from `@/lib/routing/tiers`. `indexOf` returns the rung count, or -1 if the booked code isn't on the requested ladder — guard a -1 to 0.)
-
-- [ ] **Step 7: Fire the tiered alert on the post-commit side-effects path**
-
-Alongside the `booking.created` webhook fire (~1077) and the `recordRoutingDecision` call added in Plan 1 Task 7, add:
+Update the `bookingInsert` (948-979) to use `bookedBucket`/`bookedEventType` for `org_id`, `bucket_id`, `event_type_id`, and extend the `routing_trace` literal (970, already extended in Plan 1) with the tier-drop stamp:
 
 ```typescript
-  const alert = tierFallbackAlert({
-    requestedCode: input.requestedBucketCode ?? input.bucketCode,
-    effectiveCode: input.bucketCode,
+    routing_trace: {
+      bucket_code: bookedBucket.code,            // matches bucket_id (the booked tier)
+      bucket_id: bookedBucket.id,
+      considered: candidates,
+      chosen_user_id: userId,
+      fallback_applied:
+        bookedBucket.fallback_user_id != null &&
+        candidates.length > 0 &&
+        candidates.every((id) => id === bookedBucket.fallback_user_id),
+      excluded: traceExtras.excluded,            // Plan 1, computed against bookedBucket
+      tier_fallback: tier.rungsDropped > 0,
+      requested_tier: tierKeyOf(input.bucketCode),
+      booked_tier: tierKeyOf(bookedBucket.code),
+      rungs_dropped: tier.rungsDropped,
+    },
+```
+
+(Import `tierKeyOf`. Compute `traceExtras` from `resolveBucketPool(bookedBucket)` + the candidate set, per Plan 1 Task 7. Note: `bucket_code` is now the BOOKED tier; verify no consumer expects the requested code there — `src/lib/availability/fairness.ts` reads `routing_trace.considered`, not `bucket_code`, so it is unaffected.)
+
+- [ ] **Step 7: Mirror the cascade in `legacyCreateBooking`**
+
+`legacyCreateBooking` (the anonymous/no-idempotency path, called at `orchestration.ts:923`) has its own `assignAgent` call and `routing_trace` literal (~1138). Apply the same `assignAgentWithTierFallback` + booked-bucket rebind + `routing_trace` stamp there, so anonymous bookings also tier-drop and stamp correctly.
+
+- [ ] **Step 8: Record + fire the tiered alert on the post-commit side-effects path**
+
+Alongside the `booking.created` webhook fire (~1077) and the `recordRoutingDecision` call from Plan 1 Task 7 (which already persists the decision with the tier fields), add the Slack notice:
+
+```typescript
+  const tierAlert = tierFallbackAlert({
+    requestedCode: input.bucketCode,
+    effectiveCode: booking.routing_trace?.bucket_code ?? input.bucketCode,
     rungsDropped: Math.max(0, booking.routing_trace?.rungs_dropped ?? 0),
   });
-  if (alert) {
-    await sendThrottledAlert(alert.key, alert.cooldownMs, alert.text).catch(() => {});
+  if (tierAlert) {
+    await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
   }
 ```
 
-(Plan 1's `recordRoutingDecision` already persists the row + carries the fallback flags; this only adds the Slack notice.)
-
-- [ ] **Step 8: Typecheck, build, run all tests**
+- [ ] **Step 9: Typecheck, build, run all tests**
 
 Run: `npx tsc --noEmit && pnpm test && pnpm cf:build`
 Expected: all green.
 
-- [ ] **Step 9: Live verification (user-run)**
+- [ ] **Step 10: Live verification (user-run)**
 
-Make a fallback booking (requested tier empty across the horizon, lower tier has slots) through the booker. Confirm: (a) the booking lands on a lower-tier agent; (b) `bookings.routing_trace` for it shows `tier_fallback: true`, the correct `requested_tier`/`booked_tier`/`rungs_dropped`; (c) a `routing_decisions` row exists with `tier_fallback = true`; (d) the booking webhook payload to Regal carries `routing.tier_fallback = true` (check the webhook log/outbox); (e) a single-rung drop produced the throttled Slack notice (not the loud alert). This needs a real booking + DB/webhook inspection, so it is the user's to run.
+Make a fallback booking (requested tier empty across the horizon, lower tier has slots) through the booker. Confirm: (a) the booking lands on a lower-tier agent; (b) `bookings.routing_trace` shows `tier_fallback: true` with correct `requested_tier`/`booked_tier`/`rungs_dropped`; (c) a `routing_decisions` row exists with `tier_fallback = true`; (d) the booking webhook payload to Regal carries `routing.tier_fallback = true` (check the outbox/webhook log); (e) a single-rung drop produced the throttled Slack notice, not the loud alert. Also confirm the normal path is unchanged: a booking in a tier WITH availability does no cascade (`rungs_dropped = 0`, `tier_fallback = false`). Needs a real booking + DB/webhook inspection, so it is the user's to run.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/app/booking/route.ts src/lib/booking/service.ts src/lib/booking/orchestration.ts src/lib/routing/tier-alert.ts scripts/test-tier-alert.ts
-git commit -m "Stamp, record, and alert on tier-drop fallback bookings"
+git add src/lib/booking/orchestration.ts src/lib/routing/tier-alert.ts scripts/test-tier-alert.ts
+git commit -m "Re-derive tier server-side and stamp, record, alert on tier-drop bookings"
 ```
 
 ---
@@ -512,14 +571,14 @@ git commit -m "Stamp, record, and alert on tier-drop fallback bookings"
 **Spec coverage:**
 - Tier-drop cascade (UH→VH→…→Low, one rung at a time, same backend+legal) → Tasks 1, 2.
 - Triggers only when the whole window is empty → Task 3 (cascade runs only when `requested.slots.length === 0` over the 4-day horizon).
-- Changes what the booker SHOWS (surfaces next tier's slots) → Tasks 3, 4.
-- Books against the effective tier; seamless to the customer (no tier labels) → Task 4.
+- Changes what the booker SHOWS (surfaces next tier's slots) → Task 3 (server returns lower-tier slots) + Task 4 (booker renders them, no booking change).
+- Books against the resolved tier; seamless to the customer (no tier labels) → Task 5 (server re-derives the tier at booking time).
 - Stamp on `routing_trace` + webhook (`tier_fallback`, `requested_tier`, `booked_tier`, `rungs_dropped`) → Task 5 (+ Plan 1's `RoutingMeta` reads these through to the webhook automatically).
 - Recorded in `routing_decisions` → Task 5 reuses Plan 1's `recordRoutingDecision`.
 - Single-rung = throttled notice; two-plus = escalated alert → Task 5 (`tierFallbackAlert`).
 
-**Type consistency:** `tierLadder`/`tierKeyOf` (Task 1) used in Tasks 2, 3, 5. `selectWithTierFallback` (Task 2) used in Task 3. `AvailabilityRoutingMeta` (Task 3) shape matches the Booker's `routing?` block (Task 4). `tierFallbackAlert` (Task 5) signature matches its call site.
+**Type consistency:** `tierLadder`/`tierKeyOf` (Task 1) used in Tasks 2, 3, 5. `selectWithTierFallback` (Task 2) used in Task 3. The availability `routing` block (Task 3) is informational-only on the booker (Task 4). `tierFallbackAlert` (Task 5) signature matches its call site.
 
-**Trust note (call out at execution):** the Booker sends both `bucketCode` (effective) and `requestedBucketCode` (original). A client could spoof these, but the booking still runs verify-on-book against the effective bucket, so the worst case is a mis-stamped fallback flag, not a double-book or a wrong-tier booking of a real free agent. If stronger integrity is wanted later, re-run the cascade server-side at booking time instead of trusting the client's effective code. Filed as a follow-up consideration, not built here.
+**Trust model (RESOLVED — strict / server-authoritative):** the booker books with the ORIGINAL code only; the server re-derives the tier at booking time by attempting assignment per bucket down the ladder, each gated by verify-on-book. The client cannot influence which tier is booked, so a spoofed request cannot mis-route or double-book. (This replaced an earlier client-trust design where the booker sent an "effective" code.)
 
-**Open implementer notes (verify against live code, do not assume):** exact `getCachedBucketSlots` signature + `BucketSlots` interface (Task 3); the zod `schema` field style in `src/app/booking/route.ts` (Task 5 Step 5); guard `tierLadder(...).indexOf(...)` returning -1 (Task 5 Step 6); the precise post-commit side-effects site shared with Plan 1 Task 7 (Task 5 Step 7).
+**Open implementer notes (verify against live code, do not assume):** exact `getCachedBucketSlots` signature + `BucketSlots` interface (Task 3); that `BookingDeps` exposes `resolveBucketByCode` and the `bookingWindow`/error-class imports are in scope in the new helper (Task 5 Step 5); that rebinding `bucket`/`eventType` to the booked tier does not collide with later uses of the requested `bucket`/`eventType` in `createBooking`/`legacyCreateBooking` (Task 5 Steps 6-7); the precise post-commit side-effects site shared with Plan 1 Task 7 (Task 5 Step 8); confirm no consumer reads `routing_trace.bucket_code` expecting the REQUESTED (not booked) code.
