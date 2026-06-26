@@ -300,16 +300,48 @@ export interface Booking {
   updated_at: string;
 }
 
+/** Why a candidate was excluded from a routing decision. */
+export type RoutingExcludeReason = "criteria_miss" | "no_availability";
+
+export interface RoutingExclusion {
+  user_id: string;
+  reason: RoutingExcludeReason;
+}
+
 /** How a booking routed (for troubleshooting). Stored on bookings.routing_trace. */
 export interface RoutingTrace {
   bucket_code: string;
   bucket_id: string;
-  /** Free + least-recently-booked-ordered candidate ids that were considered. */
   considered: string[];
   chosen_user_id: string;
   fallback_applied: boolean;
-  /** Manual overrides via the reassign API, in order (contact-owner stickiness). */
   reassignments?: { from: string | null; to: string; at: string }[];
+  // Explainability (Plan 1):
+  excluded?: RoutingExclusion[];
+  // Tier-drop fields — populated by Plan 2, default false/0/null here:
+  tier_fallback?: boolean;
+  requested_tier?: string | null;
+  booked_tier?: string | null;
+  rungs_dropped?: number;
+}
+
+/** One routing decision, including attempts that produced no booking. */
+export interface RoutingDecision {
+  id: string;
+  org_id: string;
+  booking_id: string | null;
+  bucket_code: string;
+  bucket_id: string | null;
+  requested_tier: string | null;
+  booked_tier: string | null;
+  chosen_user_id: string | null;
+  considered: string[];
+  excluded: RoutingExclusion[];
+  empty_pool_fallback: boolean;
+  tier_fallback: boolean;
+  rungs_dropped: number;
+  outcome: "booked" | "no_availability" | "no_eligible_agents" | "error";
+  created_at: string;
 }
 
 /** What a booking_events row records. */

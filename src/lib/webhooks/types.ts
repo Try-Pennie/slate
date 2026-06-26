@@ -1,7 +1,28 @@
 import type {
   BookingStatus,
   BookingEventInitiator,
+  RoutingTrace,
 } from "@/lib/db/types";
+
+/** Routing/fallback summary on the booking event, so Regal can suppress its
+ *  "Non-Ultra High Team Booking Detected" alert on intentional tier-drops. */
+export interface RoutingMeta {
+  empty_pool_fallback: boolean;
+  tier_fallback: boolean;
+  requested_tier: string | null;
+  booked_tier: string | null;
+  rungs_dropped: number;
+}
+
+export function routingMetaFromTrace(trace: RoutingTrace | null): RoutingMeta {
+  return {
+    empty_pool_fallback: trace?.fallback_applied ?? false,
+    tier_fallback: trace?.tier_fallback ?? false,
+    requested_tier: trace?.requested_tier ?? null,
+    booked_tier: trace?.booked_tier ?? null,
+    rungs_dropped: trace?.rungs_dropped ?? 0,
+  };
+}
 
 /** Why a booking was rescheduled/cancelled + who did it (#326). Null on create/complete. */
 export interface BookingReasonMeta {
@@ -33,4 +54,5 @@ export interface BookingEventPayload {
    * Null on booking.created / booking.completed (no reason applies).
    */
   reason: BookingReasonMeta | null;
+  routing: RoutingMeta;
 }

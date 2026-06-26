@@ -26,7 +26,11 @@ import {
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
+import { buildRoutingTraceExtras } from "../routing/explain.ts";
+import { resolveBucketPool } from "../availability/service.ts";
+import { recordRoutingDecision } from "../routing/record.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
+import { routingMetaFromTrace } from "@/lib/webhooks/types";
 import type {
   Booking,
   BookingEventAction,
@@ -600,6 +604,7 @@ function webhookPayload(
     prefill: booking.prefill,
     manage_url: `${deps.appBaseUrl()}/booking/manage/${booking.manage_token}`,
     reason,
+    routing: routingMetaFromTrace(booking.routing_trace),
   };
 }
 
@@ -933,14 +938,56 @@ export async function createBooking(
   // (the first durable act), then complete. assignAgent runs before the
   // reservation, but no event is created until completeReservation, so a crash
   // here strands nothing.
-  const { userId, email, candidates } = await assignAgent(
-    deps,
-    bucket,
-    eventType,
-    startIso,
-    endIso,
-  );
+  let assignResult: Awaited<ReturnType<typeof assignAgent>>;
+  try {
+    assignResult = await assignAgent(deps, bucket, eventType, startIso, endIso);
+  } catch (err) {
+    // Best-effort: record no-booking attempts so "why did this lead get no slots"
+    // is answerable. Awaited so the write is not dropped by the CF runtime; the
+    // outer try/catch ensures the original error still propagates unchanged.
+    if (
+      err instanceof NoEligibleAgentsError ||
+      err instanceof VerifyUnavailableError ||
+      err instanceof SlotUnavailableError
+    ) {
+      const outcome =
+        err instanceof NoEligibleAgentsError ? "no_eligible_agents" : "no_availability";
+      try {
+        const pool = await resolveBucketPool(bucket);
+        await recordRoutingDecision({
+          orgId: bucket.org_id,
+          bookingId: null,
+          bucketCode: bucket.code,
+          bucketId: bucket.id,
+          criteria: pool.criteria,
+          ...buildRoutingTraceExtras(pool, []),
+          chosenUserId: null,
+          chosenAttributes: null,
+          emptyPoolFallback: false,
+          tierFallback: false,
+          rungsDropped: 0,
+          requestedTier: pool.criteria.debt_team ? String(pool.criteria.debt_team) : null,
+          bookedTier: null,
+          outcome,
+        });
+      } catch {
+        // best-effort: never change the thrown booking error
+      }
+    }
+    throw err;
+  }
+  const { userId, email, candidates } = assignResult;
   const agent = await deps.getUser(userId);
+  let traceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
+    considered: candidates,
+    excluded: [],
+  };
+  try {
+    const pool = await resolveBucketPool(bucket);
+    traceExtras = buildRoutingTraceExtras(pool, candidates);
+  } catch {
+    // best-effort: a transient pool-resolve failure must not fail the booking
+  }
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
   const gcalClientId = await deterministicEventId(idempotencyKey, userId);
@@ -976,6 +1023,13 @@ export async function createBooking(
         bucket.fallback_user_id != null &&
         candidates.length > 0 &&
         candidates.every((id) => id === bucket.fallback_user_id),
+      excluded: traceExtras.excluded,
+      tier_fallback: false,
+      requested_tier: bucket.criteria?.debt_team
+        ? String(bucket.criteria.debt_team)
+        : null,
+      booked_tier: null,
+      rungs_dropped: 0,
     },
   };
   const event: ReservationPayload["event"] = {
@@ -1075,6 +1129,33 @@ async function completeReservation(
   const resolved = await deps.resolveBucketByCode(bucketCode);
   if (resolved) {
     await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
+    // Best-effort routing decision log. Awaited so the write is not dropped by the
+    // CF runtime; try/catch keeps any transient failure out of the booking response.
+    try {
+      const chosenAgent = booking.assigned_user_id
+        ? await deps.getUser(booking.assigned_user_id)
+        : null;
+      const rt = booking.routing_trace;
+      await recordRoutingDecision({
+        orgId: booking.org_id,
+        bookingId: booking.id,
+        bucketCode: resolved.bucket.code,
+        bucketId: resolved.bucket.id,
+        criteria: resolved.bucket.criteria,
+        considered: rt?.considered ?? [],
+        excluded: rt?.excluded ?? [],
+        chosenUserId: booking.assigned_user_id,
+        chosenAttributes: chosenAgent?.attributes ?? null,
+        emptyPoolFallback: rt?.fallback_applied ?? false,
+        tierFallback: rt?.tier_fallback ?? false,
+        rungsDropped: rt?.rungs_dropped ?? 0,
+        requestedTier: rt?.requested_tier ?? null,
+        bookedTier: rt?.booked_tier ?? null,
+        outcome: "booked",
+      });
+    } catch {
+      // best-effort
+    }
   }
 
   await deps.deleteReservation(reservation.id);
@@ -1091,14 +1172,55 @@ async function legacyCreateBooking(
   startIso: string,
   endIso: string,
 ): Promise<BookingResult> {
-  const { userId, email, candidates } = await assignAgent(
-    deps,
-    bucket,
-    eventType,
-    startIso,
-    endIso,
-  );
+  let legacyAssignResult: Awaited<ReturnType<typeof assignAgent>>;
+  try {
+    legacyAssignResult = await assignAgent(deps, bucket, eventType, startIso, endIso);
+  } catch (err) {
+    // Best-effort: record no-booking attempts. Awaited so the write is not dropped
+    // by the CF runtime; try/catch ensures the original error still propagates.
+    if (
+      err instanceof NoEligibleAgentsError ||
+      err instanceof VerifyUnavailableError ||
+      err instanceof SlotUnavailableError
+    ) {
+      const outcome =
+        err instanceof NoEligibleAgentsError ? "no_eligible_agents" : "no_availability";
+      try {
+        const pool = await resolveBucketPool(bucket);
+        await recordRoutingDecision({
+          orgId: bucket.org_id,
+          bookingId: null,
+          bucketCode: bucket.code,
+          bucketId: bucket.id,
+          criteria: pool.criteria,
+          ...buildRoutingTraceExtras(pool, []),
+          chosenUserId: null,
+          chosenAttributes: null,
+          emptyPoolFallback: false,
+          tierFallback: false,
+          rungsDropped: 0,
+          requestedTier: pool.criteria.debt_team ? String(pool.criteria.debt_team) : null,
+          bookedTier: null,
+          outcome,
+        });
+      } catch {
+        // best-effort: never change the thrown booking error
+      }
+    }
+    throw err;
+  }
+  const { userId, email, candidates } = legacyAssignResult;
   const agent = await deps.getUser(userId);
+  let legacyTraceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
+    considered: candidates,
+    excluded: [],
+  };
+  try {
+    const legacyPool = await resolveBucketPool(bucket);
+    legacyTraceExtras = buildRoutingTraceExtras(legacyPool, candidates);
+  } catch {
+    // best-effort: a transient pool-resolve failure must not fail the booking
+  }
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
 
@@ -1144,6 +1266,13 @@ async function legacyCreateBooking(
         bucket.fallback_user_id != null &&
         candidates.length > 0 &&
         candidates.every((id) => id === bucket.fallback_user_id),
+      excluded: legacyTraceExtras.excluded,
+      tier_fallback: false,
+      requested_tier: bucket.criteria?.debt_team
+        ? String(bucket.criteria.debt_team)
+        : null,
+      booked_tier: null,
+      rungs_dropped: 0,
     },
   });
 
@@ -1156,6 +1285,30 @@ async function legacyCreateBooking(
   await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
   await deps.invalidateSlots(bucket.code);
   await fire(deps, "booking.created", booking, bucket, eventType);
+  // Best-effort routing decision log (agent already loaded above). Awaited so the
+  // write is not dropped by the CF runtime; recordRoutingDecision never throws.
+  await recordRoutingDecision({
+    orgId: booking.org_id,
+    bookingId: booking.id,
+    bucketCode: bucket.code,
+    bucketId: bucket.id,
+    criteria: bucket.criteria,
+    considered: candidates,
+    excluded: legacyTraceExtras.excluded,
+    chosenUserId: userId,
+    chosenAttributes: agent.attributes,
+    emptyPoolFallback:
+      bucket.fallback_user_id != null &&
+      candidates.length > 0 &&
+      candidates.every((id) => id === bucket.fallback_user_id),
+    tierFallback: false,
+    rungsDropped: 0,
+    requestedTier: bucket.criteria.debt_team
+      ? String(bucket.criteria.debt_team)
+      : null,
+    bookedTier: null,
+    outcome: "booked",
+  });
   return { booking, manageUrl: manageUrl(deps, manageToken) };
 }
 

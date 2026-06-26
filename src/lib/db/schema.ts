@@ -24,6 +24,7 @@ import type {
   PendingEventDeletion,
   RateLimit,
   RescheduleLock,
+  RoutingDecision,
   SyncLock,
   User,
   WebhookDelivery,
@@ -67,6 +68,7 @@ export interface Database {
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
       booking_reservations: Table<BookingReservation>;
+      routing_decisions: Table<RoutingDecision>;
     };
     Views: Record<string, never>;
     Functions: {
