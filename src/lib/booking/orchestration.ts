@@ -29,6 +29,9 @@ import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
 import { resolveBucketPool } from "../availability/service.ts";
 import { recordRoutingDecision } from "../routing/record.ts";
+import { tierLadder, tierKeyOf } from "../routing/tiers.ts";
+import { tierFallbackAlert } from "../routing/tier-alert.ts";
+import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 import type {
@@ -571,6 +574,57 @@ async function assignAgent(
   return { ...assignment, candidates };
 }
 
+interface TierAssignResult {
+  bucket: Bucket;
+  eventType: EventType;
+  startIso: string;
+  endIso: string;
+  userId: string;
+  email: string;
+  candidates: string[];
+  rungsDropped: number;
+}
+
+/**
+ * Assign for the requested bucket; if that bucket has no agent free for the
+ * slot, cascade down the debt-tier ladder and assign in the first lower bucket
+ * that can serve it. The server is the authority here — the client never says
+ * which tier to use. Cascades only on SlotUnavailable / NoEligibleAgents (the
+ * tier is genuinely exhausted), never on VerifyUnavailable (a transient outage),
+ * which is rethrown so an outage can't masquerade as a tier-drop.
+ */
+async function assignAgentWithTierFallback(
+  deps: BookingDeps,
+  requested: { bucket: Bucket; eventType: EventType },
+  startInstantIso: string,
+  allowTestBuckets: boolean,
+): Promise<TierAssignResult> {
+  const ladder = tierLadder(requested.bucket.code);
+  let lastErr: unknown = null;
+  for (let i = 0; i < ladder.length; i++) {
+    const resolved = i === 0 ? requested : await deps.resolveBucketByCode(ladder[i]);
+    if (!resolved) continue; // a lower tier with no bucket row: skip
+    if (resolved.bucket.is_test && !allowTestBuckets) continue;
+    const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
+    try {
+      const { userId, email, candidates } = await assignAgent(
+        deps, resolved.bucket, resolved.eventType, startIso, endIso,
+      );
+      return {
+        bucket: resolved.bucket, eventType: resolved.eventType,
+        startIso, endIso, userId, email, candidates, rungsDropped: i,
+      };
+    } catch (err) {
+      if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
+        lastErr = err; // this tier can't serve the slot; drop a rung
+        continue;
+      }
+      throw err; // VerifyUnavailableError and anything unexpected: do not mask
+    }
+  }
+  throw lastErr ?? new SlotUnavailableError();
+}
+
 function webhookPayload(
   deps: BookingDeps,
   booking: Booking,
@@ -917,15 +971,10 @@ export async function createBooking(
   // that a hidden bucket is there).
   if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
 
-  const { startIso, endIso } = bookingWindow(
-    input.startIso,
-    eventType.duration_min,
-  );
-
   // Anonymous bookings (no email/phone/salesforceId → no stable key) can't be
   // pinned, so they keep the legacy non-crash-safe create (accepted gap, #439).
   if (!idempotencyKey) {
-    return legacyCreateBooking(deps, input, bucket, eventType, startIso, endIso);
+    return legacyCreateBooking(deps, input, bucket, eventType);
   }
 
   // Resume an in-flight reservation: a re-submit after a crash mid-create reuses
@@ -934,13 +983,11 @@ export async function createBooking(
   const inFlight = await deps.loadReservationByKey(idempotencyKey);
   if (inFlight) return completeReservation(deps, inFlight);
 
-  // Fresh create: assign, pin the agent + a deterministic event id, RESERVE
-  // (the first durable act), then complete. assignAgent runs before the
-  // reservation, but no event is created until completeReservation, so a crash
-  // here strands nothing.
-  let assignResult: Awaited<ReturnType<typeof assignAgent>>;
+  // Fresh create: cascade down the tier ladder if the requested bucket has no
+  // agent free for the slot. A crash before the reservation strands nothing.
+  let tier: TierAssignResult;
   try {
-    assignResult = await assignAgent(deps, bucket, eventType, startIso, endIso);
+    tier = await assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false);
   } catch (err) {
     // Best-effort: record no-booking attempts so "why did this lead get no slots"
     // is answerable. Awaited so the write is not dropped by the CF runtime; the
@@ -976,14 +1023,18 @@ export async function createBooking(
     }
     throw err;
   }
-  const { userId, email, candidates } = assignResult;
+  const bookedBucket = tier.bucket;
+  const bookedEventType = tier.eventType;
+  const startIso = tier.startIso;
+  const endIso = tier.endIso;
+  const { userId, email, candidates } = tier;
   const agent = await deps.getUser(userId);
   let traceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
     considered: candidates,
     excluded: [],
   };
   try {
-    const pool = await resolveBucketPool(bucket);
+    const pool = await resolveBucketPool(bookedBucket);
     traceExtras = buildRoutingTraceExtras(pool, candidates);
   } catch {
     // best-effort: a transient pool-resolve failure must not fail the booking
@@ -993,9 +1044,9 @@ export async function createBooking(
   const gcalClientId = await deterministicEventId(idempotencyKey, userId);
 
   const bookingInsert: BookingInsert = {
-    org_id: bucket.org_id,
-    bucket_id: bucket.id,
-    event_type_id: eventType.id,
+    org_id: bookedBucket.org_id,
+    bucket_id: bookedBucket.id,
+    event_type_id: bookedEventType.id,
     assigned_user_id: userId,
     agent_name: agent.name,
     agent_email: agent.email,
@@ -1015,25 +1066,23 @@ export async function createBooking(
     idempotency_key: idempotencyKey,
     external_id: input.externalId ?? null,
     routing_trace: {
-      bucket_code: input.bucketCode,
-      bucket_id: bucket.id,
+      bucket_code: bookedBucket.code,
+      bucket_id: bookedBucket.id,
       considered: candidates,
       chosen_user_id: userId,
       fallback_applied:
-        bucket.fallback_user_id != null &&
+        bookedBucket.fallback_user_id != null &&
         candidates.length > 0 &&
-        candidates.every((id) => id === bucket.fallback_user_id),
+        candidates.every((id) => id === bookedBucket.fallback_user_id),
       excluded: traceExtras.excluded,
-      tier_fallback: false,
-      requested_tier: bucket.criteria?.debt_team
-        ? String(bucket.criteria.debt_team)
-        : null,
-      booked_tier: null,
-      rungs_dropped: 0,
+      tier_fallback: tier.rungsDropped > 0,
+      requested_tier: tierKeyOf(input.bucketCode),
+      booked_tier: tierKeyOf(bookedBucket.code),
+      rungs_dropped: tier.rungsDropped,
     },
   };
   const event: ReservationPayload["event"] = {
-    summary: `${eventType.name}${
+    summary: `${bookedEventType.name}${
       input.attendee.name ? ` with ${input.attendee.name}` : ""
     }`,
     description: eventDescription(phone, manageUrl(deps, manageToken)),
@@ -1156,6 +1205,16 @@ async function completeReservation(
     } catch {
       // best-effort
     }
+    // Best-effort tier-drop alert. Throttled via alert_state; a single-rung drop
+    // emits a quiet notice, a two-plus-rung drop escalates.
+    const tierAlert = tierFallbackAlert({
+      requestedCode: bucketCode,
+      effectiveCode: booking.routing_trace?.bucket_code ?? bucketCode,
+      rungsDropped: Math.max(0, booking.routing_trace?.rungs_dropped ?? 0),
+    });
+    if (tierAlert) {
+      await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
+    }
   }
 
   await deps.deleteReservation(reservation.id);
@@ -1169,12 +1228,10 @@ async function legacyCreateBooking(
   input: CreateBookingInput,
   bucket: Bucket,
   eventType: EventType,
-  startIso: string,
-  endIso: string,
 ): Promise<BookingResult> {
-  let legacyAssignResult: Awaited<ReturnType<typeof assignAgent>>;
+  let legacyTier: TierAssignResult;
   try {
-    legacyAssignResult = await assignAgent(deps, bucket, eventType, startIso, endIso);
+    legacyTier = await assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false);
   } catch (err) {
     // Best-effort: record no-booking attempts. Awaited so the write is not dropped
     // by the CF runtime; try/catch ensures the original error still propagates.
@@ -1209,14 +1266,18 @@ async function legacyCreateBooking(
     }
     throw err;
   }
-  const { userId, email, candidates } = legacyAssignResult;
+  const bookedBucket = legacyTier.bucket;
+  const bookedEventType = legacyTier.eventType;
+  const startIso = legacyTier.startIso;
+  const endIso = legacyTier.endIso;
+  const { userId, email, candidates } = legacyTier;
   const agent = await deps.getUser(userId);
   let legacyTraceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
     considered: candidates,
     excluded: [],
   };
   try {
-    const legacyPool = await resolveBucketPool(bucket);
+    const legacyPool = await resolveBucketPool(bookedBucket);
     legacyTraceExtras = buildRoutingTraceExtras(legacyPool, candidates);
   } catch {
     // best-effort: a transient pool-resolve failure must not fail the booking
@@ -1225,7 +1286,7 @@ async function legacyCreateBooking(
   const manageToken = deps.newManageToken();
 
   const gcalEventId = await deps.createEvent(email, {
-    summary: `${eventType.name}${
+    summary: `${bookedEventType.name}${
       input.attendee.name ? ` with ${input.attendee.name}` : ""
     }`,
     description: eventDescription(phone, manageUrl(deps, manageToken)),
@@ -1236,9 +1297,9 @@ async function legacyCreateBooking(
     attendeeName: input.attendee.name,
   });
   const inserted = await deps.insertBooking({
-    org_id: bucket.org_id,
-    bucket_id: bucket.id,
-    event_type_id: eventType.id,
+    org_id: bookedBucket.org_id,
+    bucket_id: bookedBucket.id,
+    event_type_id: bookedEventType.id,
     assigned_user_id: userId,
     agent_name: agent.name,
     agent_email: agent.email,
@@ -1258,21 +1319,19 @@ async function legacyCreateBooking(
     idempotency_key: null,
     external_id: input.externalId ?? null,
     routing_trace: {
-      bucket_code: input.bucketCode,
-      bucket_id: bucket.id,
+      bucket_code: bookedBucket.code,
+      bucket_id: bookedBucket.id,
       considered: candidates,
       chosen_user_id: userId,
       fallback_applied:
-        bucket.fallback_user_id != null &&
+        bookedBucket.fallback_user_id != null &&
         candidates.length > 0 &&
-        candidates.every((id) => id === bucket.fallback_user_id),
+        candidates.every((id) => id === bookedBucket.fallback_user_id),
       excluded: legacyTraceExtras.excluded,
-      tier_fallback: false,
-      requested_tier: bucket.criteria?.debt_team
-        ? String(bucket.criteria.debt_team)
-        : null,
-      booked_tier: null,
-      rungs_dropped: 0,
+      tier_fallback: legacyTier.rungsDropped > 0,
+      requested_tier: tierKeyOf(input.bucketCode),
+      booked_tier: tierKeyOf(bookedBucket.code),
+      rungs_dropped: legacyTier.rungsDropped,
     },
   });
 
@@ -1283,32 +1342,39 @@ async function legacyCreateBooking(
   }
   const booking = inserted.booking;
   await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
-  await deps.invalidateSlots(bucket.code);
-  await fire(deps, "booking.created", booking, bucket, eventType);
+  await deps.invalidateSlots(bookedBucket.code);
+  await fire(deps, "booking.created", booking, bookedBucket, bookedEventType);
   // Best-effort routing decision log (agent already loaded above). Awaited so the
   // write is not dropped by the CF runtime; recordRoutingDecision never throws.
   await recordRoutingDecision({
     orgId: booking.org_id,
     bookingId: booking.id,
-    bucketCode: bucket.code,
-    bucketId: bucket.id,
-    criteria: bucket.criteria,
+    bucketCode: bookedBucket.code,
+    bucketId: bookedBucket.id,
+    criteria: bookedBucket.criteria,
     considered: candidates,
     excluded: legacyTraceExtras.excluded,
     chosenUserId: userId,
     chosenAttributes: agent.attributes,
     emptyPoolFallback:
-      bucket.fallback_user_id != null &&
+      bookedBucket.fallback_user_id != null &&
       candidates.length > 0 &&
-      candidates.every((id) => id === bucket.fallback_user_id),
-    tierFallback: false,
-    rungsDropped: 0,
-    requestedTier: bucket.criteria.debt_team
-      ? String(bucket.criteria.debt_team)
-      : null,
-    bookedTier: null,
+      candidates.every((id) => id === bookedBucket.fallback_user_id),
+    tierFallback: legacyTier.rungsDropped > 0,
+    rungsDropped: legacyTier.rungsDropped,
+    requestedTier: tierKeyOf(input.bucketCode),
+    bookedTier: tierKeyOf(bookedBucket.code),
     outcome: "booked",
   });
+  // Best-effort tier-drop alert.
+  const legacyTierAlert = tierFallbackAlert({
+    requestedCode: input.bucketCode,
+    effectiveCode: booking.routing_trace?.bucket_code ?? input.bucketCode,
+    rungsDropped: Math.max(0, booking.routing_trace?.rungs_dropped ?? 0),
+  });
+  if (legacyTierAlert) {
+    await sendThrottledAlert(legacyTierAlert.key, legacyTierAlert.cooldownMs, legacyTierAlert.text).catch(() => {});
+  }
   return { booking, manageUrl: manageUrl(deps, manageToken) };
 }
 
