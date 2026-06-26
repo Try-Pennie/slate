@@ -27,6 +27,7 @@ import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
+import { routingMetaFromTrace } from "@/lib/webhooks/types";
 import type {
   Booking,
   BookingEventAction,
@@ -600,6 +601,7 @@ function webhookPayload(
     prefill: booking.prefill,
     manage_url: `${deps.appBaseUrl()}/booking/manage/${booking.manage_token}`,
     reason,
+    routing: routingMetaFromTrace(booking.routing_trace),
   };
 }
 
