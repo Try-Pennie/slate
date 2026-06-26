@@ -170,6 +170,9 @@ export async function getBucketSlotsWithFallback(
   const winner = await selectWithTierFallback(code, async (c) => {
     if (!seen.has(c)) seen.set(c, await getCachedBucketSlots(c, from));
     const row = seen.get(c);
+    // Skip synthetic test buckets in the display cascade (the booking cascade
+    // skips them too); treat like a non-existent bucket so a real lower tier wins.
+    if (row?.bucket.is_test) return null;
     return row?.slots ?? null;
   });
 
