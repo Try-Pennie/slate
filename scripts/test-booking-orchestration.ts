@@ -1800,6 +1800,67 @@ async function run() {
     assert(res.items.length === 0 && res.nextCursor === null, "unknown bucket -> empty page");
     assert(calls.queryBookings.length === 0, "unknown bucket -> no DB scan");
   }
+  // --- routing_trace explainability stamping: excluded + tier fields on a criteria bucket ---
+  // Asserts the core wiring added in feat/routing-explainability: a successful booking
+  // stamps all explainability fields on the persisted booking's routing_trace.
+  // Note: recordRoutingDecision is NOT injectable through BookingDeps — it calls
+  // supabaseAdmin() directly and is wrapped in best-effort try/catch. Its invocation
+  // is therefore observed only indirectly through the routing_trace fields it reads.
+  {
+    const criteriasBucket = {
+      ...bucket,
+      criteria: { debt_team: "T1" },
+    } as unknown as Bucket;
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    // Override resolveBucketByCode to return a bucket with debt_team criteria so
+    // requested_tier is non-null — the key assertion for the tier wiring.
+    deps.resolveBucketByCode = async () => ({ bucket: criteriasBucket, eventType });
+    const res = await createBooking(input, deps);
+
+    const rt = res.booking.routing_trace;
+    assert(
+      rt != null && Array.isArray(rt.excluded),
+      "routing_trace: excluded is present and is an array on a successful booking",
+    );
+    assert(
+      rt?.requested_tier === "T1",
+      "routing_trace: requested_tier reflects the bucket criteria debt_team (wired, not null)",
+    );
+    assert(
+      rt?.tier_fallback === false,
+      "routing_trace: tier_fallback is false on a normal direct booking",
+    );
+    assert(
+      rt?.rungs_dropped === 0,
+      "routing_trace: rungs_dropped is 0 on a normal direct booking",
+    );
+    assert(
+      rt?.chosen_user_id === "a",
+      "routing_trace: chosen_user_id matches the assigned agent",
+    );
+    // The booking must still complete successfully and fire the creation webhook.
+    assert(
+      res.booking.id === "bk-new" && calls.webhooks.some((w) => w.event === "booking.created"),
+      "routing_trace: booking succeeds and booking.created fires (recordRoutingDecision is best-effort, does not block)",
+    );
+  }
+
+  // --- routing_trace explainability: no criteria bucket defaults requested_tier to null ---
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    // Default bucket has no criteria — requested_tier must be null, not undefined.
+    const res = await createBooking(input, deps);
+    const rt = res.booking.routing_trace;
+    assert(
+      rt != null && "requested_tier" in (rt as object) && rt?.requested_tier === null,
+      "routing_trace: requested_tier is null (not undefined) when bucket has no criteria",
+    );
+    assert(
+      rt?.tier_fallback === false && rt?.rungs_dropped === 0,
+      "routing_trace: tier_fallback and rungs_dropped are set to defaults when no criteria",
+    );
+  }
+
   // --- #401 drain ---
   {
     const rows: PendingEventDeletion[] = [
