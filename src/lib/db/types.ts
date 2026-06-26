@@ -562,3 +562,9 @@ export type BookingReservationInsert = {
   gcal_client_id: string;
   payload: ReservationPayload;
 };
+
+/** Dead-man's switch heartbeat (#420): one row per cron lane, stamped each tick. */
+export interface LaneHeartbeat {
+  lane: string;
+  last_ran_at: string;
+}

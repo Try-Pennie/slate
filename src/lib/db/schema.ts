@@ -19,6 +19,7 @@ import type {
   BusyBlock,
   EventType,
   GoogleCredentials,
+  LaneHeartbeat,
   OooRequest,
   Organization,
   PendingEventDeletion,
@@ -69,6 +70,7 @@ export interface Database {
       booking_outbox: Table<BookingOutbox>;
       booking_reservations: Table<BookingReservation>;
       routing_decisions: Table<RoutingDecision>;
+      lane_heartbeats: Table<LaneHeartbeat>;
     };
     Views: Record<string, never>;
     Functions: {
