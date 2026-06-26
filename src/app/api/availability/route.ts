@@ -57,11 +57,12 @@ export async function GET(req: NextRequest) {
     slots = slots.filter((s) => Date.parse(s) <= toMs);
   }
 
+  // Rule #259: leads must never see routing internals, even in the network
+  // payload. Tier-drop is intentionally invisible: we report the REQUESTED
+  // bucket code (what the lead asked for) and serve the EFFECTIVE tier's slots,
+  // but the `routing` meta stays server-side only — never sent to the client.
   return NextResponse.json({
-    // Lead-facing response: expose only the routing CODE, never the internal
-    // bucket NAME (the XBC routing descriptor, e.g. "Very High | Both | Legal").
-    // Leads must never see routing internals, even in the network payload (#259).
-    bucket: { code: result.bucket.code },
+    bucket: { code: result.routing.requested_code },
     orgName: result.orgName,
     eventType: {
       name: result.eventType.name,
@@ -69,6 +70,5 @@ export async function GET(req: NextRequest) {
       durationMin: result.eventType.duration_min,
     },
     slots,
-    routing: result.routing,
   });
 }
