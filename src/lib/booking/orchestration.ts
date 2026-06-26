@@ -1025,7 +1025,7 @@ export async function createBooking(
         candidates.every((id) => id === bucket.fallback_user_id),
       excluded: traceExtras.excluded,
       tier_fallback: false,
-      requested_tier: bucket.criteria.debt_team
+      requested_tier: bucket.criteria?.debt_team
         ? String(bucket.criteria.debt_team)
         : null,
       booked_tier: null,
@@ -1268,7 +1268,7 @@ async function legacyCreateBooking(
         candidates.every((id) => id === bucket.fallback_user_id),
       excluded: legacyTraceExtras.excluded,
       tier_fallback: false,
-      requested_tier: bucket.criteria.debt_team
+      requested_tier: bucket.criteria?.debt_team
         ? String(bucket.criteria.debt_team)
         : null,
       booked_tier: null,
