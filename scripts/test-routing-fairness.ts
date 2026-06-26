@@ -74,6 +74,43 @@ const out = computeFairness(rows, { minBookings: 3 });
   // A: bucket 411 received 2 + bucket 412 received 1 = 3 across pools.
   ok(A.received === 3, "roll-up sums an agent's received bookings across all buckets");
   ok(approx(A.expected, 1.667 + 0.5), "roll-up sums expected across buckets too (412 adds 0.5)");
+  // Without rawAssignments, rawReceived defaults to 0 (back-compat, #424).
+  ok(A.rawReceived === 0, "rawReceived defaults to 0 when no raw assignments are supplied");
+}
+
+// --- raw bookings-received total (#424) -------------------------------------
+// The router-fairness math counts only ranker decisions, so an agent who gets
+// bookings via manual reassign or reschedule is under-counted in the
+// commission-relevant total. `rawAssignments` carries EVERY booking's current
+// assigned_user_id (regardless of routing_trace) so the rollup can report the
+// true count alongside the availability-corrected one.
+{
+  // The 5 ranker bookings above resolve to A,B,A,C,A; plus a booking reassigned
+  // to D (never a ranker candidate) and one A received via reschedule.
+  const rawAssignments = ["A", "B", "A", "C", "A", "D", "A"];
+  const withRaw = computeFairness(rows, { minBookings: 3, rawAssignments });
+
+  const A = withRaw.byAgent.find((a) => a.userId === "A")!;
+  const B = withRaw.byAgent.find((a) => a.userId === "B")!;
+  const C = withRaw.byAgent.find((a) => a.userId === "C")!;
+  const D = withRaw.byAgent.find((a) => a.userId === "D");
+
+  ok(A.received === 3 && A.rawReceived === 4, "A: router-assigned 3, raw 4 (3 ranker + 1 reschedule)");
+  ok(B.received === 1 && B.rawReceived === 1, "B: router-assigned 1, raw 1");
+  ok(C.received === 1 && C.rawReceived === 1, "C: router-assigned 1, raw 1");
+  // D only ever appeared via a manual reassign: zero ranker credit, but the raw
+  // total must still surface the booking so commission isn't mis-stated.
+  ok(!!D, "an agent who only received via reassign still appears in the rollup");
+  ok(
+    !!D && D.received === 0 && approx(D.expected, 0) && D.rawReceived === 1,
+    "D: no router candidacy (received/expected 0) but rawReceived 1",
+  );
+  // The router-fairness numbers are unchanged by adding the raw total.
+  ok(approx(A.expected, 1.667 + 0.5), "supplying rawAssignments leaves the router-fairness math untouched");
+
+  // A malformed empty id is filtered, not turned into a phantom agent.
+  const withEmpty = computeFairness(rows, { minBookings: 3, rawAssignments: ["", "A"] });
+  ok(withEmpty.byAgent.find((a) => a.userId === "") === undefined, "empty-string assigned_user_id is filtered out of the rollup");
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
