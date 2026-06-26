@@ -70,6 +70,21 @@ delete process.env.SLACK_BOT_TOKEN;
 delete process.env.SLACK_ALERTS_CHANNEL;
 
 // ---------------------------------------------------------------------------
+// SAFETY GUARD — refuse to run unless explicitly confirmed.
+// This harness CREATES and DELETES organizations in whatever database the env
+// points at (i.e. production). Require an explicit opt-in so it can never run
+// by accident (a stray invocation, a misconfigured CI step, etc.).
+// ---------------------------------------------------------------------------
+if (process.env.HARNESS_CONFIRM !== "1") {
+  console.error(
+    "Refusing to run: live-tier-drop-harness creates and deletes orgs in the " +
+      "configured (production) database. Set HARNESS_CONFIRM=1 to run it " +
+      "intentionally.",
+  );
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
