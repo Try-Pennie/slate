@@ -147,7 +147,7 @@ function makeDeps(opts: FakeOpts) {
     completeBookingsIfDue: [] as string[][],
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
     deletedReservations: [] as string[],
-    webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null }[],
+    webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null; bucket_code: string | undefined }[],
     bookingEvents: [] as {
       booking_id: string;
       action: string;
@@ -391,7 +391,7 @@ function makeDeps(opts: FakeOpts) {
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
     emitWebhook: async (_orgId, event, payload, dedupeKey) => {
-      calls.webhooks.push({ event, reason: payload.reason, dedupeKey });
+      calls.webhooks.push({ event, reason: payload.reason, dedupeKey, bucket_code: payload.bucket_code });
     },
     newManageToken: () => "tok-fixed",
     appBaseUrl: () => "https://slate.test",
@@ -1812,8 +1812,8 @@ async function run() {
       criteria: { debt_team: "T1" },
     } as unknown as Bucket;
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
-    // Override resolveBucketByCode to return a bucket with debt_team criteria so
-    // requested_tier is non-null — the key assertion for the tier wiring.
+    // Override resolveBucketByCode to return a bucket with debt_team criteria.
+    // Plan 2: requested_tier is now derived from tierKeyOf(input.bucketCode), not criteria.
     deps.resolveBucketByCode = async () => ({ bucket: criteriasBucket, eventType });
     const res = await createBooking(input, deps);
 
@@ -1823,8 +1823,8 @@ async function run() {
       "routing_trace: excluded is present and is an array on a successful booking",
     );
     assert(
-      rt?.requested_tier === "T1",
-      "routing_trace: requested_tier reflects the bucket criteria debt_team (wired, not null)",
+      rt?.requested_tier === "very_high",
+      "routing_trace: requested_tier reflects the tier key for bucketCode '411' (very_high)",
     );
     assert(
       rt?.tier_fallback === false,
@@ -1845,19 +1845,76 @@ async function run() {
     );
   }
 
-  // --- routing_trace explainability: no criteria bucket defaults requested_tier to null ---
+  // --- routing_trace explainability: no-criteria bucket still gets requested_tier from tierKeyOf ---
   {
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
-    // Default bucket has no criteria — requested_tier must be null, not undefined.
+    // Plan 2: requested_tier comes from tierKeyOf(bucketCode), not criteria.
+    // bucketCode "411" -> "very_high" regardless of whether the bucket has criteria.
     const res = await createBooking(input, deps);
     const rt = res.booking.routing_trace;
     assert(
-      rt != null && "requested_tier" in (rt as object) && rt?.requested_tier === null,
-      "routing_trace: requested_tier is null (not undefined) when bucket has no criteria",
+      rt != null && "requested_tier" in (rt as object) && rt?.requested_tier === "very_high",
+      "routing_trace: requested_tier is tier key (very_high) for '411' even with no criteria",
     );
     assert(
       rt?.tier_fallback === false && rt?.rungs_dropped === 0,
       "routing_trace: tier_fallback and rungs_dropped are set to defaults when no criteria",
+    );
+  }
+
+  // --- tier-drop cascade (Plan 2 Task 5): requested bucket empty -> cascade to lower tier ---
+  {
+    // "411" is the requested bucket (very_high tier). Make it appear empty so the cascade
+    // drops one rung to "311" (high tier), which has a free agent.
+    const bucket311 = { ...bucket, id: "bkt311", code: "311" } as unknown as Bucket;
+    const { deps, calls } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    let rrCallCount = 0;
+    // First roundRobinCandidates call is for "411" (no candidates), second for "311" (agent a).
+    deps.roundRobinCandidates = async () => {
+      rrCallCount++;
+      return rrCallCount === 1 ? [] : ["a"];
+    };
+    deps.resolveBucketByCode = async (code: string) => {
+      if (code === "411") return { bucket, eventType };
+      if (code === "311") return { bucket: bucket311, eventType };
+      return null;
+    };
+    const res = await createBooking(input, deps);
+    const rt = res.booking.routing_trace;
+    assert(rt?.tier_fallback === true, "tier-drop: tier_fallback is true on a cascade booking");
+    assert(rt?.rungs_dropped === 1, "tier-drop: rungs_dropped is 1 for a single-rung drop");
+    assert(rt?.requested_tier === "very_high", "tier-drop: requested_tier reflects the original bucket code (411 -> very_high)");
+    assert(rt?.booked_tier === "high", "tier-drop: booked_tier reflects the lower bucket code (311 -> high)");
+    assert(
+      (res.booking as unknown as Record<string, unknown>).bucket_id === "bkt311",
+      "tier-drop: booking is placed in the lower (booked) bucket, not the requested one",
+    );
+    // Regression: booking.created webhook must attribute to the BOOKED bucket (311),
+    // not the requested one (411). A mismatch here means completeReservation resolved
+    // the wrong bucket for fire().
+    const tierDropWebhook = calls.webhooks.find((w) => w.event === "booking.created");
+    assert(
+      tierDropWebhook?.bucket_code === "311",
+      `tier-drop: booking.created webhook bucket_code is the booked bucket ("311"), got "${tierDropWebhook?.bucket_code}"`,
+    );
+  }
+
+  // --- tier-drop: VerifyUnavailableError is NOT a cascade trigger (outage guard) ---
+  {
+    const { deps } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(),
+      unverifiedEmails: new Set(["a@x.com"]),
+    });
+    let err: unknown;
+    try {
+      await createBooking(input, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof VerifyUnavailableError,
+      "tier-drop: VerifyUnavailableError propagates without cascading (outage not masked as tier-drop)",
     );
   }
 

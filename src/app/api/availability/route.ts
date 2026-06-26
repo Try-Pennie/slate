@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getCachedBucketSlots } from "@/lib/availability/slot-cache";
+import { getBucketSlotsWithFallback } from "@/lib/availability/slot-cache";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
   const to =
     toParam ?? new Date(now + DEFAULT_RANGE_DAYS * 86_400_000).toISOString();
 
-  const result = await getCachedBucketSlots(code, from);
+  const result = await getBucketSlotsWithFallback(code, from);
   if (!result) {
     return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
   }
@@ -57,11 +57,12 @@ export async function GET(req: NextRequest) {
     slots = slots.filter((s) => Date.parse(s) <= toMs);
   }
 
+  // Rule #259: leads must never see routing internals, even in the network
+  // payload. Tier-drop is intentionally invisible: we report the REQUESTED
+  // bucket code (what the lead asked for) and serve the EFFECTIVE tier's slots,
+  // but the `routing` meta stays server-side only — never sent to the client.
   return NextResponse.json({
-    // Lead-facing response: expose only the routing CODE, never the internal
-    // bucket NAME (the XBC routing descriptor, e.g. "Very High | Both | Legal").
-    // Leads must never see routing internals, even in the network payload (#259).
-    bucket: { code: result.bucket.code },
+    bucket: { code: result.routing.requested_code },
     orgName: result.orgName,
     eventType: {
       name: result.eventType.name,
