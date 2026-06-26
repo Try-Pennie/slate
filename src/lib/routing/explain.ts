@@ -1,6 +1,13 @@
 import { matchesCriteria } from "../availability/match.ts";
 import type { Attributes, Criteria, RoutingExclusion } from "@/lib/db/types";
 
+/** Shape of a resolved bucket pool (mirrors resolveBucketPool's return). */
+interface Pool {
+  orgAgents: { id: string; attributes: Attributes }[];
+  manualMemberIds: Set<string>;
+  criteria: Criteria;
+}
+
 /**
  * Pure: split a bucket's bookable org pool into the candidates that were
  * considered (eligible AND free for the slot) and the ones excluded, each with
@@ -32,6 +39,19 @@ export function classifyExclusions(
     else excluded.push({ user_id: a.id, reason: "no_availability" });
   }
   return { considered, excluded };
+}
+
+/**
+ * Pure: package the explainability extras (considered + excluded) for a
+ * routing decision. Delegates to classifyExclusions so the criteria logic
+ * is never duplicated. Call this after assignAgent with the raw pool and
+ * the round-robin candidates (freeIds).
+ */
+export function buildRoutingTraceExtras(
+  pool: Pool,
+  freeIds: string[],
+): { considered: string[]; excluded: RoutingExclusion[] } {
+  return classifyExclusions(pool.orgAgents, pool.manualMemberIds, pool.criteria, freeIds);
 }
 
 /**
