@@ -1,4 +1,4 @@
-import { classifyExclusions } from "../src/lib/routing/explain.ts";
+import { classifyExclusions, isMisroute } from "../src/lib/routing/explain.ts";
 import type { Attributes } from "../src/lib/db/types.ts";
 
 let failures = 0;
@@ -28,6 +28,48 @@ assert(
   "criteria mismatch => criteria_miss",
 );
 assert(!out.excluded.some((e) => e.user_id === "man"), "manual member never excluded");
+
+// chosen agent satisfies criteria => not a misroute
+assert(
+  isMisroute({
+    chosenAttributes: { debt_team: "ultra_high" },
+    criteria: { debt_team: "ultra_high" },
+    emptyPoolFallback: false,
+    tierFallback: false,
+  }) === false,
+  "qualified agent is not a misroute",
+);
+
+// chosen agent fails criteria, no intentional fallback => misroute
+assert(
+  isMisroute({
+    chosenAttributes: { debt_team: "very_high" },
+    criteria: { debt_team: "ultra_high" },
+    emptyPoolFallback: false,
+    tierFallback: false,
+  }) === true,
+  "unqualified agent with no fallback is a misroute",
+);
+
+// chosen agent fails criteria but it was an intentional fallback => NOT a misroute
+assert(
+  isMisroute({
+    chosenAttributes: { debt_team: "very_high" },
+    criteria: { debt_team: "ultra_high" },
+    emptyPoolFallback: false,
+    tierFallback: true,
+  }) === false,
+  "intentional tier-drop is not a misroute",
+);
+assert(
+  isMisroute({
+    chosenAttributes: { debt_team: "very_high" },
+    criteria: { debt_team: "ultra_high" },
+    emptyPoolFallback: true,
+    tierFallback: false,
+  }) === false,
+  "intentional empty-pool fallback is not a misroute",
+);
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

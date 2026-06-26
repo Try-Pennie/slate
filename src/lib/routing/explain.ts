@@ -33,3 +33,19 @@ export function classifyExclusions(
   }
   return { considered, excluded };
 }
+
+/**
+ * Pure: a misroute is when the chosen agent does NOT satisfy the bucket
+ * criteria AND no intentional fallback explains it. Intentional fallbacks
+ * (empty-pool designated agent, or a tier-drop) are expected, not bugs.
+ */
+export function isMisroute(input: {
+  chosenAttributes: Attributes;
+  criteria: Criteria;
+  emptyPoolFallback: boolean;
+  tierFallback: boolean;
+}): boolean {
+  if (input.emptyPoolFallback || input.tierFallback) return false;
+  if (Object.keys(input.criteria ?? {}).length === 0) return false;
+  return !matchesCriteria(input.chosenAttributes, input.criteria);
+}
