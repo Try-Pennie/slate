@@ -6,7 +6,7 @@ import {
   assembleMemberAvailability,
   type MemberAvailability,
 } from "@/lib/availability/compute";
-import { matchesCriteria } from "@/lib/availability/match";
+import { agentIdsFromPool } from "@/lib/availability/pool";
 import {
   applyFallback,
   payPeriod,
@@ -21,7 +21,9 @@ import {
   type BucketCoverage,
 } from "@/lib/availability/bucket-coverage";
 import { mapWithConcurrency } from "@/lib/concurrency";
-import type { Attributes, Bucket, EventType } from "@/lib/db/types";
+import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
+
+export { agentIdsFromPool } from "@/lib/availability/pool";
 
 const EMPTY_BUCKETS_ALERT_KEY = "empty_buckets";
 const EMPTY_BUCKETS_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -29,21 +31,20 @@ const EMPTY_BUCKETS_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const COVERAGE_CONCURRENCY = 6;
 
 /**
- * Resolves a bucket's round-robin pool: active manual members UNION agents in
- * the org whose attributes match the bucket criteria. Either source may be
- * empty; manual selection and attribute routing compose.
+ * Resolves a bucket's raw pool data: active manual members, bookable org agents,
+ * and the bucket's criteria. Used by the decision log (Task 7) to classify
+ * exclusions; `resolveBucketAgentIds` delegates here so there is one source of truth.
  */
-export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
+export async function resolveBucketPool(bucket: Bucket): Promise<{
+  orgAgents: { id: string; attributes: Attributes }[];
+  manualMemberIds: Set<string>;
+  criteria: Criteria;
+}> {
   const db = supabaseAdmin();
-
   // The manual-members and org-agents reads are independent, so fire them
   // together: one round-trip instead of two on the availability hot path.
   const [membersRes, agentsRes] = await Promise.all([
-    db
-      .from("bucket_members")
-      .select("user_id")
-      .eq("bucket_id", bucket.id)
-      .eq("active", true),
+    db.from("bucket_members").select("user_id").eq("bucket_id", bucket.id).eq("active", true),
     // One pass over org agents: include a bookable agent if they're a manual
     // member OR match the criteria. Non-bookable and deactivated (offboarded)
     // agents never enter the pool.
@@ -56,22 +57,26 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
   ]);
   // Fail loud on a query error (#277): a broken read here used to swallow into
   // an empty pool and silently show no availability. Throw instead.
-  const manual = new Set(
+  const manualMemberIds = new Set(
     (unwrap(membersRes, "bucket_members") ?? []).map(
       (m) => (m as { user_id: string }).user_id,
     ),
   );
+  const orgAgents = (unwrap(agentsRes, "bucket pool agents") ?? []).map((a) => {
+    const row = a as { id: string; attributes: Attributes };
+    return { id: row.id, attributes: row.attributes };
+  });
+  return { orgAgents, manualMemberIds, criteria: bucket.criteria ?? {} };
+}
 
-  const criteria = bucket.criteria ?? {};
-  const hasCriteria = Object.keys(criteria).length > 0;
-  const agents = unwrap(agentsRes, "bucket pool agents");
-
-  return (agents ?? [])
-    .filter((a) => {
-      const row = a as { id: string; attributes: Attributes };
-      return manual.has(row.id) || (hasCriteria && matchesCriteria(row.attributes, criteria));
-    })
-    .map((a) => (a as { id: string }).id);
+/**
+ * Resolves a bucket's round-robin pool: active manual members UNION agents in
+ * the org whose attributes match the bucket criteria. Either source may be
+ * empty; manual selection and attribute routing compose.
+ */
+export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
+  const { orgAgents, manualMemberIds, criteria } = await resolveBucketPool(bucket);
+  return agentIdsFromPool(orgAgents, manualMemberIds, criteria);
 }
 
 /**
