@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Real (non-test) buckets stay public for everyone. Cache + rate-limit + env
 // are mocked; the real api-auth verifies the bearer key.
 
-const cache = vi.hoisted(() => ({ getCachedBucketSlots: vi.fn() }));
+const cache = vi.hoisted(() => ({ getBucketSlotsWithFallback: vi.fn() }));
 const rateLimit = vi.hoisted(() => ({
   availabilityWithinLimit: vi.fn(async () => true),
   clientIp: () => "203.0.113.7",
@@ -31,6 +31,14 @@ function slotsFor(isTest: boolean) {
     eventType: { name: "Smoke", description: null, duration_min: 30, min_notice_min: 0 },
     orgName: "Pennie",
     slots: ["2099-01-01T15:00:00.000Z"],
+    routing: {
+      requested_code: "SMOKE",
+      effective_code: "SMOKE",
+      tier_fallback: false,
+      rungs_dropped: 0,
+      requested_tier: null,
+      booked_tier: null,
+    },
   };
 }
 
@@ -46,19 +54,19 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("404s a test bucket for an unauthenticated lead", async () => {
-    cache.getCachedBucketSlots.mockResolvedValue(slotsFor(true));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(true));
     const res = await get("SMOKE");
     expect(res.status).toBe(404);
   });
 
   it("404s a test bucket when the bearer key is wrong", async () => {
-    cache.getCachedBucketSlots.mockResolvedValue(slotsFor(true));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(true));
     const res = await get("SMOKE", "Bearer not-the-key");
     expect(res.status).toBe(404);
   });
 
   it("serves a test bucket's slots to the key-authed smoke test", async () => {
-    cache.getCachedBucketSlots.mockResolvedValue(slotsFor(true));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(true));
     const res = await get("SMOKE", "Bearer smoke-key");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -66,7 +74,7 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
   });
 
   it("serves a normal (non-test) bucket publicly with no auth", async () => {
-    cache.getCachedBucketSlots.mockResolvedValue(slotsFor(false));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
     const res = await get("411");
     expect(res.status).toBe(200);
   });

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getCachedBucketSlots } from "@/lib/availability/slot-cache";
+import { getBucketSlotsWithFallback } from "@/lib/availability/slot-cache";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
   const to =
     toParam ?? new Date(now + DEFAULT_RANGE_DAYS * 86_400_000).toISOString();
 
-  const result = await getCachedBucketSlots(code, from);
+  const result = await getBucketSlotsWithFallback(code, from);
   if (!result) {
     return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
   }
@@ -69,5 +69,6 @@ export async function GET(req: NextRequest) {
       durationMin: result.eventType.duration_min,
     },
     slots,
+    routing: result.routing,
   });
 }

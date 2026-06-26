@@ -8,6 +8,8 @@ import {
   bucketsForAgent,
 } from "./precompute";
 import { appUrl } from "@/lib/env";
+import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
+import { tierKeyOf } from "@/lib/routing/tiers";
 
 // Short L1 TTL: the precompute row is the source of truth, so the Cache API is
 // just a per-colo accelerator. 5s keeps a far-colo read self-healing well inside
@@ -117,6 +119,64 @@ export async function recomputeBucketsForAgent(userId: string): Promise<void> {
       `recomputeBucketsForAgent failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+export interface AvailabilityRoutingMeta {
+  requested_code: string;
+  effective_code: string;
+  tier_fallback: boolean;
+  rungs_dropped: number;
+  requested_tier: string | null;
+  booked_tier: string | null;
+}
+
+/**
+ * Cached slots for `code`; if the whole horizon window is empty, cascade down
+ * the tier ladder (lower debt-tier, same backend+legal digits) and return the
+ * first tier that has slots, with a routing descriptor.
+ *
+ * Returns null only when the requested bucket itself does not exist (→ 404).
+ * When no tier has slots, returns the requested bucket with empty slots and
+ * tier_fallback=false so the booker can show the "no availability" state.
+ */
+export async function getBucketSlotsWithFallback(
+  code: string,
+  from: string,
+): Promise<(BucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
+  const requested = await getCachedBucketSlots(code, from);
+  if (!requested) return null;
+
+  const withRouting = (
+    slotsFor: BucketSlots,
+    rungs: number,
+  ): BucketSlots & { routing: AvailabilityRoutingMeta } => ({
+    ...slotsFor,
+    routing: {
+      requested_code: code,
+      effective_code: slotsFor.bucket.code,
+      tier_fallback: rungs > 0,
+      rungs_dropped: rungs,
+      requested_tier: tierKeyOf(code),
+      booked_tier: tierKeyOf(slotsFor.bucket.code),
+    },
+  });
+
+  if (requested.slots.length > 0) return withRouting(requested, 0);
+
+  // Horizon window is empty: cascade down the tier ladder.
+  // Pre-seed the seen map with the already-fetched requested bucket so the
+  // callback never fetches it again.
+  const seen = new Map<string, BucketSlots | null>([[code, requested]]);
+  const winner = await selectWithTierFallback(code, async (c) => {
+    if (!seen.has(c)) seen.set(c, await getCachedBucketSlots(c, from));
+    const row = seen.get(c);
+    return row?.slots ?? null;
+  });
+
+  if (!winner || winner.rungsDropped === 0) return withRouting(requested, 0);
+  const winningBucket = seen.get(winner.effectiveCode);
+  if (!winningBucket) return withRouting(requested, 0);
+  return withRouting(winningBucket, winner.rungsDropped);
 }
 
 /**
