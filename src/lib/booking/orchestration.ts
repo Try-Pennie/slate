@@ -975,11 +975,17 @@ export async function createBooking(
     throw err;
   }
   const { userId, email, candidates } = assignResult;
-  const [agent, pool] = await Promise.all([
-    deps.getUser(userId),
-    resolveBucketPool(bucket),
-  ]);
-  const traceExtras = buildRoutingTraceExtras(pool, candidates);
+  const agent = await deps.getUser(userId);
+  let traceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
+    considered: candidates,
+    excluded: [],
+  };
+  try {
+    const pool = await resolveBucketPool(bucket);
+    traceExtras = buildRoutingTraceExtras(pool, candidates);
+  } catch {
+    // best-effort: a transient pool-resolve failure must not fail the booking
+  }
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
   const gcalClientId = await deterministicEventId(idempotencyKey, userId);
@@ -1199,11 +1205,17 @@ async function legacyCreateBooking(
     throw err;
   }
   const { userId, email, candidates } = legacyAssignResult;
-  const [agent, legacyPool] = await Promise.all([
-    deps.getUser(userId),
-    resolveBucketPool(bucket),
-  ]);
-  const legacyTraceExtras = buildRoutingTraceExtras(legacyPool, candidates);
+  const agent = await deps.getUser(userId);
+  let legacyTraceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
+    considered: candidates,
+    excluded: [],
+  };
+  try {
+    const legacyPool = await resolveBucketPool(bucket);
+    legacyTraceExtras = buildRoutingTraceExtras(legacyPool, candidates);
+  } catch {
+    // best-effort: a transient pool-resolve failure must not fail the booking
+  }
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
 
