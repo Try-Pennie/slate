@@ -147,7 +147,7 @@ function makeDeps(opts: FakeOpts) {
     completeBookingsIfDue: [] as string[][],
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
     deletedReservations: [] as string[],
-    webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null }[],
+    webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null; bucket_code: string | undefined }[],
     bookingEvents: [] as {
       booking_id: string;
       action: string;
@@ -391,7 +391,7 @@ function makeDeps(opts: FakeOpts) {
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
     emitWebhook: async (_orgId, event, payload, dedupeKey) => {
-      calls.webhooks.push({ event, reason: payload.reason, dedupeKey });
+      calls.webhooks.push({ event, reason: payload.reason, dedupeKey, bucket_code: payload.bucket_code });
     },
     newManageToken: () => "tok-fixed",
     appBaseUrl: () => "https://slate.test",
@@ -1867,7 +1867,7 @@ async function run() {
     // "411" is the requested bucket (very_high tier). Make it appear empty so the cascade
     // drops one rung to "311" (high tier), which has a free agent.
     const bucket311 = { ...bucket, id: "bkt311", code: "311" } as unknown as Bucket;
-    const { deps } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    const { deps, calls } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
     let rrCallCount = 0;
     // First roundRobinCandidates call is for "411" (no candidates), second for "311" (agent a).
     deps.roundRobinCandidates = async () => {
@@ -1888,6 +1888,14 @@ async function run() {
     assert(
       (res.booking as unknown as Record<string, unknown>).bucket_id === "bkt311",
       "tier-drop: booking is placed in the lower (booked) bucket, not the requested one",
+    );
+    // Regression: booking.created webhook must attribute to the BOOKED bucket (311),
+    // not the requested one (411). A mismatch here means completeReservation resolved
+    // the wrong bucket for fire().
+    const tierDropWebhook = calls.webhooks.find((w) => w.event === "booking.created");
+    assert(
+      tierDropWebhook?.bucket_code === "311",
+      `tier-drop: booking.created webhook bucket_code is the booked bucket ("311"), got "${tierDropWebhook?.bucket_code}"`,
     );
   }
 

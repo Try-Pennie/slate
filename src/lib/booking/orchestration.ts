@@ -1169,13 +1169,19 @@ async function completeReservation(
   }
   const booking = inserted.booking;
 
+  // On a tier-drop the routing_trace records the booked (lower) bucket; on a
+  // non-fallback booking it equals bucketCode. Use the persisted value so that
+  // invalidateSlots, the webhook, and the routing-decision log all attribute
+  // side-effects to the bucket whose availability actually changed.
+  const bookedCode = booking.routing_trace?.bucket_code ?? bucketCode;
+
   await deps.insertBusyBlock(
     busyBlockFor(reservation.pinned_user_id, bookingInsert.starts_at, bookingInsert.ends_at, booking.id),
   );
-  await deps.invalidateSlots(bucketCode);
+  await deps.invalidateSlots(bookedCode);
 
   // Re-resolve bucket + eventType for the webhook (works on the drain path too).
-  const resolved = await deps.resolveBucketByCode(bucketCode);
+  const resolved = await deps.resolveBucketByCode(bookedCode);
   if (resolved) {
     await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
     // Best-effort routing decision log. Awaited so the write is not dropped by the
