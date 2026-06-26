@@ -1,0 +1,208 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Asserts that a tier-drop booking dispatches a throttled Slack alert via
+// sendThrottledAlert (key "tier_fallback:<requestedCode>"). sendThrottledAlert
+// is a direct import in orchestration.ts, so vi.mock intercepts it.
+// Supabase is mocked to prevent real DB calls; supabaseAdmin() throwing is
+// caught by the best-effort wrappers (resolveBucketPool, recordRoutingDecision).
+
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(
+    async (_key: string, _cooldownMs: number, _text: string) => {},
+  ),
+}));
+vi.mock("@/lib/notify/dispatch", () => dispatch);
+
+// Supabase throws → caught by try/catch in resolveBucketPool &
+// recordRoutingDecision; test flow continues to sendThrottledAlert.
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: () => {
+    throw new Error("supabase not configured in test");
+  },
+}));
+
+import {
+  createBooking,
+  type BookingDeps,
+  type CreateBookingInput,
+} from "./orchestration";
+import type {
+  Booking,
+  BookingOutbox,
+  BookingReservation,
+  Bucket,
+  BusyBlock,
+  BookingStatus,
+  EventType,
+  User,
+} from "@/lib/db/types";
+
+// ---- fixtures ----------------------------------------------------------------
+
+const bucket511 = {
+  id: "bkt511",
+  org_id: "org1",
+  code: "511",
+  is_test: false,
+  criteria: {},
+  fallback_user_id: null,
+} as unknown as Bucket;
+
+const bucket411 = {
+  id: "bkt411",
+  org_id: "org1",
+  code: "411",
+  is_test: false,
+  criteria: {},
+  fallback_user_id: null,
+} as unknown as Bucket;
+
+const eventType = {
+  id: "et1",
+  name: "Senior Call",
+  regal_type: "call",
+  description: "desc",
+  duration_min: 30,
+  min_notice_min: 0,
+  daily_cap: null,
+  buffer_before_min: 0,
+  buffer_after_min: 0,
+  slot_interval_min: 30,
+} as unknown as EventType;
+
+const agentA: User = {
+  id: "a",
+  name: "Agent A",
+  email: "a@x.com",
+  attributes: {},
+} as unknown as User;
+
+// No email/phone/salesforceId → null idempotency key → legacyCreateBooking path
+const tierDropInput: CreateBookingInput = {
+  bucketCode: "511",
+  startIso: "2026-06-08T13:00:00.000Z",
+  timezone: "America/New_York",
+  attendee: { name: "Test User" },
+  prefill: {},
+};
+
+// ---- dep builder -------------------------------------------------------------
+
+function makeTierDropDeps(): BookingDeps {
+  const noop = async (..._args: unknown[]): Promise<void> => {};
+  return {
+    resolveBucketByCode: async (code) => {
+      if (code === "511") return { bucket: bucket511, eventType };
+      if (code === "411") return { bucket: bucket411, eventType };
+      return null;
+    },
+    // Empty pool on "511" → NoEligibleAgentsError → cascade to "411"
+    roundRobinCandidates: async (bucket) =>
+      bucket.code === "511" ? [] : ["a"],
+    isFree: async () => true,
+    verifyFree: async (emails) => ({
+      free: new Set(emails),
+      unverified: new Set<string>(),
+    }),
+    createEvent: async () => "gcal-1",
+    deleteEvent: noop,
+    enqueueEventDeletion: noop,
+    loadPendingEventDeletions: async () => [],
+    removePendingEventDeletion: noop,
+    bumpPendingEventDeletion: noop,
+    updateEventTime: noop,
+    getUser: async () => agentA,
+    loadEmails: async (ids) => new Map(ids.map((id) => [id, "a@x.com"])),
+    findBookingByIdempotencyKey: async () => null,
+    insertBooking: async (row) => ({
+      ok: true as const,
+      booking: { ...row, id: "bk-new" } as unknown as Booking,
+    }),
+    insertBusyBlock: noop,
+    moveBusyBlock: noop,
+    deleteBusyBlocksForBooking: noop,
+    loadReconcilableBusyBlocks: async () =>
+      [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[],
+    loadBookingStatuses: async () => new Map<string, BookingStatus>(),
+    deleteBusyBlocksByIds: noop,
+    enqueueOutbox: async () => "ob-1",
+    loadDrainableOutbox: async () => [] as BookingOutbox[],
+    leaseOutbox: async () => true,
+    saveOutboxSteps: noop,
+    markOutboxDelivered: noop,
+    releaseOutboxLease: noop,
+    insertReservation: async (row) => ({
+      id: "resv-1",
+      ...row,
+      status: "pending" as const,
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      created_at: "",
+      updated_at: "",
+    }),
+    loadReservationByKey: async () => null,
+    deleteReservation: noop,
+    loadDrainableReservations: async () => [] as BookingReservation[],
+    leaseReservation: async () => true,
+    releaseReservationLease: noop,
+    deleteExpiredReservations: noop,
+    updateBooking: noop,
+    claimCancellation: async () => true,
+    completeBookingsIfDue: async () => [] as string[],
+    claimReschedule: async () => ({ outcome: "won" as const }),
+    writeReschedulePin: noop,
+    readReschedulePin: async () => null,
+    releaseReschedule: noop,
+    loadAbandonedReschedulePins: async () => [],
+    insertBookingEvent: async () => "evt-1",
+    hasBookingEvent: async () => false,
+    getBookingEventId: async () => null,
+    loadBookingContext: async () => null,
+    loadBookingById: async () => null,
+    findActiveBookingsForPerson: async () => [] as Booking[],
+    queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
+    getAgentByEmail: async () => null,
+    loadPastBookingsToComplete: async () => [],
+    emitWebhook: noop,
+    newManageToken: () => "tok-fixed",
+    appBaseUrl: () => "https://slate.test",
+    invalidateSlots: noop,
+  };
+}
+
+// ---- tests -------------------------------------------------------------------
+
+beforeEach(() => vi.clearAllMocks());
+
+describe("tier-drop alert dispatch", () => {
+  it("dispatches sendThrottledAlert with key 'tier_fallback:<requestedCode>' on a cascade booking", async () => {
+    const deps = makeTierDropDeps();
+
+    await createBooking(tierDropInput, deps);
+
+    // Exactly one sendThrottledAlert call from the tier-drop path.
+    const calls = dispatch.sendThrottledAlert.mock.calls;
+    const tierDropCall = calls.find(([key]) =>
+      typeof key === "string" && key.startsWith("tier_fallback:"),
+    );
+    expect(tierDropCall).toBeDefined();
+    const [key, cooldownMs, text] = tierDropCall!;
+    expect(key).toBe("tier_fallback:511");
+    expect(typeof cooldownMs).toBe("number");
+    expect(typeof text).toBe("string");
+  });
+
+  it("does NOT dispatch a tier_fallback alert when the requested bucket itself has an agent free", async () => {
+    const deps = makeTierDropDeps();
+    // Override: "511" has a free agent → no cascade
+    deps.roundRobinCandidates = async () => ["a"];
+
+    await createBooking(tierDropInput, deps);
+
+    const tierDropCalls = dispatch.sendThrottledAlert.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.startsWith("tier_fallback:"),
+    );
+    expect(tierDropCalls).toHaveLength(0);
+  });
+});
