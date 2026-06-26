@@ -19,6 +19,7 @@ import {
   type BusinessHoursConfig,
   type VolumeWindow,
 } from "@/lib/monitor/booking-volume";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import type { Bucket } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -199,6 +200,10 @@ export async function GET(req: NextRequest) {
       );
       volume = { armed, windows, breaches: breaches.length };
     }
+
+    // Stamp the dead-man's switch (#420): proves this lane ran this tick.
+    // Best-effort — must never affect the monitor's own response.
+    await recordHeartbeat("monitor").catch(() => {});
 
     return NextResponse.json({
       buckets: buckets.length,

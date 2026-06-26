@@ -26,6 +26,7 @@ import {
   processPendingEventDeletions,
   reconcileCancelledBusyBlocks,
 } from "@/lib/booking/service";
+import { isHeartbeatStale, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -173,6 +174,28 @@ export async function GET(req: NextRequest) {
     // cancelled/missing (a crash mid-cancel can leave the slot stuck busy), so
     // the slot self-heals. Best-effort, same as the deletion drain.
     await reconcileCancelledBusyBlocks(200).catch(() => {});
+
+    // Dead-man's switch (#420): check whether the monitor lane is still running.
+    // The monitor lane stamps a heartbeat each tick; if it hasn't run in >15 min
+    // (3 missed 5-min ticks) the booker/sync alarms may be dark, so alert here
+    // since the sync lane runs every minute and is more reliable.
+    // Entirely best-effort: a read or alert failure must never break sync.
+    const MONITOR_HEARTBEAT_MAX_STALE_MS = 15 * 60_000;
+    await (async () => {
+      try {
+        const lastMs = await readHeartbeatMs("monitor");
+        if (isHeartbeatStale(lastMs, Date.now(), MONITOR_HEARTBEAT_MAX_STALE_MS)) {
+          const lastRanAt = lastMs ? new Date(lastMs).toISOString() : "unknown";
+          await sendThrottledAlert(
+            "monitor_lane_down",
+            30 * 60_000,
+            `Slate: the monitor lane has not run since ${lastRanAt} (>15m). The booker/sync/low-volume alarms may be dark. Check the cron_monitor lock and the /5 cron trigger.`,
+          ).catch(() => {});
+        }
+      } catch {
+        // swallow — heartbeat concern must never break sync
+      }
+    })();
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.
