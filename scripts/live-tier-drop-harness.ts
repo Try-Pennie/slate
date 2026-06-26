@@ -53,6 +53,21 @@ import type {
 } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
+// FIX 1 — Disable Slack for this process, evaluated at module-init time
+//          (after all imports but before main() is invoked).
+//
+// The booking path calls sendThrottledAlert, which checks slackConfigured().
+// slackConfigured() reads process.env.SLACK_BOT_TOKEN at call time (not at
+// import time), so deleting it here — before main() is invoked — guarantees
+// slackConfigured() returns false for the entire harness run. This prevents:
+//   (a) a real Slack message being posted to the production alerts channel, and
+//   (b) an alert_state cooldown row (key "tier_fallback:500") being written to
+//       the live DB, which the org-scoped cleanup would not remove.
+// ---------------------------------------------------------------------------
+delete process.env.SLACK_BOT_TOKEN;
+delete process.env.SLACK_ALERTS_CHANNEL;
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -437,17 +452,32 @@ async function cleanup(ctx: {
   const db = supabaseAdmin();
   console.log("\n--- CLEANUP ---");
 
+  // FIX 2 — revised deletion order so no RESTRICT FK blocks user/org removal.
+  //
+  // Root cause of the prior residue: several tables reference users(id) WITHOUT
+  // ON DELETE CASCADE (default = RESTRICT). If any of those child rows survived
+  // the earlier steps, the users delete would fail silently (error logged but
+  // not thrown), and the org delete would then also fail (because users still
+  // reference it). The residue check masked this via `count ?? 0` treating a
+  // query error as zero rows.
+  //
+  // Fix: (a) explicitly delete every RESTRICT-FK child table scoped by user_id
+  // BEFORE deleting users; (b) the sentinel residue check below now queries by
+  // org name pattern rather than only by the current-run org id, so ANY leftover
+  // harness row from any run is caught; (c) errors are no longer masked — the
+  // sentinel check exits non-zero if residue remains.
+
   // 1. routing_decisions (cascade from org, but be explicit)
   const rd = await db.from("routing_decisions").delete().eq("org_id", orgId);
   console.log(`  routing_decisions deleted: ${rd.error ? "ERROR: " + rd.error.message : "ok"}`);
 
-  // 2. booking_reservations (references users - RESTRICT, must delete before users)
+  // 2. booking_reservations — pinned_user_id references users(id) RESTRICT
   if (idempotencyKey) {
     const brRes = await db
       .from("booking_reservations")
       .delete()
       .eq("idempotency_key", idempotencyKey);
-    console.log(`  booking_reservations deleted: ${brRes.error ? "ERROR: " + brRes.error.message : "ok"}`);
+    console.log(`  booking_reservations (by key) deleted: ${brRes.error ? "ERROR: " + brRes.error.message : "ok"}`);
   }
   if (userIds.length > 0) {
     const brAll = await db
@@ -457,7 +487,16 @@ async function cleanup(ctx: {
     console.log(`  booking_reservations (by user) deleted: ${brAll.error ? "ERROR: " + brAll.error.message : "ok"}`);
   }
 
-  // 3. busy_blocks (cascade from users, but be explicit; also cleans the seeded block)
+  // 3. reschedule_locks — pinned_user_id references users(id) RESTRICT
+  //    (harness stubs writeReschedulePin so no real lock is created, but delete
+  //    defensively in case of a future code path change)
+  if (userIds.length > 0) {
+    const rlRes = await db.from("reschedule_locks").delete().in("pinned_user_id", userIds);
+    console.log(`  reschedule_locks (by user) deleted: ${rlRes.error ? "ERROR: " + rlRes.error.message : "ok"}`);
+  }
+
+  // 4. busy_blocks — user_id references users(id) ON DELETE CASCADE, but be
+  //    explicit so we clean the seeded pre-existing busy block too
   if (busyBlockIds.length > 0) {
     const bb = await db.from("busy_blocks").delete().in("id", busyBlockIds);
     console.log(`  seeded busy_blocks deleted: ${bb.error ? "ERROR: " + bb.error.message : "ok"}`);
@@ -467,41 +506,47 @@ async function cleanup(ctx: {
     console.log(`  all busy_blocks for test users deleted: ${bbAll.error ? "ERROR: " + bbAll.error.message : "ok"}`);
   }
 
-  // 4. bookings (references users RESTRICT - must delete before users)
+  // 5. bookings — assigned_user_id references users(id) ON DELETE SET NULL (0004),
+  //    delete by org_id so no set-null residue remains
   const bkRes = await db.from("bookings").delete().eq("org_id", orgId);
   console.log(`  bookings deleted: ${bkRes.error ? "ERROR: " + bkRes.error.message : "ok"}`);
 
-  // 5. bucket_members (cascade from buckets/users)
+  // 6. bucket_members — delete by user_id (in addition to by bucket_id) to
+  //    ensure we catch all members before deleting users
+  if (userIds.length > 0) {
+    const bmByUser = await db.from("bucket_members").delete().in("user_id", userIds);
+    console.log(`  bucket_members (by user) deleted: ${bmByUser.error ? "ERROR: " + bmByUser.error.message : "ok"}`);
+  }
   if (bucketIds.length > 0) {
-    const bmRes = await db.from("bucket_members").delete().in("bucket_id", bucketIds);
-    console.log(`  bucket_members deleted: ${bmRes.error ? "ERROR: " + bmRes.error.message : "ok"}`);
+    const bmByBucket = await db.from("bucket_members").delete().in("bucket_id", bucketIds);
+    console.log(`  bucket_members (by bucket) deleted: ${bmByBucket.error ? "ERROR: " + bmByBucket.error.message : "ok"}`);
   }
 
-  // 6. availability_rules (cascade from schedules)
+  // 7. availability_rules (cascade from schedules)
   if (scheduleIds.length > 0) {
     const arRes = await db.from("availability_rules").delete().in("schedule_id", scheduleIds);
     console.log(`  availability_rules deleted: ${arRes.error ? "ERROR: " + arRes.error.message : "ok"}`);
   }
 
-  // 7. availability_schedules (cascade from users)
+  // 8. availability_schedules (user_id ON DELETE CASCADE — explicit for safety)
   if (userIds.length > 0) {
     const asRes = await db.from("availability_schedules").delete().in("user_id", userIds);
     console.log(`  availability_schedules deleted: ${asRes.error ? "ERROR: " + asRes.error.message : "ok"}`);
   }
 
-  // 8. buckets (before event_types + users)
+  // 9. buckets (before event_types and users)
   const bRes = await db.from("buckets").delete().eq("org_id", orgId);
   console.log(`  buckets deleted: ${bRes.error ? "ERROR: " + bRes.error.message : "ok"}`);
 
-  // 9. event_types
+  // 10. event_types
   const etRes = await db.from("event_types").delete().eq("org_id", orgId);
   console.log(`  event_types deleted: ${etRes.error ? "ERROR: " + etRes.error.message : "ok"}`);
 
-  // 10. users
+  // 11. users — all RESTRICT-FK children cleared above, so this should succeed
   const uRes = await db.from("users").delete().eq("org_id", orgId);
   console.log(`  users deleted: ${uRes.error ? "ERROR: " + uRes.error.message : "ok"}`);
 
-  // 11. organizations
+  // 12. organizations
   const oRes = await db.from("organizations").delete().eq("id", orgId);
   console.log(`  organizations deleted: ${oRes.error ? "ERROR: " + oRes.error.message : "ok"}`);
 }
@@ -510,19 +555,23 @@ async function cleanup(ctx: {
 // Post-cleanup residue check
 // ---------------------------------------------------------------------------
 
+/** Per-table counts scoped to the current-run orgId and userIds. */
 async function checkResidue(orgId: string, userIds: string[]): Promise<Record<string, number>> {
   const db = supabaseAdmin();
+  const none = ["__none__"];
+  const uids = userIds.length ? userIds : none;
+
   const queries = await Promise.all([
     db.from("routing_decisions").select("id", { count: "exact", head: true }).eq("org_id", orgId),
-    db.from("busy_blocks").select("id", { count: "exact", head: true }).in("user_id", userIds.length ? userIds : ["__none__"]),
+    db.from("busy_blocks").select("id", { count: "exact", head: true }).in("user_id", uids),
     db.from("bookings").select("id", { count: "exact", head: true }).eq("org_id", orgId),
     db.from("buckets").select("id", { count: "exact", head: true }).eq("org_id", orgId),
     db.from("event_types").select("id", { count: "exact", head: true }).eq("org_id", orgId),
     db.from("users").select("id", { count: "exact", head: true }).eq("org_id", orgId),
     db.from("organizations").select("id", { count: "exact", head: true }).eq("id", orgId),
-    db.from("availability_schedules").select("id", { count: "exact", head: true }).in("user_id", userIds.length ? userIds : ["__none__"]),
-    db.from("availability_rules").select("id", { count: "exact", head: true }).eq("id", "__none__"), // handled by cascade
-    db.from("booking_reservations").select("id", { count: "exact", head: true }).in("pinned_user_id", userIds.length ? userIds : ["__none__"]),
+    db.from("availability_schedules").select("id", { count: "exact", head: true }).in("user_id", uids),
+    db.from("booking_reservations").select("id", { count: "exact", head: true }).in("pinned_user_id", uids),
+    db.from("reschedule_locks").select("booking_id", { count: "exact", head: true }).in("pinned_user_id", uids),
   ]);
 
   const labels = [
@@ -534,15 +583,60 @@ async function checkResidue(orgId: string, userIds: string[]): Promise<Record<st
     "users",
     "organizations",
     "availability_schedules",
-    "availability_rules_proxy",
     "booking_reservations",
+    "reschedule_locks",
   ];
 
   const residue: Record<string, number> = {};
   for (let i = 0; i < labels.length; i++) {
-    residue[labels[i]] = queries[i].count ?? 0;
+    // Treat a query error as a non-zero count so it surfaces rather than hiding.
+    if (queries[i].error) {
+      console.error(`  RESIDUE CHECK ERROR (${labels[i]}): ${queries[i].error.message}`);
+      residue[labels[i]] = -1;
+    } else {
+      residue[labels[i]] = queries[i].count ?? 0;
+    }
   }
   return residue;
+}
+
+/**
+ * Sentinel-based global residue check: scans for ANY harness org/user left in
+ * the DB, regardless of which run created them. Uses the org name prefix
+ * "__TIER_DROP_HARNESS__" to identify harness rows across all runs.
+ *
+ * Returns { harnessOrgs, harnessUsers } — both should be 0 after cleanup.
+ */
+async function checkSentinelResidue(): Promise<{ harnessOrgs: number; harnessUsers: number }> {
+  const db = supabaseAdmin();
+
+  const orgRes = await db
+    .from("organizations")
+    .select("id", { count: "exact", head: true })
+    .like("name", "__TIER_DROP_HARNESS__%");
+  if (orgRes.error) throw new Error(`sentinel org count failed: ${orgRes.error.message}`);
+  const harnessOrgs = orgRes.count ?? 0;
+
+  // Find harness org ids to scope the user count
+  let harnessUsers = 0;
+  if (harnessOrgs > 0) {
+    const orgIdRes = await db
+      .from("organizations")
+      .select("id")
+      .like("name", "__TIER_DROP_HARNESS__%");
+    if (orgIdRes.error) throw new Error(`sentinel org id query failed: ${orgIdRes.error.message}`);
+    const orgIds = (orgIdRes.data ?? []).map((r) => (r as { id: string }).id);
+    if (orgIds.length > 0) {
+      const userRes = await db
+        .from("users")
+        .select("id", { count: "exact", head: true })
+        .in("org_id", orgIds);
+      if (userRes.error) throw new Error(`sentinel user count failed: ${userRes.error.message}`);
+      harnessUsers = userRes.count ?? 0;
+    }
+  }
+
+  return { harnessOrgs, harnessUsers };
 }
 
 // ---------------------------------------------------------------------------
@@ -817,15 +911,14 @@ async function main() {
   } finally {
     await cleanup(ctx);
 
-    // Post-cleanup residue check
+    // Per-table residue check for the current run's org + users
+    let totalResidue = 0;
+    let residue: Record<string, number> = {};
     if (ctx.orgId) {
-      console.log("\n--- RESIDUE CHECK ---");
-      const residue = await checkResidue(ctx.orgId, ctx.userIds);
-      let totalResidue = 0;
+      console.log("\n--- RESIDUE CHECK (current run) ---");
+      residue = await checkResidue(ctx.orgId, ctx.userIds);
       for (const [table, count] of Object.entries(residue)) {
-        // availability_rules_proxy is a placeholder — skip
-        if (table === "availability_rules_proxy") continue;
-        if (count > 0) {
+        if (count !== 0) {
           console.error(`  RESIDUE: ${table} = ${count} rows`);
         } else {
           console.log(`  ${table}: 0 ✓`);
@@ -833,12 +926,41 @@ async function main() {
         totalResidue += count;
       }
       if (totalResidue === 0) {
-        console.log("  Cleanup verified: ZERO residual rows.");
+        console.log("  Per-table check: ZERO residual rows.");
       } else {
-        console.error(`  WARNING: ${totalResidue} residual rows remain!`);
+        console.error(`  Per-table check: ${totalResidue} residual rows remain!`);
       }
+    }
 
-      // Append to report
+    // FIX 2 (continued) — sentinel-based global residue check.
+    //
+    // Queries by org name pattern so it catches leftover rows from ANY harness
+    // run, not just the current one. Errors here are thrown (not masked), and
+    // any non-zero count causes an explicit exit(1).
+    console.log("\n--- SENTINEL RESIDUE CHECK (all harness runs) ---");
+    let sentinelOk = true;
+    let sentinelOrgs = 0;
+    let sentinelUsers = 0;
+    try {
+      const sentinel = await checkSentinelResidue();
+      sentinelOrgs = sentinel.harnessOrgs;
+      sentinelUsers = sentinel.harnessUsers;
+      if (sentinelOrgs === 0 && sentinelUsers === 0) {
+        console.log("  Sentinel check: ZERO harness orgs / ZERO harness users. ✓");
+      } else {
+        console.error(
+          `\n  !! RESIDUE !! sentinel found ${sentinelOrgs} harness org(s) + ${sentinelUsers} harness user(s) in the DB.`,
+        );
+        console.error("  Manual cleanup required: DELETE FROM organizations WHERE name LIKE '__TIER_DROP_HARNESS__%';");
+        sentinelOk = false;
+      }
+    } catch (err) {
+      console.error(`  Sentinel check FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      sentinelOk = false;
+    }
+
+    // Append to report
+    if (ctx.orgId) {
       const repoRoot = join(fileURLToPath(import.meta.url), "../../");
       const reportDir = join(repoRoot, ".git/sdd");
       if (!existsSync(reportDir)) mkdirSync(reportDir, { recursive: true });
@@ -846,6 +968,8 @@ async function main() {
       const ts = new Date().toISOString();
       const summary = `
 ## Live Tier-Drop Harness Run — ${ts}
+
+**Fixes applied:** Slack disabled (SLACK_BOT_TOKEN deleted before main); cleanup FK order hardened; sentinel-based residue check added.
 
 **Env vars:** NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY (from .env.local via --env-file)
 
@@ -866,12 +990,20 @@ async function main() {
 - A3a–A3d (routing_decisions row): see console output
 - A4a–A4d (webhook payload): see console output
 
-**Post-cleanup residue:**
-${Object.entries(residue).filter(([t]) => t !== "availability_rules_proxy").map(([t, c]) => `- ${t}: ${c}`).join("\n")}
-Total residue: ${totalResidue} rows (expected: 0)
+**Post-cleanup residue (per-table, current run):**
+${Object.entries(residue).map(([t, c]) => `- ${t}: ${c}`).join("\n")}
+Total per-table residue: ${totalResidue} rows (expected: 0)
+
+**Sentinel residue check (all harness runs):**
+- Harness orgs remaining: ${sentinelOrgs} (expected: 0)
+- Harness users remaining: ${sentinelUsers} (expected: 0)
+- Sentinel OK: ${sentinelOk ? "YES ✓" : "NO — RESIDUE DETECTED"}
+
+**Slack / alert_state:**
+- SLACK_BOT_TOKEN was deleted before main(); slackConfigured() returned false throughout.
+- No real Slack message was sent; no alert_state row was written.
 
 **Concerns:**
-- If SLACK_BOT_TOKEN is set in .env.local, a throttled "tier_fallback:500" Slack alert may have been sent (and alert_state updated). This is cosmetic — the test org is fully cleaned up.
 - The harness uses bucket codes 500/400 which match production XBC codes; collision is avoided by the org-scoped \`resolveBucketByCode\` stub.
 
 ---
@@ -883,6 +1015,11 @@ Total residue: ${totalResidue} rows (expected: 0)
     console.log(
       `\n=== ${assertionsPassed}/${assertionsTotal} assertions passed ===`,
     );
+
+    if (!sentinelOk) {
+      console.error("\n!! HARNESS RESIDUE DETECTED — exiting non-zero. Clean up manually before re-running. !!");
+      process.exit(1);
+    }
   }
 
   if (assertionsPassed < assertionsTotal) {
