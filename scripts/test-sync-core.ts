@@ -70,5 +70,38 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
   );
 }
 
+// partitionBusyWrites — events owned by a Slate booking (#166) are skipped
+// entirely. The booking's own source=slate block is the single owner of that
+// slot, so the sync must NOT mirror the Slate-created Google event into a second
+// source=gcal block (the double-count) — and must NOT queue it for delete either,
+// since the block's lifecycle belongs to the booking, not the sync.
+{
+  const events = [
+    { id: "slateAAA", start: { dateTime: "2026-06-08T13:00:00Z" }, end: { dateTime: "2026-06-08T13:30:00Z" } }, // a Slate booking's event
+    { id: "ext1", start: { dateTime: "2026-06-08T14:00:00Z" }, end: { dateTime: "2026-06-08T14:30:00Z" } }, // an externally-booked event
+    { id: "slateBBB", status: "cancelled", start: { dateTime: "x" }, end: { dateTime: "y" } }, // a cancelled Slate event
+  ];
+  const slateOwned = new Set(["slateAAA", "slateBBB"]);
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events, slateOwned);
+  assert(
+    upserts.length === 1 && upserts[0].gcal_event_id === "ext1",
+    "a Slate-owned event is NOT mirrored as a gcal block (only the external event upserts)",
+  );
+  assert(
+    !deletes.includes("slateBBB") && deletes.length === 0,
+    "a Slate-owned event is skipped entirely, never queued for delete (the booking owns its block)",
+  );
+}
+{
+  // No skip set -> identical to the prior behavior (every busy event mirrors).
+  const events = [
+    { id: "e1", start: { dateTime: "2026-06-08T13:00:00Z" }, end: { dateTime: "2026-06-08T13:30:00Z" } },
+  ];
+  assert(
+    partitionBusyWrites("u1", "cal-1", events).upserts.length === 1,
+    "no skip set -> behaves exactly as before (backward compatible)",
+  );
+}
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

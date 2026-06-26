@@ -13,11 +13,18 @@ const service = vi.hoisted(() => {
   }
   class SlotUnavailableError extends Error {}
   class VerifyUnavailableError extends Error {}
+  class NoEligibleAgentsError extends Error {
+    constructor(bucketCode: string) {
+      super(`No eligible agents for bucket ${bucketCode}`);
+      this.name = "NoEligibleAgentsError";
+    }
+  }
   return {
     adminRescheduleBooking: vi.fn(),
     RescheduleConflictError,
     SlotUnavailableError,
     VerifyUnavailableError,
+    NoEligibleAgentsError,
   };
 });
 
@@ -39,5 +46,12 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("This booking was just changed. Refresh and try again.");
+  });
+
+  it("maps NoEligibleAgentsError to 409 (a full slot, not a crash) (#484)", async () => {
+    service.adminRescheduleBooking.mockRejectedValueOnce(new service.NoEligibleAgentsError("411"));
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("411");
   });
 });
