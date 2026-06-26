@@ -5,6 +5,7 @@ import {
   SlotUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
+  NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 
@@ -59,6 +60,12 @@ export async function POST(
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     if (err instanceof SlotUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    // The target time has no free agent in the bucket (#484): a legitimately
+    // full slot, not a crash. 409 like the other unavailable cases so the caller
+    // can offer another time instead of seeing a generic error.
+    if (err instanceof NoEligibleAgentsError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     return NextResponse.json(
