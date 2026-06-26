@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "for f in scripts/test-*.ts; do echo \"# $f\"; node --experimental-strip-types \"$f\" || exit 1; done && pnpm test:components",
+    "test": "for f in scripts/test-*.ts; do echo \"# $f\"; node --experimental-strip-types --import ./scripts/register-paths.mjs \"$f\" || exit 1; done && pnpm test:components",
     "test:components": "vitest run",
     "cf:build": "opennextjs-cloudflare build",
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
