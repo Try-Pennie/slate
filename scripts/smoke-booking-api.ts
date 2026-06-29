@@ -13,6 +13,13 @@
 //   SMOKE_BUCKET_B  (default SMOKE2)     — a SECOND isolated bucket the test
 //                                          agent also serves; enables the
 //                                          cross-bucket move scenario.
+//   REASSIGN_API_KEY (default unset)     — Bearer key for POST /api/bookings/reassign;
+//                                          enables the reassign scenario (else it SKIPs).
+//   SMOKE_AGENT_B_EMAIL (default          — the SECOND test agent the reassign scenario
+//     smoketest2@trypennie.com)             moves the booking onto. Must be a real
+//                                          Workspace mailbox in NO smoke bucket (so
+//                                          round-robin never picks it). Seed it with
+//                                          scripts/seed-smoke-test.ts.
 //   SMOKE_DRY_RUN_ONLY (default unset)   — run ONLY scenario 0 (zero side effects);
 //                                          a safe health check against the live fleet.
 //   SMOKE_STRICT       (default unset)   — treat any SKIPped scenario as a failure
@@ -37,6 +44,10 @@
 //   2. cross-bucket move: book in A, rebook the same person into B -> new booking
 //   3. confirm path: a weak (email-only) match on a new time -> confirm_required,
 //      then the same call with confirmReschedule:true -> rescheduled
+//   6. reassign: book (lands on agent A) -> POST /api/bookings/reassign onto a
+//      second test agent (B) -> assert the booking moved to B (response + an
+//      independent re-GET), then cancel. The endpoint runs the reassign outbox
+//      INLINE before returning 200, so a moved agent IS proof of delivery.
 
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
 // Default to the ISOLATED test buckets (#396): they have a single dedicated
@@ -47,6 +58,11 @@ const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").repla
 const BUCKET_A = process.env.SMOKE_BUCKET ?? "SMOKE";
 const BUCKET_B = process.env.SMOKE_BUCKET_B ?? "SMOKE2";
 const KEY = process.env.BOOKING_API_KEY ?? "";
+// Reassign scenario (#450): a separate Bearer key (the owner-override API) and
+// the second test agent the booking is forced onto. Defaults to the seeded
+// smoketest2@ target; the scenario SKIPs if REASSIGN_API_KEY is unset.
+const REASSIGN_KEY = process.env.REASSIGN_API_KEY ?? "";
+const AGENT_B_EMAIL = process.env.SMOKE_AGENT_B_EMAIL ?? "smoketest2@trypennie.com";
 
 let failures = 0;
 let skipped = 0;
@@ -77,11 +93,18 @@ type BookBody = {
   code?: string;
 };
 
+type Agent = { name?: string | null; email?: string | null };
 type DirectBody = {
-  bookings?: Array<{ id: string; manageUrl?: string; status?: string; bucketCode?: string }>;
-  booking?: { id: string; manageUrl?: string; status?: string };
+  bookings?: Array<{ id: string; manageUrl?: string; status?: string; bucketCode?: string; agent?: Agent }>;
+  booking?: { id: string; manageUrl?: string; status?: string; agent?: Agent };
   outcome?: string;
   code?: string;
+  error?: string;
+};
+
+// Reassign API (#450) response shape: { booking: { id, agentEmail, status, ... } }.
+type ReassignBody = {
+  booking?: { id?: string; assignedUserId?: string | null; agentEmail?: string | null; status?: string };
   error?: string;
 };
 
@@ -129,6 +152,22 @@ async function book(args: {
     }),
   });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as BookBody };
+}
+
+// Owner-override reassign (#9/#450): forces an existing booking onto a specific
+// agent. Authed with its OWN key (REASSIGN_API_KEY), distinct from the booking key.
+async function reassign(bookingId: string, agentEmail: string): Promise<{ status: number; body: ReassignBody }> {
+  const res = await fetch(`${BASE}/api/bookings/reassign`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${REASSIGN_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      bookingId,
+      agentEmail,
+      reasonCode: "owner_reassignment",
+      reasonDetail: "smoke test",
+    }),
+  });
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as ReassignBody };
 }
 
 const tokensToClean: string[] = [];
@@ -321,6 +360,56 @@ async function scenarioListMode() {
   check(blankExt.status === 400, "blank externalId -> 400 (not a cross-person dump)");
 }
 
+// --- Scenario 6: reassign (owner-override move onto a second agent) ---
+async function scenarioReassign(slotsA: string[]) {
+  console.log("\n[6] reassign (force the booking onto a second test agent)");
+  if (!REASSIGN_KEY) {
+    skip("REASSIGN_API_KEY not set — set it to exercise the owner-override reassign path");
+    return;
+  }
+  if (!AGENT_B_EMAIL) {
+    skip("SMOKE_AGENT_B_EMAIL not set — set it to the second test agent's email");
+    return;
+  }
+  const id = uniq("reassign");
+  const phone = "+12155550120";
+
+  const created = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone });
+  trackForCleanup(created.body);
+  check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`);
+  const bookingId = created.body.booking?.id;
+  if (!bookingId) {
+    check(false, "booking returned an id (needed to reassign)");
+    return;
+  }
+
+  // It must NOT already be on agent B, or the reassign would no-op (same-agent
+  // reassign returns the booking unchanged). The booking always lands on agent A
+  // since B is in no bucket and round-robin can't pick it.
+  const before = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  check(
+    !!before.body.booking?.agent?.email && before.body.booking.agent.email !== AGENT_B_EMAIL,
+    `booking starts on an agent OTHER than the reassign target (${before.body.booking?.agent?.email ?? "none"})`,
+  );
+
+  const moved = await reassign(bookingId, AGENT_B_EMAIL);
+  check(
+    moved.status === 200 && moved.body.booking?.agentEmail === AGENT_B_EMAIL,
+    `reassign -> 200 + moved to ${AGENT_B_EMAIL} (got ${moved.status}/${moved.body.booking?.agentEmail ?? "none"})`,
+  );
+  check(moved.body.booking?.id === bookingId, "reassign keeps the SAME booking id (in-place move, not a new booking)");
+
+  // Independent re-read confirms the move persisted. The reassign endpoint runs
+  // its outbox (slot move + booking.rescheduled webhook + 'reassigned' history)
+  // INLINE before returning 200, so a moved agent here is also proof the outbox
+  // delivered — the smoke test has no DB read to assert the row directly.
+  const after = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  check(
+    after.body.booking?.agent?.email === AGENT_B_EMAIL,
+    `re-GET shows the booking now assigned to ${AGENT_B_EMAIL} (got ${after.body.booking?.agent?.email ?? "none"})`,
+  );
+}
+
 async function main() {
   if (!KEY) {
     console.error("Set BOOKING_API_KEY in the environment first.");
@@ -355,6 +444,8 @@ async function main() {
     await cleanup();
     await scenarioLookupAndCancel(slotsA);
     await scenarioListMode();
+    await cleanup();
+    await scenarioReassign(slotsA);
   } finally {
     console.log("\nCleaning up test bookings...");
     await cleanup();

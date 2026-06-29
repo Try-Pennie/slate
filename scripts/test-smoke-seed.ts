@@ -20,6 +20,7 @@ const params = {
   eventTypeId: "evt-smoke",
   agentEmail: "smoketest@trypennie.com",
   bucketCodes: ["SMOKE", "SMOKE2"],
+  reassignTargetEmail: "smoketest2@trypennie.com",
 };
 const seed = buildSmokeSeed(params);
 
@@ -86,10 +87,38 @@ assert(
   "the agent is a member of every bucket",
 );
 
+// --- Reassign target (#450): a SECOND bookable test agent, the explicit target
+// of the reassign smoke scenario. It must exist + be bookable (reassignBooking
+// requires both), be is_test, and be a member of NO bucket so round-robin never
+// picks it — a SMOKE booking always lands on the primary agent, leaving this one
+// as the only thing a reassign can move the booking to. ---
+const target = seed.reassignTarget;
+assert(!!target, "a reassign-target agent is built when reassignTargetEmail is given");
+if (target) {
+  assert(target.email === "smoketest2@trypennie.com", "reassign target uses the second smoke mailbox");
+  assert(target.role === "agent", "reassign target has role 'agent'");
+  assert(target.org_id === "org-smoke", "reassign target is in the target org");
+  assert(target.bookable === true, "reassign target is bookable (reassignBooking rejects non-bookable)");
+  assert(target.deactivated_at === null, "reassign target is active");
+  assert(target.is_test === true, "reassign target is flagged is_test (hidden from UI, real leads can't book)");
+  assert(target.id !== seed.user.id, "reassign target is a DISTINCT agent (reassign no-ops onto the same agent)");
+  assert(
+    !seed.members.some((m) => m.user_id === target.id),
+    "reassign target is a member of NO bucket (so round-robin never picks it)",
+  );
+}
+
+// No reassign target when the email is omitted (older seed posture stays valid).
+assert(
+  buildSmokeSeed({ ...params, reassignTargetEmail: undefined }).reassignTarget === null,
+  "no reassign target when reassignTargetEmail is omitted",
+);
+
 // --- Idempotency: deterministic ids so re-running upserts in place ---
 const again = buildSmokeSeed(params);
 assert(again.user.id === seed.user.id, "agent id is deterministic across runs");
 assert(again.schedule.id === seed.schedule.id, "schedule id is deterministic across runs");
+assert(again.reassignTarget?.id === seed.reassignTarget?.id, "reassign target id is deterministic across runs");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
