@@ -306,6 +306,26 @@ export interface BookingDeps {
     endIso: string,
     bookingId: string,
   ): Promise<void>;
+  /**
+   * Atomic reassign swap (#449): under a row lock, set the booking to the new
+   * agent + event + trace and RETURN the event being replaced (so the caller
+   * deletes exactly that, never a stale one) — closing the concurrent-distinct-
+   * reassign double-event race with last-write-wins. `updated` is false when the
+   * booking is terminal (cancelled/completed), so the caller cleans up the event
+   * it optimistically created.
+   */
+  reassignSwap(args: {
+    bookingId: string;
+    userId: string;
+    agentName: string | null;
+    agentEmail: string;
+    gcalEventId: string;
+    routingTrace: RoutingTrace;
+  }): Promise<{
+    prevGcalEventId: string | null;
+    prevAgentEmail: string | null;
+    updated: boolean;
+  }>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   /**
    * Reconcile sweep (#428): candidate busy_blocks to check for a stuck slot.
@@ -2098,11 +2118,11 @@ export async function reassignBooking(
     return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
   }
 
-  // Move the calendar event to the owning agent at the same time. No free check:
-  // this path intentionally double-books, gated only by `allow_double_book`.
-  if (booking.agent_email && booking.gcal_event_id) {
-    await deleteEventBestEffort(deps, booking.agent_email, booking.gcal_event_id, booking.id);
-  }
+  // Create the event on the TARGET agent FIRST, then swap atomically (#449). We
+  // do NOT delete the old event up front from a stale read - that's exactly what
+  // orphaned the loser's event in a concurrent distinct-reassign. Instead the
+  // swap RETURNS the event it replaced, and we delete that below.
+  //
   // P4 (#439): a deterministic client id keyed on the booking, the TARGET agent
   // (deterministicEventId mixes agent.id into the hash, so a cross-agent move
   // can't collide on the target calendar), and the reassignment ordinal (so a
@@ -2149,15 +2169,41 @@ export async function reassignBooking(
         reassignments: [reassignment],
       };
 
-  await deps.updateBooking(booking.id, {
-    assigned_user_id: agent.id,
-    agent_name: agent.name,
-    agent_email: agent.email,
-    gcal_event_id: newEventId,
-    status: "rescheduled",
-    allow_double_book: true,
-    routing_trace: nextTrace,
-  });
+  let swap: { prevGcalEventId: string | null; prevAgentEmail: string | null; updated: boolean };
+  try {
+    swap = await deps.reassignSwap({
+      bookingId: booking.id,
+      userId: agent.id,
+      agentName: agent.name,
+      agentEmail: agent.email,
+      gcalEventId: newEventId,
+      routingTrace: nextTrace,
+    });
+  } catch (err) {
+    // The swap (durable anchor) failed: clean up the event we optimistically
+    // created so it isn't orphaned, then surface the failure.
+    await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
+    throw err;
+  }
+
+  if (!swap.updated) {
+    // The booking went terminal (cancelled/completed) concurrently. Clean up the
+    // event we optimistically created so it isn't orphaned, then surface it.
+    await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
+    throw new Error("This booking can no longer be changed");
+  }
+
+  // Delete the event the swap REPLACED - the genuinely-current one at swap time,
+  // not the stale read - so no calendar event is ever left dangling. Skip when a
+  // same-target re-submit reused the same event id (deterministic id => Google
+  // 409 reuse): deleting it would remove the live event.
+  if (
+    swap.prevAgentEmail &&
+    swap.prevGcalEventId &&
+    swap.prevGcalEventId !== newEventId
+  ) {
+    await deleteEventBestEffort(deps, swap.prevAgentEmail, swap.prevGcalEventId, booking.id);
+  }
 
   const updated = {
     ...booking,

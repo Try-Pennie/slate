@@ -445,6 +445,33 @@ function realDeps(): BookingDeps {
       }
     },
 
+    reassignSwap: async ({ bookingId, userId, agentName, agentEmail, gcalEventId, routingTrace }) => {
+      // Atomic swap-and-return-previous (#449). Unlike the best-effort cache
+      // writes, this IS the durable anchor of the reassign, so a failure must
+      // surface (the caller cleans up the event it created and reports failure).
+      const { data, error } = await supabaseAdmin().rpc("reassign_booking_swap", {
+        p_booking_id: bookingId,
+        p_user_id: userId,
+        p_agent_name: agentName,
+        p_agent_email: agentEmail,
+        p_gcal_event_id: gcalEventId,
+        p_routing_trace: routingTrace,
+      });
+      if (error) {
+        throw new Error(`reassign_booking_swap failed for booking ${bookingId}: ${error.message}`);
+      }
+      const row = ((data ?? []) as {
+        prev_gcal_event_id: string | null;
+        prev_agent_email: string | null;
+        updated: boolean;
+      }[])[0];
+      return {
+        prevGcalEventId: row?.prev_gcal_event_id ?? null,
+        prevAgentEmail: row?.prev_agent_email ?? null,
+        updated: row?.updated ?? false,
+      };
+    },
+
     deleteBusyBlocksForBooking: async (bookingId) => {
       const del = () =>
         supabaseAdmin().from("busy_blocks").delete().eq("booking_id", bookingId);

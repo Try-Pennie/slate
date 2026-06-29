@@ -26,6 +26,7 @@ import type {
   RateLimit,
   RescheduleLock,
   RoutingDecision,
+  RoutingTrace,
   SyncLock,
   User,
   WebhookDelivery,
@@ -90,6 +91,21 @@ export interface Database {
           p_ends_at: string;
         };
         Returns: undefined;
+      };
+      reassign_booking_swap: {
+        Args: {
+          p_booking_id: string;
+          p_user_id: string;
+          p_agent_name: string | null;
+          p_agent_email: string;
+          p_gcal_event_id: string;
+          p_routing_trace: RoutingTrace;
+        };
+        Returns: {
+          prev_gcal_event_id: string | null;
+          prev_agent_email: string | null;
+          updated: boolean;
+        }[];
       };
     };
     Enums: Record<string, never>;
