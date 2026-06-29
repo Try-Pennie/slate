@@ -14,6 +14,11 @@
 // per-calendar watch cron creates the agent_calendars row automatically on its
 // next pass once the mailbox exists.
 //
+// REASSIGN TARGET (#450): smoketest2@trypennie.com must ALSO be a real Workspace
+// mailbox — the reassign smoke scenario moves a booking onto it, which
+// impersonates that address to create the moved calendar event. It joins no
+// bucket (so round-robin never picks it) and needs no schedule.
+//
 // Safety: DRY RUN by default — prints the planned rows and writes nothing.
 // Set APPLY=1 to actually write to the project in .env.local.
 //
@@ -24,6 +29,7 @@ import { join } from "node:path";
 import { buildSmokeSeed } from "./smoke-seed.ts";
 
 const AGENT_EMAIL = "smoketest@trypennie.com";
+const REASSIGN_TARGET_EMAIL = "smoketest2@trypennie.com";
 const BUCKET_CODES = ["SMOKE", "SMOKE2"];
 const APPLY = process.env.APPLY === "1";
 
@@ -76,11 +82,15 @@ async function main() {
     eventTypeId: eventType.id,
     agentEmail: AGENT_EMAIL,
     bucketCodes: BUCKET_CODES,
+    reassignTargetEmail: REASSIGN_TARGET_EMAIL,
   });
 
-  // 1) Agent — upsert on the deterministic id so re-runs refresh in place.
-  console.log("agent:");
-  await write("POST", "users?on_conflict=id", "resolution=merge-duplicates,return=minimal", [seed.user]);
+  // 1) Agents — upsert on the deterministic id so re-runs refresh in place. The
+  // reassign target (#450) is a second bookable agent in no bucket; written here
+  // alongside the primary so a single seed run provisions both.
+  console.log("agents:");
+  const agentRows = seed.reassignTarget ? [seed.user, seed.reassignTarget] : [seed.user];
+  await write("POST", "users?on_conflict=id", "resolution=merge-duplicates,return=minimal", agentRows);
 
   // 2) Availability schedule — upsert on id.
   console.log("schedule:");
@@ -125,8 +135,9 @@ async function main() {
 
   console.log(
     APPLY
-      ? `\nDone. Agent ${AGENT_EMAIL} seeded into buckets ${BUCKET_CODES.join(", ")}.\n` +
-          "Next: ensure the mailbox exists in Workspace, then let the watch cron add its\n" +
+      ? `\nDone. Agent ${AGENT_EMAIL} seeded into buckets ${BUCKET_CODES.join(", ")}` +
+          `${seed.reassignTarget ? `; reassign target ${REASSIGN_TARGET_EMAIL} seeded (no bucket)` : ""}.\n` +
+          "Next: ensure both mailboxes exist in Workspace, then let the watch cron add the\n" +
           "agent_calendars row (or wait one cycle), and the recompute cron publish SMOKE slots."
       : "\nDry run only — nothing written. Re-run with APPLY=1 to seed.",
   );

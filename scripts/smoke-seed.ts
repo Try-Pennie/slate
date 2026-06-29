@@ -16,6 +16,14 @@ export interface SmokeSeedParams {
   agentEmail: string;
   /** Isolated bucket codes the agent serves, e.g. ["SMOKE", "SMOKE2"]. */
   bucketCodes: string[];
+  /**
+   * Optional SECOND bookable test agent — the explicit target of the reassign
+   * smoke scenario (#450). Must also be a real Workspace mailbox (reassign
+   * impersonates it to create the moved calendar event). Member of NO bucket, so
+   * round-robin never picks it; a booking always lands on the primary agent and
+   * the reassign moves it here. Omit to skip seeding the target.
+   */
+  reassignTargetEmail?: string;
   /** Schedule timezone; defaults to America/New_York. */
   timezone?: string;
 }
@@ -64,6 +72,8 @@ export interface SmokeSeed {
   rules: SmokeSeedRule[];
   buckets: SmokeSeedBucket[];
   members: SmokeSeedMember[];
+  /** The reassign-target agent (#450), or null when reassignTargetEmail is omitted. */
+  reassignTarget: SmokeSeedUser | null;
 }
 
 // Deterministic, valid 8-4-4-4-12 hex UUIDs (version 4 / variant 8), namespaced
@@ -71,6 +81,9 @@ export interface SmokeSeed {
 // and schedule, so a fixed suffix is enough.
 const AGENT_ID = "c0000000-0000-4000-8000-000000000001";
 const SCHEDULE_ID = "d0000000-0000-4000-8000-000000000001";
+// Distinct id for the reassign-target agent (#450) so it never collides with the
+// primary agent and re-seeding upserts it in place.
+const REASSIGN_TARGET_ID = "c0000000-0000-4000-8000-000000000002";
 
 export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
   const timezone = p.timezone ?? "America/New_York";
@@ -117,5 +130,23 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     user_id: user.id,
   }));
 
-  return { user, schedule, rules, buckets, members };
+  // Reassign target (#450): a second bookable, is_test agent that joins NO bucket
+  // (kept out of `members`) and needs no schedule — reassign forces the move
+  // regardless of its availability (allow_double_book). It only has to exist and
+  // be bookable for reassignBooking to accept it as a target.
+  const reassignTarget: SmokeSeedUser | null = p.reassignTargetEmail
+    ? {
+        id: REASSIGN_TARGET_ID,
+        org_id: p.orgId,
+        email: p.reassignTargetEmail,
+        name: "Smoke Reassign Target",
+        role: "agent",
+        attributes: {},
+        bookable: true,
+        deactivated_at: null,
+        is_test: true,
+      }
+    : null;
+
+  return { user, schedule, rules, buckets, members, reassignTarget };
 }
