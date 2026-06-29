@@ -18,10 +18,12 @@ export interface SmokeSeedParams {
   bucketCodes: string[];
   /**
    * Optional SECOND bookable test agent — the explicit target of the reassign
-   * smoke scenario (#450). Must also be a real Workspace mailbox (reassign
-   * impersonates it to create the moved calendar event). Member of NO bucket, so
-   * round-robin never picks it; a booking always lands on the primary agent and
-   * the reassign moves it here. Omit to skip seeding the target.
+   * smoke scenario (#450) AND a bookable fallback member of the FIRST bucket
+   * (#464). Must also be a real Workspace mailbox (reassign impersonates it to
+   * create the moved calendar event). It gets its own working hours and joins the
+   * first bucket only, so round-robin CAN pick it there (giving the #523
+   * reschedule-stickiness scenario a real second agent) while other buckets stay
+   * single-agent. Omit to skip seeding the target.
    */
   reassignTargetEmail?: string;
   /** Schedule timezone; defaults to America/New_York. */
@@ -68,7 +70,9 @@ export interface SmokeSeedMember {
 }
 export interface SmokeSeed {
   user: SmokeSeedUser;
-  schedule: SmokeSeedSchedule;
+  /** One schedule per seeded agent (primary + reassign target when present). */
+  schedules: SmokeSeedSchedule[];
+  /** Working-hours rules across ALL seeded schedules, keyed by schedule_id. */
   rules: SmokeSeedRule[];
   buckets: SmokeSeedBucket[];
   members: SmokeSeedMember[];
@@ -84,6 +88,19 @@ const SCHEDULE_ID = "d0000000-0000-4000-8000-000000000001";
 // Distinct id for the reassign-target agent (#450) so it never collides with the
 // primary agent and re-seeding upserts it in place.
 const REASSIGN_TARGET_ID = "c0000000-0000-4000-8000-000000000002";
+// The reassign target's own schedule (#464): it's now a bookable SMOKE member, so
+// it needs working hours for round-robin to offer it.
+const REASSIGN_TARGET_SCHEDULE_ID = "d0000000-0000-4000-8000-000000000002";
+
+/** Mon-Fri 9:00-17:00 (minutes 540-1020) working-hours rules for one schedule. */
+function weekdayRules(scheduleId: string): SmokeSeedRule[] {
+  return [1, 2, 3, 4, 5].map((weekday) => ({
+    schedule_id: scheduleId,
+    weekday,
+    start_minute: 540,
+    end_minute: 1020,
+  }));
+}
 
 export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
   const timezone = p.timezone ?? "America/New_York";
@@ -100,20 +117,9 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     is_test: true,
   };
 
-  const schedule: SmokeSeedSchedule = {
-    id: SCHEDULE_ID,
-    user_id: user.id,
-    timezone,
-  };
-
-  // Mon-Fri 9:00-17:00 (minutes 540-1020), like the default working hours, so
-  // the agent has open slots for the smoke test to book.
-  const rules: SmokeSeedRule[] = [1, 2, 3, 4, 5].map((weekday) => ({
-    schedule_id: schedule.id,
-    weekday,
-    start_minute: 540,
-    end_minute: 1020,
-  }));
+  // Mon-Fri 9:00-17:00, like the default working hours, so the agent has open
+  // slots for the smoke test to book.
+  const schedule: SmokeSeedSchedule = { id: SCHEDULE_ID, user_id: user.id, timezone };
 
   const buckets: SmokeSeedBucket[] = p.bucketCodes.map((code) => ({
     org_id: p.orgId,
@@ -130,10 +136,12 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     user_id: user.id,
   }));
 
-  // Reassign target (#450): a second bookable, is_test agent that joins NO bucket
-  // (kept out of `members`) and needs no schedule — reassign forces the move
-  // regardless of its availability (allow_double_book). It only has to exist and
-  // be bookable for reassignBooking to accept it as a target.
+  // Reassign target (#450) + SMOKE fallback agent (#464): a second bookable,
+  // is_test agent. It's the explicit target of the reassign scenario AND a
+  // bookable member of the FIRST bucket (SMOKE) — giving SMOKE a real fallback so
+  // the reschedule-stickiness (#523) scenario has a second agent a small move
+  // could (wrongly) re-route to. It joins SMOKE only, NOT the other buckets, so
+  // SMOKE2 stays single-agent for the cross-bucket scenario.
   const reassignTarget: SmokeSeedUser | null = p.reassignTargetEmail
     ? {
         id: REASSIGN_TARGET_ID,
@@ -148,5 +156,19 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
       }
     : null;
 
-  return { user, schedule, rules, buckets, members, reassignTarget };
+  const schedules: SmokeSeedSchedule[] = [schedule];
+  const rules: SmokeSeedRule[] = weekdayRules(schedule.id);
+  if (reassignTarget) {
+    const targetSchedule: SmokeSeedSchedule = {
+      id: REASSIGN_TARGET_SCHEDULE_ID,
+      user_id: reassignTarget.id,
+      timezone,
+    };
+    schedules.push(targetSchedule);
+    rules.push(...weekdayRules(targetSchedule.id));
+    // A bookable fallback in the first bucket (SMOKE) only.
+    members.push({ bucketCode: p.bucketCodes[0], user_id: reassignTarget.id });
+  }
+
+  return { user, schedules, rules, buckets, members, reassignTarget };
 }

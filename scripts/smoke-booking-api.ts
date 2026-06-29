@@ -44,10 +44,13 @@
 //   2. cross-bucket move: book in A, rebook the same person into B -> new booking
 //   3. confirm path: a weak (email-only) match on a new time -> confirm_required,
 //      then the same call with confirmReschedule:true -> rescheduled
-//   6. reassign: book (lands on agent A) -> POST /api/bookings/reassign onto a
-//      second test agent (B) -> assert the booking moved to B (response + an
-//      independent re-GET), then cancel. The endpoint runs the reassign outbox
+//   6. reassign: book -> POST /api/bookings/reassign onto the OTHER SMOKE agent
+//      (whichever one it did not land on) -> assert the booking moved (response +
+//      an independent re-GET), then cancel. The endpoint runs the reassign outbox
 //      INLINE before returning 200, so a moved agent IS proof of delivery.
+//   7. reschedule stickiness (#523): book -> reschedule by less than the event
+//      length (new slot overlaps the booking's own event) -> assert it stayed on
+//      the SAME agent (no silent re-route in the two-agent SMOKE bucket, #464).
 
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
 // Default to the ISOLATED test buckets (#396): they have a single dedicated
@@ -63,6 +66,9 @@ const KEY = process.env.BOOKING_API_KEY ?? "";
 // smoketest2@ target; the scenario SKIPs if REASSIGN_API_KEY is unset.
 const REASSIGN_KEY = process.env.REASSIGN_API_KEY ?? "";
 const AGENT_B_EMAIL = process.env.SMOKE_AGENT_B_EMAIL ?? "smoketest2@trypennie.com";
+// SMOKE's two bookable agents (#464): the booking can land on either, so the
+// reassign scenario targets whichever one it did NOT land on.
+const AGENT_A_EMAIL = process.env.SMOKE_AGENT_A_EMAIL ?? "smoketest@trypennie.com";
 
 let failures = 0;
 let skipped = 0;
@@ -409,19 +415,18 @@ async function scenarioReassign(slotsA: string[]) {
     return;
   }
 
-  // It must NOT already be on agent B, or the reassign would no-op (same-agent
-  // reassign returns the booking unchanged). The booking always lands on agent A
-  // since B is in no bucket and round-robin can't pick it.
+  // SMOKE has TWO bookable agents (#464), so the booking can land on either.
+  // Pick the reassign target as whichever agent it is NOT currently on — a
+  // same-agent reassign would no-op (returns the booking unchanged).
   const before = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
-  check(
-    !!before.body.booking?.agent?.email && before.body.booking.agent.email !== AGENT_B_EMAIL,
-    `booking starts on an agent OTHER than the reassign target (${before.body.booking?.agent?.email ?? "none"})`,
-  );
+  const landedOn = before.body.booking?.agent?.email;
+  check(!!landedOn, `booking starts on a known agent (${landedOn ?? "none"})`);
+  const target = landedOn === AGENT_B_EMAIL ? AGENT_A_EMAIL : AGENT_B_EMAIL;
 
-  const moved = await reassign(bookingId, AGENT_B_EMAIL);
+  const moved = await reassign(bookingId, target);
   check(
-    moved.status === 200 && moved.body.booking?.agentEmail === AGENT_B_EMAIL,
-    `reassign -> 200 + moved to ${AGENT_B_EMAIL} (got ${moved.status}/${moved.body.booking?.agentEmail ?? "none"})`,
+    moved.status === 200 && moved.body.booking?.agentEmail === target,
+    `reassign -> 200 + moved to ${target} (got ${moved.status}/${moved.body.booking?.agentEmail ?? "none"})`,
   );
   check(moved.body.booking?.id === bookingId, "reassign keeps the SAME booking id (in-place move, not a new booking)");
 
@@ -431,8 +436,53 @@ async function scenarioReassign(slotsA: string[]) {
   // delivered — the smoke test has no DB read to assert the row directly.
   const after = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
   check(
-    after.body.booking?.agent?.email === AGENT_B_EMAIL,
-    `re-GET shows the booking now assigned to ${AGENT_B_EMAIL} (got ${after.body.booking?.agent?.email ?? "none"})`,
+    after.body.booking?.agent?.email === target,
+    `re-GET shows the booking now assigned to ${target} (got ${after.body.booking?.agent?.email ?? "none"})`,
+  );
+}
+
+// --- Scenario 7: reschedule stickiness (#523) — a reschedule SHORTER than the
+// event length keeps the SAME agent, instead of silently re-routing to another.
+// Meaningful only in the now-two-agent SMOKE bucket (#464): the new slot overlaps
+// the booking's own still-present event, which the pre-#523 self-free check
+// counted as a conflict, re-routing the booking to the other agent. ---
+async function scenarioRescheduleStickiness(slotsA: string[]) {
+  console.log("\n[7] sub-event-length reschedule keeps the same agent (#523)");
+  const id = uniq("stick");
+  const slot = slotsA[2];
+  // +10 min on the 20-min SMOKE event: the new window [+10, +30] overlaps the
+  // original [0, +20] event — the exact #523 trigger.
+  const target = new Date(Date.parse(slot) + 10 * 60_000).toISOString();
+
+  const created = await book({ bucket: BUCKET_A, start: slot, ...id, phone: "+12155550130" });
+  trackForCleanup(created.body);
+  check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`);
+  const bookingId = created.body.booking?.id;
+  const token = (created.body.booking?.manageUrl ?? "").match(/\/booking\/manage\/([^/?#]+)/)?.[1];
+  if (!bookingId || !token) {
+    check(false, "booking returned an id + manage token (needed to reschedule)");
+    return;
+  }
+
+  const before = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  const agentBefore = before.body.booking?.agent?.email;
+  check(!!agentBefore, `booked onto an agent (${agentBefore ?? "none"})`);
+
+  const moved = await fetch(`${BASE}/api/bookings/${token}/reschedule`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ start: target, reason: "schedule_conflict" }),
+  });
+  const movedBody = (await moved.json().catch(() => ({}))) as { startsAt?: string; error?: string };
+  check(
+    moved.status === 200,
+    `sub-event reschedule -> 200 (got ${moved.status}${moved.status !== 200 ? ` err=${movedBody.error}` : ""})`,
+  );
+
+  const after = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}&bookingId=${bookingId}`);
+  check(
+    !!agentBefore && after.body.booking?.agent?.email === agentBefore,
+    `STAYED on the same agent across the sub-event reschedule (before=${agentBefore}, after=${after.body.booking?.agent?.email ?? "none"})`,
   );
 }
 
@@ -472,6 +522,8 @@ async function main() {
     await scenarioListMode();
     await cleanup();
     await scenarioReassign(slotsA);
+    await cleanup();
+    await scenarioRescheduleStickiness(slotsA);
   } finally {
     console.log("\nCleaning up test bookings...");
     await cleanup();
