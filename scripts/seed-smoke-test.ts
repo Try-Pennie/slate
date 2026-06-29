@@ -14,10 +14,12 @@
 // per-calendar watch cron creates the agent_calendars row automatically on its
 // next pass once the mailbox exists.
 //
-// REASSIGN TARGET (#450): smoketest2@trypennie.com must ALSO be a real Workspace
-// mailbox — the reassign smoke scenario moves a booking onto it, which
-// impersonates that address to create the moved calendar event. It joins no
-// bucket (so round-robin never picks it) and needs no schedule.
+// REASSIGN TARGET / SMOKE FALLBACK (#450/#464): smoketest2@trypennie.com must
+// ALSO be a real Workspace mailbox — the reassign smoke scenario moves a booking
+// onto it, which impersonates that address to create the moved calendar event.
+// It now joins the SMOKE bucket as a bookable fallback (with its own 9-5
+// schedule) so round-robin CAN pick it and the reschedule-stickiness (#523)
+// scenario has a genuine second agent; it stays OUT of SMOKE2.
 //
 // Safety: DRY RUN by default — prints the planned rows and writes nothing.
 // Set APPLY=1 to actually write to the project in .env.local.
@@ -92,18 +94,22 @@ async function main() {
   const agentRows = seed.reassignTarget ? [seed.user, seed.reassignTarget] : [seed.user];
   await write("POST", "users?on_conflict=id", "resolution=merge-duplicates,return=minimal", agentRows);
 
-  // 2) Availability schedule — upsert on id.
-  console.log("schedule:");
+  // 2) Availability schedules — upsert on id (one per seeded agent: the primary
+  // and, when present, the reassign-target/SMOKE-fallback agent #464).
+  console.log("schedules:");
   await write(
     "POST",
     "availability_schedules?on_conflict=id",
     "resolution=merge-duplicates,return=minimal",
-    [seed.schedule],
+    seed.schedules,
   );
 
-  // 3) Rules — replace wholesale (no assumed unique key on schedule_id+weekday).
+  // 3) Rules — replace wholesale per schedule (no assumed unique key on
+  // schedule_id+weekday), then insert the full rule set across all schedules.
   console.log("rules (replace):");
-  await write("DELETE", `availability_rules?schedule_id=eq.${seed.schedule.id}`, "return=minimal", undefined);
+  for (const s of seed.schedules) {
+    await write("DELETE", `availability_rules?schedule_id=eq.${s.id}`, "return=minimal", undefined);
+  }
   await write("POST", "availability_rules", "return=minimal", seed.rules);
 
   // 4) Buckets — upsert on (org_id, code); need the ids back to link members.
@@ -136,7 +142,7 @@ async function main() {
   console.log(
     APPLY
       ? `\nDone. Agent ${AGENT_EMAIL} seeded into buckets ${BUCKET_CODES.join(", ")}` +
-          `${seed.reassignTarget ? `; reassign target ${REASSIGN_TARGET_EMAIL} seeded (no bucket)` : ""}.\n` +
+          `${seed.reassignTarget ? `; reassign target ${REASSIGN_TARGET_EMAIL} seeded as a bookable fallback in ${BUCKET_CODES[0]}` : ""}.\n` +
           "Next: ensure both mailboxes exist in Workspace, then let the watch cron add the\n" +
           "agent_calendars row (or wait one cycle), and the recompute cron publish SMOKE slots."
       : "\nDry run only — nothing written. Re-run with APPLY=1 to seed.",

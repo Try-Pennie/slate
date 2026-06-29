@@ -36,21 +36,23 @@ assert(
 );
 assert(seed.user.is_test === true, "agent is flagged is_test (hidden from UI, real leads can't book)");
 
-// --- Schedule + rules (so the agent actually has open slots) ---
-assert(seed.schedule.user_id === seed.user.id, "schedule belongs to the agent");
-assert(seed.schedule.timezone === "America/New_York", "schedule defaults to America/New_York");
-assert(seed.rules.length === 5, "five weekday availability rules (Mon-Fri)");
+// --- Schedules + rules (so each agent actually has open slots) ---
+const primarySchedule = seed.schedules.find((s) => s.user_id === seed.user.id);
+assert(!!primarySchedule, "the primary agent has a schedule");
+assert(primarySchedule?.timezone === "America/New_York", "primary schedule defaults to America/New_York");
+const primaryRules = seed.rules.filter((r) => r.schedule_id === primarySchedule?.id);
+assert(primaryRules.length === 5, "primary agent has five weekday rules (Mon-Fri)");
 assert(
-  seed.rules.every((r) => r.schedule_id === seed.schedule.id),
-  "every rule references the agent's schedule",
-);
-assert(
-  seed.rules.map((r) => r.weekday).join(",") === "1,2,3,4,5",
-  "rules cover weekdays Mon(1)..Fri(5)",
+  primaryRules.map((r) => r.weekday).sort().join(",") === "1,2,3,4,5",
+  "primary rules cover weekdays Mon(1)..Fri(5)",
 );
 assert(
   seed.rules.every((r) => r.start_minute === 540 && r.end_minute === 1020),
   "rules are 9:00-17:00 (minutes 540-1020), like default working hours",
+);
+assert(
+  seed.rules.every((r) => seed.schedules.some((s) => s.id === r.schedule_id)),
+  "every rule references one of the seeded schedules",
 );
 
 // --- Buckets (isolated, empty-criteria, round-robin) ---
@@ -76,22 +78,25 @@ assert(
   "buckets are flagged is_test (hidden from public availability/book, unbookable by real leads)",
 );
 
-// --- Membership: the agent is the sole member of EVERY bucket ---
-assert(seed.members.length === 2, "one membership row per bucket");
+// --- Membership: the primary agent is in EVERY bucket; the reassign target is
+// a bookable fallback in the FIRST bucket (SMOKE) only (#464). ---
 assert(
-  seed.members.every((m) => m.user_id === seed.user.id),
-  "every membership points at the smoke agent",
+  seed.members.filter((m) => m.user_id === seed.user.id).length === 2,
+  "primary agent is a member of both buckets",
 );
 assert(
-  ["SMOKE", "SMOKE2"].every((code) => seed.members.some((m) => m.bucketCode === code)),
-  "the agent is a member of every bucket",
+  ["SMOKE", "SMOKE2"].every((code) =>
+    seed.members.some((m) => m.bucketCode === code && m.user_id === seed.user.id),
+  ),
+  "the primary agent is a member of every bucket",
 );
 
-// --- Reassign target (#450): a SECOND bookable test agent, the explicit target
-// of the reassign smoke scenario. It must exist + be bookable (reassignBooking
-// requires both), be is_test, and be a member of NO bucket so round-robin never
-// picks it — a SMOKE booking always lands on the primary agent, leaving this one
-// as the only thing a reassign can move the booking to. ---
+// --- Reassign target (#450) + SMOKE fallback agent (#464): a SECOND bookable
+// test agent. It is the explicit target of the reassign scenario AND a bookable
+// member of the FIRST bucket (SMOKE), so round-robin CAN pick it — giving SMOKE
+// a real fallback for the reschedule-stickiness (#523) scenario. It must exist,
+// be bookable + is_test, be distinct from the primary, have its own working
+// hours, and join SMOKE but NOT SMOKE2 (keeping SMOKE2 single-agent). ---
 const target = seed.reassignTarget;
 assert(!!target, "a reassign-target agent is built when reassignTargetEmail is given");
 if (target) {
@@ -102,22 +107,41 @@ if (target) {
   assert(target.deactivated_at === null, "reassign target is active");
   assert(target.is_test === true, "reassign target is flagged is_test (hidden from UI, real leads can't book)");
   assert(target.id !== seed.user.id, "reassign target is a DISTINCT agent (reassign no-ops onto the same agent)");
+
+  // It now has its OWN schedule + working hours so round-robin can pick it.
+  const targetSchedule = seed.schedules.find((s) => s.user_id === target.id);
+  assert(!!targetSchedule, "reassign target has its own schedule (bookable as a SMOKE fallback)");
   assert(
-    !seed.members.some((m) => m.user_id === target.id),
-    "reassign target is a member of NO bucket (so round-robin never picks it)",
+    seed.rules.filter((r) => r.schedule_id === targetSchedule?.id).length === 5,
+    "reassign target has five Mon-Fri rules (9:00-17:00)",
+  );
+
+  // It joins SMOKE (the first bucket) only — a bookable fallback there, but
+  // SMOKE2 stays single-agent.
+  const targetMemberships = seed.members.filter((m) => m.user_id === target.id);
+  assert(
+    targetMemberships.length === 1 && targetMemberships[0].bucketCode === "SMOKE",
+    "reassign target is a member of SMOKE only (a bookable fallback), not SMOKE2",
   );
 }
 
-// No reassign target when the email is omitted (older seed posture stays valid).
+// No reassign target when the email is omitted: no target user, schedule, or
+// membership — a single-agent seed (older posture stays valid).
+const noTarget = buildSmokeSeed({ ...params, reassignTargetEmail: undefined });
+assert(noTarget.reassignTarget === null, "no reassign target when reassignTargetEmail is omitted");
+assert(noTarget.schedules.length === 1, "omitting the target seeds a single schedule");
 assert(
-  buildSmokeSeed({ ...params, reassignTargetEmail: undefined }).reassignTarget === null,
-  "no reassign target when reassignTargetEmail is omitted",
+  noTarget.members.every((m) => m.user_id === noTarget.user.id),
+  "omitting the target leaves only the primary agent's memberships",
 );
 
 // --- Idempotency: deterministic ids so re-running upserts in place ---
 const again = buildSmokeSeed(params);
 assert(again.user.id === seed.user.id, "agent id is deterministic across runs");
-assert(again.schedule.id === seed.schedule.id, "schedule id is deterministic across runs");
+assert(
+  again.schedules.map((s) => s.id).sort().join(",") === seed.schedules.map((s) => s.id).sort().join(","),
+  "schedule ids are deterministic across runs",
+);
 assert(again.reassignTarget?.id === seed.reassignTarget?.id, "reassign target id is deterministic across runs");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
