@@ -38,7 +38,6 @@ import {
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
-import { hasBlockingBusy } from "../src/lib/booking/core.ts";
 import type { WorkingRule } from "../src/lib/availability/compute.ts";
 import type {
   Booking,
@@ -64,6 +63,10 @@ const eventType = {
   regal_type: "call",
   description: "desc",
   duration_min: 30,
+  buffer_before_min: 0,
+  buffer_after_min: 0,
+  min_notice_min: 0,
+  daily_cap: null,
 } as unknown as EventType;
 const users: Record<string, User> = {
   a: { id: "a", name: "Agent A", email: "a@x.com" } as unknown as User,
@@ -139,6 +142,12 @@ interface FakeOpts {
   // Per-agent working hours the in-place reschedule guard reads (#527). Keyed by
   // userId; absent agents fall back to the default Mon-Fri 09:00-17:00 NY shift.
   workingHoursByUser?: Map<string, { timezone: string; rules: WorkingRule[] }>;
+  // Per-agent other-bookings the daily-cap guard counts (#536). Keyed by userId;
+  // ISO start instants of the agent's OTHER confirmed bookings on the target day.
+  agentDayBookings?: Map<string, string[]>;
+  // Emails whose live calendar read fails (#536): busyIntervalsForAgent returns
+  // null, so the in-place guard re-routes (matches the old isFree failure path).
+  busyReadFailEmails?: Set<string>;
 }
 
 // Default fake working hours: Mon-Fri 09:00-17:00 America/New_York. Covers every
@@ -151,7 +160,8 @@ const DEFAULT_WORKING_HOURS: { timezone: string; rules: WorkingRule[] } = {
 
 function makeDeps(opts: FakeOpts) {
   const calls = {
-    isFree: [] as string[],
+    busyIntervalsForAgent: [] as string[],
+    agentActiveBookingStartsMs: [] as { userId: string; excludeBookingId: string }[],
     agentWorkingHours: [] as string[],
     verifyFree: [] as string[][],
     createEvent: [] as { email: string; clientId?: string }[],
@@ -216,15 +226,25 @@ function makeDeps(opts: FakeOpts) {
       calls.roundRobinPreview.push(preview);
       return opts.candidates ?? ["a"];
     },
-    isFree: async (email, startIso, endIso, ignore) => {
-      calls.isFree.push(email);
-      if (!free.has(email)) return false;
-      const intervals = opts.busyByEmail?.get(email) ?? [];
-      return !hasBlockingBusy(intervals, Date.parse(startIso), Date.parse(endIso), ignore);
-    },
     agentWorkingHours: async (userId) => {
       calls.agentWorkingHours.push(userId);
       return opts.workingHoursByUser?.get(userId) ?? DEFAULT_WORKING_HOURS;
+    },
+    busyIntervalsForAgent: async (email, fromIso, toIso) => {
+      calls.busyIntervalsForAgent.push(email);
+      if (opts.busyReadFailEmails?.has(email)) return null;
+      // Mirror the old isFree fake's hard gate: an email NOT in the free set models
+      // a fully-busy calendar across the window. Finer-grained conflicts (own event,
+      // buffer cases) come from busyByEmail for emails that ARE free.
+      if (!free.has(email)) return [{ start: Date.parse(fromIso), end: Date.parse(toIso) }];
+      return (opts.busyByEmail?.get(email) ?? []).map((b) => ({
+        start: Date.parse(b.start),
+        end: Date.parse(b.end),
+      }));
+    },
+    agentActiveBookingStartsMs: async (userId, _fromIso, _toIso, excludeBookingId) => {
+      calls.agentActiveBookingStartsMs.push({ userId, excludeBookingId });
+      return (opts.agentDayBookings?.get(userId) ?? []).map((iso) => Date.parse(iso));
     },
     // Batched verify-on-book: one call per round-robin wave; returns the free
     // subset plus any emails that couldn't be checked. Mirrors the real dep.
@@ -472,6 +492,9 @@ function makeDeps(opts: FakeOpts) {
 
 // Validated reasons for the changed reschedule/cancel/reassign signatures.
 const RR = { code: "schedule_conflict", detail: null }; // reschedule
+// Fixed "now" for reschedule tests: well before the 2026-06-08+ fixture dates, so
+// the #536 min-notice guard treats those (future-relative-to-now) slots as valid.
+const NOW = Date.parse("2026-06-01T00:00:00.000Z");
 const CR = { code: "no_longer_interested", detail: null }; // cancel
 const SYS = { code: "owner_reassignment", detail: null }; // reassign (system)
 
@@ -921,7 +944,7 @@ async function run() {
       bookingById: rescheduled,
       freeEmails: new Set(["a@x.com"]),
     });
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(
       calls.updateEventTime.length === 1 && calls.updateEventTime[0].id === "gcal-old",
       "reschedule(same agent): moves the existing event in place",
@@ -987,7 +1010,7 @@ async function run() {
       busyByEmail: new Map([["a@x.com", [{ start: "2026-06-08T13:00:00.000Z", end: "2026-06-08T13:30:00.000Z" }]]]),
     });
     // +15min: new slot 13:15–13:45 overlaps the original 13:00–13:30 event.
-    const res = await rescheduleBooking("tok1", "2026-06-08T13:15:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-08T13:15:00.000Z", RR, "customer", deps, NOW);
     assert(
       res.booking.assigned_user_id === "a" && res.booking.agent_email === "a@x.com",
       "reschedule(sub-event-length): stays on the SAME agent, no silent re-route",
@@ -1033,7 +1056,7 @@ async function run() {
       ]),
     });
     // 2026-06-08T18:00Z = 14:00 NY Monday — past A's 13:30 shift end.
-    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
     assert(
       res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
       "reschedule(off-shift): re-routes to a working agent instead of staying in-place (#527)",
@@ -1074,7 +1097,7 @@ async function run() {
       ]),
     });
     // 2026-06-08T18:00Z = 14:00 NY Monday — inside A's 09:00-20:00 shift.
-    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
     assert(
       res.booking.assigned_user_id === "a" && res.booking.agent_email === "a@x.com",
       "reschedule(on-shift): stays on the same agent in-place (#527)",
@@ -1085,11 +1108,103 @@ async function run() {
     );
   }
 
+  // --- #536: reschedule that would put the agent OVER their daily cap -> re-routes
+  // instead of silently staying in-place. The agent is on-shift and calendar-free,
+  // but already at the cap for the target local day; the booker would never offer
+  // this slot for them, so the in-place guard must decline and reassign. ---
+  {
+    const capEvent = { ...eventType, daily_cap: 1 } as unknown as EventType;
+    const ctx = { booking: makeBooking({}), bucket, eventType: capEvent };
+    const rescheduled = {
+      booking: { ...ctx.booking, assigned_user_id: "b", agent_name: "Agent B", agent_email: "b@x.com",
+        starts_at: "2026-06-08T18:00:00.000Z", ends_at: "2026-06-08T18:30:00.000Z", status: "rescheduled" as const },
+      bucket, eventType: capEvent,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      candidates: ["b"], // A is over-cap; only B is offered by the schedule-aware reassign
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      // A already has one OTHER booking on 2026-06-08 (09:00 NY); cap is 1.
+      agentDayBookings: new Map([["a", ["2026-06-08T13:00:00.000Z"]]]),
+    });
+    // 18:00Z = 14:00 NY Monday — on-shift, calendar free, but A is at their daily cap.
+    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
+      "reschedule(over daily cap): re-routes off the capped agent (#536)",
+    );
+    assert(
+      calls.updateEventTime.length === 0 && calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
+      "reschedule(over daily cap): reassign churn, no in-place move (#536)",
+    );
+  }
+
+  // --- #536: reschedule into the agent's BUFFER window -> re-routes. The slot
+  // itself is calendar-free, but a busy block sits inside the required buffer-after
+  // gap, so the booker would never offer it; the in-place guard must decline. ---
+  {
+    const bufEvent = { ...eventType, buffer_after_min: 30 } as unknown as EventType;
+    const ctx = { booking: makeBooking({}), bucket, eventType: bufEvent };
+    const rescheduled = {
+      booking: { ...ctx.booking, assigned_user_id: "b", agent_name: "Agent B", agent_email: "b@x.com",
+        starts_at: "2026-06-08T18:00:00.000Z", ends_at: "2026-06-08T18:30:00.000Z", status: "rescheduled" as const },
+      bucket, eventType: bufEvent,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      candidates: ["b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      // A is free AT the slot (18:00-18:30) but busy 18:30-18:45, inside the 30-min
+      // buffer-after window [18:30, 19:00). B has no conflicts.
+      busyByEmail: new Map([["a@x.com", [{ start: "2026-06-08T18:30:00.000Z", end: "2026-06-08T18:45:00.000Z" }]]]),
+    });
+    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
+      "reschedule(buffer violation): re-routes off the agent whose buffer is violated (#536)",
+    );
+    assert(
+      calls.updateEventTime.length === 0 && calls.createEvent.length === 1,
+      "reschedule(buffer violation): reassign churn, no in-place move (#536)",
+    );
+  }
+
+  // --- #536: reschedule to a time inside the minimum-notice window -> rejected. The
+  // agent is on-shift and free, but the new time is too soon; no agent qualifies, so
+  // the in-place guard declines and the schedule-aware reassign finds nobody. ---
+  {
+    const noticeEvent = { ...eventType, min_notice_min: 120 } as unknown as EventType;
+    const ctx = { booking: makeBooking({}), bucket, eventType: noticeEvent };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      candidates: [], // too-soon: the schedule-aware reassign finds no eligible agent
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+    });
+    const slot = "2026-06-08T18:00:00.000Z";
+    const tooSoonNow = Date.parse(slot) - 30 * 60_000; // 30 min before the slot, notice is 120
+    let err: unknown;
+    try {
+      await rescheduleBooking("tok1", slot, RR, "customer", deps, tooSoonNow);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err != null && (err as Error).name === "NoEligibleAgentsError",
+      "reschedule(too soon): in-place guard declines and reassign finds nobody (#536)",
+    );
+    assert(
+      calls.updateEventTime.length === 0,
+      "reschedule(too soon): never moves the agent in place (#536)",
+    );
+  }
+
   // --- reschedule no-op / retry: records the reason ONCE, no move/webhook (#326 C1) ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType }; // starts 13:00Z
     const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
-    const res = await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", RR, "customer", deps, NOW);
     assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule no-op: returns the unchanged booking");
     assert(
       calls.claimReschedule === 0 && calls.updateEventTime.length === 0 && calls.createEvent.length === 0,
@@ -1105,7 +1220,7 @@ async function run() {
       calls.bookingEvents.length === 1 && calls.bookingEvents[0].reason_code === "schedule_conflict",
       "reschedule no-op: records the reason once (never silently dropped)",
     );
-    await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", RR, "customer", deps);
+    await rescheduleBooking("tok1", "2026-06-08T13:00:00.000Z", RR, "customer", deps, NOW);
     assert(
       calls.bookingEvents.length === 1,
       "reschedule retry: does not double-record the reason (idempotent)",
@@ -1122,7 +1237,7 @@ async function run() {
       // same-target double-submit is an idempotent no-op (not a conflict).
       heldLease: { target: "2026-06-09T14:00:00.000Z" },
     });
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(res.booking.starts_at === "2026-06-08T13:00:00.000Z", "reschedule dup: returns the booking without moving it");
     assert(calls.claimReschedule === 1, "reschedule dup: attempted the claim");
     assert(
@@ -1139,7 +1254,7 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com", "reschedule(reassign): moves to free agent B");
     assert(calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-old", "reschedule(reassign): old event deleted");
     assert(calls.createEvent.length === 1, "reschedule(reassign): new event created for B");
@@ -1193,7 +1308,7 @@ async function run() {
     crashAtCommit(deps); // crash at the commit, after the pin write + createEvent
     let crashed = false;
     try {
-      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     } catch {
       crashed = true;
     }
@@ -1201,7 +1316,7 @@ async function run() {
     // The crashed holder's lease must EXPIRE before a retry resumes (a fresh-lease
     // same-target retry is a deliberate no-op); then the retry adopts the pin.
     expireLease("bk1");
-    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     const clientIds = new Set(calls.createEvent.map((c) => c.clientId));
     assert(
       calls.createEvent.length >= 2 &&
@@ -1219,7 +1334,7 @@ async function run() {
     crashAtCommit(deps); // crash at the commit, after the in-place pin write + updateEventTime
     let crashed = false;
     try {
-      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     } catch {
       crashed = true;
     }
@@ -1228,7 +1343,7 @@ async function run() {
     // must short-circuit isFree entirely, so the poisoned read can't bump the agent.
     free.delete("a@x.com");
     expireLease("bk1");
-    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(
       res.booking.assigned_user_id === "a" &&
         res.booking.starts_at === "2026-06-09T14:00:00.000Z" &&
@@ -1248,7 +1363,7 @@ async function run() {
     });
     let err: unknown;
     try {
-      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     } catch (e) {
       err = e;
     }
@@ -1269,7 +1384,7 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx, candidates: ["b"], freeEmails: new Set(["b@x.com"]) });
-    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(
       calls.createEvent.length === 1 &&
         typeof calls.createEvent[0].clientId === "string" &&
@@ -1282,10 +1397,10 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
-    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps); // committed + released
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW); // committed + released
     let err: unknown;
     try {
-      await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps);
+      await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps, NOW);
     } catch (e) {
       err = e;
     }
@@ -1299,14 +1414,14 @@ async function run() {
     crashAtCommit(deps); // abandon the A->T1 reassign at the commit
     let crashed = false;
     try {
-      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     } catch {
       crashed = true;
     }
     assert(crashed, "headline-gap: A->T1 reschedule crashes after createEvent (abandoned pin)");
     // The abandoned holder's lease expires; a DIFFERENT-target retry adopts its seq.
     expireLease("bk1");
-    const res = await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps);
+    const res = await rescheduleBooking("tok1", "2026-06-10T15:00:00.000Z", RR, "customer", deps, NOW);
     assert(res.booking.starts_at === "2026-06-10T15:00:00.000Z", "headline-gap: booking lands on T2, not the abandoned T1");
     assert(
       calls.enqueueEventDeletion.length >= 1,
@@ -1341,7 +1456,7 @@ async function run() {
     const { deps } = makeDeps({ existing: ctx });
     let threw = false;
     try {
-      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps);
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     } catch {
       threw = true;
     }
@@ -1350,7 +1465,7 @@ async function run() {
     const { deps: deps2 } = makeDeps({ existing: null });
     let threw2 = false;
     try {
-      await rescheduleBooking("nope", "2026-06-09T14:00:00.000Z", RR, "customer", deps2);
+      await rescheduleBooking("nope", "2026-06-09T14:00:00.000Z", RR, "customer", deps2, NOW);
     } catch {
       threw2 = true;
     }
@@ -1361,7 +1476,7 @@ async function run() {
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx });
-    await cancelBooking("tok1", CR, "customer", deps);
+    await cancelBooking("tok1", CR, "customer", deps, NOW);
     assert(calls.deleteEvent.length === 1, "cancel: deletes the calendar event");
     assert(calls.deleteBusyBlocks.length === 1, "cancel: removes the busy block");
     assert(
@@ -1996,7 +2111,7 @@ async function run() {
     const bk = makeBooking({ id: "bkX", status: "confirmed", gcal_event_id: "gE", agent_email: "a@x.com" });
     const ctx = { booking: bk, bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx, deleteEventThrows: true });
-    await cancelBooking("tok1", CR, "customer", deps);
+    await cancelBooking("tok1", CR, "customer", deps, NOW);
     assert(calls.enqueueEventDeletion.length === 1, "cancel enqueues a deletion when deleteEvent fails");
     assert(calls.enqueueEventDeletion[0].eventId === "gE" && calls.enqueueEventDeletion[0].bookingId === "bkX",
       "enqueue carries the event id + booking id");
@@ -2006,7 +2121,7 @@ async function run() {
     const bk = makeBooking({ id: "bkY", status: "confirmed", gcal_event_id: "gE2", agent_email: "a@x.com" });
     const ctx = { booking: bk, bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx });
-    await cancelBooking("tok1", CR, "customer", deps);
+    await cancelBooking("tok1", CR, "customer", deps, NOW);
     assert(calls.enqueueEventDeletion.length === 0, "cancel does NOT enqueue when deleteEvent succeeds");
   }
 
@@ -2070,8 +2185,8 @@ async function run() {
     const active = makeBooking({ id: "bkRace", status: "confirmed", gcal_event_id: "g1" });
     const ctx = { booking: active, bucket, eventType };
     const { deps, calls } = makeDeps({ existing: ctx });
-    const first = await cancelBooking("tokRace", CR, "customer", deps);
-    const second = await cancelBooking("tokRace", CR, "customer", deps);
+    const first = await cancelBooking("tokRace", CR, "customer", deps, NOW);
+    const second = await cancelBooking("tokRace", CR, "customer", deps, NOW);
     assert(first === true, "atomic cancel: first caller wins the claim (true)");
     assert(second === false, "atomic cancel: second caller loses the claim (false), not a second success");
     assert(calls.webhooks.filter((w) => w.event === "booking.cancelled").length === 1,

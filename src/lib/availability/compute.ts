@@ -126,15 +126,86 @@ export function isWithinWorkingHours(
   return false;
 }
 
-function overlaps(
-  busy: { start: number; end: number }[],
-  start: number,
-  end: number,
-): boolean {
-  for (const b of busy) {
-    if (b.start < end && b.end > start) return true;
+/** The per-agent slot rules a single slot is judged against (#536). */
+export interface SlotRules {
+  durationMin: number;
+  bufferBeforeMin: number;
+  bufferAfterMin: number;
+  minNoticeMin: number;
+  dailyCap: number | null;
+}
+
+/** Bucket booking start instants by the agent's LOCAL calendar date. */
+function bookingsPerLocalDay(
+  bookingStartsMs: number[],
+  timezone: string,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const ms of bookingStartsMs) {
+    const key = DateTime.fromMillis(ms, { zone: timezone }).toISODate();
+    if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  return false;
+  return counts;
+}
+
+/**
+ * Whether the agent is under their daily cap for the LOCAL day of `startMs`.
+ * `dailyCap === null` means uncapped. `dayCounts` may be a precomputed
+ * local-date -> count map (the booker's hot loop builds it once); otherwise the
+ * count is derived from `bookingStartsMs`.
+ */
+function isUnderDailyCap(
+  bookingStartsMs: number[],
+  timezone: string,
+  startMs: number,
+  dailyCap: number | null,
+  dayCounts?: Map<string, number>,
+): boolean {
+  if (dailyCap === null) return true;
+  const dayKey = DateTime.fromMillis(startMs, { zone: timezone }).toISODate();
+  if (dayKey === null) return true;
+  const counts = dayCounts ?? bookingsPerLocalDay(bookingStartsMs, timezone);
+  return (counts.get(dayKey) ?? 0) < dailyCap;
+}
+
+/**
+ * The one predicate that decides whether a single agent can take a single slot
+ * (#536). Enforces ALL of: on-shift working hours, minimum notice, daily cap,
+ * and buffer-before/after free. Both the booker's slot computation
+ * (`memberOpenStarts`) and the in-place reschedule guard run THIS, so the two
+ * paths can't drift — a reschedule can never keep an agent on a slot the booker
+ * would never have offered.
+ *
+ * `opts.ignoreBusy` excludes one busy interval (the booking's OWN still-present
+ * event) so a sub-event-length in-place reschedule isn't a self-conflict (#523).
+ * `opts.dayCounts` lets the booker pass a precomputed per-day count for speed.
+ */
+export function isBookableSlotForAgent(
+  m: Pick<MemberAvailability, "timezone" | "rules" | "busy" | "bookingStartsMs">,
+  rules: SlotRules,
+  startMs: number,
+  nowMs: number,
+  opts?: { ignoreBusy?: { start: number; end: number }; dayCounts?: Map<string, number> },
+): boolean {
+  const endMs = startMs + rules.durationMin * MIN;
+  if (startMs < nowMs + rules.minNoticeMin * MIN) return false;
+  if (!isWithinWorkingHours(m.rules, m.timezone, startMs, endMs)) return false;
+  if (!isUnderDailyCap(m.bookingStartsMs, m.timezone, startMs, rules.dailyCap, opts?.dayCounts)) {
+    return false;
+  }
+  const winStart = startMs - rules.bufferBeforeMin * MIN;
+  const winEnd = endMs + rules.bufferAfterMin * MIN;
+  const ig = opts?.ignoreBusy;
+  for (const b of m.busy) {
+    const os = Math.max(b.start, winStart);
+    const oe = Math.min(b.end, winEnd);
+    if (os >= oe) continue; // no overlap with the buffered window
+    // The part of this busy interval overlapping our window lies entirely within
+    // the ignored own event (#523) — not a real conflict. Mirrors hasBlockingBusy.
+    if (ig && os >= ig.start && oe <= ig.end) continue;
+    return false;
+  }
+  return true;
 }
 
 /** Open start instants for a single member within the window. */
@@ -145,9 +216,15 @@ function memberOpenStarts(
   const open = new Set<number>();
   const fromMs = Date.parse(input.from);
   const toMs = Date.parse(input.to);
-  const earliest = input.nowMs + input.minNoticeMin * MIN;
   const durMs = input.durationMin * MIN;
   const stepMs = input.slotIntervalMin * MIN;
+  const rules: SlotRules = {
+    durationMin: input.durationMin,
+    bufferBeforeMin: input.bufferBeforeMin,
+    bufferAfterMin: input.bufferAfterMin,
+    minNoticeMin: input.minNoticeMin,
+    dailyCap: input.dailyCap,
+  };
 
   const rulesByDay = new Map<number, WorkingRule[]>();
   for (const r of m.rules) {
@@ -156,14 +233,9 @@ function memberOpenStarts(
     rulesByDay.set(r.weekday, list);
   }
 
-  // Pre-count bookings per local day for the daily cap.
-  const dayCounts = new Map<string, number>();
-  if (input.dailyCap !== null) {
-    for (const ms of m.bookingStartsMs) {
-      const key = DateTime.fromMillis(ms, { zone: m.timezone }).toISODate();
-      if (key) dayCounts.set(key, (dayCounts.get(key) ?? 0) + 1);
-    }
-  }
+  // Pre-count bookings per local day once; shared with the cap check below and
+  // passed to the predicate so the per-slot daily-cap decision isn't recomputed.
+  const dayCounts = bookingsPerLocalDay(m.bookingStartsMs, m.timezone);
 
   // Iterate local calendar days spanning the window.
   let day = DateTime.fromMillis(fromMs, { zone: m.timezone }).startOf("day");
@@ -171,6 +243,8 @@ function memberOpenStarts(
 
   while (day <= lastDay) {
     const dayKey = day.toISODate();
+    // Whole-day skip when already at the cap — a perf gate over the same dayCounts
+    // the predicate consults, so it can't disagree with the per-slot decision.
     const capped =
       input.dailyCap !== null &&
       dayKey !== null &&
@@ -187,15 +261,9 @@ function memberOpenStarts(
           const endMs = startMs + durMs;
 
           const inWindow = startMs >= fromMs && endMs <= toMs;
-          const enoughNotice = startMs >= earliest;
-          const free =
-            !overlaps(
-              m.busy,
-              startMs - input.bufferBeforeMin * MIN,
-              endMs + input.bufferAfterMin * MIN,
-            );
-
-          if (inWindow && enoughNotice && free) open.add(startMs);
+          if (inWindow && isBookableSlotForAgent(m, rules, startMs, input.nowMs, { dayCounts })) {
+            open.add(startMs);
+          }
           slot = slot.plus({ milliseconds: stepMs });
         }
       }
