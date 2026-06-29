@@ -210,6 +210,17 @@ function uniq(tag: string) {
   return { externalId: `smoke-${tag}-${n}`, email: `smoketest+${tag}-${n}@trypennie.com` };
 }
 
+// A reschedule target a safe margin LATER than `from` (default 60 min). Slots are
+// published at a FINER granularity than the event is long (e.g. 10-min slots for
+// a 20-min event), so the slot immediately after `from` OVERLAPS its still-present
+// event. Rescheduling onto an overlapping slot makes the sole test agent read its
+// own current event as a conflict, forcing a re-route the single-member bucket
+// can't satisfy (NO_ELIGIBLE_AGENTS). A safe-margin target keeps it in-place.
+function laterSlot(slots: string[], from: string, minGapMs = 60 * 60 * 1000): string | undefined {
+  const fromMs = new Date(from).getTime();
+  return slots.find((s) => new Date(s).getTime() - fromMs >= minGapMs);
+}
+
 // --- Scenario 0: dry run — validate routing with ZERO side effects ---
 async function scenarioDryRun(slotsA: string[]) {
   console.log("\n[0] dry run (no calendar event, no booking, no webhook)");
@@ -226,9 +237,16 @@ async function scenarioMain(slotsA: string[]) {
   console.log("\n[1] create -> deduped -> rescheduled (same bucket)");
   const id = uniq("main");
   // Distinct slot per scenario (the single test agent is shared); cleanup runs
-  // between scenarios, so holds release before the next one books.
-  const [slotA, slotB] = [slotsA[0], slotsA[1]];
+  // between scenarios, so holds release before the next one books. slotB is a
+  // safe margin LATER than slotA (not the adjacent slot) so the reschedule
+  // target doesn't overlap slotA's own event — see laterSlot.
+  const slotA = slotsA[0];
+  const slotB = laterSlot(slotsA, slotA);
   const phone = "+12155550100";
+  if (!slotB) {
+    check(false, "need a non-overlapping later slot to reschedule into");
+    return;
+  }
 
   const created = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
   trackForCleanup(created.body);
@@ -275,7 +293,15 @@ async function scenarioCrossBucket(slotsA: string[]) {
 async function scenarioConfirm(slotsA: string[]) {
   console.log("\n[3] weak match -> confirm_required -> confirm -> rescheduled");
   const id1 = uniq("confirm");
-  const [slotA, slotB] = [slotsA[3], slotsA[4]];
+  // slotB is a safe margin LATER than slotA (not the adjacent slot) so the
+  // confirmed reschedule stays in-place rather than overlapping slotA — see
+  // laterSlot.
+  const slotA = slotsA[3];
+  const slotB = laterSlot(slotsA, slotA);
+  if (!slotB) {
+    check(false, "need a non-overlapping later slot for the confirm reschedule");
+    return;
+  }
 
   // Existing appointment for this email (phone P1, externalId E1).
   const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: "+12155550110" });
