@@ -39,6 +39,7 @@ import {
 } from "../src/lib/booking/orchestration.ts";
 import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
 import { hasBlockingBusy } from "../src/lib/booking/core.ts";
+import type { WorkingRule } from "../src/lib/availability/compute.ts";
 import type {
   Booking,
   Bucket,
@@ -135,11 +136,23 @@ interface FakeOpts {
   // Per-agent calendar busy intervals the single-agent free check sees (#523):
   // models a reschedule overlapping the booking's OWN still-present event.
   busyByEmail?: Map<string, { start: string; end: string }[]>;
+  // Per-agent working hours the in-place reschedule guard reads (#527). Keyed by
+  // userId; absent agents fall back to the default Mon-Fri 09:00-17:00 NY shift.
+  workingHoursByUser?: Map<string, { timezone: string; rules: WorkingRule[] }>;
 }
+
+// Default fake working hours: Mon-Fri 09:00-17:00 America/New_York. Covers every
+// existing in-place reschedule target so the #527 guard is a no-op for them; the
+// #527 tests override it per-agent to model an off-shift / on-shift new time.
+const DEFAULT_WORKING_HOURS: { timezone: string; rules: WorkingRule[] } = {
+  timezone: "America/New_York",
+  rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 9 * 60, end_minute: 17 * 60 })),
+};
 
 function makeDeps(opts: FakeOpts) {
   const calls = {
     isFree: [] as string[],
+    agentWorkingHours: [] as string[],
     verifyFree: [] as string[][],
     createEvent: [] as { email: string; clientId?: string }[],
     deleteEvent: [] as { id: string }[],
@@ -208,6 +221,10 @@ function makeDeps(opts: FakeOpts) {
       if (!free.has(email)) return false;
       const intervals = opts.busyByEmail?.get(email) ?? [];
       return !hasBlockingBusy(intervals, Date.parse(startIso), Date.parse(endIso), ignore);
+    },
+    agentWorkingHours: async (userId) => {
+      calls.agentWorkingHours.push(userId);
+      return opts.workingHoursByUser?.get(userId) ?? DEFAULT_WORKING_HOURS;
     },
     // Batched verify-on-book: one call per round-robin wave; returns the free
     // subset plus any emails that couldn't be checked. Mirrors the real dep.
@@ -982,6 +999,89 @@ async function run() {
     assert(
       calls.createEvent.length === 0 && calls.deleteEvent.length === 0,
       "reschedule(sub-event-length): no reassign create/delete churn",
+    );
+  }
+
+  // --- reschedule PAST the assigned agent's shift end -> re-routes to a working
+  // agent even though the agent's CALENDAR is free (#527). `isFree` alone would
+  // keep the off-shift agent in place; the working-hours guard falls through to
+  // assignAgent so a working agent in the bucket can cover. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        assigned_user_id: "b",
+        agent_name: "Agent B",
+        agent_email: "b@x.com",
+        starts_at: "2026-06-08T18:00:00.000Z",
+        ends_at: "2026-06-08T18:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      // Availability-aware round-robin drops off-shift agent A; only B is offered.
+      candidates: ["b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]), // A's CALENDAR is free...
+      // ...but A's Monday shift ends 13:30 NY (17:30 UTC), so 14:00 NY is off-shift.
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 810 }] }],
+      ]),
+    });
+    // 2026-06-08T18:00Z = 14:00 NY Monday — past A's 13:30 shift end.
+    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps);
+    assert(
+      res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
+      "reschedule(off-shift): re-routes to a working agent instead of staying in-place (#527)",
+    );
+    assert(
+      calls.agentWorkingHours.includes("a"),
+      "reschedule(off-shift): consults the assigned agent's working hours",
+    );
+    assert(
+      calls.updateEventTime.length === 0 && calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
+      "reschedule(off-shift): reassign churn (delete old + create new), no in-place move",
+    );
+  }
+
+  // --- reschedule WITHIN the assigned agent's shift -> stays in-place even in a
+  // multi-agent bucket (#527 companion: the working-hours guard permits the move
+  // when the new time is on-shift and the calendar is free). ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-08T18:00:00.000Z",
+        ends_at: "2026-06-08T18:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      candidates: ["a", "b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      // A works a late shift (09:00-20:00 NY) that includes 14:00 NY.
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 20 * 60 }] }],
+      ]),
+    });
+    // 2026-06-08T18:00Z = 14:00 NY Monday — inside A's 09:00-20:00 shift.
+    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps);
+    assert(
+      res.booking.assigned_user_id === "a" && res.booking.agent_email === "a@x.com",
+      "reschedule(on-shift): stays on the same agent in-place (#527)",
+    );
+    assert(
+      calls.updateEventTime.length === 1 && calls.createEvent.length === 0 && calls.deleteEvent.length === 0,
+      "reschedule(on-shift): moves in place, no reassign churn",
     );
   }
 

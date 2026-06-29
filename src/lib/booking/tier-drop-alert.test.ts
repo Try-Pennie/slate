@@ -100,6 +100,7 @@ function makeTierDropDeps(): BookingDeps {
     roundRobinCandidates: async (bucket) =>
       bucket.code === "511" ? [] : ["a"],
     isFree: async () => true,
+    agentWorkingHours: async () => ({ timezone: "America/New_York", rules: [] }),
     verifyFree: async (emails) => ({
       free: new Set(emails),
       unverified: new Set<string>(),
