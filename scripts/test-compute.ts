@@ -4,7 +4,9 @@ import {
   computeBucketSlots,
   freeMembersForSlot,
   assembleMemberAvailability,
+  isWithinWorkingHours,
   type MemberAvailability,
+  type WorkingRule,
 } from "../src/lib/availability/compute.ts";
 
 let failures = 0;
@@ -114,6 +116,53 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
   assert(a.bookingStartsMs.length === 1 && a.bookingStartsMs[0] === Date.parse("2026-06-08T13:00:00.000Z"), "booking starts grouped per user");
   assert(b.timezone === "America/New_York" && b.rules.length === 0, "no schedule -> default tz + no rules");
   assert(b.busy.length === 1 && b.bookingStartsMs.length === 0, "user b's busy grouped; no bookings");
+}
+
+// --- isWithinWorkingHours (#527): rules-only on-shift guard for in-place reschedule ---
+{
+  // Monday 2026-06-08 NY, shift 09:00-17:00 (EDT, -4). 1=Mon..7=Sun (Luxon).
+  const monFri9to5: WorkingRule[] = [1, 2, 3, 4, 5].map((weekday) => ({
+    weekday,
+    start_minute: 9 * 60,
+    end_minute: 17 * 60,
+  }));
+  const ms = (iso: string) => Date.parse(iso);
+
+  // 09:00-09:30 NY = 13:00-13:30 UTC — fully inside the shift.
+  assert(
+    isWithinWorkingHours(monFri9to5, tz, ms("2026-06-08T13:00:00.000Z"), ms("2026-06-08T13:30:00.000Z")),
+    "within shift -> true",
+  );
+  // 16:30-17:00 NY = 20:30-21:00 UTC — ends exactly at shift end (inclusive).
+  assert(
+    isWithinWorkingHours(monFri9to5, tz, ms("2026-06-08T20:30:00.000Z"), ms("2026-06-08T21:00:00.000Z")),
+    "interval ending exactly at shift end -> true",
+  );
+  // 17:00-17:30 NY = 21:00-21:30 UTC — starts at/after shift end (#527 scenario).
+  assert(
+    !isWithinWorkingHours(monFri9to5, tz, ms("2026-06-08T21:00:00.000Z"), ms("2026-06-08T21:30:00.000Z")),
+    "interval starting past shift end -> false (the #527 gap)",
+  );
+  // 16:45-17:15 NY — straddles shift end by a few minutes.
+  assert(
+    !isWithinWorkingHours(monFri9to5, tz, ms("2026-06-08T20:45:00.000Z"), ms("2026-06-08T21:15:00.000Z")),
+    "interval spilling a few minutes past shift end -> false",
+  );
+  // 08:30-09:00 NY = 12:30-13:00 UTC — starts before shift opens.
+  assert(
+    !isWithinWorkingHours(monFri9to5, tz, ms("2026-06-08T12:30:00.000Z"), ms("2026-06-08T13:00:00.000Z")),
+    "interval starting before shift open -> false",
+  );
+  // Sunday 2026-06-07 (weekday 7) — no rule for that day.
+  assert(
+    !isWithinWorkingHours(monFri9to5, tz, ms("2026-06-07T13:00:00.000Z"), ms("2026-06-07T13:30:00.000Z")),
+    "weekday with no shift rule -> false",
+  );
+  // No rules at all (schedule-less agent) -> off-shift everywhere.
+  assert(
+    !isWithinWorkingHours([], tz, ms("2026-06-08T13:00:00.000Z"), ms("2026-06-08T13:30:00.000Z")),
+    "no working rules -> false (schedule-less agent re-routes)",
+  );
 }
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);

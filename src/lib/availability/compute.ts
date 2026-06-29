@@ -100,6 +100,32 @@ function timeOnDay(day: DateTime, minutes: number): DateTime {
   });
 }
 
+/**
+ * Rules-only on-shift guard (#527): true iff [startMs, endMs) fits entirely
+ * inside one of the agent's shift windows for the LOCAL weekday of `startMs`.
+ *
+ * Deliberately reads ONLY the working-hours rules, never `busy_blocks`: the
+ * in-place reschedule branch uses this alongside its own self-free check, and a
+ * busy-aware check would re-count the booking's own still-present cached event as
+ * a conflict — the exact #523 false-conflict the in-place branch exists to avoid.
+ * DST-correct via `timeOnDay` (wall-clock set, not a duration add).
+ */
+export function isWithinWorkingHours(
+  rules: WorkingRule[],
+  timezone: string,
+  startMs: number,
+  endMs: number,
+): boolean {
+  const day = DateTime.fromMillis(startMs, { zone: timezone }).startOf("day");
+  for (const rule of rules) {
+    if (rule.weekday !== day.weekday) continue;
+    const windowStart = timeOnDay(day, rule.start_minute).toMillis();
+    const windowEnd = timeOnDay(day, rule.end_minute).toMillis();
+    if (startMs >= windowStart && endMs <= windowEnd) return true;
+  }
+  return false;
+}
+
 function overlaps(
   busy: { start: number; end: number }[],
   start: number,

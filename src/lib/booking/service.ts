@@ -238,6 +238,37 @@ function realDeps(): BookingDeps {
     // rather than verifying primary-only and risking a double-book.
     isFree: async (email, startIso, endIso, ignore) =>
       (await checkAgentFree(email, startIso, endIso, ignore)) === "free",
+    // Working-hours schedule for one agent (#527), used by the in-place reschedule
+    // guard. Mirrors loadMembersAvailability's nested select. A schedule-less agent
+    // — or a transient read error — falls back to America/New_York + no rules, so
+    // the guard treats them as off-shift and re-routes (the SAFE default here: it
+    // sends the booking through the schedule-aware reassign path, never keeps an
+    // off-shift agent). Consistent with assembleMemberAvailability's default.
+    agentWorkingHours: async (userId) => {
+      const fallback = { timezone: "America/New_York", rules: [] };
+      const { data } = await supabaseAdmin()
+        .from("availability_schedules")
+        .select("timezone, availability_rules(weekday, start_minute, end_minute)")
+        .eq("user_id", userId)
+        .limit(1);
+      const row = (
+        data as unknown as
+          | {
+              timezone: string;
+              availability_rules: { weekday: number; start_minute: number; end_minute: number }[];
+            }[]
+          | null
+      )?.[0];
+      if (!row) return fallback;
+      return {
+        timezone: row.timezone,
+        rules: (row.availability_rules ?? []).map((r) => ({
+          weekday: r.weekday,
+          start_minute: r.start_minute,
+          end_minute: r.end_minute,
+        })),
+      };
+    },
     // Batched verify-on-book (#167): read the whole candidate wave's free/busy
     // in ONE cross-identity freeBusy call (chunked at Google's 20-calendar cap,
     // chunks fired with bounded concurrency) instead of one serial Google call

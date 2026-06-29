@@ -283,6 +283,13 @@ function buildDeps(
     // Single-agent verify: free only for agent_vh
     isFree: async (email) => email === agentVhEmail,
 
+    // Working hours (#527): unrestricted — this harness exercises tier-drop, not
+    // the in-place reschedule guard, so always report the agent on-shift.
+    agentWorkingHours: async () => ({
+      timezone: "America/New_York",
+      rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+    }),
+
     // Batched verify: free only for agent_vh
     verifyFree: async (emails) => ({
       free: new Set(emails.filter((e) => e === agentVhEmail)),

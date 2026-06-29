@@ -3,6 +3,7 @@
 // tsconfig path aliases, and type-only "@/" imports below are erased anyway.
 import { toE164 } from "../phone.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
+import { isWithinWorkingHours, type WorkingRule } from "../availability/compute.ts";
 import {
   bookingWindow,
   busyBlockFor,
@@ -273,6 +274,15 @@ export interface BookingDeps {
     endIso: string,
     ignore?: { start: string; end: string },
   ): Promise<boolean>;
+  /**
+   * The agent's working-hours schedule (#527): timezone + shift rules, read from
+   * availability_schedules + availability_rules. Used by the in-place reschedule
+   * branch to confirm the new time is on-shift before keeping the same agent —
+   * `isFree` only proves the calendar is empty, not that the agent is working.
+   * A schedule-less agent returns America/New_York + [] (matching the slot-compute
+   * default), so the guard treats them as off-shift and re-routes.
+   */
+  agentWorkingHours(userId: string): Promise<{ timezone: string; rules: WorkingRule[] }>;
   /**
    * Batched verify-on-book free check: given a wave of candidate emails, return
    * the subset confirmed free for [startIso, endIso). The real impl reads the
@@ -1970,7 +1980,27 @@ async function applyReschedule(
     // skipping the in-place branch and silently re-routing to another agent
     // (#523). The own event sits at the pre-move [starts_at, ends_at].
     const ownEvent = { start: booking.starts_at, end: booking.ends_at };
-    if (currentEmail && booking.assigned_user_id && (await deps.isFree(currentEmail, startIso, endIso, ownEvent))) {
+    // Working-hours guard (#527): the in-place branch keeps the current agent
+    // only if the new time also falls inside their working-hours SCHEDULE, not
+    // just that their calendar is free. `isFree` proves the calendar is empty but
+    // never that the agent is on-shift; without this, nudging a booking a few
+    // minutes past the agent's shift end would silently keep it on the off-shift
+    // agent instead of re-routing to a working one (the reassign path is
+    // schedule-aware via round-robin). The read is RULES-ONLY (never busy_blocks),
+    // so it can't re-introduce the #523 self-conflict the ownEvent exclusion
+    // fixes. A schedule-less agent has no shift windows -> off-shift -> re-route.
+    const wh = booking.assigned_user_id
+      ? await deps.agentWorkingHours(booking.assigned_user_id)
+      : null;
+    const onShift =
+      wh != null &&
+      isWithinWorkingHours(wh.rules, wh.timezone, Date.parse(startIso), Date.parse(endIso));
+    if (
+      currentEmail &&
+      booking.assigned_user_id &&
+      onShift &&
+      (await deps.isFree(currentEmail, startIso, endIso, ownEvent))
+    ) {
       pin = {
         reschedule_seq: seq,
         branch: "in_place",
