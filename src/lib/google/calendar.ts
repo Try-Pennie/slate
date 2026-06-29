@@ -1,6 +1,7 @@
 import { getDelegatedToken } from "@/lib/google/dwd";
 import {
   busyByCalendarFromResponse,
+  hasBlockingBusy,
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
@@ -155,11 +156,10 @@ export async function isFree(
   start: string,
   end: string,
   calendarIds: string[],
+  ignore?: Interval,
 ): Promise<boolean> {
   const busy = await freeBusy(email, start, end, calendarIds);
-  const s = Date.parse(start);
-  const e = Date.parse(end);
-  return !busy.some((b) => Date.parse(b.start) < e && Date.parse(b.end) > s);
+  return !hasBlockingBusy(busy, Date.parse(start), Date.parse(end), ignore);
 }
 
 /**

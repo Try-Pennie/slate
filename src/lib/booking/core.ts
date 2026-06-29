@@ -295,6 +295,32 @@ export interface BusyInterval {
   end: string;
 }
 
+/**
+ * Does any busy interval block the requested window, given that ONE interval —
+ * the booking's OWN still-present event (#523) — should be ignored? A busy block
+ * is a real conflict only if the part overlapping [startMs, endMs) falls OUTSIDE
+ * `ignore`. Google may merge the own event with a genuinely adjacent one, so this
+ * subtracts the ignored span precisely rather than dropping the whole merged
+ * block — it never falsely frees a real conflict. Boundaries exclusive; pass no
+ * `ignore` for a plain free check.
+ */
+export function hasBlockingBusy(
+  busy: { start: string; end: string }[],
+  startMs: number,
+  endMs: number,
+  ignore?: { start: string; end: string } | null,
+): boolean {
+  const igStart = ignore ? Date.parse(ignore.start) : NaN;
+  const igEnd = ignore ? Date.parse(ignore.end) : NaN;
+  return busy.some((b) => {
+    const os = Math.max(Date.parse(b.start), startMs);
+    const oe = Math.min(Date.parse(b.end), endMs);
+    if (os >= oe) return false; // no overlap with [start, end)
+    if (ignore && os >= igStart && oe <= igEnd) return false; // overlap lies entirely within the ignored event
+    return true;
+  });
+}
+
 /** Per-calendar outcome of a bulk freeBusy query: busy ranges or an error. */
 export interface CalendarBusy {
   busy: BusyInterval[];

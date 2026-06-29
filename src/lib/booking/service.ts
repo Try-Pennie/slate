@@ -198,6 +198,7 @@ async function checkAgentFree(
   email: string,
   startIso: string,
   endIso: string,
+  ignore?: { start: string; end: string },
 ): Promise<AgentVerdict> {
   const { readFailed, ids } = await calendarIdsForEmail(email);
   if (readFailed) {
@@ -208,7 +209,7 @@ async function checkAgentFree(
     ).catch(() => {});
     return "unverified";
   }
-  return (await isFree(email, startIso, endIso, ids.length ? ids : ["primary"]))
+  return (await isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore))
     ? "free"
     : "busy";
 }
@@ -235,8 +236,8 @@ function realDeps(): BookingDeps {
     // Single-agent free check (reschedule keep-same-agent). Checks ALL the
     // agent's calendars; on a calendar-read failure (#314) it skips + alerts
     // rather than verifying primary-only and risking a double-book.
-    isFree: async (email, startIso, endIso) =>
-      (await checkAgentFree(email, startIso, endIso)) === "free",
+    isFree: async (email, startIso, endIso, ignore) =>
+      (await checkAgentFree(email, startIso, endIso, ignore)) === "free",
     // Batched verify-on-book (#167): read the whole candidate wave's free/busy
     // in ONE cross-identity freeBusy call (chunked at Google's 20-calendar cap,
     // chunks fired with bounded concurrency) instead of one serial Google call
