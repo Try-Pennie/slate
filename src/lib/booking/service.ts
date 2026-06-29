@@ -48,6 +48,7 @@ import type {
   User,
 } from "@/lib/db/types";
 import { processBookingOutbox } from "@/lib/booking/outbox";
+import { drainBackoffMs, DRAIN_GIVE_UP_AT, DRAIN_ALERT_AFTER } from "@/lib/booking/drain-backoff";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 // A reschedule finishes in seconds; this TTL only governs reclaiming a lock
@@ -66,6 +67,9 @@ const OUTBOX_DRAIN_LIMIT = 50;
 const RESERVATION_LEASE_TTL_MS = 2 * 60 * 1000;
 const RESERVATION_DRAIN_LIMIT = 15;
 const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
+// Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
+// failing row alerts at most twice an hour, not every tick.
+const DRAIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -584,11 +588,16 @@ function realDeps(): BookingDeps {
 
     loadDrainableOutbox: async (limit) => {
       const nowIso = new Date().toISOString();
+      // Drainable = pending, lease free/expired, retry time reached (#445:
+      // next_attempt_at null/past), and under the give-up cap (a row past the cap
+      // stays pending + diagnosable but is no longer retried).
       const { data, error } = await supabaseAdmin()
         .from("booking_outbox")
         .select("*")
         .eq("status", "pending")
+        .lt("attempts", DRAIN_GIVE_UP_AT)
         .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+        .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
         .order("created_at", { ascending: true })
         .limit(limit);
       if (error) {
@@ -636,6 +645,18 @@ function realDeps(): BookingDeps {
         .eq("id", id);
     },
 
+    bumpOutboxAttempt: async (id, attempts, lastError) => {
+      await supabaseAdmin()
+        .from("booking_outbox")
+        .update({
+          attempts,
+          last_error: lastError,
+          next_attempt_at: new Date(Date.now() + drainBackoffMs(attempts)).toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+    },
+
     // --- Create reservations (#429 P4) ---
     insertReservation: async (row) => {
       const db = supabaseAdmin();
@@ -672,11 +693,15 @@ function realDeps(): BookingDeps {
 
     loadDrainableReservations: async (limit) => {
       const nowIso = new Date().toISOString();
+      // Same drainability gate as the outbox (#445): pending, lease free, retry
+      // time reached, under the give-up cap.
       const { data, error } = await supabaseAdmin()
         .from("booking_reservations")
         .select("*")
         .eq("status", "pending")
+        .lt("attempts", DRAIN_GIVE_UP_AT)
         .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+        .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
         .order("created_at", { ascending: true })
         .limit(limit);
       if (error) {
@@ -701,6 +726,17 @@ function realDeps(): BookingDeps {
       await supabaseAdmin()
         .from("booking_reservations")
         .update({ lease_until: null })
+        .eq("id", id);
+    },
+
+    bumpReservationAttempt: async (id, attempts, lastError) => {
+      await supabaseAdmin()
+        .from("booking_reservations")
+        .update({
+          attempts,
+          last_error: lastError,
+          next_attempt_at: new Date(Date.now() + drainBackoffMs(attempts)).toISOString(),
+        })
         .eq("id", id);
     },
 
@@ -1358,11 +1394,23 @@ export async function reconcileMissingBusyBlocks(limit: number) {
  * no-op until producers (P3/P4) write rows and register handlers.
  */
 export async function drainBookingOutbox() {
-  return processBookingOutbox(
+  const result = await processBookingOutbox(
     realDeps(),
     OUTBOX_DRAIN_LIMIT,
     orchestration.OUTBOX_HANDLERS,
   );
+  if (result.stuck.length > 0) {
+    const ids = result.stuck.map((r) => r.id).slice(0, 10).join(", ");
+    await sendThrottledAlert(
+      "outbox_drain_stuck",
+      DRAIN_ALERT_COOLDOWN_MS,
+      `Slate: ${result.stuck.length} booking-outbox row(s) have failed >= ${DRAIN_ALERT_AFTER} delivery attempts and are backing off (a mutation's side effects - calendar/webhook - are not completing). Diagnose via booking_outbox.last_error; rows: ${ids}.`,
+    ).catch(() => {});
+  }
+  // Return a PII-free summary: the full stuck rows carry attendee data in their
+  // payload, and this flows into the cron HTTP response body.
+  const { stuck, ...summary } = result;
+  return { ...summary, stuck: stuck.length };
 }
 
 /**
@@ -1377,10 +1425,20 @@ export async function drainBookingReservations() {
     deps,
     RESERVATION_DRAIN_LIMIT,
   );
+  if (result.stuck.length > 0) {
+    const ids = result.stuck.map((r) => r.id).slice(0, 10).join(", ");
+    await sendThrottledAlert(
+      "reservation_drain_stuck",
+      DRAIN_ALERT_COOLDOWN_MS,
+      `Slate: ${result.stuck.length} booking reservation(s) have failed >= ${DRAIN_ALERT_AFTER} completion attempts and are backing off (a crash-recovered create is not completing). Diagnose via booking_reservations.last_error; rows: ${ids}.`,
+    ).catch(() => {});
+  }
   // Retention: delete up to a batch of pending reservations older than the TTL.
   const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();
   await deps.deleteExpiredReservations(cutoff, RESERVATION_DRAIN_LIMIT).catch(() => {});
-  return result;
+  // PII-free summary (stuck rows carry attendee payload -> cron response body).
+  const { stuck, ...summary } = result;
+  return { ...summary, stuck: stuck.length };
 }
 
 /**

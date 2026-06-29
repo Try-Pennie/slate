@@ -26,6 +26,7 @@ import {
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
+import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
 import { resolveBucketPool } from "../availability/service.ts";
 import { recordRoutingDecision } from "../routing/record.ts";
@@ -345,6 +346,10 @@ export interface BookingDeps {
   markOutboxDelivered(id: string): Promise<void>;
   /** Clear the lease so the row is reclaimable (run in a finally). */
   releaseOutboxLease(id: string): Promise<void>;
+  /** Record a failed drain pass (#445): bump attempts, store last_error, and set
+   *  next_attempt_at to now + exponential backoff so the row isn't re-attempted
+   *  until then. */
+  bumpOutboxAttempt(id: string, attempts: number, lastError: string): Promise<void>;
   // --- Create reservations (#429 P4): intent-first crash-safe create ---
   /** Insert the reservation, OR — if another create with the same idempotency_key
    *  already won the UNIQUE race — return THAT existing reservation, so the loser
@@ -359,6 +364,9 @@ export interface BookingDeps {
   /** Gated lease claim; true if THIS call took it (drain vs inline guard). */
   leaseReservation(id: string): Promise<boolean>;
   releaseReservationLease(id: string): Promise<void>;
+  /** Record a failed reservation-drain pass (#445): bump attempts, store
+   *  last_error, set next_attempt_at to now + exponential backoff. */
+  bumpReservationAttempt(id: string, attempts: number, lastError: string): Promise<void>;
   /** Retention: delete up to `limit` pending reservations older than the cutoff
    *  (abandoned rows whose booking never completed). */
   deleteExpiredReservations(olderThanIso: string, limit: number): Promise<void>;
@@ -1454,23 +1462,44 @@ async function legacyCreateBooking(
 export async function processBookingReservations(
   deps: BookingDeps,
   limit: number,
-): Promise<{ processed: number; completed: number; failed: number }> {
+): Promise<{
+  processed: number;
+  completed: number;
+  failed: number;
+  stuck: BookingReservation[];
+}> {
   const rows = await deps.loadDrainableReservations(limit);
   let completed = 0;
   let failed = 0;
+  const stuck: BookingReservation[] = [];
   for (const reservation of rows) {
     if (!(await deps.leaseReservation(reservation.id))) continue;
     try {
       await completeReservation(deps, reservation);
       completed++;
-    } catch {
-      // completeReservation deletes the row on a genuine SlotUnavailable; a
-      // transient failure leaves it pending — release the lease so we retry.
+    } catch (err) {
       failed++;
+      // A genuine SlotUnavailable is TERMINAL: completeReservation already deleted
+      // the row (the slot was taken), so don't bump/alert - that would schedule a
+      // backoff on a row that no longer exists and could fire a "not completing"
+      // alert pointing on-call at a deleted row. Only a TRANSIENT failure leaves
+      // the row pending: bump attempts + last_error with backoff (#445) so we
+      // don't re-hit it every tick; past the alert threshold it's reported stuck.
+      if (!(err instanceof SlotUnavailableError)) {
+        const attempts = reservation.attempts + 1;
+        const lastError = err instanceof Error ? err.message : String(err);
+        await deps.bumpReservationAttempt(reservation.id, attempts, lastError);
+        if (attempts >= DRAIN_ALERT_AFTER) {
+          stuck.push({ ...reservation, attempts, last_error: lastError });
+        }
+      }
+    } finally {
+      // Always release, even if the bump above rejected - mirror the outbox
+      // drain so a transient bump error can't leak the lease or abort the batch.
       await deps.releaseReservationLease(reservation.id);
     }
   }
-  return { processed: rows.length, completed, failed };
+  return { processed: rows.length, completed, failed, stuck };
 }
 
 /**
@@ -2027,6 +2056,7 @@ async function applyReschedule(
         lease_until: null,
         attempts: 0,
         last_error: null,
+        next_attempt_at: null,
         created_at: "",
         updated_at: "",
       },
@@ -2174,6 +2204,7 @@ export async function reassignBooking(
         lease_until: null,
         attempts: 0,
         last_error: null,
+        next_attempt_at: null,
         created_at: "",
         updated_at: "",
       },
@@ -2264,6 +2295,7 @@ export async function cancelBooking(
         lease_until: null,
         attempts: 0,
         last_error: null,
+        next_attempt_at: null,
         created_at: "",
         updated_at: "",
       },

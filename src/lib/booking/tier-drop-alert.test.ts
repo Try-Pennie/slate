@@ -133,6 +133,7 @@ function makeTierDropDeps(): BookingDeps {
     saveOutboxSteps: noop,
     markOutboxDelivered: noop,
     releaseOutboxLease: noop,
+    bumpOutboxAttempt: noop,
     insertReservation: async (row) => ({
       id: "resv-1",
       ...row,
@@ -140,6 +141,7 @@ function makeTierDropDeps(): BookingDeps {
       lease_until: null,
       attempts: 0,
       last_error: null,
+      next_attempt_at: null,
       created_at: "",
       updated_at: "",
     }),
@@ -148,6 +150,7 @@ function makeTierDropDeps(): BookingDeps {
     loadDrainableReservations: async () => [] as BookingReservation[],
     leaseReservation: async () => true,
     releaseReservationLease: noop,
+    bumpReservationAttempt: noop,
     deleteExpiredReservations: noop,
     updateBooking: noop,
     claimCancellation: async () => true,

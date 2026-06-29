@@ -147,6 +147,7 @@ function makeDeps(opts: FakeOpts) {
     completeBookingsIfDue: [] as string[][],
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
     deletedReservations: [] as string[],
+    reservationBumps: [] as { id: string; attempts: number; lastError: string }[],
     webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null; bucket_code: string | undefined }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -382,6 +383,9 @@ function makeDeps(opts: FakeOpts) {
     loadDrainableReservations: async () => opts.drainableReservations ?? [],
     leaseReservation: async () => true,
     releaseReservationLease: async () => {},
+    bumpReservationAttempt: async (id: string, attempts: number, lastError: string) => {
+      calls.reservationBumps.push({ id, attempts, lastError });
+    },
     deleteExpiredReservations: async () => {},
     findActiveBookingsForPerson: async () => opts.personBookings ?? [],
     queryBookings: async (filter) => {
@@ -651,6 +655,7 @@ async function run() {
       lease_until: null,
       attempts: 0,
       last_error: null,
+      next_attempt_at: null,
       created_at: "",
       updated_at: "",
     };
@@ -667,6 +672,90 @@ async function run() {
       calls.deletedReservations.length === 1 && calls.deletedReservations[0] === "resv-crash",
       "drain: deletes the reservation on success",
     );
+  }
+
+  // --- reservation drain: a transient failure bumps + backs off + alerts (#445) -
+  {
+    const reservation: BookingReservation = {
+      id: "resv-stuck",
+      idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+      pinned_user_id: "a",
+      pinned_agent_email: "a@x.com",
+      gcal_client_id: "slatedeadbeef",
+      payload: {
+        booking: {
+          org_id: "org1",
+          bucket_id: "bkt1",
+          event_type_id: "et1",
+          assigned_user_id: "a",
+          agent_name: "Agent A",
+          agent_email: "a@x.com",
+          starts_at: "2026-06-08T13:00:00.000Z",
+          ends_at: "2026-06-08T13:30:00.000Z",
+          original_starts_at: "2026-06-08T13:00:00.000Z",
+          original_ends_at: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          status: "confirmed",
+          salesforce_id: "sf1",
+          attendee_name: "Kris",
+          attendee_email: "k@x.com",
+          attendee_phone: "+12035615295",
+          prefill: {},
+          gcal_event_id: "slatedeadbeef",
+          manage_token: "tok-resv",
+          idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+          external_id: null,
+          routing_trace: {
+            bucket_code: "411",
+            bucket_id: "bkt1",
+            considered: ["a"],
+            chosen_user_id: "a",
+            fallback_applied: false,
+          },
+        },
+        event: {
+          summary: "Senior Loan Advisor Call with Kris",
+          description: "desc",
+          start: "2026-06-08T13:00:00.000Z",
+          end: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          attendeeEmail: "k@x.com",
+          attendeeName: "Kris",
+        },
+        bucketCode: "411",
+      },
+      status: "pending",
+      lease_until: null,
+      attempts: 4, // a 5th failure this pass -> crosses the alert threshold
+      last_error: "earlier failure",
+      next_attempt_at: null,
+      created_at: "",
+      updated_at: "",
+    };
+    // insertBookingFails makes completeReservation throw (a transient DB failure).
+    const { deps, calls } = makeDeps({
+      drainableReservations: [reservation],
+      insertBookingFails: true,
+    });
+    const res = await processBookingReservations(deps, 15);
+    assert(res.processed === 1 && res.completed === 0 && res.failed === 1, "drain: a transient failure is counted, not completed");
+    assert(calls.deletedReservations.length === 0, "drain: a transient failure does NOT delete the reservation (it retries later)");
+    assert(calls.reservationBumps.length === 1, "drain: the failed reservation is bumped (attempts + backoff scheduled)");
+    assert(calls.reservationBumps[0]?.attempts === 5, "drain: bump increments the prior attempt count (4 -> 5)");
+    assert(res.stuck.length === 1 && res.stuck[0]?.id === "resv-stuck", "drain: a reservation past the alert threshold is reported stuck");
+
+    // Terminal SlotUnavailable (slot genuinely taken): completeReservation deletes
+    // the row and throws. The drain must NOT bump or alert (no phantom row) (#445).
+    const terminal: BookingReservation = { ...reservation, id: "resv-terminal", attempts: 4 };
+    const { deps: tDeps, calls: tCalls } = makeDeps({
+      drainableReservations: [terminal],
+      insertBookingConflict: true,
+    });
+    const tRes = await processBookingReservations(tDeps, 15);
+    assert(tRes.failed === 1, "drain: a terminal slot-taken reservation is counted failed");
+    assert(tCalls.deletedReservations.includes("resv-terminal"), "drain: terminal SlotUnavailable deletes the reservation");
+    assert(tCalls.reservationBumps.length === 0, "drain: a terminal slot-taken reservation is NOT bumped (no backoff on a deleted row)");
+    assert(tRes.stuck.length === 0, "drain: a terminal slot-taken reservation does NOT fire a stuck alert");
   }
 
   // --- createBooking: verify-on-book walks past busy A to free B ---
