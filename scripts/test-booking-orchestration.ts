@@ -129,6 +129,8 @@ interface FakeOpts {
   listResult?: { rows: Booking[]; buckets: Bucket[] }; // queryBookings result (#392)
   deleteEventThrows?: boolean;
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
+  reassignSwapTerminal?: boolean; // reassign_booking_swap returns updated=false (#449)
+  reassignSwapThrows?: boolean; // reassign_booking_swap rejects (rpc/network error) (#449)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -148,6 +150,7 @@ function makeDeps(opts: FakeOpts) {
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
     deletedReservations: [] as string[],
     reservationBumps: [] as { id: string; attempts: number; lastError: string }[],
+    reassignSwaps: [] as { bookingId: string; userId: string; gcalEventId: string; prevGcal: string | null }[],
     webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null; bucket_code: string | undefined }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -256,6 +259,29 @@ function makeDeps(opts: FakeOpts) {
     },
     moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
       calls.moveBusyBlock.push({ userId, startIso, endIso, bookingId });
+    },
+    reassignSwap: async ({ bookingId, userId, agentName, agentEmail, gcalEventId, routingTrace }) => {
+      if (opts.reassignSwapThrows) throw new Error("rpc down");
+      const ctx = [opts.bookingById, opts.existing].find((c) => c?.booking?.id === bookingId);
+      const prev = ctx?.booking;
+      // Model a concurrent cancellation between load and swap, or a terminal row.
+      if (!prev || opts.reassignSwapTerminal || prev.status === "cancelled" || prev.status === "completed") {
+        return { prevGcalEventId: null, prevAgentEmail: null, updated: false };
+      }
+      const prevGcal = prev.gcal_event_id ?? null;
+      const prevEmail = prev.agent_email ?? null;
+      calls.reassignSwaps.push({ bookingId, userId, gcalEventId, prevGcal });
+      // Persist so the outbox handlers re-reading after the swap see the new agent.
+      Object.assign(prev, {
+        assigned_user_id: userId,
+        agent_name: agentName,
+        agent_email: agentEmail,
+        gcal_event_id: gcalEventId,
+        status: "rescheduled",
+        allow_double_book: true,
+        routing_trace: routingTrace,
+      });
+      return { prevGcalEventId: prevGcal, prevAgentEmail: prevEmail, updated: true };
     },
     deleteBusyBlocksForBooking: async (id) => {
       calls.deleteBusyBlocks.push(id);
@@ -1407,16 +1433,22 @@ async function run() {
       res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
       "reassign: booking moved to the owning agent",
     );
-    assert(calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-old", "reassign: old agent's event removed");
+    // #449: the new event is created FIRST, then the atomic swap returns the
+    // event it REPLACED ("gcal-old"), which is what gets deleted - not a stale
+    // up-front read. The new event differs from the previous, so it's deleted.
     assert(calls.createEvent.length === 1, "reassign: event created on the owning agent");
-    const patch = calls.updateBooking.find((u) => u.id === "bk1")?.patch;
     assert(
-      !!patch && patch.allow_double_book === true && patch.assigned_user_id === "b",
+      calls.reassignSwaps.length === 1 && calls.reassignSwaps[0].userId === "b",
+      "reassign: goes through the atomic reassign_booking_swap (not a plain update)",
+    );
+    assert(calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-old", "reassign: the REPLACED old event is removed (the swap's previous, not a stale read)");
+    assert(
+      res.booking.allow_double_book === true && res.booking.assigned_user_id === "b",
       "reassign: marks allow_double_book and the new agent",
     );
     assert(
-      patch?.routing_trace?.reassignments?.[0]?.from === "a" &&
-        patch?.routing_trace?.reassignments?.[0]?.to === "b",
+      res.booking.routing_trace?.reassignments?.[0]?.from === "a" &&
+        res.booking.routing_trace?.reassignments?.[0]?.to === "b",
       "reassign: records the override in routing_trace",
     );
     assert(
@@ -1475,6 +1507,61 @@ async function run() {
     assert(
       dB2.calls.createEvent[0]?.clientId === clientB,
       "reassign: same booking+target yields the SAME client id (idempotent retry)",
+    );
+  }
+
+  // --- reassign: same-target re-submit reuses the event, must NOT delete it (#449) ---
+  // When the event created for the target equals the event the swap replaced
+  // (a deterministic-id 409 reuse on a same-target re-submit), deleting it would
+  // remove the LIVE event, so the guard must skip the delete.
+  {
+    // Booking currently on "a"; its current event id is "gcal-x". Make createEvent
+    // return that same id, so the swap's previous == the new event.
+    const ctx = { booking: makeBooking({ gcal_event_id: "gcal-x", agent_email: "a@x.com", assigned_user_id: "a" }), bucket, eventType };
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
+    deps.createEvent = async () => "gcal-x";
+    await reassignBooking("bk1", "b@x.com", SYS, deps);
+    assert(
+      calls.reassignSwaps.length === 1 && calls.deleteEvent.length === 0,
+      "reassign: when the swap's previous event equals the new event, the live event is NOT deleted",
+    );
+  }
+
+  // --- reassign: a swap that did not take (terminal) cleans up the created event (#449) ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner, reassignSwapTerminal: true });
+    let threw = false;
+    try {
+      await reassignBooking("bk1", "b@x.com", SYS, deps);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "reassign: a booking that went terminal during the swap surfaces an error");
+    assert(calls.createEvent.length === 1, "reassign: the event was optimistically created");
+    assert(
+      calls.deleteEvent.length === 1,
+      "reassign: the optimistically-created event is cleaned up (not orphaned) when the swap doesn't take",
+    );
+  }
+
+  // --- reassign: a swap RPC error also cleans up the created event + rethrows (#449) ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner, reassignSwapThrows: true });
+    let msg = "";
+    try {
+      await reassignBooking("bk1", "b@x.com", SYS, deps);
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    assert(msg === "rpc down", "reassign: a swap RPC error surfaces the original error (not a masked message)");
+    assert(
+      calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
+      "reassign: a swap RPC error still cleans up the optimistically-created event (no orphan)",
     );
   }
 

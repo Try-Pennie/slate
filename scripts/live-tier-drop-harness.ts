@@ -358,6 +358,9 @@ function buildDeps(
         p_ends_at: endIso,
       });
     },
+    // The harness never drives a reassign; a no-op stub keeps the BookingDeps
+    // shape complete (#449) so it can't throw "not a function" if it ever does.
+    reassignSwap: async () => ({ prevGcalEventId: null, prevAgentEmail: null, updated: true }),
 
     deleteBusyBlocksForBooking: async (bookingId) => {
       await db().from("busy_blocks").delete().eq("booking_id", bookingId);

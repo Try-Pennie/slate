@@ -120,6 +120,7 @@ function makeTierDropDeps(): BookingDeps {
     }),
     insertBusyBlock: noop,
     moveBusyBlock: noop,
+    reassignSwap: async () => ({ prevGcalEventId: null, prevAgentEmail: null, updated: true }),
     deleteBusyBlocksForBooking: noop,
     loadReconcilableBusyBlocks: async () =>
       [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[],
