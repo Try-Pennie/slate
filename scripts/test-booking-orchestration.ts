@@ -38,6 +38,7 @@ import {
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
+import { hasBlockingBusy } from "../src/lib/booking/core.ts";
 import type {
   Booking,
   Bucket,
@@ -131,6 +132,9 @@ interface FakeOpts {
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
   reassignSwapTerminal?: boolean; // reassign_booking_swap returns updated=false (#449)
   reassignSwapThrows?: boolean; // reassign_booking_swap rejects (rpc/network error) (#449)
+  // Per-agent calendar busy intervals the single-agent free check sees (#523):
+  // models a reschedule overlapping the booking's OWN still-present event.
+  busyByEmail?: Map<string, { start: string; end: string }[]>;
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -199,18 +203,26 @@ function makeDeps(opts: FakeOpts) {
       calls.roundRobinPreview.push(preview);
       return opts.candidates ?? ["a"];
     },
-    isFree: async (email) => {
+    isFree: async (email, startIso, endIso, ignore) => {
       calls.isFree.push(email);
-      return free.has(email);
+      if (!free.has(email)) return false;
+      const intervals = opts.busyByEmail?.get(email) ?? [];
+      return !hasBlockingBusy(intervals, Date.parse(startIso), Date.parse(endIso), ignore);
     },
     // Batched verify-on-book: one call per round-robin wave; returns the free
     // subset plus any emails that couldn't be checked. Mirrors the real dep.
-    verifyFree: async (emails) => {
+    verifyFree: async (emails, startIso, endIso) => {
       calls.verifyFree.push(emails);
       const unverified = opts.unverifiedEmails ?? new Set<string>();
+      const s = Date.parse(startIso);
+      const e = Date.parse(endIso);
+      const busyAt = (email: string) =>
+        (opts.busyByEmail?.get(email) ?? []).some(
+          (b) => Date.parse(b.start) < e && Date.parse(b.end) > s,
+        );
       return {
-        free: new Set(emails.filter((e) => free.has(e))),
-        unverified: new Set(emails.filter((e) => unverified.has(e))),
+        free: new Set(emails.filter((em) => free.has(em) && !busyAt(em))),
+        unverified: new Set(emails.filter((em) => unverified.has(em))),
       };
     },
     createEvent: async (email, _args, clientId) => {
@@ -930,6 +942,46 @@ async function run() {
       JSON.stringify(calls.webhooks[0].reason) ===
         JSON.stringify({ code: "schedule_conflict", detail: null, initiator: "customer" }),
       "reschedule: webhook payload carries the reason + initiator",
+    );
+  }
+
+  // --- reschedule by LESS than the event length: stays in-place on the SAME
+  // agent even in a multi-agent bucket (#523). The booking's own still-present
+  // event overlaps the new slot; the self-free check must exclude it, else the
+  // current agent looks busy and the booking silently re-routes to another. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-08T13:15:00.000Z",
+        ends_at: "2026-06-08T13:45:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      candidates: ["a", "b"], // a multi-agent bucket: re-route would pick a DIFFERENT agent
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      // a@x.com is busy ONLY with its own current event (13:00–13:30).
+      busyByEmail: new Map([["a@x.com", [{ start: "2026-06-08T13:00:00.000Z", end: "2026-06-08T13:30:00.000Z" }]]]),
+    });
+    // +15min: new slot 13:15–13:45 overlaps the original 13:00–13:30 event.
+    const res = await rescheduleBooking("tok1", "2026-06-08T13:15:00.000Z", RR, "customer", deps);
+    assert(
+      res.booking.assigned_user_id === "a" && res.booking.agent_email === "a@x.com",
+      "reschedule(sub-event-length): stays on the SAME agent, no silent re-route",
+    );
+    assert(
+      calls.updateEventTime.length === 1 && calls.updateEventTime[0].id === "gcal-old",
+      "reschedule(sub-event-length): moves the existing event in place",
+    );
+    assert(
+      calls.createEvent.length === 0 && calls.deleteEvent.length === 0,
+      "reschedule(sub-event-length): no reassign create/delete churn",
     );
   }
 

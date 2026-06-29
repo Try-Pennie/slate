@@ -263,8 +263,16 @@ export interface BookingDeps {
     preview?: boolean,
   ): Promise<string[]>;
   // google calendar
-  /** Single-agent free check — used by reschedule to keep the same agent. */
-  isFree(email: string, startIso: string, endIso: string): Promise<boolean>;
+  /** Single-agent free check — used by reschedule to keep the same agent.
+   *  `ignore` excludes one interval (the booking's OWN still-present event) from
+   *  the busy read so a sub-event-length reschedule, whose new slot overlaps the
+   *  old one, isn't counted as a self-conflict and silently re-routed (#523). */
+  isFree(
+    email: string,
+    startIso: string,
+    endIso: string,
+    ignore?: { start: string; end: string },
+  ): Promise<boolean>;
   /**
    * Batched verify-on-book free check: given a wave of candidate emails, return
    * the subset confirmed free for [startIso, endIso). The real impl reads the
@@ -1956,7 +1964,13 @@ async function applyReschedule(
     // Branch decision — the ONLY place isFree / assignAgent run, and only on a
     // FRESH attempt. A resume never reaches here, so a poisoned freeBusy can't
     // flip a same-agent move to a new agent (window b).
-    if (currentEmail && booking.assigned_user_id && (await deps.isFree(currentEmail, startIso, endIso))) {
+    // Exclude the booking's OWN current event from the self-free check: a
+    // reschedule that shifts by less than the event length overlaps its own
+    // still-present event, which freeBusy would otherwise count as a conflict —
+    // skipping the in-place branch and silently re-routing to another agent
+    // (#523). The own event sits at the pre-move [starts_at, ends_at].
+    const ownEvent = { start: booking.starts_at, end: booking.ends_at };
+    if (currentEmail && booking.assigned_user_id && (await deps.isFree(currentEmail, startIso, endIso, ownEvent))) {
       pin = {
         reschedule_seq: seq,
         branch: "in_place",
