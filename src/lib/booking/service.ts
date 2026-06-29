@@ -514,6 +514,58 @@ function realDeps(): BookingDeps {
       }
     },
 
+    loadActiveUpcomingBookings: async (limit) => {
+      // Active bookings whose slot is still in the future and that have an
+      // assigned agent (a null-agent booking can't own a per-user busy_block).
+      // Ordered created_at DESC: a missed write-through INSERT happens at create
+      // time, so the freshest bookings are the likeliest to be missing a block -
+      // scan those first within the `limit` cap.
+      const { data, error } = await supabaseAdmin()
+        .from("bookings")
+        .select("id, assigned_user_id, starts_at, ends_at")
+        .in("status", ["confirmed", "rescheduled"])
+        .gte("ends_at", new Date().toISOString())
+        .not("assigned_user_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (error) {
+        console.error(`reconcile-missing: loadActiveUpcomingBookings failed: ${error.message}`);
+        return [];
+      }
+      return ((data ?? []) as {
+        id: string;
+        assigned_user_id: string;
+        starts_at: string;
+        ends_at: string;
+      }[]).map((r) => ({
+        id: r.id,
+        user_id: r.assigned_user_id,
+        starts_at: r.starts_at,
+        ends_at: r.ends_at,
+      }));
+    },
+
+    loadBusyBlockBookingIds: async (bookingIds) => {
+      if (bookingIds.length === 0) return new Set<string>();
+      const { data, error } = await supabaseAdmin()
+        .from("busy_blocks")
+        .select("booking_id")
+        .eq("source", "slate")
+        .in("booking_id", bookingIds);
+      if (error) {
+        // Fail safe: an empty result would make EVERY booking look like it's
+        // missing a block and trigger a re-insert for all of them. A duplicate
+        // insert is benign (busy-over-free), but throwing aborts this tick so a
+        // transient read blip can't mass-insert; the next tick retries.
+        throw new Error(`reconcile-missing: loadBusyBlockBookingIds failed: ${error.message}`);
+      }
+      return new Set(
+        ((data ?? []) as { booking_id: string | null }[])
+          .map((r) => r.booking_id)
+          .filter((id): id is string => !!id),
+      );
+    },
+
     // --- Outbox (#429 P2) ---
     enqueueOutbox: async (row) => {
       const { data } = await supabaseAdmin()
@@ -1256,6 +1308,45 @@ export async function reconcileCancelledBusyBlocks(limit: number) {
     RECONCILE_ALERT_KEY,
     RECONCILE_ALERT_COOLDOWN_MS,
     `Slate: reconcile freed ${res.freed} stuck busy_block(s) whose booking was cancelled/missing across ${res.userIds.length} agent(s). The slot(s) are now bookable again, but a write-through delete was missed. Check cancel-path health.`,
+  ).catch(() => {});
+
+  return res;
+}
+
+const RECONCILE_MISSING_ALERT_KEY = "reconcile_missing_busy_blocks";
+
+/**
+ * Reconcile-missing sweep (#431): re-create busy_blocks for active upcoming
+ * bookings whose write-through INSERT was missed (the slot was showing free and
+ * could be double-booked), then recompute those buckets so the slot flips busy
+ * within ~1 min. Counterpart to reconcileCancelledBusyBlocks. Safe to run every
+ * tick: the pure core only ever inserts (busy-over-free), never deletes.
+ */
+export async function reconcileMissingBusyBlocks(limit: number) {
+  const res = await orchestration.reconcileMissingBusyBlocks(realDeps(), limit);
+  if (res.recreated === 0) return res;
+
+  // A missing block made the agent look free in EVERY bucket they serve, so
+  // recompute all of each affected agent's buckets (deduped + bounded), exactly
+  // as the #428 sweep does for freed agents - not just the booking's own bucket.
+  const touched = new Set<string>();
+  for (const userId of res.userIds) {
+    try {
+      for (const code of await bucketsForAgent(userId)) touched.add(code);
+    } catch (err) {
+      console.error(
+        `reconcile-missing: bucket lookup failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  for (const code of [...touched].slice(0, RECONCILE_MAX_TOUCHED_BUCKETS)) {
+    await recomputeBucketSlotsForToday(code, true).catch(() => {});
+  }
+
+  await sendThrottledAlert(
+    RECONCILE_MISSING_ALERT_KEY,
+    RECONCILE_ALERT_COOLDOWN_MS,
+    `Slate: re-created ${res.recreated} missing busy_block(s) for active booking(s) - a write-through INSERT had been missed, so the slot(s) were showing free and could have been double-booked. Now recomputed. Booking ids: ${res.bookingIds.slice(0, 10).join(", ")}${res.bookingIds.length > 10 ? " ..." : ""}. Check booking-path busy_block write health.`,
   ).catch(() => {});
 
   return res;
