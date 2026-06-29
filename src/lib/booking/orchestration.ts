@@ -3,7 +3,13 @@
 // tsconfig path aliases, and type-only "@/" imports below are erased anyway.
 import { toE164 } from "../phone.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
-import { isWithinWorkingHours, type WorkingRule } from "../availability/compute.ts";
+import { DateTime } from "luxon";
+import {
+  isBookableSlotForAgent,
+  isWithinWorkingHours,
+  type SlotRules,
+  type WorkingRule,
+} from "../availability/compute.ts";
 import {
   bookingWindow,
   busyBlockFor,
@@ -264,16 +270,6 @@ export interface BookingDeps {
     preview?: boolean,
   ): Promise<string[]>;
   // google calendar
-  /** Single-agent free check — used by reschedule to keep the same agent.
-   *  `ignore` excludes one interval (the booking's OWN still-present event) from
-   *  the busy read so a sub-event-length reschedule, whose new slot overlaps the
-   *  old one, isn't counted as a self-conflict and silently re-routed (#523). */
-  isFree(
-    email: string,
-    startIso: string,
-    endIso: string,
-    ignore?: { start: string; end: string },
-  ): Promise<boolean>;
   /**
    * The agent's working-hours schedule (#527): timezone + shift rules, read from
    * availability_schedules + availability_rules. Used by the in-place reschedule
@@ -283,6 +279,32 @@ export interface BookingDeps {
    * default), so the guard treats them as off-shift and re-routes.
    */
   agentWorkingHours(userId: string): Promise<{ timezone: string; rules: WorkingRule[] }>;
+  /**
+   * Live busy intervals for ONE agent across all their calendars (#536), epoch-ms,
+   * over [fromIso, toIso). The in-place reschedule guard reads these so it can run
+   * the SAME `isBookableSlotForAgent` predicate the booker does — buffers and all —
+   * instead of a bare boolean free check. `null` means the calendar read failed
+   * (an alert is raised by the impl); the guard treats that as not-bookable-in-place
+   * and re-routes, exactly as the old `isFree` failure path did.
+   */
+  busyIntervalsForAgent(
+    email: string,
+    fromIso: string,
+    toIso: string,
+  ): Promise<{ start: number; end: number }[] | null>;
+  /**
+   * Active (confirmed/rescheduled) booking start instants for ONE agent in
+   * [fromIso, toIso), epoch-ms, EXCLUDING `excludeBookingId` (#536). The in-place
+   * reschedule guard loads the agent's other bookings on the target local day to
+   * enforce the daily cap — excluding the booking being moved so a same-day nudge
+   * isn't counted against its own cap.
+   */
+  agentActiveBookingStartsMs(
+    userId: string,
+    fromIso: string,
+    toIso: string,
+    excludeBookingId: string,
+  ): Promise<number[]>;
   /**
    * Batched verify-on-book free check: given a wave of candidate emails, return
    * the subset confirmed free for [startIso, endIso). The real impl reads the
@@ -1867,6 +1889,7 @@ export async function rescheduleBooking(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   deps: BookingDeps,
+  nowMs: number = Date.now(),
 ): Promise<BookingResult> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
@@ -1926,7 +1949,7 @@ export async function rescheduleBooking(
   }
 
   try {
-    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator, claim);
+    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs);
   } finally {
     await deps.releaseReschedule(booking.id);
   }
@@ -1941,6 +1964,7 @@ async function applyReschedule(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   claim: Extract<RescheduleClaim, { outcome: "won" | "resume" | "fresh-after-abandon" }>,
+  nowMs: number,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -1971,41 +1995,70 @@ async function applyReschedule(
       }
     }
 
-    // Branch decision — the ONLY place isFree / assignAgent run, and only on a
-    // FRESH attempt. A resume never reaches here, so a poisoned freeBusy can't
-    // flip a same-agent move to a new agent (window b).
-    // Exclude the booking's OWN current event from the self-free check: a
-    // reschedule that shifts by less than the event length overlaps its own
-    // still-present event, which freeBusy would otherwise count as a conflict —
-    // skipping the in-place branch and silently re-routing to another agent
-    // (#523). The own event sits at the pre-move [starts_at, ends_at].
-    const ownEvent = { start: booking.starts_at, end: booking.ends_at };
-    // Working-hours guard (#527): the in-place branch keeps the current agent
-    // only if the new time also falls inside their working-hours SCHEDULE, not
-    // just that their calendar is free. `isFree` proves the calendar is empty but
-    // never that the agent is on-shift; without this, nudging a booking a few
-    // minutes past the agent's shift end would silently keep it on the off-shift
-    // agent instead of re-routing to a working one (the reassign path is
-    // schedule-aware via round-robin). The read is RULES-ONLY (never busy_blocks),
-    // so it can't re-introduce the #523 self-conflict the ownEvent exclusion
-    // fixes. A schedule-less agent has no shift windows -> off-shift -> re-route.
-    const wh = booking.assigned_user_id
-      ? await deps.agentWorkingHours(booking.assigned_user_id)
-      : null;
-    const onShift =
-      wh != null &&
-      isWithinWorkingHours(wh.rules, wh.timezone, Date.parse(startIso), Date.parse(endIso));
-    if (
-      currentEmail &&
-      booking.assigned_user_id &&
-      onShift &&
-      (await deps.isFree(currentEmail, startIso, endIso, ownEvent))
-    ) {
+    // Branch decision — the ONLY place the in-place guard / assignAgent run, and
+    // only on a FRESH attempt. A resume never reaches here, so a poisoned freeBusy
+    // can't flip a same-agent move to a new agent (window b).
+    //
+    // The in-place branch keeps the current agent only if the new time passes the
+    // FULL set of slot rules the booker's `memberOpenStarts` enforces — the SAME
+    // `isBookableSlotForAgent` predicate, so the two paths can't drift (#536):
+    // working hours (#527), minimum notice, daily cap, AND buffer-before/after.
+    // Without all four, a reschedule (especially a direct-API one not picked from
+    // offered slots) could park an agent on a slot the booker would never offer.
+    // The reads are scoped to the assigned agent + new slot:
+    //  - working-hours schedule (rules-only) as a cheap gate before any live call;
+    //  - live busy across the BUFFERED window, excluding the booking's OWN still-
+    //    present event (#523) so a sub-event-length move isn't a self-conflict; a
+    //    read failure (null) re-routes, exactly as the old `isFree` path did;
+    //  - the agent's OTHER bookings on the target LOCAL day for the daily cap,
+    //    excluding the booking being moved (so a same-day nudge isn't self-counted).
+    // A schedule-less agent has no shift windows -> off-shift -> re-route.
+    const ownEvent = { start: Date.parse(booking.starts_at), end: Date.parse(booking.ends_at) };
+    const slotRules: SlotRules = {
+      durationMin: eventType.duration_min,
+      bufferBeforeMin: eventType.buffer_before_min,
+      bufferAfterMin: eventType.buffer_after_min,
+      minNoticeMin: eventType.min_notice_min,
+      dailyCap: eventType.daily_cap,
+    };
+    const startMs = Date.parse(startIso);
+    const endMs = Date.parse(endIso);
+    let keepInPlace = false;
+    if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
+      const wh = await deps.agentWorkingHours(booking.assigned_user_id);
+      // Cheap rules-only on-shift gate first, so an off-shift reschedule re-routes
+      // without a needless live Google read (the common #527 case).
+      if (isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {
+        const busy = await deps.busyIntervalsForAgent(
+          currentEmail,
+          new Date(startMs - slotRules.bufferBeforeMin * 60_000).toISOString(),
+          new Date(endMs + slotRules.bufferAfterMin * 60_000).toISOString(),
+        );
+        if (busy !== null) {
+          const day = DateTime.fromMillis(startMs, { zone: wh.timezone }).startOf("day");
+          const bookingStartsMs = await deps.agentActiveBookingStartsMs(
+            booking.assigned_user_id,
+            day.toISO()!,
+            day.plus({ days: 1 }).toISO()!,
+            booking.id,
+          );
+          keepInPlace = isBookableSlotForAgent(
+            { timezone: wh.timezone, rules: wh.rules, busy, bookingStartsMs },
+            slotRules,
+            startMs,
+            nowMs,
+            { ignoreBusy: ownEvent },
+          );
+        }
+      }
+    }
+    if (keepInPlace) {
+      // keepInPlace is only true when all three were present (the guard block above).
       pin = {
         reschedule_seq: seq,
         branch: "in_place",
-        pinned_user_id: booking.assigned_user_id,
-        pinned_agent_email: currentEmail,
+        pinned_user_id: booking.assigned_user_id!,
+        pinned_agent_email: currentEmail!,
         gcal_client_id: booking.gcal_event_id!, // in-place re-PATCHes the existing event
         target_starts_at: startIso,
       };

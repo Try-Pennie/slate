@@ -10,6 +10,7 @@ import { bucketsForAgent } from "@/lib/availability/precompute";
 import {
   createEvent,
   deleteEvent,
+  freeBusy,
   freeBusyMany,
   isFree,
   updateEventTime,
@@ -214,6 +215,31 @@ async function checkAgentFree(
     : "busy";
 }
 
+/**
+ * Live busy intervals (epoch-ms) across ALL of one agent's calendars over the
+ * window — the in-place reschedule guard's read (#536). Resolves the agent's
+ * calendars the same way the per-agent verify does; on a calendar-read failure it
+ * alerts and returns `null` so the guard re-routes rather than risk keeping an
+ * agent on an unverifiable slot (the same SAFE default the old `isFree` path had).
+ */
+async function agentBusyIntervals(
+  email: string,
+  fromIso: string,
+  toIso: string,
+): Promise<{ start: number; end: number }[] | null> {
+  const { readFailed, ids } = await calendarIdsForEmail(email);
+  if (readFailed) {
+    await sendThrottledAlert(
+      VERIFY_READ_ALERT_KEY,
+      VERIFY_READ_ALERT_COOLDOWN_MS,
+      `Slate: in-place reschedule could not read calendars for ${email}; re-routing to avoid keeping the agent on an unverifiable slot. Check DB health.`,
+    ).catch(() => {});
+    return null;
+  }
+  const busy = await freeBusy(email, fromIso, toIso, ids.length ? ids : ["primary"]);
+  return busy.map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) }));
+}
+
 export {
   SlotUnavailableError,
   RescheduleConflictError,
@@ -233,11 +259,24 @@ function realDeps(): BookingDeps {
   return {
     resolveBucketByCode,
     roundRobinCandidates,
-    // Single-agent free check (reschedule keep-same-agent). Checks ALL the
-    // agent's calendars; on a calendar-read failure (#314) it skips + alerts
-    // rather than verifying primary-only and risking a double-book.
-    isFree: async (email, startIso, endIso, ignore) =>
-      (await checkAgentFree(email, startIso, endIso, ignore)) === "free",
+    // Live busy intervals for the in-place reschedule guard (#536): checks ALL the
+    // agent's calendars; a read failure returns null -> the guard re-routes. The
+    // guard runs the SAME isBookableSlotForAgent predicate the booker does, so a
+    // reschedule can't keep an agent on a slot the booker would never offer.
+    busyIntervalsForAgent: agentBusyIntervals,
+    // The agent's OTHER active bookings in a window (#536), epoch-ms, excluding the
+    // booking being moved — the in-place guard counts these for the daily cap.
+    agentActiveBookingStartsMs: async (userId, fromIso, toIso, excludeBookingId) => {
+      const { data } = await supabaseAdmin()
+        .from("bookings")
+        .select("starts_at")
+        .eq("assigned_user_id", userId)
+        .in("status", ["confirmed", "rescheduled"])
+        .gte("starts_at", fromIso)
+        .lt("starts_at", toIso)
+        .neq("id", excludeBookingId);
+      return ((data as { starts_at: string }[] | null) ?? []).map((r) => Date.parse(r.starts_at));
+    },
     // Working-hours schedule for one agent (#527), used by the in-place reschedule
     // guard. Mirrors loadMembersAvailability's nested select. A schedule-less agent
     // — or a transient read error — falls back to America/New_York + no rules, so

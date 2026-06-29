@@ -99,7 +99,8 @@ function makeTierDropDeps(): BookingDeps {
     // Empty pool on "511" → NoEligibleAgentsError → cascade to "411"
     roundRobinCandidates: async (bucket) =>
       bucket.code === "511" ? [] : ["a"],
-    isFree: async () => true,
+    busyIntervalsForAgent: async () => [],
+    agentActiveBookingStartsMs: async () => [],
     agentWorkingHours: async () => ({ timezone: "America/New_York", rules: [] }),
     verifyFree: async (emails) => ({
       free: new Set(emails),

@@ -5,7 +5,9 @@ import {
   freeMembersForSlot,
   assembleMemberAvailability,
   isWithinWorkingHours,
+  isBookableSlotForAgent,
   type MemberAvailability,
+  type SlotRules,
   type WorkingRule,
 } from "../src/lib/availability/compute.ts";
 
@@ -162,6 +164,95 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
   assert(
     !isWithinWorkingHours([], tz, ms("2026-06-08T13:00:00.000Z"), ms("2026-06-08T13:30:00.000Z")),
     "no working rules -> false (schedule-less agent re-routes)",
+  );
+}
+
+// --- isBookableSlotForAgent (#536): one shared per-agent slot predicate reused by
+//     memberOpenStarts AND the in-place reschedule guard, so the two can't drift. ---
+{
+  const ms = (iso: string) => Date.parse(iso);
+  const monFri9to5: WorkingRule[] = [1, 2, 3, 4, 5].map((weekday) => ({
+    weekday,
+    start_minute: 9 * 60,
+    end_minute: 17 * 60,
+  }));
+  const agent = {
+    timezone: tz,
+    rules: monFri9to5,
+    busy: [] as { start: number; end: number }[],
+    bookingStartsMs: [] as number[],
+  };
+  const rules: SlotRules = {
+    durationMin: 30,
+    bufferBeforeMin: 0,
+    bufferAfterMin: 0,
+    minNoticeMin: 0,
+    dailyCap: null,
+  };
+  const earlyNow = ms("2026-06-01T00:00:00.000Z"); // well before the window
+  // Mon 2026-06-08 09:00 NY = 13:00 UTC.
+  const slot = ms("2026-06-08T13:00:00.000Z");
+
+  assert(
+    isBookableSlotForAgent(agent, rules, slot, earlyNow),
+    "bookable: on-shift, free, under cap, enough notice -> true",
+  );
+
+  // Off-shift: 17:00 NY (21:00 UTC) starts at shift end.
+  assert(
+    !isBookableSlotForAgent(agent, rules, ms("2026-06-08T21:00:00.000Z"), earlyNow),
+    "not bookable: off-shift start past shift end -> false",
+  );
+
+  // Min-notice: now is 30 min before slot, notice is 60 min.
+  assert(
+    !isBookableSlotForAgent(agent, { ...rules, minNoticeMin: 60 }, slot, slot - 30 * 60_000),
+    "not bookable: inside the min-notice window -> false",
+  );
+
+  // Daily cap: 2 confirmed bookings on the slot's local day, cap of 2.
+  const capAgent = {
+    ...agent,
+    bookingStartsMs: [ms("2026-06-08T13:00:00.000Z"), ms("2026-06-08T15:00:00.000Z")],
+  };
+  assert(
+    !isBookableSlotForAgent(capAgent, { ...rules, dailyCap: 2 }, slot, earlyNow),
+    "not bookable: at the daily cap for the local day -> false",
+  );
+  assert(
+    isBookableSlotForAgent(capAgent, { ...rules, dailyCap: 3 }, slot, earlyNow),
+    "bookable: under the daily cap -> true",
+  );
+  assert(
+    isBookableSlotForAgent(capAgent, { ...rules, dailyCap: null }, slot, earlyNow),
+    "bookable: no daily cap configured -> true regardless of count",
+  );
+
+  // Buffer: a busy block in the buffer-after window blocks the slot.
+  const bufferAgent = {
+    ...agent,
+    busy: [{ start: ms("2026-06-08T13:30:00.000Z"), end: ms("2026-06-08T13:45:00.000Z") }],
+  };
+  assert(
+    !isBookableSlotForAgent(bufferAgent, { ...rules, bufferAfterMin: 15 }, slot, earlyNow),
+    "not bookable: busy block inside buffer-after window -> false",
+  );
+  assert(
+    isBookableSlotForAgent(bufferAgent, { ...rules, bufferAfterMin: 0 }, slot, earlyNow),
+    "bookable: adjacent busy block with no buffer -> true",
+  );
+
+  // ignoreBusy excludes the booking's OWN still-present event (#523) so a
+  // sub-event-length in-place reschedule isn't a self-conflict.
+  const ownEvent = { start: slot, end: slot + 30 * 60_000 };
+  const selfAgent = { ...agent, busy: [ownEvent] };
+  assert(
+    !isBookableSlotForAgent(selfAgent, rules, slot, earlyNow),
+    "not bookable: own event counted as a conflict without ignoreBusy",
+  );
+  assert(
+    isBookableSlotForAgent(selfAgent, rules, slot, earlyNow, { ignoreBusy: ownEvent }),
+    "bookable: own event excluded via ignoreBusy -> true (#523)",
   );
 }
 
