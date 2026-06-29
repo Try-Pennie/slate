@@ -51,6 +51,14 @@
 //   7. reschedule stickiness (#523): book -> reschedule by less than the event
 //      length (new slot overlaps the booking's own event) -> assert it stayed on
 //      the SAME agent (no silent re-route in the two-agent SMOKE bucket, #464).
+//
+// Keys (BOOKING_API_KEY, REASSIGN_API_KEY, ...) load from .env.local / .dev.vars
+// if not already in the environment, so a plain `node … smoke-booking-api.ts`
+// works without exporting them by hand (and without `source`, which dies on an
+// unmatched quote anywhere in the file).
+import { loadEnvFiles } from "./smoke-env.ts";
+
+loadEnvFiles([".env.local", ".dev.vars"]);
 
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
 // Default to the ISOLATED test buckets (#396): they have a single dedicated

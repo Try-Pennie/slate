@@ -18,26 +18,11 @@
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-523-stickiness.ts
 //
 // Optional env: SLATE_BASE_URL (default prod).
-import { readFileSync } from "node:fs";
 import { DateTime } from "luxon";
+import { loadEnvFiles } from "./smoke-env.ts";
 
-// Load env from .env.local then .dev.vars (later file does not override earlier).
-for (const file of [".env.local", ".dev.vars"]) {
-  try {
-    for (const line of readFileSync(file, "utf8").split("\n")) {
-      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (!m) continue;
-      const key = m[1];
-      let val = m[2].trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      if (process.env[key] === undefined) process.env[key] = val;
-    }
-  } catch {
-    // file absent — fine, rely on the ambient environment.
-  }
-}
+// Keys load from .env.local / .dev.vars if not already in the environment.
+loadEnvFiles([".env.local", ".dev.vars"]);
 
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
 const KEY = process.env.BOOKING_API_KEY ?? "";
