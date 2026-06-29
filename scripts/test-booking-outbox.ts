@@ -151,6 +151,35 @@ async function run() {
     const res = await processBookingOutbox(deps, 50, handlers);
     assert(res.delivered === 0 && handlerRan.length === 0, "a row leased by another drain is skipped");
   }
+  {
+    // #445: a failing step is NOT delivered. The row is bumped (attempts + backoff
+    // scheduled via the dep) and released; only a row past DRAIN_ALERT_AFTER is
+    // reported stuck for the throttled alert.
+    const handlers: OutboxHandlers = { a: async () => { throw new Error("boom"); } };
+    const bumps: { id: string; attempts: number; error: string }[] = [];
+    const released: string[] = [];
+    const rows = [
+      row([{ name: "a", state: "pending" }], { id: "ob-stuck", attempts: 4 }), // -> 5 = alert
+      row([{ name: "a", state: "pending" }], { id: "ob-young", attempts: 0 }), // -> 1 = quiet
+    ];
+    const deps = {
+      loadDrainableOutbox: async () => rows,
+      leaseOutbox: async () => true,
+      releaseOutboxLease: async (id: string) => { released.push(id); },
+      saveOutboxSteps: async () => {},
+      markOutboxDelivered: async () => { throw new Error("must not deliver a row with a failed step"); },
+      bumpOutboxAttempt: async (id: string, attempts: number, error: string) => { bumps.push({ id, attempts, error }); },
+    } as unknown as BookingDeps;
+    const res = await processBookingOutbox(deps, 50, handlers);
+    assert(res.delivered === 0, "a row with a failing step is not delivered");
+    assert(bumps.length === 2, "every failing row is bumped (attempts incremented, backoff scheduled by the dep)");
+    const stuckBump = bumps.find((b) => b.id === "ob-stuck");
+    assert(!!stuckBump && stuckBump.attempts === 5, "bump increments the row's prior attempt count");
+    assert(!!stuckBump && stuckBump.error.includes("boom"), "bump records the failed step's error");
+    assert(res.stuck.length === 1 && res.stuck[0].id === "ob-stuck", "only the row past the alert threshold is reported stuck");
+    assert(res.stuck[0]?.attempts === 5, "the reported stuck row carries its bumped attempt count");
+    assert(released.length === 2, "both leased rows are released even though they failed");
+  }
 }
 
 await run();

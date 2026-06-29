@@ -473,6 +473,8 @@ export interface BookingOutbox {
   lease_until: string | null;
   attempts: number;
   last_error: string | null;
+  /** Earliest time the drain may re-attempt this row (#445 backoff); null = now. */
+  next_attempt_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -551,6 +553,8 @@ export interface BookingReservation {
   lease_until: string | null;
   attempts: number;
   last_error: string | null;
+  /** Earliest time the drain may re-attempt this row (#445 backoff); null = now. */
+  next_attempt_at: string | null;
   created_at: string;
   updated_at: string;
 }

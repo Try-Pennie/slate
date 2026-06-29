@@ -9,6 +9,7 @@
 // the "@/" import below is type-only and erased by --experimental-strip-types.
 import type { BookingDeps } from "./orchestration.ts";
 import type { BookingOutbox } from "@/lib/db/types";
+import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 
 /** Performs one named side effect idempotently. Throws to mark the step failed
  *  (the drain retries it next pass); returns to mark it done. */
@@ -72,10 +73,16 @@ export async function processBookingOutbox(
   deps: BookingDeps,
   limit: number,
   handlers: OutboxHandlers,
-): Promise<{ processed: number; delivered: number; skipped: number }> {
+): Promise<{
+  processed: number;
+  delivered: number;
+  skipped: number;
+  stuck: BookingOutbox[];
+}> {
   const rows = await deps.loadDrainableOutbox(limit);
   let delivered = 0;
   let skipped = 0;
+  const stuck: BookingOutbox[] = [];
 
   for (const row of rows) {
     const leased = await deps.leaseOutbox(row.id);
@@ -85,11 +92,28 @@ export async function processBookingOutbox(
     }
     try {
       const res = await runOutboxSteps(deps, row, handlers);
-      if (res.delivered) delivered++;
+      if (res.delivered) {
+        delivered++;
+      } else {
+        // A step failed this pass (#445): bump attempts + record why, and let the
+        // dep schedule the next retry with backoff so we don't re-hit the failing
+        // step every tick. A row past the alert threshold is reported for a
+        // throttled Slack alert; past the give-up cap the loader stops returning it.
+        const attempts = row.attempts + 1;
+        const lastError =
+          row.steps
+            .filter((s) => s.state === "failed")
+            .map((s) => `${s.name}: ${s.error ?? "failed"}`)
+            .join("; ") || "delivery incomplete";
+        await deps.bumpOutboxAttempt(row.id, attempts, lastError);
+        if (attempts >= DRAIN_ALERT_AFTER) {
+          stuck.push({ ...row, attempts, last_error: lastError });
+        }
+      }
     } finally {
       await deps.releaseOutboxLease(row.id);
     }
   }
 
-  return { processed: rows.length, delivered, skipped };
+  return { processed: rows.length, delivered, skipped, stuck };
 }
