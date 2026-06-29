@@ -319,6 +319,17 @@ export interface BookingDeps {
   loadBookingStatuses(bookingIds: string[]): Promise<Map<string, BookingStatus>>;
   /** Delete busy_blocks by id (the reconcile sweep's targeted cleanup). */
   deleteBusyBlocksByIds(ids: string[]): Promise<void>;
+  /**
+   * Reconcile-missing sweep (#431): active upcoming bookings whose busy_block
+   * write-through may have been missed. Returns the agent + window + bucket
+   * code needed to re-create the block and recompute the slot.
+   */
+  loadActiveUpcomingBookings(limit: number): Promise<ActiveUpcomingBooking[]>;
+  /**
+   * Which of `bookingIds` already have a slate busy_block. The reconcile-missing
+   * sweep re-creates a block only for the ids NOT in this set.
+   */
+  loadBusyBlockBookingIds(bookingIds: string[]): Promise<Set<string>>;
   // --- Outbox (#429 P2): durable intent + idempotent drain ---
   /** Write a durable mutation-intent row; returns its id. */
   enqueueOutbox(row: BookingOutboxInsert): Promise<string>;
@@ -520,6 +531,55 @@ export async function reconcileCancelledBusyBlocks(
   if (stuck.length === 0) return { freed: 0, userIds: [] };
   await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id));
   return { freed: stuck.length, userIds: [...new Set(stuck.map((r) => r.user_id))] };
+}
+
+/** An active upcoming booking, with everything the reconcile-missing sweep
+ *  needs to re-create its busy_block (#431). */
+export interface ActiveUpcomingBooking {
+  id: string;
+  /** The assigned agent (guaranteed non-null by the loader). */
+  user_id: string;
+  starts_at: string;
+  ends_at: string;
+}
+
+/**
+ * Reconcile-missing sweep (#431): the dangerous counterpart to #428. A missed
+ * busy_block write-through INSERT leaves an active booking's slot showing FREE
+ * in the embed, so it can be DOUBLE-BOOKED on the Slate side until the next full
+ * sync mirrors the Google event. This re-creates the missing slate block for any
+ * active upcoming booking that lacks one, then the caller recomputes the buckets.
+ *
+ * Safety bias: this ONLY ever INSERTS, never deletes. The failure we prevent
+ * (missing block -> free slot -> double-book) is far worse than the only
+ * downside of over-acting (a duplicate block just keeps the slot busy), so it is
+ * safe to run aggressively. A genuinely-missing block is inserted once; the next
+ * tick sees the block and skips it, so blocks don't accumulate in steady state.
+ *
+ * Returns the affected agents (not buckets): a missing block makes the agent
+ * look free in EVERY bucket they serve, so the caller recomputes all of each
+ * agent's buckets, exactly as the #428 sweep does for freed agents.
+ */
+export async function reconcileMissingBusyBlocks(
+  deps: BookingDeps,
+  limit: number,
+): Promise<{ recreated: number; bookingIds: string[]; userIds: string[] }> {
+  const empty = { recreated: 0, bookingIds: [], userIds: [] };
+  const bookings = await deps.loadActiveUpcomingBookings(limit);
+  if (bookings.length === 0) return empty;
+
+  const haveBlock = await deps.loadBusyBlockBookingIds(bookings.map((b) => b.id));
+  const missing = bookings.filter((b) => !haveBlock.has(b.id));
+  if (missing.length === 0) return empty;
+
+  for (const b of missing) {
+    await deps.insertBusyBlock(busyBlockFor(b.user_id, b.starts_at, b.ends_at, b.id));
+  }
+  return {
+    recreated: missing.length,
+    bookingIds: missing.map((b) => b.id),
+    userIds: [...new Set(missing.map((b) => b.user_id))],
+  };
 }
 
 /**

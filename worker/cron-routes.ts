@@ -16,7 +16,15 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // Splitting them stops a busy sync tick from starving the slot refresh.
   // Plus the booking-outbox drain (cron_outbox, #429): its own every-minute
   // lane + lock so it never starves on the sync tail's 25s budget.
-  "* * * * *": ["/api/cron/sync", "/api/cron/recompute", "/api/cron/outbox"],
+  // Plus the self-heal sweeps (cron_selfheal, #433): the #401 deletion drain +
+  // #428 cancelled-reconcile + #431 missing-reconcile, moved off the sync tail
+  // onto their own lane so a busy tick can't starve booking-safety cleanup.
+  "* * * * *": [
+    "/api/cron/sync",
+    "/api/cron/recompute",
+    "/api/cron/outbox",
+    "/api/cron/selfheal",
+  ],
   // Booking completion sweep + webhook retry queue, the watch-renewal lane
   // (cron_watch): watch TTL is ~7 days, so renewals never needed the 1-min tick,
   // and the availability-health probe (cron_monitor, #371): a DB-only check that

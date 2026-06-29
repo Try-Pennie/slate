@@ -22,10 +22,6 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
-import {
-  processPendingEventDeletions,
-  reconcileCancelledBusyBlocks,
-} from "@/lib/booking/service";
 import { isHeartbeatStale, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
@@ -166,14 +162,11 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Drain a small batch of failed-event-deletion retries (#401). Best-effort:
-    // a failure here must never break the sync lane.
-    await processPendingEventDeletions(20).catch(() => {});
-
-    // Reconcile sweep (#428): free any busy_block whose booking is now
-    // cancelled/missing (a crash mid-cancel can leave the slot stuck busy), so
-    // the slot self-heals. Best-effort, same as the deletion drain.
-    await reconcileCancelledBusyBlocks(200).catch(() => {});
+    // The self-heal sweeps (#401 deletion drain, #428 cancelled-reconcile,
+    // #431 missing-reconcile) moved to the dedicated /api/cron/selfheal lane
+    // (#433): on a busy ~200-agent tick this sync pass exhausts its 25s budget,
+    // so as a tail call they could be starved exactly when self-heal is needed
+    // most. They now run under their own lock + guaranteed every-minute lane.
 
     // Dead-man's switch (#420): check whether the monitor lane is still running.
     // The monitor lane stamps a heartbeat each tick; if it hasn't run in >15 min

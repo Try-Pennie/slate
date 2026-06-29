@@ -125,6 +125,8 @@ function makeTierDropDeps(): BookingDeps {
       [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[],
     loadBookingStatuses: async () => new Map<string, BookingStatus>(),
     deleteBusyBlocksByIds: noop,
+    loadActiveUpcomingBookings: async () => [],
+    loadBusyBlockBookingIds: async () => new Set<string>(),
     enqueueOutbox: async () => "ob-1",
     loadDrainableOutbox: async () => [] as BookingOutbox[],
     leaseOutbox: async () => true,
