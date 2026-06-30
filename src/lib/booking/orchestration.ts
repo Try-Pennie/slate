@@ -1669,6 +1669,9 @@ export interface ApiBookingResult {
   outcome: ApiBookingOutcome;
   booking: Booking;
   manageUrl: string;
+  /** #543: present on a "rescheduled" outcome when the in-place agent was
+   *  declined and the booking reassigned. Observability only. */
+  rescheduleDecline?: RescheduleDeclineReason;
 }
 
 // Machine-to-machine rebooking reason; recorded on the reschedule history row.
@@ -1773,7 +1776,12 @@ export async function bookViaApi(
         "system",
         deps,
       );
-      return { outcome: "rescheduled", booking: res.booking, manageUrl: res.manageUrl };
+      return {
+        outcome: "rescheduled",
+        booking: res.booking,
+        manageUrl: res.manageUrl,
+        rescheduleDecline: res.rescheduleDecline,
+      };
     }
     case "confirm_required":
       return {

@@ -1277,6 +1277,33 @@ export function rescheduleLogLine(input: {
   };
 }
 
+/** Emit the #543 success breadcrumb (INFO) when a reschedule reassigned away from
+ *  the declined in-place agent. No-op when the agent was kept (declineReason null). */
+function logRescheduleSuccess(
+  bookingId: string,
+  initiator: string,
+  declineReason: orchestration.RescheduleDeclineReason | undefined,
+): void {
+  const line = rescheduleLogLine({ ok: true, bookingId, initiator, declineReason });
+  if (line) console.info(line.message);
+}
+
+/** Emit the #543 failure breadcrumb (WARN) ONLY for a reschedule-reroute failure
+ *  (the error carries the reschedule tag). A create/dedupe/not-found failure on the
+ *  same call path is left alone so it isn't mislabeled as a reschedule failure. */
+function logRescheduleFailure(err: unknown, initiator: string): void {
+  const ctx = orchestration.rescheduleFailureContext(err);
+  if (ctx.bookingId === undefined) return;
+  const line = rescheduleLogLine({
+    ok: false,
+    bookingId: ctx.bookingId,
+    initiator,
+    declineReason: ctx.inPlaceDeclineReason,
+    errorName: err instanceof Error ? err.name : String(err),
+  });
+  if (line) (line.level === "warn" ? console.warn : console.info)(line.message);
+}
+
 /**
  * Run a reschedule through the booking layer and emit the #543 breadcrumb. Shared
  * by the customer + admin entry points so the log decision lives in exactly one
@@ -1290,24 +1317,10 @@ async function rescheduleWithLog(
 ): Promise<BookingResult> {
   try {
     const res = await orchestration.rescheduleBooking(token, newStartIso, reason, initiator, realDeps());
-    const line = rescheduleLogLine({
-      ok: true,
-      bookingId: res.booking.id,
-      initiator,
-      declineReason: res.rescheduleDecline,
-    });
-    if (line) console.info(line.message);
+    logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
   } catch (err) {
-    const ctx = orchestration.rescheduleFailureContext(err);
-    const line = rescheduleLogLine({
-      ok: false,
-      bookingId: ctx.bookingId,
-      initiator,
-      declineReason: ctx.inPlaceDeclineReason,
-      errorName: err instanceof Error ? err.name : String(err),
-    });
-    if (line) (line.level === "warn" ? console.warn : console.info)(line.message);
+    logRescheduleFailure(err, initiator);
     throw err;
   }
 }
@@ -1325,7 +1338,19 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
  * to both verify-on-book).
  */
 export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
-  return alertOnBookingFailure(() => orchestration.bookViaApi(input, realDeps()));
+  return alertOnBookingFailure(async () => {
+    try {
+      const res = await orchestration.bookViaApi(input, realDeps());
+      // Only a "rescheduled" outcome can carry a decline reason (#543).
+      if (res.outcome === "rescheduled") {
+        logRescheduleSuccess(res.booking.id, "system", res.rescheduleDecline);
+      }
+      return res;
+    } catch (err) {
+      logRescheduleFailure(err, "system");
+      throw err;
+    }
+  });
 }
 
 /**

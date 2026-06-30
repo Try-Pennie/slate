@@ -39,12 +39,13 @@ describe("rescheduleLogLine", () => {
   it("logs WARN with 'n/a' when a failure had no in-place candidate to decline", () => {
     const line = rescheduleLogLine({
       ok: false,
-      bookingId: undefined,
+      bookingId: "b1",
       initiator: "customer",
       declineReason: undefined,
       errorName: "SlotUnavailableError",
     });
     expect(line?.level).toBe("warn");
+    expect(line?.message).toContain("b1");
     expect(line?.message).toContain("n/a");
   });
 });
