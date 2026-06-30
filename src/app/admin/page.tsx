@@ -1001,6 +1001,7 @@ export default async function AdminPage({
                           bookingId={b.id}
                           bucketCode={t?.bucket_code ?? null}
                           status={b.status}
+                          currentAgentId={b.assigned_user_id}
                         />
                       </td>
                     </tr>

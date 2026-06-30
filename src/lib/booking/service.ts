@@ -23,6 +23,7 @@ import {
   type ValidatedReason,
   type BookingActor,
 } from "@/lib/booking/core";
+import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
@@ -1477,6 +1478,21 @@ export async function adminCancelBooking(
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
   await orchestration.cancelBooking(token, reason, "admin", realDeps(), actor);
+}
+
+/**
+ * Active agents for the manager reassign picker (#546): non-deactivated, non-test
+ * users in the org, minimal fields only (never the full user row to the client).
+ * The picker filters/sorts these with `rankReassignAgents`.
+ */
+export async function listActiveAgents(orgId: string): Promise<ReassignAgent[]> {
+  const { data } = await supabaseAdmin()
+    .from("users")
+    .select("id, name, email, bookable")
+    .eq("org_id", orgId)
+    .eq("is_test", false)
+    .is("deactivated_at", null);
+  return (data as ReassignAgent[] | null) ?? [];
 }
 
 /**
