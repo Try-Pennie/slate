@@ -62,26 +62,34 @@ fresh agent and DOES enforce the cap for that net-new assignment (correct).
 
 1. Add an `overrideCap: boolean` parameter (default `false`).
 2. After resolving the target agent and before forcing the event, compute whether the
-   target agent is at their daily cap for the booking's local day:
-   - Read the event type's `daily_cap`. If `null` (uncapped) → skip the check entirely.
+   target agent is at their daily cap for the booking's local day. This is computed
+   ALWAYS (regardless of `overrideCap`) so the result can be reported:
+   - Read the event type's `daily_cap`. If `null` (uncapped) → `overCap = false`,
+     skip the rest of the check.
    - Reuse the #536 helpers: `deps.agentActiveBookingStartsMs(targetUserId, dayStart,
      dayEnd, bookingId)` for the target agent's other bookings that day (excluding the
      booking being moved), and `isUnderDailyCap(...)` from `compute.ts` to decide.
    - The day window is the booking's NEW local day in the agent's timezone (reuse the
      same day-bounds logic as the reschedule guard; read the agent timezone via
      `deps.agentWorkingHours(targetUserId)`).
-3. If at cap and `overrideCap === false` → throw a new typed error
+3. If `overCap` and `overrideCap === false` → throw a new typed error
    `DailyCapExceededError` (carrying the agent email + the day) and do NOT force /
    create the event. Nothing is mutated.
 4. If under cap, or `overrideCap === true` → proceed exactly as today (force-create,
    `allow_double_book: true`).
+5. Reporting: when `overCap` is true AND the reassign proceeds (override path), log a
+   warning ("reassign forced <agent> over their daily cap on <day>") and include an
+   `overCap: true` flag in the returned result. The reassign return type is extended to
+   carry `overCap: boolean` alongside `{ booking, manageUrl }` (a small struct, not the
+   shared `BookingResult`, so other callers are untouched).
 
 Caller wiring:
-- Service wrapper `reassignBooking` (`src/lib/booking/service.ts`) threads `overrideCap`.
+- Service wrapper `reassignBooking` (`src/lib/booking/service.ts`) threads `overrideCap`
+  and passes the `overCap` result back out.
 - The existing machine route `src/app/api/bookings/reassign/route.ts` passes
   `overrideCap: true` so the contact-owner automation keeps forcing unconditionally
-  (no contract change). Optionally it may also surface `overCap` informationally in the
-  response, but it never blocks.
+  (no contract change), and includes `overCap` in its JSON response so callers and logs
+  can see a forced reassign landed the agent over cap. It never blocks.
 - Phase 2 (NOT in this spec) adds an admin-authed reassign route + manager UI that pass
   `overrideCap` only when the manager confirms the two-step warning.
 
@@ -113,9 +121,9 @@ it exists for the phase-2 route/UI. A unit test still covers the throw path dire
    - reassign onto an at-cap agent with `overrideCap: false` → throws
      `DailyCapExceededError`, no event created.
    - reassign onto an at-cap agent with `overrideCap: true` → forces through (current
-     behavior), event created.
-   - reassign onto an under-cap agent → succeeds regardless of the flag.
-   - reassign with `daily_cap: null` → never blocks.
+     behavior), event created, returns `overCap: true`.
+   - reassign onto an under-cap agent → succeeds regardless of the flag, `overCap: false`.
+   - reassign with `daily_cap: null` → never blocks, `overCap: false`.
 3. Full gate: `tsc --noEmit`, lint, node suites, vitest, `cf:build`.
 
 ## Out of scope (future)
