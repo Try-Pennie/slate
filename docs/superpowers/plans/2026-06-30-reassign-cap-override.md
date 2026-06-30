@@ -347,13 +347,10 @@ Immediately after that early return (and before the `// Create the event on the 
     if (overCap && !overrideCap) {
       throw new DailyCapExceededError(agent.email, day.toISODate()!);
     }
-    if (overCap) {
-      console.warn(
-        `reassign forced ${agent.email} over their daily cap on ${day.toISODate()} (booking ${booking.id})`,
-      );
-    }
   }
 ```
+
+Note: do NOT log here. `orchestration.ts` is the pure, fakes-tested logic layer and has no `console.*` calls — keep it that way. The over-cap signal is returned via `overCap`; the request handler (Task 4) does the logging, where Cloudflare actually captures it.
 
 Update the final return to include `overCap`:
 
@@ -428,7 +425,7 @@ export {
 
 - [ ] **Step 2: Update the machine route to force + report**
 
-In `src/app/api/bookings/reassign/route.ts`, change the call to pass `overrideCap: true` (preserve the contact-owner force contract) and include `overCap` in the JSON:
+In `src/app/api/bookings/reassign/route.ts`, change the call to pass `overrideCap: true` (preserve the contact-owner force contract), log when a forced reassign landed over cap (this is the request handler — a Worker route where Cloudflare captures console output), and include `overCap` in the JSON:
 
 ```ts
     const result = await reassignBooking(
@@ -437,6 +434,11 @@ In `src/app/api/bookings/reassign/route.ts`, change the call to pass `overrideCa
       { code: reasonCode, detail: reasonDetail },
       true,
     );
+    if (result.overCap) {
+      console.warn(
+        `reassign forced agent ${result.booking.agent_email} over their daily cap (booking ${result.booking.id})`,
+      );
+    }
     return NextResponse.json({
       booking: {
         id: result.booking.id,
