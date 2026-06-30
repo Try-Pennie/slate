@@ -1779,7 +1779,7 @@ async function run() {
     // overrideCap=true -> forces through, reports overCap.
     {
       const { deps, calls } = atCap();
-      const res = await reassignBooking("bk1", "b@x.com", SYS, deps, true);
+      const res = await reassignBooking("bk1", "b@x.com", SYS, deps, { overrideCap: true });
       assert(
         res.booking.assigned_user_id === "b" && res.overCap === true,
         "reassign(at cap, override): forces through and reports overCap=true",
@@ -1818,6 +1818,68 @@ async function run() {
     });
     const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(res.overCap === false, "reassign(uncapped): never over cap");
+  }
+
+  // --- #546: manager reassign records initiator 'admin' (not 'system') + the actor ---
+  {
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps, calls } = makeDeps({
+      bookingById: { booking: makeBooking({}), bucket, eventType },
+      agentByEmail: owner,
+    });
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps, {
+      initiator: "admin",
+      actor: { userId: "mgr1", actingAsUserId: null },
+    });
+    assert(res.booking.assigned_user_id === "b", "reassign(admin): booking moved");
+    assert(
+      calls.bookingEvents[0].initiator === "admin",
+      "reassign(admin): history records initiator 'admin', not 'system'",
+    );
+    assert(
+      calls.bookingEvents[0].actor_user_id === "mgr1",
+      "reassign(admin): history records the acting manager (#549)",
+    );
+    assert(
+      calls.webhooks.some((w) => w.event === "booking.rescheduled"),
+      "reassign(admin): still fires booking.rescheduled (Regal contract)",
+    );
+  }
+
+  // --- #546: manager may reassign to an agent OUTSIDE the bookable pool only
+  //     when allowNonBookable is set (coverage/escalation); else rejected. ---
+  {
+    const offPool = { id: "z", name: "Lead Z", email: "z@x.com", bookable: false } as unknown as User;
+    {
+      const { deps } = makeDeps({
+        bookingById: { booking: makeBooking({}), bucket, eventType },
+        agentByEmail: offPool,
+      });
+      let err: unknown;
+      try {
+        await reassignBooking("bk1", "z@x.com", SYS, deps);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        err != null && /not bookable/i.test((err as Error).message),
+        "reassign(non-bookable, default): rejected",
+      );
+    }
+    {
+      const { deps, calls } = makeDeps({
+        bookingById: { booking: makeBooking({}), bucket, eventType },
+        agentByEmail: offPool,
+      });
+      const res = await reassignBooking("bk1", "z@x.com", SYS, deps, {
+        allowNonBookable: true,
+        initiator: "admin",
+      });
+      assert(
+        res.booking.assigned_user_id === "z" && calls.createEvent.length === 1,
+        "reassign(non-bookable, allowNonBookable): succeeds for coverage/escalation",
+      );
+    }
   }
 
   // --- reassign: new event uses a deterministic, target-keyed client id (#439 P4) ---

@@ -1082,6 +1082,10 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       code: p.reasonCode ?? "",
       detail: p.reasonDetail ?? null,
     };
+    // A manager-driven reassign carries initiator 'admin' (#546); the machine
+    // contact-owner path leaves it unset -> 'system'. The history row AND the
+    // webhook meta must agree, so both read the payload's initiator.
+    const initiator: BookingEventInitiator = p.initiator ?? "system";
     // Record the override audit row (action 'reassigned'). Not guarded for
     // idempotent resume because a reassign has no natural per-operation key in
     // booking_events; a duplicate on the rare within-step crash is acceptable
@@ -1090,7 +1094,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       bookingEventFrom({
         bookingId: booking.id,
         action: "reassigned",
-        initiator: "system",
+        initiator,
         reason,
         fromStartsIso: booking.starts_at,
         toStartsIso: booking.starts_at,
@@ -1109,7 +1113,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       booking,
       bucket,
       eventType,
-      reasonMeta(reason, "system"),
+      reasonMeta(reason, initiator),
       row.id,
     );
   },
@@ -2289,14 +2293,27 @@ async function applyReschedule(
  * `allow_double_book` so the active-slot unique index lets it stack. Throws
  * "Booking not found" / "Agent not found or not bookable" for the caller to map.
  */
+export interface ReassignOptions {
+  /** Push through even when the target agent is at their daily cap (the machine
+   *  contact-owner path passes true; the manager UI passes it on the 2nd step). */
+  overrideCap?: boolean;
+  /** Staff user accountable for a manager-driven reassign (#549). */
+  actor?: BookingActor;
+  /** Who drove it: 'system' (machine, default) or 'admin' (manager UI, #546). */
+  initiator?: BookingEventInitiator;
+  /** Allow a target OUTSIDE the bookable pool — manager coverage/escalation
+   *  (#546). Default false keeps the machine path bookable-only. */
+  allowNonBookable?: boolean;
+}
+
 export async function reassignBooking(
   bookingId: string,
   agentEmail: string,
   reason: ValidatedReason,
   deps: BookingDeps,
-  overrideCap = false,
-  actor?: BookingActor,
+  opts: ReassignOptions = {},
 ): Promise<BookingResult & { overCap: boolean }> {
+  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false } = opts;
   const ctx = await deps.loadBookingById(bookingId);
   if (!ctx) throw new Error("Booking not found");
   const { booking, bucket, eventType } = ctx;
@@ -2305,7 +2322,7 @@ export async function reassignBooking(
   }
 
   const agent = await deps.getAgentByEmail(agentEmail);
-  if (!agent || !agent.bookable || !agent.email) {
+  if (!agent || !agent.email || (!agent.bookable && !allowNonBookable)) {
     throw new Error("Agent not found or not bookable");
   }
   if (agent.id === booking.assigned_user_id) {
@@ -2445,7 +2462,7 @@ export async function reassignBooking(
   const payload = {
     reasonCode: reason.code,
     reasonDetail: reason.detail,
-    initiator: "system" as const,
+    initiator,
     fromStartsIso: booking.starts_at,
     fromAgentUserId: booking.assigned_user_id,
     actorUserId: actor?.userId,

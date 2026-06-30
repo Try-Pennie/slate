@@ -1435,7 +1435,7 @@ export function reassignBooking(
   reason: ValidatedReason,
   overrideCap = false,
 ) {
-  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(), overrideCap);
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(), { overrideCap });
 }
 
 /** Resolve a booking's manage token by id, so admin actions can reuse the
