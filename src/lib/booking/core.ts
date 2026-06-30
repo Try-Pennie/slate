@@ -23,8 +23,9 @@ export interface ReasonOption {
   label: string;
 }
 
-/** The two customer-facing actions that capture a reason. */
-export type ReasonAction = "reschedule" | "cancel";
+/** The actions that capture a reason: customer-facing reschedule/cancel + the
+ *  manager reassign (#546). */
+export type ReasonAction = "reschedule" | "cancel" | "reassign";
 
 /** Max length of the free-text detail for the "other" option. */
 export const REASON_DETAIL_MAX = 500;
@@ -46,6 +47,19 @@ export const CANCEL_REASONS: ReasonOption[] = [
   { code: "got_help_elsewhere", label: "Already got help elsewhere" },
   { code: "booked_by_mistake", label: "Booked by mistake" },
   { code: "schedule_conflict", label: "Schedule conflict" },
+  { code: "other", label: "Other" },
+];
+
+/**
+ * Reasons a manager picks when reassigning a booking to a specific agent (#546).
+ * `owner_reassignment` reuses the EXACT code the machine reassign API defaults to
+ * (src/app/api/bookings/reassign/route.ts), so manual and automated reassigns
+ * land in one analytics bucket. "other" reveals the free-text field.
+ */
+export const REASSIGN_REASONS: ReasonOption[] = [
+  { code: "owner_reassignment", label: "Owner reassignment" },
+  { code: "coverage", label: "Coverage (agent unavailable)" },
+  { code: "escalation", label: "Escalation" },
   { code: "other", label: "Other" },
 ];
 
@@ -76,7 +90,12 @@ export function validateReason(
   action: ReasonAction,
   input: ReasonInput,
 ): ReasonValidation {
-  const options = action === "reschedule" ? RESCHEDULE_REASONS : CANCEL_REASONS;
+  const optionsByAction: Record<ReasonAction, ReasonOption[]> = {
+    reschedule: RESCHEDULE_REASONS,
+    cancel: CANCEL_REASONS,
+    reassign: REASSIGN_REASONS,
+  };
+  const options = optionsByAction[action];
   const code = (input.code ?? "").trim();
   if (!code) return { ok: false, error: "Please choose a reason." };
   if (!options.some((o) => o.code === code)) {

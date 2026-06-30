@@ -3,6 +3,7 @@
 import {
   RESCHEDULE_REASONS,
   CANCEL_REASONS,
+  REASSIGN_REASONS,
   REASON_DETAIL_MAX,
   validateReason,
   bookingEventFrom,
@@ -64,6 +65,26 @@ function assert(cond: boolean, msg: string) {
   // The option lists expose code + label and both include "other".
   assert(RESCHEDULE_REASONS.some((o) => o.code === "other") && RESCHEDULE_REASONS.every((o) => o.code && o.label), "reschedule options have code+label incl. other");
   assert(CANCEL_REASONS.some((o) => o.code === "other"), "cancel options include other");
+}
+// #546: reassign reasons. Reuse the machine path's EXACT "owner_reassignment"
+// code so manual + automated reassigns share one analytics bucket; include
+// "other". validateReason("reassign", ...) must validate against this list, not
+// fall through to CANCEL_REASONS.
+{
+  assert(
+    REASSIGN_REASONS.some((o) => o.code === "owner_reassignment"),
+    "reassign options reuse the machine 'owner_reassignment' code",
+  );
+  assert(
+    REASSIGN_REASONS.some((o) => o.code === "other") && REASSIGN_REASONS.every((o) => o.code && o.label),
+    "reassign options have code+label incl. other",
+  );
+  const ok = validateReason("reassign", { code: "owner_reassignment" });
+  assert(ok.ok && ok.reason.code === "owner_reassignment" && ok.reason.detail === null, "valid reassign code accepted");
+  const wrongList = validateReason("reassign", { code: "no_longer_interested" });
+  assert(!wrongList.ok, "a cancel-only code is rejected for the reassign action (no fall-through)");
+  const other = validateReason("reassign", { code: "other", detail: "covering for PTO" });
+  assert(other.ok && other.reason.detail === "covering for PTO", "reassign 'other' carries trimmed detail");
 }
 
 // --- bookingEventFrom: builds the history row, signed lead time, agent change ---
