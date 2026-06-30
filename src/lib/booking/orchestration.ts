@@ -2035,19 +2035,16 @@ async function applyReschedule(
           new Date(endMs + slotRules.bufferAfterMin * 60_000).toISOString(),
         );
         if (busy !== null) {
-          const day = DateTime.fromMillis(startMs, { zone: wh.timezone }).startOf("day");
-          const bookingStartsMs = await deps.agentActiveBookingStartsMs(
-            booking.assigned_user_id,
-            day.toISO()!,
-            day.plus({ days: 1 }).toISO()!,
-            booking.id,
-          );
+          // A reschedule that keeps the same agent is NOT a net-new booking, so the
+          // daily cap does not apply here (it would otherwise reroute a simple move
+          // onto a day already full of the agent's OTHER meetings). Still enforce
+          // working-hours (gated above), min-notice, and buffer.
           keepInPlace = isBookableSlotForAgent(
-            { timezone: wh.timezone, rules: wh.rules, busy, bookingStartsMs },
+            { timezone: wh.timezone, rules: wh.rules, busy, bookingStartsMs: [] },
             slotRules,
             startMs,
             nowMs,
-            { ignoreBusy: ownEvent },
+            { ignoreBusy: ownEvent, enforceDailyCap: false },
           );
         }
       }
