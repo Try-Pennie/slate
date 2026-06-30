@@ -6,6 +6,7 @@ import {
   assembleMemberAvailability,
   isWithinWorkingHours,
   isBookableSlotForAgent,
+  capCountWindow,
   type MemberAvailability,
   type SlotRules,
   type WorkingRule,
@@ -267,6 +268,25 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
   assert(
     isBookableSlotForAgent(selfAgent, rules, slot, earlyNow, { ignoreBusy: ownEvent }),
     "bookable: own event excluded via ignoreBusy -> true (#523)",
+  );
+}
+
+// --- capCountWindow (#540): widen a window so the daily-cap count covers the
+//     agent's FULL local day regardless of timezone, even for a single-slot window
+//     (the reroute/verify path loaded only the slot itself, so the cap never bit). ---
+{
+  const w = capCountWindow("2026-06-08T18:00:00.000Z", "2026-06-08T18:30:00.000Z");
+  assert(
+    w.from === "2026-06-07T18:00:00.000Z" && w.to === "2026-06-09T18:30:00.000Z",
+    `capCountWindow widens by 24h each side (got ${w.from}..${w.to})`,
+  );
+  // The widened window must contain the full local day of the slot for any tz:
+  // a slot at 18:00Z on 2026-06-08 has, in America/Los_Angeles, a local day
+  // [2026-06-08T07:00:00Z, 2026-06-09T07:00:00Z) — both ends inside the window.
+  assert(
+    Date.parse(w.from) <= Date.parse("2026-06-08T07:00:00.000Z") &&
+      Date.parse(w.to) >= Date.parse("2026-06-09T07:00:00.000Z"),
+    "capCountWindow covers the slot's full local day (America/Los_Angeles)",
   );
 }
 

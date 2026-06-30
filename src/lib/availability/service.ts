@@ -4,6 +4,7 @@ import {
   computeBucketSlots,
   freeMembersForSlot,
   assembleMemberAvailability,
+  capCountWindow,
   type MemberAvailability,
 } from "@/lib/availability/compute";
 import { agentIdsFromPool } from "@/lib/availability/pool";
@@ -205,6 +206,14 @@ export async function loadMembersAvailability(
   const { ids: userIds } = await eligibleAgentIds(bucket);
   if (userIds.length === 0) return [];
 
+  // The daily-cap count is per agent per LOCAL day, so the bookings read must cover
+  // the FULL local day of every day in [from, to] — not just the requested window.
+  // The reroute/verify path calls this with a window only as long as the slot, which
+  // left the cap count almost empty and the cap unenforced (#540). Widen the bookings
+  // read by a day on each side (covers any timezone); the busy/calendar read keeps
+  // the exact window so conflict logic is unchanged.
+  const capWindow = capCountWindow(from, to);
+
   // Fetch the schedules WITH their rules nested (one query instead of a separate
   // sequential hop for rules), alongside busy + bookings, all in parallel (#249).
   const [schedulesRes, busyRes, bookingsRes] = await Promise.all([
@@ -225,8 +234,8 @@ export async function loadMembersAvailability(
       .select("assigned_user_id, starts_at")
       .in("assigned_user_id", userIds)
       .in("status", ["confirmed", "rescheduled"])
-      .gte("starts_at", from)
-      .lte("starts_at", to),
+      .gte("starts_at", capWindow.from)
+      .lte("starts_at", capWindow.to),
   ]);
 
   // Fail loud on any of these reads (#277). A swallowed busy_blocks error is
