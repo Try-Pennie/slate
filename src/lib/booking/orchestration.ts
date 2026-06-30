@@ -230,6 +230,42 @@ export interface CreateBookingInput {
 export interface BookingResult {
   booking: Booking;
   manageUrl: string;
+  /**
+   * Why the in-place agent was declined and the booking reassigned to another
+   * agent (#543). `undefined` = kept in place, no in-place candidate, or a
+   * crash-resume (the decline was logged on the original attempt). Observability
+   * only; the service layer turns this into a log breadcrumb.
+   */
+  rescheduleDecline?: RescheduleDeclineReason;
+}
+
+/**
+ * Why an in-place reschedule could not keep the current agent (#543): the slot
+ * rules it failed (`UnbookableReason`) plus `calendar` for a failed live busy
+ * read (the agent's calendar was unreadable, so we re-route to be safe).
+ */
+export type RescheduleDeclineReason = UnbookableReason | "calendar";
+
+/**
+ * Observability context attached to a thrown reschedule failure (#543) so the
+ * service layer can log WHY the in-place agent was declined before the reroute
+ * ultimately found nobody, without the pure layer doing IO. Read with
+ * `rescheduleFailureContext`.
+ */
+export interface RescheduleFailureContext {
+  bookingId?: string;
+  inPlaceDeclineReason?: RescheduleDeclineReason;
+}
+
+function tagRescheduleFailure(err: unknown, ctx: RescheduleFailureContext): void {
+  if (err instanceof Error) Object.assign(err, ctx);
+}
+
+/** Read the observability context off a reschedule failure (#543); empty if none. */
+export function rescheduleFailureContext(err: unknown): RescheduleFailureContext {
+  if (!(err instanceof Error)) return {};
+  const e = err as Error & RescheduleFailureContext;
+  return { bookingId: e.bookingId, inPlaceDeclineReason: e.inPlaceDeclineReason };
 }
 
 export interface CreateEventArgs {
@@ -1984,6 +2020,11 @@ async function applyReschedule(
   // Capture the pre-move time + agent for the history row before we mutate.
   const fromStartsIso = booking.starts_at;
   const fromAgentUserId = booking.assigned_user_id;
+  // Why the current agent could NOT be kept in place (#543), surfaced to the
+  // service layer (on success via BookingResult, on failure via the thrown
+  // error) for an observability breadcrumb. null = kept in place / no in-place
+  // candidate / a resume (the original attempt already reported it).
+  let inPlaceDeclineReason: RescheduleDeclineReason | null = null;
 
   // Resolve the pin. RESUME reads it verbatim — NEVER recompute the agent/branch/
   // event id (recomputing reopens window a + the oscillation ghost). A fresh
@@ -2037,11 +2078,9 @@ async function applyReschedule(
     const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
     let keepInPlace = false;
-    // Why the current agent could NOT be kept in place (#543). One of
-    // working_hours | calendar (live busy read failed) | min_notice | buffer.
-    // daily_cap can't fire here (enforceDailyCap is off for a keep-same-agent
-    // move). null while there was no in-place candidate to evaluate at all.
-    let inPlaceDeclineReason: UnbookableReason | "calendar" | null = null;
+    // Reason vocabulary here: working_hours | calendar (live busy read failed) |
+    // min_notice | buffer. daily_cap can't fire on a keep-same-agent move
+    // (enforceDailyCap is off). null while there was no in-place candidate.
     if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
       const wh = await deps.agentWorkingHours(booking.assigned_user_id);
       // Cheap rules-only on-shift gate first, so an off-shift reschedule re-routes
@@ -2072,13 +2111,6 @@ async function applyReschedule(
           keepInPlace = inPlaceDeclineReason === null;
         }
       }
-      if (!keepInPlace) {
-        // Observability breadcrumb (#543): not customer-facing. Lets anyone reading
-        // logs see WHY the in-place agent was declined without reproducing.
-        console.warn(
-          `reschedule in-place declined: booking=${booking.id} agent=${currentEmail} target=${startIso} reason=${inPlaceDeclineReason}`,
-        );
-      }
     }
     if (keepInPlace) {
       // keepInPlace is only true when all three were present (the guard block above).
@@ -2096,11 +2128,10 @@ async function applyReschedule(
         next = await assignAgent(deps, bucket, eventType, startIso, endIso);
       } catch (err) {
         // The reschedule ultimately failed: the in-place agent was declined and
-        // the reroute found nobody. Log a breadcrumb tying the two together (#543)
-        // before the typed error propagates to the caller's customer-facing message.
-        console.warn(
-          `reschedule failed: booking=${booking.id} bucket=${bucket.code} target=${startIso} in_place_declined=${inPlaceDeclineReason ?? "n/a"} reassign=${err instanceof Error ? err.constructor.name : String(err)}`,
-        );
+        // the reroute found nobody. Tag the error with the in-place decline reason
+        // (#543) so the service layer can log the two together — the pure layer
+        // does no IO itself. Then rethrow the typed error unchanged.
+        tagRescheduleFailure(err, { bookingId: booking.id, inPlaceDeclineReason: inPlaceDeclineReason ?? undefined });
         throw err;
       }
       pin = {
@@ -2222,7 +2253,11 @@ async function applyReschedule(
     await deps.releaseOutboxLease(outboxId);
   }
 
-  return { booking: updated, manageUrl: manageUrl(deps, token) };
+  return {
+    booking: updated,
+    manageUrl: manageUrl(deps, token),
+    rescheduleDecline: inPlaceDeclineReason ?? undefined,
+  };
 }
 
 /**

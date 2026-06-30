@@ -1250,6 +1250,68 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Decide the observability breadcrumb for a reschedule (#543). The pure booking
+ * layer surfaces WHY the in-place agent was declined; this turns it into a log
+ * line. A routine reassign (declined in-place, succeeded elsewhere) is INFO — a
+ * normal outcome, not a problem; an outright failure is WARN. Returns null when
+ * there's nothing to say (the in-place agent was kept, or no candidate existed).
+ */
+export function rescheduleLogLine(input: {
+  ok: boolean;
+  bookingId: string | undefined;
+  initiator: string;
+  declineReason: orchestration.RescheduleDeclineReason | null | undefined;
+  errorName?: string;
+}): { level: "info" | "warn"; message: string } | null {
+  if (input.ok) {
+    if (!input.declineReason) return null;
+    return {
+      level: "info",
+      message: `reschedule reassigned: booking=${input.bookingId ?? "?"} initiator=${input.initiator} in_place_declined=${input.declineReason}`,
+    };
+  }
+  return {
+    level: "warn",
+    message: `reschedule failed: booking=${input.bookingId ?? "?"} initiator=${input.initiator} in_place_declined=${input.declineReason ?? "n/a"} error=${input.errorName ?? "unknown"}`,
+  };
+}
+
+/**
+ * Run a reschedule through the booking layer and emit the #543 breadcrumb. Shared
+ * by the customer + admin entry points so the log decision lives in exactly one
+ * place. Logging is here (the realDeps/IO layer), never in the pure layer.
+ */
+async function rescheduleWithLog(
+  token: string,
+  newStartIso: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
+): Promise<BookingResult> {
+  try {
+    const res = await orchestration.rescheduleBooking(token, newStartIso, reason, initiator, realDeps());
+    const line = rescheduleLogLine({
+      ok: true,
+      bookingId: res.booking.id,
+      initiator,
+      declineReason: res.rescheduleDecline,
+    });
+    if (line) console.info(line.message);
+    return res;
+  } catch (err) {
+    const ctx = orchestration.rescheduleFailureContext(err);
+    const line = rescheduleLogLine({
+      ok: false,
+      bookingId: ctx.bookingId,
+      initiator,
+      declineReason: ctx.inPlaceDeclineReason,
+      errorName: err instanceof Error ? err.name : String(err),
+    });
+    if (line) (line.level === "warn" ? console.warn : console.info)(line.message);
+    throw err;
+  }
+}
+
 export function createBooking(input: CreateBookingInput): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
     orchestration.createBooking(input, realDeps()),
@@ -1323,7 +1385,7 @@ export function rescheduleBooking(
   initiator: BookingEventInitiator,
 ): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    orchestration.rescheduleBooking(token, newStartIso, reason, initiator, realDeps()),
+    rescheduleWithLog(token, newStartIso, reason, initiator),
   );
 }
 
@@ -1370,7 +1432,7 @@ export async function adminRescheduleBooking(
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
   return alertOnBookingFailure(() =>
-    orchestration.rescheduleBooking(token, newStartIso, reason, "admin", realDeps()),
+    rescheduleWithLog(token, newStartIso, reason, "admin"),
   );
 }
 
