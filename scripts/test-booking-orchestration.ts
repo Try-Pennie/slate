@@ -1138,45 +1138,8 @@ async function run() {
       "reschedule(over cap, same agent): stays on the SAME agent (cap not enforced on reschedule)",
     );
     assert(
-      calls.updateEventTime.length === 1 && calls.createEvent.length === 0,
-      "reschedule(over cap, same agent): moves in place, no reassign churn",
-    );
-  }
-
-  // --- #536: reschedule into a slot on a DIFFERENT time (where the agent HAS OTHER
-  // bookings already) still stays in-place IF the new time itself is free (just a move,
-  // not blocked by the daily cap). This contrasts with a NEW booking routed for the first
-  // time, which would never be offered on an over-cap day. ---
-  {
-    const capEvent = { ...eventType, daily_cap: 1 } as unknown as EventType;
-    const ctx = { booking: makeBooking({}), bucket, eventType: capEvent };
-    const rescheduled = {
-      booking: {
-        ...ctx.booking,
-        starts_at: "2026-06-08T18:00:00.000Z",
-        ends_at: "2026-06-08T18:30:00.000Z",
-        status: "rescheduled" as const,
-      },
-      bucket, eventType: capEvent,
-    };
-    const { deps, calls } = makeDeps({
-      existing: ctx,
-      bookingById: rescheduled,
-      candidates: ["a", "b"],
-      freeEmails: new Set(["a@x.com", "b@x.com"]),
-      // A already has another booking on 2026-06-08 (09:00 NY); cap is 1, so A is at cap.
-      // But the reschedule is just a move, so it should stay in-place, not be rerouted.
-      agentDayBookings: new Map([["a", ["2026-06-08T13:00:00.000Z"]]]),
-    });
-    // 18:00Z = 14:00 NY Monday — on-shift, calendar free, at daily cap, but still in-place move.
-    const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
-    assert(
-      res.booking.assigned_user_id === "a" && res.booking.agent_email === "a@x.com",
-      "reschedule(on same over-cap day): stays in-place (cap does not block reschedule)",
-    );
-    assert(
       calls.updateEventTime.length === 1 && calls.createEvent.length === 0 && calls.deleteEvent.length === 0,
-      "reschedule(on same over-cap day): moves in place, no reassign churn",
+      "reschedule(over cap, same agent): moves in place, no reassign churn",
     );
   }
 
@@ -1822,6 +1785,10 @@ async function run() {
         "reassign(at cap, override): forces through and reports overCap=true",
       );
       assert(calls.createEvent.length === 1, "reassign(at cap, override): event created");
+      assert(
+        calls.agentActiveBookingStartsMs[0]?.excludeBookingId === "bk1",
+        "reassign(cap check): excludes the booking being moved from the day count",
+      );
     }
   }
 
