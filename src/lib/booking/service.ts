@@ -245,6 +245,7 @@ export {
   RescheduleConflictError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
+  DailyCapExceededError,
   UnknownBucketError,
   BookingNotFoundError,
 } from "@/lib/booking/orchestration";
@@ -1340,8 +1341,9 @@ export function reassignBooking(
   bookingId: string,
   agentEmail: string,
   reason: ValidatedReason,
-): Promise<BookingResult> {
-  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps());
+  overrideCap = false,
+) {
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(), overrideCap);
 }
 
 /** Resolve a booking's manage token by id, so admin actions can reuse the
