@@ -6,6 +6,7 @@ import {
   assembleMemberAvailability,
   isWithinWorkingHours,
   isBookableSlotForAgent,
+  bookableSlotReason,
   capCountWindow,
   type MemberAvailability,
   type SlotRules,
@@ -268,6 +269,45 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
   assert(
     isBookableSlotForAgent(selfAgent, rules, slot, earlyNow, { ignoreBusy: ownEvent }),
     "bookable: own event excluded via ignoreBusy -> true (#523)",
+  );
+
+  // --- bookableSlotReason (#543): the same predicate, but returns the SPECIFIC
+  //     failing rule (or null when bookable) so a declined in-place reschedule
+  //     leaves a breadcrumb. isBookableSlotForAgent is `reason === null`, so the
+  //     two can never disagree. Order matches the predicate: min_notice, then
+  //     working_hours, then daily_cap, then buffer. ---
+  assert(
+    bookableSlotReason(agent, rules, slot, earlyNow) === null,
+    "reason: bookable slot -> null",
+  );
+  assert(
+    bookableSlotReason(agent, { ...rules, minNoticeMin: 60 }, slot, slot - 30 * 60_000) ===
+      "min_notice",
+    "reason: inside min-notice window -> 'min_notice'",
+  );
+  assert(
+    bookableSlotReason(agent, rules, ms("2026-06-08T21:00:00.000Z"), earlyNow) ===
+      "working_hours",
+    "reason: off-shift start -> 'working_hours'",
+  );
+  assert(
+    bookableSlotReason(capAgent, { ...rules, dailyCap: 2 }, slot, earlyNow) === "daily_cap",
+    "reason: at the daily cap -> 'daily_cap'",
+  );
+  assert(
+    bookableSlotReason(capAgent, { ...rules, dailyCap: 2 }, slot, earlyNow, {
+      enforceDailyCap: false,
+    }) === null,
+    "reason: over cap with enforceDailyCap=false -> null (in-place keep-same-agent)",
+  );
+  assert(
+    bookableSlotReason(bufferAgent, { ...rules, bufferAfterMin: 15 }, slot, earlyNow) ===
+      "buffer",
+    "reason: busy block inside buffer-after window -> 'buffer'",
+  );
+  assert(
+    bookableSlotReason(selfAgent, rules, slot, earlyNow, { ignoreBusy: ownEvent }) === null,
+    "reason: own event excluded via ignoreBusy -> null (#523)",
   );
 }
 

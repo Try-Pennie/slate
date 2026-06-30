@@ -5,11 +5,12 @@ import { toE164 } from "../phone.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { DateTime } from "luxon";
 import {
-  isBookableSlotForAgent,
+  bookableSlotReason,
   isUnderDailyCap,
   isWithinWorkingHours,
   type SlotRules,
   type WorkingRule,
+  type UnbookableReason,
 } from "../availability/compute.ts";
 import {
   bookingWindow,
@@ -2036,29 +2037,47 @@ async function applyReschedule(
     const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
     let keepInPlace = false;
+    // Why the current agent could NOT be kept in place (#543). One of
+    // working_hours | calendar (live busy read failed) | min_notice | buffer.
+    // daily_cap can't fire here (enforceDailyCap is off for a keep-same-agent
+    // move). null while there was no in-place candidate to evaluate at all.
+    let inPlaceDeclineReason: UnbookableReason | "calendar" | null = null;
     if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
       const wh = await deps.agentWorkingHours(booking.assigned_user_id);
       // Cheap rules-only on-shift gate first, so an off-shift reschedule re-routes
       // without a needless live Google read (the common #527 case).
-      if (isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {
+      if (!isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {
+        inPlaceDeclineReason = "working_hours";
+      } else {
         const busy = await deps.busyIntervalsForAgent(
           currentEmail,
           new Date(startMs - slotRules.bufferBeforeMin * 60_000).toISOString(),
           new Date(endMs + slotRules.bufferAfterMin * 60_000).toISOString(),
         );
-        if (busy !== null) {
+        if (busy === null) {
+          // Live calendar read failed -> re-route, exactly as the old isFree path did.
+          inPlaceDeclineReason = "calendar";
+        } else {
           // A reschedule that keeps the same agent is NOT a net-new booking, so the
           // daily cap does not apply here (it would otherwise reroute a simple move
           // onto a day already full of the agent's OTHER meetings). Still enforce
           // working-hours (gated above), min-notice, and buffer.
-          keepInPlace = isBookableSlotForAgent(
+          inPlaceDeclineReason = bookableSlotReason(
             { timezone: wh.timezone, rules: wh.rules, busy, bookingStartsMs: [] },
             slotRules,
             startMs,
             nowMs,
             { ignoreBusy: ownEvent, enforceDailyCap: false },
           );
+          keepInPlace = inPlaceDeclineReason === null;
         }
+      }
+      if (!keepInPlace) {
+        // Observability breadcrumb (#543): not customer-facing. Lets anyone reading
+        // logs see WHY the in-place agent was declined without reproducing.
+        console.warn(
+          `reschedule in-place declined: booking=${booking.id} agent=${currentEmail} target=${startIso} reason=${inPlaceDeclineReason}`,
+        );
       }
     }
     if (keepInPlace) {
@@ -2072,7 +2091,18 @@ async function applyReschedule(
         target_starts_at: startIso,
       };
     } else {
-      const next = await assignAgent(deps, bucket, eventType, startIso, endIso);
+      let next;
+      try {
+        next = await assignAgent(deps, bucket, eventType, startIso, endIso);
+      } catch (err) {
+        // The reschedule ultimately failed: the in-place agent was declined and
+        // the reroute found nobody. Log a breadcrumb tying the two together (#543)
+        // before the typed error propagates to the caller's customer-facing message.
+        console.warn(
+          `reschedule failed: booking=${booking.id} bucket=${bucket.code} target=${startIso} in_place_declined=${inPlaceDeclineReason ?? "n/a"} reassign=${err instanceof Error ? err.constructor.name : String(err)}`,
+        );
+        throw err;
+      }
       pin = {
         reschedule_seq: seq,
         branch: "reassign",

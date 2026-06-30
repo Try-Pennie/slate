@@ -180,7 +180,21 @@ export function isUnderDailyCap(
  * event) so a sub-event-length in-place reschedule isn't a self-conflict (#523).
  * `opts.dayCounts` lets the booker pass a precomputed per-day count for speed.
  */
-export function isBookableSlotForAgent(
+/**
+ * The specific slot rule an agent fails, in the order the predicate checks them:
+ * `min_notice` -> `working_hours` -> `daily_cap` -> `buffer` (a busy block inside
+ * the buffered window, i.e. a calendar conflict). `null` means bookable.
+ */
+export type UnbookableReason = "min_notice" | "working_hours" | "daily_cap" | "buffer";
+
+/**
+ * Like `isBookableSlotForAgent` but returns WHICH rule failed (or `null` when
+ * bookable), so a declined in-place reschedule can log the specific reason (#543)
+ * instead of a generic no-availability error. This is the single source of truth;
+ * `isBookableSlotForAgent` is just `bookableSlotReason(...) === null`, so the
+ * boolean and the reason can never drift.
+ */
+export function bookableSlotReason(
   m: Pick<MemberAvailability, "timezone" | "rules" | "busy" | "bookingStartsMs">,
   rules: SlotRules,
   startMs: number,
@@ -190,15 +204,15 @@ export function isBookableSlotForAgent(
     dayCounts?: Map<string, number>;
     enforceDailyCap?: boolean;
   },
-): boolean {
+): UnbookableReason | null {
   const endMs = startMs + rules.durationMin * MIN;
-  if (startMs < nowMs + rules.minNoticeMin * MIN) return false;
-  if (!isWithinWorkingHours(m.rules, m.timezone, startMs, endMs)) return false;
+  if (startMs < nowMs + rules.minNoticeMin * MIN) return "min_notice";
+  if (!isWithinWorkingHours(m.rules, m.timezone, startMs, endMs)) return "working_hours";
   if (
     (opts?.enforceDailyCap ?? true) &&
     !isUnderDailyCap(m.bookingStartsMs, m.timezone, startMs, rules.dailyCap, opts?.dayCounts)
   ) {
-    return false;
+    return "daily_cap";
   }
   const winStart = startMs - rules.bufferBeforeMin * MIN;
   const winEnd = endMs + rules.bufferAfterMin * MIN;
@@ -210,9 +224,23 @@ export function isBookableSlotForAgent(
     // The part of this busy interval overlapping our window lies entirely within
     // the ignored own event (#523) — not a real conflict. Mirrors hasBlockingBusy.
     if (ig && os >= ig.start && oe <= ig.end) continue;
-    return false;
+    return "buffer";
   }
-  return true;
+  return null;
+}
+
+export function isBookableSlotForAgent(
+  m: Pick<MemberAvailability, "timezone" | "rules" | "busy" | "bookingStartsMs">,
+  rules: SlotRules,
+  startMs: number,
+  nowMs: number,
+  opts?: {
+    ignoreBusy?: { start: number; end: number };
+    dayCounts?: Map<string, number>;
+    enforceDailyCap?: boolean;
+  },
+): boolean {
+  return bookableSlotReason(m, rules, startMs, nowMs, opts) === null;
 }
 
 /** Open start instants for a single member within the window. */
