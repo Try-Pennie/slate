@@ -1479,6 +1479,28 @@ export async function adminCancelBooking(
   await orchestration.cancelBooking(token, reason, "admin", realDeps(), actor);
 }
 
+/**
+ * Manager reassign by booking id (#546): force a booking onto a chosen agent from
+ * the admin screen. Records initiator='admin' + the acting staff user (#549), and
+ * allows targets OUTSIDE the bookable pool (coverage/escalation) — the manager
+ * picks deliberately and the UI flags out-of-pool agents. `overrideCap` is set
+ * only on the manager's second (two-step) confirm. requireBookingActor-gated.
+ */
+export function adminReassignBooking(
+  bookingId: string,
+  agentEmail: string,
+  reason: ValidatedReason,
+  actor: BookingActor,
+  overrideCap = false,
+): Promise<BookingResult & { overCap: boolean }> {
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(), {
+    overrideCap,
+    actor,
+    initiator: "admin",
+    allowNonBookable: true,
+  });
+}
+
 export function completePastBookings(): Promise<number> {
   return orchestration.completePastBookings(realDeps());
 }
