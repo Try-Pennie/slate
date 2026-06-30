@@ -96,6 +96,16 @@ export function validateReason(
   return { ok: true, reason: { code, detail: null } };
 }
 
+/**
+ * Who performed an admin-initiated booking action (#549). `userId` is the REAL
+ * accountable staff user; `actingAsUserId` is the user they acted as when
+ * impersonating (null otherwise). Customer/system actions pass no actor at all.
+ */
+export interface BookingActor {
+  userId: string;
+  actingAsUserId?: string | null;
+}
+
 /** Inputs for building a booking_events history row (pure). */
 export interface BookingEventDraft {
   bookingId: string;
@@ -108,6 +118,14 @@ export interface BookingEventDraft {
   toStartsIso: string | null;
   fromAgentUserId: string | null;
   toAgentUserId: string | null;
+  /**
+   * The staff user accountable for an admin-initiated action (#549): the real
+   * signed-in user. null for customer/system actions. When an admin is acting via
+   * impersonation, this is the REAL admin, and `actingAsUserId` is who they acted as.
+   */
+  actorUserId?: string | null;
+  /** The impersonated user an admin acted as (#549); null when not impersonating. */
+  actingAsUserId?: string | null;
   nowMs: number;
 }
 
@@ -122,6 +140,8 @@ export type BookingEventInsert = {
   to_starts_at: string | null;
   from_agent_user_id: string | null;
   to_agent_user_id: string | null;
+  actor_user_id: string | null;
+  acting_as_user_id: string | null;
   lead_time_minutes: number | null;
 };
 
@@ -145,6 +165,8 @@ export function bookingEventFrom(d: BookingEventDraft): BookingEventInsert {
     to_starts_at: d.toStartsIso,
     from_agent_user_id: d.fromAgentUserId,
     to_agent_user_id: d.toAgentUserId,
+    actor_user_id: d.actorUserId ?? null,
+    acting_as_user_id: d.actingAsUserId ?? null,
     lead_time_minutes,
   };
 }

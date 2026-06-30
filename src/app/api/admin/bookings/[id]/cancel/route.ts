@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { requireManager } from "@/lib/auth";
+import { requireBookingActor } from "@/lib/auth";
 import { adminCancelBooking } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 
@@ -16,7 +16,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  await requireManager();
+  const actor = await requireBookingActor();
   const { id } = await params;
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {
@@ -32,7 +32,7 @@ export async function POST(
   }
 
   try {
-    await adminCancelBooking(id, reason.reason);
+    await adminCancelBooking(id, reason.reason, actor);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

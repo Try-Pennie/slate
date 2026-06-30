@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { requireManager } from "@/lib/auth";
+import { requireBookingActor } from "@/lib/auth";
 import {
   adminRescheduleBooking,
   SlotUnavailableError,
@@ -23,7 +23,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  await requireManager();
+  const actor = await requireBookingActor();
   const { id } = await params;
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
@@ -39,7 +39,7 @@ export async function POST(
   }
 
   try {
-    const { booking } = await adminRescheduleBooking(id, parsed.data.start, reason.reason);
+    const { booking } = await adminRescheduleBooking(id, parsed.data.start, reason.reason, actor);
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,

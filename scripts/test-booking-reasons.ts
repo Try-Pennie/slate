@@ -85,6 +85,40 @@ const NOW = Date.parse("2026-06-08T11:00:00.000Z"); // 2h before a 13:00 appt
   assert(ev.from_starts_at === "2026-06-08T13:00:00.000Z" && ev.to_starts_at === "2026-06-09T15:00:00.000Z", "carries from/to time");
   assert(ev.from_agent_user_id === "a" && ev.to_agent_user_id === "b", "carries agent change");
   assert(ev.lead_time_minutes === 120, "lead time = +120 min before the (old) appointment");
+  // #549: a customer self-serve action has no staff actor.
+  assert(ev.actor_user_id === null && ev.acting_as_user_id === null, "customer action records no staff actor");
+}
+// #549: an admin action records WHICH staff user performed it; an impersonated
+// action records the real admin as the actor + who they acted as.
+{
+  const plain = bookingEventFrom({
+    bookingId: "bk1",
+    action: "cancelled",
+    initiator: "admin",
+    reason: { code: "booked_by_mistake", detail: null },
+    fromStartsIso: "2026-06-08T13:00:00.000Z",
+    toStartsIso: null,
+    fromAgentUserId: "a",
+    toAgentUserId: null,
+    actorUserId: "mgr1",
+    nowMs: NOW,
+  });
+  assert(plain.actor_user_id === "mgr1" && plain.acting_as_user_id === null, "admin action records the acting staff user, no impersonation");
+
+  const impersonated = bookingEventFrom({
+    bookingId: "bk1",
+    action: "rescheduled",
+    initiator: "admin",
+    reason: { code: "schedule_conflict", detail: null },
+    fromStartsIso: "2026-06-08T13:00:00.000Z",
+    toStartsIso: "2026-06-09T15:00:00.000Z",
+    fromAgentUserId: "a",
+    toAgentUserId: "b",
+    actorUserId: "admin1",
+    actingAsUserId: "mgr2",
+    nowMs: NOW,
+  });
+  assert(impersonated.actor_user_id === "admin1" && impersonated.acting_as_user_id === "mgr2", "impersonated action: real admin is the actor, target recorded as acting-as");
 }
 {
   // Action after the appointment start -> negative lead time (rounded).

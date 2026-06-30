@@ -368,6 +368,11 @@ export interface BookingEvent {
   to_starts_at: string | null;
   from_agent_user_id: string | null;
   to_agent_user_id: string | null;
+  /** Staff user accountable for an admin action (#549); null for customer/system.
+   *  Under impersonation this is the REAL admin (see acting_as_user_id). */
+  actor_user_id: string | null;
+  /** The user an admin acted AS via impersonation (#549); null otherwise. */
+  acting_as_user_id: string | null;
   /** Signed minutes from the action to the appointment; negative = after it. */
   lead_time_minutes: number | null;
   created_at: string;
@@ -453,6 +458,11 @@ export interface OutboxPayload {
   initiator?: BookingEventInitiator;
   fromStartsIso?: string;
   fromAgentUserId?: string | null;
+  /** Staff user accountable for an admin action (#549); carried so the drained
+   *  history-write step records it even on a crash-resume. */
+  actorUserId?: string | null;
+  /** The user an admin acted AS via impersonation (#549). */
+  actingAsUserId?: string | null;
 }
 
 /**

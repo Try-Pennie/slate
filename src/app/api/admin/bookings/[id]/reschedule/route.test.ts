@@ -2,10 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // HTTP wiring for the admin reschedule route (#439): a concurrent reschedule that
 // throws RescheduleConflictError maps to 409 with the distinct refresh message.
-// requireAdmin + adminRescheduleBooking are mocked so this exercises only the glue.
+// requireBookingActor + adminRescheduleBooking are mocked so this exercises only the glue.
 const auth = vi.hoisted(() => ({
-  requireAdmin: vi.fn(async () => {}),
-  requireManager: vi.fn(async () => {}),
+  requireBookingActor: vi.fn(
+    async (): Promise<{ userId: string; actingAsUserId: string | null }> => ({
+      userId: "mgr1",
+      actingAsUserId: null,
+    }),
+  ),
 }));
 const service = vi.hoisted(() => {
   class RescheduleConflictError extends Error {
@@ -50,8 +54,21 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
     });
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(200);
-    expect(auth.requireManager).toHaveBeenCalled();
-    expect(auth.requireAdmin).not.toHaveBeenCalled();
+    expect(auth.requireBookingActor).toHaveBeenCalled();
+  });
+
+  it("records WHICH staff user rescheduled by threading the actor (#549)", async () => {
+    auth.requireBookingActor.mockResolvedValueOnce({ userId: "admin1", actingAsUserId: "mgr2" });
+    service.adminRescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", status: "rescheduled" },
+    });
+    await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(service.adminRescheduleBooking).toHaveBeenCalledWith(
+      "bk1",
+      "2026-07-01T15:00:00.000Z",
+      expect.anything(),
+      { userId: "admin1", actingAsUserId: "mgr2" },
+    );
   });
 
   it("maps RescheduleConflictError to 409 with the conflict message", async () => {

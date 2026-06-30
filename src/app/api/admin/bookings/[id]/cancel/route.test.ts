@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // HTTP wiring for the admin cancel route. Manager+ gated (#544): managers, not just
-// admins, can cancel from the admin page. requireManager + adminCancelBooking are
-// mocked so this exercises only the glue.
+// admins, can cancel from the admin page. requireBookingActor (the manager+ gate +
+// #549 actor resolver) + adminCancelBooking are mocked so this exercises only the glue.
 const auth = vi.hoisted(() => ({
-  requireAdmin: vi.fn(async () => {}),
-  requireManager: vi.fn(async () => {}),
+  requireBookingActor: vi.fn(
+    async (): Promise<{ userId: string; actingAsUserId: string | null }> => ({
+      userId: "mgr1",
+      actingAsUserId: null,
+    }),
+  ),
 }));
 const service = vi.hoisted(() => ({ adminCancelBooking: vi.fn() }));
 
@@ -27,8 +31,18 @@ describe("POST /admin/bookings/[id]/cancel", () => {
     const res = await POST(req({ reason: "schedule_conflict" }), params);
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
-    expect(auth.requireManager).toHaveBeenCalled();
-    expect(auth.requireAdmin).not.toHaveBeenCalled();
+    expect(auth.requireBookingActor).toHaveBeenCalled();
+  });
+
+  it("records WHICH staff user cancelled by threading the actor (#549)", async () => {
+    auth.requireBookingActor.mockResolvedValueOnce({ userId: "admin1", actingAsUserId: "mgr2" });
+    service.adminCancelBooking.mockResolvedValueOnce(undefined);
+    await POST(req({ reason: "schedule_conflict" }), params);
+    expect(service.adminCancelBooking).toHaveBeenCalledWith(
+      "bk1",
+      expect.anything(),
+      { userId: "admin1", actingAsUserId: "mgr2" },
+    );
   });
 
   it("maps a cancel failure to 500", async () => {
