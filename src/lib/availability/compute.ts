@@ -313,6 +313,25 @@ export function freeMembersForSlot(
     .map((m) => m.userId);
 }
 
+const DAY_MS = 24 * 60 * MIN;
+
+/**
+ * Widen a [from, to] window by one day on each side, for loading the bookings that
+ * feed the DAILY CAP count (#540). The cap is counted per agent per LOCAL day, but
+ * the reroute/verify path loads availability for a window only as long as the slot
+ * itself — so the per-day count was almost empty and the cap never bit. The full
+ * local day containing any instant in [from, to] lies within [from - 24h, to + 24h]
+ * for ANY timezone (max UTC offset is under 24h), so widening by a day guarantees
+ * the count sees every booking on the slot's day. Only the bookings read uses this;
+ * the busy/calendar read keeps the exact window.
+ */
+export function capCountWindow(fromIso: string, toIso: string): { from: string; to: string } {
+  return {
+    from: new Date(Date.parse(fromIso) - DAY_MS).toISOString(),
+    to: new Date(Date.parse(toIso) + DAY_MS).toISOString(),
+  };
+}
+
 /** Drops slot instants earlier than now + min-notice (applied after a cache read). */
 export function filterSlotsFromNow(slots: string[], nowMs: number, minNoticeMin: number): string[] {
   const cutoff = nowMs + minNoticeMin * 60_000;
