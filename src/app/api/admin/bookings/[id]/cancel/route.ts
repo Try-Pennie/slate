@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { requireAdmin } from "@/lib/auth";
+import { requireManager } from "@/lib/auth";
 import { adminCancelBooking } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 
@@ -11,12 +11,12 @@ const schema = z.object({
   reasonDetail: z.string().optional(),
 });
 
-/** Admin cancel by booking id (#326). requireAdmin-gated; initiator='admin'. */
+/** Admin cancel by booking id (#326). Manager+ gated (#544); initiator='admin'. */
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  await requireAdmin();
+  await requireManager();
   const { id } = await params;
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {
