@@ -6,6 +6,7 @@ import { mapWithConcurrency } from "../concurrency.ts";
 import { DateTime } from "luxon";
 import {
   isBookableSlotForAgent,
+  isUnderDailyCap,
   isWithinWorkingHours,
   type SlotRules,
   type WorkingRule,
@@ -162,6 +163,17 @@ export class NoEligibleAgentsError extends Error {
     super("No advisors are configured for this booking type.");
     this.name = "NoEligibleAgentsError";
     this.bucketCode = bucketCode;
+  }
+}
+
+export class DailyCapExceededError extends Error {
+  readonly agentEmail: string;
+  readonly day: string;
+  constructor(agentEmail: string, day: string) {
+    super(`Agent ${agentEmail} is at their daily cap on ${day}`);
+    this.name = "DailyCapExceededError";
+    this.agentEmail = agentEmail;
+    this.day = day;
   }
 }
 
@@ -2035,19 +2047,16 @@ async function applyReschedule(
           new Date(endMs + slotRules.bufferAfterMin * 60_000).toISOString(),
         );
         if (busy !== null) {
-          const day = DateTime.fromMillis(startMs, { zone: wh.timezone }).startOf("day");
-          const bookingStartsMs = await deps.agentActiveBookingStartsMs(
-            booking.assigned_user_id,
-            day.toISO()!,
-            day.plus({ days: 1 }).toISO()!,
-            booking.id,
-          );
+          // A reschedule that keeps the same agent is NOT a net-new booking, so the
+          // daily cap does not apply here (it would otherwise reroute a simple move
+          // onto a day already full of the agent's OTHER meetings). Still enforce
+          // working-hours (gated above), min-notice, and buffer.
           keepInPlace = isBookableSlotForAgent(
-            { timezone: wh.timezone, rules: wh.rules, busy, bookingStartsMs },
+            { timezone: wh.timezone, rules: wh.rules, busy, bookingStartsMs: [] },
             slotRules,
             startMs,
             nowMs,
-            { ignoreBusy: ownEvent },
+            { ignoreBusy: ownEvent, enforceDailyCap: false },
           );
         }
       }
@@ -2199,7 +2208,8 @@ export async function reassignBooking(
   agentEmail: string,
   reason: ValidatedReason,
   deps: BookingDeps,
-): Promise<BookingResult> {
+  overrideCap = false,
+): Promise<BookingResult & { overCap: boolean }> {
   const ctx = await deps.loadBookingById(bookingId);
   if (!ctx) throw new Error("Booking not found");
   const { booking, bucket, eventType } = ctx;
@@ -2212,7 +2222,32 @@ export async function reassignBooking(
     throw new Error("Agent not found or not bookable");
   }
   if (agent.id === booking.assigned_user_id) {
-    return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
+    return { booking, manageUrl: manageUrl(deps, booking.manage_token), overCap: false };
+  }
+
+  // Daily-cap awareness (#reassign-cap): the cap counts meetings per agent per day.
+  // Moving a booking onto a DIFFERENT agent is net-new load for that agent, so the
+  // cap applies. We compute it ALWAYS so we can report it; we only BLOCK when the
+  // caller hasn't opted to override (the machine contact-owner path passes true).
+  let overCap = false;
+  if (eventType.daily_cap !== null) {
+    const wh = await deps.agentWorkingHours(agent.id);
+    const day = DateTime.fromISO(booking.starts_at, { zone: wh.timezone }).startOf("day");
+    const dayStartsMs = await deps.agentActiveBookingStartsMs(
+      agent.id,
+      day.toISO()!,
+      day.plus({ days: 1 }).toISO()!,
+      booking.id,
+    );
+    overCap = !isUnderDailyCap(
+      dayStartsMs,
+      wh.timezone,
+      Date.parse(booking.starts_at),
+      eventType.daily_cap,
+    );
+    if (overCap && !overrideCap) {
+      throw new DailyCapExceededError(agent.email, day.toISODate()!);
+    }
   }
 
   // Create the event on the TARGET agent FIRST, then swap atomically (#449). We
@@ -2356,7 +2391,7 @@ export async function reassignBooking(
   } finally {
     await deps.releaseOutboxLease(outboxId);
   }
-  return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token) };
+  return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token), overCap };
 }
 
 /** Cancel a booking by token. Returns true if THIS call transitioned the row

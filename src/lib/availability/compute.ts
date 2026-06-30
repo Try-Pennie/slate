@@ -154,7 +154,7 @@ function bookingsPerLocalDay(
  * local-date -> count map (the booker's hot loop builds it once); otherwise the
  * count is derived from `bookingStartsMs`.
  */
-function isUnderDailyCap(
+export function isUnderDailyCap(
   bookingStartsMs: number[],
   timezone: string,
   startMs: number,
@@ -185,12 +185,19 @@ export function isBookableSlotForAgent(
   rules: SlotRules,
   startMs: number,
   nowMs: number,
-  opts?: { ignoreBusy?: { start: number; end: number }; dayCounts?: Map<string, number> },
+  opts?: {
+    ignoreBusy?: { start: number; end: number };
+    dayCounts?: Map<string, number>;
+    enforceDailyCap?: boolean;
+  },
 ): boolean {
   const endMs = startMs + rules.durationMin * MIN;
   if (startMs < nowMs + rules.minNoticeMin * MIN) return false;
   if (!isWithinWorkingHours(m.rules, m.timezone, startMs, endMs)) return false;
-  if (!isUnderDailyCap(m.bookingStartsMs, m.timezone, startMs, rules.dailyCap, opts?.dayCounts)) {
+  if (
+    (opts?.enforceDailyCap ?? true) &&
+    !isUnderDailyCap(m.bookingStartsMs, m.timezone, startMs, rules.dailyCap, opts?.dayCounts)
+  ) {
     return false;
   }
   const winStart = startMs - rules.bufferBeforeMin * MIN;

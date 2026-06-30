@@ -228,6 +228,20 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
     "bookable: no daily cap configured -> true regardless of count",
   );
 
+  // #(reassign-cap): the cap can be opted out (the in-place reschedule guard does this).
+  const capAgent2 = {
+    ...agent,
+    bookingStartsMs: [ms("2026-06-08T13:00:00.000Z"), ms("2026-06-08T15:00:00.000Z")],
+  };
+  assert(
+    !isBookableSlotForAgent(capAgent2, { ...rules, dailyCap: 2 }, slot, earlyNow),
+    "cap enforced by default: at cap -> false",
+  );
+  assert(
+    isBookableSlotForAgent(capAgent2, { ...rules, dailyCap: 2 }, slot, earlyNow, { enforceDailyCap: false }),
+    "cap opt-out: over cap is bookable when enforceDailyCap=false (reschedule keep-same-agent)",
+  );
+
   // Buffer: a busy block in the buffer-after window blocks the slot.
   const bufferAgent = {
     ...agent,

@@ -1108,35 +1108,38 @@ async function run() {
     );
   }
 
-  // --- #536: reschedule that would put the agent OVER their daily cap -> re-routes
-  // instead of silently staying in-place. The agent is on-shift and calendar-free,
-  // but already at the cap for the target local day; the booker would never offer
-  // this slot for them, so the in-place guard must decline and reassign. ---
+  // --- #(reassign-cap) reschedule keeping the SAME agent is NOT blocked by the daily
+  // cap, even onto a day already full of the agent's OTHER meetings (a reschedule moves
+  // an existing meeting, it's not a net-new booking). ---
   {
     const capEvent = { ...eventType, daily_cap: 1 } as unknown as EventType;
     const ctx = { booking: makeBooking({}), bucket, eventType: capEvent };
     const rescheduled = {
-      booking: { ...ctx.booking, assigned_user_id: "b", agent_name: "Agent B", agent_email: "b@x.com",
-        starts_at: "2026-06-08T18:00:00.000Z", ends_at: "2026-06-08T18:30:00.000Z", status: "rescheduled" as const },
-      bucket, eventType: capEvent,
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-08T18:00:00.000Z",
+        ends_at: "2026-06-08T18:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType: capEvent,
     };
     const { deps, calls } = makeDeps({
       existing: ctx,
       bookingById: rescheduled,
-      candidates: ["b"], // A is over-cap; only B is offered by the schedule-aware reassign
+      candidates: ["a", "b"],
       freeEmails: new Set(["a@x.com", "b@x.com"]),
-      // A already has one OTHER booking on 2026-06-08 (09:00 NY); cap is 1.
+      // A already has another booking that day; cap is 1 -> would be "over cap".
       agentDayBookings: new Map([["a", ["2026-06-08T13:00:00.000Z"]]]),
     });
-    // 18:00Z = 14:00 NY Monday — on-shift, calendar free, but A is at their daily cap.
     const res = await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
     assert(
-      res.booking.assigned_user_id === "b" && res.booking.agent_email === "b@x.com",
-      "reschedule(over daily cap): re-routes off the capped agent (#536)",
+      res.booking.assigned_user_id === "a" && res.booking.agent_email === "a@x.com",
+      "reschedule(over cap, same agent): stays on the SAME agent (cap not enforced on reschedule)",
     );
     assert(
-      calls.updateEventTime.length === 0 && calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
-      "reschedule(over daily cap): reassign churn, no in-place move (#536)",
+      calls.updateEventTime.length === 1 && calls.createEvent.length === 0 && calls.deleteEvent.length === 0,
+      "reschedule(over cap, same agent): moves in place, no reassign churn",
     );
   }
 
@@ -1740,6 +1743,81 @@ async function run() {
         calls.bookingEvents[0].to_starts_at === calls.bookingEvents[0].from_starts_at,
       "reassign: records a 'reassigned' (not 'rescheduled') system event, same time, new agent",
     );
+  }
+
+  // --- #(reassign-cap): reassign onto an at-cap agent ---
+  {
+    const capEvent = { ...eventType, daily_cap: 1 } as unknown as EventType;
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    // B already has one booking on the booking's day (2026-06-08); cap is 1 -> over cap.
+    const atCap = () =>
+      makeDeps({
+        bookingById: { booking: makeBooking({}), bucket, eventType: capEvent },
+        agentByEmail: owner,
+        agentDayBookings: new Map([["b", ["2026-06-08T15:00:00.000Z"]]]),
+      });
+
+    // Default (overrideCap omitted) -> blocked.
+    {
+      const { deps, calls } = atCap();
+      let err: unknown;
+      try {
+        await reassignBooking("bk1", "b@x.com", SYS, deps);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        err != null && (err as Error).name === "DailyCapExceededError",
+        "reassign(at cap, no override): throws DailyCapExceededError",
+      );
+      assert(
+        calls.createEvent.length === 0 && calls.reassignSwaps.length === 0,
+        "reassign(at cap, no override): no event created, no swap (nothing mutated)",
+      );
+    }
+
+    // overrideCap=true -> forces through, reports overCap.
+    {
+      const { deps, calls } = atCap();
+      const res = await reassignBooking("bk1", "b@x.com", SYS, deps, true);
+      assert(
+        res.booking.assigned_user_id === "b" && res.overCap === true,
+        "reassign(at cap, override): forces through and reports overCap=true",
+      );
+      assert(calls.createEvent.length === 1, "reassign(at cap, override): event created");
+      assert(
+        calls.agentActiveBookingStartsMs[0]?.excludeBookingId === "bk1",
+        "reassign(cap check): excludes the booking being moved from the day count",
+      );
+    }
+  }
+
+  // --- #(reassign-cap): reassign onto an UNDER-cap agent succeeds, overCap=false ---
+  {
+    const capEvent = { ...eventType, daily_cap: 3 } as unknown as EventType;
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps } = makeDeps({
+      bookingById: { booking: makeBooking({}), bucket, eventType: capEvent },
+      agentByEmail: owner,
+      agentDayBookings: new Map([["b", ["2026-06-08T15:00:00.000Z"]]]), // 1 < 3
+    });
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
+    assert(
+      res.booking.assigned_user_id === "b" && res.overCap === false,
+      "reassign(under cap): succeeds, overCap=false",
+    );
+  }
+
+  // --- #(reassign-cap): uncapped event never blocks, overCap=false ---
+  {
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps } = makeDeps({
+      bookingById: { booking: makeBooking({}), bucket, eventType }, // daily_cap: null
+      agentByEmail: owner,
+      agentDayBookings: new Map([["b", ["2026-06-08T15:00:00.000Z"]]]),
+    });
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
+    assert(res.overCap === false, "reassign(uncapped): never over cap");
   }
 
   // --- reassign: new event uses a deterministic, target-keyed client id (#439 P4) ---

@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  * is allowed). Bearer-authed with REASSIGN_API_KEY since it mutates and moves
  * calendar events.
  *
- *   POST { bookingId, agentEmail } -> 200 { booking } | 404 | 409 | 401/503
+ *   POST { bookingId, agentEmail } -> 200 { booking, overCap } | 404 | 409 | 401/503
  */
 export async function POST(req: NextRequest) {
   const key = reassignApiKey();
@@ -41,10 +41,17 @@ export async function POST(req: NextRequest) {
   const reasonDetail = String(body.reasonDetail ?? "").trim().slice(0, 500) || null;
 
   try {
-    const result = await reassignBooking(bookingId, agentEmail, {
-      code: reasonCode,
-      detail: reasonDetail,
-    });
+    const result = await reassignBooking(
+      bookingId,
+      agentEmail,
+      { code: reasonCode, detail: reasonDetail },
+      true,
+    );
+    if (result.overCap) {
+      console.warn(
+        `reassign forced agent ${result.booking.agent_email} over their daily cap (booking ${result.booking.id})`,
+      );
+    }
     return NextResponse.json({
       booking: {
         id: result.booking.id,
@@ -53,6 +60,7 @@ export async function POST(req: NextRequest) {
         startsAt: result.booking.starts_at,
         status: result.booking.status,
       },
+      overCap: result.overCap,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
