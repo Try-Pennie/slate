@@ -1782,6 +1782,77 @@ async function run() {
     );
   }
 
+  // --- #(reassign-cap): reassign onto an at-cap agent ---
+  {
+    const capEvent = { ...eventType, daily_cap: 1 } as unknown as EventType;
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    // B already has one booking on the booking's day (2026-06-08); cap is 1 -> over cap.
+    const atCap = () =>
+      makeDeps({
+        bookingById: { booking: makeBooking({}), bucket, eventType: capEvent },
+        agentByEmail: owner,
+        agentDayBookings: new Map([["b", ["2026-06-08T15:00:00.000Z"]]]),
+      });
+
+    // Default (overrideCap omitted) -> blocked.
+    {
+      const { deps, calls } = atCap();
+      let err: unknown;
+      try {
+        await reassignBooking("bk1", "b@x.com", SYS, deps);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        err != null && (err as Error).name === "DailyCapExceededError",
+        "reassign(at cap, no override): throws DailyCapExceededError",
+      );
+      assert(
+        calls.createEvent.length === 0 && calls.reassignSwaps.length === 0,
+        "reassign(at cap, no override): no event created, no swap (nothing mutated)",
+      );
+    }
+
+    // overrideCap=true -> forces through, reports overCap.
+    {
+      const { deps, calls } = atCap();
+      const res = await reassignBooking("bk1", "b@x.com", SYS, deps, true);
+      assert(
+        res.booking.assigned_user_id === "b" && res.overCap === true,
+        "reassign(at cap, override): forces through and reports overCap=true",
+      );
+      assert(calls.createEvent.length === 1, "reassign(at cap, override): event created");
+    }
+  }
+
+  // --- #(reassign-cap): reassign onto an UNDER-cap agent succeeds, overCap=false ---
+  {
+    const capEvent = { ...eventType, daily_cap: 3 } as unknown as EventType;
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps } = makeDeps({
+      bookingById: { booking: makeBooking({}), bucket, eventType: capEvent },
+      agentByEmail: owner,
+      agentDayBookings: new Map([["b", ["2026-06-08T15:00:00.000Z"]]]), // 1 < 3
+    });
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
+    assert(
+      res.booking.assigned_user_id === "b" && res.overCap === false,
+      "reassign(under cap): succeeds, overCap=false",
+    );
+  }
+
+  // --- #(reassign-cap): uncapped event never blocks, overCap=false ---
+  {
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps } = makeDeps({
+      bookingById: { booking: makeBooking({}), bucket, eventType }, // daily_cap: null
+      agentByEmail: owner,
+      agentDayBookings: new Map([["b", ["2026-06-08T15:00:00.000Z"]]]),
+    });
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
+    assert(res.overCap === false, "reassign(uncapped): never over cap");
+  }
+
   // --- reassign: new event uses a deterministic, target-keyed client id (#439 P4) ---
   // The reassign target is caller-supplied (deterministic), so a crash between the
   // create and the booking commit must reuse the SAME Google event on retry rather
