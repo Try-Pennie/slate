@@ -21,6 +21,7 @@ import {
   freeAgentsFromBusy,
   type CalendarBusy,
   type ValidatedReason,
+  type BookingActor,
 } from "@/lib/booking/core";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
@@ -250,6 +251,7 @@ export {
   BookingNotFoundError,
 } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
+export type { BookingActor } from "@/lib/booking/core";
 
 /**
  * Binds the booking orchestration to real IO. This is the ONLY place the
@@ -1314,9 +1316,12 @@ async function rescheduleWithLog(
   newStartIso: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
+  actor?: BookingActor,
 ): Promise<BookingResult> {
   try {
-    const res = await orchestration.rescheduleBooking(token, newStartIso, reason, initiator, realDeps());
+    const res = await orchestration.rescheduleBooking(
+      token, newStartIso, reason, initiator, realDeps(), Date.now(), actor,
+    );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
   } catch (err) {
@@ -1453,22 +1458,25 @@ export async function adminRescheduleBooking(
   bookingId: string,
   newStartIso: string,
   reason: ValidatedReason,
+  actor: BookingActor,
 ): Promise<BookingResult> {
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, "admin"),
+    rescheduleWithLog(token, newStartIso, reason, "admin", actor),
   );
 }
 
-/** Admin cancel by booking id (#326), initiator='admin'. requireAdmin-gated. */
+/** Admin cancel by booking id (#326), initiator='admin'. requireManager-gated.
+ *  `actor` records WHICH staff user cancelled (#549). */
 export async function adminCancelBooking(
   bookingId: string,
   reason: ValidatedReason,
+  actor: BookingActor,
 ): Promise<void> {
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
-  await orchestration.cancelBooking(token, reason, "admin", realDeps());
+  await orchestration.cancelBooking(token, reason, "admin", realDeps(), actor);
 }
 
 export function completePastBookings(): Promise<number> {

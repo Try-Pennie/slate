@@ -22,6 +22,7 @@ import {
   selectAgent,
   type AssignResult,
   type BusyBlockInsert,
+  type BookingActor,
   type BookingEventInsert,
   type ValidatedReason,
   type VerifyResult,
@@ -970,6 +971,8 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
           toStartsIso: null,
           fromAgentUserId: p.fromAgentUserId ?? booking.assigned_user_id,
           toAgentUserId: null,
+          actorUserId: p.actorUserId,
+          actingAsUserId: p.actingAsUserId,
           nowMs: Date.now(),
         }),
       );
@@ -1030,6 +1033,8 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
           toStartsIso,
           fromAgentUserId: p.fromAgentUserId ?? null,
           toAgentUserId: booking.assigned_user_id,
+          actorUserId: p.actorUserId,
+          actingAsUserId: p.actingAsUserId,
           nowMs: Date.now(),
         }),
       );
@@ -1091,6 +1096,8 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
         toStartsIso: booking.starts_at,
         fromAgentUserId: p.fromAgentUserId ?? null,
         toAgentUserId: booking.assigned_user_id,
+        actorUserId: p.actorUserId,
+        actingAsUserId: p.actingAsUserId,
         nowMs: Date.now(),
       }),
     );
@@ -1947,6 +1954,7 @@ export async function rescheduleBooking(
   initiator: BookingEventInitiator,
   deps: BookingDeps,
   nowMs: number = Date.now(),
+  actor?: BookingActor,
 ): Promise<BookingResult> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
@@ -1978,6 +1986,8 @@ export async function rescheduleBooking(
           toStartsIso: startIso,
           fromAgentUserId: booking.assigned_user_id,
           toAgentUserId: booking.assigned_user_id,
+          actorUserId: actor?.userId,
+          actingAsUserId: actor?.actingAsUserId,
           nowMs: Date.now(),
         }),
       );
@@ -2006,7 +2016,7 @@ export async function rescheduleBooking(
   }
 
   try {
-    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs);
+    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor);
   } finally {
     await deps.releaseReschedule(booking.id);
   }
@@ -2022,6 +2032,7 @@ async function applyReschedule(
   initiator: BookingEventInitiator,
   claim: Extract<RescheduleClaim, { outcome: "won" | "resume" | "fresh-after-abandon" }>,
   nowMs: number,
+  actor?: BookingActor,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -2230,6 +2241,8 @@ async function applyReschedule(
     initiator,
     fromStartsIso,
     fromAgentUserId,
+    actorUserId: actor?.userId,
+    actingAsUserId: actor?.actingAsUserId,
   };
   const outboxId = await deps.enqueueOutbox({
     booking_id: booking.id,
@@ -2282,6 +2295,7 @@ export async function reassignBooking(
   reason: ValidatedReason,
   deps: BookingDeps,
   overrideCap = false,
+  actor?: BookingActor,
 ): Promise<BookingResult & { overCap: boolean }> {
   const ctx = await deps.loadBookingById(bookingId);
   if (!ctx) throw new Error("Booking not found");
@@ -2434,6 +2448,8 @@ export async function reassignBooking(
     initiator: "system" as const,
     fromStartsIso: booking.starts_at,
     fromAgentUserId: booking.assigned_user_id,
+    actorUserId: actor?.userId,
+    actingAsUserId: actor?.actingAsUserId,
   };
   const outboxId = await deps.enqueueOutbox({
     booking_id: booking.id,
@@ -2476,6 +2492,7 @@ export async function cancelBooking(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   deps: BookingDeps,
+  actor?: BookingActor,
 ): Promise<boolean> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
@@ -2495,6 +2512,8 @@ export async function cancelBooking(
           toStartsIso: null,
           fromAgentUserId: booking.assigned_user_id,
           toAgentUserId: null,
+          actorUserId: actor?.userId,
+          actingAsUserId: actor?.actingAsUserId,
           nowMs: Date.now(),
         }),
       );
@@ -2521,6 +2540,8 @@ export async function cancelBooking(
     initiator,
     fromStartsIso: booking.starts_at,
     fromAgentUserId: booking.assigned_user_id,
+    actorUserId: actor?.userId,
+    actingAsUserId: actor?.actingAsUserId,
   };
   const outboxId = await deps.enqueueOutbox({
     booking_id: booking.id,

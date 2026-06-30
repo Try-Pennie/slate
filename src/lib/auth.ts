@@ -107,3 +107,17 @@ export async function requireRole(min: Role): Promise<User> {
 export const requireManager = (): Promise<User> => requireRole("manager");
 export const requireAdmin = (): Promise<User> => requireRole("admin");
 export const requireSuperAdmin = (): Promise<User> => requireRole("super_admin");
+
+/**
+ * Gate at manager+ AND resolve who is accountable for an admin booking action
+ * (#549). The REAL signed-in user is the actor; when an admin is impersonating,
+ * the impersonated user is recorded as `actingAsUserId`. Shape is structurally a
+ * `BookingActor` (kept dependency-free of the booking domain).
+ */
+export async function requireBookingActor(): Promise<{ userId: string; actingAsUserId: string | null }> {
+  const me = await requireManager();
+  const imp = await getImpersonation();
+  return imp
+    ? { userId: imp.real.id, actingAsUserId: imp.target.id }
+    : { userId: me.id, actingAsUserId: null };
+}
