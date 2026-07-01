@@ -156,6 +156,13 @@ Extend (node-native, per `slate-test-convention`):
 
 ## Out of scope
 
+- **UI-tunable alert settings (split to its own issue, decided 2026-07-01).** The
+  cooldowns here (`availability_data_anomaly` 30 min, `availability_booked_solid`
+  6 h) ship as coded constants with env-var fallback in THIS change. A separate
+  follow-up issue adds a `monitor_settings` store + an admin screen so the alert
+  cooldowns AND the destination Slack channel (and the existing low-volume alert
+  timings) can be changed without a redeploy; that issue then points these
+  constants at the store. Do not build the settings UI as part of #570.
 - Stale/missing cache rows (already excluded from the page; recompute lane owns them).
 - Thin-tier staffing early warning (#569) and tier-drop frequency (#500).
 - Any change to the `covered` fallback-covered info signal (#567).
