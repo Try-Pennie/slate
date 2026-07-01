@@ -97,6 +97,12 @@ export const bookingApiKeySecondary = (): string => process.env.BOOKING_API_KEY_
 export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>
   process.env.SLACK_ALERTS_CHANNEL ?? "";
+// Low-priority / informational Slack channel (#567): visibility-only signals
+// (e.g. a thin tier the tier-drop fallback is quietly covering) that should NOT
+// page the alerts channel. Falls back to the alerts channel when unset so the
+// signal is never silently lost; set it to a quieter channel to separate them.
+export const slackInfoChannel = (): string =>
+  process.env.SLACK_INFO_CHANNEL ?? process.env.SLACK_ALERTS_CHANNEL ?? "";
 // Slack app signing secret — verifies inbound interaction requests (#77).
 // Empty = the /api/slack/interactions endpoint rejects everything.
 export const slackSigningSecret = (): string =>
