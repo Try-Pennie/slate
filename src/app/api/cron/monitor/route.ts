@@ -2,13 +2,15 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { mapWithConcurrency } from "@/lib/google/sync-pace";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { tierLadder } from "@/lib/routing/tiers";
 import {
   anyOnShift,
-  failingBuckets,
+  classifyEmptyBuckets,
   formatEmptyAvailabilityAlert,
+  formatFallbackCoveredNotice,
   type BucketHealth,
   type WorkingRule,
 } from "@/lib/monitor/availability-health";
@@ -37,6 +39,11 @@ const EMPTY_ALERT_COOLDOWN_MS = 30 * 60_000;
 // One consolidated alert (not one per bucket) so a broad outage is a single
 // Slack message, not a storm — the cooldown throttles repeats.
 const EMPTY_AVAIL_ALERT_KEY = "empty_availability";
+// Low-priority info signal (#567): empty tiers the fallback is quietly covering.
+// Its own key + a longer cooldown (a thin tier is chronic, not urgent) so it
+// never competes with, or spams alongside, the real page above.
+const FALLBACK_COVERED_INFO_KEY = "fallback_covered_availability";
+const FALLBACK_COVERED_COOLDOWN_MS = 6 * 60 * 60_000;
 
 /** Default zone for an agent with no schedule row, matching how the availability
  *  compute treats a scheduleless agent (America/New_York, no working rules). */
@@ -160,17 +167,41 @@ export async function GET(req: NextRequest) {
     );
 
     const health = results.filter(Boolean) as BucketHealth[];
-    const failing = failingBuckets(health, { nowMs: now, freshWindowMs: FRESH_WINDOW_MS });
-    if (failing.length) {
+    // slot count + is_test per code, so the classifier can walk the tier ladder
+    // (skipping synthetic test buckets, like the booker's fallback) with no extra IO.
+    const bucketInfo = new Map(
+      buckets.map((b) => [
+        b.code,
+        { slotCount: slotByCode.get(b.code)?.slotCount ?? 0, isTest: b.is_test ?? false },
+      ]),
+    );
+    // Split empty-but-should-show buckets by whether the tier-drop fallback still
+    // serves a customer (#567): only a true dead-end (whole ladder dry) pages; a
+    // fallback-covered tier is a low-priority info signal, not an outage.
+    const { page, covered } = classifyEmptyBuckets(health, {
+      nowMs: now,
+      freshWindowMs: FRESH_WINDOW_MS,
+      ladder: tierLadder,
+      bucketInfo,
+    });
+    if (page.length) {
       await sendThrottledAlert(
         EMPTY_AVAIL_ALERT_KEY,
         EMPTY_ALERT_COOLDOWN_MS,
-        formatEmptyAvailabilityAlert(failing),
+        formatEmptyAvailabilityAlert(page),
+      ).catch(() => {});
+    }
+    if (covered.length) {
+      await sendThrottledInfo(
+        FALLBACK_COVERED_INFO_KEY,
+        FALLBACK_COVERED_COOLDOWN_MS,
+        formatFallbackCoveredNotice(covered),
       ).catch(() => {});
     }
     console.log(
-      `monitor: ${failing.length}/${buckets.length} bucket(s) on-shift-but-empty` +
-        (failing.length ? ` (${failing.join(", ")})` : "") +
+      `monitor: ${page.length} dead-end + ${covered.length} fallback-covered of ${buckets.length} bucket(s)` +
+        (page.length ? ` [page: ${page.join(", ")}]` : "") +
+        (covered.length ? ` [covered: ${covered.map((c) => `${c.code}->${c.via}`).join(", ")}]` : "") +
         (truncated ? " [scan truncated by budget]" : ""),
     );
 
@@ -207,8 +238,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       buckets: buckets.length,
-      failing: failing.length,
-      codes: failing,
+      failing: page.length,
+      codes: page,
+      fallbackCovered: covered,
       truncated,
       volume,
     });

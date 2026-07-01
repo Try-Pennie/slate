@@ -8,6 +8,8 @@ import {
   anyOnShift,
   failingBuckets,
   formatEmptyAvailabilityAlert,
+  classifyEmptyBuckets,
+  formatFallbackCoveredNotice,
   type WorkingRule,
 } from "../src/lib/monitor/availability-health.ts";
 
@@ -92,6 +94,89 @@ const NINE_TO_FIVE: WorkingRule[] = [
   ok(!/[–—]/.test(msg), "alert uses no em/en dashes (copy rule)");
   const many = formatEmptyAvailabilityAlert(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
   ok(/2 more/.test(many), "alert caps the inline list and summarizes the remainder");
+}
+
+// --- classifyEmptyBuckets (#567): fallback-aware split of empty buckets ---
+// A test ladder mirroring the real XBC tier ladder: 5xx -> 4xx -> ... -> 1xx.
+const ladder = (code: string) => {
+  const adv = Number(code[0]);
+  const rest = code.slice(1);
+  const out: string[] = [];
+  for (let t = adv; t >= 1; t--) out.push(`${t}${rest}`);
+  return out;
+};
+{
+  // 520 is on-shift/eligible/fresh but empty; the lower rung 420 has slots -> covered.
+  // 521 is empty AND its whole ladder (421,321,221,121) is dry -> page (real dead-end).
+  const rows = [
+    { code: "520", eligibleCount: 3, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
+    { code: "521", eligibleCount: 2, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
+    { code: "530", eligibleCount: 2, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: false }, // closed, not failing
+  ];
+  const bucketInfo = new Map<string, { slotCount: number; isTest: boolean }>([
+    ["520", { slotCount: 0, isTest: false }],
+    ["420", { slotCount: 50, isTest: false }], // covers 520
+    ["320", { slotCount: 64, isTest: false }],
+    ["521", { slotCount: 0, isTest: false }],
+    ["421", { slotCount: 0, isTest: false }],
+    ["321", { slotCount: 0, isTest: false }],
+    ["221", { slotCount: 0, isTest: false }],
+    ["121", { slotCount: 0, isTest: false }],
+  ]);
+  const out = classifyEmptyBuckets(rows, { nowMs: NOW, freshWindowMs: FRESH, ladder, bucketInfo });
+  ok(out.page.length === 1 && out.page[0] === "521", "pages only the bucket whose entire ladder is dry");
+  ok(
+    out.covered.length === 1 && out.covered[0].code === "520" && out.covered[0].via === "420",
+    "reports the fallback-covered bucket with the first lower rung that has slots",
+  );
+  ok(!out.page.includes("530"), "a bucket nobody is on shift for is not classified at all (not failing)");
+}
+{
+  // The tier-fallback cascade must skip synthetic test buckets, exactly like the
+  // booker's getBucketSlotsWithFallback -> a test rung with slots does NOT count as coverage.
+  const rows = [
+    { code: "540", eligibleCount: 1, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
+  ];
+  const bucketInfo = new Map<string, { slotCount: number; isTest: boolean }>([
+    ["540", { slotCount: 0, isTest: false }],
+    ["440", { slotCount: 99, isTest: true }], // a test bucket with slots -> must be ignored
+    ["340", { slotCount: 0, isTest: false }],
+    ["240", { slotCount: 0, isTest: false }],
+    ["140", { slotCount: 0, isTest: false }],
+  ]);
+  const out = classifyEmptyBuckets(rows, { nowMs: NOW, freshWindowMs: FRESH, ladder, bucketInfo });
+  ok(out.page.length === 1 && out.page[0] === "540", "a TEST rung with slots does not count as coverage (pages)");
+  ok(out.covered.length === 0, "no fallback-covered entry when the only rung with slots is a test bucket");
+}
+{
+  // A lower rung that is missing from bucketInfo entirely is treated as no-coverage.
+  const rows = [
+    { code: "510", eligibleCount: 1, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
+  ];
+  const out = classifyEmptyBuckets(rows, {
+    nowMs: NOW,
+    freshWindowMs: FRESH,
+    ladder,
+    bucketInfo: new Map([["510", { slotCount: 0, isTest: false }]]),
+  });
+  ok(out.page.length === 1 && out.covered.length === 0, "missing lower-rung rows count as no coverage");
+}
+
+// --- formatFallbackCoveredNotice (#567): the low-priority info signal ---
+{
+  const notice = formatFallbackCoveredNotice([
+    { code: "520", via: "420" },
+    { code: "530", via: "330" },
+  ]);
+  ok(notice.includes("520") && notice.includes("420"), "notice names each empty bucket and the covering rung");
+  ok(/fallback|cover/i.test(notice), "notice makes clear the fallback is covering (not a customer dead-end)");
+  ok(!/[–—]/.test(notice), "notice uses no em/en dashes (copy rule)");
+}
+
+// --- formatEmptyAvailabilityAlert: a page now means the whole ladder is dry ---
+{
+  const msg = formatEmptyAvailabilityAlert(["521"]);
+  ok(/fallback|lower tier|ladder/i.test(msg), "page copy states the fallback tiers are also exhausted (true dead-end)");
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
