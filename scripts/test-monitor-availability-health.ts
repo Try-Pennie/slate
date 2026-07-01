@@ -7,9 +7,11 @@ import {
   isWorkingNow,
   anyOnShift,
   failingBuckets,
-  formatEmptyAvailabilityAlert,
   classifyEmptyBuckets,
   formatFallbackCoveredNotice,
+  classifyDeadEndCause,
+  formatDataAnomalyAlert,
+  formatBookedSolidNotice,
   type WorkingRule,
 } from "../src/lib/monitor/availability-health.ts";
 
@@ -85,15 +87,6 @@ const NINE_TO_FIVE: WorkingRule[] = [
   ok(!out.includes("414"), "ignores STALE rows (the recompute lane's concern)");
   ok(!out.includes("415"), "ignores never-computed (null) rows");
   ok(!out.includes("412"), "ignores buckets that have slots");
-}
-
-// --- formatEmptyAvailabilityAlert ---
-{
-  const msg = formatEmptyAvailabilityAlert(["411", "412"]);
-  ok(msg.includes("411") && msg.includes("412"), "alert names the failing buckets");
-  ok(!/[–—]/.test(msg), "alert uses no em/en dashes (copy rule)");
-  const many = formatEmptyAvailabilityAlert(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
-  ok(/2 more/.test(many), "alert caps the inline list and summarizes the remainder");
 }
 
 // --- classifyEmptyBuckets (#567): fallback-aware split of empty buckets ---
@@ -173,10 +166,34 @@ const ladder = (code: string) => {
   ok(!/[–—]/.test(notice), "notice uses no em/en dashes (copy rule)");
 }
 
-// --- formatEmptyAvailabilityAlert: a page now means the whole ladder is dry ---
+// --- classifyDeadEndCause: split paged buckets by live-recompute result ---
 {
-  const msg = formatEmptyAvailabilityAlert(["521"]);
-  ok(/fallback|lower tier|ladder/i.test(msg), "page copy states the fallback tiers are also exhausted (true dead-end)");
+  const counts = new Map<string, number | null>([
+    ["FULL", 0], // recompute also 0 -> booked solid
+    ["ANOM", 3], // recompute > 0 -> cache disagrees with calendars
+    ["NULL", null], // recompute failed -> unverified
+    // "MISS" intentionally absent from the map -> unverified
+  ]);
+  const cause = classifyDeadEndCause(["FULL", "ANOM", "NULL", "MISS"], counts);
+  ok(cause.bookedSolid.join() === "FULL", "recompute 0 -> bookedSolid");
+  ok(cause.dataAnomaly.join() === "ANOM", "recompute >0 -> dataAnomaly");
+  ok(cause.unverified.slice().sort().join() === "MISS,NULL", "null/absent -> unverified");
+}
+
+// --- formatDataAnomalyAlert: names anomaly + unverified with runbook, no dashes ---
+{
+  const msg = formatDataAnomalyAlert({ bookedSolid: [], dataAnomaly: ["ANOM"], unverified: ["NULL"] });
+  ok(msg.includes("ANOM") && msg.includes("NULL"), "anomaly alert names both groups");
+  ok(/sync|precompute/i.test(msg), "anomaly alert points at the sync/precompute pipeline");
+  ok(!/[–—]/.test(msg) && !/ - /.test(msg), "anomaly alert has no dashes");
+}
+
+// --- formatBookedSolidNotice: capacity wording, no dashes ---
+{
+  const msg = formatBookedSolidNotice(["FULL1", "FULL2"]);
+  ok(msg.includes("FULL1") && msg.includes("FULL2"), "booked-solid notice names the tiers");
+  ok(/capacity|booked solid|staffing/i.test(msg), "booked-solid notice reads as a capacity heads up");
+  ok(!/[–—]/.test(msg) && !/ - /.test(msg), "booked-solid notice has no dashes");
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);

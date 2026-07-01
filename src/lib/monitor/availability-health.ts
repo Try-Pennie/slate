@@ -135,19 +135,6 @@ export function classifyEmptyBuckets(
 
 const ALERT_NAME_CAP = 8;
 
-/** Slack body for a sustained empty-availability fault. Only fires now for a true
- *  customer dead-end (the requested bucket AND its whole tier ladder are empty),
- *  so the copy says so. No em/en dashes (the copy lint forbids them). */
-export function formatEmptyAvailabilityAlert(codes: string[]): string {
-  const head = codes.slice(0, ALERT_NAME_CAP).join(", ");
-  const more = codes.length > ALERT_NAME_CAP ? ` and ${codes.length - ALERT_NAME_CAP} more` : "";
-  return (
-    `Slate: ${codes.length} bucket(s) have agents on shift but show NO booking times, ` +
-    `and their lower fallback tiers are also empty (${head}${more}). ` +
-    `A customer requesting these tiers cannot book; check calendar sync and agent schedules.`
-  );
-}
-
 /** Low-priority info signal (#567): empty buckets the tier-drop fallback still
  *  covers, so no customer is stranded. Names each empty bucket and the lower rung
  *  serving it. No em/en dashes (copy rule). */
@@ -160,5 +147,77 @@ export function formatFallbackCoveredNotice(covered: FallbackCovered[]): string 
   return (
     `Slate (info): ${covered.length} tier(s) show no times but the fallback is covering them ` +
     `(${head}${more}). No customer is blocked; this is a thin-capacity heads up, not an outage.`
+  );
+}
+
+/** Why a paged (dead-end) bucket shows no times, from a live recompute vs the
+ *  cached zero. `bookedSolid`: recompute also 0 (calendars genuinely full).
+ *  `dataAnomaly`: recompute > 0 (cache disagrees with reality). `unverified`:
+ *  the recompute failed, so the cause could not be confirmed. */
+export interface DeadEndCause {
+  bookedSolid: string[];
+  dataAnomaly: string[];
+  unverified: string[];
+}
+
+/** Split the paged bucket codes by live recompute slot count. A code missing
+ *  from the map, or mapped to null, is `unverified` (recompute failed): we still
+ *  surface it, erring toward flagging a possible problem over going silent. */
+export function classifyDeadEndCause(
+  pageCodes: string[],
+  recomputeSlotCount: Map<string, number | null>,
+): DeadEndCause {
+  const bookedSolid: string[] = [];
+  const dataAnomaly: string[] = [];
+  const unverified: string[] = [];
+  for (const code of pageCodes) {
+    const count = recomputeSlotCount.get(code);
+    if (!recomputeSlotCount.has(code) || count === null || count === undefined) {
+      unverified.push(code);
+    } else if (count > 0) {
+      dataAnomaly.push(code);
+    } else {
+      bookedSolid.push(code);
+    }
+  }
+  return { bookedSolid, dataAnomaly, unverified };
+}
+
+/** Truncated "code, code and N more" for one cause group. */
+function capList(codes: string[]): string {
+  const head = codes.slice(0, ALERT_NAME_CAP).join(", ");
+  const more = codes.length > ALERT_NAME_CAP ? ` and ${codes.length - ALERT_NAME_CAP} more` : "";
+  return `${head}${more}`;
+}
+
+/** Urgent page body for real dead-ends whose cause is a data/sync fault (or could
+ *  not be verified). Booked-solid buckets are NOT included here (they are a quiet
+ *  info signal). No em/en dashes (copy lint). */
+export function formatDataAnomalyAlert(cause: DeadEndCause): string {
+  const parts: string[] = [];
+  if (cause.dataAnomaly.length) {
+    parts.push(
+      `${cause.dataAnomaly.length} bucket(s) show NO booking times but the agents' ` +
+        `calendars are OPEN (${capList(cause.dataAnomaly)}): the cached availability ` +
+        `disagrees with reality. Check the precompute and calendar sync pipeline.`,
+    );
+  }
+  if (cause.unverified.length) {
+    parts.push(
+      `${cause.unverified.length} bucket(s) could not be verified because the live ` +
+        `recompute failed (${capList(cause.unverified)}); treat as a possible sync issue.`,
+    );
+  }
+  return `Slate: ${parts.join(" ")}`;
+}
+
+/** Low-priority info body: tiers empty because the agents are booked solid. This
+ *  is a capacity fact, not an outage, so it whispers on a long cooldown. No
+ *  em/en dashes (copy lint). */
+export function formatBookedSolidNotice(bookedSolid: string[]): string {
+  return (
+    `Slate (info): ${bookedSolid.length} tier(s) show no booking times because the ` +
+    `agents are booked solid (${capList(bookedSolid)}). Calendars are full, not ` +
+    `broken; this is a capacity heads up, so check staffing if it persists.`
   );
 }
