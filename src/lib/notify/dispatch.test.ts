@@ -23,11 +23,15 @@ vi.mock("@/lib/supabase/admin", () => ({
 
 import { sendThrottledInfo } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
+import { __clearChannelCache } from "@/lib/notify/channels";
 
 const ENV = process.env;
 beforeEach(() => {
   vi.clearAllMocks();
   process.env = { ...ENV };
+  // #571: the info channel now comes from a store-aware, briefly-cached resolver;
+  // clear it so each test's env is honored (the mocked config table is empty).
+  __clearChannelCache();
 });
 afterEach(() => {
   process.env = ENV;

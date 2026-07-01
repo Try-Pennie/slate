@@ -1,4 +1,5 @@
-import { slackBotToken, slackAlertsChannel } from "@/lib/env";
+import { slackBotToken } from "@/lib/env";
+import { defaultAlertsChannel } from "@/lib/notify/channels";
 
 // Slack normally answers in well under a second; cap every call so a slow or
 // unreachable Slack can never wedge the flow awaiting it (a booking/OOO submit,
@@ -170,7 +171,7 @@ export async function postSlack(
 ): Promise<{ ok: boolean; error?: string; channel?: string; ts?: string }> {
   const token = slackBotToken();
   if (!token) return { ok: false, error: "slack-not-configured" };
-  const channel = msg.channel ?? slackAlertsChannel();
+  const channel = msg.channel ?? (await defaultAlertsChannel());
   if (!channel) return { ok: false, error: "no-channel" };
 
   try {

@@ -20,6 +20,8 @@ import type {
   EventType,
   GoogleCredentials,
   LaneHeartbeat,
+  MonitorAlertConfig,
+  MonitorSettings,
   OooRequest,
   Organization,
   PendingEventDeletion,
@@ -72,6 +74,8 @@ export interface Database {
       booking_reservations: Table<BookingReservation>;
       routing_decisions: Table<RoutingDecision>;
       lane_heartbeats: Table<LaneHeartbeat>;
+      monitor_settings: Table<MonitorSettings>;
+      monitor_alert_config: Table<MonitorAlertConfig>;
     };
     Views: Record<string, never>;
     Functions: {

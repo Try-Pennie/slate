@@ -27,6 +27,7 @@ import {
   type VolumeWindow,
 } from "@/lib/monitor/booking-volume";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { loadMonitorSettings } from "@/lib/monitor/settings";
 import type { Bucket } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -42,18 +43,14 @@ const PROBE_CONCURRENCY = 6;
 const FRESH_WINDOW_MS = 6 * 60_000;
 // Urgent page: a dead-end whose cache disagrees with the real calendars (or could
 // not be verified). One consolidated message so a broad outage is one Slack post,
-// not a storm; the cooldown throttles repeats. (Cooldown becomes UI-tunable in #571.)
+// not a storm; the cooldown throttles repeats. Cooldowns are UI-tunable (#571) via
+// loadMonitorSettings(); these keys stay in code (they are alert_state row keys).
 const DATA_ANOMALY_ALERT_KEY = "availability_data_anomaly";
-const DATA_ANOMALY_COOLDOWN_MS = 30 * 60_000;
 // Quiet info: a dead-end because agents are booked solid. Full calendars are a
-// good outcome, not an incident, so this whispers on a long cooldown. (#571)
+// good outcome, not an incident, so this whispers on a long cooldown.
 const BOOKED_SOLID_INFO_KEY = "availability_booked_solid";
-const BOOKED_SOLID_COOLDOWN_MS = 6 * 60 * 60_000;
 // Low-priority info signal (#567): empty tiers the fallback is quietly covering.
-// Its own key + a longer cooldown (a thin tier is chronic, not urgent) so it
-// never competes with, or spams alongside, the real page above.
 const FALLBACK_COVERED_INFO_KEY = "fallback_covered_availability";
-const FALLBACK_COVERED_COOLDOWN_MS = 6 * 60 * 60_000;
 
 /** Default zone for an agent with no schedule row, matching how the availability
  *  compute treats a scheduleless agent (America/New_York, no working rules). */
@@ -68,16 +65,13 @@ const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
   startHour: 8,
   endHour: 20,
 };
-// Expected-minimum booking counts per window, env-tunable. Defaults are
-// conservative placeholders; tune them when ARMING at cutover. During the
-// cal.com to Slate ramp the alert is DISARMED, so these don't fire yet.
-const VOLUME_FLOOR_30 = Number(process.env.BOOKING_VOLUME_FLOOR_30 ?? "5");
-const VOLUME_FLOOR_120 = Number(process.env.BOOKING_VOLUME_FLOOR_120 ?? "20");
-// Disarmed by default: count and log, but never alert, until Slate owns roughly
-// full traffic. Set BOOKING_VOLUME_ALERT_ARMED=1 at cutover to enable alerting.
+// Expected-minimum booking counts per window are UI-tunable (#571), resolved by
+// loadMonitorSettings() with precedence store > env (BOOKING_VOLUME_FLOOR_*) >
+// coded default. Disarmed by default: count and log, but never alert, until Slate
+// owns roughly full traffic. Set BOOKING_VOLUME_ALERT_ARMED=1 at cutover to enable
+// alerting (arming stays deploy-gated, a cutover decision, not a routine tune).
 const volumeAlertArmed = (): boolean => process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
 const VOLUME_ALERT_KEY = "low_booking_volume";
-const VOLUME_ALERT_COOLDOWN_MS = 30 * 60_000;
 
 /** Count bookings created at or after `sinceIso` (head-only, no rows). */
 async function bookingsCreatedSince(
@@ -111,6 +105,9 @@ export async function GET(req: NextRequest) {
 
   try {
     const db = supabaseAdmin();
+    // UI-tunable cooldowns + low-volume floors (#571); never throws (falls back
+    // to env/coded defaults) so config can't take down the monitor tick.
+    const settings = await loadMonitorSettings();
     const buckets = ((await db.from("buckets").select("*")).data ?? []) as Bucket[];
 
     // bucket_slots health in one scan: slot count + freshness per code.
@@ -220,21 +217,21 @@ export async function GET(req: NextRequest) {
     if (cause.dataAnomaly.length || cause.unverified.length) {
       await sendThrottledAlert(
         DATA_ANOMALY_ALERT_KEY,
-        DATA_ANOMALY_COOLDOWN_MS,
+        settings.cooldownMs.availability_data_anomaly,
         formatDataAnomalyAlert(cause),
       ).catch(() => {});
     }
     if (cause.bookedSolid.length) {
       await sendThrottledInfo(
         BOOKED_SOLID_INFO_KEY,
-        BOOKED_SOLID_COOLDOWN_MS,
+        settings.cooldownMs.availability_booked_solid,
         formatBookedSolidNotice(cause.bookedSolid),
       ).catch(() => {});
     }
     if (covered.length) {
       await sendThrottledInfo(
         FALLBACK_COVERED_INFO_KEY,
-        FALLBACK_COVERED_COOLDOWN_MS,
+        settings.cooldownMs.fallback_covered_availability,
         formatFallbackCoveredNotice(covered),
       ).catch(() => {});
     }
@@ -256,15 +253,15 @@ export async function GET(req: NextRequest) {
         bookingsCreatedSince(db, new Date(now - 120 * 60_000).toISOString()),
       ]);
       const windows: VolumeWindow[] = [
-        { label: "30 min", count: count30, floor: VOLUME_FLOOR_30 },
-        { label: "120 min", count: count120, floor: VOLUME_FLOOR_120 },
+        { label: "30 min", count: count30, floor: settings.floors.floor30 },
+        { label: "120 min", count: count120, floor: settings.floors.floor120 },
       ];
       const breaches = lowVolumeBreaches(windows);
       const armed = volumeAlertArmed();
       if (breaches.length && armed) {
         await sendThrottledAlert(
           VOLUME_ALERT_KEY,
-          VOLUME_ALERT_COOLDOWN_MS,
+          settings.cooldownMs.low_booking_volume,
           formatLowVolumeAlert(breaches),
         ).catch(() => {});
       }
