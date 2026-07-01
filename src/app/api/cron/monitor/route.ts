@@ -4,12 +4,17 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { mapWithConcurrency } from "@/lib/google/sync-pace";
 import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
+import { getBucketSlots } from "@/lib/availability/service";
+import { slotCacheKey } from "@/lib/availability/cache-key";
+import { HORIZON_DAYS } from "@/lib/availability/slot-cache";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { tierLadder } from "@/lib/routing/tiers";
 import {
   anyOnShift,
   classifyEmptyBuckets,
-  formatEmptyAvailabilityAlert,
+  classifyDeadEndCause,
+  formatDataAnomalyAlert,
+  formatBookedSolidNotice,
   formatFallbackCoveredNotice,
   type BucketHealth,
   type WorkingRule,
@@ -35,10 +40,15 @@ const PROBE_CONCURRENCY = 6;
 // A bucket_slots row only counts as a real (computed) empty within this window;
 // a stale/missing row is the recompute lane's concern, not a booker fault.
 const FRESH_WINDOW_MS = 6 * 60_000;
-const EMPTY_ALERT_COOLDOWN_MS = 30 * 60_000;
-// One consolidated alert (not one per bucket) so a broad outage is a single
-// Slack message, not a storm — the cooldown throttles repeats.
-const EMPTY_AVAIL_ALERT_KEY = "empty_availability";
+// Urgent page: a dead-end whose cache disagrees with the real calendars (or could
+// not be verified). One consolidated message so a broad outage is one Slack post,
+// not a storm; the cooldown throttles repeats. (Cooldown becomes UI-tunable in #571.)
+const DATA_ANOMALY_ALERT_KEY = "availability_data_anomaly";
+const DATA_ANOMALY_COOLDOWN_MS = 30 * 60_000;
+// Quiet info: a dead-end because agents are booked solid. Full calendars are a
+// good outcome, not an incident, so this whispers on a long cooldown. (#571)
+const BOOKED_SOLID_INFO_KEY = "availability_booked_solid";
+const BOOKED_SOLID_COOLDOWN_MS = 6 * 60 * 60_000;
 // Low-priority info signal (#567): empty tiers the fallback is quietly covering.
 // Its own key + a longer cooldown (a thin tier is chronic, not urgent) so it
 // never competes with, or spams alongside, the real page above.
@@ -184,11 +194,41 @@ export async function GET(req: NextRequest) {
       ladder: tierLadder,
       bucketInfo,
     });
+    // For each paged bucket (the rare all-ladder-dry dead-end), recompute
+    // availability live from the DB (busy_blocks/bookings/schedules, no Google) and
+    // compare to the cached zero: recompute 0 = booked solid; > 0 = the cache
+    // disagrees with the calendars (data anomaly); a failed recompute = unverified.
+    const recomputeCounts = new Map<string, number | null>();
     if (page.length) {
+      const { results: recomputes } = await mapWithConcurrency<string, { code: string; count: number | null }>(
+        page,
+        PROBE_CONCURRENCY,
+        async (code) => {
+          const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), HORIZON_DAYS);
+          try {
+            const res = await getBucketSlots(code, fromIso, toIso);
+            return { code, count: res ? res.slots.length : null };
+          } catch {
+            return { code, count: null };
+          }
+        },
+        { deadlineMs: now + MONITOR_LOCK_TTL_MS },
+      );
+      for (const r of recomputes) if (r) recomputeCounts.set(r.code, r.count);
+    }
+    const cause = classifyDeadEndCause(page, recomputeCounts);
+    if (cause.dataAnomaly.length || cause.unverified.length) {
       await sendThrottledAlert(
-        EMPTY_AVAIL_ALERT_KEY,
-        EMPTY_ALERT_COOLDOWN_MS,
-        formatEmptyAvailabilityAlert(page),
+        DATA_ANOMALY_ALERT_KEY,
+        DATA_ANOMALY_COOLDOWN_MS,
+        formatDataAnomalyAlert(cause),
+      ).catch(() => {});
+    }
+    if (cause.bookedSolid.length) {
+      await sendThrottledInfo(
+        BOOKED_SOLID_INFO_KEY,
+        BOOKED_SOLID_COOLDOWN_MS,
+        formatBookedSolidNotice(cause.bookedSolid),
       ).catch(() => {});
     }
     if (covered.length) {
@@ -199,7 +239,9 @@ export async function GET(req: NextRequest) {
       ).catch(() => {});
     }
     console.log(
-      `monitor: ${page.length} dead-end + ${covered.length} fallback-covered of ${buckets.length} bucket(s)` +
+      `monitor: ${page.length} dead-end (${cause.dataAnomaly.length} anomaly, ` +
+        `${cause.bookedSolid.length} booked-solid, ${cause.unverified.length} unverified) + ` +
+        `${covered.length} fallback-covered of ${buckets.length} bucket(s)` +
         (page.length ? ` [page: ${page.join(", ")}]` : "") +
         (covered.length ? ` [covered: ${covered.map((c) => `${c.code}->${c.via}`).join(", ")}]` : "") +
         (truncated ? " [scan truncated by budget]" : ""),
