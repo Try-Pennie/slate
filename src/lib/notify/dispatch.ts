@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
 import { shouldSendAlert } from "@/lib/notify/alerts";
-import { slackInfoChannel } from "@/lib/env";
+import { defaultInfoChannel } from "@/lib/notify/channels";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -36,15 +36,16 @@ export async function sendThrottledAlert(
 
 /**
  * Low-priority, visibility-only variant (#567): same throttle, but posts to the
- * info channel so it never pages the alerts channel. Silently no-ops when no
- * info channel is configured (it defaults to the alerts channel via env).
+ * info channel so it never pages the alerts channel. The info channel is now
+ * UI-tunable (#571): store > env, falling back to the resolved alerts channel so
+ * the signal is never silently lost. Still no-ops when nothing is configured.
  */
 export async function sendThrottledInfo(
   key: string,
   cooldownMs: number,
   text: string,
 ): Promise<void> {
-  const channel = slackInfoChannel();
+  const channel = await defaultInfoChannel();
   if (!channel) return;
   await sendThrottledAlert(key, cooldownMs, text, channel);
 }

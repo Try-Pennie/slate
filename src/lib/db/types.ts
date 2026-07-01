@@ -191,6 +191,26 @@ export interface AlertState {
   last_sent_at: string;
 }
 
+/** Per-alert cooldown override (#571); a missing row = use the coded default. */
+export interface MonitorSettings {
+  key: string;
+  cooldown_min: number | null;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+/** Single-row global monitor config (#571): low-volume floors + the app-wide
+ *  default Slack channels. Null column = unset = fall through to env/default. */
+export interface MonitorAlertConfig {
+  id: number;
+  floor_30: number | null;
+  floor_120: number | null;
+  alerts_channel: string | null;
+  info_channel: string | null;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 /** Cross-request lock row (#30); a claim is stale after its TTL. */
 export interface SyncLock {
   key: string;

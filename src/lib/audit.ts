@@ -15,7 +15,8 @@ export type AuditAction =
   | "ooo.modify"
   | "ooo.retry"
   | "impersonate.start"
-  | "impersonate.stop";
+  | "impersonate.stop"
+  | "monitor.settings";
 
 /**
  * Appends a privileged action to the audit trail. Best-effort: never throws, so

@@ -23,7 +23,19 @@ import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { recordAudit, type AuditAction } from "@/lib/audit";
+import {
+  parseMonitorSettingsForm,
+  type MonitorAlertKey,
+} from "@/lib/monitor/settings";
+import { __clearChannelCache } from "@/lib/notify/channels";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
+
+const MONITOR_ALERT_KEYS: MonitorAlertKey[] = [
+  "availability_data_anomaly",
+  "availability_booked_solid",
+  "fallback_covered_availability",
+  "low_booking_volume",
+];
 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
@@ -319,6 +331,56 @@ export async function setWorkingHours(form: FormData): Promise<void> {
     );
   }
   revalidatePath("/admin");
+}
+
+/**
+ * Saves the UI-tunable monitor alert settings (#571). Blank fields revert to
+ * fallback (explicit null, never 0); out-of-range values are refused. Each row is
+ * written as one complete object so clearing one field can't wipe a sibling.
+ */
+export async function setMonitorSettings(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const cooldownMin = Object.fromEntries(
+    MONITOR_ALERT_KEYS.map((k) => [k, String(form.get(`cooldown_${k}`) ?? "")]),
+  ) as Record<MonitorAlertKey, string>;
+
+  const parsed = parseMonitorSettingsForm({
+    cooldownMin,
+    floor30: String(form.get("floor_30") ?? ""),
+    floor120: String(form.get("floor_120") ?? ""),
+    alertsChannel: String(form.get("alerts_channel") ?? ""),
+    infoChannel: String(form.get("info_channel") ?? ""),
+  });
+
+  if (parsed.errors.length) {
+    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+  }
+
+  const db = supabaseAdmin();
+  const now = new Date().toISOString();
+  await db.from("monitor_settings").upsert(
+    parsed.cooldowns.map((c) => ({
+      key: c.key,
+      cooldown_min: c.cooldown_min,
+      updated_at: now,
+      updated_by: admin.id,
+    })),
+    { onConflict: "key" },
+  );
+  await db
+    .from("monitor_alert_config")
+    .upsert({ id: 1, ...parsed.config, updated_at: now, updated_by: admin.id }, { onConflict: "id" });
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "monitor.settings",
+    details: { cooldowns: parsed.cooldowns, config: parsed.config },
+  });
+  // Channels are cached in-process; clear so the new destination takes effect now.
+  __clearChannelCache();
+  revalidatePath("/admin/settings");
+  redirect("/admin/settings?ok=1");
 }
 
 export async function setOrgDefaultHours(form: FormData): Promise<void> {

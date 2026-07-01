@@ -73,6 +73,7 @@ const AUDIT_LABEL: Record<string, string> = {
   "agent.use_default_hours": "applied default hours",
   "agent.bookable": "set bookable",
   "agent.attributes": "set attributes",
+  "monitor.settings": "changed alert settings",
 };
 
 type TraceRow = Pick<
@@ -648,6 +649,20 @@ export default async function AdminPage({
           </fieldset>
           <button className={btnCls}>Save layout</button>
         </form>
+      </section>
+      )}
+
+      {/* Monitor alert settings (admin only) */}
+      {isAdmin && (
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Alert settings</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          Tune how often the monitor alerts fire and which Slack channel they post
+          to, without a deploy.
+        </p>
+        <a href="/admin/settings" className={btnSecondaryCls}>
+          Open alert settings
+        </a>
       </section>
       )}
 
