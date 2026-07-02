@@ -7,6 +7,7 @@ import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
 import { BookerStrip } from "@/components/BookerStrip";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
+import { postJson } from "@/lib/http";
 import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import { timezoneOptions } from "@/lib/booking/timezones";
@@ -308,10 +309,12 @@ export default function Booker({
 
     setSubmitting(true);
     setError(null);
-    const res = await fetch("/booking", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const { ok, status, data } = await postJson<{
+        startsAt?: string;
+        error?: string;
+        fieldErrors?: AttendeeErrors;
+      }>("/booking", {
         bucketCode,
         start: selectedSlot,
         timezone: zone,
@@ -322,28 +325,27 @@ export default function Booker({
           phone: attendee.phone.trim(),
         },
         prefill,
-      }),
-    });
+      });
 
-    if (res.ok) {
-      const data = await res.json();
-      setConfirmed({ start: data.startsAt });
-      if (embedded) {
-        window.parent.postMessage(
-          { type: "slate:bookingSuccessful", data: { booking: data, salesforceId } },
-          "*",
-        );
+      if (ok) {
+        setConfirmed({ start: data.startsAt ?? selectedSlot });
+        if (embedded) {
+          window.parent.postMessage(
+            { type: "slate:bookingSuccessful", data: { booking: data, salesforceId } },
+            "*",
+          );
+        }
+      } else if (status === 409) {
+        setError("That time was just taken. Please pick another.");
+        setSelectedSlot(null);
+        await loadSlots();
+      } else {
+        if (data.fieldErrors) setFieldErrors(data.fieldErrors);
+        setError(data.error ?? "Something went wrong. Please try again.");
       }
-    } else if (res.status === 409) {
-      setError("That time was just taken. Please pick another.");
-      setSelectedSlot(null);
-      await loadSlots();
-    } else {
-      const data = await res.json().catch(() => ({}));
-      if (data.fieldErrors) setFieldErrors(data.fieldErrors as AttendeeErrors);
-      setError(data.error ?? "Something went wrong. Please try again.");
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   }
 
   const shell = `mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;

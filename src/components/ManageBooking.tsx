@@ -9,6 +9,7 @@ import {
   validateReason,
 } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
+import { postJson } from "@/lib/http";
 
 interface ManageBookingProps {
   token: string;
@@ -112,49 +113,50 @@ export default function ManageBooking({
     setBusy(true);
     setError(null);
     setPendingIso(newStart);
-    const res = await fetch(`/api/bookings/${token}/reschedule`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        start: newStart,
-        reason: reschedReason,
-        reasonDetail: reschedDetail || undefined,
-      }),
-    });
-    if (res.ok) {
-      const d = await res.json();
-      setStart(d.startsAt);
-      setStatus("rescheduled");
-      setRescheduling(false);
-    } else {
-      const d = await res.json().catch(() => ({}));
-      setError(d.error ?? "Could not reschedule. Please try again.");
+    try {
+      const { ok, data } = await postJson<{ startsAt?: string; error?: string }>(
+        `/api/bookings/${token}/reschedule`,
+        {
+          start: newStart,
+          reason: reschedReason,
+          reasonDetail: reschedDetail || undefined,
+        },
+      );
+      if (ok) {
+        setStart(data.startsAt ?? newStart);
+        setStatus("rescheduled");
+        setRescheduling(false);
+      } else {
+        setError(data.error ?? "Could not reschedule. Please try again.");
+      }
+    } finally {
+      setPendingIso(null);
+      setBusy(false);
     }
-    setPendingIso(null);
-    setBusy(false);
   }
 
   async function cancel() {
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/bookings/${token}/cancel`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        reason: cancelReason,
-        reasonDetail: cancelDetail || undefined,
-      }),
-    });
-    if (res.ok) {
-      setStatus("cancelled");
-      setConfirmingCancel(false);
-    } else {
-      // Previously a native confirm() with no visible failure path: a failed
-      // POST left the page looking unchanged. Surface it instead.
-      const d = await res.json().catch(() => ({}));
-      setError(d.error ?? "Could not cancel. Please try again.");
+    try {
+      const { ok, data } = await postJson<{ error?: string }>(
+        `/api/bookings/${token}/cancel`,
+        {
+          reason: cancelReason,
+          reasonDetail: cancelDetail || undefined,
+        },
+      );
+      if (ok) {
+        setStatus("cancelled");
+        setConfirmingCancel(false);
+      } else {
+        // Previously a native confirm() with no visible failure path: a failed
+        // POST left the page looking unchanged. Surface it instead.
+        setError(data.error ?? "Could not cancel. Please try again.");
+      }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   return (
