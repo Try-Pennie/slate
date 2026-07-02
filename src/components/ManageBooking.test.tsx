@@ -197,6 +197,74 @@ describe("ManageBooking", () => {
     expect(slotAfter.disabled).toBe(false);
     expect(calls).toBeGreaterThan(1);
   });
+
+  // #627: opening Reschedule must not flash "No times left" while the
+  // availability fetch is in flight, nor show it on a failed fetch. Loading,
+  // error, and empty are three distinct states (mirrors the Booker).
+  it("shows loading skeletons, not the empty copy, while availability is in flight", async () => {
+    // Availability fetch never resolves: the slot list stays in its loading state.
+    global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
+    expect(screen.queryByText(/no times left/i)).toBeNull();
+  });
+
+  it("shows an error with Try again when the availability fetch fails, then recovers on retry", async () => {
+    let attempt = 0;
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) {
+        attempt++;
+        // First load fails; the retry succeeds with a slot.
+        return attempt === 1
+          ? ({ ok: false, json: async () => ({}) } as Response)
+          : ({ ok: true, json: async () => ({ slots: ["2026-06-21T15:00:00.000Z"] }) } as Response);
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
+    // Not conflated with the empty state.
+    expect(screen.queryByText(/no times left/i)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(await screen.findByRole("button", { name: /Sun/i })).toBeTruthy();
+  });
+
+  it("shows an error when the availability fetch rejects at the network layer", async () => {
+    // A rejection (flaky mobile) must land in the error state, not the empty state
+    // — the original code had no .catch and mapped everything to an empty list.
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) throw new TypeError("Failed to fetch");
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
+    expect(screen.queryByText(/no times left/i)).toBeNull();
+  });
+
+  it("shows the empty copy only after a confirmed empty availability response", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) {
+        return { ok: true, json: async () => ({ slots: [] }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(await screen.findByText(/no times left/i)).toBeTruthy();
+    expect(screen.queryByRole("status", { name: /loading/i })).toBeNull();
+  });
 });
 
 beforeEach(() => {

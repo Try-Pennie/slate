@@ -7,3 +7,4 @@ export { PlusIcon } from "./PlusIcon";
 export { MinusIcon } from "./MinusIcon";
 export { PhoneIcon } from "./PhoneIcon";
 export { InfoIcon } from "./InfoIcon";
+export { AlertIcon } from "./AlertIcon";

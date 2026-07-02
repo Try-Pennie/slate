@@ -198,4 +198,86 @@ describe("AdminBookingActions", () => {
     expect(agentBtn.disabled).toBe(false);
     expect(refresh).not.toHaveBeenCalled();
   });
+
+  // #627: the reschedule slot list and the reassign agent list must show
+  // distinct loading / error / empty states, never "no times"/"no agents"
+  // while the fetch is still in flight or after it failed.
+  it("shows loading skeletons, not the empty copy, while reschedule availability loads", async () => {
+    global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
+    expect(screen.queryByText(/no open times/i)).toBeNull();
+  });
+
+  it("shows an error with Try again when reschedule availability fails, then recovers on retry", async () => {
+    let attempt = 0;
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) {
+        attempt++;
+        return attempt === 1
+          ? ({ ok: false, json: async () => ({}) } as Response)
+          : ({ ok: true, json: async () => ({ slots: ["2026-06-21T15:00:00.000Z"] }) } as Response);
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
+    expect(screen.queryByText(/no open times/i)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(await screen.findByRole("button", { name: /Sun/i })).toBeTruthy();
+  });
+
+  it("shows the empty copy only after a confirmed empty reschedule response", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) {
+        return { ok: true, json: async () => ({ slots: [] }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(await screen.findByText(/no open times/i)).toBeTruthy();
+    expect(screen.queryByRole("status", { name: /loading/i })).toBeNull();
+  });
+
+  it("shows loading skeletons, not the empty copy, while the reassign agent list loads", async () => {
+    global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+
+    expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
+    expect(screen.queryByText(/no matching agents/i)).toBeNull();
+  });
+
+  it("shows an error with Try again when the reassign agent list fails, then recovers on retry", async () => {
+    let attempt = 0;
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/admin/agents")) {
+        attempt++;
+        return attempt === 1
+          ? ({ ok: false, json: async () => ({}) } as Response)
+          : ({ ok: true, json: async () => ({ agents: AGENTS }) } as Response);
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+
+    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
+    expect(screen.queryByText(/no matching agents/i)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(await screen.findByRole("button", { name: /bea agent/i })).toBeTruthy();
+  });
 });
