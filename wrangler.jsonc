@@ -38,6 +38,12 @@
 	// vars get overwritten on deploy). Only CALCOM_API_KEY is sensitive enough to
 	// stay a secret; the org id + base url are not secret, so they live here too.
 	"vars": {
+		// Google Workspace sign-in gate (#589). Enforced server-side in the auth
+		// callback; the NEXT_PUBLIC_ twin only drives the `hd` login hint. Kept here
+		// (not dashboard-only) so the security control survives every deploy — a
+		// dashboard plain var gets wiped on the next `wrangler deploy`.
+		"GOOGLE_HOSTED_DOMAIN": "trypennie.com",
+		"NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN": "trypennie.com",
 		"OOO_CALCOM_DUAL_WRITE": "true",
 		"AGENT_SCHEDULING_LIVE": "false",
 		"CALCOM_BASE_URL": "https://api.cal.com/v2",
