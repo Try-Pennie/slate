@@ -11,6 +11,7 @@ import {
   canSetRole,
   canManageUser,
   canChangeRole,
+  canImpersonate,
   isSelfDemotion,
   roleLabel,
   isRole,
@@ -119,6 +120,35 @@ assert(canManageUser("manager", "manager", true), "anyone can edit self");
 assert(
   canManageUser("team_lead", "manager", false) && !canManageUser("manager", "team_lead", false),
   "team_lead can edit a manager but not vice versa",
+);
+
+// canImpersonate — the #588 role ceiling: admin+ only, and never someone who
+// outranks-or-equals you (so impersonation can never be a privilege escalation).
+assert(
+  canImpersonate("admin", "agent") &&
+    canImpersonate("admin", "manager") &&
+    canImpersonate("admin", "team_lead"),
+  "admin can impersonate every tier below them",
+);
+assert(
+  !canImpersonate("admin", "admin"),
+  "admin cannot impersonate a peer admin (equal rank)",
+);
+assert(
+  !canImpersonate("admin", "super_admin"),
+  "admin cannot impersonate a super_admin (the escalation the bug allowed)",
+);
+assert(
+  canImpersonate("super_admin", "admin") && canImpersonate("super_admin", "agent"),
+  "super_admin can impersonate admins and below",
+);
+assert(
+  !canImpersonate("super_admin", "super_admin"),
+  "super_admin cannot impersonate a peer super_admin",
+);
+assert(
+  !canImpersonate("manager", "agent") && !canImpersonate("team_lead", "agent"),
+  "below admin nobody can impersonate, even down-rank",
 );
 
 // canChangeRole — last-admin invariant (admins + super admins both hold power)

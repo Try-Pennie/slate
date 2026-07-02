@@ -13,11 +13,14 @@ import {
 } from "@/lib/auth";
 import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
 import {
+  atLeast,
+  canImpersonate,
   canManageUser,
   canChangeRole,
   canSetRole,
   isRole,
   isSelfDemotion,
+  roleLabel,
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
@@ -460,29 +463,36 @@ export async function setBookable(form: FormData): Promise<void> {
 }
 
 /**
- * Admin-only: start viewing the app as another user. The cookie only takes
- * effect for a real admin session (resolveEffectiveUserId gates it), so it
- * can't be used to escalate. Lands on /me — the impersonated user's home.
+ * Admin+-only: start viewing the app as another user ranked below you. The cookie
+ * only takes effect for a real admin+ session and only for a lower-ranked target
+ * (resolveEffectiveUserId + canImpersonate gate it downstream), so it can't be
+ * used to escalate. Lands on /me — the impersonated user's home.
  */
 export async function startImpersonation(form: FormData): Promise<void> {
   const admin = await realCurrentUser();
-  if (!admin || admin.role !== "admin") throw new Error("Not authorized");
+  if (!admin || !atLeast(admin.role, "admin")) throw new Error("Not authorized");
 
   const email = String(form.get("email") ?? "").trim().toLowerCase();
   if (!email) redirect(`/admin?imp_error=${encodeURIComponent("Enter an email.")}`);
 
   const { data } = await supabaseAdmin()
     .from("users")
-    .select("id")
+    .select("id, role")
     .eq("org_id", admin.org_id)
     .eq("email", email)
     .maybeSingle();
-  const target = data as { id: string } | null;
+  const target = data as { id: string; role: Role } | null;
   if (!target) {
     redirect(`/admin?imp_error=${encodeURIComponent(`No user with email ${email}.`)}`);
   }
   if (target.id === admin.id) {
     redirect(`/admin?imp_error=${encodeURIComponent("That is already you.")}`);
+  }
+  // Role ceiling (#588): can't view-as someone who outranks or equals you.
+  if (!canImpersonate(admin.role, target.role)) {
+    redirect(
+      `/admin?imp_error=${encodeURIComponent(`You can't impersonate a ${roleLabel(target.role)}.`)}`,
+    );
   }
 
   const store = await cookies();
