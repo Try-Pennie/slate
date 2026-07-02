@@ -87,6 +87,17 @@ export const canManageUser = (
   isSelf || (canManageAgents(actor) && ROLE_RANK[actor] > ROLE_RANK[target]);
 
 /**
+ * Whether `actor` may impersonate (view/act as) `target`. Two conditions, so it
+ * can never be a privilege escalation: only admins and up impersonate at all,
+ * and only ever someone who ranks STRICTLY below them. This closes #588 — a rank-3
+ * admin could impersonate a rank-4 super_admin and inherit their powers. Mirrors
+ * `canManageUser`'s strict-outrank rule; the "may impersonate at all" floor lives
+ * in `resolveEffectiveUserId` too (which can't see the target's role).
+ */
+export const canImpersonate = (actor: Role, target: Role): boolean =>
+  atLeast(actor, "admin") && ROLE_RANK[actor] > ROLE_RANK[target];
+
+/**
  * Last-admin invariant: stripping org-config power from the final admin-or-above
  * would brick the org (also covers self-demotion of the only one). `adminCount`
  * is the current number of users with admin power (admins + super admins).
