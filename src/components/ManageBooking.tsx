@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { timezoneOptions } from "@/lib/booking/timezones";
 import {
@@ -9,7 +9,12 @@ import {
   validateReason,
 } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
+import { AsyncListStates, useFetchList } from "@/components/AsyncList";
+import { AlertIcon } from "@/components/icons";
 import { postJson } from "@/lib/http";
+
+const extractSlots = (json: unknown): string[] =>
+  (json as { slots?: string[] } | null)?.slots ?? [];
 
 interface ManageBookingProps {
   token: string;
@@ -19,16 +24,6 @@ interface ManageBookingProps {
   eventName: string;
   /** Presentational only; scopes the Pennie tokens via data-theme. */
   theme?: "light" | "dark";
-}
-
-function AlertIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7.5v5.5" strokeLinecap="round" />
-      <path d="M12 16.5h.01" strokeLinecap="round" />
-    </svg>
-  );
 }
 
 function XIcon() {
@@ -78,7 +73,16 @@ export default function ManageBooking({
   const [start, setStart] = useState(startsAt);
   const [status, setStatus] = useState(initialStatus);
   const [rescheduling, setRescheduling] = useState(false);
-  const [slots, setSlots] = useState<string[]>([]);
+  const {
+    items: slots,
+    loading: slotsLoading,
+    error: slotsError,
+    retry: retrySlots,
+  } = useFetchList(
+    `/api/availability?bucket=${encodeURIComponent(bucketCode)}`,
+    rescheduling,
+    extractSlots,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
@@ -97,15 +101,6 @@ export default function ManageBooking({
     code: cancelReason,
     detail: cancelDetail,
   }).ok;
-
-  useEffect(() => {
-    if (!rescheduling) return;
-    fetch(`/api/availability?bucket=${encodeURIComponent(bucketCode)}`, {
-      cache: "no-store",
-    })
-      .then((r) => (r.ok ? r.json() : { slots: [] }))
-      .then((d) => setSlots(d.slots ?? []));
-  }, [rescheduling, bucketCode]);
 
   const done = status === "cancelled" || status === "completed";
 
@@ -264,7 +259,7 @@ export default function ManageBooking({
             className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]"
           >
             <span className="mt-0.5 shrink-0">
-              <AlertIcon />
+              <AlertIcon width={15} height={15} />
             </span>
             {error}
           </p>
@@ -288,26 +283,35 @@ export default function ManageBooking({
                 ? "Pick a new time"
                 : "Choose a reason above, then pick a new time"}
             </p>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {slots.slice(0, 30).map((iso) => (
-                <button
-                  key={iso}
-                  disabled={busy || !reschedReasonValid}
-                  aria-busy={pendingIso === iso}
-                  onClick={() => reschedule(iso)}
-                  className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
-                    pendingIso === iso
-                      ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
-                      : "border-border bg-surface text-fg hover:border-fg/45"
-                  }`}
-                >
-                  {pendingIso === iso ? "Moving…" : timeLabel(iso, timeZone)}
-                </button>
-              ))}
-              {slots.length === 0 && (
-                <p className="text-sm text-fg-muted">No times left, pick another.</p>
-              )}
-            </div>
+            <AsyncListStates
+              loading={slotsLoading}
+              error={slotsError}
+              isEmpty={slots.length === 0}
+              onRetry={retrySlots}
+              loadingLabel="Loading available times"
+              skeletonCount={6}
+              skeletonClassName="h-11"
+              containerClassName="grid grid-cols-2 gap-2 sm:grid-cols-3"
+              emptyNode={<p className="text-sm text-fg-muted">No times left, pick another.</p>}
+            >
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {slots.slice(0, 30).map((iso) => (
+                  <button
+                    key={iso}
+                    disabled={busy || !reschedReasonValid}
+                    aria-busy={pendingIso === iso}
+                    onClick={() => reschedule(iso)}
+                    className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
+                      pendingIso === iso
+                        ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
+                        : "border-border bg-surface text-fg hover:border-fg/45"
+                    }`}
+                  >
+                    {pendingIso === iso ? "Moving…" : timeLabel(iso, timeZone)}
+                  </button>
+                ))}
+              </div>
+            </AsyncListStates>
           </div>
         )}
       </div>

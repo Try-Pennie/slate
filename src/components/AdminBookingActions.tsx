@@ -12,9 +12,15 @@ import {
 } from "@/lib/booking/core";
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
+import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { postJson } from "@/lib/http";
 
 type Mode = null | "cancel" | "reschedule" | "reassign";
+
+const extractSlots = (json: unknown): string[] =>
+  (json as { slots?: string[] } | null)?.slots ?? [];
+const extractAgents = (json: unknown): ReassignAgent[] =>
+  (json as { agents?: ReassignAgent[] } | null)?.agents ?? [];
 
 /**
  * Internal admin reschedule / cancel / reassign for a single booking (#326, #546).
@@ -38,11 +44,28 @@ export default function AdminBookingActions({
   const [mode, setMode] = useState<Mode>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [slots, setSlots] = useState<string[]>([]);
   const [reasonCode, setReasonCode] = useState("");
   const [reasonDetail, setReasonDetail] = useState("");
-  // Reassign state.
-  const [agents, setAgents] = useState<ReassignAgent[]>([]);
+  // Reschedule + reassign lists share one fetch+state hook (#627): loading and
+  // error are distinct from empty, so neither panel shows "no times"/"no agents"
+  // while its fetch is still in flight or after it failed.
+  const {
+    items: slots,
+    loading: slotsLoading,
+    error: slotsError,
+    retry: retrySlots,
+  } = useFetchList(
+    bucketCode ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}` : null,
+    mode === "reschedule",
+    extractSlots,
+  );
+  const {
+    items: agents,
+    loading: agentsLoading,
+    error: agentsError,
+    retry: retryAgents,
+  } = useFetchList(`/api/admin/agents`, mode === "reassign", extractAgents);
+  // Reassign search box.
   const [agentQuery, setAgentQuery] = useState("");
   // Set when the chosen target is at their daily cap: drives the two-step override.
   const [capWarn, setCapWarn] = useState<{ email: string; day: string } | null>(null);
@@ -61,36 +84,26 @@ export default function AdminBookingActions({
     setError(null);
     setReasonCode("");
     setReasonDetail("");
-    setSlots([]);
-    setAgents([]);
     setAgentQuery("");
     setCapWarn(null);
   }
 
-  async function openReschedule() {
+  // Opening a panel just switches mode; the two useFetchList hooks fetch the
+  // slot / agent lists declaratively off `mode` (with loading + error states).
+  function openReschedule() {
     setMode("reschedule");
     setError(null);
     setReasonCode("");
     setReasonDetail("");
-    if (!bucketCode) return;
-    const r = await fetch(`/api/availability?bucket=${encodeURIComponent(bucketCode)}`, {
-      cache: "no-store",
-    });
-    const d = r.ok ? await r.json() : { slots: [] };
-    setSlots(d.slots ?? []);
   }
 
-  async function openReassign() {
+  function openReassign() {
     setMode("reassign");
     setError(null);
     setReasonCode("");
     setReasonDetail("");
     setCapWarn(null);
     setAgentQuery("");
-    // Load the agent list on open (minimal fields), not into every row up front.
-    const r = await fetch(`/api/admin/agents`, { cache: "no-store" });
-    const d = r.ok ? await r.json() : { agents: [] };
-    setAgents(d.agents ?? []);
   }
 
   async function doCancel() {
@@ -227,23 +240,34 @@ export default function AdminBookingActions({
           <p className="mb-2 text-xs font-semibold text-fg">
             {reasonValid ? "Pick a new time" : "Choose a reason above, then pick a new time"}
           </p>
-          <div className="grid grid-cols-2 gap-1">
-            {slots.slice(0, 12).map((iso) => (
-              <button
-                key={iso}
-                disabled={busy || !reasonValid}
-                onClick={() => doReschedule(iso)}
-                className="min-h-9 rounded-md border border-border bg-surface px-1 py-1 text-xs tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
-              >
-                {new Date(iso).toLocaleString("en-US", {
-                  weekday: "short",
-                  hour: "numeric",
-                  minute: "2-digit",
-                })}
-              </button>
-            ))}
-            {slots.length === 0 && <p className="col-span-2 text-xs text-fg-muted">No open times.</p>}
-          </div>
+          <AsyncListStates
+            loading={slotsLoading}
+            error={slotsError}
+            isEmpty={slots.length === 0}
+            onRetry={retrySlots}
+            loadingLabel="Loading available times"
+            skeletonCount={6}
+            skeletonClassName="h-9"
+            containerClassName="grid grid-cols-2 gap-1"
+            emptyNode={<p className="text-xs text-fg-muted">No open times.</p>}
+          >
+            <div className="grid grid-cols-2 gap-1">
+              {slots.slice(0, 12).map((iso) => (
+                <button
+                  key={iso}
+                  disabled={busy || !reasonValid}
+                  onClick={() => doReschedule(iso)}
+                  className="min-h-9 rounded-md border border-border bg-surface px-1 py-1 text-xs tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
+                >
+                  {new Date(iso).toLocaleString("en-US", {
+                    weekday: "short",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </button>
+              ))}
+            </div>
+          </AsyncListStates>
           <button onClick={reset} disabled={busy} className="mt-2 min-h-9 rounded-md border border-border px-3 py-1 text-xs text-fg">
             Back
           </button>
@@ -285,22 +309,30 @@ export default function AdminBookingActions({
                 className="mb-2 min-h-9 w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg"
               />
               <div className="max-h-48 overflow-y-auto rounded-md border border-border">
-                {rankedAgents.slice(0, 30).map((a) => (
-                  <button
-                    key={a.id}
-                    disabled={busy || !reasonValid}
-                    onClick={() => doReassign(a.email, false)}
-                    className={`flex min-h-9 w-full items-center justify-between px-2 py-1 text-left text-xs text-fg hover:bg-fg/[0.06] disabled:opacity-60 ${
-                      a.bookable ? "bg-surface" : "bg-fg/[0.04]"
-                    }`}
-                  >
-                    <span>{a.name ?? a.email}</span>
-                    {!a.bookable && <span className="text-fg-muted">not in rotation</span>}
-                  </button>
-                ))}
-                {rankedAgents.length === 0 && (
-                  <p className="px-2 py-2 text-xs text-fg-muted">No matching agents.</p>
-                )}
+                <AsyncListStates
+                  loading={agentsLoading}
+                  error={agentsError}
+                  isEmpty={rankedAgents.length === 0}
+                  onRetry={retryAgents}
+                  loadingLabel="Loading agents"
+                  skeletonCount={5}
+                  skeletonClassName="mx-2 my-1 h-7"
+                  emptyNode={<p className="px-2 py-2 text-xs text-fg-muted">No matching agents.</p>}
+                >
+                  {rankedAgents.slice(0, 30).map((a) => (
+                    <button
+                      key={a.id}
+                      disabled={busy || !reasonValid}
+                      onClick={() => doReassign(a.email, false)}
+                      className={`flex min-h-9 w-full items-center justify-between px-2 py-1 text-left text-xs text-fg hover:bg-fg/[0.06] disabled:opacity-60 ${
+                        a.bookable ? "bg-surface" : "bg-fg/[0.04]"
+                      }`}
+                    >
+                      <span>{a.name ?? a.email}</span>
+                      {!a.bookable && <span className="text-fg-muted">not in rotation</span>}
+                    </button>
+                  ))}
+                </AsyncListStates>
               </div>
               <button onClick={reset} disabled={busy} className="mt-2 min-h-9 rounded-md border border-border px-3 py-1 text-xs text-fg">
                 Back
