@@ -141,4 +141,61 @@ describe("AdminBookingActions", () => {
     expect(screen.getByLabelText(/search agents/i)).toBeTruthy();
     expect(reassignPicks(fn)).toHaveLength(1);
   });
+
+  // #625: a network rejection must surface an error and re-enable the control,
+  // never leave it frozen in its busy state.
+  it("surfaces an error and re-enables when the admin cancel POST rejects", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm cancel/i }));
+
+    expect(await screen.findByText(/could not cancel/i)).toBeTruthy();
+    const confirm = screen.getByRole("button", { name: /confirm cancel/i }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an error and re-enables the slots when the admin reschedule POST rejects", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) {
+        return { ok: true, json: async () => ({ slots: ["2026-06-21T15:00:00.000Z"] }) } as Response;
+      }
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
+    const slot = (await screen.findByRole("button", { name: /Sun/i })) as HTMLButtonElement;
+    await userEvent.click(slot);
+
+    expect(await screen.findByText(/could not reschedule/i)).toBeTruthy();
+    const slotAfter = screen.getByRole("button", { name: /Sun/i }) as HTMLButtonElement;
+    expect(slotAfter.disabled).toBe(false);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an error and re-enables when the admin reassign POST rejects", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/admin/agents")) {
+        return { ok: true, json: async () => ({ agents: AGENTS }) } as Response;
+      }
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /bea agent/i }));
+
+    expect(await screen.findByText(/could not reassign/i)).toBeTruthy();
+    const agentBtn = screen.getByRole("button", { name: /bea agent/i }) as HTMLButtonElement;
+    expect(agentBtn.disabled).toBe(false);
+    expect(refresh).not.toHaveBeenCalled();
+  });
 });

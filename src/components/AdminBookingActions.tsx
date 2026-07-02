@@ -12,6 +12,7 @@ import {
 } from "@/lib/booking/core";
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
+import { postJson } from "@/lib/http";
 
 type Mode = null | "cancel" | "reschedule" | "reassign";
 
@@ -95,66 +96,67 @@ export default function AdminBookingActions({
   async function doCancel() {
     setBusy(true);
     setError(null);
-    const r = await fetch(`/api/admin/bookings/${bookingId}/cancel`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason: reasonCode, reasonDetail: reasonDetail || undefined }),
-    });
-    if (r.ok) {
-      reset();
-      router.refresh();
-    } else {
-      const d = await r.json().catch(() => ({}));
-      setError(d.error ?? "Could not cancel. Please try again.");
+    try {
+      const { ok, data } = await postJson<{ error?: string }>(
+        `/api/admin/bookings/${bookingId}/cancel`,
+        { reason: reasonCode, reasonDetail: reasonDetail || undefined },
+      );
+      if (ok) {
+        reset();
+        router.refresh();
+      } else {
+        setError(data.error ?? "Could not cancel. Please try again.");
+      }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   async function doReschedule(start: string) {
     setBusy(true);
     setError(null);
-    const r = await fetch(`/api/admin/bookings/${bookingId}/reschedule`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ start, reason: reasonCode, reasonDetail: reasonDetail || undefined }),
-    });
-    if (r.ok) {
-      reset();
-      router.refresh();
-    } else {
-      const d = await r.json().catch(() => ({}));
-      setError(d.error ?? "Could not reschedule. Please try again.");
+    try {
+      const { ok, data } = await postJson<{ error?: string }>(
+        `/api/admin/bookings/${bookingId}/reschedule`,
+        { start, reason: reasonCode, reasonDetail: reasonDetail || undefined },
+      );
+      if (ok) {
+        reset();
+        router.refresh();
+      } else {
+        setError(data.error ?? "Could not reschedule. Please try again.");
+      }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   // overrideCap=true is the manager's second confirm after an at-cap warning (#546).
   async function doReassign(agentEmail: string, overrideCap: boolean) {
     setBusy(true);
     setError(null);
-    const r = await fetch(`/api/admin/bookings/${bookingId}/reassign`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        agentEmail,
-        reason: reasonCode,
-        reasonDetail: reasonDetail || undefined,
-        overrideCap,
-      }),
-    });
-    if (r.ok) {
-      reset();
-      router.refresh();
-    } else {
-      const d = await r.json().catch(() => ({}));
-      if (d.code === "DAILY_CAP_EXCEEDED") {
+    try {
+      const { ok, data } = await postJson<{ error?: string; code?: string; day?: string }>(
+        `/api/admin/bookings/${bookingId}/reassign`,
+        {
+          agentEmail,
+          reason: reasonCode,
+          reasonDetail: reasonDetail || undefined,
+          overrideCap,
+        },
+      );
+      if (ok) {
+        reset();
+        router.refresh();
+      } else if (data.code === "DAILY_CAP_EXCEEDED") {
         // First attempt declined: surface the warning + offer the two-step override.
-        setCapWarn({ email: agentEmail, day: d.day ?? "" });
+        setCapWarn({ email: agentEmail, day: data.day ?? "" });
       } else {
-        setError(d.error ?? "Could not reassign. Please try again.");
+        setError(data.error ?? "Could not reassign. Please try again.");
       }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   if (mode === null) {

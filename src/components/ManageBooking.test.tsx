@@ -155,6 +155,48 @@ describe("ManageBooking", () => {
     await waitFor(() => expect(bodyFor(fn, "/reschedule").reason).toBe("found_better_time"));
     expect(bodyFor(fn, "/reschedule").start).toBe("2026-06-21T15:00:00.000Z");
   });
+
+  // #625: a network rejection (flaky mobile) must not freeze the button in its
+  // busy state — the action surfaces an error and re-enables.
+  it("surfaces an error and re-enables when the cancel POST rejects at the network layer", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /cancel booking/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
+    await userEvent.click(screen.getByRole("button", { name: /yes, cancel/i }));
+
+    expect(await screen.findByText(/could not cancel/i)).toBeTruthy();
+    // Button is back to its idle label (not stuck on "Cancelling…") and enabled.
+    const yesCancel = screen.getByRole("button", { name: /yes, cancel/i }) as HTMLButtonElement;
+    expect(yesCancel.disabled).toBe(false);
+    expect(screen.queryByText("This booking is cancelled.")).toBeNull();
+  });
+
+  it("surfaces an error and re-enables the slots when the reschedule POST rejects", async () => {
+    let calls = 0;
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      calls++;
+      if (String(url).includes("/availability")) {
+        return { ok: true, json: async () => ({ slots: ["2026-06-21T15:00:00.000Z"] }) } as Response;
+      }
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    const slot = (await screen.findByRole("button", { name: /Sun/i })) as HTMLButtonElement;
+    await userEvent.click(slot);
+
+    expect(await screen.findByText(/could not reschedule/i)).toBeTruthy();
+    // Slot buttons re-enable (not stuck disabled / on "Moving…") so the user can retry.
+    const slotAfter = screen.getByRole("button", { name: /Sun/i }) as HTMLButtonElement;
+    expect(slotAfter.disabled).toBe(false);
+    expect(calls).toBeGreaterThan(1);
+  });
 });
 
 beforeEach(() => {
