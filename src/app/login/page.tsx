@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/browser";
 import { ArrowRightIcon } from "@/components/icons";
 
@@ -8,6 +9,28 @@ const CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",
 ].join(" ");
+
+// Sign-in failures the callback can bounce back with. Kept plain and
+// non-technical; the domain case is the security gate from #589.
+const ERROR_MESSAGES: Record<string, string> = {
+  domain_not_allowed: "Please sign in with your Pennie Google account.",
+  exchange_failed: "That sign-in didn't complete. Please try again.",
+  missing_code: "That sign-in didn't complete. Please try again.",
+};
+
+function LoginError() {
+  const error = useSearchParams().get("error");
+  const message = error ? ERROR_MESSAGES[error] : null;
+  if (!message) return null;
+  return (
+    <p
+      role="alert"
+      className="mt-4 rounded-md border border-[var(--error)] bg-error/5 px-4 py-3 text-sm text-error"
+    >
+      {message}
+    </p>
+  );
+}
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
@@ -82,6 +105,9 @@ export default function LoginPage() {
             Sign in with your Pennie Google account to manage your calendar and
             availability.
           </p>
+          <Suspense fallback={null}>
+            <LoginError />
+          </Suspense>
           <button
             onClick={signIn}
             disabled={loading}

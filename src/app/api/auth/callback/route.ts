@@ -3,6 +3,8 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { ensureWatches } from "@/lib/google/sync";
 import { canManageAgents } from "@/lib/auth/roles";
+import { isAllowedEmail } from "@/lib/auth/domain";
+import { googleHostedDomain } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -30,10 +32,21 @@ export async function GET(req: NextRequest) {
 
   const { user } = data.session;
   const meta = user.user_metadata ?? {};
+  const email = user.email ?? (meta.email as string) ?? "";
+
+  // Enforce the Google Workspace domain server-side (#589). The `hd` hint on the
+  // login page is browser-supplied and bypassable; this is the real gate. Reject
+  // unverified or out-of-domain emails BEFORE provisioning so an outside account
+  // never gets a live users row. Sign out first to clear the session cookies the
+  // code exchange just set.
+  if (meta.email_verified === false || !isAllowedEmail(email, googleHostedDomain())) {
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/login?error=domain_not_allowed`);
+  }
 
   const slateUser = await provisionUser({
     authUserId: user.id,
-    email: user.email ?? (meta.email as string) ?? "",
+    email,
     name: (meta.full_name as string) ?? (meta.name as string) ?? null,
     googleSub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
     avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
