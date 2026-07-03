@@ -1071,30 +1071,26 @@ function realDeps(): BookingDeps {
       return (data as { id: string }).id;
     },
 
-    hasBookingEvent: async (bookingId, action, toStartsIso) => {
-      const base = supabaseAdmin()
+    hasBookingEvent: async (bookingId, action, toStartsIso, rescheduleSeq) => {
+      let q = supabaseAdmin()
         .from("booking_events")
         .select("id")
         .eq("booking_id", bookingId)
         .eq("action", action);
-      const q =
-        toStartsIso === null
-          ? base.is("to_starts_at", null)
-          : base.eq("to_starts_at", toStartsIso);
+      q = toStartsIso === null ? q.is("to_starts_at", null) : q.eq("to_starts_at", toStartsIso);
+      if (rescheduleSeq != null) q = q.eq("reschedule_seq", rescheduleSeq);
       const { data } = await q.limit(1).maybeSingle();
       return data != null;
     },
 
-    getBookingEventId: async (bookingId, action, toStartsIso) => {
-      const base = supabaseAdmin()
+    getBookingEventId: async (bookingId, action, toStartsIso, rescheduleSeq) => {
+      let q = supabaseAdmin()
         .from("booking_events")
         .select("id")
         .eq("booking_id", bookingId)
         .eq("action", action);
-      const q =
-        toStartsIso === null
-          ? base.is("to_starts_at", null)
-          : base.eq("to_starts_at", toStartsIso);
+      q = toStartsIso === null ? q.is("to_starts_at", null) : q.eq("to_starts_at", toStartsIso);
+      if (rescheduleSeq != null) q = q.eq("reschedule_seq", rescheduleSeq);
       const { data } = await q.limit(1).maybeSingle();
       return data ? (data as { id: string }).id : null;
     },
