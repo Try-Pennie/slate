@@ -51,8 +51,11 @@ Both require `Authorization: Bearer $CRON_SECRET`.
 
 ## End-to-end verification
 
-1. Visit `/login`, sign in with a Pennie Google account (first user becomes
-   admin). Repeat for 2–3 agent accounts to connect their calendars.
+1. Visit `/login`, sign in with a Pennie Google account. Every login provisions
+   an `agent` (no login ever auto-grants admin). Repeat for 2–3 agent accounts to
+   connect their calendars. To bootstrap the first admin, promote an agent with a
+   direct DB update: `update users set role = 'admin' where email = '…';` then use
+   role management in `/admin` to grant the rest.
 2. In `/admin`: create an event type, set each agent's working hours, and create
    a bucket with code `411` containing those agents. Set the webhook URL to a
    stub (e.g. webhook.site).
