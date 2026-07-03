@@ -17,6 +17,7 @@ import {
   busyBlockFor,
   bookingEventFrom,
   deterministicEventId,
+  EventGone,
   eventDescription,
   idempotencyKeyFor,
   selectAgent,
@@ -2230,8 +2231,29 @@ async function applyReschedule(
   if (pin.branch === "in_place") {
     // Idempotent PATCH — a resume simply re-PATCHes the same event to the same
     // time. No createEvent / 409-reuse here; the pin stores the existing event id.
-    await deps.updateEventTime(pin.pinned_agent_email, pin.gcal_client_id, startIso, endIso, booking.timezone);
-    newGcalEventId = pin.gcal_client_id;
+    try {
+      await deps.updateEventTime(pin.pinned_agent_email, pin.gcal_client_id, startIso, endIso, booking.timezone);
+      newGcalEventId = pin.gcal_client_id;
+    } catch (err) {
+      // #617: the PATCH target was deleted on Google. Rather than commit a
+      // phantom move, recreate the event on the SAME agent at the new time. The
+      // deterministic id keeps a crash-resume idempotent (a repeat insert 409s
+      // and reuses the same event), and the customer gets a fresh invite.
+      if (!(err instanceof EventGone)) throw err;
+      newGcalEventId = await deps.createEvent(
+        pin.pinned_agent_email,
+        {
+          summary: `${eventType.name}${booking.attendee_name ? ` with ${booking.attendee_name}` : ""}`,
+          description: eventDescription(booking.attendee_phone, manageUrl(deps, token)),
+          start: startIso,
+          end: endIso,
+          timezone: booking.timezone,
+          attendeeEmail: booking.attendee_email ?? undefined,
+          attendeeName: booking.attendee_name ?? undefined,
+        },
+        await deterministicEventId(`reschedule-recreate:${booking.id}:${pin.reschedule_seq}`, pin.pinned_user_id),
+      );
+    }
   } else {
     // reassign: delete-first the old event, then create the new with the pinned
     // deterministic id (a resume's repeat insert 409s and GET-and-reuses it ->
