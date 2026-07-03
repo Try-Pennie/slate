@@ -31,10 +31,10 @@ interface ProvisionInput {
 }
 
 /**
- * Resolves the logged-in (admin) user to a Slate users row, linking by
- * auth_user_id, else by email (e.g. a synced agent who now logs in), else
- * creating a new row. First admin to log in becomes role 'admin'. Calendar
- * access is via domain-wide delegation, so no OAuth tokens are stored.
+ * Resolves the logged-in user to a Slate users row, linking by auth_user_id,
+ * else by email (e.g. a synced agent who now logs in), else creating a new row.
+ * A brand-new row is always role 'agent'; admin is never granted at login (#599).
+ * Calendar access is via domain-wide delegation, so no OAuth tokens are stored.
  */
 export async function provisionUser(input: ProvisionInput): Promise<User> {
   const db = supabaseAdmin();
@@ -84,13 +84,12 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
     return updated as User;
   }
 
-  // Brand new — first person to log in with no admin yet becomes admin.
-  const { count } = await db
-    .from("users")
-    .select("id", { count: "exact", head: true })
-    .eq("role", "admin");
-  const role = (count ?? 0) === 0 ? "admin" : "agent";
-
+  // Brand new — always provisioned as 'agent'. We deliberately do NOT auto-grant
+  // admin to the first login on an empty-admin state (#599): a data condition
+  // (no admins) must never mint an admin, or a normal login becomes a silent
+  // privilege escalation. Admins are seeded deliberately by promoting an existing
+  // user (role management) or, to bootstrap from scratch, a direct DB write —
+  // there is no login-time bootstrap path.
   const { data: created } = await db
     .from("users")
     .insert({
@@ -100,7 +99,7 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
       name: input.name,
       google_sub: input.googleSub,
       avatar_url: input.avatarUrl,
-      role,
+      role: "agent",
     })
     .select("*")
     .single();
