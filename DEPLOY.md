@@ -18,20 +18,69 @@ cd ~/Documents/Slate
 wrangler login
 ```
 
-## 2. Set runtime secrets (server-only; entered at prompts)
-These are NOT inlined at build — the Worker reads them at runtime. Paste each
-value (from `.env.local`) when prompted:
+## 2. Set runtime configuration
+Slate reads its configuration from three places, so a rebuild-from-scratch deploy
+needs ALL of them. This is the full list (source of truth: `.env.example` and
+`src/lib/env.ts`); `scripts/test-deploy-env-coverage.ts` fails CI if a var read by
+the app or listed in `.env.example` is ever missing here.
+
+### 2a. Build-time public values (`.env.local`, inlined into the client bundle)
+Set these in `.env.local` BEFORE `pnpm run cf:deploy`: they are baked in at build,
+not read at runtime.
+- `NEXT_PUBLIC_APP_URL` (required): base URL, no trailing slash. Drives OAuth
+  redirects, the embed SDK, manage links, and the Google push callback URL.
+- `NEXT_PUBLIC_SUPABASE_URL` (required): the Supabase project URL.
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (required): the client-safe
+  `sb_publishable_…` key.
+- `NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN` (optional): sets Google's `hd` login hint. The
+  enforced server-side twin is `GOOGLE_HOSTED_DOMAIN` (in 2c).
+
+### 2b. Runtime secrets (`wrangler secret put`, entered at prompts)
+Sensitive values the Worker reads at runtime. Paste each (from `.env.local`) when
+prompted. The **required** ones each break a core feature when unset:
 ```bash
-wrangler secret put SUPABASE_SECRET_KEY
-wrangler secret put GOOGLE_CLIENT_ID
-wrangler secret put GOOGLE_CLIENT_SECRET
-wrangler secret put GOOGLE_HOSTED_DOMAIN
-wrangler secret put CRON_SECRET
-wrangler secret put GOOGLE_CHANNEL_TOKEN
-wrangler secret put OFFBOARDING_API_KEY   # optional; unset = offboarding endpoints return 503
-wrangler secret put BOOKING_API_KEY        # optional; unset = direct booking API returns 503
-# wrangler secret put BOOKING_API_KEY_2    # optional 2nd key — set only when rotating
+wrangler secret put SUPABASE_SECRET_KEY    # required; server DB access (bypasses RLS). Unset = every server route + cron fails.
+wrangler secret put GOOGLE_CLIENT_ID        # required; Google SSO login. Unset = nobody can sign in.
+wrangler secret put GOOGLE_CLIENT_SECRET    # required; Google SSO login (paired with the id).
+wrangler secret put GOOGLE_SA_CLIENT_EMAIL  # required; service account for domain-wide delegation. Unset = no calendar reads/writes, no availability, no OOO.
+wrangler secret put GOOGLE_SA_PRIVATE_KEY   # required; the SA private key (literal \n newlines, as in the JSON key).
+wrangler secret put SF_CLIENT_ID            # required; Salesforce roster sync. Unset = the agent roster never syncs.
+wrangler secret put SF_CLIENT_SECRET        # required; Salesforce roster sync (paired with the id).
+wrangler secret put SF_INSTANCE_URL         # required; the Salesforce org URL, no trailing slash.
+wrangler secret put CRON_SECRET             # required; authorizes every cron endpoint. Unset = all cron lanes reject (sync, complete, watch, agents, monitor, outbox, selfheal).
+wrangler secret put GOOGLE_CHANNEL_TOKEN    # required; signs/verifies Google calendar push pings. Unset = real-time push verification fails.
+wrangler secret put MAIN_OOO_CAL_ID         # required; the OOO approval calendar + default impersonation actor for manager-calendar writes. Unset = OOO approval throws.
+wrangler secret put SLACK_BOT_TOKEN         # optional; ops alerts + OOO DMs/digest. Empty = Slack is a no-op.
+wrangler secret put SLACK_ALERTS_CHANNEL    # optional; default alert channel id. Empty = alerts have nowhere to post. (Channel id, not sensitive; may live in wrangler.jsonc vars instead.)
+wrangler secret put SLACK_INFO_CHANNEL      # optional; quieter info-only channel (#567). Empty = falls back to SLACK_ALERTS_CHANNEL.
+wrangler secret put SLACK_SIGNING_SECRET    # optional; verifies inbound Slack Approve/Decline requests. Empty = /api/slack/interactions rejects everything.
+wrangler secret put CALCOM_API_KEY          # optional; cal.com dual-write during cutover (needs OOO_CALCOM_DUAL_WRITE). Empty = dual-write no-op.
+wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
+wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
+wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct booking API. Empty (both) = POST /api/bookings returns 503.
+# wrangler secret put BOOKING_API_KEY_2     # optional 2nd booking key; set only when rotating (both accepted at once).
 ```
+
+### 2c. Runtime vars (`wrangler.jsonc` under `vars`, committed and redeployed)
+Non-secret config + launch flags. They live in `wrangler.jsonc` (version-controlled
+so they survive every deploy; a dashboard-only plain var gets WIPED on the next
+`wrangler deploy`), so they ship with `pnpm cf:deploy` and need no `secret put`.
+Change one by editing `wrangler.jsonc` and redeploying.
+- `GOOGLE_HOSTED_DOMAIN` (required): the server-side SSO domain gate (e.g.
+  `trypennie.com`). Empty = any Google account may sign in. Its build-time
+  `NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN` twin is set in 2a.
+- `AGENT_SCHEDULING_LIVE`: launch flag. `"false"` = OOO-only phase; `"true"` reveals
+  scheduling self-service to agents.
+- `OOO_CALENDAR_ACTOR_EMAIL` (optional): impersonation actor for OOO calendar writes.
+  Unset = defaults to `MAIN_OOO_CAL_ID`.
+- `OOO_APPROVALS_TO` / `OOO_APPROVALS_BCC` / `OOO_APPROVALS_REPLY_TO`: recipients of
+  the daily OOO-approvals digest email. Empty `TO` = the digest no-ops.
+- `OOO_CALCOM_DUAL_WRITE`: `"true"` mirrors approved OOO into cal.com during the
+  cutover (requires `CALCOM_*` + `CALCOM_API_KEY`). `"false"`/unset = no-op.
+- `CALCOM_BASE_URL` / `CALCOM_ORG_ID`: cal.com API base + org for the dual-write.
+- `BOOKING_VOLUME_ALERT_ARMED` / `BOOKING_VOLUME_FLOOR_30` / `BOOKING_VOLUME_FLOOR_120`:
+  low-volume booking alert arming + floors (see Post-deploy config below). Unset =
+  disarmed (counts still logged; floors default 5 / 20).
 
 ## 3. Build + deploy
 ```bash
