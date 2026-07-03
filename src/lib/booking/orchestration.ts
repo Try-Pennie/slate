@@ -1358,6 +1358,39 @@ export async function createBooking(
 }
 
 /**
+ * The post-insert side effects a create MUST deliver, factored out so the fresh
+ * create and a crash-resume run the SAME sequence (#613). Every step is
+ * idempotent — moveBusyBlock replaces any prior block for the booking, and
+ * booking.created dedupes on the booking id (`webhookDedupeKey`) so a re-run
+ * emits nothing new — so running it inline once, or again from the reservation
+ * drain after a crash, reaches the same end state without a duplicate block or a
+ * double webhook. Returns the resolved bucket/eventType (or null) so the fresh
+ * path can attach its best-effort routing log without a second resolve.
+ */
+async function deliverCreatedSideEffects(
+  deps: BookingDeps,
+  booking: Booking,
+  bookedCode: string,
+): Promise<{ bucket: Bucket; eventType: EventType } | null> {
+  if (booking.assigned_user_id) {
+    await deps.moveBusyBlock(
+      booking.assigned_user_id,
+      booking.starts_at,
+      booking.ends_at,
+      booking.id,
+    );
+  }
+  await deps.invalidateSlots(bookedCode);
+
+  // Re-resolve bucket + eventType for the webhook (works on the drain path too).
+  const resolved = await deps.resolveBucketByCode(bookedCode);
+  if (resolved) {
+    await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
+  }
+  return resolved;
+}
+
+/**
  * Complete a booking from its reservation (#429 P4). Shared by the fresh create,
  * the re-submit resume, and the drain — so a crash anywhere resumes to the same
  * end state. Idempotent: createEvent reuses the event (deterministic id → 409),
@@ -1371,11 +1404,17 @@ async function completeReservation(
   const { booking: bookingInsert, event, bucketCode } = reservation.payload;
   const key = bookingInsert.idempotency_key;
 
-  // Already completed (a resume after insert but before the reservation was
-  // deleted): return the booking, clean up the reservation.
+  // A resume after the booking was inserted but before the reservation was
+  // deleted. A crash here could have landed BEFORE booking.created fired (1336
+  // -> 1374), which used to be dropped permanently: short-circuiting to just
+  // delete the reservation skipped every post-insert side effect (#613). Instead,
+  // re-run the idempotent side effects (busyblock/recompute/notify) so the
+  // previously-lost booking.created is delivered exactly once, THEN clean up.
   if (key) {
     const already = await deps.findBookingByIdempotencyKey(key);
     if (already) {
+      const bookedCode = already.routing_trace?.bucket_code ?? bucketCode;
+      await deliverCreatedSideEffects(deps, already, bookedCode);
       await deps.deleteReservation(reservation.id);
       return { booking: already, manageUrl: manageUrl(deps, already.manage_token) };
     }
@@ -1426,15 +1465,10 @@ async function completeReservation(
   // side-effects to the bucket whose availability actually changed.
   const bookedCode = booking.routing_trace?.bucket_code ?? bucketCode;
 
-  await deps.insertBusyBlock(
-    busyBlockFor(reservation.pinned_user_id, bookingInsert.starts_at, bookingInsert.ends_at, booking.id),
-  );
-  await deps.invalidateSlots(bookedCode);
-
-  // Re-resolve bucket + eventType for the webhook (works on the drain path too).
-  const resolved = await deps.resolveBucketByCode(bookedCode);
+  // Deliver the busyblock/recompute/notify side effects idempotently — the SAME
+  // path a crash-resume takes, so booking.created can't be dropped (#613).
+  const resolved = await deliverCreatedSideEffects(deps, booking, bookedCode);
   if (resolved) {
-    await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
     // Best-effort routing decision log. Awaited so the write is not dropped by the
     // CF runtime; try/catch keeps any transient failure out of the booking response.
     try {
