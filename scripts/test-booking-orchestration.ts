@@ -48,6 +48,7 @@ import type {
   BookingOutbox,
   BookingReservation,
 } from "../src/lib/db/types.ts";
+import { EventGone } from "../src/lib/booking/core.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -154,6 +155,10 @@ interface FakeOpts {
   // in-memory row as a concurrent cancel or reassign would. The gated commit then
   // sees the changed row and must roll back instead of winning.
   concurrentBeforeCommit?: (booking: Booking) => void;
+  // #617: the in-place PATCH hits a deleted event — updateEventTime raises
+  // EventGone so the reschedule recreates the event instead of committing a
+  // phantom move.
+  updateEventTimeGone?: boolean;
 }
 
 // Default fake working hours: Mon-Fri 09:00-17:00 America/New_York. Covers every
@@ -302,6 +307,7 @@ function makeDeps(opts: FakeOpts) {
     },
     updateEventTime: async (_email, id) => {
       calls.updateEventTime.push({ id });
+      if (opts.updateEventTimeGone) throw new EventGone("events.patch"); // #617
       fireConcurrent(); // #615: a concurrent cancel/reassign lands mid-PATCH
     },
     getUser: async (id) => users[id],
@@ -1017,6 +1023,55 @@ async function run() {
         JSON.stringify({ code: "schedule_conflict", detail: null, initiator: "customer" }),
       "reschedule: webhook payload carries the reason + initiator",
     );
+  }
+
+  // --- reschedule in-place when the calendar event was DELETED (#617): the
+  // PATCH 410s -> updateEventTime raises EventGone -> the branch recreates the
+  // event (with a deterministic id) instead of committing a phantom move. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-09T14:00:00.000Z",
+        ends_at: "2026-06-09T14:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      freeEmails: new Set(["a@x.com"]),
+      updateEventTimeGone: true, // the existing event is gone on Google
+    });
+    const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      calls.updateEventTime.length === 1 && calls.updateEventTime[0].id === "gcal-old",
+      "reschedule(deleted event): still attempts the in-place PATCH first",
+    );
+    assert(
+      calls.createEvent.length === 1 && calls.createEvent[0].email === "a@x.com",
+      "reschedule(deleted event): recreates the event on EventGone",
+    );
+    assert(
+      calls.deleteEvent.length === 0,
+      "reschedule(deleted event): no delete — the old event is already gone",
+    );
+    assert(
+      typeof calls.createEvent[0].clientId === "string" && calls.createEvent[0].clientId.length > 0,
+      "reschedule(deleted event): recreate uses a deterministic client id (idempotent on resume)",
+    );
+    assert(
+      res.booking.gcal_event_id !== "gcal-old" && (res.booking.gcal_event_id ?? "").length > 0,
+      "reschedule(deleted event): commits the NEW recreated event id, not the phantom one",
+    );
+    assert(
+      res.booking.assigned_user_id === "a" && res.booking.status === "rescheduled",
+      "reschedule(deleted event): stays on the same agent and commits the move",
+    );
+    assert(calls.webhooks[0].event === "booking.rescheduled", "reschedule(deleted event): still fires booking.rescheduled");
   }
 
   // --- reschedule by LESS than the event length: stays in-place on the SAME

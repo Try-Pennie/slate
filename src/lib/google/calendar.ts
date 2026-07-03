@@ -2,6 +2,7 @@ import { getDelegatedToken } from "@/lib/google/dwd";
 import {
   busyByCalendarFromResponse,
   hasBlockingBusy,
+  EventGone,
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
@@ -78,7 +79,10 @@ async function gfetch(
 }
 
 async function ok(res: Response, label: string): Promise<Response> {
-  if (!res.ok && res.status !== 410) {
+  // #617: no 410 exemption. syncEvents handles its own expired-token 410 BEFORE
+  // calling ok(), so this stays strict for every other caller — a 410 (e.g. a
+  // PATCH on a deleted event) is a failure, never a silent success.
+  if (!res.ok) {
     throw new Error(`${label} failed: ${res.status} ${await res.text()}`);
   }
   return res;
@@ -310,20 +314,22 @@ export async function updateEventTime(
   end: string,
   timezone: string,
 ): Promise<void> {
-  await ok(
-    await gfetch(
-      email,
-      `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({
-          start: { dateTime: start, timeZone: timezone },
-          end: { dateTime: end, timeZone: timezone },
-        }),
-      },
-    ),
-    "events.patch",
+  const res = await gfetch(
+    email,
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        start: { dateTime: start, timeZone: timezone },
+        end: { dateTime: end, timeZone: timezone },
+      }),
+    },
   );
+  // #617: a PATCH on a deleted event 404/410s. Surface it as a typed EventGone
+  // so the reschedule recreates the event instead of committing a phantom move
+  // (ok() would otherwise throw a generic error). Checked BEFORE ok().
+  if (res.status === 404 || res.status === 410) throw new EventGone("events.patch");
+  await ok(res, "events.patch");
 }
 
 export async function deleteEvent(email: string, eventId: string): Promise<void> {

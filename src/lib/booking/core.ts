@@ -13,6 +13,19 @@ import type {
  * logic is deterministic and unit-testable. See `scripts/test-booking.ts`.
  */
 
+/**
+ * Thrown by a calendar write when the target event no longer exists on Google
+ * (HTTP 404/410). Lives in this pure module so both the Google client (which
+ * throws it) and the pure orchestration layer (which catches it to recreate the
+ * event) can reference it without coupling to the Google stack. See #617.
+ */
+export class EventGone extends Error {
+  constructor(label: string) {
+    super(`${label}: event no longer exists on Google`);
+    this.name = "EventGone";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reschedule/cancel reason capture + history events (#326 / #300, ADR 0001).
 // ---------------------------------------------------------------------------
