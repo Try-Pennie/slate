@@ -21,10 +21,30 @@ assert(
     JSON.stringify({ start: "2026-06-08T13:00:00Z", end: "2026-06-08T13:30:00Z" }),
   "timed event keeps its dateTimes",
 );
+// all-day events (#616): without a timezone the window defaults to UTC midnight
+// (isBusyEvent only needs null-ness); WITH an agent timezone it anchors to LOCAL
+// midnight so the block matches the agent's actual all-day OOO/holiday. Google's
+// end.date is EXCLUSIVE (the day after), so a single all-day event blocks exactly
+// the local 00:00-24:00 with no bleed into adjacent days.
 assert(
   JSON.stringify(eventWindow({ start: { date: "2026-06-08" }, end: { date: "2026-06-09" } })) ===
     JSON.stringify({ start: "2026-06-08T00:00:00.000Z", end: "2026-06-09T00:00:00.000Z" }),
-  "all-day event expands date to midnight UTC",
+  "all-day event without a tz defaults to midnight UTC",
+);
+assert(
+  JSON.stringify(eventWindow({ start: { date: "2026-07-04" }, end: { date: "2026-07-05" } }, "America/New_York")) ===
+    JSON.stringify({ start: "2026-07-04T04:00:00.000Z", end: "2026-07-05T04:00:00.000Z" }),
+  "all-day event in ET (summer/EDT) blocks local 00:00-24:00 (04:00Z), not UTC midnight",
+);
+assert(
+  JSON.stringify(eventWindow({ start: { date: "2026-07-04" }, end: { date: "2026-07-05" } }, "America/Los_Angeles")) ===
+    JSON.stringify({ start: "2026-07-04T07:00:00.000Z", end: "2026-07-05T07:00:00.000Z" }),
+  "all-day event in PT (summer/PDT) anchors to local midnight (07:00Z)",
+);
+assert(
+  JSON.stringify(eventWindow({ start: { date: "2026-01-15" }, end: { date: "2026-01-16" } }, "America/New_York")) ===
+    JSON.stringify({ start: "2026-01-15T05:00:00.000Z", end: "2026-01-16T05:00:00.000Z" }),
+  "all-day event in ET (winter/EST) uses the DST-correct offset (05:00Z)",
 );
 assert(eventWindow({ start: {}, end: {} }) === null, "event with no times yields null");
 
@@ -90,6 +110,20 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
   assert(
     !deletes.includes("slateBBB") && deletes.length === 0,
     "a Slate-owned event is skipped entirely, never queued for delete (the booking owns its block)",
+  );
+}
+// partitionBusyWrites threads the agent timezone into all-day windows (#616) so
+// an OOO/holiday block lands on the agent's local day, not UTC midnight.
+{
+  const events = [
+    { id: "ooo", start: { date: "2026-07-04" }, end: { date: "2026-07-05" } },
+  ];
+  const { upserts } = partitionBusyWrites("u1", "cal-1", events, new Set(), "America/New_York");
+  assert(
+    upserts.length === 1 &&
+      upserts[0].starts_at === "2026-07-04T04:00:00.000Z" &&
+      upserts[0].ends_at === "2026-07-05T04:00:00.000Z",
+    "all-day OOO upserts a local-midnight-anchored block for an ET agent",
   );
 }
 {
