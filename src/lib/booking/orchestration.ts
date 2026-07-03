@@ -480,7 +480,20 @@ export interface BookingDeps {
   /** Retention: delete up to `limit` pending reservations older than the cutoff
    *  (abandoned rows whose booking never completed). */
   deleteExpiredReservations(olderThanIso: string, limit: number): Promise<void>;
-  updateBooking(bookingId: string, patch: BookingUpdate): Promise<void>;
+  /**
+   * Gated reschedule commit (#615). Applies the move ONLY while the booking is
+   * still the one we started moving: status still active AND assignee + gcal
+   * event id unchanged since we read them. Returns true iff THIS update
+   * transitioned the row. A concurrent cancel (flips status) or reassign (swaps
+   * assignee + event id) makes it touch 0 rows, so the reschedule can roll back
+   * instead of resurrecting a cancelled booking or clobbering the reassign.
+   * Same gated-update shape as `claimCancellation` / `completeBookingsIfDue`.
+   */
+  commitReschedule(
+    bookingId: string,
+    patch: BookingUpdate,
+    guard: { assignedUserId: string | null; gcalEventId: string | null },
+  ): Promise<boolean>;
   /**
    * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in
    * one statement, returning true only if THIS call made the transition. A second
@@ -2082,6 +2095,10 @@ async function applyReschedule(
   // Capture the pre-move time + agent for the history row before we mutate.
   const fromStartsIso = booking.starts_at;
   const fromAgentUserId = booking.assigned_user_id;
+  // The assignee + event id we read, used to GATE the commit (#615): if a
+  // concurrent cancel or reassign changed either (or the status) before we
+  // commit, the gated UPDATE touches 0 rows and we roll back rather than win.
+  const fromGcalEventId = booking.gcal_event_id;
   // Why the current agent could NOT be kept in place (#543), surfaced to the
   // service layer (on success via BookingResult, on failure via the thrown
   // error) for an observability breadcrumb. null = kept in place / no in-place
@@ -2250,16 +2267,46 @@ async function applyReschedule(
 
   // Single atomic commit at the new time/agent, advancing the ordinal ONLY on
   // success (so a crash-retry recomputes the same seq -> same deterministic id).
-  await deps.updateBooking(booking.id, {
-    starts_at: startIso,
-    ends_at: endIso,
-    assigned_user_id: assigned,
-    agent_name: agentName,
-    agent_email: agentEmail,
-    status: "rescheduled",
-    gcal_event_id: newGcalEventId,
-    reschedule_seq: pin.reschedule_seq,
-  });
+  // GATED on the booking still being the one we started moving (#615): a
+  // concurrent cancel (status flip) or reassign (assignee + event id swap) makes
+  // this touch 0 rows, so we don't resurrect a cancelled booking or clobber the
+  // reassign.
+  const committed = await deps.commitReschedule(
+    booking.id,
+    {
+      starts_at: startIso,
+      ends_at: endIso,
+      assigned_user_id: assigned,
+      agent_name: agentName,
+      agent_email: agentEmail,
+      status: "rescheduled",
+      gcal_event_id: newGcalEventId,
+      reschedule_seq: pin.reschedule_seq,
+    },
+    { assignedUserId: fromAgentUserId, gcalEventId: fromGcalEventId },
+  );
+  if (!committed) {
+    // 0 rows: the booking is no longer the one we started moving. Two cases:
+    //  - a crash-resume whose prior attempt already committed THIS exact pin
+    //    (the row now carries our seq + event id) — idempotent, fall through;
+    //  - a genuine conflict: a concurrent cancel/reassign/completion changed it.
+    // Distinguish by re-reading, so only a real conflict rolls back + throws.
+    const fresh = await deps.loadBookingById(booking.id);
+    const alreadyCommitted =
+      fresh != null &&
+      fresh.booking.reschedule_seq === pin.reschedule_seq &&
+      fresh.booking.gcal_event_id === newGcalEventId &&
+      (fresh.booking.status === "rescheduled" || fresh.booking.status === "confirmed");
+    if (!alreadyCommitted) {
+      // Roll back the event THIS reschedule created (reassign branch only; the
+      // in_place branch re-PATCHed a pre-existing event that the winner owns, so
+      // deleting it here could remove a live event — leave it to the winner).
+      if (pin.branch === "reassign") {
+        await deleteEventBestEffort(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+      }
+      throw new RescheduleConflictError();
+    }
+  }
   booking.gcal_event_id = newGcalEventId;
 
   const updated = {
