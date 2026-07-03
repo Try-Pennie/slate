@@ -13,7 +13,8 @@ import {
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
-import { postJson } from "@/lib/http";
+import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { useStalledAfter } from "@/lib/useStalledAfter";
 
 type Mode = null | "cancel" | "reschedule" | "reassign";
 
@@ -43,6 +44,9 @@ export default function AdminBookingActions({
   const router = useRouter();
   const [mode, setMode] = useState<Mode>(null);
   const [busy, setBusy] = useState(false);
+  // Still-alive cue if an admin action POST hasn't returned by ~10s; the
+  // REQUEST_TIMEOUT_MS abort converts a true hang into the error below (#626).
+  const stalled = useStalledAfter(busy);
   const [error, setError] = useState<string | null>(null);
   const [reasonCode, setReasonCode] = useState("");
   const [reasonDetail, setReasonDetail] = useState("");
@@ -113,6 +117,7 @@ export default function AdminBookingActions({
       const { ok, data } = await postJson<{ error?: string }>(
         `/api/admin/bookings/${bookingId}/cancel`,
         { reason: reasonCode, reasonDetail: reasonDetail || undefined },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok) {
         reset();
@@ -132,6 +137,7 @@ export default function AdminBookingActions({
       const { ok, data } = await postJson<{ error?: string }>(
         `/api/admin/bookings/${bookingId}/reschedule`,
         { start, reason: reasonCode, reasonDetail: reasonDetail || undefined },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok) {
         reset();
@@ -157,6 +163,7 @@ export default function AdminBookingActions({
           reasonDetail: reasonDetail || undefined,
           overrideCap,
         },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok) {
         reset();
@@ -340,6 +347,12 @@ export default function AdminBookingActions({
             </>
           )}
         </div>
+      )}
+
+      {busy && stalled && !error && (
+        <p role="status" className="mt-2 text-xs text-fg-muted">
+          Still working… this is taking longer than usual.
+        </p>
       )}
 
       {error && (

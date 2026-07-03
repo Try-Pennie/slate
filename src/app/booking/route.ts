@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import {
   createBooking,
+  findDuplicateBookingWarning,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -68,11 +69,24 @@ export async function POST(req: NextRequest) {
       },
       prefill: parsed.data.prefill,
     });
+    // A successful confirm that timed out client-side then got rebooked at a new
+    // time leaves the lead with two active calls (#626). Surface their other
+    // active booking so the confirmation screen can offer to view/cancel it.
+    const duplicateWarning = await findDuplicateBookingWarning({
+      excludeBookingId: booking.id,
+      salesforceId: parsed.data.salesforceId ?? null,
+      attendee: {
+        email: parsed.data.attendee.email?.trim(),
+        phone: parsed.data.attendee.phone?.trim(),
+      },
+    });
+
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,
       endsAt: booking.ends_at,
       manageUrl,
+      duplicateWarning,
     });
   } catch (err) {
     // Couldn't verify any candidate (likely a Google/DB outage), not a full

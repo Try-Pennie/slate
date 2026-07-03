@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AdminBookingActions from "@/components/AdminBookingActions";
 
@@ -280,4 +280,33 @@ describe("AdminBookingActions", () => {
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
     expect(await screen.findByRole("button", { name: /bea agent/i })).toBeTruthy();
   });
+
+  it("shows a still-working cue when an admin cancel POST hangs (#626)", async () => {
+    global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/cancel")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    }) as unknown as typeof fetch;
+
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: /confirm cancel/i }));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByText(/still working/i)).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    expect(screen.getByText(/still working/i)).toBeTruthy();
+    vi.useRealTimers();
+  });
 });
+
+afterEach(() => vi.useRealTimers());

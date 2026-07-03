@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useRef, useState } from "react";
 import { DateTimeField } from "@/components/ui/DateTimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { useStalledAfter } from "@/lib/useStalledAfter";
 import type { OooFormState } from "@/app/me/actions";
 
 /**
@@ -71,7 +72,7 @@ export function OooForm({
   // Watchdog: a submit should take ~1s. If it's still in flight after this, a
   // request somewhere wedged (cold server, dropped connection), so stop looking
   // successful and tell the agent how to recover instead of spinning forever.
-  const [stalled, setStalled] = useState(false);
+  const stalled = useStalledAfter(isPending, 15000);
 
   // An inline error is easy to miss if the agent is focused lower in the form,
   // so bring it into view (reduced-motion users get an instant jump via the
@@ -84,12 +85,6 @@ export function OooForm({
       formRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     }
   }, [state]);
-
-  useEffect(() => {
-    if (!isPending) return;
-    const t = setTimeout(() => setStalled(true), 15000);
-    return () => clearTimeout(t);
-  }, [isPending]);
 
   // Entering edit mode (this component remounts per ?edit=<id>): snap the form
   // into view immediately. A long smooth scroll up the page reads as "nothing
@@ -171,7 +166,6 @@ export function OooForm({
         action={formAction}
         onSubmit={() => {
           setSubmitted(true);
-          setStalled(false);
         }}
         className={`scroll-mt-24 rounded-md bg-surface p-6 shadow-xs dark:border dark:border-border ${
           editing

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ManageBooking from "@/components/ManageBooking";
 
@@ -265,8 +265,37 @@ describe("ManageBooking", () => {
     expect(await screen.findByText(/no times left/i)).toBeTruthy();
     expect(screen.queryByRole("status", { name: /loading/i })).toBeNull();
   });
+
+  it("shows a still-working cue when a cancel POST hangs (#626)", async () => {
+    vi.useFakeTimers();
+    global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/cancel")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ slots: [] }) } as Response);
+    }) as unknown as typeof fetch;
+
+    render(<ManageBooking {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: /cancel booking/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
+    fireEvent.click(screen.getByRole("button", { name: /yes, cancel/i }));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByText(/still working/i)).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    expect(screen.getByText(/still working/i)).toBeTruthy();
+    vi.useRealTimers();
+  });
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

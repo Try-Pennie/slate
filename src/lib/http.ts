@@ -8,26 +8,54 @@ export interface PostJsonResult<T> {
 }
 
 /**
+ * Client-side abort ceiling for booking-flow POSTs (#626). A request still in
+ * flight this long is wedged, not slow; aborting converts it to the retryable
+ * `{ ok:false, status:0 }` result. Paired with the ~10s `useStalledAfter`
+ * "still working" cue, this gives the three distinct states every time-taking
+ * action must have (started / still-alive / failed).
+ */
+export const REQUEST_TIMEOUT_MS = 20000;
+
+export interface PostJsonOptions {
+  /**
+   * Abort the request after this many ms so a wedged connection (server accepted
+   * but never responds) becomes the retryable `{ ok:false, status:0 }` result
+   * instead of awaiting forever (#626). Omit to wait indefinitely (default).
+   */
+  timeoutMs?: number;
+}
+
+/**
  * POST a JSON body from a client component and ALWAYS resolve with
- * `{ ok, status, data }`. A network rejection (flaky mobile, offline) or an
- * unparseable body becomes `{ ok: false, status: 0, data: {} }` rather than a
- * thrown rejection. Callers branch on the result and clear their busy state in
- * a `finally`, so a failed action surfaces an error and re-enables its control
- * instead of freezing forever (#625).
+ * `{ ok, status, data }`. A network rejection (flaky mobile, offline), an
+ * unparseable body, or a `timeoutMs` abort all become
+ * `{ ok: false, status: 0, data: {} }` rather than a thrown rejection. Callers
+ * branch on the result and clear their busy state in a `finally`, so a failed
+ * action surfaces an error and re-enables its control instead of freezing
+ * forever (#625, #626).
  */
 export async function postJson<T = Record<string, unknown>>(
   url: string,
   body: unknown,
+  options: PostJsonOptions = {},
 ): Promise<PostJsonResult<T>> {
+  const controller = options.timeoutMs != null ? new AbortController() : null;
+  const timer =
+    controller && options.timeoutMs != null
+      ? setTimeout(() => controller.abort(), options.timeoutMs)
+      : null;
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal: controller?.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };
   } catch {
     return { ok: false, status: 0, data: {} as T };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

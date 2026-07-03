@@ -1119,8 +1119,47 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
   },
 };
 
-function manageUrl(deps: BookingDeps, token: string): string {
+function manageUrl(deps: Pick<BookingDeps, "appBaseUrl">, token: string): string {
   return `${deps.appBaseUrl()}/booking/manage/${token}`;
+}
+
+export interface DuplicateWarning {
+  /** Start of the lead's OTHER active booking (ISO instant). */
+  startsAt: string;
+  /** Manage link for that booking, so they can view or cancel it. */
+  manageUrl: string;
+}
+
+/**
+ * After a booking succeeds, find the lead's OTHER active booking so the
+ * confirmation screen can warn them (#626). Guards the case a timed-out confirm
+ * that silently succeeded then got rebooked at a new time. Reuses the same
+ * identity grading (findPersonMatch) and candidate lookup as the dedupe path;
+ * this wrapper only drops the just-created row and maps the match to a link.
+ */
+export async function findDuplicateWarning(
+  input: {
+    excludeBookingId: string;
+    salesforceId: string | null;
+    attendee: { email?: string; phone?: string };
+  },
+  deps: Pick<BookingDeps, "findActiveBookingsForPerson" | "appBaseUrl">,
+): Promise<DuplicateWarning | null> {
+  const identity: PersonIdentity = {
+    externalId: null,
+    salesforceId: input.salesforceId,
+    email: input.attendee.email ?? null,
+    phone: input.attendee.phone ?? null,
+  };
+  const candidates = (
+    await deps.findActiveBookingsForPerson(identity)
+  ).filter((b) => b.id !== input.excludeBookingId);
+  const match = findPersonMatch(identity, candidates);
+  if (!match) return null;
+  return {
+    startsAt: match.booking.starts_at,
+    manageUrl: manageUrl(deps, match.booking.manage_token),
+  };
 }
 
 /** Max simultaneous booking.completed deliveries (Cloudflare subrequest cap). */
