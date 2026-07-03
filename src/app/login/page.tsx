@@ -19,10 +19,13 @@ const ERROR_MESSAGES: Record<string, string> = {
   missing_code: "That sign-in didn't complete. Please try again.",
 };
 
-function LoginError() {
-  const error = useSearchParams().get("error");
-  const message = error ? ERROR_MESSAGES[error] : null;
-  if (!message) return null;
+// Shown when the sign-in call itself never reaches Google (a transient network
+// blip). Distinct from ERROR_MESSAGES, which cover errors the callback bounces
+// back after a redirect did happen.
+const SIGN_IN_FAILED_MESSAGE =
+  "We couldn't reach the sign-in service. Check your connection and try again.";
+
+function ErrorBanner({ message }: { message: string }) {
   return (
     <p
       role="alert"
@@ -33,8 +36,16 @@ function LoginError() {
   );
 }
 
+function LoginError() {
+  const error = useSearchParams().get("error");
+  const message = error ? ERROR_MESSAGES[error] : null;
+  if (!message) return null;
+  return <ErrorBanner message={message} />;
+}
+
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
   // A successful sign-in redirects to Google; if that hasn't happened by ~10s
   // the hand-off wedged, so surface a distinct still-alive state with a retry
   // instead of a button stuck on "Redirecting…" forever (#626). The redirect
@@ -42,21 +53,35 @@ export default function LoginPage() {
   const stalled = useStalledAfter(loading);
 
   async function signIn() {
+    setSignInError(null);
     setLoading(true);
     const supabase = supabaseBrowser();
     const hd = process.env.NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN;
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/api/auth/callback`,
-        scopes: CALENDAR_SCOPES,
-        queryParams: {
-          access_type: "offline",
-          prompt: "consent",
-          ...(hd ? { hd } : {}),
+    // On success the browser redirects to Google and this component unmounts, so
+    // loading stays true through the hand-off. A returned error or a throw means
+    // the redirect never happened (#631): unwind loading and show the failure so
+    // the only button doesn't stay stuck on "Redirecting…".
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/api/auth/callback`,
+          scopes: CALENDAR_SCOPES,
+          queryParams: {
+            access_type: "offline",
+            prompt: "consent",
+            ...(hd ? { hd } : {}),
+          },
         },
-      },
-    });
+      });
+      if (error) {
+        setLoading(false);
+        setSignInError(SIGN_IN_FAILED_MESSAGE);
+      }
+    } catch {
+      setLoading(false);
+      setSignInError(SIGN_IN_FAILED_MESSAGE);
+    }
   }
 
   return (
@@ -114,6 +139,7 @@ export default function LoginPage() {
           <Suspense fallback={null}>
             <LoginError />
           </Suspense>
+          {signInError && <ErrorBanner message={signInError} />}
           <button
             onClick={signIn}
             disabled={loading}
