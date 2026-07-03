@@ -25,6 +25,7 @@ import {
   PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
   SlotUnavailableError,
+  RescheduleConflictError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
@@ -148,6 +149,11 @@ interface FakeOpts {
   // Emails whose live calendar read fails (#536): busyIntervalsForAgent returns
   // null, so the in-place guard re-routes (matches the old isFree failure path).
   busyReadFailEmails?: Set<string>;
+  // #615: fired ONCE from inside the Google call (updateEventTime / createEvent),
+  // i.e. the race window between reading the booking and committing, to mutate the
+  // in-memory row as a concurrent cancel or reassign would. The gated commit then
+  // sees the changed row and must roll back instead of winning.
+  concurrentBeforeCommit?: (booking: Booking) => void;
 }
 
 // Default fake working hours: Mon-Fri 09:00-17:00 America/New_York. Covers every
@@ -171,7 +177,11 @@ function makeDeps(opts: FakeOpts) {
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     moveBusyBlock: [] as { userId: string; startIso: string; endIso: string; bookingId: string }[],
     deleteBusyBlocks: [] as string[],
-    updateBooking: [] as { id: string; patch: Record<string, unknown> }[],
+    commitReschedule: [] as {
+      id: string;
+      patch: Record<string, unknown>;
+      guard: { assignedUserId: string | null; gcalEventId: string | null };
+    }[],
     claimCancellation: [] as string[],
     completeBookingsIfDue: [] as string[][],
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
@@ -214,6 +224,15 @@ function makeDeps(opts: FakeOpts) {
     });
   }
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
+  // #615: fire the injected concurrent op ONCE, from inside the Google call that
+  // precedes the commit, so the gated commit sees a row a cancel/reassign changed.
+  let concurrentFired = false;
+  const fireConcurrent = (): void => {
+    if (concurrentFired || !opts.concurrentBeforeCommit) return;
+    concurrentFired = true;
+    const b = opts.existing?.booking;
+    if (b) opts.concurrentBeforeCommit(b);
+  };
   const deps: BookingDeps = {
     resolveBucketByCode: async () =>
       opts.unknownBucket
@@ -264,6 +283,7 @@ function makeDeps(opts: FakeOpts) {
     },
     createEvent: async (email, _args, clientId) => {
       calls.createEvent.push({ email, clientId });
+      fireConcurrent(); // #615: a concurrent cancel/reassign lands mid-create
       if (clientId) {
         const reused = gcalByClientId.get(clientId);
         if (reused) return reused;
@@ -282,6 +302,7 @@ function makeDeps(opts: FakeOpts) {
     },
     updateEventTime: async (_email, id) => {
       calls.updateEventTime.push({ id });
+      fireConcurrent(); // #615: a concurrent cancel/reassign lands mid-PATCH
     },
     getUser: async (id) => users[id],
     loadEmails: async (ids) => {
@@ -335,13 +356,26 @@ function makeDeps(opts: FakeOpts) {
     deleteBusyBlocksForBooking: async (id) => {
       calls.deleteBusyBlocks.push(id);
     },
-    updateBooking: async (id, patch) => {
-      calls.updateBooking.push({ id, patch: patch as Record<string, unknown> });
-      // Mirror production: persist the patch so a later loadBookingById (e.g. the
-      // outbox handlers re-reading after the commit) sees the updated booking.
+    // Gated reschedule commit (#615). Gates against the LIVE pre-commit row
+    // (loadBookingContext's `existing`): a concurrent cancel (status) or reassign
+    // (assignee + event id) that changed it since we read makes this touch 0 rows.
+    // On success mirrors production by persisting the patch so a later
+    // loadBookingById (outbox re-read) sees the committed booking.
+    commitReschedule: async (id, patch, guard) => {
+      calls.commitReschedule.push({ id, patch: patch as Record<string, unknown>, guard });
+      const live =
+        opts.existing?.booking?.id === id
+          ? opts.existing.booking
+          : [opts.bookingById].find((c) => c?.booking?.id === id)?.booking;
+      if (!live) return false;
+      const active = live.status === "confirmed" || live.status === "rescheduled";
+      const assigneeOk = (live.assigned_user_id ?? null) === guard.assignedUserId;
+      const gcalOk = (live.gcal_event_id ?? null) === guard.gcalEventId;
+      if (!(active && assigneeOk && gcalOk)) return false;
       for (const c of [opts.bookingById, opts.existing]) {
         if (c?.booking && c.booking.id === id) Object.assign(c.booking, patch);
       }
+      return true;
     },
     // Atomic cancel claim (#413): the FIRST call for an id wins (flips
     // active->cancelled), every later call loses — models the conditional UPDATE.
@@ -927,7 +961,7 @@ async function run() {
   // --- reschedule: same agent free -> in-place move, no reassign, RR untouched ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
-    // The outbox handlers re-load by id AFTER updateBooking, so loadBookingById
+    // The outbox handlers re-load by id AFTER the commit, so loadBookingById
     // must return the committed (new-time) booking, mirroring production.
     const rescheduled = {
       booking: {
@@ -1214,7 +1248,7 @@ async function run() {
       "reschedule no-op: skips the lock and all calendar work when already at target",
     );
     assert(
-      calls.updateBooking.length === 0 && calls.webhooks.length === 0,
+      calls.commitReschedule.length === 0 && calls.webhooks.length === 0,
       "reschedule no-op: no DB write or webhook for a same-instant reschedule",
     );
     // The mandatory reason must NOT be silently dropped on the no-op path: it's
@@ -1248,7 +1282,7 @@ async function run() {
       "reschedule dup: no calendar churn for the lock loser",
     );
     assert(
-      calls.updateBooking.length === 0 && calls.webhooks.length === 0 && calls.releaseReschedule === 0,
+      calls.commitReschedule.length === 0 && calls.webhooks.length === 0 && calls.releaseReschedule === 0,
       "reschedule dup: no DB write, no duplicate webhook, and doesn't release a lock it never held",
     );
   }
@@ -1286,13 +1320,13 @@ async function run() {
     };
   };
 
-  // Model a PROCESS crash at the commit: updateBooking throws once, AND the
+  // Model a PROCESS crash at the commit: commitReschedule throws once, AND the
   // crashed attempt's `finally`-release is suppressed (a dead process never runs
   // its finally), so the lease is left behind for the retry to resume — exactly
   // the crashed-holder state the design recovers from. The retry's own release
   // still works.
   const crashAtCommit = (deps: BookingDeps): void => {
-    crashOnce(deps, "updateBooking");
+    crashOnce(deps, "commitReschedule");
     let suppressed = false;
     const release = deps.releaseReschedule.bind(deps);
     deps.releaseReschedule = async (bookingId: string) => {
@@ -1352,6 +1386,79 @@ async function run() {
         res.booking.starts_at === "2026-06-09T14:00:00.000Z" &&
         calls.createEvent.length === 0,
       "window(b): resume stays on the SAME agent, completes the move, creates no new event",
+    );
+  }
+
+  // --- #615: a cancel that lands DURING an in-place reschedule (after the PATCH,
+  // before the commit) must NOT resurrect the booking. The gated commit touches 0
+  // rows, the booking stays cancelled, and the reschedule surfaces a conflict. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      candidates: ["a", "b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]), // a on-shift + free -> in-place branch
+      // The cancel lands mid-PATCH: flip the row to cancelled (as claimCancellation would).
+      concurrentBeforeCommit: (b) => {
+        b.status = "cancelled";
+      },
+    });
+    let conflicted = false;
+    try {
+      await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
+    } catch (err) {
+      conflicted = err instanceof RescheduleConflictError;
+    }
+    assert(conflicted, "#615 cancel-during-reschedule: throws RescheduleConflictError (no silent resurrect)");
+    assert(
+      ctx.booking.status === "cancelled",
+      "#615 cancel-during-reschedule: the booking STAYS cancelled (gated commit touched 0 rows)",
+    );
+    assert(
+      calls.createEvent.length === 0,
+      "#615 cancel-during-reschedule: in-place branch created no event, so there is no orphan",
+    );
+  }
+
+  // --- #615: a reassign that lands DURING a reassign-branch reschedule (after the
+  // new event is created, before the commit) must NOT be clobbered. The gated
+  // commit touches 0 rows, the reschedule rolls back the event it created and
+  // conflicts, and the reassign's agent + event remain the live ones. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      // a is off-shift at the new time, so the reschedule re-routes to b (reassign branch).
+      candidates: ["b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 810 }] }],
+      ]),
+      // A concurrent reassign to agent C swaps assignee + event id (0058 swap shape).
+      concurrentBeforeCommit: (b) => {
+        b.assigned_user_id = "c";
+        b.agent_email = "c@x.com";
+        b.gcal_event_id = "ev-reassign";
+        b.status = "rescheduled";
+      },
+    });
+    let conflicted = false;
+    // 2026-06-08T18:00Z = 14:00 NY Monday — past a's 13:30 shift end -> reassign branch.
+    try {
+      await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
+    } catch (err) {
+      conflicted = err instanceof RescheduleConflictError;
+    }
+    assert(conflicted, "#615 reassign-during-reschedule: throws RescheduleConflictError (does not clobber)");
+    assert(
+      ctx.booking.assigned_user_id === "c" && ctx.booking.gcal_event_id === "ev-reassign",
+      "#615 reassign-during-reschedule: the reassign's agent + event stay live (not overwritten)",
+    );
+    assert(
+      // delete-first of the old event (1) + rollback of the event this reschedule
+      // created (1) = 2; the reassign's live event id is never deleted.
+      calls.deleteEvent.length === 2 && !calls.deleteEvent.some((d) => d.id === "ev-reassign"),
+      "#615 reassign-during-reschedule: rolls back its own created event, leaves the reassign's intact",
     );
   }
 
@@ -1510,7 +1617,7 @@ async function run() {
     const { deps: d2, calls: c2 } = makeDeps({ existing: ctx2 });
     await cancelBooking("tok1", CR, "customer", d2);
     assert(
-      c2.deleteEvent.length === 0 && c2.updateBooking.length === 0 && c2.webhooks.length === 0,
+      c2.deleteEvent.length === 0 && c2.commitReschedule.length === 0 && c2.webhooks.length === 0,
       "cancel: no-op when already cancelled (no re-delete / re-webhook)",
     );
     // But the mandatory reason is still captured once for the already-cancelled
@@ -2003,7 +2110,7 @@ async function run() {
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
     await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
-      calls.createEvent.length === 0 && calls.updateBooking.length === 0 && calls.webhooks.length === 0,
+      calls.createEvent.length === 0 && calls.commitReschedule.length === 0 && calls.webhooks.length === 0,
       "reassign: no-op when already the owning agent",
     );
   }
@@ -2116,7 +2223,7 @@ async function run() {
     const res = await bookViaApi(apiInput, deps);
     assert(res.outcome === "confirm_required", "bookViaApi: weak match + new time -> confirm_required");
     assert(
-      calls.createEvent.length === 0 && calls.updateBooking.length === 0,
+      calls.createEvent.length === 0 && calls.commitReschedule.length === 0,
       "bookViaApi confirm_required: makes NO changes (no silent move of the wrong person)",
     );
   }

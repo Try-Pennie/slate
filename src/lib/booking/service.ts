@@ -854,8 +854,27 @@ function realDeps(): BookingDeps {
       if (ids.length) await db.from("booking_reservations").delete().in("id", ids);
     },
 
-    updateBooking: async (bookingId, patch) => {
-      await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
+    commitReschedule: async (bookingId, patch, guard) => {
+      // Gated commit (#615): apply the move only while the booking is still
+      // active AND its assignee + event id are unchanged since we read them.
+      // A concurrent cancel (status flip) or reassign (assignee + event id swap)
+      // makes this touch 0 rows; `.select` returns a row only when THIS UPDATE
+      // transitioned it. Same shape as claimCancellation / completeBookingsIfDue.
+      const base = supabaseAdmin()
+        .from("bookings")
+        .update(patch)
+        .eq("id", bookingId)
+        .in("status", ["confirmed", "rescheduled"]);
+      const withAssignee =
+        guard.assignedUserId === null
+          ? base.is("assigned_user_id", null)
+          : base.eq("assigned_user_id", guard.assignedUserId);
+      const gated =
+        guard.gcalEventId === null
+          ? withAssignee.is("gcal_event_id", null)
+          : withAssignee.eq("gcal_event_id", guard.gcalEventId);
+      const { data } = await gated.select("id");
+      return ((data ?? []) as { id: string }[]).length > 0;
     },
 
     claimCancellation: async (bookingId) => {
