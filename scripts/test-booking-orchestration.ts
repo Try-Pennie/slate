@@ -204,6 +204,7 @@ function makeDeps(opts: FakeOpts) {
       to_starts_at: string | null;
       to_agent_user_id: string | null;
       lead_time_minutes: number | null;
+      reschedule_seq: number | null;
     }[],
     claimReschedule: 0,
     releaseReschedule: 0,
@@ -441,23 +442,25 @@ function makeDeps(opts: FakeOpts) {
       calls.bookingEvents.push(row);
       return `evt-${calls.bookingEvents.length}`;
     },
-    hasBookingEvent: async (bookingId, action, toStartsIso) =>
+    hasBookingEvent: async (bookingId, action, toStartsIso, rescheduleSeq) =>
       calls.bookingEvents.some(
         (e) =>
           e.booking_id === bookingId &&
           e.action === action &&
-          e.to_starts_at === toStartsIso,
+          e.to_starts_at === toStartsIso &&
+          (rescheduleSeq == null || e.reschedule_seq === rescheduleSeq),
       ),
     loadBookingContext: async () => opts.existing ?? null,
     // The outbox cancel handlers re-load by id; fall back to the same context
     // loadBookingContext returns so the inline run has the booking to act on.
     loadBookingById: async () => opts.bookingById ?? opts.existing ?? null,
-    getBookingEventId: async (bookingId, action, toStartsIso) => {
+    getBookingEventId: async (bookingId, action, toStartsIso, rescheduleSeq) => {
       const e = calls.bookingEvents.findIndex(
         (ev) =>
           ev.booking_id === bookingId &&
           ev.action === action &&
-          ev.to_starts_at === toStartsIso,
+          ev.to_starts_at === toStartsIso &&
+          (rescheduleSeq == null || ev.reschedule_seq === rescheduleSeq),
       );
       return e === -1 ? null : `evt-${e + 1}`;
     },
@@ -1022,6 +1025,82 @@ async function run() {
       JSON.stringify(calls.webhooks[0].reason) ===
         JSON.stringify({ code: "schedule_conflict", detail: null, initiator: "customer" }),
       "reschedule: webhook payload carries the reason + initiator",
+    );
+  }
+
+  // --- #614: an oscillating reschedule that returns to a previously-used start
+  // time must still emit its own rescheduled webhook + history row. The dedupe
+  // key is versioned by the booking's reschedule_seq, so a move back to a used
+  // to_starts_at can't reuse the earlier reschedule's row (which would swallow
+  // the webhook). We drive the NOTIFY step directly across three moves whose
+  // targets oscillate (T2 -> T1 -> T2), then re-run the last (drain resume). ---
+  {
+    const notify = OUTBOX_HANDLERS[rescheduleOutboxSteps()[2].name];
+    const T2 = "2026-06-09T14:00:00.000Z";
+    const T1 = "2026-06-10T15:00:00.000Z";
+    // One mutable context: loadBookingById returns it, and we advance the
+    // booking's time + reschedule_seq between moves like the real commit does.
+    const ctx = { booking: makeBooking({ status: "rescheduled" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    const row = {
+      id: "ob-osc",
+      booking_id: "bk1",
+      action: "reschedule" as const,
+      status: "pending" as const,
+      steps: rescheduleOutboxSteps(),
+      payload: {
+        reasonCode: "schedule_conflict",
+        reasonDetail: null,
+        initiator: "customer" as const,
+        fromStartsIso: "2026-06-08T13:00:00.000Z",
+        fromAgentUserId: "a",
+      },
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      next_attempt_at: null,
+      created_at: "",
+      updated_at: "",
+    } as BookingOutbox;
+
+    const move = async (toIso: string, seq: number) => {
+      ctx.booking.starts_at = toIso;
+      ctx.booking.reschedule_seq = seq;
+      await notify(deps, row);
+    };
+    await move(T2, 1);
+    await move(T1, 2);
+    await move(T2, 3); // back to a USED start: pre-#614 this reused move 1's row
+
+    assert(
+      calls.webhooks.length === 3 && calls.webhooks.every((w) => w.event === "booking.rescheduled"),
+      "oscillating reschedule: every move emits its own booking.rescheduled webhook (#614)",
+    );
+    assert(
+      calls.bookingEvents.length === 3,
+      "oscillating reschedule: every move records its own history row (#614)",
+    );
+    assert(
+      new Set(calls.webhooks.map((w) => w.dedupeKey)).size === 3,
+      "oscillating reschedule: each move's webhook carries a distinct dedupe key (#614)",
+    );
+    assert(
+      calls.bookingEvents[2].to_starts_at === T2 && calls.bookingEvents[2].reschedule_seq === 3,
+      "oscillating reschedule: the return-to-T2 row is versioned by seq 3, not folded into seq 1",
+    );
+
+    // Drain re-run of the last move (same booking state) must dedupe: no new
+    // history row, and the re-fired webhook reuses move 3's key so emit's unique
+    // (endpoint, event, dedupe_key) index suppresses the duplicate POST.
+    const move3Key = calls.webhooks[2].dedupeKey;
+    await move(T2, 3);
+    assert(
+      calls.bookingEvents.length === 3,
+      "oscillating reschedule: a drain re-run inserts no duplicate history row (#614)",
+    );
+    assert(
+      calls.webhooks[3]?.dedupeKey === move3Key,
+      "oscillating reschedule: a drain re-run reuses the same dedupe key (emit dedupes to one) (#614)",
     );
   }
 

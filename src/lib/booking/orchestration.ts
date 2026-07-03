@@ -543,14 +543,20 @@ export interface BookingDeps {
     bookingId: string,
     action: BookingEventAction,
     toStartsIso: string | null,
+    rescheduleSeq?: number | null,
   ): Promise<boolean>;
   /** The id of an existing history row for (booking, action, target), or null.
    *  Lets the idempotent outbox notify step reuse the same webhook dedupe key on
-   *  a drain re-run instead of inserting a duplicate history row (#429 P3). */
+   *  a drain re-run instead of inserting a duplicate history row (#429 P3).
+   *  `rescheduleSeq` (#614) further scopes the match to one reschedule generation,
+   *  so an oscillation back to a previously-used `toStartsIso` doesn't reuse the
+   *  earlier reschedule's row (which would swallow its webhook). Omit for cancel/
+   *  reassign, which don't collide on time. */
   getBookingEventId(
     bookingId: string,
     action: BookingEventAction,
     toStartsIso: string | null,
+    rescheduleSeq?: number | null,
   ): Promise<string | null>;
   loadBookingContext(token: string): Promise<BookingContext | null>;
   loadBookingById(bookingId: string): Promise<BookingContext | null>;
@@ -1033,9 +1039,12 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
     };
     const initiator: BookingEventInitiator = p.initiator ?? "system";
     const toStartsIso = booking.starts_at; // the new time (already committed)
-    // Versioned by to_starts_at: a later reschedule to a different time gets a
-    // fresh history row + dedupe key, so its webhook isn't swallowed.
-    let eventId = await deps.getBookingEventId(booking.id, "rescheduled", toStartsIso);
+    // Versioned by (to_starts_at, reschedule_seq): an oscillation back to a
+    // previously-used time still gets a fresh history row + dedupe key, so its
+    // webhook isn't swallowed by the earlier reschedule's row (#614). The seq is
+    // stable across a drain re-run of THIS move, so the resume still dedupes.
+    const seq = booking.reschedule_seq;
+    let eventId = await deps.getBookingEventId(booking.id, "rescheduled", toStartsIso, seq);
     if (!eventId) {
       eventId = await deps.insertBookingEvent(
         bookingEventFrom({
@@ -1049,6 +1058,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
           toAgentUserId: booking.assigned_user_id,
           actorUserId: p.actorUserId,
           actingAsUserId: p.actingAsUserId,
+          rescheduleSeq: seq,
           nowMs: Date.now(),
         }),
       );
@@ -2032,7 +2042,7 @@ export async function rescheduleBooking(
   // before recording it would otherwise lose the (mandatory) reason (#326).
   // Non-holder early return (never claimed -> never releases).
   if (Date.parse(booking.starts_at) === Date.parse(startIso)) {
-    if (!(await deps.hasBookingEvent(booking.id, "rescheduled", startIso))) {
+    if (!(await deps.hasBookingEvent(booking.id, "rescheduled", startIso, booking.reschedule_seq))) {
       await deps.insertBookingEvent(
         bookingEventFrom({
           bookingId: booking.id,
@@ -2045,6 +2055,7 @@ export async function rescheduleBooking(
           toAgentUserId: booking.assigned_user_id,
           actorUserId: actor?.userId,
           actingAsUserId: actor?.actingAsUserId,
+          rescheduleSeq: booking.reschedule_seq,
           nowMs: Date.now(),
         }),
       );

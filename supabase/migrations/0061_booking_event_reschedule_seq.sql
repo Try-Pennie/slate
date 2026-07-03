@@ -1,0 +1,11 @@
+-- #614: an oscillating reschedule (T1->T2->T1) that returns to a previously-used
+-- start time collided on the (booking_id, action, to_starts_at) dedupe key, so the
+-- NOTIFY step reused the OLD history row's id, suppressing the second rescheduled
+-- webhook AND its history row. Version the dedupe by bookings.reschedule_seq (the
+-- monotonic per-booking reschedule counter from 0053) so each distinct reschedule
+-- gets its own history row + webhook, even when the target time repeats.
+--
+-- Nullable: existing rows predate this, and cancel/reassign events don't version
+-- by seq (cancel is one-per-booking on to_starts_at=null; reassign keys its webhook
+-- on the outbox row id). Only 'rescheduled' rows carry a non-null seq.
+alter table booking_events add column reschedule_seq int;

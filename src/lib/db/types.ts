@@ -395,6 +395,11 @@ export interface BookingEvent {
   acting_as_user_id: string | null;
   /** Signed minutes from the action to the appointment; negative = after it. */
   lead_time_minutes: number | null;
+  /** The booking's reschedule generation when this event was recorded (#614,
+   *  migration 0061). Versions the rescheduled-webhook dedupe key so an
+   *  oscillation back to a previously-used time isn't swallowed. Null for
+   *  historical rows and for cancel/reassign events (they don't version by seq). */
+  reschedule_seq: number | null;
   created_at: string;
 }
 
