@@ -7,7 +7,8 @@ import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
 import { BookerStrip } from "@/components/BookerStrip";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
-import { postJson } from "@/lib/http";
+import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { useStalledAfter } from "@/lib/useStalledAfter";
 import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import { timezoneOptions } from "@/lib/booking/timezones";
@@ -16,6 +17,13 @@ interface Attendee {
   name: string;
   email: string;
   phone: string;
+}
+
+/** The lead's OTHER active booking, surfaced by /booking so the confirmation
+ *  screen can offer to view or cancel it (#626). */
+interface DuplicateWarning {
+  startsAt: string;
+  manageUrl: string;
 }
 
 interface BookerProps {
@@ -179,7 +187,13 @@ export default function Booker({
   const [fieldErrors, setFieldErrors] = useState<AttendeeErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState<{ start: string } | null>(null);
+  const [confirmed, setConfirmed] = useState<{
+    start: string;
+    duplicateWarning?: DuplicateWarning | null;
+  } | null>(null);
+  // Three distinct states for the confirm (owner rule): started → this flips the
+  // still-alive cue at ~10s → the postJson timeout converts a hang to error.
+  const stalled = useStalledAfter(submitting);
   const rootRef = useRef<HTMLDivElement>(null);
   const confirmedHeadingRef = useRef<HTMLHeadingElement>(null);
 
@@ -314,21 +328,31 @@ export default function Booker({
         startsAt?: string;
         error?: string;
         fieldErrors?: AttendeeErrors;
-      }>("/booking", {
-        bucketCode,
-        start: selectedSlot,
-        timezone: zone,
-        salesforceId,
-        attendee: {
-          name: attendee.name.trim(),
-          email: attendee.email.trim(),
-          phone: attendee.phone.trim(),
+        duplicateWarning?: DuplicateWarning | null;
+      }>(
+        "/booking",
+        {
+          bucketCode,
+          start: selectedSlot,
+          timezone: zone,
+          salesforceId,
+          attendee: {
+            name: attendee.name.trim(),
+            email: attendee.email.trim(),
+            phone: attendee.phone.trim(),
+          },
+          prefill,
         },
-        prefill,
-      });
+        // Convert a wedged confirm (server accepted, never responds) into the
+        // retryable error below instead of an endless "Booking your call…" (#626).
+        { timeoutMs: REQUEST_TIMEOUT_MS },
+      );
 
       if (ok) {
-        setConfirmed({ start: data.startsAt ?? selectedSlot });
+        setConfirmed({
+          start: data.startsAt ?? selectedSlot,
+          duplicateWarning: data.duplicateWarning ?? null,
+        });
         if (embedded) {
           window.parent.postMessage(
             { type: "slate:bookingSuccessful", data: { booking: data, salesforceId } },
@@ -397,6 +421,33 @@ export default function Booker({
             Booked. {confirmedDay} at {confirmedTime} {zoneLabel}. A calendar invite
             is on its way.
           </p>
+          {confirmed.duplicateWarning && (
+            <div
+              role="status"
+              className="mx-auto mt-6 max-w-sm rounded-xl bg-pennie-sky-soft px-5 py-4 text-left dark:bg-accent/15"
+            >
+              <p className={`text-sm font-semibold ${c.title}`}>
+                Heads up: you already have another call booked
+              </p>
+              <p className={`mt-1 text-sm ${c.muted}`}>
+                It&apos;s set for{" "}
+                <span className="tabular-nums">
+                  {DateTime.fromISO(confirmed.duplicateWarning.startsAt)
+                    .setZone(zone)
+                    .toFormat("cccc, LLL d")}{" "}
+                  at {fmtTime(confirmed.duplicateWarning.startsAt)}
+                </span>
+                . If you only need one, you can view or cancel it.
+              </p>
+              <a
+                href={confirmed.duplicateWarning.manageUrl}
+                className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+              >
+                View or cancel that booking
+                <span aria-hidden="true">→</span>
+              </a>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -490,6 +541,14 @@ export default function Booker({
               <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
             )}
           </button>
+          {submitting && stalled && (
+            <p
+              role="status"
+              className={`flex items-center justify-center gap-2 text-xs ${c.muted}`}
+            >
+              Still working… this is taking longer than usual.
+            </p>
+          )}
         </div>
       ) : (
         <>

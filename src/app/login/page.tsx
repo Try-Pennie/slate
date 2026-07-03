@@ -3,6 +3,7 @@
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/browser";
+import { useStalledAfter } from "@/lib/useStalledAfter";
 import { ArrowRightIcon } from "@/components/icons";
 
 const CALENDAR_SCOPES = [
@@ -34,6 +35,11 @@ function LoginError() {
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
+  // A successful sign-in redirects to Google; if that hasn't happened by ~10s
+  // the hand-off wedged, so surface a distinct still-alive state with a retry
+  // instead of a button stuck on "Redirecting…" forever (#626). The redirect
+  // can't be aborted, so this is a cue + retry rather than a timeout.
+  const stalled = useStalledAfter(loading);
 
   async function signIn() {
     setLoading(true);
@@ -118,6 +124,21 @@ export default function LoginPage() {
               <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
             )}
           </button>
+          {loading && stalled && (
+            <p role="status" className="mt-4 text-sm text-fg-muted">
+              Taking longer than expected.{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setLoading(false);
+                  signIn();
+                }}
+                className="font-semibold text-fg underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+              >
+                Try again
+              </button>
+            </p>
+          )}
         </div>
       </section>
     </main>

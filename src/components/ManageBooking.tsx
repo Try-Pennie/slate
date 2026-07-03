@@ -11,7 +11,8 @@ import {
 import ReasonPicker from "@/components/ReasonPicker";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { AlertIcon } from "@/components/icons";
-import { postJson } from "@/lib/http";
+import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { useStalledAfter } from "@/lib/useStalledAfter";
 
 const extractSlots = (json: unknown): string[] =>
   (json as { slots?: string[] } | null)?.slots ?? [];
@@ -84,6 +85,9 @@ export default function ManageBooking({
     extractSlots,
   );
   const [busy, setBusy] = useState(false);
+  // Still-alive cue if a cancel/reschedule POST hasn't returned by ~10s; the
+  // REQUEST_TIMEOUT_MS abort then converts a true hang into the error below (#626).
+  const stalled = useStalledAfter(busy);
   const [error, setError] = useState<string | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [pendingIso, setPendingIso] = useState<string | null>(null);
@@ -116,6 +120,7 @@ export default function ManageBooking({
           reason: reschedReason,
           reasonDetail: reschedDetail || undefined,
         },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok) {
         setStart(data.startsAt ?? newStart);
@@ -140,6 +145,7 @@ export default function ManageBooking({
           reason: cancelReason,
           reasonDetail: cancelDetail || undefined,
         },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok) {
         setStatus("cancelled");
@@ -251,6 +257,12 @@ export default function ManageBooking({
               </button>
             </div>
           </div>
+        )}
+
+        {busy && stalled && !error && (
+          <p role="status" className="mt-4 text-sm text-fg-muted">
+            Still working… this is taking longer than usual.
+          </p>
         )}
 
         {error && (

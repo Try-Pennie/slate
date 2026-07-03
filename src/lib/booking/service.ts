@@ -1338,6 +1338,23 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
 }
 
 /**
+ * Best-effort "you already have another call booked" lookup for the confirmation
+ * screen (#626). Never throws: a lookup failure just yields no warning, so it can
+ * never turn a successful booking into a failed one.
+ */
+export async function findDuplicateBookingWarning(input: {
+  excludeBookingId: string;
+  salesforceId: string | null;
+  attendee: { email?: string; phone?: string };
+}): Promise<orchestration.DuplicateWarning | null> {
+  try {
+    return await orchestration.findDuplicateWarning(input, realDeps());
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Direct booking API entry (#357): "one active appointment per person" — create,
  * dedupe, auto-reschedule, or ask-to-confirm. Wraps the orchestration in the same
  * verify-outage alerting as createBooking (the create/reschedule paths it dispatches

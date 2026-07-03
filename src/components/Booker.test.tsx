@@ -1,11 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
 // the request rejects at the network layer (flaky mobile). It surfaces an error
 // and re-enables so the lead can retry.
+// #626: a confirm that HANGS (server accepted, never responds) must show a
+// distinct "still working" state at ~10s, then convert to a retryable error at
+// the 20s timeout; and a success that finds the lead already has another active
+// booking must warn them on the confirmation screen.
 
 const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -66,4 +70,70 @@ describe("Booker confirm", () => {
 
     expect(await screen.findByText("You're all set")).toBeTruthy();
   });
+
+  it("shows a 'still working' state while the confirm hangs, then a retryable error at the timeout", async () => {
+    vi.useFakeTimers();
+    // Availability resolves; the POST only settles when its AbortSignal fires —
+    // a wedged request the 20s timeout must convert into an error.
+    global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return Promise.resolve({ ok: true, json: async () => availability } as Response);
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await act(async () => {}); // settle the availability load
+
+    fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dana Lead" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "dana@example.com" } });
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(203) 561-5295" } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+    await act(async () => { await Promise.resolve(); }); // submit starts, watchdog arms
+
+    expect(screen.queryByText(/still working/i)).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    expect(screen.getByText(/still working/i)).toBeTruthy();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); }); // trip 20s abort
+    expect(screen.getByText(/something went wrong/i)).toBeTruthy();
+    const confirm = screen.getByRole("button", { name: /confirm booking/i }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("warns on the confirmation screen when the lead already has another active booking", async () => {
+    const otherIso = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          startsAt: slotIso,
+          duplicateWarning: {
+            startsAt: otherIso,
+            manageUrl: "https://slate.test/booking/manage/tok-old",
+          },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText("You're all set")).toBeTruthy();
+    expect(screen.getByText(/already have (a|another) call booked/i)).toBeTruthy();
+    const link = screen.getByRole("link", { name: /view or cancel/i }) as HTMLAnchorElement;
+    expect(link.href).toBe("https://slate.test/booking/manage/tok-old");
+  });
 });
+
+afterEach(() => vi.useRealTimers());
