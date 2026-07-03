@@ -61,6 +61,24 @@ async function loadAgentEmail(userId: string): Promise<string | null> {
   return (data as { email: string | null } | null)?.email ?? null;
 }
 
+/**
+ * The agent's working-hours timezone, used to anchor all-day Google events to
+ * their local day (#616). Mirrors the availability compute's fallback
+ * ("America/New_York") so the cached blocks and the booker agree on which local
+ * day an all-day OOO/holiday occupies.
+ */
+async function loadAgentTimezone(userId: string): Promise<string> {
+  const { data } = await supabaseAdmin()
+    .from("availability_schedules")
+    .select("timezone")
+    .eq("user_id", userId)
+    .limit(1);
+  return (
+    ((data ?? [])[0] as { timezone: string | null } | undefined)?.timezone ??
+    "America/New_York"
+  );
+}
+
 async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
   const { data } = await supabaseAdmin()
     .from("agent_calendars")
@@ -263,6 +281,7 @@ async function applyEvents(
   calendarId: string,
   events: GoogleEvent[],
   slateEventIds: Set<string>,
+  timeZone: string,
 ): Promise<void> {
   const db = supabaseAdmin();
   const { upserts, deletes } = partitionBusyWrites(
@@ -270,6 +289,7 @@ async function applyEvents(
     calendarId,
     events,
     slateEventIds,
+    timeZone,
   );
   // Throw on any failure so syncCalendar never advances the sync token past an
   // event it failed to record - a swallowed error loses the event for good (the
@@ -362,7 +382,11 @@ async function recordCalHealth(
 }
 
 /** Sync one calendar's changes into busy_blocks; advances its stored sync token. */
-async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> {
+async function syncCalendar(
+  email: string,
+  cal: AgentCalendar,
+  timeZone: string,
+): Promise<number> {
   const bootstrapMin = new Date(
     Date.now() - BOOTSTRAP_LOOKBACK_MS,
   ).toISOString();
@@ -389,7 +413,7 @@ async function syncCalendar(email: string, cal: AgentCalendar): Promise<number> 
       result.events.length > 0
         ? await loadSlateBookingEventIds(cal.user_id)
         : new Set<string>();
-    await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds);
+    await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
     if (full)
       await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds);
 
@@ -436,13 +460,14 @@ export async function runIncrementalSync(
 ): Promise<{ events: number; truncated: boolean }> {
   const email = await loadAgentEmail(userId);
   if (!email) return { events: 0, truncated: false };
+  const timeZone = await loadAgentTimezone(userId);
   const cals = orderCalendarsForSync(await loadAgentCalendars(userId));
   let events = 0;
   for (let i = 0; i < cals.length; i++) {
     if (pastDeadline(Date.now(), deadlineMs)) {
       return { events, truncated: true };
     }
-    events += await syncCalendar(email, cals[i]);
+    events += await syncCalendar(email, cals[i], timeZone);
   }
   return { events, truncated: false };
 }
@@ -483,6 +508,7 @@ export async function syncByChannel(
   const email = await loadAgentEmail(cal.user_id);
   try {
     if (!email) return "synced";
+    const timeZone = await loadAgentTimezone(cal.user_id);
     for (let pass = 1; pass <= MAX_SYNC_PASSES; pass++) {
       await db.from("agent_calendars").update({ sync_pending: false }).eq("id", cal.id);
       const { data: fresh } = await db
@@ -491,7 +517,7 @@ export async function syncByChannel(
         .eq("id", cal.id)
         .maybeSingle();
       if (!fresh) break;
-      await syncCalendar(email, fresh as AgentCalendar);
+      await syncCalendar(email, fresh as AgentCalendar, timeZone);
       const { data: after } = await db
         .from("agent_calendars")
         .select("sync_pending")

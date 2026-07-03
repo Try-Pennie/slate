@@ -1,19 +1,41 @@
+import { DateTime } from "luxon";
 import type { GoogleEvent } from "./calendar.ts";
 
 /**
  * Pure helpers for calendar sync (no IO), so the busy/stale logic is testable.
  */
 
-/** The [start, end) window of an event, or null if it has no usable times. */
+/**
+ * Expand a Google all-day date (date-only, no time) to the UTC instant of local
+ * midnight in `timeZone`. Google all-day dates are date-only and its `end.date`
+ * is EXCLUSIVE (the day after the last day), so anchoring both ends to the
+ * agent's local midnight blocks exactly the agent's all-day OOO/holiday with no
+ * bleed into adjacent days. Anchoring to UTC midnight (the old behavior) shifted
+ * the block by the agent's offset, leaving the tail of a non-UTC agent's all-day
+ * event bookable and wrongly blocking the neighbouring evening (#616). Falls
+ * back to UTC midnight if the zone is unusable.
+ */
+function allDayToUtc(date: string, timeZone: string): string {
+  const dt = DateTime.fromISO(`${date}T00:00:00`, { zone: timeZone });
+  return dt.isValid ? dt.toUTC().toISO()! : `${date}T00:00:00.000Z`;
+}
+
+/**
+ * The [start, end) window of an event, or null if it has no usable times.
+ * `timeZone` anchors all-day (date-only) events to the agent's local midnight;
+ * it has no effect on timed events. Defaults to UTC so callers that only need
+ * null-ness (isBusyEvent) can omit it.
+ */
 export function eventWindow(
   ev: GoogleEvent,
+  timeZone = "UTC",
 ): { start: string; end: string } | null {
   const start = ev.start?.dateTime ?? ev.start?.date;
   const end = ev.end?.dateTime ?? ev.end?.date;
   if (!start || !end) return null;
   return {
-    start: ev.start?.dateTime ? start : `${start}T00:00:00.000Z`,
-    end: ev.end?.dateTime ? end : `${end}T00:00:00.000Z`,
+    start: ev.start?.dateTime ? start : allDayToUtc(start, timeZone),
+    end: ev.end?.dateTime ? end : allDayToUtc(end, timeZone),
   };
 }
 
@@ -48,6 +70,7 @@ export function partitionBusyWrites(
   calendarId: string,
   events: GoogleEvent[],
   slateEventIds: Set<string> = new Set(),
+  timeZone = "UTC",
 ): { upserts: BusyBlockRow[]; deletes: string[] } {
   const upserts: BusyBlockRow[] = [];
   const deletes: string[] = [];
@@ -63,7 +86,7 @@ export function partitionBusyWrites(
       deletes.push(ev.id);
       continue;
     }
-    const win = eventWindow(ev)!;
+    const win = eventWindow(ev, timeZone)!;
     upserts.push({
       user_id: userId,
       gcal_event_id: ev.id,
