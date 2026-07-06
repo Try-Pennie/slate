@@ -196,6 +196,16 @@ export class BookingNotFoundError extends Error {
   }
 }
 
+/** Thrown when a customer tries to cancel a booking that's already past its
+ *  terminal state (#618): a completed meeting can't be flipped back to
+ *  cancelled. Maps to a friendly 4xx, not a 500. */
+export class BookingNotCancellableError extends Error {
+  constructor() {
+    super("This meeting has already taken place, so it can no longer be cancelled.");
+    this.name = "BookingNotCancellableError";
+  }
+}
+
 /** Delete a calendar event, and if the delete FAILS, enqueue it for the retry
  *  drain (#401) instead of silently dropping it. Never throws to the caller —
  *  the booking flow proceeds; the queue is the durable net. */
@@ -2548,6 +2558,15 @@ export async function cancelBooking(
       );
     }
     return false;
+  }
+
+  // A completed meeting can't be flipped back to cancelled (#618). That would
+  // corrupt show-rate analytics and fire a contradictory booking.cancelled to
+  // Regal. For a customer clicking the manage link, reject with a friendly 4xx.
+  // Admin/rebook/system callers skip the throw and rely on the status-gated
+  // claim below to no-op instead of erroring mid-flow.
+  if (initiator === "customer" && !CANCELLABLE_STATUSES.includes(booking.status)) {
+    throw new BookingNotCancellableError();
   }
 
   // Atomically claim the transition BEFORE any side effect (#413). Two cancels
