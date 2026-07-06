@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { resolveRouting } from "@/lib/availability/service";
+import { allowRequest, clientIp, ROUTING_RATE_RULES } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,20 @@ export const dynamic = "force-dynamic";
  * bucket code (both derivable from the public booking flow). The internal bucket
  * NAME (the XBC routing descriptor) is deliberately NOT returned — it's an
  * internal label and this endpoint is unauthenticated (#351, sibling of #259).
+ * Being unauthenticated, it's throttled per IP (#596) to bound enumeration and
+ * DB load; resolveRouting is read-only, so probes never perturb routing state.
  */
 export async function POST(req: NextRequest) {
+  // Per-IP throttle (#596): this endpoint is unauthenticated and does a
+  // DB-backed resolve per call, so bound anonymous enumeration + DB load.
+  // Fails open — a limiter hiccup must never break a legitimate lookup.
+  if (!(await allowRequest(clientIp(req.headers), ROUTING_RATE_RULES))) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again in a moment." },
+      { status: 429 },
+    );
+  }
+
   const body = (await req.json().catch(() => ({}))) as { xbc?: string };
   const xbc = String(body.xbc ?? "").trim();
   if (!xbc) {
