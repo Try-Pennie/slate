@@ -54,3 +54,7 @@ service-account*.json
 
 # local browser-profile artifacts
 /.playwright-mcp/
+
+# browser-verification evidence (screenshots, axe JSON): local-only, never
+# commit. Anchored so the tracked .claude/.../reports/ store is unaffected (#583).
+/reports/
