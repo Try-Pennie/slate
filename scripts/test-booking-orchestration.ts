@@ -516,6 +516,7 @@ function makeDeps(opts: FakeOpts) {
       calls.webhooks.push({ event, reason: payload.reason, dedupeKey, bucket_code: payload.bucket_code });
     },
     newManageToken: () => "tok-fixed",
+    newIdempotencyKey: () => "anon-fixed", // synthetic key for keyless bookings (#666)
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: async (bucketCode) => {
       calls.invalidateSlots.push(bucketCode);
@@ -593,6 +594,142 @@ async function run() {
     assert(
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "create: invalidates cached slots for the booked bucket exactly once",
+    );
+  }
+
+  // --- createBooking: a keyless (anonymous) booking is crash-safe too (#666) ---
+  // No email/phone/salesforceId and no caller key -> no STABLE idempotency key.
+  // Such a booking used to fall through to the legacy path, which fired
+  // booking.created inline with no reservation and no outbox: a crash after the
+  // insert but before the webhook dropped it permanently, with nothing to
+  // redeliver. It must now get the SAME reservation-backed durable net every
+  // keyed booking has (a synthesized key), so the drain can resume it.
+  {
+    const keyless: CreateBookingInput = {
+      bucketCode: "411",
+      startIso: "2026-06-08T13:00:00.000Z",
+      timezone: "America/New_York",
+      attendee: { name: "Anon Lead" }, // no email/phone -> idempotencyKeyFor is null
+      prefill: {},
+    };
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const res = await createBooking(keyless, deps);
+    assert(res.booking.id === "bk-new", "keyless create: returns the persisted booking");
+    assert(
+      calls.reservations.length === 1,
+      "keyless create: writes a reservation (the durable crash-safety net #666)",
+    );
+    const rk = calls.reservations[0]?.idempotency_key ?? "";
+    assert(
+      rk.length > 0 && !rk.includes("|"),
+      "keyless create: reservation uses a synthesized key, not a derived (email/phone) key",
+    );
+    assert(
+      calls.reservations[0]?.gcal_client_id.startsWith("slate"),
+      "keyless create: pins a deterministic Google client id (retry-safe)",
+    );
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created",
+      "keyless create: fires booking.created",
+    );
+    assert(
+      calls.deletedReservations.length === 1,
+      "keyless create: deletes the reservation on success (delete-on-deliver)",
+    );
+  }
+
+  // --- keyless create: crash AFTER insert, BEFORE the webhook is recoverable (#666) ---
+  // The failure path: a keyless booking's reservation persisted and the booking
+  // inserted, then the process died before booking.created fired. The drain must
+  // resume it from the reservation and deliver the previously-lost webhook
+  // exactly once -- the exact drop #666 closes for anonymous bookings.
+  {
+    const already = makeBooking({
+      id: "bk-anon",
+      salesforce_id: null,
+      attendee_email: null,
+      attendee_phone: null,
+      idempotency_key: "anon_synth_666",
+      routing_trace: {
+        bucket_code: "411",
+        bucket_id: "bkt1",
+        considered: ["a"],
+        chosen_user_id: "a",
+        fallback_applied: false,
+      },
+    });
+    const reservation: BookingReservation = {
+      id: "resv-anon",
+      idempotency_key: "anon_synth_666",
+      pinned_user_id: "a",
+      pinned_agent_email: "a@x.com",
+      gcal_client_id: "slatedeadbeef",
+      payload: {
+        booking: {
+          org_id: "org1",
+          bucket_id: "bkt1",
+          event_type_id: "et1",
+          assigned_user_id: "a",
+          agent_name: "Agent A",
+          agent_email: "a@x.com",
+          starts_at: "2026-06-08T13:00:00.000Z",
+          ends_at: "2026-06-08T13:30:00.000Z",
+          original_starts_at: "2026-06-08T13:00:00.000Z",
+          original_ends_at: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          status: "confirmed",
+          salesforce_id: null,
+          attendee_name: "Anon Lead",
+          attendee_email: null,
+          attendee_phone: null,
+          prefill: {},
+          gcal_event_id: "slatedeadbeef",
+          manage_token: "tok-anon",
+          idempotency_key: "anon_synth_666",
+          external_id: null,
+          routing_trace: {
+            bucket_code: "411",
+            bucket_id: "bkt1",
+            considered: ["a"],
+            chosen_user_id: "a",
+            fallback_applied: false,
+          },
+        },
+        event: {
+          summary: "Senior Loan Advisor Call with Anon Lead",
+          description: "desc",
+          start: "2026-06-08T13:00:00.000Z",
+          end: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+        },
+        bucketCode: "411",
+      },
+      status: "pending",
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      next_attempt_at: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const { deps, calls } = makeDeps({
+      drainableReservations: [reservation],
+      existingByKey: already, // the booking the crashed attempt already inserted
+    });
+    const res = await processBookingReservations(deps, 15);
+    assert(
+      res.processed === 1 && res.completed === 1,
+      "#666 drain: resumes the crashed keyless reservation",
+    );
+    assert(
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.created" &&
+        calls.webhooks[0].dedupeKey === "bk-anon",
+      "#666 drain: redelivers the previously-lost booking.created exactly once",
+    );
+    assert(
+      calls.deletedReservations.length === 1 && calls.deletedReservations[0] === "resv-anon",
+      "#666 drain: deletes the reservation only after delivering the webhook",
     );
   }
 

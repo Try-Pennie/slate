@@ -315,6 +315,7 @@ function buildDeps(
 
     // --- Misc ---
     newManageToken: () => randomUUID().replace(/-/g, "").slice(0, 24),
+    newIdempotencyKey: () => `anon_${randomUUID().replace(/-/g, "")}`,
     appBaseUrl: () => "https://harness.test.local",
     invalidateSlots: async () => {},
 

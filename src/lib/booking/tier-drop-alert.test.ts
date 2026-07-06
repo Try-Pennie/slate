@@ -77,7 +77,7 @@ const agentA: User = {
   attributes: {},
 } as unknown as User;
 
-// No email/phone/salesforceId → null idempotency key → legacyCreateBooking path
+// No email/phone/salesforceId → no stable key → synthesized key + reservation path (#666)
 const tierDropInput: CreateBookingInput = {
   bucketCode: "511",
   startIso: "2026-06-08T13:00:00.000Z",
@@ -174,6 +174,7 @@ function makeTierDropDeps(): BookingDeps {
     loadPastBookingsToComplete: async () => [],
     emitWebhook: noop,
     newManageToken: () => "tok-fixed",
+    newIdempotencyKey: () => "anon-fixed",
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: noop,
   };

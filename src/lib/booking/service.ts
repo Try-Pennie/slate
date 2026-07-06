@@ -416,6 +416,10 @@ function realDeps(): BookingDeps {
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
+    // Keyless (anonymous) bookings synthesize a unique key so they still get the
+    // reservation-backed crash-safe create (#666). "anon_" prefix + nanoid can
+    // never contain a "|", so it can't collide with a derived contact key.
+    newIdempotencyKey: () => `anon_${nanoid(24)}`,
     // A booking changed the bucket's availability: recompute its precomputed
     // row so the booked slot disappears. Fire-and-forget so the confirm isn't
     // blocked on the recompute; the recompute lane's freshness sweep is the
