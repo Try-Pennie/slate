@@ -146,6 +146,51 @@ working once verification is done.
 > After deploying the main Worker, retire it once with `wrangler delete slate-cron`.
 
 ## Verify after deploy
-1. Visit `https://slate.trypennie.app/login` → sign in with Google → land on `/admin`.
-2. Configure event type + working hours + bucket `411` + webhook URL.
-3. Load `/booking/SF_TEST?xbc=411&...` → book → check calendar invite + webhook.
+1. Hit `https://slate.trypennie.app/api/health` → expect HTTP `200` with
+   `{"status":"ok",...}`. A `503` `{"status":"degraded",...}` means the DB is
+   unreachable (`db:"unreachable"`) or a cron lane heartbeat is stale
+   (`reason:"heartbeat_stale"`, with the offending `staleLane`). This endpoint is
+   unauthenticated and safe to point an uptime monitor at.
+2. Visit `https://slate.trypennie.app/login` → sign in with Google → land on `/admin`.
+3. Configure event type + working hours + bucket `411` + webhook URL.
+4. Load `/booking/SF_TEST?xbc=411&...` → book → check calendar invite + webhook.
+
+## Rollback
+Both the app and its crons run on the single **main** Worker, so a rollback is one
+command. Redeploys are versioned by Cloudflare; roll back to the previous good
+version when a deploy breaks production.
+
+```bash
+wrangler deployments list        # find the last-known-good version id
+wrangler rollback [<version-id>] # omit the id to roll back to the immediately prior version
+```
+
+`wrangler rollback` re-points traffic to an already-uploaded version; it does not
+rebuild. It restores code and bindings only (**it does not revert secrets, `vars`,
+or the database**). If a bad deploy shipped alongside a DB migration, roll the code
+back first (above), then decide separately whether the schema change is
+backward-compatible or also needs reverting (see Backup below). Never roll code
+back to a version that predates a migration its predecessor depends on.
+
+Dry-run the flow in a non-prod context before you need it in anger: deploy a
+trivial change, `wrangler deployments list`, `wrangler rollback`, then re-hit
+`/api/health` to confirm `200`.
+
+## Backup & Point-in-Time Recovery (PITR)
+The Postgres database is managed by Supabase (project **`slate`**, ref
+`drukfvgaynzrralbzkzj`,
+[dashboard](https://supabase.com/dashboard/project/drukfvgaynzrralbzkzj)).
+
+- **Daily backups** are taken automatically by Supabase; restore from
+  Dashboard → Database → Backups. Restores are destructive (they replace the
+  current database), so take a fresh backup or snapshot first.
+- **Point-in-Time Recovery** (add-on, enable under Database → Backups) lets you
+  restore to any second within the retention window, which is what you want after
+  a bad migration or a data-corrupting write. Enable it before you need it: PITR
+  only covers the period after it is turned on.
+- **Before any manual migration, backfill, or destructive SQL**, note the current
+  UTC timestamp so PITR has a clean restore target, and prefer running changes
+  through `supabase db push` (versioned migrations in `supabase/migrations/`) over
+  ad-hoc SQL.
+- After any restore, re-hit `/api/health` and run the post-deploy verify steps
+  above to confirm the app and crons reconnected.
