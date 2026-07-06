@@ -4,6 +4,7 @@ import { completePastBookings } from "@/lib/booking/service";
 import { retryFailedDeliveries } from "@/lib/webhooks/emit";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,8 @@ export async function GET(req: NextRequest) {
   try {
     const completed = await completePastBookings();
     const retried = await retryFailedDeliveries();
+    // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    await recordHeartbeat("complete").catch(() => {});
     return NextResponse.json({ completed, retried });
   } finally {
     await releaseLock("cron_complete", lock);

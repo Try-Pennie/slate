@@ -11,12 +11,14 @@ const locks = vi.hoisted(() => ({
 }));
 const service = vi.hoisted(() => ({ completePastBookings: vi.fn(async () => 0) }));
 const emit = vi.hoisted(() => ({ retryFailedDeliveries: vi.fn(async () => 0) }));
+const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/google/sync-coalesce", () => ({ CRON_LOCK_TTL_MS: 1000 }));
+vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import { GET } from "./route";
 
@@ -31,5 +33,21 @@ describe("GET /api/cron/complete", () => {
     expect(locks.acquireLock).not.toHaveBeenCalled();
     expect(service.completePastBookings).not.toHaveBeenCalled();
     expect(emit.retryFailedDeliveries).not.toHaveBeenCalled();
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  // Multi-lane dead-man's switch (#685): a successful tick stamps THIS lane.
+  it("stamps the 'complete' heartbeat on a successful tick", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("complete");
+  });
+
+  it("still returns 200 when the heartbeat stamp fails (best-effort)", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
   });
 });

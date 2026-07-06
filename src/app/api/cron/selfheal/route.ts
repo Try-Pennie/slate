@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import {
   processPendingEventDeletions,
   reconcileCancelledBusyBlocks,
@@ -57,6 +58,10 @@ export async function GET(req: NextRequest) {
       return null;
     });
 
+    // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    // Stamped even when a sub-sweep returned its "error" marker (those are
+    // logged/alerted separately); the heartbeat only proves the lane executed.
+    await recordHeartbeat("selfheal").catch(() => {});
     return NextResponse.json({
       deletionsDrained: deletions ?? "error",
       stuckFreed: freed?.freed ?? "error",

@@ -11,6 +11,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { WATCH_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatWatchLapseAlert, type FailingAgent } from "@/lib/notify/alerts";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -76,6 +77,8 @@ export async function GET(req: NextRequest) {
       await alertWatchLapse(await loadFailingAgents(), ordered.length);
     }
 
+    // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    await recordHeartbeat("watch").catch(() => {});
     return NextResponse.json({
       agents: ordered.length,
       processed: results.length,

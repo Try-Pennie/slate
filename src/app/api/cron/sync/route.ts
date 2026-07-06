@@ -22,7 +22,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
-import { isHeartbeatStale, readHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { isHeartbeatStale, readHeartbeatMs, recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -193,6 +193,8 @@ export async function GET(req: NextRequest) {
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.
     const truncated = deferred > 0 || budgetTruncated || results.some((r) => r.truncated);
+    // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    await recordHeartbeat("sync").catch(() => {});
     return NextResponse.json({
       agents: agents.length,
       deferred,
