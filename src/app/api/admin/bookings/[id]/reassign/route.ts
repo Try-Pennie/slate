@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { requireBookingActor } from "@/lib/auth";
+import { forbiddenResponse } from "@/lib/auth/http";
 import { adminReassignBooking, DailyCapExceededError } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 
@@ -20,7 +21,12 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const actor = await requireBookingActor();
+  let actor: Awaited<ReturnType<typeof requireBookingActor>>;
+  try {
+    actor = await requireBookingActor();
+  } catch (err) {
+    return forbiddenResponse(err);
+  }
   const { id } = await params;
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {

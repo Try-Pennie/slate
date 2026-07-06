@@ -38,7 +38,14 @@ vi.mock("next/headers", () => ({
   cookies: async () => ({ get: () => (cookieValue.v ? { value: cookieValue.v } : undefined) }),
 }));
 
-import { currentUser, getImpersonation } from "@/lib/auth";
+import {
+  currentUser,
+  getImpersonation,
+  requireRole,
+  requireManager,
+  requireAdmin,
+  requireSuperAdmin,
+} from "@/lib/auth";
 
 const ORG = "org-1";
 const user = (id: string, role: Role, extra: Partial<User> = {}): User =>
@@ -105,6 +112,56 @@ describe("currentUser impersonation ceiling (#588)", () => {
     const admin = user("admin-1", "admin");
     arrange(admin, null);
     expect((await currentUser())?.id).toBe("admin-1");
+  });
+});
+
+// A plain signed-in session (no impersonation cookie): currentUser resolves to
+// `who`. This is the denial chokepoint every admin/manager route + action funnels
+// through, so its reject branch is the highest-value RBAC test (#606).
+function signedInAs(who: User) {
+  authUser.id = who.auth_user_id ?? "auth-1";
+  cookieValue.v = undefined;
+  dbRows.queue = [who];
+}
+
+describe("requireRole denial (#606)", () => {
+  it("rejects an unauthenticated caller", async () => {
+    authUser.id = null;
+    cookieValue.v = undefined;
+    dbRows.queue = [];
+    await expect(requireManager()).rejects.toThrow("Not authorized");
+  });
+
+  it("rejects an agent from every manager+ gate", async () => {
+    signedInAs(user("agent-9", "agent"));
+    await expect(requireRole("manager")).rejects.toThrow("Not authorized");
+    signedInAs(user("agent-9", "agent"));
+    await expect(requireManager()).rejects.toThrow("Not authorized");
+    signedInAs(user("agent-9", "agent"));
+    await expect(requireAdmin()).rejects.toThrow("Not authorized");
+  });
+
+  it("rejects a manager from admin+ gates but allows the manager gate", async () => {
+    signedInAs(user("mgr-1", "manager"));
+    await expect(requireAdmin()).rejects.toThrow("Not authorized");
+    signedInAs(user("mgr-1", "manager"));
+    await expect(requireSuperAdmin()).rejects.toThrow("Not authorized");
+    signedInAs(user("mgr-1", "manager"));
+    expect((await requireManager()).id).toBe("mgr-1");
+  });
+
+  it("rejects an admin from the super_admin gate but allows admin and manager", async () => {
+    signedInAs(user("admin-1", "admin"));
+    await expect(requireSuperAdmin()).rejects.toThrow("Not authorized");
+    signedInAs(user("admin-1", "admin"));
+    expect((await requireAdmin()).id).toBe("admin-1");
+    signedInAs(user("admin-1", "admin"));
+    expect((await requireManager()).id).toBe("admin-1");
+  });
+
+  it("allows a caller that holds exactly the required rank", async () => {
+    signedInAs(user("mgr-1", "manager"));
+    expect((await requireRole("manager")).role).toBe("manager");
   });
 });
 

@@ -7,6 +7,7 @@ import {
   resolveEffectiveUserId,
 } from "@/lib/auth/impersonation";
 import { devPreviewUser } from "@/lib/auth/dev-preview";
+import { NotAuthorizedError } from "@/lib/auth/http";
 import type { Role, User } from "@/lib/db/types";
 
 /**
@@ -99,7 +100,8 @@ export async function getImpersonation(): Promise<{
 export async function requireRole(min: Role): Promise<User> {
   const user = await currentUser();
   if (!user || !atLeast(user.role, min)) {
-    throw new Error("Not authorized");
+    // Typed so the HTTP layer maps this to a 403, not a generic 500 (#606).
+    throw new NotAuthorizedError();
   }
   return user;
 }
