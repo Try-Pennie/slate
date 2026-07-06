@@ -137,6 +137,10 @@
     if (ui.theme) params.set("theme", ui.theme);
     if (ui.brandColor) params.set("brand", ui.brandColor);
     params.set("embed", "1");
+    // Tell the Booker which origin to target its outbound postMessages at, so the
+    // slate:bookingSuccessful lead PII is never broadcast to "*" (#593). This is
+    // the host page's own origin — the frame the modal lives in.
+    params.set("parentOrigin", window.location.origin);
     return originFor(ns) + "/book?" + params.toString();
   }
 
@@ -357,7 +361,15 @@
 
   window.addEventListener("message", function (e) {
     var d = e.data || {};
-    if (d.type === "slate:resize" && typeof d.height === "number" && activeIframe) {
+    if (
+      d.type === "slate:resize" &&
+      typeof d.height === "number" &&
+      activeIframe &&
+      e.source === activeIframe.contentWindow
+    ) {
+      // Only the active booking iframe may resize us — a nested/malicious frame
+      // on the host page must not be able to oscillate it (#593; parity with the
+      // success/escape source checks below).
       activeIframe.style.height = d.height + "px";
     } else if (
       d.type === "slate:bookingSuccessful" &&
