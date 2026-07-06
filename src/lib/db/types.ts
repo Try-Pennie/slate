@@ -462,8 +462,10 @@ export interface PendingEventDeletion {
   updated_at: string;
 }
 
-/** The booking change-path mutation an outbox row drives to completion (#429). */
-export type BookingOutboxAction = "create" | "cancel" | "reschedule" | "reassign";
+/** The booking change-path mutation an outbox row drives to completion (#429).
+ *  No 'create': the create path uses booking_reservations as its durable intent
+ *  (#613), never an outbox row. */
+export type BookingOutboxAction = "cancel" | "reschedule" | "reassign";
 export type OutboxStepState = "pending" | "done" | "failed";
 
 /** One side effect of a mutation, tracked so the drain resumes only what's left. */
