@@ -110,13 +110,30 @@ round-robin, verify-on-book, and one-appointment-per-person dedupe.
 ## Layout
 
 ```
-src/lib/availability   slot computation (compute.ts) + data loading (service.ts)
-src/lib/booking        create / reschedule / cancel + round-robin + verify-on-book
-src/lib/google         OAuth, calendar ops, push/incremental sync
+src/lib/availability   slot computation (compute.ts) + cache-first loading (service.ts)
+src/lib/booking        create / reschedule / cancel + round-robin + verify-on-book + reservations/outbox (crash-safety)
+src/lib/routing        bucket resolution + equal-share ranking + tier fallback + routing-decision log
+src/lib/google         OAuth, calendar ops, push/incremental sync, freeBusy
+src/lib/monitor        availability-health probe + booking-volume alert + tunable settings
 src/lib/webhooks       HMAC-signed delivery + retry
-src/app/api            availability, bookings, auth callback, google push, cron
-src/app/admin          minimal admin (agents, hours, event types, buckets, webhook)
+src/lib/salesforce     hourly roster sync (agents, teams, attributes)
+src/lib/ooo            out-of-office requests, approvals, digests
+src/lib/slack          ops alerts + OOO DMs + Approve/Decline interactions
+src/lib/notify         throttled alert dispatch (shared by monitor/booking/routing)
+src/lib/offboarding    deactivate / reactivate departed agents
+src/lib/auth           login provisioning + role/RBAC + admin impersonation
+src/lib/{calcom,date,db,embed,supabase}   cal.com dual-write, Luxon helpers, hand-written DB types, embed origin, Supabase clients
+src/app/api            availability, bookings, auth callback, google push, cron/* lanes, keyed reassign/booking/offboarding APIs
+src/app/admin          admin: agents, hours, event types, buckets, webhook, settings, monitor tuning
 src/app/booking        public booking page + self-serve manage page
+src/app/book           short-code booking entry
+src/app/me             agent self-serve (hours, calendar, OOO)
+src/app/login          Google SSO
+worker/                Cloudflare Worker entry (index.ts) + cron dispatch (cron-routes.ts)
+scripts/               node-native tests (test-*.ts) + migration / env / doc drift guards
 public/widget.js       embed SDK (inline + popup)
-supabase/migrations    schema
+supabase/migrations    schema (runs to 0060)
 ```
+
+Deeper context: `CONTEXT.md` (domain glossary), `DEPLOY.md` (deploy + cron runbook),
+`docs/booking-api.md` (Direct Booking API), and `docs/adr/` (architecture decisions).

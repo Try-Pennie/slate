@@ -3,7 +3,7 @@
 // and the routes must be real cron endpoints. A drift here means a schedule
 // silently does nothing in production (the exact failure this setup fixes).
 // Run: node --experimental-strip-types scripts/test-cron-routes.ts
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CRON_ROUTES, routesForCron } from "../worker/cron-routes.ts";
 
@@ -154,6 +154,24 @@ assert(
   !/slate\.trypennie\.dev/.test(deploy),
   "DEPLOY.md does not hardcode the non-canonical slate.trypennie.dev host",
 );
+
+// #645: the README Layout block must map the real subsystem tree, not a stale
+// subset (an audit found half the lib/ and app/ dirs missing). Assert every
+// source subsystem dir is named in the Layout section so it can't silently rot.
+const layout = (readme.match(/## Layout\n([\s\S]*?)(?:\n## |$)/)?.[1] ?? "");
+assert(layout.length > 0, "README has a Layout section");
+// Non-subsystem dirs legitimately absent from the map: a dev-preview harness
+// and static font assets.
+const LAYOUT_EXEMPT = new Set(["dev", "fonts"]);
+for (const base of ["src/lib", "src/app"]) {
+  for (const dir of readdirSync(join(root, base))) {
+    if (LAYOUT_EXEMPT.has(dir)) continue;
+    if (!statSync(join(root, base, dir)).isDirectory()) continue;
+    assert(layout.includes(dir), `README Layout names ${base}/${dir}`);
+  }
+}
+assert(/worker\//.test(layout), "README Layout names the worker/ dir");
+assert(/scripts\//.test(layout), "README Layout names the scripts/ dir");
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
