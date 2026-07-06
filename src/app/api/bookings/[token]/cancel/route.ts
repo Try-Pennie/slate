@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { cancelBooking } from "@/lib/booking/service";
+import { cancelBooking, BookingNotCancellableError } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +33,10 @@ export async function POST(
     await cancelBooking(token, reason.reason, "customer");
     return NextResponse.json({ ok: true });
   } catch (err) {
+    // The meeting already completed (#618): a friendly 4xx no-op, not a crash.
+    if (err instanceof BookingNotCancellableError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Cancel failed" },
       { status: 500 },

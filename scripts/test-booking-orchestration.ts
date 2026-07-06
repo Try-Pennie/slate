@@ -24,6 +24,7 @@ import {
   reassignOutboxSteps,
   PENDING_DELETION_ALERT_AFTER,
   BookingNotFoundError,
+  BookingNotCancellableError,
   SlotUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
@@ -386,10 +387,15 @@ function makeDeps(opts: FakeOpts) {
     },
     // Atomic cancel claim (#413): the FIRST call for an id wins (flips
     // active->cancelled), every later call loses — models the conditional UPDATE.
+    // Also models the status guard (#618): the UPDATE gates on the row still
+    // being confirmed/rescheduled, so a completed/cancelled row touches 0 rows.
     claimCancellation: (() => {
       const claimed = new Set<string>();
       return async (id: string) => {
         calls.claimCancellation.push(id);
+        const live = [opts.existing, opts.bookingById].find((c) => c?.booking?.id === id)?.booking;
+        const active = live ? live.status === "confirmed" || live.status === "rescheduled" : true;
+        if (!active) return false;
         if (claimed.has(id)) return false;
         claimed.add(id);
         return true;
@@ -2012,6 +2018,67 @@ async function run() {
     assert(
       c2.bookingEvents.length === 1 && c2.bookingEvents[0].action === "cancelled",
       "cancel re-submit: records the reason once for an already-cancelled booking",
+    );
+  }
+
+  // --- cancel: completed booking cannot be flipped to cancelled (#618) ---
+  {
+    // Customer clicks the cancel link AFTER the meeting completed. The status
+    // regression completed->cancelled must be rejected with a friendly 4xx and
+    // touch NOTHING (no claim, no gcal delete, no contradictory webhook).
+    const ctx = { booking: makeBooking({ status: "completed" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    let err: unknown;
+    try {
+      await cancelBooking("tok1", CR, "customer", deps, NOW);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof BookingNotCancellableError,
+      "cancel completed: rejects a customer cancel of a completed booking",
+    );
+    assert(
+      calls.claimCancellation.length === 0 &&
+        calls.deleteEvent.length === 0 &&
+        calls.webhooks.length === 0 &&
+        calls.bookingEvents.length === 0,
+      "cancel completed: writes nothing (no claim, no gcal delete, no webhook, no event)",
+    );
+
+    // The DB net (#618): a non-customer initiator (admin/rebook/system) does NOT
+    // throw, but the status-gated claim no-ops on a completed row, so the cancel
+    // is a silent no-op with no side effects instead of a status regression.
+    const ctx2 = { booking: makeBooking({ status: "completed" }), bucket, eventType };
+    const { deps: d2, calls: c2 } = makeDeps({ existing: ctx2 });
+    let threw2 = false;
+    let result2: boolean | undefined;
+    try {
+      result2 = await cancelBooking("tok1", CR, "admin", d2, NOW);
+    } catch {
+      threw2 = true;
+    }
+    assert(!threw2, "cancel completed: an admin/system cancel does not throw");
+    assert(
+      result2 === false &&
+        c2.deleteEvent.length === 0 &&
+        c2.webhooks.length === 0,
+      "cancel completed: the DB net makes an admin cancel of a completed booking a no-op",
+    );
+  }
+
+  // --- cancel: concurrent double-cancel resolves to one terminal state (#618) ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    const first = await cancelBooking("tok1", CR, "customer", deps, NOW);
+    // Second cancel races: it passes the pre-check (the fake ctx still reads
+    // active) but LOSES the atomic claim, so it must fire no second side effect.
+    const second = await cancelBooking("tok1", CR, "customer", deps, NOW);
+    assert(first === true && second === false, "double-cancel: exactly one call wins the claim");
+    assert(
+      calls.deleteEvent.length === 1 && calls.webhooks.length === 1,
+      "double-cancel: side effects fire exactly once (one terminal state)",
     );
   }
 

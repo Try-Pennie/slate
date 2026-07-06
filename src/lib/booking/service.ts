@@ -250,6 +250,7 @@ export {
   DailyCapExceededError,
   UnknownBucketError,
   BookingNotFoundError,
+  BookingNotCancellableError,
 } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
 export type { BookingActor } from "@/lib/booking/core";
@@ -882,14 +883,16 @@ function realDeps(): BookingDeps {
     },
 
     claimCancellation: async (bookingId) => {
-      // Atomic flip active->cancelled (#413). Gating on the row not already being
-      // cancelled means a concurrent cancel that already won touches 0 rows;
-      // `.select` returns the row only when THIS call made the transition.
+      // Atomic flip active->cancelled (#413). Gating on the row still being in an
+      // active status (not just "not cancelled") means a concurrent cancel OR a
+      // complete-cron tick that already terminated it touches 0 rows (#618); a
+      // completed booking can never regress to cancelled. `.select` returns the
+      // row only when THIS call made the transition.
       const { data } = await supabaseAdmin()
         .from("bookings")
         .update({ status: "cancelled" })
         .eq("id", bookingId)
-        .neq("status", "cancelled")
+        .in("status", ["confirmed", "rescheduled"])
         .select("id");
       return ((data ?? []) as { id: string }[]).length > 0;
     },
