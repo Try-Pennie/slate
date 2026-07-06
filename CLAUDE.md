@@ -17,8 +17,9 @@ v4 · Luxon. Package manager: pnpm.
   bookings write through synchronously; Google push (`/api/google/push`) +
   the 1-min `/api/cron/sync` backstop keep external changes fresh. The embed
   reads the cache via `/api/availability` — never live Google. The only live
-  Google call on the hot path is the single-agent verify-on-book at confirm
-  time (`src/lib/booking/service.ts`).
+  Google call on the hot path is verify-on-book at confirm time
+  (`src/lib/booking/service.ts`): it checks the round-robin candidates in batched
+  waves (one Google call per wave, #167) and takes the first actually-free agent.
 - **Server code uses the secret-key client** (`supabaseAdmin`, bypasses RLS; the
   new-style `sb_secret_…` key — anon/service_role JWTs are legacy).
   RLS is default-deny; the only client-readable row is a user reading itself.

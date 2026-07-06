@@ -1,16 +1,18 @@
-# Deploying Slate to Cloudflare (slate.trypennie.dev)
+# Deploying Slate to Cloudflare (slate.trypennie.app)
 
 The app runs on Cloudflare Workers via `@opennextjs/cloudflare`. Run these in a
 **real Terminal** (not the `!` prefix — wrangler needs a TTY for login + secret
 prompts, so values never land in a transcript).
 
 ## Prerequisites
-- `trypennie.dev` is a zone in the target Cloudflare account (the `custom_domain`
-  route in `wrangler.jsonc` auto-creates the DNS record + TLS cert for the
-  subdomain). If it isn't, add the domain to Cloudflare first, or remove the
-  `routes` entry and bind the domain in the dashboard later.
+- The canonical production host is **`slate.trypennie.app`**. `wrangler.jsonc`'s
+  `routes` bind it as a `custom_domain` (and also bind a secondary domain);
+  `custom_domain` auto-creates the DNS record + TLS cert. Each host's apex zone
+  must exist in the target Cloudflare account. If one isn't there, add it to
+  Cloudflare first, or drop that `routes` entry and bind the domain in the
+  dashboard later.
 - `.env.local` is filled in (it provides the `NEXT_PUBLIC_*` values inlined at
-  build time; `NEXT_PUBLIC_APP_URL` is already set to `https://slate.trypennie.dev`).
+  build time; `NEXT_PUBLIC_APP_URL` is set to `https://slate.trypennie.app`).
 
 ## 1. Authenticate
 ```bash
@@ -109,10 +111,10 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
   real volume. Until armed it still logs the counts each tick (visible in Worker
   logs) so you can calibrate the floors before turning it on.
 - **Supabase → Authentication → URL Configuration → Redirect URLs:** add
-  `https://slate.trypennie.dev/api/auth/callback`. (Set Site URL to
-  `https://slate.trypennie.dev` too.)
+  `https://slate.trypennie.app/api/auth/callback`. (Set Site URL to
+  `https://slate.trypennie.app` too.)
 - **Google Calendar push (real-time availability):** verify domain ownership of
-  `slate.trypennie.dev` (or `trypennie.dev`) in Google Search Console, then add
+  `slate.trypennie.app` (or `trypennie.app`) in Google Search Console, then add
   it under the Cloud project's **Domain verification** so `events.watch` accepts
   the push endpoint. Until then, calendar changes still sync — just not in
   real-time (see Cron below).
@@ -124,11 +126,14 @@ dispatches each Cloudflare trigger through `worker/cron-routes.ts` to the app's
 cron endpoints (`Authorization: Bearer $CRON_SECRET`). Triggers live in
 `wrangler.jsonc`; `scripts/test-cron-routes.ts` pins them in lockstep. A single
 trigger may drive more than one independent lane (each guards itself with its
-own lock):
-- `* * * * *`   → `/api/cron/sync` (backstop calendar sync) **+** `/api/cron/recompute` (bucket_slots freshness)
-- `*/5 * * * *` → `/api/cron/complete` (mark-complete sweep + webhook retries) **+** `/api/cron/watch` (calendar watch renewal)
+own lock). This table mirrors `worker/cron-routes.ts` exactly (the full lane set,
+not a subset; `scripts/test-cron-routes.ts` fails CI if any lane below drifts):
+- `* * * * *`   → `/api/cron/sync` (backstop calendar sync) **+** `/api/cron/recompute` (bucket_slots freshness) **+** `/api/cron/outbox` (booking-outbox drain, #429) **+** `/api/cron/selfheal` (deletion drain + cancelled/missing reconcile sweeps, #433)
+- `*/5 * * * *` → `/api/cron/complete` (mark-complete sweep + webhook retries) **+** `/api/cron/watch` (calendar watch renewal) **+** `/api/cron/monitor` (availability-health probe, #371)
 - `0 * * * *`   → `/api/cron/agents` (hourly Salesforce roster reconcile + default hours, single locked path)
-- OOO digest / approvals slots (see `cron-routes.ts`)
+- `0 13 * * 1-5` **and** `0 14 * * 1-5` → `/api/cron/ooo-digest` (pending-OOO morning digest; the two UTC slots straddle DST and the route's time gate lets exactly one fire at 9am ET)
+- `0 11 * * *` **and** `0 12 * * *` → `/api/cron/ooo-approvals` (7am ET email of yesterday's OOO approvals; two DST slots, one fires)
+- `0 3 * * *`   → `/api/cron/prune-routing` (daily prune of routing_decisions rows older than 12 months)
 
 No secret beyond `CRON_SECRET` (already set on the app) is needed — the crons
 deploy with the app via `pnpm cf:deploy`. Until the domain is Google-verified,
@@ -141,6 +146,6 @@ working once verification is done.
 > After deploying the main Worker, retire it once with `wrangler delete slate-cron`.
 
 ## Verify after deploy
-1. Visit `https://slate.trypennie.dev/login` → sign in with Google → land on `/admin`.
+1. Visit `https://slate.trypennie.app/login` → sign in with Google → land on `/admin`.
 2. Configure event type + working hours + bucket `411` + webhook URL.
 3. Load `/booking/SF_TEST?xbc=411&...` → book → check calendar invite + webhook.
