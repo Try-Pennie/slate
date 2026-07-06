@@ -94,6 +94,7 @@ export default async function BookEntry({
         theme={first(sp, "theme") === "dark" ? "dark" : "light"}
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
         layout={layout}
+        parentOrigin={first(sp, "parentOrigin") || undefined}
       />
     </main>
   );

@@ -12,6 +12,7 @@ import { useStalledAfter } from "@/lib/useStalledAfter";
 import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import { timezoneOptions } from "@/lib/booking/timezones";
+import { embedParentOrigin } from "@/lib/embed/parent-origin";
 
 interface Attendee {
   name: string;
@@ -39,6 +40,9 @@ interface BookerProps {
   brandColor?: string;
   /** Date-picker layout: a horizontal day strip (default) or the month grid. */
   layout?: BookerLayout;
+  /** Host page origin (from widget.js), used as the postMessage target so the
+   *  booking-success payload is never broadcast to "*" (#593). */
+  parentOrigin?: string;
 }
 
 interface AvailabilityResponse {
@@ -159,6 +163,7 @@ export default function Booker({
   theme = "light",
   brandColor,
   layout = "strip",
+  parentOrigin,
 }: BookerProps) {
   // Options derive from the *detected* zone (fixed) so a traveling lead's own
   // zone stays in the list even after they switch the selection to a curated one.
@@ -274,19 +279,39 @@ export default function Booker({
   const activeDay =
     selectedDay && slotsByDay.has(selectedDay) ? selectedDay : firstAvailable;
 
+  // The single origin every outbound embed message targets. Never "*": the
+  // success payload carries lead PII, so a wildcard could hand it to whatever
+  // origin the parent later becomes (#593). null when the framer is unknown, in
+  // which case we skip the post rather than broadcast.
+  const parentTargetOrigin = useMemo(
+    () =>
+      embedParentOrigin(
+        parentOrigin,
+        typeof document !== "undefined" ? document.referrer : null,
+      ),
+    [parentOrigin],
+  );
+  const postToParent = useCallback(
+    (message: unknown) => {
+      if (!parentTargetOrigin) return;
+      window.parent.postMessage(message, parentTargetOrigin);
+    },
+    [parentTargetOrigin],
+  );
+
   // Tell the embedding page our height so the iframe resizes with no scroll.
   useEffect(() => {
     if (!embedded || !rootRef.current) return;
     const post = () =>
-      window.parent.postMessage(
-        { type: "slate:resize", height: rootRef.current?.scrollHeight ?? 0 },
-        "*",
-      );
+      postToParent({
+        type: "slate:resize",
+        height: rootRef.current?.scrollHeight ?? 0,
+      });
     const ro = new ResizeObserver(post);
     ro.observe(rootRef.current);
     post();
     return () => ro.disconnect();
-  }, [embedded, meta, activeDay, selectedSlot, confirmed]);
+  }, [embedded, meta, activeDay, selectedSlot, confirmed, postToParent]);
 
   // Keydowns inside the iframe never reach the host page, so relay Escape
   // for the host's modal chrome to close on (widget.js listens for it).
@@ -294,12 +319,12 @@ export default function Booker({
     if (!embedded) return;
     const onKeydown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        window.parent.postMessage({ type: "slate:escape" }, "*");
+        postToParent({ type: "slate:escape" });
       }
     };
     document.addEventListener("keydown", onKeydown);
     return () => document.removeEventListener("keydown", onKeydown);
-  }, [embedded]);
+  }, [embedded, postToParent]);
 
   const daySlots = activeDay ? (slotsByDay.get(activeDay) ?? []) : [];
 
@@ -354,10 +379,10 @@ export default function Booker({
           duplicateWarning: data.duplicateWarning ?? null,
         });
         if (embedded) {
-          window.parent.postMessage(
-            { type: "slate:bookingSuccessful", data: { booking: data, salesforceId } },
-            "*",
-          );
+          postToParent({
+            type: "slate:bookingSuccessful",
+            data: { booking: data, salesforceId },
+          });
         }
       } else if (status === 409) {
         setError("That time was just taken. Please pick another.");

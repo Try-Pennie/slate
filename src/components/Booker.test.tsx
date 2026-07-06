@@ -136,4 +136,66 @@ describe("Booker confirm", () => {
   });
 });
 
+describe("Booker embed postMessage origin (#593)", () => {
+  // The postMessage(message, targetOrigin) call's second arg, as a plain string.
+  const targetOf = (call: unknown[]) => call[1] as string;
+  const availabilityOnlyFetch = () =>
+    vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+  it("posts slate:resize to the known parent origin, never '*'", async () => {
+    global.fetch = availabilityOnlyFetch();
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+
+    render(<Booker {...baseProps} embedded parentOrigin="https://host.test" />);
+    // Let the availability load + resize effect run.
+    await screen.findByRole("button", { name: /:\d{2}/ });
+
+    const resizes = postSpy.mock.calls.filter(
+      (c) => (c[0] as { type?: string })?.type === "slate:resize",
+    );
+    expect(resizes.length).toBeGreaterThan(0);
+    expect(resizes.every((c) => targetOf(c) === "https://host.test")).toBe(true);
+    expect(postSpy.mock.calls.some((c) => targetOf(c) === "*")).toBe(false);
+    postSpy.mockRestore();
+  });
+
+  it("posts the PII-bearing slate:bookingSuccessful only to the known parent origin", async () => {
+    global.fetch = availabilityOnlyFetch();
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+
+    render(<Booker {...baseProps} embedded parentOrigin="https://host.test" />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+
+    const success = postSpy.mock.calls.filter(
+      (c) => (c[0] as { type?: string })?.type === "slate:bookingSuccessful",
+    );
+    expect(success.length).toBe(1);
+    expect(targetOf(success[0]!)).toBe("https://host.test");
+    postSpy.mockRestore();
+  });
+
+  it("does NOT broadcast bookingSuccessful when the parent origin is unknown", async () => {
+    global.fetch = availabilityOnlyFetch();
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+
+    // No parentOrigin prop and jsdom's default referrer is empty → unknown origin.
+    render(<Booker {...baseProps} embedded />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+
+    const success = postSpy.mock.calls.filter(
+      (c) => (c[0] as { type?: string })?.type === "slate:bookingSuccessful",
+    );
+    expect(success.length).toBe(0);
+    expect(postSpy.mock.calls.some((c) => targetOf(c) === "*")).toBe(false);
+    postSpy.mockRestore();
+  });
+});
+
 afterEach(() => vi.useRealTimers());
