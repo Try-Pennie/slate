@@ -5,6 +5,7 @@ import {
   clientIp,
   BOOKING_RATE_RULES,
   DIRECT_BOOKING_API_RATE_RULES,
+  ROUTING_RATE_RULES,
 } from "../src/lib/rate-limit-core.ts";
 
 let failures = 0;
@@ -80,6 +81,38 @@ assert(
   assert(
     BOOKING_RATE_RULES.every((r) => !apiPrefixes.has(r.prefix)),
     "per-key API counters use different prefixes than the per-IP booking counters",
+  );
+}
+
+// Routing API (#596): the standalone routing preview is unauthenticated and
+// DB-backed, so it gets its own per-IP ceiling with distinct prefixes. Tight
+// enough to bound anonymous enumeration + DB load; a burst window plus an
+// hourly cap, same shape as the booking rules.
+assert(
+  ROUTING_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
+  "routing rules are positive",
+);
+{
+  const [rBurst, rSustained] = [...ROUTING_RATE_RULES].sort(
+    (a, b) => a.windowSeconds - b.windowSeconds,
+  );
+  assert(
+    ROUTING_RATE_RULES.length >= 2 &&
+      rBurst.windowSeconds < rSustained.windowSeconds &&
+      rBurst.max < rSustained.max,
+    "routing burst window is shorter and tighter than its sustained window",
+  );
+}
+{
+  const routingPrefixes = new Set(ROUTING_RATE_RULES.map((r) => r.prefix));
+  assert(
+    routingPrefixes.size === ROUTING_RATE_RULES.length,
+    "routing rule prefixes are distinct (separate counters)",
+  );
+  assert(
+    BOOKING_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)) &&
+      DIRECT_BOOKING_API_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)),
+    "routing counters use different prefixes than the booking counters",
   );
 }
 

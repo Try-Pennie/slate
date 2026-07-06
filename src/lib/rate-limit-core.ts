@@ -40,6 +40,19 @@ export const DIRECT_BOOKING_API_READ_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:read:h", windowSeconds: 3600, max: 30000 },
 ];
 
+/**
+ * Routing preview API (#596) ceiling, keyed per IP. The standalone /api/routing
+ * endpoint is unauthenticated and does a DB-backed resolve per call, so it needs
+ * its own throttle to bound anonymous enumeration and DB load. It has no
+ * frontend caller (a diagnostic/preview surface), so it's sized modestly — well
+ * above real debugging use but far below abuse. Distinct prefixes so it never
+ * shares a counter with the booking paths; fails open like the rest.
+ */
+export const ROUTING_RATE_RULES: RateLimitRule[] = [
+  { prefix: "routing:m", windowSeconds: 60, max: 20 },
+  { prefix: "routing:h", windowSeconds: 3600, max: 200 },
+];
+
 // Availability (#56) no longer uses a DB rule: it's throttled at the edge by
 // the AVAIL_RATE_LIMITER Workers binding (wrangler.jsonc, 30/min per datacenter)
 // so the slot-cache hot path never makes a DB round-trip just to rate-limit. The

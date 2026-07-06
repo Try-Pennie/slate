@@ -2,7 +2,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
-export { clientIp, BOOKING_RATE_RULES } from "@/lib/rate-limit-core";
+export { clientIp, BOOKING_RATE_RULES, ROUTING_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 
 /**
