@@ -54,6 +54,14 @@ beforeEach(() => {
 });
 
 describe("GET /api/cron/agents", () => {
+  it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(false);
+    const res = await GET(req());
+    expect(res.status).toBe(401);
+    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(sync.syncSalesforceAgents).not.toHaveBeenCalled();
+  });
+
   it("clears the failure streak and does not alert on a clean pass", async () => {
     const res = await GET(req());
     expect(res.status).toBe(200);

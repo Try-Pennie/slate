@@ -26,6 +26,15 @@ const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 beforeEach(() => vi.clearAllMocks());
 
 describe("GET /api/cron/outbox", () => {
+  it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(false);
+    const res = await GET(req());
+    expect(res.status).toBe(401);
+    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(service.drainBookingOutbox).not.toHaveBeenCalled();
+    expect(service.sweepAbandonedReschedulePins).not.toHaveBeenCalled();
+  });
+
   it("runs the abandoned-pin GC sweep and includes its result", async () => {
     const res = await GET(req());
     expect(service.sweepAbandonedReschedulePins).toHaveBeenCalledTimes(1);
