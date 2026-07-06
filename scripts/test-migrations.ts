@@ -60,5 +60,34 @@ for (const table of created) {
   );
 }
 
+// #667: the retired 'create' outbox action must be dropped from the effective
+// booking_outbox.action CHECK. No producer enqueues a create row: the create
+// path uses booking_reservations as its durable intent (#613). The migration
+// drops the original inline constraint and re-adds a named one without 'create'.
+assert(
+  /drop constraint (?:if exists )?booking_outbox_action_check/.test(sql),
+  "booking_outbox_action_check is dropped before being redefined (#667)",
+);
+const outboxActionAdd = sql.match(
+  /add constraint booking_outbox_action_check\s+check\s*\(\s*action in \(([^)]*)\)\s*\)/,
+);
+assert(
+  outboxActionAdd !== null,
+  "booking_outbox.action CHECK is redefined via a named constraint (#667)",
+);
+if (outboxActionAdd) {
+  const allowed = outboxActionAdd[1];
+  assert(
+    !/'create'/.test(allowed),
+    "redefined booking_outbox.action CHECK no longer allows 'create' (#667)",
+  );
+  for (const v of ["cancel", "reschedule", "reassign"]) {
+    assert(
+      new RegExp(`'${v}'`).test(allowed),
+      `redefined booking_outbox.action CHECK allows '${v}' (#667)`,
+    );
+  }
+}
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
