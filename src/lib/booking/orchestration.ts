@@ -580,6 +580,13 @@ export interface BookingDeps {
     dedupeKey: string | null,
   ): Promise<void>;
   newManageToken(): string;
+  /** A fresh, unique synthetic idempotency key for a keyless (anonymous) booking
+   *  (#666), so it still gets the reservation-backed crash-safe create every keyed
+   *  booking has. Random per call: there's no stable identity to dedupe on, so it
+   *  provides no cross-request collapse (matching the old anonymous behavior), only
+   *  the durable net. Distinct, non-colliding shape (e.g. an "anon_"-prefixed token)
+   *  so it can never equal a derived bucket|slot|contact key. */
+  newIdempotencyKey(): string;
   appBaseUrl(): string;
   /** Best-effort clear of a bucket's cached availability after a booking changes it. */
   invalidateSlots(bucketCode: string): Promise<void>;
@@ -1193,7 +1200,10 @@ export async function createBooking(
   input: CreateBookingInput,
   deps: BookingDeps,
 ): Promise<BookingResult> {
-  const idempotencyKey =
+  // A STABLE key (caller-supplied, or derived from the lead's contact identity)
+  // is what lets a re-submit collapse onto the same booking. Anonymous bookings
+  // have none (idempotencyKeyFor returns null).
+  const stableKey =
     input.idempotencyKey ??
     idempotencyKeyFor({
       bucketCode: input.bucketCode,
@@ -1205,8 +1215,10 @@ export async function createBooking(
 
   // Fast path: a double-click / retry of the same submit returns the existing
   // active booking instead of creating a second one (+ a second gcal event).
-  if (idempotencyKey) {
-    const existing = await deps.findBookingByIdempotencyKey(idempotencyKey);
+  // Only a stable key can match a prior booking; a synthetic key (below) is fresh
+  // per request, so there's nothing to look up.
+  if (stableKey) {
+    const existing = await deps.findBookingByIdempotencyKey(stableKey);
     if (existing) {
       return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
     }
@@ -1222,17 +1234,21 @@ export async function createBooking(
   // that a hidden bucket is there).
   if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
 
-  // Anonymous bookings (no email/phone/salesforceId → no stable key) can't be
-  // pinned, so they keep the legacy non-crash-safe create (accepted gap, #439).
-  if (!idempotencyKey) {
-    return legacyCreateBooking(deps, input, bucket, eventType);
-  }
+  // Every booking gets the reservation-backed crash-safe create (#666). A keyless
+  // (anonymous) booking has no stable key to pin a re-submit by, so it gets a
+  // fresh synthesized one: no cross-request dedupe (there's nothing to dedupe on,
+  // same as the old anonymous behavior), but the reservation + drain still
+  // guarantee booking.created is delivered exactly once even across a crash.
+  const idempotencyKey = stableKey ?? deps.newIdempotencyKey();
 
   // Resume an in-flight reservation: a re-submit after a crash mid-create reuses
   // the SAME pinned agent + event id instead of re-running assignAgent (which
-  // could land on a different agent and duplicate the calendar event).
-  const inFlight = await deps.loadReservationByKey(idempotencyKey);
-  if (inFlight) return completeReservation(deps, inFlight);
+  // could land on a different agent and duplicate the calendar event). Only a
+  // stable key can name a prior in-flight reservation.
+  if (stableKey) {
+    const inFlight = await deps.loadReservationByKey(stableKey);
+    if (inFlight) return completeReservation(deps, inFlight);
+  }
 
   // Fresh create: cascade down the tier ladder if the requested bucket has no
   // agent free for the slot. A crash before the reservation strands nothing.
@@ -1510,163 +1526,6 @@ async function completeReservation(
 
   await deps.deleteReservation(reservation.id);
   return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
-}
-
-/** The pre-#429-P4 create: event-then-insert with best-effort rollback. Kept for
- *  anonymous bookings that have no idempotency key to pin a reservation by. */
-async function legacyCreateBooking(
-  deps: BookingDeps,
-  input: CreateBookingInput,
-  bucket: Bucket,
-  eventType: EventType,
-): Promise<BookingResult> {
-  let legacyTier: TierAssignResult;
-  try {
-    legacyTier = await assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false);
-  } catch (err) {
-    // Best-effort: record no-booking attempts. Awaited so the write is not dropped
-    // by the CF runtime; try/catch ensures the original error still propagates.
-    if (
-      err instanceof NoEligibleAgentsError ||
-      err instanceof VerifyUnavailableError ||
-      err instanceof SlotUnavailableError
-    ) {
-      const outcome =
-        err instanceof NoEligibleAgentsError ? "no_eligible_agents" : "no_availability";
-      try {
-        const pool = await resolveBucketPool(bucket);
-        await recordRoutingDecision({
-          orgId: bucket.org_id,
-          bookingId: null,
-          bucketCode: bucket.code,
-          bucketId: bucket.id,
-          criteria: pool.criteria,
-          ...buildRoutingTraceExtras(pool, []),
-          chosenUserId: null,
-          chosenAttributes: null,
-          emptyPoolFallback: false,
-          tierFallback: false,
-          rungsDropped: 0,
-          requestedTier: pool.criteria.debt_team ? String(pool.criteria.debt_team) : null,
-          bookedTier: null,
-          outcome,
-        });
-      } catch {
-        // best-effort: never change the thrown booking error
-      }
-    }
-    throw err;
-  }
-  const bookedBucket = legacyTier.bucket;
-  const bookedEventType = legacyTier.eventType;
-  const startIso = legacyTier.startIso;
-  const endIso = legacyTier.endIso;
-  const { userId, email, candidates } = legacyTier;
-  const agent = await deps.getUser(userId);
-  let legacyTraceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
-    considered: candidates,
-    excluded: [],
-  };
-  try {
-    const legacyPool = await resolveBucketPool(bookedBucket);
-    legacyTraceExtras = buildRoutingTraceExtras(legacyPool, candidates);
-  } catch {
-    // best-effort: a transient pool-resolve failure must not fail the booking
-  }
-  const phone = toE164(input.attendee.phone);
-  const manageToken = deps.newManageToken();
-
-  const gcalEventId = await deps.createEvent(email, {
-    summary: `${bookedEventType.name}${
-      input.attendee.name ? ` with ${input.attendee.name}` : ""
-    }`,
-    description: eventDescription(phone, manageUrl(deps, manageToken)),
-    start: startIso,
-    end: endIso,
-    timezone: input.timezone,
-    attendeeEmail: input.attendee.email,
-    attendeeName: input.attendee.name,
-  });
-  const inserted = await deps.insertBooking({
-    org_id: bookedBucket.org_id,
-    bucket_id: bookedBucket.id,
-    event_type_id: bookedEventType.id,
-    assigned_user_id: userId,
-    agent_name: agent.name,
-    agent_email: agent.email,
-    starts_at: startIso,
-    ends_at: endIso,
-    original_starts_at: startIso,
-    original_ends_at: endIso,
-    timezone: input.timezone,
-    status: "confirmed",
-    salesforce_id: input.salesforceId ?? null,
-    attendee_name: input.attendee.name ?? null,
-    attendee_email: input.attendee.email ?? null,
-    attendee_phone: phone,
-    prefill: input.prefill,
-    gcal_event_id: gcalEventId,
-    manage_token: manageToken,
-    idempotency_key: null,
-    external_id: input.externalId ?? null,
-    routing_trace: {
-      bucket_code: bookedBucket.code,
-      bucket_id: bookedBucket.id,
-      considered: candidates,
-      chosen_user_id: userId,
-      fallback_applied:
-        bookedBucket.fallback_user_id != null &&
-        candidates.length > 0 &&
-        candidates.every((id) => id === bookedBucket.fallback_user_id),
-      excluded: legacyTraceExtras.excluded,
-      tier_fallback: legacyTier.rungsDropped > 0,
-      requested_tier: tierKeyOf(input.bucketCode),
-      booked_tier: tierKeyOf(bookedBucket.code),
-      rungs_dropped: legacyTier.rungsDropped,
-    },
-  });
-
-  if (!inserted.ok) {
-    await deleteEventBestEffort(deps, email, gcalEventId, null);
-    if (inserted.conflict) throw new SlotUnavailableError();
-    throw new Error("Failed to persist booking");
-  }
-  const booking = inserted.booking;
-  await deps.insertBusyBlock(busyBlockFor(userId, startIso, endIso, booking.id));
-  await deps.invalidateSlots(bookedBucket.code);
-  await fire(deps, "booking.created", booking, bookedBucket, bookedEventType);
-  // Best-effort routing decision log (agent already loaded above). Awaited so the
-  // write is not dropped by the CF runtime; recordRoutingDecision never throws.
-  await recordRoutingDecision({
-    orgId: booking.org_id,
-    bookingId: booking.id,
-    bucketCode: bookedBucket.code,
-    bucketId: bookedBucket.id,
-    criteria: bookedBucket.criteria,
-    considered: candidates,
-    excluded: legacyTraceExtras.excluded,
-    chosenUserId: userId,
-    chosenAttributes: agent.attributes,
-    emptyPoolFallback:
-      bookedBucket.fallback_user_id != null &&
-      candidates.length > 0 &&
-      candidates.every((id) => id === bookedBucket.fallback_user_id),
-    tierFallback: legacyTier.rungsDropped > 0,
-    rungsDropped: legacyTier.rungsDropped,
-    requestedTier: tierKeyOf(input.bucketCode),
-    bookedTier: tierKeyOf(bookedBucket.code),
-    outcome: "booked",
-  });
-  // Best-effort tier-drop alert.
-  const legacyTierAlert = tierFallbackAlert({
-    requestedCode: input.bucketCode,
-    effectiveCode: booking.routing_trace?.bucket_code ?? input.bucketCode,
-    rungsDropped: Math.max(0, booking.routing_trace?.rungs_dropped ?? 0),
-  });
-  if (legacyTierAlert) {
-    await sendThrottledAlert(legacyTierAlert.key, legacyTierAlert.cooldownMs, legacyTierAlert.text).catch(() => {});
-  }
-  return { booking, manageUrl: manageUrl(deps, manageToken) };
 }
 
 /**
