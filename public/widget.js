@@ -226,37 +226,112 @@
       close.style.color = "rgb(106,106,112)";
     });
 
-    // Branded loading state on the white surface, removed on iframe load.
+    // Branded loading state on the white surface. It must NEVER spin forever:
+    // if the iframe never loads (Slate origin down/blocked/stalled) a ~12s
+    // timeout converts the spinner into a plain-language error + retry (#628),
+    // so the lead always sees "working" and "failed" as distinct states rather
+    // than an indefinite spinner on this first-impression surface.
+    var LOAD_TIMEOUT_MS = 12000;
+    var loadTimer = null;
+    var bookUrl = bookingUrl(link, ns);
+
     var loader = document.createElement("div");
-    loader.setAttribute("role", "status");
-    loader.setAttribute("aria-label", "Loading");
+    loader.className = "slate-widget-loader";
     loader.style.cssText =
-      "position:absolute;inset:0;display:flex;align-items:center;" +
-      "justify-content:center;background:#fff;border-radius:inherit;" +
-      "box-sizing:border-box;margin:0;padding:0";
-    if (reduceMotion) {
-      loader.textContent = "Loading…";
-      loader.style.color = "rgb(106,106,112)";
-      loader.style.fontSize = "14px";
-    } else {
-      var spinner = document.createElement("div");
-      spinner.style.cssText =
-        "width:36px;height:36px;border-radius:50%;box-sizing:border-box;" +
-        "border:3px solid rgba(130,208,255,0.35);border-top-color:#82D0FF;" +
-        "animation:slate-spin .8s linear infinite";
-      loader.appendChild(spinner);
+      "position:absolute;inset:0;display:flex;flex-direction:column;" +
+      "align-items:center;justify-content:center;gap:14px;text-align:center;" +
+      "background:#fff;border-radius:inherit;box-sizing:border-box;" +
+      "margin:0;padding:24px;color:rgb(52,52,52)";
+
+    function clearNode(n) {
+      while (n.firstChild) n.removeChild(n.firstChild);
     }
 
+    function renderLoading() {
+      clearNode(loader);
+      loader.setAttribute("role", "status");
+      loader.setAttribute("aria-label", "Loading");
+      if (reduceMotion) {
+        loader.textContent = "Loading…";
+        loader.style.color = "rgb(106,106,112)";
+        loader.style.fontSize = "14px";
+      } else {
+        var spinner = document.createElement("div");
+        spinner.style.cssText =
+          "width:36px;height:36px;border-radius:50%;box-sizing:border-box;" +
+          "border:3px solid rgba(130,208,255,0.35);border-top-color:#82D0FF;" +
+          "animation:slate-spin .8s linear infinite";
+        loader.appendChild(spinner);
+      }
+    }
+
+    function renderError() {
+      clearNode(loader);
+      loader.setAttribute("role", "alert");
+      loader.removeAttribute("aria-label");
+      loader.style.color = "rgb(52,52,52)";
+      loader.style.fontSize = "14px";
+
+      var msg = document.createElement("p");
+      msg.textContent =
+        "We couldn't load the booking form. Check your connection and try again.";
+      msg.style.cssText = "margin:0;max-width:280px;line-height:1.5";
+
+      var retry = document.createElement("button");
+      retry.textContent = "Try again";
+      retry.style.cssText =
+        "min-height:44px;padding:0 20px;border:0;border-radius:12px;" +
+        "background:#82D0FF;color:rgb(52,52,52);font-size:15px;cursor:pointer;" +
+        "box-sizing:border-box;margin:0;font-family:inherit";
+      retry.addEventListener("focus", function () {
+        retry.style.outline = "2px solid rgb(52,52,52)";
+        retry.style.outlineOffset = "2px";
+        retry.style.boxShadow = "0 0 0 4px rgba(130,208,255,0.45)";
+      });
+      retry.addEventListener("blur", function () {
+        retry.style.outline = "";
+        retry.style.outlineOffset = "";
+        retry.style.boxShadow = "";
+      });
+      retry.addEventListener("click", function () {
+        renderLoading();
+        armLoadTimer();
+        iframe.src = bookUrl; // force a fresh load attempt
+      });
+
+      loader.appendChild(msg);
+      loader.appendChild(retry);
+      retry.focus();
+    }
+
+    function armLoadTimer() {
+      if (loadTimer) clearTimeout(loadTimer);
+      loadTimer = setTimeout(function () {
+        loadTimer = null;
+        renderError();
+      }, LOAD_TIMEOUT_MS);
+    }
+
+    renderLoading();
+    armLoadTimer();
+
     var iframe = document.createElement("iframe");
-    iframe.src = bookingUrl(link, ns);
+    iframe.src = bookUrl;
     iframe.style.cssText =
       "width:100%;border:0;min-height:560px;opacity:0" +
       (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
     iframe.setAttribute("title", "Pennie booking");
     iframe.allow = "fullscreen";
     iframe.addEventListener("load", function () {
+      if (loadTimer) {
+        clearTimeout(loadTimer);
+        loadTimer = null;
+      }
       if (loader.parentNode) loader.parentNode.removeChild(loader);
       iframe.style.opacity = "1";
+    });
+    iframe.addEventListener("error", function () {
+      renderError();
     });
 
     // Forward-tab sentinel: focus leaving the iframe's last element lands
@@ -273,6 +348,10 @@
     var inerted = [];
 
     function hide() {
+      if (loadTimer) {
+        clearTimeout(loadTimer);
+        loadTimer = null;
+      }
       document.removeEventListener("keydown", onKeydown, true);
       overlay.remove();
       document.body.style.overflow = prevOverflow;
