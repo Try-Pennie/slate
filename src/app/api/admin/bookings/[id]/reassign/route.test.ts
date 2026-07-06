@@ -30,6 +30,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
+import { NotAuthorizedError } from "@/lib/auth/http";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
   return { json: async () => body } as unknown as Parameters<typeof POST>[0];
@@ -72,6 +73,13 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     const body = await res.json();
     expect(body.code).toBe("DAILY_CAP_EXCEEDED");
     expect(body.agentEmail).toBe("b@x.com");
+  });
+
+  it("returns 403 when the caller is not manager+ (denial branch, #606)", async () => {
+    auth.requireBookingActor.mockRejectedValueOnce(new NotAuthorizedError());
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(403);
+    expect(service.adminReassignBooking).not.toHaveBeenCalled();
   });
 
   it("rejects a missing agent with 400", async () => {

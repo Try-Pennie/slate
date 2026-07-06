@@ -17,6 +17,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
+import { NotAuthorizedError } from "@/lib/auth/http";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
   return { json: async () => body } as unknown as Parameters<typeof POST>[0];
@@ -32,6 +33,13 @@ describe("POST /admin/bookings/[id]/cancel", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
     expect(auth.requireBookingActor).toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller is not manager+ (denial branch, #606)", async () => {
+    auth.requireBookingActor.mockRejectedValueOnce(new NotAuthorizedError());
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(403);
+    expect(service.adminCancelBooking).not.toHaveBeenCalled();
   });
 
   it("records WHICH staff user cancelled by threading the actor (#549)", async () => {

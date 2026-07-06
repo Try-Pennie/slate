@@ -11,6 +11,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("@/lib/booking/service", () => service);
 
 import { GET } from "./route";
+import { NotAuthorizedError } from "@/lib/auth/http";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -24,5 +25,12 @@ describe("GET /admin/agents", () => {
     expect((await res.json()).agents).toHaveLength(1);
     expect(auth.requireManager).toHaveBeenCalled();
     expect(service.listActiveAgents).toHaveBeenCalledWith("org1");
+  });
+
+  it("returns 403 when the caller is not manager+ (denial branch, #606)", async () => {
+    auth.requireManager.mockRejectedValueOnce(new NotAuthorizedError());
+    const res = await GET();
+    expect(res.status).toBe(403);
+    expect(service.listActiveAgents).not.toHaveBeenCalled();
   });
 });
