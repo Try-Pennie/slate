@@ -13,11 +13,13 @@ const service = vi.hoisted(() => ({
   drainBookingReservations: vi.fn(async () => ({ processed: 0 })),
   sweepAbandonedReschedulePins: vi.fn(async () => ({ swept: 2, enqueued: 1 })),
 }));
+const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/google/sync-coalesce", () => ({ CRON_LOCK_TTL_MS: 1000 }));
+vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import { GET } from "./route";
 
@@ -47,5 +49,24 @@ describe("GET /api/cron/outbox", () => {
     const body = await res.json();
     expect(body.reschedulePins).toBeNull();
     expect(service.drainBookingOutbox).toHaveBeenCalledTimes(1);
+  });
+
+  // Multi-lane dead-man's switch (#685): a successful tick stamps THIS lane.
+  it("stamps the 'outbox' heartbeat on a successful tick", async () => {
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("outbox");
+  });
+
+  it("still returns 200 when the heartbeat stamp fails (best-effort)", async () => {
+    heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+  });
+
+  it("does not stamp a heartbeat when the caller is unauthorized", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(false);
+    await GET(req());
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 });

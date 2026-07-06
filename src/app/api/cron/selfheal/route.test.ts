@@ -10,13 +10,15 @@ const locks = vi.hoisted(() => ({
 }));
 const service = vi.hoisted(() => ({
   processPendingEventDeletions: vi.fn(async () => ({})),
-  reconcileCancelledBusyBlocks: vi.fn(async () => ({})),
-  reconcileMissingBusyBlocks: vi.fn(async () => ({})),
+  reconcileCancelledBusyBlocks: vi.fn(async () => ({ freed: 0 })),
+  reconcileMissingBusyBlocks: vi.fn(async () => ({ recreated: 0 })),
 }));
+const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/booking/service", () => service);
+vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import { GET } from "./route";
 
@@ -30,5 +32,22 @@ describe("GET /api/cron/selfheal", () => {
     expect(res.status).toBe(401);
     expect(locks.acquireLock).not.toHaveBeenCalled();
     expect(service.processPendingEventDeletions).not.toHaveBeenCalled();
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  // Multi-lane dead-man's switch (#685): a successful tick stamps THIS lane,
+  // even though the sub-sweeps swallow their own errors into "error" markers.
+  it("stamps the 'selfheal' heartbeat on a successful tick", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
+  });
+
+  it("still returns 200 when the heartbeat stamp fails (best-effort)", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
   });
 });

@@ -4,6 +4,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { withinBudget } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { RECOMPUTE_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
@@ -137,6 +138,8 @@ export async function GET(req: NextRequest) {
       ).catch(() => {});
     }
 
+    // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    await recordHeartbeat("recompute").catch(() => {});
     return NextResponse.json({
       buckets: allCodes.length,
       due: due.length,

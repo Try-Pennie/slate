@@ -7,6 +7,7 @@ import {
 } from "@/lib/booking/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,8 @@ export async function GET(req: NextRequest) {
     const reservations = await drainBookingReservations().catch(() => null);
     // GC abandoned reschedule lease-pins (#439): cleanup only, best-effort.
     const reschedulePins = await sweepAbandonedReschedulePins().catch(() => null);
+    // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    await recordHeartbeat("outbox").catch(() => {});
     return NextResponse.json({ outbox, reservations, reschedulePins });
   } finally {
     await releaseLock("cron_outbox", lock);
