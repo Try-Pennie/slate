@@ -114,5 +114,46 @@ for (const [cron, value] of Object.entries(CRON_ROUTES)) {
 
 assert(routesForCron("0 0 31 2 *").length === 0, "unknown cron expressions route to nothing");
 
+// --- Doc/runbook consistency guards (docs cluster #639/#642/#644) ---
+// The setup + deploy docs drift out of sync with this file and wrangler.jsonc
+// (an audit found README describing Vercel crons that no longer exist, and
+// DEPLOY.md listing 3 of the 10 real lanes). Pin the docs to the code here so a
+// future edit that reintroduces the drift fails CI instead of shipping.
+const readme = readFileSync(join(root, "README.md"), "utf8");
+const deploy = readFileSync(join(root, "DEPLOY.md"), "utf8");
+const envExample = readFileSync(join(root, ".env.example"), "utf8");
+
+// #639: crons run on Cloudflare (wrangler.jsonc triggers), never Vercel. No
+// stale vercel.json / "Vercel Cron" wording may creep back into the docs.
+for (const [name, text] of [
+  ["README.md", readme],
+  ["DEPLOY.md", deploy],
+  [".env.example", envExample],
+] as const) {
+  assert(!/vercel\.json/i.test(text), `${name} has no stale vercel.json reference`);
+  assert(!/vercel cron/i.test(text), `${name} has no stale "Vercel Cron" reference`);
+}
+
+// #644: DEPLOY.md is the ops runbook, so every cron lane in CRON_ROUTES must be
+// named there, or a route is invisible to whoever debugs it in production.
+for (const value of Object.values(CRON_ROUTES)) {
+  const paths = Array.isArray(value) ? value : [value];
+  for (const path of paths) {
+    assert(deploy.includes(path), `DEPLOY.md documents cron lane ${path}`);
+  }
+}
+
+// #642: one canonical production host in the runbook. slate.trypennie.app is
+// live; wrangler.jsonc is the source of truth for the routes (it binds a second
+// domain too), so the runbook names only the canonical host, never the .dev one.
+assert(
+  deploy.includes("slate.trypennie.app"),
+  "DEPLOY.md names the canonical host slate.trypennie.app",
+);
+assert(
+  !/slate\.trypennie\.dev/.test(deploy),
+  "DEPLOY.md does not hardcode the non-canonical slate.trypennie.dev host",
+);
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
