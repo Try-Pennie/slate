@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { publicSupabasePublishableKey, publicSupabaseUrl } from "@/lib/env";
+import { SECURITY_HEADERS } from "@/lib/security-headers";
 
 /**
  * Refreshes the Supabase auth session cookie on each request so Server
@@ -30,6 +31,14 @@ export async function middleware(request: NextRequest) {
   );
 
   await supabase.auth.getUser();
+
+  // Clickjacking + baseline hardening on the staff surfaces this matcher covers
+  // (#592). Set last so they land on the final response, even after a cookie
+  // refresh reassigned it above. /book + widget.js aren't matched, so the embed
+  // stays frameable.
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    response.headers.set(name, value);
+  }
   return response;
 }
 
