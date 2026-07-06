@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMonitorSettings } from "@/app/admin/actions";
 import { MONITOR_DEFAULTS, type MonitorAlertKey } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { labelCls, inputCls, cardCls, btnCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
 
@@ -252,7 +253,9 @@ export default async function MonitorSettingsPage({
           </section>
 
           <div className="flex items-center gap-4">
-            <button className={btnCls}>Save alert settings</button>
+            <SubmitButton className={btnCls} pendingLabel="Saving…">
+              Save alert settings
+            </SubmitButton>
             <a href="/admin" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
               Back to admin
             </a>

@@ -46,6 +46,7 @@ import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
@@ -267,7 +268,9 @@ function BucketForm({
           ))}
         </div>
       </div>
-      <button className={btnCls}>{editing ? "Save bucket" : "Create bucket"}</button>
+      <SubmitButton className={btnCls} pendingLabel={editing ? "Saving…" : "Creating…"}>
+        {editing ? "Save bucket" : "Create bucket"}
+      </SubmitButton>
     </form>
   );
 }
@@ -559,7 +562,9 @@ export default async function AdminPage({
               className={`${inputCls} w-72`}
             />
           </div>
-          <button className={btnCls}>View as them</button>
+          <SubmitButton className={btnCls} pendingLabel="Switching…">
+            View as them
+          </SubmitButton>
         </form>
       </section>
       )}
@@ -611,7 +616,9 @@ export default async function AdminPage({
               className="mt-1"
             />
           </div>
-          <button className={btnCls}>Save default</button>
+          <SubmitButton className={btnCls} pendingLabel="Saving…">
+            Save default
+          </SubmitButton>
         </form>
       </section>
       )}
@@ -647,7 +654,9 @@ export default async function AdminPage({
               Month grid
             </label>
           </fieldset>
-          <button className={btnCls}>Save layout</button>
+          <SubmitButton className={btnCls} pendingLabel="Saving…">
+            Save layout
+          </SubmitButton>
         </form>
       </section>
       )}
@@ -908,7 +917,9 @@ export default async function AdminPage({
               placeholder="Twenty minutes with a senior advisor to confirm your income…"
             />
           </div>
-          <button className={btnCls}>Add event type</button>
+          <SubmitButton className={btnCls} pendingLabel="Adding…">
+            Add event type
+          </SubmitButton>
         </form>
       </section>
       )}
@@ -1101,7 +1112,9 @@ export default async function AdminPage({
               className={inputCls}
             />
           </div>
-          <button className={btnCls}>Save</button>
+          <SubmitButton className={btnCls} pendingLabel="Saving…">
+            Save
+          </SubmitButton>
         </form>
       </section>
       )}
@@ -1133,7 +1146,9 @@ export default async function AdminPage({
               <option value="72">3 days</option>
               <option value="168">7 days</option>
             </select>
-            <button className={btnSecondaryCls}>Replay failed deliveries</button>
+            <SubmitButton className={btnSecondaryCls} pendingLabel="Replaying…">
+              Replay failed deliveries
+            </SubmitButton>
           </form>
           {deliveries.length === 0 ? (
             <p className="text-sm text-fg-muted">No deliveries yet.</p>
@@ -1186,9 +1201,9 @@ export default async function AdminPage({
                       <td className="py-1.5">
                         <form action={resendWebhookDelivery}>
                           <input type="hidden" name="delivery_id" value={d.id} />
-                          <button className={btnSecondaryCls}>
+                          <SubmitButton className={btnSecondaryCls} pendingLabel="Resending…">
                             Resend
-                          </button>
+                          </SubmitButton>
                         </form>
                       </td>
                     </tr>
