@@ -1,10 +1,11 @@
 import { type NextRequest } from "next/server";
 import { cronSecret } from "@/lib/env";
 
-/** Vercel Cron sends `Authorization: Bearer <CRON_SECRET>`; also allow ?secret=. */
+/**
+ * Cron lanes authorize via `Authorization: Bearer <CRON_SECRET>` only. The
+ * secret is never accepted as a URL query param: query strings leak into CF
+ * logs, observability, and browser history (#591).
+ */
 export function isAuthorizedCron(req: NextRequest): boolean {
-  const secret = cronSecret();
-  const auth = req.headers.get("authorization");
-  if (auth === `Bearer ${secret}`) return true;
-  return req.nextUrl.searchParams.get("secret") === secret;
+  return req.headers.get("authorization") === `Bearer ${cronSecret()}`;
 }
