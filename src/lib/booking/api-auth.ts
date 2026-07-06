@@ -9,7 +9,12 @@
  * rotated with zero downtime: add the new secret as the secondary, point the
  * caller at it, then retire the old primary. Each authenticated call reports the
  * matched key's LABEL (never the secret) so logs can attribute traffic per key.
+ *
+ * The constant-time comparison + `Bearer` parsing live in the shared
+ * `bearer-auth` module (#594) so this rotation-aware layer and the single-secret
+ * machine-to-machine endpoints all run the same timing-safe path.
  */
+import { bearerToken, timingSafeEqual } from "@/lib/bearer-auth";
 
 export interface ApiKey {
   /** Stable label for logs — "primary" or "secondary". Never the secret. */
@@ -30,28 +35,6 @@ export function parseApiKeys(primary: string, secondary: string): ApiKey[] {
   if (primary.trim()) keys.push({ id: "primary", secret: primary });
   if (secondary.trim()) keys.push({ id: "secondary", secret: secondary });
   return keys;
-}
-
-/** Extract the token from an `Authorization: Bearer <token>` header, or null. */
-function bearerToken(header: string | null): string | null {
-  if (!header) return null;
-  const prefix = "Bearer ";
-  if (!header.startsWith(prefix)) return null;
-  const token = header.slice(prefix.length);
-  return token.length > 0 ? token : null;
-}
-
-/**
- * Constant-time string comparison so a wrong key can't be brute-forced by
- * timing the response. Length mismatch returns false but still walks the loop to
- * avoid a length-based early-out leak.
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i % b.length);
-  }
-  return diff === 0;
 }
 
 /**
