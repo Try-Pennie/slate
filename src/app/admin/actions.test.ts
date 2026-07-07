@@ -22,6 +22,15 @@ const revalidatePath = vi.hoisted(() => vi.fn());
 const cookieStore = vi.hoisted(() => ({ set: vi.fn(), get: vi.fn(), delete: vi.fn() }));
 const recordAudit = vi.hoisted(() => vi.fn(async () => {}));
 
+const emit = vi.hoisted(() => ({
+  resendDelivery: vi.fn(async () => {}),
+  replayDeadLetteredDeliveries: vi.fn(async () => 0),
+}));
+const locks = vi.hoisted(() => ({
+  acquireLock: vi.fn(async () => "claim" as string | null),
+  releaseLock: vi.fn(async () => {}),
+}));
+
 const dbState = vi.hoisted(() => ({ single: null as unknown, count: 0 }));
 const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
 const update = vi.hoisted(() => vi.fn(() => ({ eq: updateEq })));
@@ -44,8 +53,15 @@ vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/audit", () => ({ recordAudit }));
+vi.mock("@/lib/webhooks/emit", () => emit);
+vi.mock("@/lib/locks", () => locks);
 
-import { setUserRole, startImpersonation } from "./actions";
+import {
+  setUserRole,
+  startImpersonation,
+  resendWebhookDelivery,
+  replayFailedWebhooks,
+} from "./actions";
 
 const admin = { id: "admin1", role: "admin", org_id: "o1" };
 
@@ -59,6 +75,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   dbState.single = null;
   dbState.count = 0;
+  locks.acquireLock.mockResolvedValue("claim");
 });
 
 describe("setUserRole denial branches", () => {
@@ -117,5 +134,52 @@ describe("startImpersonation denial branches", () => {
     const target = redirect.mock.calls.find(([u]) => String(u).includes("imp_error"));
     expect(target).toBeTruthy();
     expect(cookieStore.set).not.toHaveBeenCalled();
+  });
+});
+
+// #674: the SubmitButton's client-side disable (#630) can't stop a flaky-network
+// retry or a racing request from firing these non-idempotent re-delivery actions
+// twice. A DB-backed claim (acquireLock) makes a duplicate within the window a
+// no-op regardless of the client.
+describe("webhook re-delivery duplicate guard", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+  });
+
+  it("resendWebhookDelivery re-fires when it wins the claim", async () => {
+    await resendWebhookDelivery(form({ delivery_id: "d1" }));
+    expect(locks.acquireLock).toHaveBeenCalledWith(
+      "webhook_resend:o1:d1",
+      expect.any(Number),
+    );
+    expect(emit.resendDelivery).toHaveBeenCalledWith("d1", "o1");
+  });
+
+  it("resendWebhookDelivery is a no-op for a duplicate that loses the claim", async () => {
+    locks.acquireLock.mockResolvedValueOnce(null);
+    await resendWebhookDelivery(form({ delivery_id: "d1" }));
+    expect(emit.resendDelivery).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("does not release the claim on success, so a later retry stays deduped", async () => {
+    await resendWebhookDelivery(form({ delivery_id: "d1" }));
+    expect(locks.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it("replayFailedWebhooks replays when it wins the claim, keyed by org and window", async () => {
+    await replayFailedWebhooks(form({ hours: "24" }));
+    expect(locks.acquireLock).toHaveBeenCalledWith(
+      "webhook_replay:o1:24",
+      expect.any(Number),
+    );
+    expect(emit.replayDeadLetteredDeliveries).toHaveBeenCalledTimes(1);
+  });
+
+  it("replayFailedWebhooks is a no-op for a duplicate that loses the claim", async () => {
+    locks.acquireLock.mockResolvedValueOnce(null);
+    await replayFailedWebhooks(form({ hours: "24" }));
+    expect(emit.replayDeadLetteredDeliveries).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 });
