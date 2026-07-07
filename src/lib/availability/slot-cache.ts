@@ -135,16 +135,24 @@ export interface AvailabilityRoutingMeta {
  * the tier ladder (lower debt-tier, same backend+legal digits) and return the
  * first tier that has slots, with a routing descriptor.
  *
- * Returns null only when the requested bucket itself does not exist (→ 404).
+ * Returns null only when the requested bucket itself does not exist (→ 404),
+ * or when it is a hidden test bucket and the caller isn't authorized for it.
  * When no tier has slots, returns the requested bucket with empty slots and
  * tier_fallback=false so the booker can show the "no availability" state.
+ *
+ * `authorizedForTest` gates synthetic test buckets (#396): an unauthorized
+ * caller gets null here, BEFORE the tier cascade runs, so a hidden test bucket
+ * does the same single resolve an unknown code does and its 404 timing doesn't
+ * reveal that it exists (#601).
  */
 export async function getBucketSlotsWithFallback(
   code: string,
   from: string,
+  authorizedForTest = false,
 ): Promise<(BucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
   const requested = await getCachedBucketSlots(code, from);
   if (!requested) return null;
+  if (requested.bucket.is_test && !authorizedForTest) return null;
 
   const withRouting = (
     slotsFor: BucketSlots,

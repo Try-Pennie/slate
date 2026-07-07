@@ -35,20 +35,22 @@ export async function GET(req: NextRequest) {
   const to =
     toParam ?? new Date(now + DEFAULT_RANGE_DAYS * 86_400_000).toISOString();
 
-  const result = await getBucketSlotsWithFallback(code, from);
-  if (!result) {
-    return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
-  }
-
   // A synthetic test bucket (#396) is invisible to the public: only the
-  // key-authed smoke test may read its slots. To everyone else it 404s exactly
-  // like an unknown code — no signal that a hidden bucket exists.
-  if (result.bucket.is_test) {
-    const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
-    const auth = authenticateBearer(req.headers.get("authorization"), keys);
-    if (!auth.ok) {
-      return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
-    }
+  // key-authed smoke test may read its slots. Resolve auth up front (DB-free:
+  // parse the bearer against env keys) and gate the test bucket BEFORE the tier
+  // cascade, so an unauthorized hidden bucket 404s doing the same single resolve
+  // an unknown code does (no timing signal that it exists, #601).
+  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
+  const authorizedForTest = authenticateBearer(
+    req.headers.get("authorization"),
+    keys,
+  ).ok;
+
+  const result = await getBucketSlotsWithFallback(code, from, authorizedForTest);
+  if (!result) {
+    // Unknown code and an unauthorized hidden test bucket both land here with
+    // the identical response.
+    return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
   }
 
   let slots = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
