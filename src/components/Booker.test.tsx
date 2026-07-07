@@ -151,6 +151,31 @@ describe("Booker confirm", () => {
     const status = screen.getByRole("status");
     expect(status.textContent).toMatch(/1 time available/i);
   });
+
+  // #632: the attendee step used sr-only labels + a placeholder as the only
+  // visible identification, which vanished once a value was typed. Each field
+  // now has a persistent visible label and no longer leans on the placeholder.
+  it("shows a persistent visible label for each attendee field (#632)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    for (const fieldName of ["Name", "Email", "Phone"]) {
+      const input = screen.getByLabelText(fieldName) as HTMLInputElement;
+      const label = document.querySelector(`label[for="${input.id}"]`);
+      expect(label).not.toBeNull();
+      // Visible, not sr-only, so the field's purpose persists after typing.
+      expect(label!.className).not.toMatch(/sr-only/);
+      // The placeholder is no longer the sole (or a redundant) label.
+      expect(input.getAttribute("placeholder")).toBeNull();
+    }
+  });
 });
 
 describe("Booker availability race on month change (#629)", () => {
