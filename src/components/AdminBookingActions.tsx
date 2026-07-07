@@ -15,6 +15,7 @@ import ReasonPicker from "@/components/ReasonPicker";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
+import { formatSlotTime, groupSlotsByDay } from "@/lib/booking/slot-label";
 
 type Mode = null | "cancel" | "reschedule" | "reassign";
 
@@ -258,20 +259,27 @@ export default function AdminBookingActions({
             containerClassName="grid grid-cols-2 gap-1"
             emptyNode={<p className="text-xs text-fg-muted">No open times.</p>}
           >
-            <div className="grid grid-cols-2 gap-1">
-              {slots.slice(0, 12).map((iso) => (
-                <button
-                  key={iso}
-                  disabled={busy || !reasonValid}
-                  onClick={() => doReschedule(iso)}
-                  className="min-h-9 rounded-md border border-border bg-surface px-1 py-1 text-xs tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
-                >
-                  {new Date(iso).toLocaleString("en-US", {
-                    weekday: "short",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
-                </button>
+            {/* Grouped by dated day heading (#635): times read unambiguously and
+                the full horizon shows with no silent slice(0,12) cap. */}
+            <div className="space-y-3">
+              {groupSlotsByDay(slots).map((day) => (
+                <div key={day.key}>
+                  <p className="mb-1 text-xs font-semibold tabular-nums text-fg">
+                    {day.heading}
+                  </p>
+                  <div className="grid grid-cols-2 gap-1">
+                    {day.slots.map((iso) => (
+                      <button
+                        key={iso}
+                        disabled={busy || !reasonValid}
+                        onClick={() => doReschedule(iso)}
+                        className="min-h-9 rounded-md border border-border bg-surface px-1 py-1 text-xs tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
+                      >
+                        {formatSlotTime(iso)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </AsyncListStates>

@@ -70,7 +70,7 @@ describe("AdminBookingActions", () => {
     render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
-    const slot = (await screen.findByRole("button", { name: /Sun/i })) as HTMLButtonElement;
+    const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     expect(slot.disabled).toBe(true);
 
     await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
@@ -171,11 +171,11 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
-    const slot = (await screen.findByRole("button", { name: /Sun/i })) as HTMLButtonElement;
+    const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     await userEvent.click(slot);
 
     expect(await screen.findByText(/could not reschedule/i)).toBeTruthy();
-    const slotAfter = screen.getByRole("button", { name: /Sun/i }) as HTMLButtonElement;
+    const slotAfter = screen.getByRole("button", { name: /:\d{2}/ }) as HTMLButtonElement;
     expect(slotAfter.disabled).toBe(false);
     expect(refresh).not.toHaveBeenCalled();
   });
@@ -231,7 +231,7 @@ describe("AdminBookingActions", () => {
     expect(screen.queryByText(/no open times/i)).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
-    expect(await screen.findByRole("button", { name: /Sun/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
   });
 
   it("shows the empty copy only after a confirmed empty reschedule response", async () => {
@@ -330,7 +330,7 @@ describe("AdminBookingActions", () => {
     render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /found a better time/i }));
-    const slot = await screen.findByRole("button", { name: /Sun/i });
+    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
 
     vi.useFakeTimers();
     fireEvent.click(slot);

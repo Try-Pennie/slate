@@ -13,6 +13,7 @@ import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { AlertIcon } from "@/components/icons";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
+import { formatSlotTime, groupSlotsByDay } from "@/lib/booking/slot-label";
 
 const extractSlots = (json: unknown): string[] =>
   (json as { slots?: string[] } | null)?.slots ?? [];
@@ -46,15 +47,6 @@ function fmt(iso: string, timeZone: string) {
     weekday: "short",
     month: "short",
     day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(iso));
-}
-
-function timeLabel(iso: string, timeZone: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "short",
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(iso));
@@ -306,21 +298,32 @@ export default function ManageBooking({
               containerClassName="grid grid-cols-2 gap-2 sm:grid-cols-3"
               emptyNode={<p className="text-sm text-fg-muted">No times left, pick another.</p>}
             >
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {slots.slice(0, 30).map((iso) => (
-                  <button
-                    key={iso}
-                    disabled={busy || !reschedReasonValid}
-                    aria-busy={pendingIso === iso}
-                    onClick={() => reschedule(iso)}
-                    className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
-                      pendingIso === iso
-                        ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
-                        : "border-border bg-surface text-fg hover:border-fg/45"
-                    }`}
-                  >
-                    {pendingIso === iso ? "Moving…" : timeLabel(iso, timeZone)}
-                  </button>
+              {/* Grouped by dated day heading (#635): every time reads unambiguously
+                  and the whole horizon renders with no silent slice(0,30) cap. */}
+              <div className="space-y-4">
+                {groupSlotsByDay(slots, timeZone).map((day) => (
+                  <div key={day.key}>
+                    <p className="mb-2 text-sm font-semibold tabular-nums text-fg">
+                      {day.heading}
+                    </p>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      {day.slots.map((iso) => (
+                        <button
+                          key={iso}
+                          disabled={busy || !reschedReasonValid}
+                          aria-busy={pendingIso === iso}
+                          onClick={() => reschedule(iso)}
+                          className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
+                            pendingIso === iso
+                              ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
+                              : "border-border bg-surface text-fg hover:border-fg/45"
+                          }`}
+                        >
+                          {pendingIso === iso ? "Moving…" : formatSlotTime(iso, timeZone)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </AsyncListStates>

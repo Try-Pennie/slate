@@ -104,7 +104,7 @@ describe("ManageBooking", () => {
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     // A reason is mandatory before a slot can be picked.
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
-    const slot = await screen.findByRole("button", { name: /Sun/i });
+    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
     await userEvent.click(slot);
 
     expect(await screen.findByText("That time was just taken.")).toBeTruthy();
@@ -126,7 +126,7 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
-    const slot = await screen.findByRole("button", { name: /Sun/i });
+    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
     await userEvent.click(slot);
 
     expect(
@@ -145,7 +145,7 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     // Slots are visible but disabled until a reason is chosen.
-    const slot = (await screen.findByRole("button", { name: /Sun/i })) as HTMLButtonElement;
+    const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     expect(slot.disabled).toBe(true);
 
     await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
@@ -188,12 +188,12 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
-    const slot = (await screen.findByRole("button", { name: /Sun/i })) as HTMLButtonElement;
+    const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     await userEvent.click(slot);
 
     expect(await screen.findByText(/could not reschedule/i)).toBeTruthy();
     // Slot buttons re-enable (not stuck disabled / on "Moving…") so the user can retry.
-    const slotAfter = screen.getByRole("button", { name: /Sun/i }) as HTMLButtonElement;
+    const slotAfter = screen.getByRole("button", { name: /:\d{2}/ }) as HTMLButtonElement;
     expect(slotAfter.disabled).toBe(false);
     expect(calls).toBeGreaterThan(1);
   });
@@ -233,7 +233,7 @@ describe("ManageBooking", () => {
     expect(screen.queryByText(/no times left/i)).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
-    expect(await screen.findByRole("button", { name: /Sun/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
   });
 
   it("shows an error when the availability fetch rejects at the network layer", async () => {
@@ -312,7 +312,7 @@ describe("ManageBooking", () => {
     render(<ManageBooking {...baseProps} />);
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /schedule conflict/i }));
-    const slot = await screen.findByRole("button", { name: /Sun/i });
+    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
 
     vi.useFakeTimers();
     fireEvent.click(slot);
