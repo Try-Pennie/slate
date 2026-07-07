@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
 
+/** The one client-facing message for an unexpected server fault. Shared so every
+ *  route (the six #598 mutation routes and the direct bot API, #707) says the
+ *  same thing and none leak internal detail. */
+export const GENERIC_ERROR_MESSAGE =
+  "Something went wrong on our end. Please try again.";
+
 /**
  * The single generic 500 for an UNEXPECTED fault on a client- or admin-facing
  * mutation route (#598). Typed, expected errors (409/404/503/400/403) keep
@@ -16,8 +22,5 @@ import { NextResponse } from "next/server";
  */
 export function internalErrorResponse(err: unknown, context: string): NextResponse {
   console.error(`[${context}] unexpected error`, err);
-  return NextResponse.json(
-    { error: "Something went wrong on our end. Please try again." },
-    { status: 500 },
-  );
+  return NextResponse.json({ error: GENERIC_ERROR_MESSAGE }, { status: 500 });
 }

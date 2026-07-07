@@ -17,6 +17,7 @@ import {
 } from "@/lib/booking/service";
 import { formatOutcomeLine } from "@/lib/monitor/booking-api-outcome";
 import { allowRequest } from "@/lib/rate-limit";
+import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
 import { DIRECT_BOOKING_API_RATE_RULES, DIRECT_BOOKING_API_READ_RATE_RULES } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
@@ -98,10 +99,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(preview);
     } catch (err) {
       const { status, code } = mapBookingError(err);
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : "Preview failed", code },
-        { status },
-      );
+      return NextResponse.json(apiErrorBody(err, code, "preview", "Preview failed"), { status });
     }
   }
 
@@ -146,7 +144,7 @@ export async function POST(req: NextRequest) {
       formatOutcomeLine({ outcome: "error", bucketCode: v.bucketCode, keyId: authd.keyId, status, code }),
     );
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Booking failed", code },
+      apiErrorBody(err, code, "book", "Booking failed"),
       { status },
     );
   }
@@ -202,10 +200,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ bookings: list });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Lookup failed", code },
-      { status: httpStatus },
-    );
+    return NextResponse.json(apiErrorBody(err, code, "lookup", "Lookup failed"), {
+      status: httpStatus,
+    });
   }
 }
 
@@ -232,11 +229,30 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ outcome: "cancelled", booking });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Cancel failed", code },
-      { status: httpStatus },
-    );
+    return NextResponse.json(apiErrorBody(err, code, "cancel", "Cancel failed"), {
+      status: httpStatus,
+    });
   }
+}
+
+/**
+ * Body for a mapped error. A typed code keeps its own intended, safe message
+ * (validation text, "no eligible agents", "slot taken") that the bot acts on;
+ * an unexpected INTERNAL returns the generic message and logs the real detail
+ * server-side so table names / Google error text never leak to the client
+ * (#707, sibling of #598). The machine-readable `code` is always preserved.
+ */
+function apiErrorBody(
+  err: unknown,
+  code: string,
+  context: string,
+  fallback: string,
+): { error: string; code: string } {
+  if (code === "INTERNAL") {
+    console.error(`[bookings-api/${context}] unexpected error`, err);
+    return { error: GENERIC_ERROR_MESSAGE, code };
+  }
+  return { error: err instanceof Error ? err.message : fallback, code };
 }
 
 /** Error→code map for the lookup/cancel paths (#386): a missing/unowned booking
