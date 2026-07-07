@@ -8,9 +8,10 @@ import {
   canModerateAllOoo,
   isRole,
 } from "@/lib/auth/roles";
-import { getImpersonation } from "@/lib/auth";
+import { getImpersonationView } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { stopImpersonation } from "@/app/admin/actions";
+import { ImpersonationDropNotice } from "@/components/ImpersonationDropNotice";
 import type { ThemePreference } from "@/lib/db/types";
 
 // Module scope so the Date.now() call doesn't trip react-hooks/purity in render.
@@ -101,8 +102,9 @@ export async function AppHeader({
   // Agents in OOO-only mode have a single page ("My Requests"); everyone else
   // keeps the "My Availability" label since they also have other tabs.
   const meLabel = oooOnly && r === "agent" ? "My Requests" : "My Availability";
-  // Persistent banner so an impersonating admin always knows + can get out.
-  const impersonation = await getImpersonation();
+  // Persistent banner so an impersonating admin always knows + can get out, plus
+  // a one-time notice when a "view as" session was silently dropped (#652).
+  const impersonation = await getImpersonationView();
 
   // Google Calendar sync status. DWD reaches calendars by email, so the real
   // per-user "actively syncing" signal is a live push-watch channel. null =
@@ -150,7 +152,7 @@ export async function AppHeader({
   }
   return (
     <>
-    {impersonation && (
+    {impersonation.status === "active" && (
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-pennie-navy px-4 py-2 text-center text-sm text-pennie-beige">
         <span>
           Viewing as{" "}
@@ -163,6 +165,9 @@ export async function AppHeader({
           </button>
         </form>
       </div>
+    )}
+    {impersonation.status === "dropped" && (
+      <ImpersonationDropNotice reason={impersonation.reason} />
     )}
     {calendarUrgent && (
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-[var(--error)] px-4 py-2 text-center text-sm text-white">

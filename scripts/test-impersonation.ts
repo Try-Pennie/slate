@@ -6,6 +6,7 @@
 // Run: node --experimental-strip-types scripts/test-impersonation.ts
 import {
   resolveEffectiveUserId,
+  impersonationCookieOutcome,
   encodeImpersonationCookie,
   impersonationTargetId,
   IMPERSONATE_TTL_MS,
@@ -120,6 +121,46 @@ assert(
 assert(
   impersonationTargetId(undefined) === undefined,
   "undefined cookie stays undefined",
+);
+
+// --- impersonationCookieOutcome classifies WHY a cookie was honored or not
+//     (#652): 'none' (ignore silently), 'ended' (present but stale -> notify),
+//     'candidate' (valid, still needs the downstream DB eligibility check) ---
+assert(
+  impersonationCookieOutcome("admin", ADMIN, undefined, NOW).kind === "none",
+  "no cookie -> none",
+);
+assert(
+  impersonationCookieOutcome("agent", "agent-id", fresh(TARGET), NOW).kind === "none",
+  "a non-admin's cookie -> none (never a drop notice for them)",
+);
+assert(
+  impersonationCookieOutcome("admin", ADMIN, fresh(ADMIN), NOW).kind === "none",
+  "a self-pointing cookie -> none",
+);
+{
+  const o = impersonationCookieOutcome("admin", ADMIN, fresh(TARGET), NOW);
+  assert(
+    o.kind === "candidate" && o.targetId === TARGET,
+    "a fresh cookie pointing elsewhere -> candidate(targetId)",
+  );
+}
+assert(
+  impersonationCookieOutcome(
+    "admin",
+    ADMIN,
+    encodeImpersonationCookie(TARGET, NOW - IMPERSONATE_TTL_MS),
+    NOW,
+  ).kind === "ended",
+  "an expired cookie -> ended (session timed out)",
+);
+assert(
+  impersonationCookieOutcome("admin", ADMIN, TARGET, NOW).kind === "ended",
+  "a legacy bare-id cookie -> ended (stale, clear it)",
+);
+assert(
+  impersonationCookieOutcome("admin", ADMIN, `${TARGET}.nope`, NOW).kind === "ended",
+  "a malformed-timestamp cookie -> ended",
 );
 
 if (failures) {

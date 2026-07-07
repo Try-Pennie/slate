@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { atLeast, canImpersonate } from "@/lib/auth/roles";
 import {
   IMPERSONATE_COOKIE,
-  resolveEffectiveUserId,
+  impersonationCookieOutcome,
 } from "@/lib/auth/impersonation";
 import { devPreviewUser } from "@/lib/auth/dev-preview";
 import { NotAuthorizedError } from "@/lib/auth/http";
@@ -48,26 +48,52 @@ export async function realCurrentUser(): Promise<User | null> {
  *     the cookie says so. Blocks a rank-3 admin from inheriting a super_admin's
  *     powers; also re-checked live here in case the target was promoted mid-session.
  */
-async function resolveImpersonationTarget(real: User): Promise<User | null> {
+/**
+ * Full impersonation state for `real`, the single computation every accessor
+ * derives from (#652). `dropped` means a cookie was present but is no longer
+ * honored: either the session timed out / went stale (`expired`), or the target
+ * became ineligible mid-session: vanished, deactivated, or promoted past the
+ * ceiling (`unavailable`). Callers use this to notify + clear, instead of the old
+ * silent fall-back that was indistinguishable from having no cookie at all.
+ */
+type ImpersonationState =
+  | { status: "active"; target: User }
+  | { status: "dropped"; reason: "expired" | "unavailable" }
+  | { status: "none" };
+
+async function resolveImpersonationState(real: User): Promise<ImpersonationState> {
   const cookieStore = await cookies();
-  const effectiveId = resolveEffectiveUserId(
+  const outcome = impersonationCookieOutcome(
     real.role,
     real.id,
     cookieStore.get(IMPERSONATE_COOKIE)?.value,
     Date.now(),
   );
-  if (effectiveId === real.id) return null;
+  if (outcome.kind === "none") return { status: "none" };
+  if (outcome.kind === "ended") return { status: "dropped", reason: "expired" };
 
-  const { data } = await supabaseAdmin()
+  const { data, error } = await supabaseAdmin()
     .from("users")
     .select("*")
-    .eq("id", effectiveId)
+    .eq("id", outcome.targetId)
     .eq("org_id", real.org_id)
     .is("deactivated_at", null)
     .maybeSingle();
+  // A transient query error is NOT a real drop: don't permanently clear a valid
+  // session over a DB blip. Revert to self for this request only (as before) and
+  // let it resume once the lookup succeeds. Only an actual empty result or a
+  // ceiling failure means the target genuinely became ineligible.
+  if (error) return { status: "none" };
   const target = data as User | null;
-  if (!target || !canImpersonate(real.role, target.role)) return null;
-  return target;
+  if (!target || !canImpersonate(real.role, target.role)) {
+    return { status: "dropped", reason: "unavailable" };
+  }
+  return { status: "active", target };
+}
+
+async function resolveImpersonationTarget(real: User): Promise<User | null> {
+  const state = await resolveImpersonationState(real);
+  return state.status === "active" ? state.target : null;
 }
 
 /**
@@ -84,17 +110,35 @@ export async function currentUser(): Promise<User | null> {
 }
 
 /**
+ * The impersonation state for the current request, for the header to render both
+ * the active "viewing as" banner AND the dropped-session notice (#652) from one
+ * lookup: `active` (real + target), `dropped` (with the reason), or `none`.
+ */
+export type ImpersonationView =
+  | { status: "active"; real: User; target: User }
+  | { status: "dropped"; reason: "expired" | "unavailable" }
+  | { status: "none" };
+
+export async function getImpersonationView(): Promise<ImpersonationView> {
+  const real = await realCurrentUser();
+  if (!real) return { status: "none" };
+  const state = await resolveImpersonationState(real);
+  if (state.status === "active") return { status: "active", real, target: state.target };
+  if (state.status === "dropped") return { status: "dropped", reason: state.reason };
+  return { status: "none" };
+}
+
+/**
  * When an admin+ is impersonating, returns both the real actor and the target
- * (for the persistent banner). Null otherwise.
+ * (for the persistent banner). Null otherwise. Thin projection of
+ * `getImpersonationView` so booking-actor resolution can't drift from the header.
  */
 export async function getImpersonation(): Promise<{
   real: User;
   target: User;
 } | null> {
-  const real = await realCurrentUser();
-  if (!real) return null;
-  const target = await resolveImpersonationTarget(real);
-  return target ? { real, target } : null;
+  const view = await getImpersonationView();
+  return view.status === "active" ? { real: view.real, target: view.target } : null;
 }
 
 /** Resolves the signed-in user and asserts they hold at least `min` rank. */
