@@ -112,6 +112,28 @@ export async function emitWebhook(
  * Cron sweep: redeliver failed (or stuck-pending) deliveries that are due per
  * the exponential backoff, until attempts are exhausted.
  */
+/**
+ * Compare-and-swap claim on a delivery's attempt counter (#623): bump
+ * `attempts` only if it still equals what we read. The row's send bumps attempts
+ * too, so a concurrent actor (a manual resend racing the cron sweep, or two
+ * sweeps) that has already advanced this attempt loses the CAS and returns
+ * false, so the caller skips the send instead of double-POSTing. The winner then
+ * sends; `send()` rewrites the same `attempts` value alongside the status.
+ */
+async function claimDeliveryAttempt(
+  db: ReturnType<typeof supabaseAdmin>,
+  deliveryId: string,
+  currentAttempts: number,
+): Promise<boolean> {
+  const { data } = await db
+    .from("webhook_deliveries")
+    .update({ attempts: currentAttempts + 1 })
+    .eq("id", deliveryId)
+    .eq("attempts", currentAttempts)
+    .select("id");
+  return (data?.length ?? 0) > 0;
+}
+
 export async function retryFailedDeliveries(): Promise<number> {
   const db = supabaseAdmin();
   const { data: rows } = await db
@@ -122,25 +144,34 @@ export async function retryFailedDeliveries(): Promise<number> {
     .limit(100);
 
   const now = Date.now();
-  let retried = 0;
-  for (const r of (rows ?? []) as unknown as {
+  const due = ((rows ?? []) as unknown as {
     id: string;
     endpoint_id: string;
     event: WebhookEvent;
     payload: BookingEventPayload;
     attempts: number;
     updated_at: string;
-  }[]) {
-    if (!isDueForRetry(r.attempts, Date.parse(r.updated_at), now)) continue;
+  }[]).filter((r) => isDueForRetry(r.attempts, Date.parse(r.updated_at), now));
+  if (due.length === 0) return 0;
 
-    const { data: endpoint } = await db
-      .from("webhook_endpoints")
-      .select("*")
-      .eq("id", r.endpoint_id)
-      .maybeSingle();
+  // One endpoints query per sweep (#623): batch-load the distinct endpoints the
+  // due rows reference instead of a lookup per row.
+  const endpointIds = [...new Set(due.map((r) => r.endpoint_id))];
+  const { data: endpoints } = await db
+    .from("webhook_endpoints")
+    .select("*")
+    .in("id", endpointIds);
+  const byId = new Map(
+    ((endpoints ?? []) as WebhookEndpoint[]).map((e) => [e.id, e]),
+  );
+
+  let retried = 0;
+  for (const r of due) {
+    const endpoint = byId.get(r.endpoint_id);
     if (!endpoint) continue;
-
-    await send(endpoint as WebhookEndpoint, r.id, r.event, r.payload, r.attempts + 1);
+    // Claim the attempt before sending so a concurrent resend can't double-fire.
+    if (!(await claimDeliveryAttempt(db, r.id, r.attempts))) continue;
+    await send(endpoint, r.id, r.event, r.payload, r.attempts + 1);
     retried++;
   }
   return retried;
@@ -175,6 +206,9 @@ export async function resendDelivery(deliveryId: string, orgId: string): Promise
     .maybeSingle();
   if (!endpoint) return;
 
+  // Claim the attempt (#623) so a resend that races the cron retry sweep (or a
+  // duplicate resend) can't double-POST the same attempt.
+  if (!(await claimDeliveryAttempt(db, row.id, row.attempts))) return;
   await send(endpoint as WebhookEndpoint, row.id, row.event, row.payload, row.attempts + 1);
 }
 
