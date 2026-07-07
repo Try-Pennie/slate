@@ -4,6 +4,7 @@ import { requireBookingActor } from "@/lib/auth";
 import { forbiddenResponse } from "@/lib/auth/http";
 import { adminReassignBooking, DailyCapExceededError } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -66,11 +67,12 @@ export async function POST(
       );
     }
     const message = err instanceof Error ? err.message : "Reassign failed";
-    // "Booking not found" / "Agent not found or not bookable" are bad input (404/400);
-    // anything else is unexpected (500).
+    // "Booking not found" / "Agent not found or not bookable" are bad input (404):
+    // an intended, benign message the client acts on. Anything else is unexpected
+    // and must not leak its internals (#598).
     if (message.includes("not found")) {
       return NextResponse.json({ error: message }, { status: 404 });
     }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return internalErrorResponse(err, "admin/bookings/[id]/reassign");
   }
 }

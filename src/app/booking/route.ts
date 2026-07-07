@@ -14,6 +14,7 @@ import {
   clientIp,
   BOOKING_RATE_RULES,
 } from "@/lib/rate-limit";
+import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -101,9 +102,6 @@ export async function POST(req: NextRequest) {
     if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Booking failed" },
-      { status: 500 },
-    );
+    return internalErrorResponse(err, "booking");
   }
 }

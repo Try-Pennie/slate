@@ -166,6 +166,22 @@ export default function ManageBooking({
           )}
         </p>
 
+        {/* #634: don't dead-end a cancelled lead. Offer a warm path back into
+            the same bucket they were routed to. */}
+        {status === "cancelled" && (
+          <div className="mt-6">
+            <p className="text-sm text-fg-muted">
+              Changed your mind? You can grab a new time whenever you&apos;re ready.
+            </p>
+            <a
+              href={`/book?xbc=${encodeURIComponent(bucketCode)}`}
+              className="pn-btn pn-btn--primary mt-3 inline-flex min-h-[44px] rounded-lg px-5 text-sm"
+            >
+              Book a new time
+            </a>
+          </div>
+        )}
+
         {status !== "cancelled" && (
           <div className="mt-2">
             <label htmlFor="manage-tz" className="sr-only">

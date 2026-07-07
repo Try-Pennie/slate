@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { cancelBooking, BookingNotCancellableError } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -37,9 +38,6 @@ export async function POST(
     if (err instanceof BookingNotCancellableError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Cancel failed" },
-      { status: 500 },
-    );
+    return internalErrorResponse(err, "bookings/[token]/cancel");
   }
 }

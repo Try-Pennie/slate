@@ -8,6 +8,7 @@ import {
   NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -68,9 +69,6 @@ export async function POST(
     if (err instanceof NoEligibleAgentsError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Reschedule failed" },
-      { status: 500 },
-    );
+    return internalErrorResponse(err, "bookings/[token]/reschedule");
   }
 }
