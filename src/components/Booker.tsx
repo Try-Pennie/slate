@@ -555,13 +555,17 @@ export default function Booker({
           </p>
           {(["name", "email", "phone"] as const).map((field) => (
             <div key={field}>
-              <label htmlFor={`booker-${field}`} className="sr-only">
+              {/* Persistent visible label (#632): the field's purpose stays put
+                  after a value is typed, unlike the old placeholder-only step. */}
+              <label
+                htmlFor={`booker-${field}`}
+                className={`mb-1 block text-xs font-semibold ${c.muted}`}
+              >
                 {field[0].toUpperCase() + field.slice(1)}
               </label>
               <input
                 id={`booker-${field}`}
                 className={`min-h-12 w-full rounded-sm px-4 text-base ${c.input}`}
-                placeholder={field[0].toUpperCase() + field.slice(1)}
                 type={
                   field === "email" ? "email" : field === "phone" ? "tel" : "text"
                 }
