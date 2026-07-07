@@ -64,6 +64,12 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect((await res.json()).startsAt).toBe("2026-07-01T15:00:00.000Z");
   });
 
+  it("returns 400 for an unparseable start without calling the booking layer (#622)", async () => {
+    const res = await POST(req({ start: "garbage", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(400);
+    expect(service.rescheduleBooking).not.toHaveBeenCalled();
+  });
+
   it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     service.rescheduleBooking.mockRejectedValueOnce(new Error('column "agent_id" does not exist'));
