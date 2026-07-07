@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Role, User } from "@/lib/db/types";
-import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
+import {
+  encodeImpersonationCookie,
+  IMPERSONATE_TTL_MS,
+} from "@/lib/auth/impersonation";
 
 // Integration coverage for the #588 impersonation role ceiling as it runs
 // through the real DB/cookie boundary in currentUser + getImpersonation. The
@@ -11,9 +14,18 @@ import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
 
 // Queue of rows returned by the chained supabase builder's maybeSingle(), in
 // call order: [ real signed-in user, impersonation target ].
+// A queued row is returned as `data`; the sentinel `{ __error: true }` simulates a
+// transient query failure ({ data: null, error }) for that call.
+const DB_ERROR = { __error: true } as const;
 const dbRows = vi.hoisted(() => ({ queue: [] as (unknown | null)[] }));
 const maybeSingle = vi.hoisted(() =>
-  vi.fn(async () => ({ data: dbRows.queue.shift() ?? null })),
+  vi.fn(async () => {
+    const next = dbRows.queue.shift() ?? null;
+    if (next && typeof next === "object" && "__error" in next) {
+      return { data: null, error: { message: "transient" } };
+    }
+    return { data: next, error: null };
+  }),
 );
 const builder = vi.hoisted(() => {
   const b: Record<string, unknown> = {};
@@ -42,6 +54,7 @@ vi.mock("next/headers", () => ({
 import {
   currentUser,
   getImpersonation,
+  getImpersonationView,
   requireRole,
   requireManager,
   requireAdmin,
@@ -181,5 +194,64 @@ describe("getImpersonation ceiling (#588)", () => {
     const imp = await getImpersonation();
     expect(imp?.real.id).toBe("admin-1");
     expect(imp?.target.id).toBe("agent-9");
+  });
+});
+
+// #652: a silently-dropped "view as" session must be distinguishable from a plain
+// no-cookie request so the header can notify the admin and clear the stale cookie.
+describe("getImpersonationView drop states (#652)", () => {
+  it("reports a timed-out session (expired cookie) as dropped/expired without a DB lookup", async () => {
+    const admin = user("admin-1", "admin");
+    authUser.id = "auth-1";
+    dbRows.queue = [admin]; // only realCurrentUser resolves; no target fetch
+    cookieValue.v = encodeImpersonationCookie("agent-9", Date.now() - IMPERSONATE_TTL_MS - 1);
+    const view = await getImpersonationView();
+    expect(view.status).toBe("dropped");
+    expect(view.status === "dropped" && view.reason).toBe("expired");
+  });
+
+  it("reports a vanished/deactivated target as dropped/unavailable", async () => {
+    const admin = user("admin-1", "admin");
+    arrange(admin, null); // target row comes back null (deactivated or removed)
+    const view = await getImpersonationView();
+    expect(view.status).toBe("dropped");
+    expect(view.status === "dropped" && view.reason).toBe("unavailable");
+  });
+
+  it("reports a target that now outranks the admin as dropped/unavailable (ceiling)", async () => {
+    const admin = user("admin-1", "admin");
+    arrange(admin, user("super-1", "super_admin"));
+    const view = await getImpersonationView();
+    expect(view.status).toBe("dropped");
+    expect(view.status === "dropped" && view.reason).toBe("unavailable");
+  });
+
+  it("does NOT drop the session on a transient target-lookup error (reverts to self, keeps the cookie)", async () => {
+    const admin = user("admin-1", "admin");
+    authUser.id = "auth-1";
+    // realCurrentUser resolves the admin, then the target lookup errors out.
+    dbRows.queue = [admin, DB_ERROR];
+    cookieValue.v = encodeImpersonationCookie("agent-9", Date.now());
+    // A DB blip must read as "none" (act as self this request), not a dropped
+    // session, so the cookie is left intact to resume once the lookup recovers.
+    expect((await getImpersonationView()).status).toBe("none");
+  });
+
+  it("reports a valid down-rank session as active with the target", async () => {
+    const admin = user("admin-1", "admin");
+    arrange(admin, user("agent-9", "agent"));
+    const view = await getImpersonationView();
+    expect(view.status).toBe("active");
+    expect(view.status === "active" && view.target.id).toBe("agent-9");
+  });
+
+  it("reports a plain signed-in session (no cookie) as none, and currentUser stays self on a drop", async () => {
+    const admin = user("admin-1", "admin");
+    signedInAs(admin);
+    expect((await getImpersonationView()).status).toBe("none");
+    // On an expired cookie, currentUser must still resolve to the admin themselves.
+    dbRows.queue = [admin];
+    cookieValue.v = encodeImpersonationCookie("agent-9", Date.now() - IMPERSONATE_TTL_MS - 1);
+    expect((await currentUser())?.id).toBe("admin-1");
   });
 });

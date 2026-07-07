@@ -60,6 +60,7 @@ import {
   setUserRole,
   startImpersonation,
   stopImpersonation,
+  endDroppedImpersonation,
   resendWebhookDelivery,
   replayFailedWebhooks,
 } from "./actions";
@@ -166,6 +167,36 @@ describe("startImpersonation denial branches", () => {
     expect(recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "impersonate.stop", targetId: "agent1" }),
     );
+  });
+});
+
+// #652: the page auto-clears a dropped session in the background. This action
+// deletes the cookie and records the auto-end WITHOUT redirecting, so the notice
+// stays visible on the current page.
+describe("endDroppedImpersonation (#652)", () => {
+  it("clears the cookie and audits the auto-end with the reason and decoded target", async () => {
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    cookieStore.get.mockReturnValueOnce({
+      value: encodeImpersonationCookie("agent1", 1_700_000_000_000),
+    });
+    await endDroppedImpersonation("expired");
+    expect(cookieStore.delete).toHaveBeenCalledWith("slate_impersonate");
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "impersonate.ended",
+        targetId: "agent1",
+        details: expect.objectContaining({ reason: "expired" }),
+      }),
+    );
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("is a safe no-op when there is no cookie (does not audit)", async () => {
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    cookieStore.get.mockReturnValueOnce(undefined);
+    await endDroppedImpersonation("expired");
+    expect(cookieStore.delete).toHaveBeenCalledWith("slate_impersonate");
+    expect(recordAudit).not.toHaveBeenCalled();
   });
 });
 

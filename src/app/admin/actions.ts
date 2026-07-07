@@ -538,6 +538,35 @@ export async function stopImpersonation(): Promise<void> {
   redirect("/admin");
 }
 
+/**
+ * Clear a silently-dropped "view as" session (#652): the impersonated user became
+ * ineligible mid-session (timed out, deactivated, removed, or promoted past the
+ * ceiling), so the app already reverted the admin to themselves. The header fires
+ * this in the background to delete the stale cookie and record the auto-end.
+ *
+ * Unlike stopImpersonation this does NOT redirect or revalidate: the admin is
+ * already on their own view, and leaving the current render intact keeps the
+ * "session ended" notice visible while the cookie clears behind it. Safe to call
+ * repeatedly and when no cookie remains (idempotent).
+ */
+export async function endDroppedImpersonation(
+  reason: "expired" | "unavailable",
+): Promise<void> {
+  const real = await realCurrentUser();
+  const store = await cookies();
+  const targetId = impersonationTargetId(store.get(IMPERSONATE_COOKIE)?.value);
+  store.delete(IMPERSONATE_COOKIE);
+  if (real && targetId) {
+    await recordAudit({
+      orgId: real.org_id,
+      actorId: real.id,
+      action: "impersonate.ended",
+      targetId,
+      details: { reason },
+    });
+  }
+}
+
 /** Assigns (or clears) an agent's manager, the routing edge for OOO requests. */
 export async function setAgentManager(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");

@@ -16,6 +16,7 @@ export type AuditAction =
   | "ooo.retry"
   | "impersonate.start"
   | "impersonate.stop"
+  | "impersonate.ended"
   | "monitor.settings";
 
 /**
