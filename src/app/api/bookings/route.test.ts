@@ -201,6 +201,27 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: "VALIDATION" });
   });
+
+  it("does NOT leak the raw message on an INTERNAL 500, but keeps the code (#707)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new Error('relation "bookings" does not exist'));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe("INTERNAL");
+    expect(body.error).not.toMatch(/bookings|does not exist/);
+  });
+
+  it("keeps the intended message on a typed error (SLOT_TAKEN) (#707)", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("That time was just taken."));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("SLOT_TAKEN");
+    expect(body.error).toBe("That time was just taken.");
+  });
 });
 
 describe("GET /api/bookings (list mode + lookup mode)", () => {
