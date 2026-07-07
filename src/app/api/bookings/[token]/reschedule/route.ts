@@ -13,7 +13,10 @@ import { internalErrorResponse } from "@/lib/api/errors";
 export const dynamic = "force-dynamic";
 
 const schema = z.object({
-  start: z.string().min(1),
+  // A parseable ISO instant (the booker sends slot starts as UTC `...Z` strings).
+  // Reject garbage here so it can't reach bookingWindow's `new Date().toISOString()`,
+  // which throws a RangeError on invalid input and surfaces as a generic 500 (#622).
+  start: z.string().refine((s) => !Number.isNaN(Date.parse(s)), "Invalid start"),
   reason: z.string().optional(),
   reasonDetail: z.string().optional(),
 });
