@@ -29,7 +29,7 @@ async function timed(url: string, headers: Record<string, string> = {}): Promise
     const res = await fetch(url, { headers });
     await res.text(); // drain body so timing covers full response
     return { ms: performance.now() - t0, status: res.status, ok: res.ok };
-  } catch (e) {
+  } catch {
     return { ms: performance.now() - t0, status: 0, ok: false };
   }
 }

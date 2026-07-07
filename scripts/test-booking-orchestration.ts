@@ -36,7 +36,6 @@ import {
   type AbandonedReschedulePin,
   type CreateBookingInput,
   type ApiBookingInput,
-  type ApiBookingListItem,
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
@@ -2991,7 +2990,7 @@ async function run() {
 
   // --- routing_trace explainability: no-criteria bucket still gets requested_tier from tierKeyOf ---
   {
-    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     // Plan 2: requested_tier comes from tierKeyOf(bucketCode), not criteria.
     // bucketCode "411" -> "very_high" regardless of whether the bucket has criteria.
     const res = await createBooking(input, deps);

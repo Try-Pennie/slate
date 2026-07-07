@@ -16,6 +16,21 @@ const eslintConfig = defineConfig([
     ".open-next/**",
     ".wrangler/**",
   ]),
+  {
+    // A leading underscore marks an intentionally-unused binding (positional
+    // mock params, deliberately-ignored destructured fields, caught errors we
+    // don't inspect). Treat that prefix as the opt-out so those don't warn.
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;
