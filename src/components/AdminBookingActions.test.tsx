@@ -307,6 +307,73 @@ describe("AdminBookingActions", () => {
     expect(screen.getByText(/still working/i)).toBeTruthy();
     vi.useRealTimers();
   });
+
+  // #658: the still-working cue shares one busy/stalled mechanism across all
+  // three admin actions; the cancel path proves it above. Lock reschedule and
+  // reassign too so a wedged POST on either can't sit on a silent spinner.
+  it("shows a still-working cue when an admin reschedule POST hangs (#658)", async () => {
+    global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/availability")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ slots: ["2026-06-21T15:00:00.000Z"] }),
+        } as Response);
+      }
+      // The reschedule POST wedges until its AbortSignal fires.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    }) as unknown as typeof fetch;
+
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+    fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    fireEvent.click(await screen.findByRole("radio", { name: /found a better time/i }));
+    const slot = await screen.findByRole("button", { name: /Sun/i });
+
+    vi.useFakeTimers();
+    fireEvent.click(slot);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByText(/still working/i)).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    expect(screen.getByText(/still working/i)).toBeTruthy();
+    vi.useRealTimers();
+  });
+
+  it("shows a still-working cue when an admin reassign POST hangs (#658)", async () => {
+    global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/admin/agents")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ agents: AGENTS }),
+        } as Response);
+      }
+      // The reassign POST wedges until its AbortSignal fires.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+    fireEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
+    const agentBtn = await screen.findByRole("button", { name: /bea agent/i });
+
+    vi.useFakeTimers();
+    fireEvent.click(agentBtn);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByText(/still working/i)).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    expect(screen.getByText(/still working/i)).toBeTruthy();
+    vi.useRealTimers();
+  });
 });
 
 afterEach(() => vi.useRealTimers());

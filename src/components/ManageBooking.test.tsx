@@ -290,6 +290,39 @@ describe("ManageBooking", () => {
     expect(screen.getByText(/still working/i)).toBeTruthy();
     vi.useRealTimers();
   });
+
+  // #658: cancel and reschedule share one busy/stalled cue; the cancel hang is
+  // covered above. Lock the reschedule hang too so a wedged move POST can't sit
+  // on a silent spinner.
+  it("shows a still-working cue when a reschedule POST hangs (#658)", async () => {
+    global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/reschedule")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ slots: ["2026-06-21T15:00:00.000Z"] }),
+      } as Response);
+    }) as unknown as typeof fetch;
+
+    render(<ManageBooking {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    fireEvent.click(await screen.findByRole("radio", { name: /schedule conflict/i }));
+    const slot = await screen.findByRole("button", { name: /Sun/i });
+
+    vi.useFakeTimers();
+    fireEvent.click(slot);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByText(/still working/i)).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    expect(screen.getByText(/still working/i)).toBeTruthy();
+    vi.useRealTimers();
+  });
 });
 
 beforeEach(() => {
