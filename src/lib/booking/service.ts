@@ -37,6 +37,7 @@ import type {
   ReschedulePin,
 } from "@/lib/booking/orchestration";
 import { toE164 } from "@/lib/phone";
+import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook } from "@/lib/webhooks/emit";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -1156,7 +1157,11 @@ function realDeps(): BookingDeps {
       if (identity.salesforceId)
         queries.push(base().eq("salesforce_id", identity.salesforceId));
       const email = identity.email?.trim();
-      if (email) queries.push(base().ilike("attendee_email", email));
+      // Escape LIKE metacharacters (#620): an email's `_`/`%` must not act as an
+      // ilike wildcard, or a `john_doe@` address would also fetch `johnXdoe@` and
+      // an unordered limit(20) could crowd out the true row. Still case-insensitive
+      // (matches the lowercased grader) and still served by the trigram index.
+      if (email) queries.push(base().ilike("attendee_email", escapeLike(email)));
       const phone = toE164(identity.phone);
       if (phone) queries.push(base().eq("attendee_phone", phone));
       if (queries.length === 0) return [];
