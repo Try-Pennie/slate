@@ -69,6 +69,14 @@ describe("POST /booking (embed) error mapping", () => {
     expect((await post(VALID_BODY)).status).toBe(503);
   });
 
+  it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.createBooking.mockRejectedValueOnce(new Error('relation "buckets" does not exist'));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).not.toMatch(/buckets|does not exist/);
+  });
+
   it("returns the booking on success", async () => {
     service.createBooking.mockResolvedValue({
       booking: { id: "bk-1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },

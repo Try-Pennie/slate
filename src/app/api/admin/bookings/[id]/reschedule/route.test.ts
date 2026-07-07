@@ -92,4 +92,14 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain("411");
   });
+
+  it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.adminRescheduleBooking.mockRejectedValueOnce(
+      new Error('relation "public.bookings" does not exist'),
+    );
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).not.toMatch(/bookings|does not exist/);
+  });
 });

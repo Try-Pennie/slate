@@ -53,10 +53,13 @@ describe("POST /admin/bookings/[id]/cancel", () => {
     );
   });
 
-  it("maps a cancel failure to 500", async () => {
-    service.adminCancelBooking.mockRejectedValueOnce(new Error("Cancel failed"));
+  it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.adminCancelBooking.mockRejectedValueOnce(
+      new Error('relation "bookings" does not exist'),
+    );
     const res = await POST(req({ reason: "schedule_conflict" }), params);
     expect(res.status).toBe(500);
-    expect((await res.json()).error).toBe("Cancel failed");
+    expect((await res.json()).error).not.toMatch(/bookings|does not exist/);
   });
 });

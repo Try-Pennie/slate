@@ -93,4 +93,21 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     expect(res.status).toBe(400);
     expect(service.adminReassignBooking).not.toHaveBeenCalled();
   });
+
+  it("keeps the intended 'not found' message as a 404 (#598 leaves benign input errors)", async () => {
+    service.adminReassignBooking.mockRejectedValueOnce(new Error("Agent not found or not bookable"));
+    const res = await POST(req({ agentEmail: "gone@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe("Agent not found or not bookable");
+  });
+
+  it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.adminReassignBooking.mockRejectedValueOnce(
+      new Error('duplicate key value violates unique constraint "bookings_pkey"'),
+    );
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).not.toMatch(/constraint|bookings_pkey|duplicate key/);
+  });
 });

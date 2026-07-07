@@ -63,4 +63,12 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).startsAt).toBe("2026-07-01T15:00:00.000Z");
   });
+
+  it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.rescheduleBooking.mockRejectedValueOnce(new Error('column "agent_id" does not exist'));
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).not.toMatch(/agent_id|does not exist/);
+  });
 });

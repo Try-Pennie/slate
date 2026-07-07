@@ -4,6 +4,7 @@ import { requireBookingActor } from "@/lib/auth";
 import { forbiddenResponse } from "@/lib/auth/http";
 import { adminCancelBooking } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -41,9 +42,6 @@ export async function POST(
     await adminCancelBooking(id, reason.reason, actor);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Cancel failed" },
-      { status: 500 },
-    );
+    return internalErrorResponse(err, "admin/bookings/[id]/cancel");
   }
 }
