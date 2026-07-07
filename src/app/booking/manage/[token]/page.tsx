@@ -1,4 +1,5 @@
 import ManageBooking from "@/components/ManageBooking";
+import ManageNotFound from "@/components/ManageNotFound";
 import { getBookingByToken } from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
@@ -19,16 +20,7 @@ export default async function ManagePage({
   const found = await getBookingByToken(token);
 
   if (!found) {
-    return (
-      <main
-        data-theme={theme}
-        className="flex min-h-dvh items-center justify-center bg-bg p-8"
-      >
-        <p className="text-sm text-fg-muted">
-          We couldn&apos;t find that booking.
-        </p>
-      </main>
-    );
+    return <ManageNotFound theme={theme} />;
   }
 
   return (
