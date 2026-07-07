@@ -27,7 +27,7 @@ interface Env {
   [key: string]: unknown;
 }
 
-export default {
+const worker = {
   fetch: (request: Request, env: Env, ctx: ExecutionContext) =>
     handler.fetch(request, env, ctx),
 
@@ -60,3 +60,5 @@ export default {
     );
   },
 };
+
+export default worker;

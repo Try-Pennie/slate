@@ -36,14 +36,14 @@
 
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import * as orchestration from "@/lib/booking/orchestration";
 import { roundRobinCandidates } from "@/lib/availability/service";
 import type { BookingDeps } from "@/lib/booking/orchestration";
-import type { BookingEventPayload, RoutingMeta } from "@/lib/webhooks/types";
+import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type {
   Booking,
   BookingReservation,
@@ -677,7 +677,6 @@ async function main() {
 
   // The idempotency key uses a unique salesforce id so the booking gets a key.
   const testSalesforceId = `harness-sf-${epoch}`;
-  const idempotencyKey: string | null = null; // will be computed by orchestration
 
   // Working-hours slot: next weekday at 14:00 UTC (10:00 AM ET).
   const slotStart = nextWeekdaySlotIso();
