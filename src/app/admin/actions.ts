@@ -25,6 +25,7 @@ import {
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
+import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import {
   parseMonitorSettingsForm,
@@ -622,11 +623,29 @@ export async function setUserRole(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
+// Server-side duplicate guard for the non-idempotent webhook re-delivery
+// actions (#674). The SubmitButton's client-side disable (#630) can't stop a
+// flaky-network retry (the client lost the response and retries AFTER the server
+// already ran) or a racing request from re-firing a delivery. A DB-backed claim
+// (acquireLock, sync_locks) that we DELIBERATELY DO NOT RELEASE makes a duplicate
+// within the window a no-op: the claim lingers until its TTL expires, so it
+// covers the retry-after-completion case, not just an in-flight race. A genuinely
+// new action after the window still steals the stale claim and proceeds. `send()`
+// records failure internally (never throws), so there is no error path that needs
+// the claim released early.
+const WEBHOOK_RESEND_DEDUPE_TTL_MS = 60_000;
+const WEBHOOK_REPLAY_DEDUPE_TTL_MS = 5 * 60_000;
+
 /** Admin-only: re-fire a webhook delivery from the delivery log. */
 export async function resendWebhookDelivery(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const deliveryId = String(form.get("delivery_id") ?? "");
   if (!deliveryId) return;
+  const claim = await acquireLock(
+    `webhook_resend:${admin.org_id}:${deliveryId}`,
+    WEBHOOK_RESEND_DEDUPE_TTL_MS,
+  );
+  if (!claim) return; // a duplicate/racing request already re-fired this delivery
   await resendDelivery(deliveryId, admin.org_id);
   revalidatePath("/admin");
 }
@@ -638,6 +657,13 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
 export async function replayFailedWebhooks(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const hours = Math.min(Math.max(Number(form.get("hours")) || 24, 1), 168);
+  // `hours` is in the key so a genuinely different window isn't deduped away,
+  // while an identical resubmit (same window) is.
+  const claim = await acquireLock(
+    `webhook_replay:${admin.org_id}:${hours}`,
+    WEBHOOK_REPLAY_DEDUPE_TTL_MS,
+  );
+  if (!claim) return; // a duplicate/racing request already replayed this window
   const sinceIso = new Date(Date.now() - hours * 3_600_000).toISOString();
   await replayDeadLetteredDeliveries(admin.org_id, sinceIso);
   revalidatePath("/admin");
