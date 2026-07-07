@@ -351,6 +351,32 @@ describe("ManageBooking", () => {
     expect(await screen.findByText(/no times left, pick another/i)).toBeTruthy();
     expect(screen.getByRole("status").textContent).toMatch(/no times/i);
   });
+
+  // #634: a cancelled booking must not dead-end the lead. The terminal state
+  // offers a warm "Book a new time" link back into the same bucket.
+  it("offers a rebook link into the same bucket after cancelling", async () => {
+    mockFetch({ cancel: { ok: true } });
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /cancel booking/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
+    await userEvent.click(screen.getByRole("button", { name: /yes, cancel/i }));
+
+    expect(await screen.findByText("This booking is cancelled.")).toBeTruthy();
+    const rebook = screen.getByRole("link", { name: /book a new time/i });
+    expect(rebook.getAttribute("href")).toBe("/book?xbc=411");
+  });
+
+  it("shows the rebook link when the booking is already cancelled on load", () => {
+    render(<ManageBooking {...baseProps} status="cancelled" />);
+    const rebook = screen.getByRole("link", { name: /book a new time/i });
+    expect(rebook.getAttribute("href")).toBe("/book?xbc=411");
+  });
+
+  it("does not show a rebook link on an active booking", () => {
+    render(<ManageBooking {...baseProps} />);
+    expect(screen.queryByRole("link", { name: /book a new time/i })).toBeNull();
+  });
 });
 
 beforeEach(() => {
