@@ -54,6 +54,7 @@ async function resolveImpersonationTarget(real: User): Promise<User | null> {
     real.role,
     real.id,
     cookieStore.get(IMPERSONATE_COOKIE)?.value,
+    Date.now(),
   );
   if (effectiveId === real.id) return null;
 

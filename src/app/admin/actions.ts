@@ -11,7 +11,11 @@ import {
   requireAdmin,
   requireManager,
 } from "@/lib/auth";
-import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
+import {
+  IMPERSONATE_COOKIE,
+  IMPERSONATE_TTL_SECONDS,
+  encodeImpersonationCookie,
+} from "@/lib/auth/impersonation";
 import {
   atLeast,
   canImpersonate,
@@ -497,11 +501,15 @@ export async function startImpersonation(form: FormData): Promise<void> {
   }
 
   const store = await cookies();
-  store.set(IMPERSONATE_COOKIE, target.id, {
+  // Timestamped value + matching maxAge so the session auto-expires (#653): the
+  // server-side TTL check in resolveEffectiveUserId is authoritative, maxAge is
+  // defense in depth.
+  store.set(IMPERSONATE_COOKIE, encodeImpersonationCookie(target.id, Date.now()), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
+    maxAge: IMPERSONATE_TTL_SECONDS,
   });
   await recordAudit({
     orgId: admin.org_id,
