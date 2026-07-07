@@ -15,6 +15,7 @@ import {
   IMPERSONATE_COOKIE,
   IMPERSONATE_TTL_SECONDS,
   encodeImpersonationCookie,
+  impersonationTargetId,
 } from "@/lib/auth/impersonation";
 import {
   atLeast,
@@ -524,7 +525,7 @@ export async function startImpersonation(form: FormData): Promise<void> {
 export async function stopImpersonation(): Promise<void> {
   const real = await realCurrentUser();
   const store = await cookies();
-  const targetId = store.get(IMPERSONATE_COOKIE)?.value;
+  const targetId = impersonationTargetId(store.get(IMPERSONATE_COOKIE)?.value);
   store.delete(IMPERSONATE_COOKIE);
   if (real && targetId) {
     await recordAudit({

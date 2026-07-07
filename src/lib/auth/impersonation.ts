@@ -39,6 +39,16 @@ function parseImpersonationCookie(
 }
 
 /**
+ * Extract just the target user id from a cookie value, for callers that need the
+ * id regardless of expiry (e.g. the stop-impersonation audit log). A legacy
+ * bare-id cookie (no timestamp) is returned as-is; undefined stays undefined.
+ */
+export function impersonationTargetId(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return parseImpersonationCookie(value)?.targetId ?? value;
+}
+
+/**
  * Which user id a request should act as. This is the FLOOR gate: impersonation is
  * honored ONLY when the real session is an admin or super_admin — for everyone
  * else the cookie is ignored, so a forged cookie can never escalate privileges. A

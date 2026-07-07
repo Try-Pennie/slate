@@ -59,9 +59,11 @@ vi.mock("@/lib/locks", () => locks);
 import {
   setUserRole,
   startImpersonation,
+  stopImpersonation,
   resendWebhookDelivery,
   replayFailedWebhooks,
 } from "./actions";
+import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
 
 const admin = { id: "admin1", role: "admin", org_id: "o1" };
 
@@ -151,6 +153,19 @@ describe("startImpersonation denial branches", () => {
     // A finite maxAge bounds the cookie's own lifetime as defense in depth.
     expect(opts.maxAge).toBeGreaterThan(0);
     expect(Number.isFinite(opts.maxAge)).toBe(true);
+  });
+
+  // The cookie now carries "id.timestamp" (#653); the stop audit must record the
+  // clean target id, not the encoded value.
+  it("records the decoded target id in the stop audit, not the raw cookie", async () => {
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    cookieStore.get.mockReturnValueOnce({
+      value: encodeImpersonationCookie("agent1", 1_700_000_000_000),
+    });
+    await expect(stopImpersonation()).rejects.toThrow(/NEXT_REDIRECT:\/admin/);
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "impersonate.stop", targetId: "agent1" }),
+    );
   });
 });
 

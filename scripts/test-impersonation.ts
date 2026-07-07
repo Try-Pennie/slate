@@ -7,6 +7,7 @@
 import {
   resolveEffectiveUserId,
   encodeImpersonationCookie,
+  impersonationTargetId,
   IMPERSONATE_TTL_MS,
 } from "../src/lib/auth/impersonation.ts";
 
@@ -105,6 +106,20 @@ assert(
 assert(
   resolveEffectiveUserId("admin", ADMIN, "", NOW) === ADMIN,
   "an empty cookie is ignored",
+);
+
+// --- impersonationTargetId extracts the clean id for the stop audit (#653) ---
+assert(
+  impersonationTargetId(encodeImpersonationCookie(TARGET, NOW)) === TARGET,
+  "decodes the target id out of an encoded cookie",
+);
+assert(
+  impersonationTargetId(TARGET) === TARGET,
+  "returns a legacy bare-id cookie as-is",
+);
+assert(
+  impersonationTargetId(undefined) === undefined,
+  "undefined cookie stays undefined",
 );
 
 if (failures) {
