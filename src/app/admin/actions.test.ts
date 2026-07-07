@@ -135,6 +135,23 @@ describe("startImpersonation denial branches", () => {
     expect(target).toBeTruthy();
     expect(cookieStore.set).not.toHaveBeenCalled();
   });
+
+  // #653: a "view as" session must be bounded so a forgotten one auto-ends.
+  it("sets a bounded, timestamped cookie on the success path", async () => {
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    dbState.single = { id: "agent1", role: "agent" };
+    await expect(startImpersonation(form({ email: "agent@x.com" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/me/,
+    );
+    expect(cookieStore.set).toHaveBeenCalledTimes(1);
+    const [name, value, opts] = cookieStore.set.mock.calls[0];
+    expect(name).toBe("slate_impersonate");
+    // Value carries the target id AND an issued-at timestamp (id.timestamp).
+    expect(value).toMatch(/^agent1\.\d+$/);
+    // A finite maxAge bounds the cookie's own lifetime as defense in depth.
+    expect(opts.maxAge).toBeGreaterThan(0);
+    expect(Number.isFinite(opts.maxAge)).toBe(true);
+  });
 });
 
 // #674: the SubmitButton's client-side disable (#630) can't stop a flaky-network

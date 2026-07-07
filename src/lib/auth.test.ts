@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Role, User } from "@/lib/db/types";
+import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
 
 // Integration coverage for the #588 impersonation role ceiling as it runs
 // through the real DB/cookie boundary in currentUser + getImpersonation. The
@@ -70,7 +71,9 @@ const user = (id: string, role: Role, extra: Partial<User> = {}): User =>
 // the target-fetch returns, e.g. null when deactivated/vanished).
 function arrange(real: User, target: User | null) {
   authUser.id = real.auth_user_id ?? "auth-1";
-  cookieValue.v = target ? target.id : "some-target-id";
+  // A freshly-issued impersonation cookie (id + current timestamp, #653) so the
+  // TTL check honors it and these tests exercise the ceiling, not expiry.
+  cookieValue.v = encodeImpersonationCookie(target ? target.id : "some-target-id", Date.now());
   dbRows.queue = [real, target];
 }
 
