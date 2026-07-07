@@ -208,7 +208,7 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
     expect(screen.queryByText(/no times left/i)).toBeNull();
   });
 
@@ -262,8 +262,10 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(await screen.findByText(/no times left/i)).toBeTruthy();
-    expect(screen.queryByRole("status", { name: /loading/i })).toBeNull();
+    // The visible empty copy carries the trailing "pick another"; the sr-only
+    // status region says just "No times left", so target the visible line.
+    expect(await screen.findByText(/no times left, pick another/i)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).not.toMatch(/loading/i);
   });
 
   it("shows a still-working cue when a cancel POST hangs (#626)", async () => {
@@ -322,6 +324,32 @@ describe("ManageBooking", () => {
     await act(async () => { vi.advanceTimersByTime(10000); });
     expect(screen.getByText(/still working/i)).toBeTruthy();
     vi.useRealTimers();
+  });
+
+  // #633: the reschedule grid's settled state must be announced, not just the
+  // loading skeletons. A polite role=status names the slot count when times
+  // load and the empty message when there are none.
+  it("announces the slot count via role=status when the reschedule list loads (#633)", async () => {
+    mockFetch({
+      availability: {
+        ok: true,
+        body: { slots: ["2026-06-21T15:00:00.000Z", "2026-06-21T16:00:00.000Z"] },
+      },
+    });
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    const status = await screen.findByRole("status");
+    await waitFor(() => expect(status.textContent).toMatch(/2 times available/i));
+  });
+
+  it("announces the empty message via role=status when no reschedule times (#633)", async () => {
+    mockFetch({ availability: { ok: true, body: { slots: [] } } });
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    expect(await screen.findByText(/no times left, pick another/i)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/no times/i);
   });
 });
 

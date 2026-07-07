@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AdminBookingActions from "@/components/AdminBookingActions";
 
@@ -208,7 +208,7 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
     expect(screen.queryByText(/no open times/i)).toBeNull();
   });
 
@@ -245,8 +245,10 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(await screen.findByText(/no open times/i)).toBeTruthy();
-    expect(screen.queryByRole("status", { name: /loading/i })).toBeNull();
+    // Visible copy is "No open times."; the sr-only status says "No open times",
+    // so target the visible line by its trailing period.
+    expect(await screen.findByText(/no open times\./i)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).not.toMatch(/loading/i);
   });
 
   it("shows loading skeletons, not the empty copy, while the reassign agent list loads", async () => {
@@ -255,7 +257,7 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
 
-    expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
     expect(screen.queryByText(/no matching agents/i)).toBeNull();
   });
 
@@ -373,6 +375,17 @@ describe("AdminBookingActions", () => {
     await act(async () => { vi.advanceTimersByTime(10000); });
     expect(screen.getByText(/still working/i)).toBeTruthy();
     vi.useRealTimers();
+  });
+
+  // #633: announce the reschedule grid's settled state via a polite role=status,
+  // not just the loading skeletons.
+  it("announces the reschedule slot count via role=status (#633)", async () => {
+    mockFetch(); // availability responds with one slot
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    const status = await screen.findByRole("status");
+    await waitFor(() => expect(status.textContent).toMatch(/1 time available/i));
   });
 });
 

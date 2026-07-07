@@ -65,9 +65,15 @@ export function useFetchList<T>(
 
 /**
  * Renders one of four states for an async list: loading skeletons, an error
- * with a retry, the caller's empty node, or the children. The skeleton region
- * is a labelled `role="status"` live region so assistive tech announces the
- * "still loading" state rather than a misleading empty message.
+ * with a retry, the caller's empty node, or the children.
+ *
+ * A single persistent `role="status"` polite live region sits above the visual
+ * branch and carries the current announcement (#633): the loading label, then
+ * the settled count (`resultLabel`) or empty message (`emptyLabel`). Because the
+ * region stays mounted across the load→settle swap, assistive tech announces the
+ * outcome, so a screen-reader user selecting a day hears the count instead of
+ * silence. Errors are announced by the `role="alert"` below, so the polite
+ * region stays quiet in that state to avoid a double read.
  */
 export function AsyncListStates({
   loading,
@@ -75,6 +81,8 @@ export function AsyncListStates({
   isEmpty,
   onRetry,
   loadingLabel,
+  resultLabel,
+  emptyLabel,
   skeletonCount,
   skeletonClassName,
   containerClassName,
@@ -86,6 +94,10 @@ export function AsyncListStates({
   isEmpty: boolean;
   onRetry: () => void;
   loadingLabel: string;
+  /** Announced once the list settles with items, e.g. "12 times available". */
+  resultLabel?: string;
+  /** Announced once the list settles empty, e.g. "No times left". */
+  emptyLabel?: string;
   skeletonCount: number;
   skeletonClassName: string;
   /** Wraps the skeletons so they match the populated list's layout (grid/rows). */
@@ -93,34 +105,46 @@ export function AsyncListStates({
   emptyNode: ReactNode;
   children: ReactNode;
 }) {
-  if (loading) {
-    return (
-      <div role="status" aria-label={loadingLabel} className={containerClassName}>
-        {Array.from({ length: skeletonCount }).map((_, i) => (
-          <div key={i} className={`animate-pulse rounded-md bg-fg/10 ${skeletonClassName}`} />
-        ))}
-        <span className="sr-only">{loadingLabel}</span>
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="space-y-2">
-        <p role="alert" className="flex items-start gap-2 text-sm text-[var(--error)]">
-          <span className="mt-0.5 shrink-0">
-            <AlertIcon width={15} height={15} />
-          </span>
-          Couldn&apos;t load. Check your connection.
-        </p>
-        <button
-          onClick={onRetry}
-          className="inline-flex min-h-9 items-center rounded-md border border-border px-3 text-sm text-fg hover:border-fg/45"
-        >
-          Try again
-        </button>
-      </div>
-    );
-  }
-  if (isEmpty) return <>{emptyNode}</>;
-  return <>{children}</>;
+  const announcement = loading
+    ? loadingLabel
+    : error
+      ? ""
+      : isEmpty
+        ? (emptyLabel ?? "")
+        : (resultLabel ?? "");
+
+  return (
+    <>
+      <span role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </span>
+      {loading ? (
+        // aria-hidden: the polite region above already announces the load.
+        <div aria-hidden="true" className={containerClassName}>
+          {Array.from({ length: skeletonCount }).map((_, i) => (
+            <div key={i} className={`animate-pulse rounded-md bg-fg/10 ${skeletonClassName}`} />
+          ))}
+        </div>
+      ) : error ? (
+        <div className="space-y-2">
+          <p role="alert" className="flex items-start gap-2 text-sm text-[var(--error)]">
+            <span className="mt-0.5 shrink-0">
+              <AlertIcon width={15} height={15} />
+            </span>
+            Couldn&apos;t load. Check your connection.
+          </p>
+          <button
+            onClick={onRetry}
+            className="inline-flex min-h-9 items-center rounded-md border border-border px-3 text-sm text-fg hover:border-fg/45"
+          >
+            Try again
+          </button>
+        </div>
+      ) : isEmpty ? (
+        <>{emptyNode}</>
+      ) : (
+        <>{children}</>
+      )}
+    </>
+  );
 }

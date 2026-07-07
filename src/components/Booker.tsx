@@ -523,6 +523,20 @@ export default function Booker({
     </p>
   ) : null;
 
+  // a11y (#633): announce the slot list's settled state to screen readers, so a
+  // lead selecting a day hears the count (or the empty message) instead of
+  // silence. A load failure is announced by the role=alert above, so the polite
+  // region stays quiet there to avoid a double read.
+  const slotAnnouncement = loading
+    ? "Loading available times"
+    : loadError
+      ? ""
+      : slotsByDay.size === 0
+        ? "No availability this month"
+        : daySlots.length === 0
+          ? "No times available on the selected day"
+          : `${daySlots.length} time${daySlots.length === 1 ? "" : "s"} available`;
+
   // Times / booking form — rendered once and shared by both layouts (the 420px
   // cap is for the scrolling slot list only).
   const timesPanel = (
@@ -601,6 +615,11 @@ export default function Booker({
         </div>
       ) : (
         <>
+          {/* Persistent polite region: stays mounted across the skeleton→slots
+              swap so the settled count / empty message is announced (#633). */}
+          <p role="status" aria-live="polite" className="sr-only">
+            {slotAnnouncement}
+          </p>
           <div className="mb-1 flex items-center justify-between">
             <p className={`text-sm font-semibold tabular-nums ${c.title}`}>
               {selectedDate ? (
