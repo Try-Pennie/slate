@@ -117,6 +117,38 @@ describe("getBucketSlotsWithFallback", () => {
     expect(result!.routing.effective_code).toBe("211");
   });
 
+  it("hides an unauthorized test bucket like an unknown code, without running the cascade (#601)", async () => {
+    // Requested "411" is a hidden test bucket with an empty window. An unknown
+    // code returns null after a single resolve; the test bucket must do the same
+    // work (NOT fall through to the tier cascade) so its 404 timing matches.
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "411") return makeBucketSlots("411", [], /* isTest */ true);
+      // A real lower tier exists with slots; the cascade must never reach it.
+      if (code === "311") return makeBucketSlots("311", [SLOT]);
+      return null;
+    });
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO, /* authorizedForTest */ false);
+
+    expect(result).toBeNull();
+    // Resolved exactly once (the requested code); the cascade never ran.
+    expect(mockResolveBucketSlots).toHaveBeenCalledTimes(1);
+    expect(mockResolveBucketSlots).toHaveBeenCalledWith("411", expect.anything(), expect.anything(), expect.anything());
+  });
+
+  it("serves an authorized test bucket its own slots (#601)", async () => {
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "411") return makeBucketSlots("411", [SLOT], /* isTest */ true);
+      return null;
+    });
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO, /* authorizedForTest */ true);
+
+    expect(result).not.toBeNull();
+    expect(result!.bucket.code).toBe("411");
+    expect(result!.slots).toEqual([SLOT]);
+  });
+
   it("returns the requested bucket with empty slots and tier_fallback=false when no tier has slots", async () => {
     // Every tier in the "411" ladder ("411", "311", "211", "111") is empty.
     mockResolveBucketSlots.mockImplementation(async (code: string) => {
