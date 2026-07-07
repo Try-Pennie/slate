@@ -201,6 +201,12 @@ export default function Booker({
   const stalled = useStalledAfter(submitting);
   const rootRef = useRef<HTMLDivElement>(null);
   const confirmedHeadingRef = useRef<HTMLHeadingElement>(null);
+  // Race guard for availability loads (#629): rapid month changes issue
+  // overlapping fetches. `reqSeq` is a monotonic id (only the latest call may
+  // write state), so a slow older month can't overwrite the newer one. `abortRef`
+  // holds the in-flight controller so a re-run or unmount aborts it.
+  const reqSeq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   // a11y: move focus to the confirmation heading so the success is announced.
   useEffect(() => {
@@ -215,6 +221,12 @@ export default function Booker({
   }, [selectedSlot]);
 
   const loadSlots = useCallback(async () => {
+    // Supersede any in-flight load: abort its fetch and claim the next seq id so
+    // its late response is ignored below (#629).
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const seq = ++reqSeq.current;
     // Set loading here too (not just on month change) so the post-409 refetch
     // swaps the stale slot list for skeletons instead of leaving it tappable.
     setLoading(true);
@@ -237,25 +249,37 @@ export default function Booker({
     try {
       const res = await fetch(
         `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`,
-        { cache: "no-store" },
+        { cache: "no-store", signal: controller.signal },
       );
-      if (res.ok) {
-        setMeta((await res.json()) as AvailabilityResponse);
+      const body = res.ok
+        ? ((await res.json()) as AvailabilityResponse)
+        : null;
+      // A newer load started while this awaited: drop this stale result untouched.
+      if (seq !== reqSeq.current) return;
+      if (body) {
+        setMeta(body);
       } else {
         // Distinguish a failed fetch from a genuinely empty month, so the user
         // sees "couldn't load" + retry rather than a permanent "no availability".
         setLoadError(true);
       }
     } catch {
+      // Aborts (supersession/unmount) and stale rejections leave state to the
+      // newer load; only a live failure surfaces the retry affordance.
+      if (controller.signal.aborted || seq !== reqSeq.current) return;
       setLoadError(true);
     }
     setLoading(false);
   }, [bucketCode, month, today]);
 
   useEffect(() => {
+    // IIFE defers loadSlots' synchronous setState out of the effect body.
     void (async () => {
       await loadSlots();
     })();
+    // Abort the in-flight availability fetch on unmount (or before the next
+    // load), so a resolved response can't touch an unmounted tree (#629).
+    return () => abortRef.current?.abort();
   }, [loadSlots]);
 
   const slotsByDay = useMemo(() => {

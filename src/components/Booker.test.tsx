@@ -136,6 +136,68 @@ describe("Booker confirm", () => {
   });
 });
 
+describe("Booker availability race on month change (#629)", () => {
+  // Rapid month navigation issues overlapping availability fetches. If the older
+  // (stale) month's response resolves last, its slots must NOT overwrite the
+  // newer month the user actually landed on. Reproduced with two months both in
+  // the 4-day horizon (today anchored to Jan 30 so Feb 1 still fetches).
+  it("ignores a stale month's response that resolves after the newer month's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
+
+    const janSlots = ["2026-01-30T15:00:00.000Z", "2026-01-30T18:00:00.000Z"];
+    const febSlots = ["2026-02-01T19:00:00.000Z"];
+    const respFor = (url: string) =>
+      url.includes("from=2026-02")
+        ? { ...availability, slots: febSlots }
+        : { ...availability, slots: janSlots };
+
+    const pending: { url: string; settle: () => void }[] = [];
+    global.fetch = vi.fn((url: RequestInfo | URL) => {
+      const u = decodeURIComponent(String(url));
+      return new Promise<Response>((resolve) => {
+        pending.push({
+          url: u,
+          settle: () => resolve({ ok: true, json: async () => respFor(u) } as Response),
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} layout="month" />);
+
+    // Settle the initial Jan load → two Jan slots on screen.
+    await act(async () => {
+      pending[0]!.settle();
+      await Promise.resolve();
+    });
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
+
+    // Rapid nav: Next (Feb, older request) then Prev (Jan, newest request).
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /next month/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /previous month/i }));
+    });
+
+    const feb = pending.find((p) => p.url.includes("from=2026-02"))!;
+    const janNewest = pending[pending.length - 1]!;
+    // Newest (Jan) resolves first; the stale Feb resolves last and must be dropped.
+    await act(async () => {
+      janNewest.settle();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      feb.settle();
+      await Promise.resolve();
+    });
+
+    // Still the Jan month the user landed on: two slots, not Feb's single slot.
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
+    vi.useRealTimers();
+  });
+});
+
 describe("Booker embed postMessage origin (#593)", () => {
   // The postMessage(message, targetOrigin) call's second arg, as a plain string.
   const targetOf = (call: unknown[]) => call[1] as string;
