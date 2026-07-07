@@ -254,6 +254,8 @@ export default function AdminBookingActions({
             isEmpty={slots.length === 0}
             onRetry={retrySlots}
             loadingLabel="Loading available times"
+            resultLabel={`${slots.length} time${slots.length === 1 ? "" : "s"} available`}
+            emptyLabel="No open times"
             skeletonCount={6}
             skeletonClassName="h-9"
             containerClassName="grid grid-cols-2 gap-1"
@@ -330,6 +332,8 @@ export default function AdminBookingActions({
                   isEmpty={rankedAgents.length === 0}
                   onRetry={retryAgents}
                   loadingLabel="Loading agents"
+                  resultLabel={`${rankedAgents.length} agent${rankedAgents.length === 1 ? "" : "s"} available`}
+                  emptyLabel="No matching agents"
                   skeletonCount={5}
                   skeletonClassName="mx-2 my-1 h-7"
                   emptyNode={<p className="px-2 py-2 text-xs text-fg-muted">No matching agents.</p>}

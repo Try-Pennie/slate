@@ -293,6 +293,8 @@ export default function ManageBooking({
               isEmpty={slots.length === 0}
               onRetry={retrySlots}
               loadingLabel="Loading available times"
+              resultLabel={`${slots.length} time${slots.length === 1 ? "" : "s"} available`}
+              emptyLabel="No times left"
               skeletonCount={6}
               skeletonClassName="h-11"
               containerClassName="grid grid-cols-2 gap-2 sm:grid-cols-3"
