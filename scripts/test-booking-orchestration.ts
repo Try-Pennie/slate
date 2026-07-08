@@ -47,6 +47,7 @@ import type {
   User,
   BookingOutbox,
   BookingReservation,
+  RoutingTrace,
 } from "../src/lib/db/types.ts";
 import { EventGone } from "../src/lib/booking/core.ts";
 
@@ -348,6 +349,16 @@ function makeDeps(opts: FakeOpts) {
       const prevGcal = prev.gcal_event_id ?? null;
       const prevEmail = prev.agent_email ?? null;
       calls.reassignSwaps.push({ bookingId, userId, gcalEventId, prevGcal });
+      // Faithful stand-in for the fixed RPC (#519): seed from the ROW's current
+      // trace (falling back to the caller base only when the row has none), derive
+      // the record from the row (from = current agent under the lock, to = target),
+      // and append server-side so concurrent reassigns accumulate full history.
+      const base = (prev.routing_trace ?? routingTrace) as RoutingTrace;
+      const record = { from: prev.assigned_user_id ?? null, to: userId, at: new Date().toISOString() };
+      const newRoutingTrace: RoutingTrace = {
+        ...base,
+        reassignments: [...(base.reassignments ?? []), record],
+      };
       // Persist so the outbox handlers re-reading after the swap see the new agent.
       Object.assign(prev, {
         assigned_user_id: userId,
@@ -356,7 +367,7 @@ function makeDeps(opts: FakeOpts) {
         gcal_event_id: gcalEventId,
         status: "rescheduled",
         allow_double_book: true,
-        routing_trace: routingTrace,
+        routing_trace: newRoutingTrace,
       });
       return { prevGcalEventId: prevGcal, prevAgentEmail: prevEmail, updated: true };
     },
@@ -2343,6 +2354,59 @@ async function run() {
         calls.bookingEvents[0].to_agent_user_id === "b" &&
         calls.bookingEvents[0].to_starts_at === calls.bookingEvents[0].from_starts_at,
       "reassign: records a 'reassigned' (not 'rescheduled') system event, same time, new agent",
+    );
+  }
+
+  // --- reassign: concurrent reassigns accumulate FULL history server-side (#519) ---
+  // Two reassigns of the same booking whose callers BOTH loaded a base before
+  // either swap committed (stale bases). The reassignment record must be appended
+  // INSIDE reassign_booking_swap under its row lock, so the later swap adds to the
+  // freshest history instead of overwriting it from a stale snapshot (which loses
+  // one audit entry). Modeled with a SHARED backing row that the swap mutates,
+  // while every load returns a pinned pre-race snapshot (reassignments empty),
+  // simulating both racers reading before either swap.
+  {
+    const owner = (id: string, email: string) =>
+      ({ id, name: `Owner ${id}`, email, bookable: true } as unknown as User);
+    const sharedRow = makeBooking({ id: "bk1", assigned_user_id: "a", agent_email: "a@x.com" });
+    sharedRow.routing_trace = {
+      bucket_code: "411",
+      bucket_id: "bkt1",
+      considered: [],
+      chosen_user_id: "a",
+      fallback_applied: false,
+      reassignments: [],
+    };
+    // The default mock's swap reads/mutates opts.bookingById.booking (= sharedRow),
+    // deriving the record from ITS current agent and appending onto ITS trace.
+    const { deps } = makeDeps({
+      bookingById: { booking: sharedRow, bucket, eventType },
+      agentByEmail: owner("b", "b@x.com"),
+    });
+    // Every load hands the caller a frozen PRE-RACE snapshot (assigned to "a", no
+    // reassignments yet), so neither caller's base reflects the other's swap.
+    deps.loadBookingById = async () => ({
+      booking: { ...makeBooking({ id: "bk1", assigned_user_id: "a", agent_email: "a@x.com" }),
+        routing_trace: { bucket_code: "411", bucket_id: "bkt1", considered: [], chosen_user_id: "a", fallback_applied: false, reassignments: [] } },
+      bucket,
+      eventType,
+    });
+    deps.getAgentByEmail = async (email: string) =>
+      email === "c@x.com" ? owner("c", email) : owner("b", email);
+
+    await reassignBooking("bk1", "b@x.com", SYS, deps);
+    await reassignBooking("bk1", "c@x.com", SYS, deps);
+
+    const recorded = sharedRow.routing_trace?.reassignments ?? [];
+    assert(
+      recorded.length === 2 && recorded[0]?.to === "b" && recorded[1]?.to === "c",
+      "reassign (#519): concurrent reassigns append full history server-side (no lost record)",
+    );
+    // from is derived under the lock, so the 2nd record's from is the true current
+    // agent ("b") at swap time, not the caller's stale view ("a").
+    assert(
+      recorded[0]?.from === "a" && recorded[1]?.from === "b",
+      "reassign (#519): the swap derives 'from' from the genuinely-current agent under the lock",
     );
   }
 
