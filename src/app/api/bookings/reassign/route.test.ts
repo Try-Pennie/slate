@@ -6,7 +6,45 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // bearerTokenMatches is exercised (not mocked) so the constant-time compare is
 // part of the test; only the env key and the mutating service call are stubbed.
 const env = vi.hoisted(() => ({ reassignApiKey: vi.fn(() => "k3y") }));
-const service = vi.hoisted(() => ({ reassignBooking: vi.fn() }));
+const service = vi.hoisted(() => {
+  // The route maps by typed error CLASS (not fragile substring matching, #621),
+  // so the mock must expose the same classes the route does `instanceof` against.
+  class DailyCapExceededError extends Error {
+    agentEmail: string;
+    day: string;
+    constructor(agentEmail: string, day: string) {
+      super(`Agent ${agentEmail} is at their daily cap on ${day}`);
+      this.name = "DailyCapExceededError";
+      this.agentEmail = agentEmail;
+      this.day = day;
+    }
+  }
+  class BookingNotFoundError extends Error {
+    constructor() {
+      super("Booking not found");
+      this.name = "BookingNotFoundError";
+    }
+  }
+  class AgentNotAvailableError extends Error {
+    constructor() {
+      super("Agent not found or not bookable");
+      this.name = "AgentNotAvailableError";
+    }
+  }
+  class BookingNotChangeableError extends Error {
+    constructor() {
+      super("This booking can no longer be changed");
+      this.name = "BookingNotChangeableError";
+    }
+  }
+  return {
+    reassignBooking: vi.fn(),
+    DailyCapExceededError,
+    BookingNotFoundError,
+    AgentNotAvailableError,
+    BookingNotChangeableError,
+  };
+});
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/booking/service", () => service);
@@ -71,5 +109,47 @@ describe("POST /api/bookings/reassign", () => {
     const res = await POST(req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com" } }));
     expect(res.status).toBe(200);
     expect(service.reassignBooking).toHaveBeenCalledTimes(1);
+  });
+
+  // Error-contract mapping (#621): typed errors decide the status so the machine
+  // caller can tell a genuine conflict (do not retry) from a transient outage
+  // (retry). Substring routing used to send Google/DB outages back as a 409.
+  const ok = { auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com" } };
+
+  it("maps a missing booking to 404 (genuine not-found, do not retry)", async () => {
+    service.reassignBooking.mockRejectedValueOnce(new service.BookingNotFoundError());
+    const res = await POST(req(ok));
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a missing/non-bookable target agent to 404", async () => {
+    service.reassignBooking.mockRejectedValueOnce(new service.AgentNotAvailableError());
+    const res = await POST(req(ok));
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a terminal (cancelled/completed) booking to 409, not a retryable 5xx", async () => {
+    service.reassignBooking.mockRejectedValueOnce(new service.BookingNotChangeableError());
+    const res = await POST(req(ok));
+    expect(res.status).toBe(409);
+  });
+
+  it("maps the daily-cap conflict to a distinct 409 with a machine-readable code", async () => {
+    service.reassignBooking.mockRejectedValueOnce(new service.DailyCapExceededError("a@x.com", "2026-07-10"));
+    const res = await POST(req(ok));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("DAILY_CAP_EXCEEDED");
+    expect(body.agentEmail).toBe("a@x.com");
+  });
+
+  it("maps a transient Google/DB outage to a retryable 5xx that does not leak internals", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.reassignBooking.mockRejectedValueOnce(
+      new Error('insert into "busy_blocks" failed: connection terminated unexpectedly'),
+    );
+    const res = await POST(req(ok));
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect((await res.json()).error).not.toMatch(/busy_blocks|connection terminated/);
   });
 });

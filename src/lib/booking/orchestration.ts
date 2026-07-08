@@ -206,6 +206,27 @@ export class BookingNotCancellableError extends Error {
   }
 }
 
+/** Thrown when a reassign target agent can't be resolved or isn't bookable
+ *  (#621). A caller-input problem (bad/stale agent), so 404, never retryable.
+ *  Message is preserved verbatim: the admin route's 404 mapping and an
+ *  orchestration test still match on it. */
+export class AgentNotAvailableError extends Error {
+  constructor() {
+    super("Agent not found or not bookable");
+    this.name = "AgentNotAvailableError";
+  }
+}
+
+/** Thrown when a booking is (or becomes, concurrently) terminal so it can no
+ *  longer be reassigned/changed (#621). A genuine conflict → 409, distinct from
+ *  a transient outage so a machine caller stops retrying rather than looping. */
+export class BookingNotChangeableError extends Error {
+  constructor() {
+    super("This booking can no longer be changed");
+    this.name = "BookingNotChangeableError";
+  }
+}
+
 /** Delete a calendar event, and if the delete FAILS, enqueue it for the retry
  *  drain (#401) instead of silently dropping it. Never throws to the caller —
  *  the booking flow proceeds; the queue is the durable net. */
@@ -2337,15 +2358,15 @@ export async function reassignBooking(
 ): Promise<BookingResult & { overCap: boolean }> {
   const { overrideCap = false, actor, initiator = "system", allowNonBookable = false } = opts;
   const ctx = await deps.loadBookingById(bookingId);
-  if (!ctx) throw new Error("Booking not found");
+  if (!ctx) throw new BookingNotFoundError();
   const { booking, bucket, eventType } = ctx;
   if (booking.status === "cancelled" || booking.status === "completed") {
-    throw new Error("This booking can no longer be changed");
+    throw new BookingNotChangeableError();
   }
 
   const agent = await deps.getAgentByEmail(agentEmail);
   if (!agent || !agent.email || (!agent.bookable && !allowNonBookable)) {
-    throw new Error("Agent not found or not bookable");
+    throw new AgentNotAvailableError();
   }
   if (agent.id === booking.assigned_user_id) {
     return { booking, manageUrl: manageUrl(deps, booking.manage_token), overCap: false };
@@ -2448,7 +2469,7 @@ export async function reassignBooking(
     // The booking went terminal (cancelled/completed) concurrently. Clean up the
     // event we optimistically created so it isn't orphaned, then surface it.
     await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
-    throw new Error("This booking can no longer be changed");
+    throw new BookingNotChangeableError();
   }
 
   // Delete the event the swap REPLACED - the genuinely-current one at swap time,
