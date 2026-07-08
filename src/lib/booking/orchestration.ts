@@ -442,6 +442,10 @@ export interface BookingDeps {
     agentName: string | null;
     agentEmail: string;
     gcalEventId: string;
+    // The base trace, used ONLY to seed the row's trace when it has none yet.
+    // When the row has a trace, the swap appends the reassignment record onto the
+    // row's own current history server-side under the lock (#519), so this array
+    // is NOT the authoritative source of the reassignments list.
     routingTrace: RoutingTrace;
   }): Promise<{
     prevGcalEventId: string | null;
@@ -2436,27 +2440,29 @@ export async function reassignBooking(
     gcalClientId,
   );
 
-  // Record the override on the trace so the viewer can show who reassigned whom.
-  const reassignment = {
-    from: booking.assigned_user_id,
-    to: agent.id,
-    at: new Date().toISOString(),
+  // The reassignment audit record is appended server-side in reassign_booking_swap
+  // under the row lock (#519): building the final array here off a snapshot read
+  // before the swap would let two concurrent reassigns overwrite each other's
+  // history entry. We pass only a BASE trace to seed the row if it has none; the
+  // swap derives the record (from = the genuinely-current agent under the lock,
+  // to = this target, at = now) and appends it onto the row's own current history.
+  const baseTrace: RoutingTrace = booking.routing_trace ?? {
+    bucket_code: bucket.code,
+    bucket_id: bucket.id,
+    considered: [],
+    chosen_user_id: booking.assigned_user_id ?? "",
+    fallback_applied: false,
+    reassignments: [],
   };
-  const nextTrace: RoutingTrace = booking.routing_trace
-    ? {
-        ...booking.routing_trace,
-        reassignments: [...(booking.routing_trace.reassignments ?? []), reassignment],
-      }
-    : {
-        bucket_code: bucket.code,
-        bucket_id: bucket.id,
-        considered: [],
-        chosen_user_id: booking.assigned_user_id ?? "",
-        fallback_applied: false,
-        reassignments: [reassignment],
-      };
+  // Captured BEFORE the swap for the returned object's local trace view: the
+  // agent we're moving away from, as this caller saw it.
+  const fromUserId = booking.assigned_user_id;
 
-  let swap: { prevGcalEventId: string | null; prevAgentEmail: string | null; updated: boolean };
+  let swap: {
+    prevGcalEventId: string | null;
+    prevAgentEmail: string | null;
+    updated: boolean;
+  };
   try {
     swap = await deps.reassignSwap({
       bookingId: booking.id,
@@ -2464,7 +2470,7 @@ export async function reassignBooking(
       agentName: agent.name,
       agentEmail: agent.email,
       gcalEventId: newEventId,
-      routingTrace: nextTrace,
+      routingTrace: baseTrace,
     });
   } catch (err) {
     // The swap (durable anchor) failed: clean up the event we optimistically
@@ -2500,7 +2506,16 @@ export async function reassignBooking(
     gcal_event_id: newEventId,
     status: "rescheduled" as const,
     allow_double_book: true,
-    routing_trace: nextTrace,
+    // Best-effort local view of the trace for the returned object (the swap owns
+    // the authoritative append server-side, #519; this value is not surfaced to
+    // any response, so a concurrent racer's extra entry not shown here is fine).
+    routing_trace: {
+      ...baseTrace,
+      reassignments: [
+        ...(baseTrace.reassignments ?? []),
+        { from: fromUserId, to: agent.id, at: new Date().toISOString() },
+      ],
+    },
   };
 
   // Deliver the post-commit side effects (slot move, recompute, the

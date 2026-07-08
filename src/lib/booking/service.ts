@@ -532,6 +532,9 @@ function realDeps(): BookingDeps {
       // Atomic swap-and-return-previous (#449). Unlike the best-effort cache
       // writes, this IS the durable anchor of the reassign, so a failure must
       // surface (the caller cleans up the event it created and reports failure).
+      // The reassignment audit record is appended server-side under the row lock
+      // (#519) so concurrent reassigns accumulate full history; p_routing_trace
+      // only seeds the row's trace when it has none yet.
       const { data, error } = await supabaseAdmin().rpc("reassign_booking_swap", {
         p_booking_id: bookingId,
         p_user_id: userId,
