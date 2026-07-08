@@ -10,6 +10,13 @@
 import type { BookingDeps } from "./orchestration.ts";
 import type { BookingOutbox } from "@/lib/db/types";
 import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
+import { mapWithConcurrency } from "../concurrency.ts";
+
+// Bounded fan-out for the drain (AUD-062). Rows are leased independently, so
+// draining them concurrently never double-runs a row; the cap keeps outbound
+// side-effect calls (webhook send, calendar delete) under Cloudflare's
+// simultaneous-connection ceiling. Matches the verify-on-book fan-out cap.
+export const OUTBOX_DRAIN_CONCURRENCY = 8;
 
 /** Performs one named side effect idempotently. Throws to mark the step failed
  *  (the drain retries it next pass); returns to mark it done. */
@@ -84,11 +91,14 @@ export async function processBookingOutbox(
   let skipped = 0;
   const stuck: BookingOutbox[] = [];
 
-  for (const row of rows) {
+  // Drain rows concurrently but bounded (AUD-062). Each row is leased before its
+  // steps run, so a large backlog clears in far fewer ticks without two drains
+  // ever double-running the same row. A row already leased elsewhere is skipped.
+  await mapWithConcurrency(rows, OUTBOX_DRAIN_CONCURRENCY, async (row) => {
     const leased = await deps.leaseOutbox(row.id);
     if (!leased) {
       skipped++;
-      continue;
+      return;
     }
     try {
       const res = await runOutboxSteps(deps, row, handlers);
@@ -113,7 +123,7 @@ export async function processBookingOutbox(
     } finally {
       await deps.releaseOutboxLease(row.id);
     }
-  }
+  });
 
   return { processed: rows.length, delivered, skipped, stuck };
 }

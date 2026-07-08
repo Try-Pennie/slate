@@ -738,6 +738,47 @@ async function run() {
     );
   }
 
+  // --- processBookingReservations drains a backlog CONCURRENTLY (AUD-062) ---
+  // Each reservation is leased before completeReservation runs, so a large
+  // backlog clears in far fewer ticks without two drains double-running a row.
+  // Probe concurrency at the lease (called once per row): a serial loop never
+  // has two leases in flight, the bounded-concurrent drain does.
+  {
+    const rows = Array.from({ length: 6 }, (_, i) => ({
+      id: `resv-c${i}`,
+      idempotency_key: `k-c${i}`,
+      pinned_user_id: "a",
+      pinned_agent_email: "a@x.com",
+      gcal_client_id: `slate-c${i}`,
+      payload: {},
+      status: "pending" as const,
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      next_attempt_at: null,
+      created_at: "",
+      updated_at: "",
+    })) as unknown as Parameters<typeof makeDeps>[0]["drainableReservations"];
+    const { deps } = makeDeps({ drainableReservations: rows ?? undefined });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const leased: string[] = [];
+    const released: string[] = [];
+    deps.leaseReservation = async (id: string) => {
+      leased.push(id);
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5)); // yield so peers can start
+      inFlight--;
+      return true;
+    };
+    deps.releaseReservationLease = async (id: string) => { released.push(id); };
+    const res = await processBookingReservations(deps, 15);
+    assert(res.processed === 6, "reservation drain processes every backlog row");
+    assert(maxInFlight > 1, "reservation drain runs rows concurrently, not one-at-a-time");
+    assert(released.length === 6, "reservation drain releases the lease for every leased row");
+  }
+
   // --- createBooking: a test bucket is unbookable on the public path (#396) ---
   {
     const { deps, calls } = makeDeps({

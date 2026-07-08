@@ -152,6 +152,38 @@ async function run() {
     assert(res.delivered === 0 && handlerRan.length === 0, "a row leased by another drain is skipped");
   }
   {
+    // AUD-062: a backlog drains rows CONCURRENTLY (bounded), not one-at-a-time,
+    // so a large backlog clears in far fewer ticks. Each row is still leased
+    // independently, so concurrent rows never double-run. Detect concurrency by
+    // proving more than one row's handler is in flight at the same moment.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const handlers: OutboxHandlers = {
+      a: async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 5)); // yield so peers can start
+        inFlight--;
+      },
+    };
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      row([{ name: "a", state: "pending" }], { id: `ob-c${i}` }),
+    );
+    const leased: string[] = [];
+    const released: string[] = [];
+    const deps = {
+      loadDrainableOutbox: async () => rows,
+      leaseOutbox: async (id: string) => { leased.push(id); return true; },
+      releaseOutboxLease: async (id: string) => { released.push(id); },
+      saveOutboxSteps: async () => {},
+      markOutboxDelivered: async () => {},
+    } as unknown as BookingDeps;
+    const res = await processBookingOutbox(deps, 50, handlers);
+    assert(res.delivered === 6, "drains and delivers every backlog row");
+    assert(maxInFlight > 1, "drains rows concurrently, not one-at-a-time");
+    assert(released.length === 6, "releases the lease for every leased row under concurrency");
+  }
+  {
     // #445: a failing step is NOT delivered. The row is bumped (attempts + backoff
     // scheduled via the dep) and released; only a row past DRAIN_ALERT_AFTER is
     // reported stuck for the throttled alert.
