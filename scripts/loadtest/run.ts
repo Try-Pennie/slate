@@ -17,6 +17,7 @@
 //   node --experimental-strip-types scripts/loadtest/run.ts
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { checkSoakInvariants } from "./invariants.ts";
 
 function env(name: string, fallbackKey?: string): string {
   if (process.env[name]) return process.env[name] as string;
@@ -64,6 +65,32 @@ async function count(pathAndFilter: string): Promise<number> {
 async function rows(pathAndFilter: string): Promise<Record<string, unknown>[]> {
   const res = await fetch(`${SUPA}/${pathAndFilter}`, { headers: supaHeaders });
   return (await res.json().catch(() => [])) as Record<string, unknown>[];
+}
+
+/**
+ * Every row of a result set, paginated via Range so PostgREST's 1000-row cap can
+ * never silently truncate an invariant into a false pass (the #440 soak bug).
+ */
+async function listAll(pathAndFilter: string): Promise<Record<string, unknown>[]> {
+  const PAGE = 1000;
+  const all: Record<string, unknown>[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const res = await fetch(`${SUPA}/${pathAndFilter}`, {
+      headers: { ...supaHeaders, Range: `${from}-${from + PAGE - 1}` },
+    });
+    const page = (await res.json().catch(() => [])) as Record<string, unknown>[];
+    all.push(...page);
+    if (page.length < PAGE) return all;
+  }
+}
+
+/** One selfheal tick, normalised to the shape the convergence loop expects. */
+async function selfhealTick(): Promise<{ freed: number; recreated: number }> {
+  const { body } = await hit("/api/cron/selfheal");
+  return {
+    freed: Number(body.stuckFreed ?? 0),
+    recreated: Number(body.missingRecreated ?? 0),
+  };
 }
 
 async function freshness(): Promise<{ total: number; stale6m: number; spreadSec: number }> {
@@ -116,46 +143,6 @@ async function drainOutboxToEmpty(): Promise<{ ticks: number; drained: boolean }
   return { ticks, drained: pending === 0 };
 }
 
-async function invariants(): Promise<boolean> {
-  console.log("\nINVARIANTS (post-soak):");
-  let pass = true;
-  const fail = (msg: string) => {
-    pass = false;
-    console.log(`  FAIL: ${msg}`);
-  };
-  const okLine = (msg: string) => console.log(`  ok: ${msg}`);
-
-  const pendingOutbox = await count("booking_outbox?status=eq.pending");
-  if (pendingOutbox === 0) okLine("every outbox row self-healed to delivered");
-  else fail(`${pendingOutbox} outbox rows still pending (drain did not converge)`);
-
-  // No cancelled booking may keep a slate busy_block (the stuck-slot / double-book
-  // window the outbox + #428 reconcile close). Cross-check by fetching cancelled
-  // ids, then any slate blocks still pointing at one.
-  const cancelledIds = new Set(
-    (await rows("bookings?status=eq.cancelled&select=id")).map((r) => r.id as string),
-  );
-  const slateBlocks = await rows("busy_blocks?source=eq.slate&select=booking_id");
-  const stuck = slateBlocks.filter((b) => b.booking_id && cancelledIds.has(b.booking_id as string)).length;
-  if (stuck === 0) okLine("no cancelled booking retains a slate busy_block (no stuck slots)");
-  else fail(`${stuck} slate busy_blocks still held by a cancelled booking`);
-
-  // Exactly-once: no (endpoint,event,dedupe_key) appears twice among deliveries.
-  const deliveries = await rows("webhook_deliveries?select=endpoint_id,event,dedupe_key");
-  const seen = new Set<string>();
-  let dupes = 0;
-  for (const d of deliveries) {
-    if (d.dedupe_key == null) continue;
-    const k = `${d.endpoint_id}|${d.event}|${d.dedupe_key}`;
-    if (seen.has(k)) dupes++;
-    else seen.add(k);
-  }
-  if (dupes === 0) okLine(`exactly-once webhooks held (${deliveries.length} deliveries, 0 duplicate dedupe keys)`);
-  else fail(`${dupes} duplicate webhook deliveries (dedupe index did not hold)`);
-
-  return pass;
-}
-
 async function main() {
   if (!CRON_SECRET) throw new Error("Set CRON_SECRET (same value the app uses).");
   console.log(`Driving ${SLATE_BASE} for ${TICKS} ticks/lane ...\n`);
@@ -171,22 +158,37 @@ async function main() {
   const drain = await drainOutboxToEmpty();
   console.log("\nCOMPLETE lane:");
   await driveLane("/api/cron/complete");
-  console.log("\nSELFHEAL lane (#401/#428 backstops, kept through rollout):");
-  await driveLane("/api/cron/selfheal");
 
   if (SUPA_KEY) {
+    // SELFHEAL to convergence + invariants. reconcile (#428) is capped at 200
+    // blocks/tick, so this loops until a tick frees nothing before reading the
+    // stuck-slot invariant. All counts are uncapped server-side counts (the delivery
+    // set is paginated) so a large soak can't truncate into a false pass (#440).
+    console.log("\nSELFHEAL to convergence (#401/#428 backstops) + INVARIANTS:");
+    const inv = await checkSoakInvariants({
+      count,
+      listAll,
+      driveSelfheal: selfhealTick,
+      log: (m) => console.log(m),
+    });
+    console.log(`  selfheal converged in ${inv.selfhealTicks} ticks; ${inv.deliveries} deliveries checked`);
+
     const f = await freshness();
     console.log(
       `\nFreshness: ${f.total} buckets, ${f.stale6m} stale >6m, ${f.spreadSec}s spread across the set.`,
     );
-    const invPass = await invariants();
+
+    console.log("\nINVARIANTS (post-soak):");
+    if (inv.pass) console.log("  ok: every invariant held (outbox delivered, no stuck slots, exactly-once webhooks)");
+    else for (const msg of inv.failures) console.log(`  FAIL: ${msg}`);
+
     console.log(
       "\nPASS if: recompute p50 well under 50000ms and drains its due set; the outbox\n" +
         "backlog drained to 0 while the interleaved sync lane stayed well under 25000ms;\n" +
         "stale>6m is 0; and every invariant above is ok. See RUNBOOK.md.",
     );
     if (!drain.drained) console.log("WARN: outbox did not drain to empty within MAX_DRAIN_TICKS.");
-    process.exit(invPass && drain.drained ? 0 : 1);
+    process.exit(inv.pass && drain.drained ? 0 : 1);
   }
   console.log("\n(No SUPABASE_SECRET_KEY set: skipped freshness + invariant checks.)");
 }
