@@ -13,6 +13,8 @@ const auth = vi.hoisted(() => ({
   ),
 }));
 const service = vi.hoisted(() => {
+  // The route maps by typed error CLASS (via the shared mapReassignError, #717),
+  // so the mock must expose the same classes the mapper does `instanceof` against.
   class DailyCapExceededError extends Error {
     agentEmail: string;
     day: string;
@@ -23,7 +25,31 @@ const service = vi.hoisted(() => {
       this.day = day;
     }
   }
-  return { adminReassignBooking: vi.fn(), DailyCapExceededError };
+  class BookingNotFoundError extends Error {
+    constructor() {
+      super("Booking not found");
+      this.name = "BookingNotFoundError";
+    }
+  }
+  class AgentNotAvailableError extends Error {
+    constructor() {
+      super("Agent not found or not bookable");
+      this.name = "AgentNotAvailableError";
+    }
+  }
+  class BookingNotChangeableError extends Error {
+    constructor() {
+      super("This booking can no longer be changed");
+      this.name = "BookingNotChangeableError";
+    }
+  }
+  return {
+    adminReassignBooking: vi.fn(),
+    DailyCapExceededError,
+    BookingNotFoundError,
+    AgentNotAvailableError,
+    BookingNotChangeableError,
+  };
 });
 
 vi.mock("@/lib/auth", () => auth);
@@ -95,10 +121,17 @@ describe("POST /admin/bookings/[id]/reassign", () => {
   });
 
   it("keeps the intended 'not found' message as a 404 (#598 leaves benign input errors)", async () => {
-    service.adminReassignBooking.mockRejectedValueOnce(new Error("Agent not found or not bookable"));
+    service.adminReassignBooking.mockRejectedValueOnce(new service.AgentNotAvailableError());
     const res = await POST(req({ agentEmail: "gone@x.com", reason: "owner_reassignment" }), params);
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe("Agent not found or not bookable");
+  });
+
+  it("maps a terminal (cancelled/completed) booking to a 409 conflict, not a 500 (#717)", async () => {
+    service.adminReassignBooking.mockRejectedValueOnce(new service.BookingNotChangeableError());
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("This booking can no longer be changed");
   });
 
   it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {

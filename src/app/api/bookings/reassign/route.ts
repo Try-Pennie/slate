@@ -1,14 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { reassignApiKey } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
-import {
-  reassignBooking,
-  DailyCapExceededError,
-  BookingNotFoundError,
-  AgentNotAvailableError,
-  BookingNotChangeableError,
-} from "@/lib/booking/service";
-import { internalErrorResponse } from "@/lib/api/errors";
+import { reassignBooking } from "@/lib/booking/service";
+import { mapReassignError } from "@/lib/booking/reassign-http";
 
 export const dynamic = "force-dynamic";
 
@@ -71,37 +65,6 @@ export async function POST(req: NextRequest) {
       overCap: result.overCap,
     });
   } catch (err) {
-    return mapReassignError(err);
+    return mapReassignError(err, "bookings/reassign");
   }
-}
-
-/**
- * Typed error contract for the machine reassign caller (#621), mirroring the
- * direct booking API's mapBookingError. The classification the automation relies
- * on: a 409 is a GENUINE conflict (stop retrying), a 404 is bad input (stop),
- * and a 5xx is transient (retry). Substring routing used to send every
- * non-'not found' failure (including a Google/DB outage) back as a 409, so the
- * contact-owner automation would stop retrying a transiently-failed reassign.
- *
- * Anything unrecognized is an unexpected fault: a generic 500 that never leaks
- * internal detail (#598), not a 409.
- */
-function mapReassignError(err: unknown): NextResponse {
-  // At-cap target: a distinct, recoverable 409 with a machine-readable code (the
-  // machine path passes overrideCap=true so this is rare, but the contract holds).
-  if (err instanceof DailyCapExceededError) {
-    return NextResponse.json(
-      { error: err.message, code: "DAILY_CAP_EXCEEDED", agentEmail: err.agentEmail, day: err.day },
-      { status: 409 },
-    );
-  }
-  // Genuine not-found (bad/stale booking id or target agent): do not retry.
-  if (err instanceof BookingNotFoundError || err instanceof AgentNotAvailableError) {
-    return NextResponse.json({ error: err.message }, { status: 404 });
-  }
-  // Booking is (or became) terminal: a real conflict, not a transient fault.
-  if (err instanceof BookingNotChangeableError) {
-    return NextResponse.json({ error: err.message }, { status: 409 });
-  }
-  return internalErrorResponse(err, "bookings/reassign");
 }
