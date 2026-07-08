@@ -8,6 +8,19 @@ import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 const WEBHOOK_TIMEOUT_MS = 5000;
 const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
 
+/**
+ * Load-test short-circuit (#440): under SLATE_LOADTEST the delivery row is still
+ * inserted (so the 200-agent soak exercises the dedupe unique index), but the
+ * external POST is skipped and the delivery recorded a success: a dead sink
+ * would otherwise turn every notify into a timeout + failed-retry, polluting the
+ * lane timings. Returns null off the flag so production does the real send.
+ * Inert anywhere the flag isn't set. Exported for testing.
+ */
+export function loadtestDeliveryResult(): { ok: boolean; lastResponse: string } | null {
+  if (process.env.SLATE_LOADTEST !== "true") return null;
+  return { ok: true, lastResponse: "loadtest: external POST skipped" };
+}
+
 async function send(
   endpoint: WebhookEndpoint,
   deliveryId: string,
@@ -20,23 +33,29 @@ async function send(
 
   let ok = false;
   let lastResponse = "";
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
-  try {
-    const res = await fetch(endpoint.url, {
-      method: "POST",
-      headers,
-      body,
-      signal: controller.signal,
-    });
-    const text = (await res.text().catch(() => "")).slice(0, 1000);
-    ok = res.ok;
-    lastResponse = `${res.status} ${text}`;
-  } catch (err) {
-    // AbortError (timeout) or network error — both count as a failed attempt.
-    lastResponse = String(err).slice(0, 1000);
-  } finally {
-    clearTimeout(timer);
+  const stub = loadtestDeliveryResult();
+  if (stub) {
+    ok = stub.ok;
+    lastResponse = stub.lastResponse;
+  } else {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+    try {
+      const res = await fetch(endpoint.url, {
+        method: "POST",
+        headers,
+        body,
+        signal: controller.signal,
+      });
+      const text = (await res.text().catch(() => "")).slice(0, 1000);
+      ok = res.ok;
+      lastResponse = `${res.status} ${text}`;
+    } catch (err) {
+      // AbortError (timeout) or network error, both count as a failed attempt.
+      lastResponse = String(err).slice(0, 1000);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   await db
