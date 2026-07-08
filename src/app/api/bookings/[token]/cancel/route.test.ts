@@ -32,6 +32,19 @@ describe("POST /bookings/[token]/cancel", () => {
     expect((await res.json()).ok).toBe(true);
   });
 
+  it("rejects a missing reason with 400 without touching the booking layer (#326)", async () => {
+    const res = await POST(req({}), params);
+    expect(res.status).toBe(400);
+    expect(service.cancelBooking).not.toHaveBeenCalled();
+  });
+
+  it("rejects a reason outside the cancel list with 400 (#326)", async () => {
+    // A reschedule-only code must not be accepted on the cancel route.
+    const res = await POST(req({ reason: "found_better_time" }), params);
+    expect(res.status).toBe(400);
+    expect(service.cancelBooking).not.toHaveBeenCalled();
+  });
+
   it("maps BookingNotCancellableError to 409 with its message", async () => {
     service.cancelBooking.mockRejectedValueOnce(new service.BookingNotCancellableError());
     const res = await POST(req({ reason: "schedule_conflict" }), params);
