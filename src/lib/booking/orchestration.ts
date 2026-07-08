@@ -1227,6 +1227,11 @@ export async function findDuplicateWarning(
 /** Max simultaneous booking.completed deliveries (Cloudflare subrequest cap). */
 const COMPLETION_WEBHOOK_CONCURRENCY = 6;
 
+/** Max reservations completed at once when draining a backlog (AUD-062). Rows are
+ *  leased independently so concurrency never double-runs one; the cap keeps the
+ *  per-row create/webhook calls under the same subrequest ceiling. */
+const RESERVATION_DRAIN_CONCURRENCY = 6;
+
 export async function createBooking(
   input: CreateBookingInput,
   deps: BookingDeps,
@@ -1579,8 +1584,11 @@ export async function processBookingReservations(
   let completed = 0;
   let failed = 0;
   const stuck: BookingReservation[] = [];
-  for (const reservation of rows) {
-    if (!(await deps.leaseReservation(reservation.id))) continue;
+  // Complete reservations concurrently but bounded (AUD-062): each is leased
+  // first, so two drains never double-run a row; a large backlog clears in far
+  // fewer ticks than a serial await-per-row loop.
+  await mapWithConcurrency(rows, RESERVATION_DRAIN_CONCURRENCY, async (reservation) => {
+    if (!(await deps.leaseReservation(reservation.id))) return;
     try {
       await completeReservation(deps, reservation);
       completed++;
@@ -1605,7 +1613,7 @@ export async function processBookingReservations(
       // drain so a transient bump error can't leak the lease or abort the batch.
       await deps.releaseReservationLease(reservation.id);
     }
-  }
+  });
   return { processed: rows.length, completed, failed, stuck };
 }
 
