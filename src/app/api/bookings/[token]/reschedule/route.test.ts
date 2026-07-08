@@ -64,6 +64,22 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect((await res.json()).startsAt).toBe("2026-07-01T15:00:00.000Z");
   });
 
+  it("rejects a missing reason with 400 without touching the booking layer (#326)", async () => {
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z" }), params);
+    expect(res.status).toBe(400);
+    expect(service.rescheduleBooking).not.toHaveBeenCalled();
+  });
+
+  it("rejects a reason outside the reschedule list with 400 (#326)", async () => {
+    // A cancel-only code must not be accepted on the reschedule route.
+    const res = await POST(
+      req({ start: "2026-07-01T15:00:00.000Z", reason: "no_longer_interested" }),
+      params,
+    );
+    expect(res.status).toBe(400);
+    expect(service.rescheduleBooking).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for an unparseable start without calling the booking layer (#622)", async () => {
     const res = await POST(req({ start: "garbage", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(400);
