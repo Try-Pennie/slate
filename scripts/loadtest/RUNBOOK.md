@@ -81,7 +81,11 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    node --experimental-strip-types scripts/loadtest/run.ts
    ```
    It drives recompute/sync/watch, then drains `/api/cron/outbox` to empty (re-driving sync
-   each pass), drives complete + selfheal, and prints the invariant checks. Exit code 0 =
+   each pass), drives complete, then drives `/api/cron/selfheal` **to convergence** (reconcile
+   is capped at 200 blocks/tick, so it loops until a tick frees nothing) before reading the
+   invariants. The invariant checks use **uncapped server-side counts** (`scripts/loadtest/
+   invariants.ts`), so a large soak can't truncate a result set past PostgREST's 1000-row cap
+   and false-pass the stuck-slot check (the trap the first #440 soak hit). Exit code 0 =
    backlog drained and all invariants ok. Paste the output back for the go/no-go read. Bump
    `TICKS` for a longer read, `OUTBOX_BACKLOG` for a bigger drain.
 
