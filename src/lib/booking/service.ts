@@ -252,6 +252,8 @@ export {
   UnknownBucketError,
   BookingNotFoundError,
   BookingNotCancellableError,
+  AgentNotAvailableError,
+  BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 export type { BookingResult, CreateBookingInput };
 export type { BookingActor } from "@/lib/booking/core";
