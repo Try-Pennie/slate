@@ -15,6 +15,8 @@ function fakeDb(tables: Rows): ReturnType<typeof supabaseAdmin> {
     const b: Record<string, unknown> = {
       select: () => b,
       eq: () => b,
+      lte: () => b,
+      gt: () => b,
       then: (resolve: (v: { data: unknown[] }) => unknown) => Promise.resolve({ data: rows }).then(resolve),
     };
     return b;
@@ -52,7 +54,29 @@ describe("loadTierDepths", () => {
   });
 
   it("returns an empty list when there are no buckets", async () => {
-    const db = fakeDb({ buckets: [], users: [], bucket_members: [] });
+    const db = fakeDb({ buckets: [], users: [], bucket_members: [], ooo_requests: [] });
     expect(await loadTierDepths(db)).toEqual([]);
+  });
+
+  it("#738: discounts agents on approved time off from effective depth", async () => {
+    const db = fakeDb({
+      buckets: [{ id: "b1", code: "311", name: "High", criteria: {}, is_test: false, fallback_user_id: null }],
+      users: [
+        { id: "u1", name: "A", email: "a@x", attributes: {}, bookable: true, deactivated_at: null },
+        { id: "u2", name: "B", email: "b@x", attributes: {}, bookable: true, deactivated_at: null },
+      ],
+      bucket_members: [
+        { bucket_id: "b1", user_id: "u1" },
+        { bucket_id: "b1", user_id: "u2" },
+      ],
+      // The loader's query already restricts to approved + currently-active rows;
+      // the fixture returns exactly what that query would (u1 is out now).
+      ooo_requests: [{ user_id: "u1" }],
+    });
+    const [row] = await loadTierDepths(db, "org1", new Date("2026-07-09T15:00:00Z"));
+    expect(row.depth).toBe(2);
+    expect(row.effectiveDepth).toBe(1);
+    expect(row.effectiveFlag).toBe("spof");
+    expect(row.outCount).toBe(1);
   });
 });
