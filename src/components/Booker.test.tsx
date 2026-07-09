@@ -135,6 +135,61 @@ describe("Booker confirm", () => {
     expect(link.href).toBe("https://slate.test/booking/manage/tok-old");
   });
 
+  // #637: the embed is the primary lead surface, but its confirmation used to
+  // show only a 64px check badge while the standalone page got the branded coins
+  // illustration. The design system calls for one branded delight moment on
+  // success, so both surfaces now render the same illustration.
+  it("shows the branded coins illustration on the embedded confirmation (#637)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          startsAt: slotIso,
+          manageUrl: "https://slate.test/booking/manage/tok-new",
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} embedded parentOrigin="https://host.test" />);
+    await fillAndConfirm();
+
+    await screen.findByText("You're all set");
+    const coins = document.querySelector('img[src="/brand/pic-1-coins.png"]');
+    expect(coins).not.toBeNull();
+  });
+
+  // #637: the confirmation offered no way back to the booking. It now links to
+  // the manage page (returned as manageUrl by POST /booking), opening in a new
+  // tab so an embed lead does not navigate the iframe away from the confirmation.
+  it("links to the manage page on a successful confirmation (#637)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          startsAt: slotIso,
+          manageUrl: "https://slate.test/booking/manage/tok-new",
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    await screen.findByText("You're all set");
+    const link = screen.getByRole("link", { name: /manage/i }) as HTMLAnchorElement;
+    expect(link.href).toBe("https://slate.test/booking/manage/tok-new");
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toContain("noopener");
+  });
+
   // #633: a screen-reader lead selecting a day heard nothing when the skeletons
   // swapped for slots. The times panel now carries a polite role=status that
   // names the count (or the empty message) once the load settles.
