@@ -136,6 +136,7 @@ interface FakeOpts {
   testBucket?: boolean; // resolveBucketByCode returns an is_test bucket (#396)
   listResult?: { rows: Booking[]; buckets: Bucket[] }; // queryBookings result (#392)
   deleteEventThrows?: boolean;
+  deleteGcalMirrorThrows?: boolean; // deleteGcalMirrorBlock rejects (best-effort heal, #586)
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
   reassignSwapTerminal?: boolean; // reassign_booking_swap returns updated=false (#449)
   reassignSwapThrows?: boolean; // reassign_booking_swap rejects (rpc/network error) (#449)
@@ -183,6 +184,7 @@ function makeDeps(opts: FakeOpts) {
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     moveBusyBlock: [] as { userId: string; startIso: string; endIso: string; bookingId: string }[],
     deleteBusyBlocks: [] as string[],
+    deleteGcalMirror: [] as { userId: string; gcalEventId: string }[],
     commitReschedule: [] as {
       id: string;
       patch: Record<string, unknown>;
@@ -373,6 +375,10 @@ function makeDeps(opts: FakeOpts) {
     },
     deleteBusyBlocksForBooking: async (id) => {
       calls.deleteBusyBlocks.push(id);
+    },
+    deleteGcalMirrorBlock: async (userId, gcalEventId) => {
+      calls.deleteGcalMirror.push({ userId, gcalEventId });
+      if (opts.deleteGcalMirrorThrows) throw new Error("busy_blocks delete 503");
     },
     // Gated reschedule commit (#615). Gates against the LIVE pre-commit row
     // (loadBookingContext's `existing`): a concurrent cancel (status) or reassign
@@ -604,6 +610,15 @@ async function run() {
         calls.moveBusyBlock[0].endIso === "2026-06-08T13:30:00.000Z",
       "create: busy block spans the booked slot (30m)",
     );
+    // #586: once the event is Slate-owned, clear any stray source=gcal mirror a
+    // push-sync may have cached while racing the create (before the booking
+    // committed). Keyed by the booked agent + the created event id.
+    assert(
+      calls.deleteGcalMirror.length === 1 &&
+        calls.deleteGcalMirror[0].userId === "a" &&
+        calls.deleteGcalMirror[0].gcalEventId === "gcal-1",
+      "create: heals any raced gcal mirror for the booked event (#586)",
+    );
     assert(calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created", "create: fires booking.created");
     assert(calls.webhooks[0].dedupeKey === res.booking.id, "create: webhook dedupe key is the booking id (#436)");
     assert(calls.deleteEvent.length === 0, "create: no rollback on success");
@@ -611,6 +626,26 @@ async function run() {
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "create: invalidates cached slots for the booked bucket exactly once",
     );
+  }
+
+  // --- createBooking: the #586 gcal-mirror heal is BEST-EFFORT ---
+  // The booking has already committed by the time the heal runs, so a transient
+  // failure of the mirror delete must NOT fail the booking. It is attempted, it
+  // throws, and the create still returns the persisted booking with its webhook.
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      deleteGcalMirrorThrows: true,
+    });
+    const res = await createBooking(input, deps);
+    assert(res.booking.id === "bk-new", "heal-fail: booking still succeeds when the mirror delete throws");
+    assert(calls.deleteGcalMirror.length === 1, "heal-fail: the mirror delete was attempted");
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created",
+      "heal-fail: booking.created still fires (the commit's side effects are not lost)",
+    );
+    assert(calls.deleteEvent.length === 0, "heal-fail: no rollback of the calendar event");
   }
 
   // --- createBooking: a keyless (anonymous) booking is crash-safe too (#666) ---

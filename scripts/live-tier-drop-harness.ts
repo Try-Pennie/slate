@@ -374,6 +374,15 @@ function buildDeps(
       await db().from("busy_blocks").delete().eq("booking_id", bookingId);
     },
 
+    deleteGcalMirrorBlock: async (userId, gcalEventId) => {
+      await db()
+        .from("busy_blocks")
+        .delete()
+        .eq("user_id", userId)
+        .eq("source", "gcal")
+        .eq("gcal_event_id", gcalEventId);
+    },
+
     loadReconcilableBusyBlocks: async () => [],
     loadBookingStatuses: async () => new Map<string, BookingStatus>(),
     deleteBusyBlocksByIds: async () => {},

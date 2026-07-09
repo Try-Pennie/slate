@@ -76,12 +76,17 @@ export function partitionBusyWrites(
   const deletes: string[] = [];
   for (const ev of events) {
     if (!ev.id) continue;
-    // #166: an event Slate itself created for a booking is already represented by
-    // that booking's source=slate block (the single owner of the slot). Skip it
-    // entirely — never mirror it into a second source=gcal block (the double-count
-    // bug), and never queue it for delete, since the booking flow owns the block's
-    // lifecycle (cancel/reschedule remove it by booking_id, not via the sync).
-    if (slateEventIds.has(ev.id)) continue;
+    // #166/#586: an event Slate itself created for a booking is already represented
+    // by that booking's source=slate block (the single owner of the slot). Never
+    // mirror it into a second source=gcal block (the double-count bug). Queue it for
+    // delete so a stray source=gcal mirror is cleared (#586): the kind a push-sync
+    // caches while racing the booking's create, before the booking committed. The
+    // delete matches gcal rows by gcal_event_id; the booking's own slate block has a
+    // null gcal_event_id, so it is never touched (its lifecycle stays with the booking).
+    if (slateEventIds.has(ev.id)) {
+      deletes.push(ev.id);
+      continue;
+    }
     if (!isBusyEvent(ev)) {
       deletes.push(ev.id);
       continue;
