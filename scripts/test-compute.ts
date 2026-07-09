@@ -271,6 +271,26 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
     "bookable: own event excluded via ignoreBusy -> true (#523)",
   );
 
+  // #739: duplicate/overlapping busy intervals over the SAME slot block it exactly
+  // once (busy is an any-overlap predicate, never a sum), so two coincident busy
+  // rows (a real, benign case: a daily hold coinciding with a weekly one) can't
+  // over-subtract availability. The result must equal a single block, and a slot
+  // the block doesn't cover stays bookable (no phantom bleed from the extra row).
+  const dupBusy = { start: slot, end: slot + 30 * 60_000 };
+  const oneBlock = { ...agent, busy: [dupBusy] };
+  const twoIdentical = { ...agent, busy: [{ ...dupBusy }, { ...dupBusy }] };
+  assert(
+    isBookableSlotForAgent(oneBlock, rules, slot, earlyNow) ===
+      isBookableSlotForAgent(twoIdentical, rules, slot, earlyNow) &&
+      !isBookableSlotForAgent(twoIdentical, rules, slot, earlyNow),
+    "#739: duplicate busy intervals block the covered slot exactly once (same as a single block)",
+  );
+  const uncoveredSlot = ms("2026-06-08T15:00:00.000Z"); // 11:00 NY, on-shift, not covered by dupBusy
+  assert(
+    isBookableSlotForAgent(twoIdentical, rules, uncoveredSlot, earlyNow),
+    "#739: a slot outside the duplicated busy interval is unaffected (no over-subtraction)",
+  );
+
   // --- bookableSlotReason (#543): the same predicate, but returns the SPECIFIC
   //     failing rule (or null when bookable) so a declined in-place reschedule
   //     leaves a breadcrumb. isBookableSlotForAgent is `reason === null`, so the

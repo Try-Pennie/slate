@@ -117,6 +117,27 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
     "an external busy event is upserted, not deleted",
   );
 }
+// partitionBusyWrites: two DISTINCT gcal events that occupy the identical window
+// are BOTH kept. This is the legitimate "duplicate busy block" from #739 (a daily
+// recurring hold coinciding with a weekly one at the same local time). They carry
+// different gcal_event_ids, so the (user_id, gcal_event_id) unique index is
+// satisfied and both belong in the cache. Only a SAME id (deduped by the index) or
+// a Slate-owned mirror (#166, suppressed above) collapses; coincident distinct
+// events must not.
+{
+  const win = { start: { dateTime: "2026-06-08T19:30:00Z" }, end: { dateTime: "2026-06-08T20:00:00Z" } };
+  const events = [
+    { id: "dailyHold_20260608T193000Z", ...win },
+    { id: "weeklyHold_20260608T193000Z", ...win },
+  ];
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events);
+  assert(
+    upserts.length === 2 &&
+      upserts.every((u) => u.starts_at === "2026-06-08T19:30:00Z" && u.ends_at === "2026-06-08T20:00:00Z"),
+    "#739: two distinct gcal events at the identical window both upsert (not a bug, not collapsed)",
+  );
+  assert(deletes.length === 0, "#739: coincident distinct events are not treated as stale/dup deletes");
+}
 // partitionBusyWrites threads the agent timezone into all-day windows (#616) so
 // an OOO/holiday block lands on the agent's local day, not UTC midnight.
 {
