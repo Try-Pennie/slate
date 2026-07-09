@@ -34,6 +34,11 @@ const COOLDOWN_FIELDS: { key: MonitorAlertKey; label: string; help: string }[] =
     label: "Low-volume alert cooldown",
     help: "Throttle for the low-booking-volume alert.",
   },
+  {
+    key: "thin_tier_staffing",
+    label: "Thin-tier staffing cooldown",
+    help: "Quiet nudge when a tier rests on 1 to 2 bookable agents.",
+  },
 ];
 
 /** Formats a stored/updated pair into "changed by X at Y", or a default note. */

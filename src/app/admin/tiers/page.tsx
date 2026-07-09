@@ -6,14 +6,8 @@ import { oooOnlyFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
 import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
-import {
-  bucketStaffingDepths,
-  type ActiveMember,
-  type StaffingAgent,
-  type StaffingFlag,
-  type TierDepth,
-} from "@/lib/routing/staffing-depth";
-import type { Bucket, BucketMember, User } from "@/lib/db/types";
+import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
+import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 
 export const dynamic = "force-dynamic";
 
@@ -72,36 +66,7 @@ export default async function TiersPage() {
     redirect("/admin/ooo");
   }
 
-  const db = supabaseAdmin();
-  const [bucketsRes, usersRes, membersRes] = await Promise.all([
-    db.from("buckets").select("*").eq("org_id", me.org_id),
-    db
-      .from("users")
-      .select("id, name, email, attributes, bookable, deactivated_at")
-      .eq("org_id", me.org_id),
-    // Only active memberships count toward a pool (matches resolveBucketPool).
-    db.from("bucket_members").select("bucket_id, user_id").eq("active", true),
-  ]);
-
-  const buckets = (bucketsRes.data ?? []) as Bucket[];
-  const userRows = (usersRes.data ?? []) as Pick<
-    User,
-    "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at"
-  >[];
-  // Match the booker exactly: it routes to any bookable, non-deactivated agent
-  // (it does NOT exclude the synthetic test agent), so neither do we here.
-  const agents: StaffingAgent[] = userRows.map((u) => ({
-    id: u.id,
-    name: u.name ?? u.email,
-    attributes: u.attributes,
-    bookable: u.bookable,
-    deactivated_at: u.deactivated_at,
-  }));
-  const activeMembers: ActiveMember[] = (
-    (membersRes.data ?? []) as Pick<BucketMember, "bucket_id" | "user_id">[]
-  ).map((m) => ({ bucket_id: m.bucket_id, user_id: m.user_id }));
-
-  const rows = bucketStaffingDepths(buckets, agents, activeMembers);
+  const rows = await loadTierDepths(supabaseAdmin(), me.org_id);
   const spofCount = rows.filter((r) => r.flag === "spof").length;
   const noneCount = rows.filter((r) => r.flag === "none").length;
   const thinCount = rows.filter((r) => r.flag === "thin").length;

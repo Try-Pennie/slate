@@ -34,17 +34,11 @@ import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import {
   parseMonitorSettingsForm,
+  ALERT_KEYS as MONITOR_ALERT_KEYS,
   type MonitorAlertKey,
 } from "@/lib/monitor/settings";
 import { __clearChannelCache } from "@/lib/notify/channels";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
-
-const MONITOR_ALERT_KEYS: MonitorAlertKey[] = [
-  "availability_data_anomaly",
-  "availability_booked_solid",
-  "fallback_covered_availability",
-  "low_booking_volume",
-];
 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation

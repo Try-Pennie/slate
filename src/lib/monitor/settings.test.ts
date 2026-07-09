@@ -17,11 +17,19 @@ describe("resolveCooldownMs", () => {
     expect(out.availability_booked_solid).toBe(MONITOR_DEFAULTS.cooldownMs.availability_booked_solid);
     expect(out.fallback_covered_availability).toBe(MONITOR_DEFAULTS.cooldownMs.fallback_covered_availability);
     expect(out.low_booking_volume).toBe(MONITOR_DEFAULTS.cooldownMs.low_booking_volume);
+    // #569: the thin-tier staffing whisper defaults to a long ~daily cooldown.
+    expect(out.thin_tier_staffing).toBe(MONITOR_DEFAULTS.cooldownMs.thin_tier_staffing);
+    expect(out.thin_tier_staffing).toBe(24 * 60 * 60_000);
   });
 
   it("uses a stored cooldown (minutes) converted to ms when set", () => {
     const out = resolveCooldownMs([{ key: "availability_data_anomaly", cooldown_min: 45 }]);
     expect(out.availability_data_anomaly).toBe(45 * 60_000);
+  });
+
+  it("#569: the thin-tier staffing cooldown is UI-tunable via the store", () => {
+    const out = resolveCooldownMs([{ key: "thin_tier_staffing", cooldown_min: 720 }]);
+    expect(out.thin_tier_staffing).toBe(720 * 60_000);
   });
 
   it("ignores an unset (null) stored value and falls back to default", () => {

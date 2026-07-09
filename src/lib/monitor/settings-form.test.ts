@@ -12,6 +12,7 @@ const blank = {
     availability_booked_solid: "",
     fallback_covered_availability: "",
     low_booking_volume: "",
+    thin_tier_staffing: "",
   },
   floor30: "",
   floor120: "",
