@@ -7,6 +7,7 @@ import { setMonitorSettings } from "@/app/admin/actions";
 import { MONITOR_DEFAULTS, type MonitorAlertKey } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { SettingsSaveNotice } from "./SettingsSaveNotice";
 import { labelCls, inputCls, cardCls, btnCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
 
@@ -126,16 +127,7 @@ export default async function MonitorSettingsPage({
           <p className="mt-3 text-xs text-white/70 dark:text-fg-muted">{lastChanged}</p>
         </section>
 
-        {sp.ok && (
-          <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg">
-            Alert settings saved.
-          </div>
-        )}
-        {sp.error && (
-          <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">
-            {sp.error}
-          </div>
-        )}
+        <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
         {!armed && (
           <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
             Heads up: the low-booking-volume alarm is currently <strong>disarmed</strong> (a
