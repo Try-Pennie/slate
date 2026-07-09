@@ -124,6 +124,7 @@ function makeTierDropDeps(): BookingDeps {
     moveBusyBlock: noop,
     reassignSwap: async () => ({ prevGcalEventId: null, prevAgentEmail: null, updated: true }),
     deleteBusyBlocksForBooking: noop,
+    deleteGcalMirrorBlock: noop,
     loadReconcilableBusyBlocks: async () =>
       [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[],
     loadBookingStatuses: async () => new Map<string, BookingStatus>(),

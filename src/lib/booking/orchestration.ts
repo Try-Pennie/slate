@@ -454,6 +454,14 @@ export interface BookingDeps {
   }>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   /**
+   * Delete any source=gcal busy_block mirroring this Slate-created event (#586).
+   * A push-sync that raced the booking's create (before it committed) could have
+   * cached the event as a source=gcal block; once the booking owns the event id,
+   * that mirror is a stray duplicate. Keyed by (user_id, gcal_event_id); the
+   * booking's own source=slate block has a null gcal_event_id, so it is untouched.
+   */
+  deleteGcalMirrorBlock(userId: string, gcalEventId: string): Promise<void>;
+  /**
    * Reconcile sweep (#428): candidate busy_blocks to check for a stuck slot.
    * The real impl returns only upcoming `slate`-sourced rows (a past block can't
    * block a bookable future slot, and `gcal` mirrors are never freed here), so
@@ -1514,6 +1522,21 @@ async function completeReservation(
     throw new Error("Failed to persist booking");
   }
   const booking = inserted.booking;
+
+  // #586: the booking now owns this event id, so any source=gcal block for it is a
+  // stray mirror a push-sync cached while racing the create (before the booking
+  // committed). Delete it, else it would outlive a later cancel (which removes
+  // blocks by booking_id, not the null-booking_id mirror) and over-block the freed
+  // slot until a full resync. Idempotent (no-op when no mirror exists). Best-effort:
+  // the booking has already committed, so a transient cleanup failure must NOT fail
+  // it. The sync's slate-id delete and the full-resync purge are the backstops.
+  if (booking.assigned_user_id && gcalEventId) {
+    try {
+      await deps.deleteGcalMirrorBlock(booking.assigned_user_id, gcalEventId);
+    } catch {
+      // best-effort
+    }
+  }
 
   // On a tier-drop the routing_trace records the booked (lower) bucket; on a
   // non-fallback booking it equals bucketCode. Use the persisted value so that

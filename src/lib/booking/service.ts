@@ -577,6 +577,28 @@ function realDeps(): BookingDeps {
       }
     },
 
+    deleteGcalMirrorBlock: async (userId, gcalEventId) => {
+      // #586: clear a stray source=gcal mirror of a Slate booking's own event. Scoped
+      // to source=gcal + this exact gcal_event_id, so it can never touch the booking's
+      // source=slate write-through block (which carries a null gcal_event_id). A single
+      // retry on transient failure; a leftover mirror self-heals on the next full
+      // resync (purgeVanished) and via the sync's slate-id delete, so no alert.
+      const del = () =>
+        supabaseAdmin()
+          .from("busy_blocks")
+          .delete()
+          .eq("user_id", userId)
+          .eq("source", "gcal")
+          .eq("gcal_event_id", gcalEventId);
+      let { error } = await del();
+      if (error) ({ error } = await del());
+      if (error) {
+        console.error(
+          `busy_blocks gcal-mirror delete failed for event ${gcalEventId}: ${error.message}`,
+        );
+      }
+    },
+
     loadReconcilableBusyBlocks: async (limit) => {
       // Only upcoming slate rows: a past block can't block a bookable future
       // slot, and gcal mirrors are never freed by the reconcile sweep (#428).

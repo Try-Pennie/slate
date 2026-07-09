@@ -90,11 +90,12 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
   );
 }
 
-// partitionBusyWrites — events owned by a Slate booking (#166) are skipped
-// entirely. The booking's own source=slate block is the single owner of that
-// slot, so the sync must NOT mirror the Slate-created Google event into a second
-// source=gcal block (the double-count) — and must NOT queue it for delete either,
-// since the block's lifecycle belongs to the booking, not the sync.
+// partitionBusyWrites: events owned by a Slate booking (#166) are NEVER mirrored
+// into a second source=gcal block (the double-count). They ARE queued for delete
+// (#586): if a push-sync raced the booking's create and cached a stray source=gcal
+// mirror before the booking committed, this deletes it. The delete targets gcal
+// rows by gcal_event_id, so the booking's own source=slate block (null
+// gcal_event_id) is never matched, and its lifecycle still belongs to the booking.
 {
   const events = [
     { id: "slateAAA", start: { dateTime: "2026-06-08T13:00:00Z" }, end: { dateTime: "2026-06-08T13:30:00Z" } }, // a Slate booking's event
@@ -108,8 +109,12 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
     "a Slate-owned event is NOT mirrored as a gcal block (only the external event upserts)",
   );
   assert(
-    !deletes.includes("slateBBB") && deletes.length === 0,
-    "a Slate-owned event is skipped entirely, never queued for delete (the booking owns its block)",
+    deletes.includes("slateAAA") && deletes.includes("slateBBB"),
+    "a Slate-owned event is queued for delete to clear any stray gcal mirror (#586)",
+  );
+  assert(
+    !deletes.includes("ext1"),
+    "an external busy event is upserted, not deleted",
   );
 }
 // partitionBusyWrites threads the agent timezone into all-day windows (#616) so
