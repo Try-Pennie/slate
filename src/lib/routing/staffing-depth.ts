@@ -35,13 +35,21 @@ export interface ActiveMember {
 export interface TierDepth {
   code: string;
   name: string;
-  /** Count of currently-bookable eligible agents, fallback-blind. */
+  /** Count of currently-bookable eligible agents, fallback-blind (roster snapshot). */
   depth: number;
+  /** Roster depth minus eligible agents on approved time off today (#738). Equals
+   *  `depth` when no `outUserIds` are supplied. This is the short-term risk number. */
+  effectiveDepth: number;
+  /** How many of the tier's eligible agents are out today (`depth - effectiveDepth`). */
+  outCount: number;
   /** Display name of the only agent when depth === 1, else null. */
   soleAgentName: string | null;
   /** True when the bucket has a fallback that itself points at a routable agent. */
   hasWorkingFallback: boolean;
+  /** Flag on the roster `depth` (the structural snapshot). */
   flag: StaffingFlag;
+  /** Flag on `effectiveDepth` (the time-off-aware short-term risk). */
+  effectiveFlag: StaffingFlag;
 }
 
 export function staffingFlag(depth: number): StaffingFlag {
@@ -59,6 +67,7 @@ export function bucketStaffingDepths(
   buckets: Bucket[],
   agents: StaffingAgent[],
   activeMembers: ActiveMember[],
+  outUserIds: Set<string> = new Set(),
 ): TierDepth[] {
   // Only bookable, non-deactivated agents can be routed to (matches
   // resolveBucketPool's users filter: .eq("bookable", true).is("deactivated_at", null)).
@@ -82,14 +91,26 @@ export function bucketStaffingDepths(
       // who is non-bookable/deactivated is dropped here exactly as at booking time.
       const ids = agentIdsFromPool(orgAgents, manualMemberIds, b.criteria ?? {});
       const depth = ids.length;
+      // Only eligible agents count as "out": an out id outside this tier's pool
+      // can't lower its depth.
+      const outCount = ids.filter((id) => outUserIds.has(id)).length;
+      const effectiveDepth = depth - outCount;
       return {
         code: b.code,
         name: b.name,
         depth,
+        effectiveDepth,
+        outCount,
         soleAgentName: depth === 1 ? (nameById.get(ids[0]) ?? null) : null,
         hasWorkingFallback: !!b.fallback_user_id && routableIds.has(b.fallback_user_id),
         flag: staffingFlag(depth),
+        effectiveFlag: staffingFlag(effectiveDepth),
       };
     })
-    .sort((a, b) => a.depth - b.depth || a.code.localeCompare(b.code));
+    // Sort by the short-term risk first (effective), then roster depth, then code,
+    // so the tiers most at risk today surface at the top.
+    .sort(
+      (a, b) =>
+        a.effectiveDepth - b.effectiveDepth || a.depth - b.depth || a.code.localeCompare(b.code),
+    );
 }

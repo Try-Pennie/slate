@@ -32,8 +32,20 @@ function flagPill(flag: StaffingFlag): { variant: PillVariant; className?: strin
   }
 }
 
-/** Human detail for a row: who the sole agent is, or the fallback situation. */
+/** Human detail for a row: who the sole agent is, the time-off situation today,
+ *  or the fallback situation. The status column reflects the EFFECTIVE flag, so
+ *  this detail explains it (roster vs available today when agents are out). */
 function rowDetail(row: TierDepth): string {
+  // #738: agents on approved time off thin (or empty) the tier for today.
+  if (row.outCount > 0) {
+    const avail =
+      row.effectiveDepth === 0
+        ? "nobody is available today"
+        : row.effectiveDepth === 1
+          ? "only 1 is available today"
+          : `only ${row.effectiveDepth} are available today`;
+    return `${row.depth} on the roster, but ${avail} (${row.outCount} on approved time off).`;
+  }
   if (row.flag === "spof") {
     return row.soleAgentName
       ? `Only ${row.soleAgentName} can take these bookings.`
@@ -67,9 +79,12 @@ export default async function TiersPage() {
   }
 
   const rows = await loadTierDepths(supabaseAdmin(), me.org_id);
-  const spofCount = rows.filter((r) => r.flag === "spof").length;
-  const noneCount = rows.filter((r) => r.flag === "none").length;
-  const thinCount = rows.filter((r) => r.flag === "thin").length;
+  // Summary + status reflect the EFFECTIVE (time-off-aware) flag: the real
+  // short-term risk today. Roster depth stays visible per row for context (#738).
+  const spofCount = rows.filter((r) => r.effectiveFlag === "spof").length;
+  const noneCount = rows.filter((r) => r.effectiveFlag === "none").length;
+  const thinCount = rows.filter((r) => r.effectiveFlag === "thin").length;
+  const outTodayCount = rows.reduce((n, r) => n + r.outCount, 0);
 
   return (
     <>
@@ -88,9 +103,10 @@ export default async function TiersPage() {
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Staffing depth</h1>
           <p className="mt-2 text-pennie-beige/75">
-            How many currently-bookable agents can take each tier&rsquo;s bookings, so a
-            tier resting on one person is visible before it runs out of times. Thinnest
-            first.
+            How many currently-bookable agents can take each tier&rsquo;s bookings, and how
+            many are actually available today after approved time off, so a tier resting on
+            one person (now or this week) is visible before it runs out of times. Most at
+            risk today first.
           </p>
         </section>
 
@@ -103,10 +119,13 @@ export default async function TiersPage() {
               <span className="font-semibold tabular-nums">{noneCount}</span> with no coverage
             </span>
             <span className={spofCount > 0 ? "text-error" : "text-fg-muted"}>
-              <span className="font-semibold tabular-nums">{spofCount}</span> on a single agent
+              <span className="font-semibold tabular-nums">{spofCount}</span> on a single agent today
             </span>
             <span className="text-fg-muted">
-              <span className="font-semibold tabular-nums">{thinCount}</span> two deep
+              <span className="font-semibold tabular-nums">{thinCount}</span> two deep today
+            </span>
+            <span className="text-fg-muted">
+              <span className="font-semibold tabular-nums">{outTodayCount}</span> agent-slots on time off
             </span>
           </div>
 
@@ -116,13 +135,13 @@ export default async function TiersPage() {
                 <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
                   <th scope="col" className="px-4 py-2.5 font-semibold">Tier</th>
                   <th scope="col" className="px-3 py-2.5 font-semibold">Code</th>
-                  <th scope="col" className="px-3 py-2.5 font-semibold">Bookable agents</th>
+                  <th scope="col" className="px-3 py-2.5 font-semibold">Bookable agents (available today)</th>
                   <th scope="col" className="px-4 py-2.5 font-semibold">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {rows.map((row) => {
-                  const pill = flagPill(row.flag);
+                  const pill = flagPill(row.effectiveFlag);
                   const detail = rowDetail(row);
                   return (
                     <tr key={row.code} className="align-top transition-colors hover:bg-[var(--bg-alt)]">
@@ -130,10 +149,13 @@ export default async function TiersPage() {
                       <td className="px-3 py-3 text-fg-muted tabular-nums">{row.code}</td>
                       <td className="px-3 py-3 tabular-nums">
                         <span
-                          className={`font-semibold ${row.depth <= 1 ? "text-error" : "text-fg"}`}
+                          className={`font-semibold ${row.effectiveDepth <= 1 ? "text-error" : "text-fg"}`}
                         >
                           {row.depth}
                         </span>
+                        {row.outCount > 0 && (
+                          <span className="text-xs text-fg-muted"> ({row.effectiveDepth} today)</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="space-y-1">

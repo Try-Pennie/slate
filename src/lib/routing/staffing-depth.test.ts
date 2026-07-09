@@ -65,6 +65,49 @@ describe("bucketStaffingDepths", () => {
     expect(row.soleAgentName).toBe("Tyler Moffett");
   });
 
+  // #738: time-off-aware effective depth. `outUserIds` are agents on approved
+  // time off today; effectiveDepth = roster depth minus those, so a roster-deep
+  // tier whose agents are mostly out surfaces its hidden short-term SPOF. The
+  // roster depth/flag are unchanged (the snapshot truth); effective is the risk.
+  it("defaults effectiveDepth to the roster depth when nobody is out", () => {
+    const buckets = [mkBucket({ code: "311", name: "High | Achieve", criteria: { debt_team: "high_achieve" } })];
+    const agents = [
+      mkAgent({ id: "a", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "b", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "c", attributes: { debt_team: "high_achieve" } }),
+    ];
+    const [row] = bucketStaffingDepths(buckets, agents, []);
+    expect(row.depth).toBe(3);
+    expect(row.effectiveDepth).toBe(3);
+    expect(row.effectiveFlag).toBe("ok");
+    expect(row.outCount).toBe(0);
+  });
+
+  it("subtracts out-today agents into a thinner effectiveDepth while roster depth stays", () => {
+    const buckets = [mkBucket({ code: "311", name: "High | Achieve", criteria: { debt_team: "high_achieve" } })];
+    const agents = [
+      mkAgent({ id: "a", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "b", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "c", attributes: { debt_team: "high_achieve" } }),
+    ];
+    // Two of the three eligible agents are on approved time off today.
+    const [row] = bucketStaffingDepths(buckets, agents, [], new Set(["a", "b"]));
+    expect(row.depth).toBe(3);
+    expect(row.flag).toBe("ok");
+    expect(row.effectiveDepth).toBe(1);
+    expect(row.effectiveFlag).toBe("spof");
+    expect(row.outCount).toBe(2);
+  });
+
+  it("ignores out ids that are not in the tier's eligible pool", () => {
+    const buckets = [mkBucket({ code: "311", name: "High | Achieve", criteria: { debt_team: "high_achieve" } })];
+    const agents = [mkAgent({ id: "a", attributes: { debt_team: "high_achieve" } })];
+    // "stranger" is out but not eligible for this tier, so it can't lower depth.
+    const [row] = bucketStaffingDepths(buckets, agents, [], new Set(["stranger"]));
+    expect(row.effectiveDepth).toBe(1);
+    expect(row.outCount).toBe(0);
+  });
+
   it("does not name an agent when the tier has more than one (depth >= 2)", () => {
     const buckets = [mkBucket({ code: "311", name: "High | Achieve | NL", criteria: { debt_team: "high_achieve" } })];
     const agents = [

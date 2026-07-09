@@ -294,7 +294,7 @@ export async function GET(req: NextRequest) {
     // reactive availability signals above. depth-0 dead-ends are those signals'
     // job and are excluded; the info-channel post self-throttles to ~daily. ---
     const thinTierCount = await runThinTierStaffingCheck({
-      loadDepths: () => loadTierDepths(db),
+      loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
       notify: sendThrottledInfo,
       cooldownMs: settings.cooldownMs.thin_tier_staffing,
       log: (m) => console.log(m),

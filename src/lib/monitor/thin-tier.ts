@@ -19,24 +19,32 @@ export const THIN_TIER_STAFFING_KEY = "thin_tier_staffing";
 const NAME_CAP = 8;
 
 /**
- * The tiers worth a staffing nudge: single points of failure (depth 1) and thin
- * tiers (depth 2). Depth-0 tiers are deliberately excluded: a true dead-end is
- * already the #371 availability probe's / #567 fallback notice's job, and folding
- * it in here would double-notify. `ok` (3+) tiers are healthy.
+ * The tiers worth a staffing nudge, judged on EFFECTIVE depth (#738): a tier with
+ * 1 or 2 agents actually available today, whether that is structural (a small
+ * roster) or because agents are on approved time off. Effective-0 tiers are
+ * excluded: an all-out tier is a live dead-end already covered by the #371
+ * availability probe / #567 fallback notice, so folding it in would double-notify.
+ * Effective 3+ is healthy.
  */
 export function selectThinTiers(depths: TierDepth[]): TierDepth[] {
-  return depths.filter((t) => t.flag === "spof" || t.flag === "thin");
+  return depths.filter((t) => t.effectiveFlag === "spof" || t.effectiveFlag === "thin");
 }
 
 /** Human line for one thin tier, thinnest-first ordering preserved by the caller. */
 function tierLine(t: TierDepth): string {
   const head = `${t.code} (${t.name})`;
-  const body =
-    t.flag === "spof"
-      ? t.soleAgentName
-        ? `only ${t.soleAgentName} can take these bookings (single point of failure)`
-        : "rests on a single agent (single point of failure)"
-      : "only 2 agents deep, one time-off or offboarding from a single point of failure";
+  const avail = t.effectiveDepth === 1 ? "1 agent" : "2 agents";
+  let body: string;
+  if (t.outCount > 0) {
+    // A roster-deep tier thinned by today's time off: show both so staffing sees
+    // it is temporary and how many are out.
+    body = `${t.depth} on the roster but only ${avail} available today (${t.outCount} on time off)`;
+  } else if (t.flag === "spof" && t.soleAgentName) {
+    // Structural single point of failure: name the sole agent.
+    body = `only ${t.soleAgentName} can take these bookings (single point of failure)`;
+  } else {
+    body = `only ${avail} deep`;
+  }
   // A working fallback means an empty tier still routes, so it's lower urgency,
   // but the tier is still structurally thin (depth is reported fallback-blind).
   const cushion = t.hasWorkingFallback
@@ -56,7 +64,7 @@ export function formatThinTierNotice(tiers: TierDepth[]): string {
   const lines = tiers.slice(0, NAME_CAP).map(tierLine);
   const more = tiers.length > NAME_CAP ? ` (and ${tiers.length - NAME_CAP} more)` : "";
   return (
-    `Slate (info): ${tiers.length} tier(s) are thinly staffed (1 to 2 bookable agents), ` +
+    `Slate (info): ${tiers.length} tier(s) are thinly staffed (1 to 2 agents available today), ` +
     `so add coverage or set a fallback before customers hit empty availability.${more}\n` +
     lines.join("\n")
   );

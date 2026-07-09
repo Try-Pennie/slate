@@ -11,21 +11,28 @@ import type { TierDepth } from "@/lib/routing/staffing-depth";
 // monitor cron. These pure tests pin WHICH tiers qualify (spof + thin only) and
 // the notice wording; the depth math itself lives in staffing-depth.ts (#584).
 
+function flagFor(d: number) {
+  return d <= 0 ? "none" : d === 1 ? "spof" : d === 2 ? "thin" : "ok";
+}
+
 function tier(over: Partial<TierDepth> & { code: string; depth: number }): TierDepth {
-  const flag =
-    over.depth <= 0 ? "none" : over.depth === 1 ? "spof" : over.depth === 2 ? "thin" : "ok";
+  // effectiveDepth defaults to roster depth (nobody out) unless overridden.
+  const effectiveDepth = over.effectiveDepth ?? over.depth;
   return {
     code: over.code,
     name: over.name ?? `Tier ${over.code}`,
     depth: over.depth,
+    effectiveDepth,
+    outCount: over.outCount ?? over.depth - effectiveDepth,
     soleAgentName: over.soleAgentName ?? (over.depth === 1 ? "Tyler Moffett" : null),
     hasWorkingFallback: over.hasWorkingFallback ?? false,
-    flag: over.flag ?? flag,
+    flag: over.flag ?? flagFor(over.depth),
+    effectiveFlag: over.effectiveFlag ?? flagFor(effectiveDepth),
   };
 }
 
 describe("selectThinTiers", () => {
-  it("picks only spof (depth 1) and thin (depth 2) tiers", () => {
+  it("picks tiers whose EFFECTIVE depth is spof (1) or thin (2)", () => {
     const depths = [
       tier({ code: "520", depth: 1 }),
       tier({ code: "420", depth: 2 }),
@@ -35,12 +42,26 @@ describe("selectThinTiers", () => {
     expect(selectThinTiers(depths).map((t) => t.code)).toEqual(["520", "420"]);
   });
 
-  it("excludes depth-0 tiers (a true dead-end is the #371 availability probe's job, not a staffing nudge)", () => {
+  it("#738: fires on a roster-deep tier that is effectively thin today (agents on time off)", () => {
+    // Roster depth 4 (would read OK), but 2 are out today -> effective 2 (thin).
+    const depths = [tier({ code: "311", depth: 4, effectiveDepth: 2 })];
+    const picked = selectThinTiers(depths);
+    expect(picked.map((t) => t.code)).toEqual(["311"]);
+    expect(picked[0].effectiveFlag).toBe("thin");
+  });
+
+  it("#738: excludes an effectively-empty tier (a live dead-end is the availability probe's job)", () => {
+    // Roster 3 but everyone's out today -> effective 0 -> not a staffing nudge.
+    const depths = [tier({ code: "311", depth: 3, effectiveDepth: 0 }), tier({ code: "520", depth: 1 })];
+    expect(selectThinTiers(depths).map((t) => t.code)).toEqual(["520"]);
+  });
+
+  it("excludes roster depth-0 tiers (structurally empty, handled by the availability probe)", () => {
     const depths = [tier({ code: "999", depth: 0 }), tier({ code: "520", depth: 1 })];
     expect(selectThinTiers(depths).map((t) => t.code)).toEqual(["520"]);
   });
 
-  it("returns an empty list when every tier is adequately staffed", () => {
+  it("returns an empty list when every tier is adequately staffed today", () => {
     const depths = [tier({ code: "120", depth: 5 }), tier({ code: "220", depth: 4 })];
     expect(selectThinTiers(depths)).toEqual([]);
   });
@@ -57,6 +78,15 @@ describe("formatThinTierNotice", () => {
     expect(msg).toContain("Tyler Moffett");
     expect(msg).toContain("420 (Very High | Beyond)");
     expect(msg).toContain("2 agents");
+  });
+
+  it("#738: spells out roster vs available-today when agents are on time off", () => {
+    const msg = formatThinTierNotice([
+      tier({ code: "311", name: "High | Achieve", depth: 4, effectiveDepth: 1, outCount: 3 }),
+    ]);
+    expect(msg).toContain("4 on the roster");
+    expect(msg).toContain("1 agent available today");
+    expect(msg).toContain("3 on time off");
   });
 
   it("annotates a tier whose only cushion is a fallback as lower urgency", () => {
