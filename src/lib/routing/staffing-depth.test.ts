@@ -99,6 +99,25 @@ describe("bucketStaffingDepths", () => {
     expect(row.outCount).toBe(2);
   });
 
+  // #740: the drill-down needs the full eligible roster per tier, each marked
+  // out-today, sorted available-first then out, name-ascending.
+  it("lists the tier's eligible agents with out-today flags, available first", () => {
+    const buckets = [mkBucket({ code: "311", name: "High | Achieve", criteria: { debt_team: "high_achieve" } })];
+    const agents = [
+      mkAgent({ id: "z", name: "Zoe Adams", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "a", name: "Aaron Ng", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "m", name: "Mia Lee", attributes: { debt_team: "high_achieve" } }),
+      mkAgent({ id: "x", name: "Not Eligible", attributes: { debt_team: "low" } }),
+    ];
+    const [row] = bucketStaffingDepths(buckets, agents, [], new Set(["a"]));
+    // Aaron is out -> sorts last; the rest available, name-ascending.
+    expect(row.agents.map((a) => `${a.name}:${a.out}`)).toEqual([
+      "Mia Lee:false",
+      "Zoe Adams:false",
+      "Aaron Ng:true",
+    ]);
+  });
+
   it("ignores out ids that are not in the tier's eligible pool", () => {
     const buckets = [mkBucket({ code: "311", name: "High | Achieve", criteria: { debt_team: "high_achieve" } })];
     const agents = [mkAgent({ id: "a", attributes: { debt_team: "high_achieve" } })];

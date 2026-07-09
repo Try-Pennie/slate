@@ -147,15 +147,40 @@ export default async function TiersPage() {
                     <tr key={row.code} className="align-top transition-colors hover:bg-[var(--bg-alt)]">
                       <td className="px-4 py-3 font-semibold text-fg">{row.name}</td>
                       <td className="px-3 py-3 text-fg-muted tabular-nums">{row.code}</td>
-                      <td className="px-3 py-3 tabular-nums">
-                        <span
-                          className={`font-semibold ${row.effectiveDepth <= 1 ? "text-error" : "text-fg"}`}
-                        >
-                          {row.depth}
-                        </span>
-                        {row.outCount > 0 && (
-                          <span className="text-xs text-fg-muted"> ({row.effectiveDepth} today)</span>
-                        )}
+                      <td className="px-3 py-3">
+                        {/* #740: click to expand the covering agents. Native
+                            details/summary: keyboard-accessible, needs no client JS. */}
+                        <details className="group">
+                          <summary className="flex cursor-pointer items-center gap-1 tabular-nums marker:text-fg-muted">
+                            <span
+                              className={`font-semibold ${row.effectiveDepth <= 1 ? "text-error" : "text-fg"}`}
+                            >
+                              {row.depth}
+                            </span>
+                            {row.outCount > 0 && (
+                              <span className="text-xs text-fg-muted">({row.effectiveDepth} today)</span>
+                            )}
+                            <span className="ml-1 text-xs text-fg-muted underline-offset-2 group-hover:underline">
+                              agents
+                            </span>
+                          </summary>
+                          <ul className="mt-2 space-y-1">
+                            {row.agents.length === 0 && (
+                              <li className="text-xs text-fg-muted">No eligible agents.</li>
+                            )}
+                            {row.agents.map((a) => (
+                              <li key={a.id} className="text-xs">
+                                <a
+                                  href={`/admin/agents/${a.id}`}
+                                  className="text-fg underline-offset-2 hover:underline"
+                                >
+                                  {a.name}
+                                </a>
+                                {a.out && <span className="ml-1 text-fg-muted">(out today)</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
                       </td>
                       <td className="px-4 py-3">
                         <div className="space-y-1">

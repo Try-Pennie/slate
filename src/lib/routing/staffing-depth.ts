@@ -50,6 +50,9 @@ export interface TierDepth {
   flag: StaffingFlag;
   /** Flag on `effectiveDepth` (the time-off-aware short-term risk). */
   effectiveFlag: StaffingFlag;
+  /** The tier's eligible agents (the drill-down, #740), each marked out-today,
+   *  sorted available-first then out, name-ascending. */
+  agents: { id: string; name: string; out: boolean }[];
 }
 
 export function staffingFlag(depth: number): StaffingFlag {
@@ -95,6 +98,10 @@ export function bucketStaffingDepths(
       // can't lower its depth.
       const outCount = ids.filter((id) => outUserIds.has(id)).length;
       const effectiveDepth = depth - outCount;
+      const agents = ids
+        .map((id) => ({ id, name: nameById.get(id) ?? id, out: outUserIds.has(id) }))
+        // Available first, then out; name-ascending within each group.
+        .sort((a, c) => Number(a.out) - Number(c.out) || a.name.localeCompare(c.name));
       return {
         code: b.code,
         name: b.name,
@@ -105,6 +112,7 @@ export function bucketStaffingDepths(
         hasWorkingFallback: !!b.fallback_user_id && routableIds.has(b.fallback_user_id),
         flag: staffingFlag(depth),
         effectiveFlag: staffingFlag(effectiveDepth),
+        agents,
       };
     })
     // Sort by the short-term risk first (effective), then roster depth, then code,

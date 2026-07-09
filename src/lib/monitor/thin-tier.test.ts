@@ -28,6 +28,7 @@ function tier(over: Partial<TierDepth> & { code: string; depth: number }): TierD
     hasWorkingFallback: over.hasWorkingFallback ?? false,
     flag: over.flag ?? flagFor(over.depth),
     effectiveFlag: over.effectiveFlag ?? flagFor(effectiveDepth),
+    agents: over.agents ?? [],
   };
 }
 

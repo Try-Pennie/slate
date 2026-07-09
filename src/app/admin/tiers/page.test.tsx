@@ -63,18 +63,50 @@ describe("TiersPage time-off-aware display (#738)", () => {
         hasWorkingFallback: false,
         flag: "ok",
         effectiveFlag: "spof",
+        agents: [],
       },
     ]);
     render(await TiersPage());
-    // The inline cell shows the roster count with the available-today annotation.
-    const agentsCell = screen.getByText(
-      (_, el) => el?.tagName === "TD" && /^4\s*\(1 today\)$/.test((el.textContent ?? "").trim()),
+    // The drill-down summary shows the roster count with the available-today annotation.
+    const agentsSummary = screen.getByText(
+      (_, el) =>
+        el?.tagName === "SUMMARY" &&
+        /4/.test(el.textContent ?? "") &&
+        /\(1 today\)/.test(el.textContent ?? ""),
     );
-    expect(agentsCell).toBeTruthy();
+    expect(agentsSummary).toBeTruthy();
     // Detail spells out roster vs available today and the time-off count.
     expect(screen.getByText(/4 on the roster/i)).toBeTruthy();
     expect(screen.getByText(/3 on approved time off/i)).toBeTruthy();
     // The status pill reflects the EFFECTIVE risk, not the roster-OK flag.
     expect(screen.getByText(/single point of failure/i)).toBeTruthy();
+  });
+
+  it("#740: drills down to the covering agents, linked to their admin page, marking who is out", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    load.loadTierDepths.mockResolvedValueOnce([
+      {
+        code: "311",
+        name: "High | Achieve",
+        depth: 2,
+        effectiveDepth: 1,
+        outCount: 1,
+        soleAgentName: null,
+        hasWorkingFallback: false,
+        flag: "thin",
+        effectiveFlag: "spof",
+        agents: [
+          { id: "u-mia", name: "Mia Lee", out: false },
+          { id: "u-aaron", name: "Aaron Ng", out: true },
+        ],
+      },
+    ]);
+    render(await TiersPage());
+    const mia = screen.getByRole("link", { name: "Mia Lee" });
+    expect(mia.getAttribute("href")).toBe("/admin/agents/u-mia");
+    const aaron = screen.getByRole("link", { name: "Aaron Ng" });
+    expect(aaron.getAttribute("href")).toBe("/admin/agents/u-aaron");
+    // The out-today agent carries the marker.
+    expect(screen.getByText(/out today/i)).toBeTruthy();
   });
 });
