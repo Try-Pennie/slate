@@ -1,5 +1,6 @@
 import ManageBooking from "@/components/ManageBooking";
 import ManageNotFound from "@/components/ManageNotFound";
+import StandaloneTheme from "@/components/StandaloneTheme";
 import { getBookingByToken } from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
@@ -19,18 +20,28 @@ export default async function ManagePage({
   const theme = sp.theme === "dark" ? ("dark" as const) : ("light" as const);
   const found = await getBookingByToken(token);
 
+  // #706: paint the theme at the document root so dark renders don't leave a
+  // beige gutter behind the content card. Always standalone (never embedded).
   if (!found) {
-    return <ManageNotFound theme={theme} />;
+    return (
+      <>
+        <StandaloneTheme theme={theme} />
+        <ManageNotFound theme={theme} />
+      </>
+    );
   }
 
   return (
-    <ManageBooking
-      token={token}
-      bucketCode={found.bucket.code}
-      startsAt={found.booking.starts_at}
-      status={found.booking.status}
-      eventName={found.eventType.name}
-      theme={theme}
-    />
+    <>
+      <StandaloneTheme theme={theme} />
+      <ManageBooking
+        token={token}
+        bucketCode={found.bucket.code}
+        startsAt={found.booking.starts_at}
+        status={found.booking.status}
+        eventName={found.eventType.name}
+        theme={theme}
+      />
+    </>
   );
 }
