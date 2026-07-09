@@ -4,7 +4,7 @@ import { currentUser } from "@/lib/auth";
 import { requireAdmin } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
-import { matchesCriteria } from "@/lib/availability/match";
+import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { isActive } from "@/lib/active-user";
@@ -150,26 +150,25 @@ function CriteriaEditor({
   );
 }
 
-/** Create/edit form for one bucket (shared between the list rows and "new"). */
+/** Create/edit form for one bucket (shared between the list rows and "new").
+ *  `eligibleCount` (bookable-agent depth) is computed once by the page via the
+ *  shared staffing-depth helper so it can never diverge from the booker's pool. */
 function BucketForm({
   bucket,
   eventTypes,
   users,
   memberIds,
   catalog,
+  eligibleCount = 0,
 }: {
   bucket?: Bucket;
   eventTypes: EventType[];
   users: User[];
   memberIds: Set<string>;
   catalog: Record<string, string[]>;
+  eligibleCount?: number;
 }) {
   const editing = !!bucket;
-  const eligibleCount = users.filter(
-    (u) =>
-      u.bookable &&
-      (memberIds.has(u.id) || matchesCriteria(u.attributes, bucket?.criteria ?? {})),
-  ).length;
   return (
     <form
       action={editing ? updateBucket : createBucket}
@@ -355,6 +354,10 @@ export default async function AdminPage({
   const members = (membersRes.data ?? []) as BucketMember[];
   // Routing editor offers only attribute keys/values that exist on agents.
   const attrCatalog = deriveAttributeCatalog(users.map((u) => u.attributes));
+  // Bookable-agent depth per bucket, from the shared staffing-depth helper (#584)
+  // so this count matches the booker's pool exactly (bookable + not deactivated,
+  // active members only) instead of an ad-hoc recompute that could drift.
+  const depthByBucketCode = bucketDepthByCode(buckets, users, members);
   const webhook = webhookRes.data as WebhookEndpoint | null;
 
   // Routing trace viewer: recent bookings + how each one routed.
@@ -924,6 +927,18 @@ export default async function AdminPage({
       </section>
       )}
 
+      {/* Staffing depth (thin-tier early warning, #584) */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Staffing depth</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          See how many bookable agents can take each tier&rsquo;s bookings, so a tier
+          resting on a single person is visible before it runs out of times.
+        </p>
+        <a href="/admin/tiers" className={btnSecondaryCls}>
+          View staffing depth
+        </a>
+      </section>
+
       {/* Buckets (admin only) */}
       {isAdmin && (
       <section className={cardCls}>
@@ -945,6 +960,7 @@ export default async function AdminPage({
                 )
               }
               catalog={attrCatalog}
+              eligibleCount={depthByBucketCode.get(b.code) ?? 0}
             />
           ))}
           {buckets.length === 0 && (
