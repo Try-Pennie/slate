@@ -9,6 +9,7 @@ import { slotCacheKey } from "@/lib/availability/cache-key";
 import { HORIZON_DAYS } from "@/lib/availability/slot-cache";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { tierLadder } from "@/lib/routing/tiers";
+import { bucketSpecForXbc } from "@/lib/xbc";
 import {
   anyOnShift,
   classifyEmptyBuckets,
@@ -229,10 +230,23 @@ export async function GET(req: NextRequest) {
       ).catch(() => {});
     }
     if (covered.length) {
+      // Enrich each covered tier with its human name and the eligible-agent
+      // depth of both tiers (#585), so the on-call notice needs no code lookup.
+      // Counts come from the health scan already loaded; a code missing from it
+      // (budget-truncated scan) leaves the depth null and the notice omits it.
+      const eligibleByCode = new Map(health.map((h) => [h.code, h.eligibleCount]));
+      const nameOf = (code: string) => bucketSpecForXbc(code)?.name ?? code;
+      const coveredDetail = covered.map((c) => ({
+        ...c,
+        tierName: nameOf(c.code),
+        viaTierName: nameOf(c.via),
+        emptyDepth: eligibleByCode.get(c.code) ?? null,
+        coverDepth: eligibleByCode.get(c.via) ?? null,
+      }));
       await sendThrottledInfo(
         FALLBACK_COVERED_INFO_KEY,
         settings.cooldownMs.fallback_covered_availability,
-        formatFallbackCoveredNotice(covered),
+        formatFallbackCoveredNotice(coveredDetail),
       ).catch(() => {});
     }
     console.log(

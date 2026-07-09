@@ -155,14 +155,34 @@ const ladder = (code: string) => {
   ok(out.page.length === 1 && out.covered.length === 0, "missing lower-rung rows count as no coverage");
 }
 
-// --- formatFallbackCoveredNotice (#567): the low-priority info signal ---
+// --- formatFallbackCoveredNotice (#567/#585): the low-priority info signal,
+//     now self-explaining (human tier name + covering depth + likely cause) ---
 {
   const notice = formatFallbackCoveredNotice([
-    { code: "520", via: "420" },
-    { code: "530", via: "330" },
+    {
+      code: "520",
+      via: "420",
+      tierName: "Ultra High | Beyond | Non-Legal",
+      viaTierName: "Very High | Beyond | Non-Legal",
+      emptyDepth: 1,
+      coverDepth: 1,
+    },
+    {
+      code: "530",
+      via: "330",
+      tierName: "Ultra High | Achieve | Non-Legal",
+      viaTierName: "High | Achieve | Non-Legal",
+      emptyDepth: 3,
+      coverDepth: 4,
+    },
   ]);
   ok(notice.includes("520") && notice.includes("420"), "notice names each empty bucket and the covering rung");
   ok(/fallback|cover/i.test(notice), "notice makes clear the fallback is covering (not a customer dead-end)");
+  // #585: the raw '520 via 420' is enriched so the on-call reader needs no lookup.
+  ok(notice.includes("Ultra High | Beyond | Non-Legal"), "notice spells out the human tier name");
+  ok(/sole agent|1 agent|one agent/i.test(notice), "notice flags a one-deep covering tier as thin");
+  ok(/booked|full/i.test(notice), "notice states the likely cause (calendars full)");
+  ok(notice.includes("3 agents"), "notice reports the empty tier's agent depth");
   ok(!/[–—]/.test(notice), "notice uses no em/en dashes (copy rule)");
 }
 

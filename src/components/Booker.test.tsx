@@ -190,6 +190,25 @@ describe("Booker confirm", () => {
     expect(link.rel).toContain("noopener");
   });
 
+  // #585 / AUD-067: the empty-window copy used to say "No availability this
+  // month. Try another month." while the next-month arrow is disabled (and the
+  // real horizon is only ~4 days, so "month" is misleading). It now gives an
+  // honest next step and never points at a disabled control.
+  it("shows honest empty-window copy that doesn't point at a disabled control (#585)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => ({ ...availability, slots: [] }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    // Both the visible copy and the polite SR announcement carry the honest text.
+    const empty = await screen.findAllByText(/all times are taken|check back/i);
+    expect(empty.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/another month/i)).toBeNull();
+  });
+
   // #633: a screen-reader lead selecting a day heard nothing when the skeletons
   // swapped for slots. The times panel now carries a polite role=status that
   // names the count (or the empty message) once the load settles.
