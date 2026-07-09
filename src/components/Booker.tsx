@@ -551,7 +551,7 @@ export default function Booker({
     : loadError
       ? ""
       : slotsByDay.size === 0
-        ? "No availability this month"
+        ? "All times are taken right now. Check back soon."
         : daySlots.length === 0
           ? "No times available on the selected day"
           : `${daySlots.length} time${daySlots.length === 1 ? "" : "s"} available`;
@@ -709,7 +709,7 @@ export default function Booker({
                 </button>
               </div>
             ) : slotsByDay.size === 0 ? (
-              <p className={`text-sm ${c.faint}`}>No availability this month. Try another month.</p>
+              <p className={`text-sm ${c.faint}`}>All times are taken right now. Check back soon.</p>
             ) : daySlots.length === 0 ? (
               <p className={`text-sm ${c.faint}`}>No times left that day, pick another.</p>
             ) : (

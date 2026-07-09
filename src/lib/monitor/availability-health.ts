@@ -81,6 +81,18 @@ export interface FallbackCovered {
   via: string;
 }
 
+/** A `FallbackCovered` enriched by the caller with the human tier names and the
+ *  eligible-agent depth of both tiers (#585), so the notice is actionable at a
+ *  glance without the on-call reader decoding raw codes. `emptyDepth` /
+ *  `coverDepth` are null when the count is unknown (e.g. a budget-truncated
+ *  scan left that bucket out of the health scan). */
+export interface FallbackCoveredDetail extends FallbackCovered {
+  tierName: string;
+  viaTierName: string;
+  emptyDepth: number | null;
+  coverDepth: number | null;
+}
+
 export interface EmptyBucketClassification {
   /** Empty buckets whose ENTIRE tier ladder is also dry: a real customer
    *  dead-end. These page at normal urgency. */
@@ -135,18 +147,33 @@ export function classifyEmptyBuckets(
 
 const ALERT_NAME_CAP = 8;
 
-/** Low-priority info signal (#567): empty buckets the tier-drop fallback still
- *  covers, so no customer is stranded. Names each empty bucket and the lower rung
- *  serving it. No em/en dashes (copy rule). */
-export function formatFallbackCoveredNotice(covered: FallbackCovered[]): string {
-  const head = covered
-    .slice(0, ALERT_NAME_CAP)
-    .map((c) => `${c.code} via ${c.via}`)
-    .join(", ");
-  const more = covered.length > ALERT_NAME_CAP ? ` and ${covered.length - ALERT_NAME_CAP} more` : "";
+/** Low-priority info signal (#567), self-explaining (#585): empty buckets the
+ *  tier-drop fallback still covers, so no customer is stranded. Each line names
+ *  the empty tier and its covering rung by human name, states the likely cause
+ *  (eligible agents on shift but no times, so calendars look full), and flags a
+ *  one-deep covering tier as thin coverage. No em/en dashes (copy rule). */
+export function formatFallbackCoveredNotice(covered: FallbackCoveredDetail[]): string {
+  const lines = covered.slice(0, ALERT_NAME_CAP).map((c) => {
+    const cause =
+      c.emptyDepth === 1
+        ? "its sole agent looks fully booked"
+        : c.emptyDepth != null
+          ? `its ${c.emptyDepth} agents look fully booked`
+          : "its agents look fully booked";
+    const cover =
+      c.coverDepth === 1
+        ? ", which is only one agent deep, so coverage is thin"
+        : c.coverDepth != null
+          ? `, ${c.coverDepth} agents deep`
+          : "";
+    return `${c.code} (${c.tierName}): ${cause}; covered by ${c.via} (${c.viaTierName})${cover}.`;
+  });
+  const more =
+    covered.length > ALERT_NAME_CAP ? ` (and ${covered.length - ALERT_NAME_CAP} more)` : "";
   return (
-    `Slate (info): ${covered.length} tier(s) show no times but the fallback is covering them ` +
-    `(${head}${more}). No customer is blocked; this is a thin-capacity heads up, not an outage.`
+    `Slate (info): ${covered.length} tier(s) show no times, but a lower tier is still ` +
+    `covering them, so no customer is blocked (thin-capacity heads up, not an outage).${more}\n` +
+    lines.join("\n")
   );
 }
 
