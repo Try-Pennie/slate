@@ -29,6 +29,8 @@ import {
 } from "@/lib/monitor/booking-volume";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
+import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
+import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import type { Bucket } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -285,6 +287,19 @@ export async function GET(req: NextRequest) {
       volume = { armed, windows, breaches: breaches.length };
     }
 
+    // --- Thin-tier staffing early warning (#569): a slow, low-priority whisper
+    // of tiers resting on 1-2 bookable agents, reusing the #584 depth helper
+    // (fallback-blind, so a configured fallback can't mask a thin tier), so
+    // staffing can add coverage before a thin tier saturates and trips the
+    // reactive availability signals above. depth-0 dead-ends are those signals'
+    // job and are excluded; the info-channel post self-throttles to ~daily. ---
+    const thinTierCount = await runThinTierStaffingCheck({
+      loadDepths: () => loadTierDepths(db),
+      notify: sendThrottledInfo,
+      cooldownMs: settings.cooldownMs.thin_tier_staffing,
+      log: (m) => console.log(m),
+    });
+
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort — must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
@@ -294,6 +309,7 @@ export async function GET(req: NextRequest) {
       failing: page.length,
       codes: page,
       fallbackCovered: covered,
+      thinTiers: thinTierCount,
       truncated,
       volume,
     });
