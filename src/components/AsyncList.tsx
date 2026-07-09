@@ -32,23 +32,31 @@ export function useFetchList<T>(
 
   useEffect(() => {
     if (!key || !url) return;
+    // Abort the request on supersession (key/url change) or unmount so a slow
+    // stale response can't touch state, matching the Booker guard (#629/#698).
+    // `cancelled` still gates every setState below: abort races the resolution,
+    // so the flag is the authoritative "ignore this run" signal.
+    const controller = new AbortController();
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store", signal: controller.signal });
         if (cancelled) return;
         if (res.ok) {
           const json = (await res.json().catch(() => null)) as unknown;
           if (!cancelled) setState({ key, items: extract(json), error: false });
-        } else {
+        } else if (!cancelled) {
           setState({ key, items: [], error: true });
         }
       } catch {
+        // Aborts (supersession/unmount) leave state to the newer/next run; only
+        // a live failure surfaces the retry affordance.
         if (!cancelled) setState({ key, items: [], error: true });
       }
     })();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [key, url, extract]);
 
