@@ -30,6 +30,36 @@ export interface SoakInvariantResult {
   deliveries: number;
 }
 
+export interface FreshnessResult {
+  /** How many bucket_slots rows were read. */
+  total: number;
+  /** How many were computed more than staleMs ago. */
+  stale6m: number;
+  /** Seconds between the oldest and newest computed_at across the set. */
+  spreadSec: number;
+}
+
+/**
+ * Recompute-freshness readout over EVERY bucket_slots row. Fetches through the
+ * paginating listAll so a set larger than PostgREST's 1000-row cap can't be
+ * silently truncated into an under-reported stale count / spread (#725) the way
+ * the old capped `rows()` fetch could.
+ */
+export async function computeFreshness(
+  listAll: (pathAndFilter: string) => Promise<Record<string, unknown>[]>,
+  now: number,
+  staleMs = 6 * 60_000,
+): Promise<FreshnessResult> {
+  const ts = (await listAll("bucket_slots?select=computed_at"))
+    .map((r) => Date.parse(r.computed_at as string))
+    .sort((a, b) => a - b);
+  return {
+    total: ts.length,
+    stale6m: ts.filter((t) => now - t > staleMs).length,
+    spreadSec: ts.length ? Math.round((ts[ts.length - 1] - ts[0]) / 1000) : 0,
+  };
+}
+
 /**
  * Drive selfheal until a tick frees nothing new (freed === 0 && recreated === 0),
  * or maxTicks is reached. #428 reconcile is capped at 200 blocks/tick, so a large

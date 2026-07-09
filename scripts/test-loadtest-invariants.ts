@@ -12,6 +12,7 @@
 import {
   driveSelfhealToConvergence,
   checkSoakInvariants,
+  computeFreshness,
   type InvariantDeps,
 } from "./loadtest/invariants.ts";
 
@@ -129,6 +130,40 @@ async function main() {
     const r = await checkSoakInvariants(deps);
     assert(r.pass, "ordering: passes because the count is read post-convergence");
     assert(r.selfhealTicks >= 3, `ordering: drove selfheal to convergence (got ${r.selfhealTicks})`);
+  }
+
+  // 7. FRESHNESS cap-safety (#725): computeFreshness aggregates the FULL result set.
+  //    Feed 1500 rows through the paginating listAll fake; total must be 1500, not
+  //    truncated at PostgREST's 1000-row cap the way run.ts freshness() used to be.
+  {
+    const now = Date.parse("2026-07-09T12:00:00.000Z");
+    const rows1500 = Array.from({ length: 1500 }, () => ({
+      computed_at: new Date(now).toISOString(),
+    }));
+    const f = await computeFreshness(async () => rows1500, now);
+    assert(f.total === 1500, `freshness: counts every row, not a 1000 cap (got ${f.total})`);
+    assert(f.stale6m === 0, "freshness: none stale when all just computed");
+  }
+
+  // 8. FRESHNESS math: stale count (>6m) and spread over a mixed set at a fixed now.
+  {
+    const now = Date.parse("2026-07-09T12:00:00.000Z");
+    const rowsMixed = [
+      { computed_at: new Date(now - 10 * 60_000).toISOString() }, // 10m old -> stale
+      { computed_at: new Date(now - 7 * 60_000).toISOString() }, //  7m old -> stale
+      { computed_at: new Date(now - 60_000).toISOString() }, //     1m old -> fresh
+      { computed_at: new Date(now).toISOString() }, //             now      -> fresh
+    ];
+    const f = await computeFreshness(async () => rowsMixed, now);
+    assert(f.total === 4, `freshness: total over mixed set (got ${f.total})`);
+    assert(f.stale6m === 2, `freshness: counts rows older than 6m (got ${f.stale6m})`);
+    assert(f.spreadSec === 600, `freshness: spread is newest-oldest seconds (got ${f.spreadSec})`);
+  }
+
+  // 9. FRESHNESS empty set: no rows yields zero spread, not a crash on ts[-1].
+  {
+    const f = await computeFreshness(async () => [], Date.parse("2026-07-09T12:00:00.000Z"));
+    assert(f.total === 0 && f.spreadSec === 0, "freshness: empty set yields zero total and spread");
   }
 
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");

@@ -17,7 +17,7 @@
 //   node --experimental-strip-types scripts/loadtest/run.ts
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { checkSoakInvariants } from "./invariants.ts";
+import { checkSoakInvariants, computeFreshness } from "./invariants.ts";
 
 function env(name: string, fallbackKey?: string): string {
   if (process.env[name]) return process.env[name] as string;
@@ -62,11 +62,6 @@ async function count(pathAndFilter: string): Promise<number> {
   return Number(range.split("/")[1] ?? 0);
 }
 
-async function rows(pathAndFilter: string): Promise<Record<string, unknown>[]> {
-  const res = await fetch(`${SUPA}/${pathAndFilter}`, { headers: supaHeaders });
-  return (await res.json().catch(() => [])) as Record<string, unknown>[];
-}
-
 /**
  * Every row of a result set, paginated via Range so PostgREST's 1000-row cap can
  * never silently truncate an invariant into a false pass (the #440 soak bug).
@@ -90,18 +85,6 @@ async function selfhealTick(): Promise<{ freed: number; recreated: number }> {
   return {
     freed: Number(body.stuckFreed ?? 0),
     recreated: Number(body.missingRecreated ?? 0),
-  };
-}
-
-async function freshness(): Promise<{ total: number; stale6m: number; spreadSec: number }> {
-  const ts = (await rows("bucket_slots?select=computed_at"))
-    .map((r) => Date.parse(r.computed_at as string))
-    .sort((a, b) => a - b);
-  const now = Date.now();
-  return {
-    total: ts.length,
-    stale6m: ts.filter((t) => now - t > 6 * 60_000).length,
-    spreadSec: ts.length ? Math.round((ts[ts.length - 1] - ts[0]) / 1000) : 0,
   };
 }
 
@@ -173,7 +156,7 @@ async function main() {
     });
     console.log(`  selfheal converged in ${inv.selfhealTicks} ticks; ${inv.deliveries} deliveries checked`);
 
-    const f = await freshness();
+    const f = await computeFreshness(listAll, Date.now());
     console.log(
       `\nFreshness: ${f.total} buckets, ${f.stale6m} stale >6m, ${f.spreadSec}s spread across the set.`,
     );
