@@ -3,7 +3,7 @@
 import { DateTime } from "luxon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ArrowRightIcon, CheckBadgeIcon } from "@/components/icons";
+import { ArrowRightIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
 import { BookerStrip } from "@/components/BookerStrip";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
@@ -194,6 +194,7 @@ export default function Booker({
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<{
     start: string;
+    manageUrl?: string | null;
     duplicateWarning?: DuplicateWarning | null;
   } | null>(null);
   // Three distinct states for the confirm (owner rule): started → this flips the
@@ -375,6 +376,7 @@ export default function Booker({
     try {
       const { ok, status, data } = await postJson<{
         startsAt?: string;
+        manageUrl?: string;
         error?: string;
         fieldErrors?: AttendeeErrors;
         duplicateWarning?: DuplicateWarning | null;
@@ -400,6 +402,7 @@ export default function Booker({
       if (ok) {
         setConfirmed({
           start: data.startsAt ?? selectedSlot,
+          manageUrl: data.manageUrl ?? null,
           duplicateWarning: data.duplicateWarning ?? null,
         });
         if (embedded) {
@@ -429,29 +432,32 @@ export default function Booker({
       .toFormat("cccc, LLL d");
     const confirmedTime = fmtTime(confirmed.start);
     const zoneLabel = zone.replace(/_/g, " ");
+    // Carry the booker's theme onto the manage link so the manage page opens in
+    // the same appearance (light is the default there, so only dark needs it).
+    const manageHref =
+      confirmed.manageUrl && theme === "dark"
+        ? `${confirmed.manageUrl}${confirmed.manageUrl.includes("?") ? "&" : "?"}theme=dark`
+        : confirmed.manageUrl;
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
         {/* Entrance animates opacity/transform only: a height animation would
-            jitter the embed iframe via the ResizeObserver above. */}
+            jitter the embed iframe via the ResizeObserver above. #637: the embed
+            gets the same branded coins illustration as the standalone page (one
+            delight moment); confirmation is a one-time swap, so the single iframe
+            resize it triggers is not the animated-height jitter guarded above. */}
         <div className="pn-confirm-enter p-10 text-center">
-          {embedded ? (
-            <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-pennie-sky-soft text-[var(--accent)]">
-              <CheckBadgeIcon width={32} height={32} />
-            </span>
-          ) : (
-            <div className="mx-auto flex max-w-72 items-center justify-center rounded-xl bg-pennie-sky-soft px-6 py-5">
-              {/* Plain <img>: OpenNext on Cloudflare has no image loader configured. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/brand/pic-1-coins.png"
-                alt=""
-                aria-hidden="true"
-                width={144}
-                height={144}
-                className="h-36 w-36 object-contain"
-              />
-            </div>
-          )}
+          <div className="mx-auto flex max-w-72 items-center justify-center rounded-xl bg-pennie-sky-soft px-6 py-5">
+            {/* Plain <img>: OpenNext on Cloudflare has no image loader configured. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/brand/pic-1-coins.png"
+              alt=""
+              aria-hidden="true"
+              width={144}
+              height={144}
+              className="h-36 w-36 object-contain"
+            />
+          </div>
           <h2
             ref={confirmedHeadingRef}
             tabIndex={-1}
@@ -466,6 +472,19 @@ export default function Booker({
           <p className={`mt-1 text-xs ${c.faint}`}>
             A calendar invite is on its way to {attendee.email || "your email"}.
           </p>
+          {manageHref && (
+            // Opens in a new tab so an embed lead keeps this confirmation instead
+            // of navigating the iframe away to the manage page (#637).
+            <a
+              href={manageHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-5 inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            >
+              View or manage your booking
+              <span aria-hidden="true">→</span>
+            </a>
+          )}
           <p role="status" className="sr-only">
             Booked. {confirmedDay} at {confirmedTime} {zoneLabel}. A calendar invite
             is on its way.
