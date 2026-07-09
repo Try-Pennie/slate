@@ -1,4 +1,5 @@
 import Booker from "@/components/Booker";
+import StandaloneTheme from "@/components/StandaloneTheme";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -52,9 +53,13 @@ export default async function BookingPage({
   }
 
   const embedded = first(sp, "embed") === "1";
+  const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
 
   return (
     <main>
+      {/* #706: standalone renders paint the theme at the document root so a dark
+          booker has no beige gutter. The embed leaves the host in control. */}
+      {!embedded && <StandaloneTheme theme={theme} />}
       <Booker
         bucketCode={bucketCode}
         salesforceId={id}
@@ -65,7 +70,7 @@ export default async function BookingPage({
         }}
         prefill={prefill}
         embedded={embedded}
-        theme={first(sp, "theme") === "dark" ? "dark" : "light"}
+        theme={theme}
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
       />
     </main>
