@@ -140,6 +140,23 @@ export interface AbandonedReschedulePin {
 }
 
 /**
+ * A crashed standalone-reassign create intent past its lease (#518), with the
+ * booking's live event id, for the abandoned-reassign-intent GC sweep. Records
+ * the NEW event (`gcal_client_id`, created before the swap) and, once the swap
+ * has committed, the REPLACED old event (`prev_*`, so the sweep can finish the
+ * interrupted delete-old). The sweep deletes whichever recorded event is NOT the
+ * booking's live one.
+ */
+export interface AbandonedReassignIntent {
+  booking_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string;
+  prev_agent_email: string | null;
+  prev_gcal_event_id: string | null;
+  booking_gcal_event_id: string | null;
+}
+
+/**
  * Thrown when a booking fails NOT because every candidate is genuinely busy, but
  * because we couldn't verify any of them (calendar/DB read errors — a likely
  * verify-on-book outage). Distinct from SlotUnavailableError so the caller can
@@ -573,6 +590,31 @@ export interface BookingDeps {
   /** Lease-pins past `lease_until + graceMs`, each with the booking's live
    *  gcal_event_id, for the abandoned-pin GC sweep (#439). */
   loadAbandonedReschedulePins(graceMs: number): Promise<AbandonedReschedulePin[]>;
+  /**
+   * Record a crash-safe standalone-reassign intent (#518) BEFORE the Google
+   * create, so a crash between the create and the swap is cleaned by the sweep.
+   * Idempotent on (booking_id, gcal_client_id): a same-target retry (identical
+   * deterministic id) refreshes the lease instead of failing, preserving #449's
+   * idempotent-retry behavior.
+   */
+  writeReassignIntent(args: {
+    bookingId: string;
+    pinnedAgentEmail: string;
+    gcalClientId: string;
+  }): Promise<void>;
+  /** After a committed swap, record the REPLACED old event on the intent (#518)
+   *  so the sweep finishes the delete-old if the inline delete is interrupted. */
+  recordReassignIntentPrev(
+    bookingId: string,
+    gcalClientId: string,
+    prevAgentEmail: string | null,
+    prevGcalEventId: string | null,
+  ): Promise<void>;
+  /** Delete the reassign intent once the create+swap+delete-old completed (#518). */
+  deleteReassignIntent(bookingId: string, gcalClientId: string): Promise<void>;
+  /** Reassign intents past `lease_until + graceMs`, each with the booking's live
+   *  gcal_event_id, for the abandoned-reassign-intent GC sweep (#518). */
+  loadAbandonedReassignIntents(graceMs: number): Promise<AbandonedReassignIntent[]>;
   /** Append a reschedule/cancel/reassign history row (#326/#300). */
   /** Append a history row; returns the new row id (or null if the best-effort
    *  insert failed) so the caller can use it as the webhook dedupe key (#436). */
@@ -1683,6 +1725,54 @@ export async function processAbandonedReschedulePins(
   return { swept: rows.length, enqueued };
 }
 
+/**
+ * GC sweep for abandoned standalone-reassign create intents (#518). A crash
+ * between `reassignBooking`'s createEvent and the atomic swap leaves the new
+ * event orphaned on the target calendar with the booking still on the old agent;
+ * a crash after the swap but before the inline delete-old leaves the REPLACED
+ * event orphaned. Both are recorded on the intent. For each intent past
+ * `lease_until + grace`, delete whichever recorded event is NOT the booking's
+ * live one, then remove the intent row.
+ *
+ * Cleanup ONLY, like the reschedule sweep it never completes/reassigns (resume
+ * is a verified trap: the reassign ordinal is computed live and the swap appends
+ * history unconditionally, so a resumed swap would spawn a third event + double
+ * the history). `dropped` counts intents whose NEW event was never adopted (a
+ * contact-owner reassign that was silently lost), so the caller alerts on it
+ * ("fail loud"; the machine override path has no human retry loop).
+ */
+export async function processAbandonedReassignIntents(
+  deps: BookingDeps,
+  graceMs: number,
+): Promise<{ swept: number; enqueued: number; dropped: number }> {
+  const rows = await deps.loadAbandonedReassignIntents(graceMs);
+  let enqueued = 0;
+  let dropped = 0;
+  for (const row of rows) {
+    const live = row.booking_gcal_event_id;
+    // The NEW event: not adopted (booking never moved onto it) => the reassign
+    // crashed before the swap and was lost. Delete the orphan and flag dropped.
+    if (row.gcal_client_id !== live) {
+      await deps.enqueueEventDeletion(row.pinned_agent_email, row.gcal_client_id, row.booking_id);
+      enqueued += 1;
+      dropped += 1;
+    }
+    // The REPLACED old event (recorded post-swap): if it isn't the live event,
+    // the swap committed (reassign succeeded) but the inline delete-old was
+    // interrupted. Finish it. This is NOT a dropped reassign.
+    if (
+      row.prev_gcal_event_id &&
+      row.prev_agent_email &&
+      row.prev_gcal_event_id !== live
+    ) {
+      await deps.enqueueEventDeletion(row.prev_agent_email, row.prev_gcal_event_id, row.booking_id);
+      enqueued += 1;
+    }
+    await deps.deleteReassignIntent(row.booking_id, row.gcal_client_id);
+  }
+  return { swept: rows.length, enqueued, dropped };
+}
+
 /** Input for the direct booking API path: a normal booking plus the external
  *  caller's required per-person id and the confirm-reschedule flag (#357). */
 export interface ApiBookingInput extends CreateBookingInput {
@@ -2233,13 +2323,12 @@ async function applyReschedule(
       );
     }
   } else {
-    // reassign: delete-first the old event, then create the new with the pinned
-    // deterministic id (a resume's repeat insert 409s and GET-and-reuses it ->
-    // no duplicate, window a). On a generic failure, delete the new event and let
-    // the pinned id 409-re-create it on resume (mirrors completeReservation ~996).
-    if (currentEmail && booking.gcal_event_id && booking.gcal_event_id !== pin.gcal_client_id) {
-      await deleteEventBestEffort(deps, currentEmail, booking.gcal_event_id, booking.id);
-    }
+    // reassign: CREATE-FIRST the new event with the pinned deterministic id (a
+    // resume's repeat insert 409s and GET-and-reuses it -> no duplicate). The OLD
+    // event is deleted only AFTER the durable commit below (AUD-044/#518): a
+    // delete-first strands the booking on a deleted event if the create or commit
+    // fails. On a generic create failure, delete the new event and let the pinned
+    // id 409-re-create it on resume (mirrors completeReservation ~996).
     try {
       newGcalEventId = await deps.createEvent(
         pin.pinned_agent_email,
@@ -2308,6 +2397,22 @@ async function applyReschedule(
     }
   }
   booking.gcal_event_id = newGcalEventId;
+
+  // AUD-044/#518: for a reroute (new agent), delete the OLD event only AFTER the
+  // new event is durably committed above (create-first). A crash before the
+  // commit therefore never leaves the booking pointing at a deleted event; a
+  // crash HERE leaves a cosmetic old-event orphan (availability is cache-first),
+  // not a booking without a calendar hold. Skip when the pinned id 409-reused the
+  // same event (deleting it would remove the live event). in_place never deletes
+  // (it re-PATCHes the pre-existing event).
+  if (
+    pin.branch === "reassign" &&
+    currentEmail &&
+    fromGcalEventId &&
+    fromGcalEventId !== newGcalEventId
+  ) {
+    await deleteEventBestEffort(deps, currentEmail, fromGcalEventId, booking.id);
+  }
 
   const updated = {
     ...booking,
@@ -2456,6 +2561,16 @@ export async function reassignBooking(
     `reassign:${booking.id}:${reassignOrdinal}`,
     agent.id,
   );
+  // #518: durable intent written BEFORE the create, so a crash between here and
+  // the swap is cleaned by processAbandonedReassignIntents (the new event is
+  // orphaned + the reassign silently lost otherwise). Idempotent on
+  // (booking_id, gcal_client_id): a same-target retry (identical deterministic
+  // id, #449) refreshes the lease instead of failing.
+  await deps.writeReassignIntent({
+    bookingId: booking.id,
+    pinnedAgentEmail: agent.email,
+    gcalClientId,
+  });
   const newEventId = await deps.createEvent(
     agent.email,
     {
@@ -2505,17 +2620,31 @@ export async function reassignBooking(
     });
   } catch (err) {
     // The swap (durable anchor) failed: clean up the event we optimistically
-    // created so it isn't orphaned, then surface the failure.
+    // created so it isn't orphaned + drop the intent (handled inline), then
+    // surface the failure.
     await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
+    await deps.deleteReassignIntent(booking.id, gcalClientId);
     throw err;
   }
 
   if (!swap.updated) {
     // The booking went terminal (cancelled/completed) concurrently. Clean up the
-    // event we optimistically created so it isn't orphaned, then surface it.
+    // event we optimistically created so it isn't orphaned + drop the intent,
+    // then surface it.
     await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
+    await deps.deleteReassignIntent(booking.id, gcalClientId);
     throw new BookingNotChangeableError();
   }
+
+  // #518: record the REPLACED old event on the intent BEFORE deleting it, so a
+  // crash during the delete-old below leaves a durable record and the sweep
+  // finishes the deletion (closes the symmetric old-event orphan window).
+  await deps.recordReassignIntentPrev(
+    booking.id,
+    gcalClientId,
+    swap.prevAgentEmail,
+    swap.prevGcalEventId,
+  );
 
   // Delete the event the swap REPLACED - the genuinely-current one at swap time,
   // not the stale read - so no calendar event is ever left dangling. Skip when a
@@ -2528,6 +2657,11 @@ export async function reassignBooking(
   ) {
     await deleteEventBestEffort(deps, swap.prevAgentEmail, swap.prevGcalEventId, booking.id);
   }
+
+  // #518: create + swap + delete-old are done; the intent's crash-safety window
+  // is closed, so drop it. Anything past this point (the outbox side effects
+  // below) already resumes via the outbox drain (#429 P3), not the intent.
+  await deps.deleteReassignIntent(booking.id, gcalClientId);
 
   const updated = {
     ...booking,

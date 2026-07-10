@@ -10,6 +10,7 @@ import {
   type BookingContext,
   type ReschedulePin,
   type AbandonedReschedulePin,
+  type AbandonedReassignIntent,
   type CreateBookingInput,
   type PendingEventDeletion,
 } from "../../src/lib/booking/orchestration.ts";
@@ -113,6 +114,7 @@ export interface FakeOpts {
   // idempotent no-op; different -> conflict); `expired` = a crashed holder.
   heldLease?: { target: string; expired?: boolean; pin?: ReschedulePin };
   abandonedPins?: AbandonedReschedulePin[]; // for the GC sweep (#476)
+  abandonedReassignIntents?: AbandonedReassignIntent[]; // reassign-intent sweep (#518)
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
@@ -200,6 +202,14 @@ export function makeDeps(opts: FakeOpts) {
     queryBookings: [] as unknown[],
     removePendingEventDeletion: [] as string[],
     bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
+    reassignIntents: [] as { bookingId: string; gcalClientId: string; pinnedAgentEmail: string }[],
+    reassignIntentPrev: [] as {
+      bookingId: string;
+      gcalClientId: string;
+      prevAgentEmail: string | null;
+      prevGcalEventId: string | null;
+    }[],
+    reassignIntentDeletes: [] as { bookingId: string; gcalClientId: string }[],
   };
   let seq = 0;
   let insertAttempted = false;
@@ -444,6 +454,22 @@ export function makeDeps(opts: FakeOpts) {
       locks.delete(bookingId);
     },
     loadAbandonedReschedulePins: async () => opts.abandonedPins ?? [],
+    // #518 reassign-intent state. writeReassignIntent is an idempotent UPSERT on
+    // (booking_id, gcal_client_id): a same-target retry (identical deterministic
+    // id) must NOT create a second row or throw, so #449's idempotent retry holds.
+    writeReassignIntent: async ({ bookingId, gcalClientId, pinnedAgentEmail }) => {
+      const existing = calls.reassignIntents.find(
+        (r) => r.bookingId === bookingId && r.gcalClientId === gcalClientId,
+      );
+      if (!existing) calls.reassignIntents.push({ bookingId, gcalClientId, pinnedAgentEmail });
+    },
+    recordReassignIntentPrev: async (bookingId, gcalClientId, prevAgentEmail, prevGcalEventId) => {
+      calls.reassignIntentPrev.push({ bookingId, gcalClientId, prevAgentEmail, prevGcalEventId });
+    },
+    deleteReassignIntent: async (bookingId, gcalClientId) => {
+      calls.reassignIntentDeletes.push({ bookingId, gcalClientId });
+    },
+    loadAbandonedReassignIntents: async () => opts.abandonedReassignIntents ?? [],
     insertBookingEvent: async (row) => {
       calls.bookingEvents.push(row);
       return `evt-${calls.bookingEvents.length}`;

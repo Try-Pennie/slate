@@ -190,10 +190,17 @@ async function run() {
       "#615 reassign-during-reschedule: the reassign's agent + event stay live (not overwritten)",
     );
     assert(
-      // delete-first of the old event (1) + rollback of the event this reschedule
-      // created (1) = 2; the reassign's live event id is never deleted.
-      calls.deleteEvent.length === 2 && !calls.deleteEvent.some((d) => d.id === "ev-reassign"),
-      "#615 reassign-during-reschedule: rolls back its own created event, leaves the reassign's intact",
+      // AUD-044/#518 create-first: the old event is deleted only AFTER a durable
+      // commit, which this conflict never reaches. So the ONLY deletion is the
+      // rollback of the event this reschedule created (1). The concurrent
+      // reassign's live event ("ev-reassign") AND the original old event
+      // ("gcal-old", owned by the concurrent reassign's own lifecycle) are both
+      // left intact (strictly better than the old delete-first, which clobbered
+      // gcal-old before even knowing about the conflict).
+      calls.deleteEvent.length === 1 &&
+        !calls.deleteEvent.some((d) => d.id === "ev-reassign") &&
+        !calls.deleteEvent.some((d) => d.id === "gcal-old"),
+      "#615 reassign-during-reschedule: rolls back its own created event, leaves the reassign's + the old event intact",
     );
   }
 

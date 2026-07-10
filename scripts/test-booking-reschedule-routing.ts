@@ -297,6 +297,40 @@ async function run() {
     );
   }
 
+  // --- AUD-044/#518: reroute is CREATE-FIRST, so a failed create never strands
+  // the booking with its old event already deleted. When the new-agent create
+  // fails, the OLD event must still exist (deleted only AFTER a durable commit). ---
+  {
+    const ctx = { booking: makeBooking({ gcal_event_id: "gcal-old" }), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      candidates: ["b"], // A is off-shift -> reroute to B (the reassign branch)
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 810 }] }],
+      ]),
+    });
+    deps.createEvent = async () => {
+      throw new Error("google 500 on create");
+    };
+    let threw = false;
+    try {
+      await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "reschedule(reroute, create fails): surfaces the error");
+    assert(
+      !calls.deleteEvent.some((d) => d.id === "gcal-old"),
+      "reschedule(reroute, create fails): the OLD event is NOT deleted (create-first, no stranded booking)",
+    );
+    assert(
+      calls.commitReschedule.length === 0,
+      "reschedule(reroute, create fails): no commit (booking stays intact on the old agent/event)",
+    );
+  }
+
   // --- reschedule WITHIN the assigned agent's shift -> stays in-place even in a
   // multi-agent bucket (#527 companion: the working-hours guard permits the move
   // when the new time is on-shift and the calendar is free). ---
