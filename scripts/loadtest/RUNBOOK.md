@@ -89,12 +89,37 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    backlog drained and all invariants ok. Paste the output back for the go/no-go read. Bump
    `TICKS` for a longer read, `OUTBOX_BACKLOG` for a bigger drain.
 
-6. **Subrequest ceiling (Worker-only).** `pnpm dev` (Node) has no subrequest limit, so
-   timings/drain are measured locally, but the ~1000-subrequests-per-invocation ceiling
-   only exists on a deployed Worker. To check it, either deploy a branch-pointed Worker
-   and read Cloudflare observability for the recompute/sync invocations, or reason from
-   the per-tick call counts (recompute ≈ 7 reads/bucket × buckets-due-per-tick; sync ≈ a
-   few calls/agent × the concurrency cap of 8). Both should sit far under 1000.
+6. **Subrequest ceiling (Worker-only).** `pnpm dev` (Node) has no subrequest limit; the
+   ~1000-subrequests-per-invocation ceiling (Workers Paid) only exists on a deployed
+   Worker. Verified against the deployed Worker (#724, 2026-07-10). Two things the older
+   per-lane estimate got wrong:
+
+   - **One shared budget, not per-lane.** The `* * * * *` trigger dispatches FOUR routes
+     (`sync`, `recompute`, `outbox`, `selfheal`) and `worker/index.ts` runs them all
+     IN-PROCESS in a single `scheduled()` invocation (`handler.fetch(...)`, no network
+     hop), so they share ONE ~1000-subrequest budget. Budget the COMBINED total, not each
+     lane alone. Every `fetch()` counts: every PostgREST query (supabase-js), every Google
+     call, every Slack post. `caches.default` is colo-local and does NOT count.
+   - **Observability can't count subrequests.** Cloudflare Workers Logs expose cron,
+     `$workers.cpuTimeMs`, `$workers.wallTimeMs`, and `$workers.outcome`, but NO subrequest
+     counter. So you can't read the count directly; instead derive it from code and watch
+     `$workers.outcome` for resource breaches. (A subrequest-limit breach surfaces as a
+     failing outcome / "Too many subrequests" error; none seen in 7 days. Note: the minute
+     lane IS hitting the CPU ceiling ~5% of ticks today, tracked in #760, a separate limit.)
+
+   Measured budget at 200 agents (derived from code, #724):
+   - **Steady state ≈ 760 subrequests/tick** (safe): sync ~608 (100-agent cap ×~6 each) +
+     recompute ~127 (~15 aged buckets ×8) + outbox ~9 + selfheal ~14. The margin rests
+     entirely on `MAX_AGENTS_PER_SYNC_TICK=100` and the 4-min recompute freshness window.
+   - **A single backlog event can push one lane over 1000.** Worst-case per lane: selfheal
+     ~1,850, sync ~1,420, recompute ~493 (hard-capped at 60 buckets × 8), outbox ~550.
+   - **Unbounded scaling risks (must cap before 200-agent scale):** the selfheal reconcile
+     sweeps loop `bucketsForAgent` (3 subrequests) per freed/missing agent with NO per-tick
+     cap (up to 200×3 per sweep, ~1,200 across both); `reconcileMissingBusyBlocks` also
+     inserts one un-batched `busy_blocks` row per missing row (up to 200). The sync lane is
+     bounded only by the 100-agent cap and does one un-batched Google `syncEvents` per
+     calendar, so a multi-calendar fleet multiplies it. recompute is NOT a risk (fixed
+     60-bucket ceiling, `.in(userIds)`-batched, agent-count-independent).
 
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
