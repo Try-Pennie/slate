@@ -599,18 +599,22 @@ function realDeps(): BookingDeps {
       }
     },
 
-    loadReconcilableBusyBlocks: async (limit) => {
+    loadReconcilableBusyBlocks: async (limit, offset = 0) => {
       // Only upcoming slate rows: a past block can't block a bookable future
       // slot, and gcal mirrors are never freed by the reconcile sweep (#428).
       // Scoping to ends_at >= now keeps the scan bounded by concurrent future
-      // bookings instead of the whole table.
+      // bookings instead of the whole table. `offset` rotates the scan window
+      // across ticks (#512) so blocks past the first page are eventually covered.
       const { data, error } = await supabaseAdmin()
         .from("busy_blocks")
         .select("id, user_id, booking_id, source")
         .eq("source", "slate")
         .gte("ends_at", new Date().toISOString())
         .order("ends_at", { ascending: true })
-        .limit(limit);
+        // `id` breaks ends_at ties into a total order, so range paging (#512) can't
+        // skip or double-scan a row at a page boundary.
+        .order("id", { ascending: true })
+        .range(offset, offset + limit - 1);
       if (error) {
         console.error(`reconcile: loadReconcilableBusyBlocks failed: ${error.message}`);
         return [];
@@ -653,12 +657,14 @@ function realDeps(): BookingDeps {
       }
     },
 
-    loadActiveUpcomingBookings: async (limit) => {
+    loadActiveUpcomingBookings: async (limit, offset = 0) => {
       // Active bookings whose slot is still in the future and that have an
       // assigned agent (a null-agent booking can't own a per-user busy_block).
       // Ordered created_at DESC: a missed write-through INSERT happens at create
       // time, so the freshest bookings are the likeliest to be missing a block -
-      // scan those first within the `limit` cap.
+      // scan those first within the `limit` cap. `offset` rotates the window
+      // across ticks (#512) so an older upcoming booking beyond the first page
+      // is still eventually healed, not starved forever.
       const { data, error } = await supabaseAdmin()
         .from("bookings")
         .select("id, assigned_user_id, starts_at, ends_at")
@@ -666,7 +672,10 @@ function realDeps(): BookingDeps {
         .gte("ends_at", new Date().toISOString())
         .not("assigned_user_id", "is", null)
         .order("created_at", { ascending: false })
-        .limit(limit);
+        // `id` breaks created_at ties into a total order, so range paging (#512)
+        // can't skip or double-scan a row at a page boundary.
+        .order("id", { ascending: true })
+        .range(offset, offset + limit - 1);
       if (error) {
         console.error(`reconcile-missing: loadActiveUpcomingBookings failed: ${error.message}`);
         return [];
@@ -1625,8 +1634,8 @@ const RECONCILE_MAX_TOUCHED_BUCKETS = 25;
  * means a write-through delete was missed, so a throttled Slack note flags it
  * for visibility (not a page).
  */
-export async function reconcileCancelledBusyBlocks(limit: number) {
-  const res = await orchestration.reconcileCancelledBusyBlocks(realDeps(), limit);
+export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
+  const res = await orchestration.reconcileCancelledBusyBlocks(realDeps(), limit, offset);
   if (res.freed === 0) return res;
 
   // Map freed agents -> their buckets, dedupe, bound, recompute today's slots.
@@ -1662,8 +1671,8 @@ const RECONCILE_MISSING_ALERT_KEY = "reconcile_missing_busy_blocks";
  * within ~1 min. Counterpart to reconcileCancelledBusyBlocks. Safe to run every
  * tick: the pure core only ever inserts (busy-over-free), never deletes.
  */
-export async function reconcileMissingBusyBlocks(limit: number) {
-  const res = await orchestration.reconcileMissingBusyBlocks(realDeps(), limit);
+export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
+  const res = await orchestration.reconcileMissingBusyBlocks(realDeps(), limit, offset);
   if (res.recreated === 0) return res;
 
   // A missing block made the agent look free in EVERY bucket they serve, so

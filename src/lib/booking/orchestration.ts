@@ -469,6 +469,7 @@ export interface BookingDeps {
    */
   loadReconcilableBusyBlocks(
     limit: number,
+    offset?: number,
   ): Promise<Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[]>;
   /** Status of each booking by id (absent from the map = the booking is gone). */
   loadBookingStatuses(bookingIds: string[]): Promise<Map<string, BookingStatus>>;
@@ -479,7 +480,7 @@ export interface BookingDeps {
    * write-through may have been missed. Returns the agent + window + bucket
    * code needed to re-create the block and recompute the slot.
    */
-  loadActiveUpcomingBookings(limit: number): Promise<ActiveUpcomingBooking[]>;
+  loadActiveUpcomingBookings(limit: number, offset?: number): Promise<ActiveUpcomingBooking[]>;
   /**
    * Which of `bookingIds` already have a slate busy_block. The reconcile-missing
    * sweep re-creates a block only for the ids NOT in this set.
@@ -694,8 +695,9 @@ const ACTIVE_BUSY_STATUSES: ReadonlySet<BookingStatus> = new Set<BookingStatus>(
 export async function reconcileCancelledBusyBlocks(
   deps: BookingDeps,
   limit: number,
-): Promise<{ freed: number; userIds: string[] }> {
-  const rows = await deps.loadReconcilableBusyBlocks(limit);
+  offset = 0,
+): Promise<{ freed: number; userIds: string[]; scanned: number }> {
+  const rows = await deps.loadReconcilableBusyBlocks(limit, offset);
   const bookingIds = [
     ...new Set(
       rows
@@ -716,9 +718,13 @@ export async function reconcileCancelledBusyBlocks(
     return status === undefined || !ACTIVE_BUSY_STATUSES.has(status);
   });
 
-  if (stuck.length === 0) return { freed: 0, userIds: [] };
+  if (stuck.length === 0) return { freed: 0, userIds: [], scanned: rows.length };
   await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id));
-  return { freed: stuck.length, userIds: [...new Set(stuck.map((r) => r.user_id))] };
+  return {
+    freed: stuck.length,
+    userIds: [...new Set(stuck.map((r) => r.user_id))],
+    scanned: rows.length,
+  };
 }
 
 /** An active upcoming booking, with everything the reconcile-missing sweep
@@ -751,9 +757,10 @@ export interface ActiveUpcomingBooking {
 export async function reconcileMissingBusyBlocks(
   deps: BookingDeps,
   limit: number,
-): Promise<{ recreated: number; bookingIds: string[]; userIds: string[] }> {
-  const empty = { recreated: 0, bookingIds: [], userIds: [] };
-  const bookings = await deps.loadActiveUpcomingBookings(limit);
+  offset = 0,
+): Promise<{ recreated: number; bookingIds: string[]; userIds: string[]; scanned: number }> {
+  const bookings = await deps.loadActiveUpcomingBookings(limit, offset);
+  const empty = { recreated: 0, bookingIds: [], userIds: [], scanned: bookings.length };
   if (bookings.length === 0) return empty;
 
   const haveBlock = await deps.loadBusyBlockBookingIds(bookings.map((b) => b.id));
@@ -767,6 +774,7 @@ export async function reconcileMissingBusyBlocks(
     recreated: missing.length,
     bookingIds: missing.map((b) => b.id),
     userIds: [...new Set(missing.map((b) => b.user_id))],
+    scanned: bookings.length,
   };
 }
 

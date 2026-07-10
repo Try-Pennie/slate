@@ -20,6 +20,7 @@ import type {
   EventType,
   GoogleCredentials,
   LaneHeartbeat,
+  SelfhealScanCursor,
   MonitorAlertConfig,
   MonitorSettings,
   OooRequest,
@@ -74,6 +75,7 @@ export interface Database {
       booking_reservations: Table<BookingReservation>;
       routing_decisions: Table<RoutingDecision>;
       lane_heartbeats: Table<LaneHeartbeat>;
+      selfheal_scan_cursor: Table<SelfhealScanCursor>;
       monitor_settings: Table<MonitorSettings>;
       monitor_alert_config: Table<MonitorAlertConfig>;
     };
