@@ -61,6 +61,10 @@ const RESCHEDULE_LOCK_TTL_MS = 2 * 60 * 1000;
 // Extra buffer past lease expiry before the GC sweep treats a pin as abandoned
 // (#439) — well clear of any in-flight retry that's about to take over the lease.
 const ABANDONED_PIN_GRACE_MS = 2 * 60 * 1000;
+// #518 reassign-intent lease. Pinned well above any real createEvent+swap+
+// delete-old wall-clock so the sweep (which only fires past lease + grace, ~4 min
+// total) can never mistake a slow-but-alive reassign for an abandoned one.
+const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
@@ -1088,6 +1092,60 @@ function realDeps(): BookingDeps {
       }));
     },
 
+    // #518 reassign-intent state. UPSERT on (booking_id, gcal_client_id): a
+    // same-target retry (identical deterministic id, #449) refreshes the lease
+    // instead of failing on the unique constraint, so idempotent retry holds.
+    writeReassignIntent: async ({ bookingId, pinnedAgentEmail, gcalClientId }) => {
+      const leaseUntil = new Date(Date.now() + REASSIGN_INTENT_LEASE_MS).toISOString();
+      const { error } = await supabaseAdmin()
+        .from("reassign_intents")
+        .upsert(
+          {
+            booking_id: bookingId,
+            pinned_agent_email: pinnedAgentEmail,
+            gcal_client_id: gcalClientId,
+            lease_until: leaseUntil,
+          },
+          { onConflict: "booking_id,gcal_client_id" },
+        );
+      if (error) throw new Error(`reassign_intents upsert failed: ${error.message}`);
+    },
+    recordReassignIntentPrev: async (bookingId, gcalClientId, prevAgentEmail, prevGcalEventId) => {
+      await supabaseAdmin()
+        .from("reassign_intents")
+        .update({ prev_agent_email: prevAgentEmail, prev_gcal_event_id: prevGcalEventId })
+        .eq("booking_id", bookingId)
+        .eq("gcal_client_id", gcalClientId);
+    },
+    deleteReassignIntent: async (bookingId, gcalClientId) => {
+      await supabaseAdmin()
+        .from("reassign_intents")
+        .delete()
+        .eq("booking_id", bookingId)
+        .eq("gcal_client_id", gcalClientId);
+    },
+    loadAbandonedReassignIntents: async (graceMs) => {
+      const db = supabaseAdmin();
+      const cutoff = new Date(Date.now() - graceMs).toISOString();
+      const { data: rows } = await db
+        .from("reassign_intents")
+        .select("booking_id, pinned_agent_email, gcal_client_id, prev_agent_email, prev_gcal_event_id")
+        .lt("lease_until", cutoff);
+      const intents = rows ?? [];
+      if (intents.length === 0) return [];
+      const ids = intents.map((r) => r.booking_id);
+      const { data: bks } = await db.from("bookings").select("id, gcal_event_id").in("id", ids);
+      const liveById = new Map((bks ?? []).map((b) => [b.id, b.gcal_event_id]));
+      return intents.map((r) => ({
+        booking_id: r.booking_id,
+        pinned_agent_email: r.pinned_agent_email,
+        gcal_client_id: r.gcal_client_id,
+        prev_agent_email: r.prev_agent_email ?? null,
+        prev_gcal_event_id: r.prev_gcal_event_id ?? null,
+        booking_gcal_event_id: liveById.get(r.booking_id) ?? null,
+      }));
+    },
+
     // Append-only reschedule/cancel/reassign history (#326/#300). A failed
     // insert must NOT fail the booking change (the move already happened) — log
     // + throttled alert, like the busy_blocks write-through (#34). The reason is
@@ -1761,4 +1819,28 @@ export async function drainBookingReservations() {
  */
 export async function sweepAbandonedReschedulePins() {
   return orchestration.processAbandonedReschedulePins(realDeps(), ABANDONED_PIN_GRACE_MS);
+}
+
+/**
+ * GC abandoned standalone-reassign create intents (#518) on the /api/cron/outbox
+ * lane. Cleanup ONLY: deletes the orphaned event(s) and frees the stale intent;
+ * it never completes/reassigns (resume is a verified trap, see
+ * processAbandonedReassignIntents). Unlike the reschedule sweep it ALERTS when it
+ * finds a genuinely-lost reassign (`dropped > 0`): the machine contact-owner
+ * override caller has no human retry loop, so a silently-dropped reassignment
+ * would otherwise vanish ("fail loud, not silent").
+ */
+export async function sweepAbandonedReassignIntents() {
+  const result = await orchestration.processAbandonedReassignIntents(
+    realDeps(),
+    ABANDONED_PIN_GRACE_MS,
+  );
+  if (result.dropped > 0) {
+    await sendThrottledAlert(
+      "reassign_intent_dropped",
+      DRAIN_ALERT_COOLDOWN_MS,
+      `Slate: ${result.dropped} reassign(s) were abandoned mid-create (crash before the swap) and cleaned up by the sweep. The booking(s) stayed on the ORIGINAL agent; the intended reassignment did NOT happen. Re-run the contact-owner reassignment. Diagnose via the reassign_intents table + booking_events.`,
+    ).catch(() => {});
+  }
+  return result;
 }

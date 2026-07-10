@@ -237,6 +237,20 @@ export interface RescheduleLock {
   lease_until: string | null;
 }
 
+/** Crash-safe standalone-reassign create intent (#518, migration 0065). Written
+ *  before reassignBooking's createEvent, deleted on success, swept if abandoned.
+ *  `prev_*` are filled after the swap (the replaced event to finish deleting). */
+export interface ReassignIntent {
+  id: string;
+  booking_id: string;
+  pinned_agent_email: string;
+  gcal_client_id: string;
+  prev_agent_email: string | null;
+  prev_gcal_event_id: string | null;
+  lease_until: string;
+  created_at: string;
+}
+
 /** Fixed-window rate-limit counter (#31); one row per key, reset in place. */
 export interface RateLimit {
   key: string;

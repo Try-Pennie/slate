@@ -12,6 +12,7 @@ const service = vi.hoisted(() => ({
   drainBookingOutbox: vi.fn(async () => ({ processed: 0 })),
   drainBookingReservations: vi.fn(async () => ({ processed: 0 })),
   sweepAbandonedReschedulePins: vi.fn(async () => ({ swept: 2, enqueued: 1 })),
+  sweepAbandonedReassignIntents: vi.fn(async () => ({ swept: 1, enqueued: 1, dropped: 1 })),
 }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
@@ -41,6 +42,20 @@ describe("GET /api/cron/outbox", () => {
     const res = await GET(req());
     expect(service.sweepAbandonedReschedulePins).toHaveBeenCalledTimes(1);
     expect((await res.json()).reschedulePins).toEqual({ swept: 2, enqueued: 1 });
+  });
+
+  it("runs the abandoned reassign-intent sweep (#518) and includes its result", async () => {
+    const res = await GET(req());
+    expect(service.sweepAbandonedReassignIntents).toHaveBeenCalledTimes(1);
+    expect((await res.json()).reassignIntents).toEqual({ swept: 1, enqueued: 1, dropped: 1 });
+  });
+
+  it("does not break the drain if the reassign-intent sweep fails (best-effort)", async () => {
+    service.sweepAbandonedReassignIntents.mockRejectedValueOnce(new Error("boom"));
+    const res = await GET(req());
+    const body = await res.json();
+    expect(body.reassignIntents).toBeNull();
+    expect(service.drainBookingOutbox).toHaveBeenCalledTimes(1);
   });
 
   it("does not break the drain if the sweep fails (best-effort)", async () => {

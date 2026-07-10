@@ -27,6 +27,7 @@ import type {
   Organization,
   PendingEventDeletion,
   RateLimit,
+  ReassignIntent,
   RescheduleLock,
   RoutingDecision,
   RoutingTrace,
@@ -69,6 +70,7 @@ export interface Database {
       sync_locks: Table<SyncLock>;
       rate_limits: Table<RateLimit>;
       reschedule_locks: Table<RescheduleLock>;
+      reassign_intents: Table<ReassignIntent>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
