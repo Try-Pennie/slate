@@ -154,6 +154,13 @@ assert(
   !/slate\.trypennie\.dev/.test(deploy),
   "DEPLOY.md does not hardcode the non-canonical slate.trypennie.dev host",
 );
+// #750: the retired .dev host must not be bound as a route on the production
+// Worker either. It never emitted a URL (manage links + OAuth use the .app
+// NEXT_PUBLIC_APP_URL), so it only misleads. slate.trypennie.app is the sole host.
+assert(
+  !/slate\.trypennie\.dev/.test(wrangler),
+  "wrangler.jsonc does not bind the retired slate.trypennie.dev host (#750)",
+);
 
 // #645: the README Layout block must map the real subsystem tree, not a stale
 // subset (an audit found half the lib/ and app/ dirs missing). Assert every
