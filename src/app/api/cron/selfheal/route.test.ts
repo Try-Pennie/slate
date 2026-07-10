@@ -10,14 +10,22 @@ const locks = vi.hoisted(() => ({
 }));
 const service = vi.hoisted(() => ({
   processPendingEventDeletions: vi.fn(async () => ({})),
-  reconcileCancelledBusyBlocks: vi.fn(async () => ({ freed: 0 })),
-  reconcileMissingBusyBlocks: vi.fn(async () => ({ recreated: 0 })),
+  reconcileCancelledBusyBlocks: vi.fn(async () => ({ freed: 0, scanned: 0 })),
+  reconcileMissingBusyBlocks: vi.fn(async () => ({ recreated: 0, scanned: 0 })),
 }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
+// The rotating-scan cursor (#512) has its own suite; here it just runs the sweep
+// at offset 0 so this denial/heartbeat guard doesn't need a DB.
+const cursor = vi.hoisted(() => ({
+  rotateSelfhealScan: vi.fn(async (_key: string, _limit: number, run: (o: number) => Promise<unknown>) =>
+    run(0),
+  ),
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/booking/service", () => service);
+vi.mock("@/lib/booking/selfheal-cursor", () => cursor);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import { GET } from "./route";

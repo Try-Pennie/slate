@@ -609,3 +609,11 @@ export interface LaneHeartbeat {
   lane: string;
   last_ran_at: string;
 }
+
+/** Rotating scan offset for a bounded self-heal sweep (#512): one row per sweep,
+ *  advanced across ticks so the scan eventually covers rows past the first page. */
+export interface SelfhealScanCursor {
+  key: string;
+  next_offset: number;
+  updated_at: string;
+}

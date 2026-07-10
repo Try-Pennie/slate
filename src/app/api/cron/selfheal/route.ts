@@ -3,6 +3,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { reportSweepSaturation } from "@/lib/monitor/sweep-saturation";
+import { rotateSelfhealScan } from "@/lib/booking/selfheal-cursor";
 import {
   processPendingEventDeletions,
   reconcileCancelledBusyBlocks,
@@ -27,6 +28,11 @@ const RECONCILE_LIMIT = 200;
 // #726 saturation streak keys (rate_limits + alert_state rows).
 const RECONCILE_CANCELLED_SATURATED_KEY = "reconcile_cancelled_saturated";
 const RECONCILE_MISSING_SATURATED_KEY = "reconcile_missing_saturated";
+
+// #512 rotating-scan cursor keys (selfheal_scan_cursor rows). Distinct row sets,
+// so each sweep rotates its own offset.
+const RECONCILE_CANCELLED_SCAN_KEY = "reconcile_cancelled_scan";
+const RECONCILE_MISSING_SCAN_KEY = "reconcile_missing_scan";
 
 /**
  * Self-heal lane (#433): the booking-safety sweeps, on a guaranteed every-minute
@@ -54,14 +60,21 @@ export async function GET(req: NextRequest) {
         return null;
       },
     );
-    const freed = await reconcileCancelledBusyBlocks(RECONCILE_LIMIT).catch((err) => {
-      console.error(`selfheal: cancelled-reconcile failed: ${err}`);
-      return null;
-    });
-    const recreated = await reconcileMissingBusyBlocks(RECONCILE_LIMIT).catch((err) => {
-      console.error(`selfheal: missing-reconcile failed: ${err}`);
-      return null;
-    });
+    // #512: rotate each sweep's scan window across ticks so rows past the first
+    // page are eventually covered, not starved. rotateSelfhealScan feeds the
+    // stored offset in and advances the cursor on a full page.
+    const freed = await rotateSelfhealScan(RECONCILE_CANCELLED_SCAN_KEY, RECONCILE_LIMIT, (offset) =>
+      reconcileCancelledBusyBlocks(RECONCILE_LIMIT, offset).catch((err) => {
+        console.error(`selfheal: cancelled-reconcile failed: ${err}`);
+        return null;
+      }),
+    );
+    const recreated = await rotateSelfhealScan(RECONCILE_MISSING_SCAN_KEY, RECONCILE_LIMIT, (offset) =>
+      reconcileMissingBusyBlocks(RECONCILE_LIMIT, offset).catch((err) => {
+        console.error(`selfheal: missing-reconcile failed: ${err}`);
+        return null;
+      }),
+    );
 
     // #726: a sweep that hits its cap every tick is not healthy, it is behind. Both
     // reconciles are capped, so both can hide a growing backlog; page once either
@@ -87,6 +100,11 @@ export async function GET(req: NextRequest) {
       deletionsDrained: deletions ?? "error",
       stuckFreed: freed?.freed ?? "error",
       missingRecreated: recreated?.recreated ?? "error",
+      // #512: how many rows each sweep scanned this tick, so the bounded scan and
+      // its rotation are observable (a persistent `scanned === cap` means a
+      // backlog is being paged through, not fully drained in one tick).
+      cancelledScanned: freed?.scanned ?? "error",
+      missingScanned: recreated?.scanned ?? "error",
     });
   } finally {
     await releaseLock("cron_selfheal", lock);
