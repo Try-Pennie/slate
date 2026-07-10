@@ -126,8 +126,11 @@ jobs:
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
         run: |
+          # This job only runs on a push to main (see `if:` above), so a missing
+          # token is never a legitimate skip: it means main is silently NOT
+          # deploying. Fail loudly (#233) with an annotation, don't exit 0 green.
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "CLOUDFLARE_API_TOKEN not set; skipping deploy. Run 'pnpm cf:deploy' locally, or add the secret to enable auto-deploy."
-            exit 0
+            echo "::error title=main is NOT deploying::CLOUDFLARE_API_TOKEN is unset on a push to main, so this merge did not deploy. Add the secret under Settings > Secrets and variables > Actions, then re-run this job (or run 'pnpm cf:deploy' locally)."
+            exit 1
           fi
           pnpm cf:deploy
