@@ -32,11 +32,12 @@ function flagPill(flag: StaffingFlag): { variant: PillVariant; className?: strin
   }
 }
 
-/** Human detail for a row: who the sole agent is, the time-off situation today,
- *  or the fallback situation. The status column reflects the EFFECTIVE flag, so
- *  this detail explains it (roster vs available today when agents are out). */
+/** Human detail for a row: who the sole agent is, who is out today, or the
+ *  fallback situation. The status column reflects the EFFECTIVE flag, so this
+ *  detail explains it (roster vs available today when agents are out). */
 function rowDetail(row: TierDepth): string {
-  // #738: agents on approved time off thin (or empty) the tier for today.
+  // #738/#744: agents who are out today (approved time off, or an all-day block
+  // on their own calendar) thin the tier, or empty it.
   if (row.outCount > 0) {
     const avail =
       row.effectiveDepth === 0
@@ -44,7 +45,7 @@ function rowDetail(row: TierDepth): string {
         : row.effectiveDepth === 1
           ? "only 1 is available today"
           : `only ${row.effectiveDepth} are available today`;
-    return `${row.depth} on the roster, but ${avail} (${row.outCount} on approved time off).`;
+    return `${row.depth} on the roster, but ${avail} (${row.outCount} out today).`;
   }
   if (row.flag === "spof") {
     return row.soleAgentName
@@ -104,9 +105,10 @@ export default async function TiersPage() {
           <h1 className="pn-h3 mt-2 text-pennie-beige">Staffing depth</h1>
           <p className="mt-2 text-pennie-beige/75">
             How many currently-bookable agents can take each tier&rsquo;s bookings, and how
-            many are actually available today after approved time off, so a tier resting on
-            one person (now or this week) is visible before it runs out of times. Most at
-            risk today first.
+            many are actually available today once you set aside anyone who is out, so a
+            tier resting on one person (now or this week) is visible before it runs out of
+            times. An agent counts as out whether they filed time off or blocked the whole
+            day on their calendar. Most at risk today first.
           </p>
         </section>
 
@@ -125,7 +127,7 @@ export default async function TiersPage() {
               <span className="font-semibold tabular-nums">{thinCount}</span> two deep today
             </span>
             <span className="text-fg-muted">
-              <span className="font-semibold tabular-nums">{outTodayCount}</span> agent-slots on time off
+              <span className="font-semibold tabular-nums">{outTodayCount}</span> agent-slots out today
             </span>
           </div>
 

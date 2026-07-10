@@ -2,6 +2,7 @@
 // Run: node --experimental-strip-types scripts/test-sync-core.ts
 import {
   eventWindow,
+  isAllDayBlock,
   isBusyEvent,
   partitionBusyWrites,
   staleBlockIds,
@@ -160,6 +161,54 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
   assert(
     partitionBusyWrites("u1", "cal-1", events).upserts.length === 1,
     "no skip set -> behaves exactly as before (backward compatible)",
+  );
+}
+
+// isAllDayBlock (#744): read the #616 convention back off a STORED block, so a
+// Google-native all-day OOO can discount an agent from tier staffing depth. A
+// block is all-day when both ends land exactly on local midnight in the agent's
+// own timezone.
+{
+  const ET = "America/New_York";
+  assert(
+    isAllDayBlock("2026-07-09T04:00:00.000Z", "2026-07-10T04:00:00.000Z", ET),
+    "ET all-day block (local n to n) is all-day",
+  );
+  assert(
+    isAllDayBlock("2026-07-06T04:00:00.000Z", "2026-07-10T04:00:00.000Z", ET),
+    "multi-day ET all-day block (a vacation) is all-day",
+  );
+  assert(
+    !isAllDayBlock("2026-07-09T13:00:00.000Z", "2026-07-09T13:30:00.000Z", ET),
+    "a timed 30-minute meeting is not all-day",
+  );
+  assert(
+    !isAllDayBlock("2026-07-09T13:00:00.000Z", "2026-07-09T21:00:00.000Z", ET),
+    "a timed block covering the whole workday is still not all-day",
+  );
+  // The same instants are NOT local n in another zone: an ET agent's
+  // all-day block must not read as all-day for a PT agent.
+  assert(
+    !isAllDayBlock("2026-07-09T04:00:00.000Z", "2026-07-10T04:00:00.000Z", "America/Los_Angeles"),
+    "ET-anchored block is not all-day when read in PT",
+  );
+  assert(
+    isAllDayBlock("2026-07-09T07:00:00.000Z", "2026-07-10T07:00:00.000Z", "America/Los_Angeles"),
+    "PT all-day block (local n to n) is all-day",
+  );
+  // DST: 2026-11-01 ET falls back, so this local day is 25 hours, not 24. A
+  // duration check would miss it; anchoring on local n does not.
+  assert(
+    isAllDayBlock("2026-11-01T04:00:00.000Z", "2026-11-02T05:00:00.000Z", ET),
+    "a 25-hour DST fall-back day is still all-day",
+  );
+  assert(
+    !isAllDayBlock("2026-07-09T04:00:00.000Z", "2026-07-09T04:00:00.000Z", ET),
+    "a zero-length block is not all-day",
+  );
+  assert(
+    isAllDayBlock("2026-07-09T00:00:00.000Z", "2026-07-10T00:00:00.000Z", "Not/AZone"),
+    "an unusable zone falls back to UTC n (matches allDayToUtc)",
   );
 }
 

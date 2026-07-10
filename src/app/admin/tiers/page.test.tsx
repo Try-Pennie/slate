@@ -77,7 +77,9 @@ describe("TiersPage time-off-aware display (#738)", () => {
     expect(agentsSummary).toBeTruthy();
     // Detail spells out roster vs available today and the time-off count.
     expect(screen.getByText(/4 on the roster/i)).toBeTruthy();
-    expect(screen.getByText(/3 on approved time off/i)).toBeTruthy();
+    // #744: "out today" covers both an approved Slate time-off request and an
+    // agent who simply blocked their own calendar for the day.
+    expect(screen.getByText(/3 out today/i)).toBeTruthy();
     // The status pill reflects the EFFECTIVE risk, not the roster-OK flag.
     expect(screen.getByText(/single point of failure/i)).toBeTruthy();
   });
@@ -106,7 +108,8 @@ describe("TiersPage time-off-aware display (#738)", () => {
     expect(mia.getAttribute("href")).toBe("/admin/agents/u-mia");
     const aaron = screen.getByRole("link", { name: "Aaron Ng" });
     expect(aaron.getAttribute("href")).toBe("/admin/agents/u-aaron");
-    // The out-today agent carries the marker.
-    expect(screen.getByText(/out today/i)).toBeTruthy();
+    // The out-today agent carries the marker (exact, so the summary chip's own
+    // "agent-slots out today" text cannot satisfy this assertion).
+    expect(screen.getByText("(out today)")).toBeTruthy();
   });
 });

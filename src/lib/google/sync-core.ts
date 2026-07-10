@@ -39,6 +39,33 @@ export function eventWindow(
   };
 }
 
+/** Parse an instant in `timeZone`, falling back to UTC when the zone is unusable
+ *  (same tolerance as allDayToUtc). */
+function inZone(iso: string, timeZone: string): DateTime {
+  const dt = DateTime.fromISO(iso, { zone: timeZone });
+  return dt.isValid ? dt : DateTime.fromISO(iso, { zone: "UTC" });
+}
+
+/**
+ * Read the all-day convention back off an ALREADY-STORED busy block (#744): a
+ * block is all-day when both ends land exactly on local midnight in the agent's
+ * own timezone, which is precisely what allDayToUtc writes. Used by staffing
+ * depth to treat a Google-native all-day OOO as "out today", not just an
+ * approved Slate `ooo_requests` row.
+ *
+ * Anchoring on local midnight (rather than checking for a 24-hour duration) is
+ * what makes this DST-correct: a fall-back day is 25 hours long and a
+ * spring-forward day 23, yet both are all-day. Reading the block in the WRONG
+ * zone correctly yields false, so one agent's all-day event can never discount
+ * an agent in another timezone.
+ */
+export function isAllDayBlock(startsAt: string, endsAt: string, timeZone: string): boolean {
+  const start = inZone(startsAt, timeZone);
+  const end = inZone(endsAt, timeZone);
+  if (!start.isValid || !end.isValid || end <= start) return false;
+  return start.equals(start.startOf("day")) && end.equals(end.startOf("day"));
+}
+
 /** Whether an event should occupy a busy block (not cancelled/free/timeless). */
 export function isBusyEvent(ev: GoogleEvent): boolean {
   return (

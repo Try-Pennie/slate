@@ -1,6 +1,89 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { bucketStaffingDepths, type ActiveMember, type StaffingAgent, type TierDepth } from "./staffing-depth";
-import type { Bucket, BucketMember, OooRequest, User } from "@/lib/db/types";
+import {
+  bucketStaffingDepths,
+  isRoutable,
+  type ActiveMember,
+  type StaffingAgent,
+  type TierDepth,
+} from "./staffing-depth";
+import { isAllDayBlock } from "@/lib/google/sync-core";
+import type { Bucket, BucketMember, BusyBlock, OooRequest, User } from "@/lib/db/types";
+
+/** Mirrors the sync + availability compute fallback, so the depth math and the
+ *  cached blocks agree on which local day an all-day event occupies (#616). */
+const FALLBACK_TIMEZONE = "America/New_York";
+
+const PAGE_SIZE = 1000;
+
+/**
+ * Read every row of a query, page by page. PostgREST caps a single response at
+ * 1,000 rows, and a silently truncated read here would overstate coverage (an
+ * agent on all-day time off would look available), which is the very failure
+ * this loader exists to prevent. Throws on a read error rather than returning a
+ * short list that reads as "nobody is out".
+ */
+async function selectAllPages<T>(
+  page: (
+    from: number,
+    to: number,
+  ) => PromiseLike<{ data: unknown[] | null; error?: { message: string } | null }>,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await page(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`staffing depth read failed: ${error.message}`);
+    const batch = (data ?? []) as T[];
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) return rows;
+  }
+}
+
+/**
+ * The agents who are out right now because their own Google calendar is blocked
+ * for the whole local day (#744), rather than because they filed a Slate time-off
+ * request. Reads each block in ITS OWN agent's timezone, so an ET agent's all-day
+ * event can never discount a PT agent.
+ */
+async function loadAllDayOutUserIds(
+  db: ReturnType<typeof supabaseAdmin>,
+  agentIds: string[],
+  nowIso: string,
+): Promise<Set<string>> {
+  type BlockRow = Pick<BusyBlock, "user_id" | "starts_at" | "ends_at">;
+  type ScheduleRow = { user_id: string; timezone: string | null };
+
+  const [blocks, schedules] = await Promise.all([
+    // Google-sourced blocks covering `now` (starts_at <= now < ends_at). Scoped
+    // to the roster's agents, which also keeps this org-scoped.
+    selectAllPages<BlockRow>((from, to) =>
+      db
+        .from("busy_blocks")
+        .select("user_id, starts_at, ends_at")
+        .eq("source", "gcal")
+        .in("user_id", agentIds)
+        .lte("starts_at", nowIso)
+        .gt("ends_at", nowIso)
+        .range(from, to),
+    ),
+    selectAllPages<ScheduleRow>((from, to) =>
+      db.from("availability_schedules").select("user_id, timezone").in("user_id", agentIds).range(from, to),
+    ),
+  ]);
+
+  // First schedule wins, matching sync's loadAgentTimezone (see #533: a user with
+  // several schedules is a data problem tracked separately, not decided here).
+  const timezoneByUser = new Map<string, string>();
+  for (const s of schedules) {
+    if (s.timezone && !timezoneByUser.has(s.user_id)) timezoneByUser.set(s.user_id, s.timezone);
+  }
+
+  const out = new Set<string>();
+  for (const b of blocks) {
+    const tz = timezoneByUser.get(b.user_id) ?? FALLBACK_TIMEZONE;
+    if (isAllDayBlock(b.starts_at, b.ends_at, tz)) out.add(b.user_id);
+  }
+  return out;
+}
 
 /**
  * Shared IO loader for per-tier staffing depth (#584 view + #569 cron whisper).
@@ -63,6 +146,12 @@ export async function loadTierDepths(
   const outUserIds = new Set(
     ((oooRes.data ?? []) as Pick<OooRequest, "user_id">[]).map((o) => o.user_id),
   );
+
+  // #744: an agent is also out when their own calendar is blocked all day, with
+  // no Slate time-off request. Only routable agents can affect a tier's depth, so
+  // scoping the block read to them bounds it and matches bucketStaffingDepths.
+  const routableIds = agents.filter(isRoutable).map((a) => a.id);
+  for (const id of await loadAllDayOutUserIds(db, routableIds, nowIso)) outUserIds.add(id);
 
   return bucketStaffingDepths(buckets, agents, activeMembers, outUserIds);
 }
