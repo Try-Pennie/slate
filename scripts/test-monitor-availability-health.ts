@@ -12,8 +12,13 @@ import {
   classifyDeadEndCause,
   formatDataAnomalyAlert,
   formatBookedSolidNotice,
+  isBroadRecomputeFailure,
   type WorkingRule,
 } from "../src/lib/monitor/availability-health.ts";
+
+// Em dash, en dash, or a spaced hyphen used as punctuation. Built from escapes so
+// this file never contains the literal characters the copy rule forbids.
+const DASHES = new RegExp("[\\u2013\\u2014]|\\s-\\s");
 
 let failed = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -205,7 +210,51 @@ const ladder = (code: string) => {
   const msg = formatDataAnomalyAlert({ bookedSolid: [], dataAnomaly: ["ANOM"], unverified: ["NULL"] });
   ok(msg.includes("ANOM") && msg.includes("NULL"), "anomaly alert names both groups");
   ok(/sync|precompute/i.test(msg), "anomaly alert points at the sync/precompute pipeline");
-  ok(!/[–—]/.test(msg) && !/ - /.test(msg), "anomaly alert has no dashes");
+  ok(!DASHES.test(msg), "anomaly alert has no dashes");
+}
+
+// --- #572: a mostly-unverified run is ONE upstream outage, not N bucket faults ---
+// An outage is exactly when on-call needs a single clear signal. Listing 8 arbitrary
+// codes out of 54 invites chasing individual buckets instead of the upstream cause.
+{
+  const many = Array.from({ length: 54 }, (_, i) => `${100 + i}`);
+  const solid = ["S1", "S2", "S3", "S4", "S5", "S6"];
+  const cause = { bookedSolid: solid, dataAnomaly: [], unverified: many };
+  ok(isBroadRecomputeFailure(cause), "54 of 60 unverified reads as a broad failure");
+
+  const msg = formatDataAnomalyAlert(cause);
+  ok(/broadly/i.test(msg), "broad outage alert says recompute is failing broadly");
+  ok(/upstream|outage/i.test(msg), "broad outage alert names the likely upstream cause");
+  ok(msg.includes("54") && msg.includes("60"), "broad outage alert gives the 54 of 60 ratio");
+  // The whole point: do not enumerate a arbitrary slice of the failing codes.
+  ok(!msg.includes("100, 101"), "broad outage alert does not list individual codes");
+  ok(!DASHES.test(msg), "broad outage alert has no dashes");
+}
+
+// A single unverified bucket is a real, investigable bucket, so keep naming it.
+{
+  const cause = { bookedSolid: ["S1", "S2"], dataAnomaly: [], unverified: ["311"] };
+  ok(!isBroadRecomputeFailure(cause), "1 of 3 unverified is not a broad failure");
+  const msg = formatDataAnomalyAlert(cause);
+  ok(msg.includes("311"), "isolated unverified bucket is still named");
+  ok(!/broadly/i.test(msg), "isolated unverified bucket does not claim an outage");
+}
+
+// A tiny run that happens to be 100% unverified must not cry outage: with only a
+// few dead-end buckets there is no evidence the failure is broad.
+{
+  const cause = { bookedSolid: [], dataAnomaly: [], unverified: ["A", "B", "C"] };
+  ok(!isBroadRecomputeFailure(cause), "3 unverified with no comparison set is not broad");
+  ok(!/broadly/i.test(formatDataAnomalyAlert(cause)), "tiny all-unverified run stays specific");
+}
+
+// A broad recompute failure alongside a genuine data anomaly must report BOTH:
+// the anomaly is separately actionable and must not be swallowed by the outage line.
+{
+  const many = Array.from({ length: 20 }, (_, i) => `U${i}`);
+  const msg = formatDataAnomalyAlert({ bookedSolid: [], dataAnomaly: ["ANOM"], unverified: many });
+  ok(msg.includes("ANOM"), "data anomaly is still named during a broad outage");
+  ok(/broadly/i.test(msg), "broad unverified group still collapses to the outage line");
 }
 
 // --- formatBookedSolidNotice: capacity wording, no dashes ---
@@ -213,7 +262,7 @@ const ladder = (code: string) => {
   const msg = formatBookedSolidNotice(["FULL1", "FULL2"]);
   ok(msg.includes("FULL1") && msg.includes("FULL2"), "booked-solid notice names the tiers");
   ok(/capacity|booked solid|staffing/i.test(msg), "booked-solid notice reads as a capacity heads up");
-  ok(!/[–—]/.test(msg) && !/ - /.test(msg), "booked-solid notice has no dashes");
+  ok(!DASHES.test(msg), "booked-solid notice has no dashes");
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);

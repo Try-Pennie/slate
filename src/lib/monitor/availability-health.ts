@@ -217,6 +217,25 @@ function capList(codes: string[]): string {
   return `${head}${more}`;
 }
 
+/** Below this many unverified buckets there is no evidence of a BROAD failure, so
+ *  the alert stays specific and names them (one bad bucket is investigable). */
+const BROAD_FAILURE_MIN = 5;
+/** Share of dead-end buckets that must be unverified before we call it upstream. */
+const BROAD_FAILURE_RATIO = 0.75;
+
+/**
+ * Whether a run's unverified group looks like ONE upstream outage (Google or sync
+ * down, or the monitor deadline hit for most buckets) rather than N independent
+ * bucket faults (#572). Requires both a floor and a dominant share: a recompute
+ * that succeeded for most buckets is not broadly failing, and three failures out
+ * of three is too small a sample to blame upstream.
+ */
+export function isBroadRecomputeFailure(cause: DeadEndCause): boolean {
+  const total = cause.bookedSolid.length + cause.dataAnomaly.length + cause.unverified.length;
+  if (cause.unverified.length < BROAD_FAILURE_MIN) return false;
+  return cause.unverified.length / total >= BROAD_FAILURE_RATIO;
+}
+
 /** Urgent page body for real dead-ends whose cause is a data/sync fault (or could
  *  not be verified). Booked-solid buckets are NOT included here (they are a quiet
  *  info signal). No em/en dashes (copy lint). */
@@ -230,10 +249,23 @@ export function formatDataAnomalyAlert(cause: DeadEndCause): string {
     );
   }
   if (cause.unverified.length) {
-    parts.push(
-      `${cause.unverified.length} bucket(s) could not be verified because the live ` +
-        `recompute failed (${capList(cause.unverified)}); treat as a possible sync issue.`,
-    );
+    if (isBroadRecomputeFailure(cause)) {
+      // One clear signal. Naming an arbitrary 8 of 54 codes invites on-call to
+      // chase individual buckets when the cause is upstream of all of them.
+      const total = cause.bookedSolid.length + cause.dataAnomaly.length + cause.unverified.length;
+      parts.push(
+        `The live availability recompute is failing broadly: ${cause.unverified.length} of ` +
+          `${total} dead-end bucket(s) could not be verified. This is most likely a single ` +
+          `upstream outage (Google or calendar sync), not ${cause.unverified.length} separate ` +
+          `bucket faults. Check calendar sync and the precompute pipeline before investigating ` +
+          `individual buckets.`,
+      );
+    } else {
+      parts.push(
+        `${cause.unverified.length} bucket(s) could not be verified because the live ` +
+          `recompute failed (${capList(cause.unverified)}); treat as a possible sync issue.`,
+      );
+    }
   }
   return `Slate: ${parts.join(" ")}`;
 }
