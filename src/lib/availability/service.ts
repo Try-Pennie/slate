@@ -467,8 +467,11 @@ export async function resolveRouting(
   if (!resolved) return null;
   const { bucket, eventType } = resolved;
   const { ids, fallbackApplied } = await eligibleAgentIds(bucket);
-  // No slot in a routing preview, so anchor the period on now.
-  const ordered = await rankBucketShare(bucket.id, ids, Date.now(), "routing API order");
+  // No slot in a routing preview, so anchor the period on now. This endpoint is a
+  // read-only lookup, not an assignment (#673): run it as a dry-run preview so an
+  // anonymous probe against a skewed bucket can never page the unfair-ordering
+  // alert or write a shadow line. The returned order is unaffected.
+  const ordered = await rankBucketShare(bucket.id, ids, Date.now(), "routing API order", false, true);
   return {
     bucket,
     eventType,
