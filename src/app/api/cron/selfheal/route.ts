@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { reportSweepSaturation } from "@/lib/monitor/sweep-saturation";
 import {
   processPendingEventDeletions,
   reconcileCancelledBusyBlocks,
@@ -22,6 +23,10 @@ const SELFHEAL_LOCK_TTL_MS = 2 * 60_000;
 // the reconcile sweeps scan only upcoming rows so these caps are generous.
 const DELETION_DRAIN_LIMIT = 20;
 const RECONCILE_LIMIT = 200;
+
+// #726 saturation streak keys (rate_limits + alert_state rows).
+const RECONCILE_CANCELLED_SATURATED_KEY = "reconcile_cancelled_saturated";
+const RECONCILE_MISSING_SATURATED_KEY = "reconcile_missing_saturated";
 
 /**
  * Self-heal lane (#433): the booking-safety sweeps, on a guaranteed every-minute
@@ -57,6 +62,22 @@ export async function GET(req: NextRequest) {
       console.error(`selfheal: missing-reconcile failed: ${err}`);
       return null;
     });
+
+    // #726: a sweep that hits its cap every tick is not healthy, it is behind. Both
+    // reconciles are capped, so both can hide a growing backlog; page once either
+    // has been saturated for SATURATION_ALERT_AFTER_MS straight.
+    await reportSweepSaturation(
+      "cancelled-block reconcile",
+      RECONCILE_CANCELLED_SATURATED_KEY,
+      freed?.freed ?? null,
+      RECONCILE_LIMIT,
+    );
+    await reportSweepSaturation(
+      "missing-block reconcile",
+      RECONCILE_MISSING_SATURATED_KEY,
+      recreated?.recreated ?? null,
+      RECONCILE_LIMIT,
+    );
 
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
     // Stamped even when a sub-sweep returned its "error" marker (those are

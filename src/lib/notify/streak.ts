@@ -1,42 +1,59 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { isConsecutiveFailure } from "@/lib/notify/alerts";
 
 /**
- * Persistent consecutive-failure streak for a periodic job (#486), built on the
- * #31 `rate_limit_hit` SQL function: each failing pass bumps a per-key count
- * inside a window, a clean pass clears it. Mirrors the sync lane's inline streak
- * (`/api/cron/sync`) so a one-off blip stays quiet and only consecutive failures
- * alert. Tracking is best-effort: a tracking miss must never break the caller, so
- * it returns false (stay quiet) rather than throwing.
+ * Persistent consecutive-hit streak for a periodic job, built on the #31
+ * `rate_limit_hit` SQL function: each hit bumps a per-key count inside a window,
+ * `clearFailureStreak` resets it. The counter is an atomic upsert, so concurrent
+ * or retried ticks cannot race it the way a read-increment-write would.
  *
- * `windowSeconds` must comfortably exceed the job's interval so two genuinely
- * consecutive passes both land in the same window (otherwise each failure looks
- * like the first).
+ * Returns true once the streak REACHES `alertAt` consecutive hits, and on every
+ * hit after that (the caller's alert cooldown throttles the repeats).
+ *
+ * Tracking is best-effort: a tracking miss must never break the caller, and it
+ * must never invent a streak that did not happen, so it returns false (stay
+ * quiet) rather than throwing or guessing.
+ *
+ * `windowSeconds` must comfortably exceed the job's interval so genuinely
+ * consecutive passes land in the same window (otherwise each hit looks like the
+ * first).
  */
-export async function recordFailureStreak(
+export async function recordConsecutiveStreak(
   key: string,
   windowSeconds: number,
+  alertAt: number,
 ): Promise<boolean> {
   try {
     const db = supabaseAdmin();
+    // rate_limit_hit returns `count <= p_max`. Allowing one fewer than the
+    // threshold makes the Nth consecutive hit the first to report over-limit.
     const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
       p_key: key,
       p_window_seconds: windowSeconds,
-      p_max: 1,
+      p_max: alertAt - 1,
     });
     if (error) {
       console.error(`failure-streak tracking failed for ${key}: ${error.message}`);
       return false;
     }
-    // rate_limit_hit returns false once the count exceeds 1 in the window, i.e.
-    // from the second consecutive failing pass onward.
-    return isConsecutiveFailure(underLimit === false ? 2 : 1);
+    return underLimit === false;
   } catch (err) {
     console.error(
       `failure-streak tracking threw for ${key}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
   }
+}
+
+/**
+ * Consecutive-failure streak for a periodic job (#486/#43): the first failure
+ * stays quiet so a transient Google blip never pages anyone; the second
+ * consecutive one alerts. This is `recordConsecutiveStreak` at a threshold of 2.
+ */
+export async function recordFailureStreak(
+  key: string,
+  windowSeconds: number,
+): Promise<boolean> {
+  return recordConsecutiveStreak(key, windowSeconds, 2);
 }
 
 /** Clear a failure streak after a clean pass. Best-effort. */

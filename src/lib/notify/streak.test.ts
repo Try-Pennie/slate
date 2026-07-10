@@ -12,9 +12,57 @@ vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({ rpc, from }),
 }));
 
-import { recordFailureStreak, clearFailureStreak } from "./streak";
+import { recordFailureStreak, recordConsecutiveStreak, clearFailureStreak } from "./streak";
 
 beforeEach(() => vi.clearAllMocks());
+
+// #726 generalizes the same rate_limit_hit counter to an arbitrary threshold, so a
+// bounded sweep can page only after N consecutive saturated ticks. recordFailureStreak
+// is now this function at N = 2, which is why it keeps its exact behavior above.
+describe("recordConsecutiveStreak", () => {
+  it("asks the counter to allow one fewer hit than the alert threshold", async () => {
+    rpc.mockResolvedValueOnce({ data: true, error: null });
+    await recordConsecutiveStreak("sweep", 900, 5);
+    // p_max = 4 means the 5th consecutive hit is the first to report over-limit.
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "sweep",
+      p_window_seconds: 900,
+      p_max: 4,
+    });
+  });
+
+  it("stays quiet while the streak is under the threshold", async () => {
+    rpc.mockResolvedValueOnce({ data: true, error: null });
+    expect(await recordConsecutiveStreak("sweep", 900, 5)).toBe(false);
+  });
+
+  it("reports once the streak reaches the threshold", async () => {
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    expect(await recordConsecutiveStreak("sweep", 900, 5)).toBe(true);
+  });
+
+  // Failure path: tracking is best-effort, but it must never invent a streak that
+  // did not happen (a false page) nor throw into the caller's sweep.
+  it("stays quiet when the rpc errors, rather than paging on a tracking failure", async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: "boom" } });
+    expect(await recordConsecutiveStreak("sweep", 900, 5)).toBe(false);
+  });
+
+  it("stays quiet when the rpc throws", async () => {
+    rpc.mockRejectedValueOnce(new Error("db down"));
+    expect(await recordConsecutiveStreak("sweep", 900, 5)).toBe(false);
+  });
+
+  it("treats a threshold of 1 as paging on the very first hit", async () => {
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    expect(await recordConsecutiveStreak("sweep", 900, 1)).toBe(true);
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "sweep",
+      p_window_seconds: 900,
+      p_max: 0,
+    });
+  });
+});
 
 describe("recordFailureStreak", () => {
   it("stays quiet on the first failure (still under the limit)", async () => {
