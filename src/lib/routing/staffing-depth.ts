@@ -37,8 +37,9 @@ export interface TierDepth {
   name: string;
   /** Count of currently-bookable eligible agents, fallback-blind (roster snapshot). */
   depth: number;
-  /** Roster depth minus eligible agents on approved time off today (#738). Equals
-   *  `depth` when no `outUserIds` are supplied. This is the short-term risk number. */
+  /** Roster depth minus the eligible agents who are out today: an approved
+   *  time-off request (#738) or an all-day block on their own calendar (#744).
+   *  Equals `depth` when no `outUserIds` are supplied. The short-term risk number. */
   effectiveDepth: number;
   /** How many of the tier's eligible agents are out today (`depth - effectiveDepth`). */
   outCount: number;
@@ -53,6 +54,12 @@ export interface TierDepth {
   /** The tier's eligible agents (the drill-down, #740), each marked out-today,
    *  sorted available-first then out, name-ascending. */
   agents: { id: string; name: string; out: boolean }[];
+}
+
+/** Only bookable, non-deactivated agents can be routed to (matches
+ *  resolveBucketPool's users filter: .eq("bookable", true).is("deactivated_at", null)). */
+export function isRoutable(agent: Pick<StaffingAgent, "bookable" | "deactivated_at">): boolean {
+  return agent.bookable && agent.deactivated_at === null;
 }
 
 export function staffingFlag(depth: number): StaffingFlag {
@@ -72,9 +79,7 @@ export function bucketStaffingDepths(
   activeMembers: ActiveMember[],
   outUserIds: Set<string> = new Set(),
 ): TierDepth[] {
-  // Only bookable, non-deactivated agents can be routed to (matches
-  // resolveBucketPool's users filter: .eq("bookable", true).is("deactivated_at", null)).
-  const routable = agents.filter((a) => a.bookable && a.deactivated_at === null);
+  const routable = agents.filter(isRoutable);
   const orgAgents = routable.map((a) => ({ id: a.id, attributes: a.attributes }));
   const routableIds = new Set(routable.map((a) => a.id));
   const nameById = new Map(agents.map((a) => [a.id, a.name]));

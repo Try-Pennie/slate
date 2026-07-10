@@ -81,13 +81,15 @@ describe("formatThinTierNotice", () => {
     expect(msg).toContain("2 agents");
   });
 
-  it("#738: spells out roster vs available-today when agents are on time off", () => {
+  it("#738: spells out roster vs available-today when agents are out", () => {
     const msg = formatThinTierNotice([
       tier({ code: "311", name: "High | Achieve", depth: 4, effectiveDepth: 1, outCount: 3 }),
     ]);
     expect(msg).toContain("4 on the roster");
     expect(msg).toContain("1 agent available today");
-    expect(msg).toContain("3 on time off");
+    // #744: an agent can be out on approved time off OR on an all-day calendar
+    // block, so the notice must not claim they all filed time off.
+    expect(msg).toContain("3 out today");
   });
 
   it("annotates a tier whose only cushion is a fallback as lower urgency", () => {

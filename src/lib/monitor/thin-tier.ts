@@ -21,7 +21,8 @@ const NAME_CAP = 8;
 /**
  * The tiers worth a staffing nudge, judged on EFFECTIVE depth (#738): a tier with
  * 1 or 2 agents actually available today, whether that is structural (a small
- * roster) or because agents are on approved time off. Effective-0 tiers are
+ * roster) or because agents are out today (#744: an approved time-off request or
+ * an all-day block on the agent's own calendar). Effective-0 tiers are
  * excluded: an all-out tier is a live dead-end already covered by the #371
  * availability probe / #567 fallback notice, so folding it in would double-notify.
  * Effective 3+ is healthy.
@@ -36,9 +37,9 @@ function tierLine(t: TierDepth): string {
   const avail = t.effectiveDepth === 1 ? "1 agent" : "2 agents";
   let body: string;
   if (t.outCount > 0) {
-    // A roster-deep tier thinned by today's time off: show both so staffing sees
+    // A roster-deep tier thinned by who is out today: show both so staffing sees
     // it is temporary and how many are out.
-    body = `${t.depth} on the roster but only ${avail} available today (${t.outCount} on time off)`;
+    body = `${t.depth} on the roster but only ${avail} available today (${t.outCount} out today)`;
   } else if (t.flag === "spof" && t.soleAgentName) {
     // Structural single point of failure: name the sole agent.
     body = `only ${t.soleAgentName} can take these bookings (single point of failure)`;
