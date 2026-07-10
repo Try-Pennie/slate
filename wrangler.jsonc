@@ -26,10 +26,6 @@
 	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
 	"routes": [
 		{
-			"pattern": "slate.trypennie.dev",
-			"custom_domain": true
-		},
-		{
 			"pattern": "slate.trypennie.app",
 			"custom_domain": true
 		}
