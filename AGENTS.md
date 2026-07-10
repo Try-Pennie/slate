@@ -21,6 +21,43 @@ build, #412) — so a CI-only failure (including a build-only break) is caught
 locally instead of breaking main after merge. It's ~20s on a warm cache; skip it
 in a pinch with `SKIP_PREPUSH_CHECKS=1`.
 
+# Where a new test goes
+
+Slate runs two test harnesses on purpose. They are not interchangeable, and the
+boundary is by **capability, not by subject**: the same domain can legitimately
+have tests in both.
+
+**Vitest** (`src/**/*.test.ts`, `src/**/*.test.tsx`, run by `pnpm test:components`)
+is for code that imports through the `@/` alias and needs **module mocking**
+(`vi.mock`): React components, route handlers, and lib code whose collaborators
+are mocked rather than injected.
+
+**Node scripts** (`scripts/test-*.ts`, run by `pnpm test`) are for **pure logic**
+reached through hand written fakes with no module mocking, and for
+**repo invariant guards**: migration hygiene, deploy env coverage, the copy and
+dash lint, and the vitest environment rule below. Each file is its own process
+that exits 0 or 1. Shared fakes live beside them (`scripts/lib/`), never inside a
+`test-*.ts` file, because the runner globs that pattern as a suite.
+
+If you are unsure: reach for `vi.mock` and it belongs in vitest; otherwise write
+it as a node script, which is cheaper and starts faster.
+
+## jsdom is opt in
+
+The vitest default environment is **`node`**. jsdom costs roughly a second per
+file and only the component tests need a DOM, so a file that needs one declares
+it on the first line:
+
+```ts
+// @vitest-environment jsdom
+```
+
+Every `*.test.tsx` must declare it. A plain `*.test.ts` may only declare it if it
+is on the exception list in `scripts/test-vitest-environment.ts`, which currently
+holds one entry (`widget-embed.test.ts`, which drives the real `widget.js` in a
+browser environment). That guard fails the build if the boundary erodes again.
+Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
+
 # Screenshotting the dev UI (Playwright/Peekaboo)
 
 Screenshots against `next dev` hang and time out — element shots wait forever on
