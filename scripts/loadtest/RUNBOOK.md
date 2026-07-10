@@ -89,37 +89,30 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    backlog drained and all invariants ok. Paste the output back for the go/no-go read. Bump
    `TICKS` for a longer read, `OUTBOX_BACKLOG` for a bigger drain.
 
-6. **Subrequest ceiling (Worker-only).** `pnpm dev` (Node) has no subrequest limit; the
-   ~1000-subrequests-per-invocation ceiling (Workers Paid) only exists on a deployed
-   Worker. Verified against the deployed Worker (#724, 2026-07-10). Two things the older
-   per-lane estimate got wrong:
+6. **Resource ceilings on a deployed Worker (CPU is the real one; subrequests are not).**
+   `pnpm dev` (Node) enforces neither limit. Verified against the deployed Worker (#724 /
+   #760, 2026-07-10). The four every-minute lanes (`sync`, `recompute`, `outbox`,
+   `selfheal`) run IN-PROCESS in ONE `scheduled()` invocation (`worker/index.ts`
+   `handler.fetch(...)`, no network hop), so they share that invocation's CPU AND subrequest
+   budgets. Budget the COMBINED total, never per-lane.
 
-   - **One shared budget, not per-lane.** The `* * * * *` trigger dispatches FOUR routes
-     (`sync`, `recompute`, `outbox`, `selfheal`) and `worker/index.ts` runs them all
-     IN-PROCESS in a single `scheduled()` invocation (`handler.fetch(...)`, no network
-     hop), so they share ONE ~1000-subrequest budget. Budget the COMBINED total, not each
-     lane alone. Every `fetch()` counts: every PostgREST query (supabase-js), every Google
-     call, every Slack post. `caches.default` is colo-local and does NOT count.
-   - **Observability can't count subrequests.** Cloudflare Workers Logs expose cron,
-     `$workers.cpuTimeMs`, `$workers.wallTimeMs`, and `$workers.outcome`, but NO subrequest
-     counter. So you can't read the count directly; instead derive it from code and watch
-     `$workers.outcome` for resource breaches. (A subrequest-limit breach surfaces as a
-     failing outcome / "Too many subrequests" error; none seen in 7 days. Note: the minute
-     lane IS hitting the CPU ceiling ~5% of ticks today, tracked in #760, a separate limit.)
-
-   Measured budget at 200 agents (derived from code, #724):
-   - **Steady state ≈ 760 subrequests/tick** (safe): sync ~608 (100-agent cap ×~6 each) +
-     recompute ~127 (~15 aged buckets ×8) + outbox ~9 + selfheal ~14. The margin rests
-     entirely on `MAX_AGENTS_PER_SYNC_TICK=100` and the 4-min recompute freshness window.
-   - **A single backlog event can push one lane over 1000.** Worst-case per lane: selfheal
-     ~1,850, sync ~1,420, recompute ~493 (hard-capped at 60 buckets × 8), outbox ~550.
-   - **Unbounded scaling risks (must cap before 200-agent scale):** the selfheal reconcile
-     sweeps loop `bucketsForAgent` (3 subrequests) per freed/missing agent with NO per-tick
-     cap (up to 200×3 per sweep, ~1,200 across both); `reconcileMissingBusyBlocks` also
-     inserts one un-batched `busy_blocks` row per missing row (up to 200). The sync lane is
-     bounded only by the 100-agent cap and does one un-batched Google `syncEvents` per
-     calendar, so a multi-calendar fleet multiplies it. recompute is NOT a risk (fixed
-     60-bucket ceiling, `.in(userIds)`-batched, agent-count-independent).
+   - **Subrequests: NOT a constraint.** Cloudflare removed the old 1,000 cap on 2026-02-11;
+     Workers Paid is now **10,000/invocation** (configurable to 10M). Every `fetch()` counts
+     (each PostgREST query, Google call, Slack post; `caches.default` is colo-local and does
+     NOT). Observability exposes no subrequest counter, so derive from code and watch
+     `$workers.outcome` for a "Too many subrequests" breach (none ever seen). Code-derived
+     budget at 200 agents: steady state ≈ **760/tick**; even the combined worst case across
+     all four lanes (~4,300) sits well under 10,000. So the subrequest ceiling is comfortable.
+   - **CPU: the real ceiling, and it was being hit.** Cron-trigger CPU defaults to 30s
+     (Workers Paid, <1hr interval). At ~98 agents the shared minute invocation was hitting
+     it ~5% of ticks (median CPU ~11.5s, p95 pegged at ~32.5s). Fixed in #760 by raising
+     `limits.cpu_ms` to 120000 (2 min) in `wrangler.jsonc`. This IS honored for a sub-hourly
+     cron (empirically canary-verified: a burning every-minute cron ran to 302s under a
+     300000 limit, not clamped at 30s). CPU is billed on actual usage, not the limit.
+   - **Watch item (#762):** the two selfheal reconcile sweeps loop `bucketsForAgent`
+     (~3 subrequests + CPU) per freed/missing agent with NO per-tick cap (up to ~1,200
+     subrequests across both during a backlog). No longer a subrequest-ceiling threat at
+     10,000, but it is a CPU contributor worth capping.
 
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
