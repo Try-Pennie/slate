@@ -89,5 +89,24 @@ if (outboxActionAdd) {
   }
 }
 
+// #770: busy_blocks(booking_id) is UNIQUE, so a duplicate slate block for one
+// booking is impossible rather than merely unlikely. Both writers must therefore
+// SETTLE on a conflict instead of erroring, or the constraint would convert a
+// harmless race into a failed booking-path write.
+{
+  // move_busy_block deletes by booking_id then inserts, so it can only collide with
+  // a row a concurrent reconcile sweep committed in between. The booking's own write
+  // is the authority on where its block belongs, so it must win and rewrite the row.
+  const fn = sql.match(/create or replace function move_busy_block[\s\S]*?\$\$;/gi)?.at(-1) ?? "";
+  assert(
+    /on conflict\s*\(\s*booking_id\s*\)\s*do update/i.test(fn),
+    "#770: move_busy_block settles on a booking_id conflict (does not error the booking path)",
+  );
+  assert(
+    /delete from busy_blocks where booking_id = p_booking_id/i.test(fn),
+    "#770: move_busy_block still deletes the booking's prior block first (one block per booking)",
+  );
+}
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -432,10 +432,10 @@ export interface BookingDeps {
   loadEmails(userIds: string[]): Promise<Map<string, string>>;
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
-  insertBusyBlock(block: BusyBlockInsert): Promise<void>;
   /** One write for many blocks (#762). The reconcile-missing sweep can re-create up
    *  to RECONCILE_LIMIT rows, and a write per row was that many serial round-trips
-   *  on the shared every-minute invocation. */
+   *  on the shared every-minute invocation. The create/reschedule paths do NOT use
+   *  this: they go through moveBusyBlock, which is idempotent per booking. */
   insertBusyBlocks(blocks: BusyBlockInsert[]): Promise<void>;
   /**
    * Atomically move a booking's slate busy_block to a new slot (#429 P3): delete

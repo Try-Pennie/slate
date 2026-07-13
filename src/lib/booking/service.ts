@@ -275,9 +275,19 @@ export type { BookingActor } from "@/lib/booking/core";
 export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Promise<void> {
   if (blocks.length === 0) return;
 
-  let { error } = await supabaseAdmin().from("busy_blocks").insert(blocks);
+  // #770: the sweep re-creates blocks for bookings that looked block-less a moment
+  // ago, and a booking's own move_busy_block can land in that gap. Under the
+  // UNIQUE (booking_id) index a plain insert would then 23505 and take the whole
+  // batch down with it, so defer to the winner: the row already exists and is
+  // correct, and re-creating it is exactly what we no longer want to do.
+  const write = () =>
+    supabaseAdmin()
+      .from("busy_blocks")
+      .upsert(blocks, { onConflict: "booking_id", ignoreDuplicates: true });
+
+  let { error } = await write();
   if (error) {
-    ({ error } = await supabaseAdmin().from("busy_blocks").insert(blocks));
+    ({ error } = await write());
   }
   if (!error) return;
 
@@ -522,10 +532,6 @@ function realDeps(): BookingDeps {
     // slot until sync mirrors the Google event (~1 min); a missed delete
     // leaves phantom busy forever (slate rows have no gcal event to reconcile
     // against). Retry once, then log + throttled Slack alert.
-    insertBusyBlock: async (block) => {
-      await insertBusyBlocksWithRetry([block]);
-    },
-
     // #762: one write for the whole reconcile-missing batch (up to RECONCILE_LIMIT
     // rows) instead of a serial round-trip per row. Conflict-safe: these are
     // slate-sourced rows with a null gcal_event_id, and the only unique index on
