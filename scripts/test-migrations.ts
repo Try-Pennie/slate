@@ -137,5 +137,47 @@ if (outboxActionAdd) {
   );
 }
 
+// The hand-written RPC arg types in src/lib/db/schema.ts must match the function
+// each migration actually defines. This guard exists because NOTHING else catches
+// that drift: supabase-js does not type-check rpc() argument names against the
+// Database generic (verified by passing a bogus param name through `tsc --noEmit`
+// clean), so a renamed, missing, or typo'd parameter sails past the compiler and
+// only fails against the live database. #759 shipped exactly that: a new
+// p_gcal_client_id param that schema.ts did not declare.
+//
+// Compares against the LAST definition of each function, which is the one the code
+// calls when a migration adds an overload.
+{
+  const schema = readFileSync("src/lib/db/schema.ts", "utf8");
+  // Each `name: { Args: {...}; Returns: ... }` entry under Functions. Anchored on
+  // `Returns:` because Args is written inline on one line for the short functions
+  // and as a multi-line block for the long ones.
+  const declared = new Map<string, Set<string>>();
+  for (const m of schema.matchAll(/(\w+):\s*\{\s*Args:\s*\{([\s\S]*?)\};\s*Returns:/g)) {
+    const params = new Set([...m[2].matchAll(/(p_\w+)\s*\??:/g)].map((p) => p[1]));
+    if (params.size > 0) declared.set(m[1], params);
+  }
+  assert(declared.size > 0, "schema.ts RPC arg types are parseable (the guard can see them)");
+
+  for (const [fn, args] of declared) {
+    const def = sql
+      .match(new RegExp(`create or replace function ${fn}\\s*\\(([\\s\\S]*?)\\)\\s*returns`, "gi"))
+      ?.at(-1);
+    if (!def) {
+      assert(false, `schema.ts declares rpc "${fn}", which some migration defines`);
+      continue;
+    }
+    const actual = new Set([...def.matchAll(/(p_\w+)\s+\w/g)].map((p) => p[1]));
+    const missing = [...actual].filter((p) => !args.has(p));
+    const extra = [...args].filter((p) => !actual.has(p));
+    assert(
+      missing.length === 0 && extra.length === 0,
+      `schema.ts args for "${fn}" match its SQL definition` +
+        (missing.length ? ` (missing: ${missing.join(", ")})` : "") +
+        (extra.length ? ` (not in SQL: ${extra.join(", ")})` : ""),
+    );
+  }
+}
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
