@@ -776,6 +776,23 @@ export async function reconcileCancelledBusyBlocks(
   };
 }
 
+/**
+ * How long a booking is left alone before the reconcile-missing sweep will heal
+ * it (#778). A booking commits its row and then writes its busy_block, so for a
+ * moment a perfectly healthy booking has no block. Without this window the sweep
+ * scans newest-first straight into that gap, "recreates" a block that was already
+ * on its way (harmless since #770's UNIQUE index, but wasted), and then reports it
+ * as a missed write: recomputing buckets and firing a Slack alert for a booking
+ * that was never broken.
+ *
+ * 60s is comfortably longer than any in-flight create, and gives the reservation
+ * drain (every minute) time to resume a crashed one, so a block still missing when
+ * the window closes is one that genuinely never landed. The cost is that such a
+ * block leaves its slot showing free for up to a minute longer; that is bounded,
+ * because verify-on-book re-checks live Google at confirm time.
+ */
+export const RECONCILE_MISSING_GRACE_MS = 60_000;
+
 /** An active upcoming booking, with everything the reconcile-missing sweep
  *  needs to re-create its busy_block (#431). */
 export interface ActiveUpcomingBooking {
@@ -798,6 +815,11 @@ export interface ActiveUpcomingBooking {
  * downside of over-acting (a duplicate block just keeps the slot busy), so it is
  * safe to run aggressively. A genuinely-missing block is inserted once; the next
  * tick sees the block and skips it, so blocks don't accumulate in steady state.
+ *
+ * The one thing it does NOT act on is a booking still inside its grace window: the
+ * loader withholds those (#778, RECONCILE_MISSING_GRACE_MS), because a booking that
+ * is merely mid-create has not missed anything, and treating it as a miss made this
+ * sweep's counters and its Slack alert report far more damage than had occurred.
  *
  * Returns the affected agents (not buckets): a missing block makes the agent
  * look free in EVERY bucket they serve, so the caller recomputes all of each

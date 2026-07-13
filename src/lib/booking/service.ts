@@ -28,6 +28,7 @@ import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
 import type {
+  ActiveUpcomingBooking,
   ApiBookingInput,
   ApiBookingResult,
   ApiBookingPreview,
@@ -299,6 +300,58 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
     CACHE_ALERT_COOLDOWN_MS,
     `Slate: busy_blocks INSERT failed for ${what} (${error.message}). The slot(s) may show as free in the embed until the next sync pass.`,
   ).catch(() => {});
+}
+
+/**
+ * The rows the reconcile-missing sweep (#431) scans: active bookings whose slot is
+ * still in the future and that have an assigned agent (a null-agent booking can't
+ * own a per-user busy_block).
+ *
+ * Ordered created_at DESC because a missed write-through INSERT happens at create
+ * time, so the freshest bookings are the likeliest to be missing a block - scan
+ * those first within the `limit` cap. `offset` rotates the window across ticks
+ * (#512) so an older upcoming booking beyond the first page is still eventually
+ * healed, not starved forever.
+ *
+ * But newest-first ran straight into the create path's own block write (#778), so
+ * bookings younger than the grace window are held back here rather than fetched and
+ * then skipped: excluding them in SQL is what keeps them from eating the sweep's
+ * per-tick row budget. See RECONCILE_MISSING_GRACE_MS.
+ */
+export async function loadActiveUpcomingBookings(
+  limit: number,
+  offset = 0,
+): Promise<ActiveUpcomingBooking[]> {
+  const settledBefore = new Date(
+    Date.now() - orchestration.RECONCILE_MISSING_GRACE_MS,
+  ).toISOString();
+  const { data, error } = await supabaseAdmin()
+    .from("bookings")
+    .select("id, assigned_user_id, starts_at, ends_at")
+    .in("status", ["confirmed", "rescheduled"])
+    .gte("ends_at", new Date().toISOString())
+    .not("assigned_user_id", "is", null)
+    .lt("created_at", settledBefore)
+    .order("created_at", { ascending: false })
+    // `id` breaks created_at ties into a total order, so range paging (#512)
+    // can't skip or double-scan a row at a page boundary.
+    .order("id", { ascending: true })
+    .range(offset, offset + limit - 1);
+  if (error) {
+    console.error(`reconcile-missing: loadActiveUpcomingBookings failed: ${error.message}`);
+    return [];
+  }
+  return ((data ?? []) as {
+    id: string;
+    assigned_user_id: string;
+    starts_at: string;
+    ends_at: string;
+  }[]).map((r) => ({
+    id: r.id,
+    user_id: r.assigned_user_id,
+    starts_at: r.starts_at,
+    ends_at: r.ends_at,
+  }));
 }
 
 /**
@@ -692,41 +745,7 @@ function realDeps(): BookingDeps {
       }
     },
 
-    loadActiveUpcomingBookings: async (limit, offset = 0) => {
-      // Active bookings whose slot is still in the future and that have an
-      // assigned agent (a null-agent booking can't own a per-user busy_block).
-      // Ordered created_at DESC: a missed write-through INSERT happens at create
-      // time, so the freshest bookings are the likeliest to be missing a block -
-      // scan those first within the `limit` cap. `offset` rotates the window
-      // across ticks (#512) so an older upcoming booking beyond the first page
-      // is still eventually healed, not starved forever.
-      const { data, error } = await supabaseAdmin()
-        .from("bookings")
-        .select("id, assigned_user_id, starts_at, ends_at")
-        .in("status", ["confirmed", "rescheduled"])
-        .gte("ends_at", new Date().toISOString())
-        .not("assigned_user_id", "is", null)
-        .order("created_at", { ascending: false })
-        // `id` breaks created_at ties into a total order, so range paging (#512)
-        // can't skip or double-scan a row at a page boundary.
-        .order("id", { ascending: true })
-        .range(offset, offset + limit - 1);
-      if (error) {
-        console.error(`reconcile-missing: loadActiveUpcomingBookings failed: ${error.message}`);
-        return [];
-      }
-      return ((data ?? []) as {
-        id: string;
-        assigned_user_id: string;
-        starts_at: string;
-        ends_at: string;
-      }[]).map((r) => ({
-        id: r.id,
-        user_id: r.assigned_user_id,
-        starts_at: r.starts_at,
-        ends_at: r.ends_at,
-      }));
-    },
+    loadActiveUpcomingBookings,
 
     loadBusyBlockBookingIds: async (bookingIds) => {
       if (bookingIds.length === 0) return new Set<string>();
