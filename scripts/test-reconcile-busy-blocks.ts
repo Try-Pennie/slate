@@ -32,10 +32,13 @@ function block(
 function makeDeps(opts: {
   rows: Row[];
   statuses: Record<string, BookingStatus>;
+  /** Bookings whose cancel is still being delivered by the outbox (#784). */
+  inflightCancels?: string[];
 }) {
   const calls = {
     loadReconcilableBusyBlocks: [] as number[],
     loadBookingStatuses: [] as string[][],
+    loadInflightCancelBookingIds: [] as string[][],
     deleteBusyBlocksByIds: [] as string[][],
   };
   const deps = {
@@ -50,6 +53,11 @@ function makeDeps(opts: {
         if (opts.statuses[id]) m.set(id, opts.statuses[id]);
       }
       return m;
+    },
+    loadInflightCancelBookingIds: async (ids: string[]) => {
+      calls.loadInflightCancelBookingIds.push(ids);
+      const inflight = new Set(opts.inflightCancels ?? []);
+      return new Set(ids.filter((id) => inflight.has(id)));
     },
     deleteBusyBlocksByIds: async (ids: string[]) => {
       calls.deleteBusyBlocksByIds.push(ids);
@@ -115,6 +123,60 @@ async function run() {
     assert(res.freed === 0, "no stuck rows -> frees nothing");
     assert(res.userIds.length === 0, "no stuck rows -> no agents to recompute");
     assert(calls.deleteBusyBlocksByIds.length === 0, "no stuck rows -> skips the delete round-trip");
+  }
+
+  // #784: the cancel path flips status to `cancelled` FIRST and only then deletes
+  // the block, as an outbox step behind a slow Google delete. So a cancel that is
+  // merely mid-flight looks exactly like a missed write-through delete: the sweep
+  // used to free the block (harmless, it was going to be deleted anyway) and then
+  // report it as damage, firing "a write-through delete was missed, check
+  // cancel-path health" at a perfectly healthy cancel path.
+  {
+    const rows: Row[] = [
+      block("b-inflight", "u1", "bk-inflight"), // cancel still delivering -> LEAVE IT
+      block("b-delivered", "u2", "bk-delivered"), // cancel finished, block survived -> FREE
+    ];
+    const { deps, calls } = makeDeps({
+      rows,
+      statuses: { "bk-inflight": "cancelled", "bk-delivered": "cancelled" },
+      inflightCancels: ["bk-inflight"],
+    });
+    const res = await reconcileCancelledBusyBlocks(deps, 500);
+
+    const deleted = new Set(calls.deleteBusyBlocksByIds[0] ?? []);
+    assert(!deleted.has("b-inflight"), "#784: leaves the block of a cancel that is still delivering");
+    assert(deleted.has("b-delivered"), "#784: still frees a block whose cancel finished without deleting it");
+    // The counter is what the Slack alert reports, so an in-flight cancel must not
+    // inflate it, or the alert overstates the real miss rate.
+    assert(res.freed === 1, "#784: an in-flight cancel is not counted as a missed delete");
+    assert(
+      JSON.stringify(res.userIds) === JSON.stringify(["u2"]),
+      "#784: does not recompute the in-flight cancel's agent",
+    );
+  }
+
+  {
+    // Every stuck row is just an in-flight cancel: nothing was missed, so the sweep
+    // must issue no delete and report nothing (the quiet, common case).
+    const rows: Row[] = [block("b1", "u1", "bk1")];
+    const { deps, calls } = makeDeps({
+      rows,
+      statuses: { bk1: "cancelled" },
+      inflightCancels: ["bk1"],
+    });
+    const res = await reconcileCancelledBusyBlocks(deps, 500);
+    assert(res.freed === 0, "#784: an all-in-flight tick frees nothing");
+    assert(calls.deleteBusyBlocksByIds.length === 0, "#784: an all-in-flight tick issues no delete");
+  }
+
+  {
+    // An orphan block has no booking, so it has no cancel to be in flight. The
+    // in-flight check must not accidentally start protecting orphans, which are the
+    // rows this sweep exists to free.
+    const rows: Row[] = [block("b-orphan", "u1", null)];
+    const { deps } = makeDeps({ rows, statuses: {}, inflightCancels: [] });
+    const res = await reconcileCancelledBusyBlocks(deps, 500);
+    assert(res.freed === 1, "#784: still frees an orphan block with no booking at all");
   }
 }
 

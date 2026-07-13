@@ -128,6 +128,7 @@ function makeTierDropDeps(): BookingDeps {
     loadReconcilableBusyBlocks: async () =>
       [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[],
     loadBookingStatuses: async () => new Map<string, BookingStatus>(),
+    loadInflightCancelBookingIds: async () => new Set<string>(),
     deleteBusyBlocksByIds: noop,
     loadActiveUpcomingBookings: async () => [],
     loadBusyBlockBookingIds: async () => new Set<string>(),
