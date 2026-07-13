@@ -1,0 +1,17 @@
+-- #789: drop the superseded 6-arg reassign_booking_swap.
+--
+-- 0069 (#759) added the 7-arg version that stamps the reassign intent inside the
+-- swap's own transaction, and deliberately LEFT the 6-arg one from 0063 in place:
+-- migrations land before the code deploys (#482), so the still-running code had to
+-- be able to call the old signature during that window. That window has closed.
+--
+-- Leaving it would be worse than ordinary dead code, because it still WORKS: it
+-- performs the swap and silently skips the intent stamp. Anything that reached it
+-- again (a stray caller, a rolled-back deploy) would quietly reinstate exactly the
+-- bug #759 fixed: an orphaned calendar event the sweep can never clean, and a
+-- committed swap that the sweep reads as a LOST reassign and pages about.
+--
+-- Signature-qualified, so ONLY the 6-arg overload goes and the 7-arg one the code
+-- calls is untouched. Verified before writing this that the sole caller
+-- (src/lib/booking/service.ts) passes all 7 args, and that #759 is deployed.
+drop function if exists reassign_booking_swap(uuid, uuid, text, text, text, jsonb);
