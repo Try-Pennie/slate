@@ -13,6 +13,11 @@ const state = vi.hoisted(() => ({
   claimWins: true,
   endpointSelects: 0,
   inserted: [] as Record<string, unknown>[],
+  // #771: the filters emitWebhook narrows webhook_endpoints by, the error the
+  // delivery insert returns, and the status writes send() makes.
+  filters: [] as { table: string; col: string; val: unknown }[],
+  insertError: null as null | { code?: string; message: string },
+  updates: [] as Record<string, unknown>[],
 }));
 
 function resolve(b: Record<string, unknown>, table: string) {
@@ -48,12 +53,19 @@ function makeBuilder(table: string) {
   b.in = self;
   b.lt = self;
   b.gte = self;
-  b.eq = self;
-  b.contains = self;
+  b.eq = (col: string, val: unknown) => {
+    state.filters.push({ table, col, val });
+    return b;
+  };
+  b.contains = (col: string, val: unknown) => {
+    state.filters.push({ table, col, val });
+    return b;
+  };
   b.order = self;
   b.limit = self;
-  b.update = () => {
+  b.update = (payload: Record<string, unknown>) => {
     b._updated = true;
+    state.updates.push(payload);
     return b;
   };
   b.insert = (row: Record<string, unknown>) => {
@@ -62,7 +74,13 @@ function makeBuilder(table: string) {
     return b;
   };
   // insert().select("id").single() -> the new delivery row emitWebhook then sends.
-  b.single = () => Promise.resolve({ data: { id: "d-new" }, error: null });
+  // A 23505 here is the dedupe collision: a prior call already enqueued this event.
+  b.single = () =>
+    Promise.resolve(
+      state.insertError
+        ? { data: null, error: state.insertError }
+        : { data: { id: "d-new" }, error: null },
+    );
   b.maybeSingle = () => {
     b._single = true;
     return Promise.resolve(resolve(b, table));
@@ -110,6 +128,9 @@ beforeEach(() => {
   state.claimWins = true;
   state.endpointSelects = 0;
   state.inserted = [];
+  state.filters = [];
+  state.insertError = null;
+  state.updates = [];
   from.mockImplementation((table: string) => makeBuilder(table));
   fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => "ok" });
   vi.stubGlobal("fetch", fetchMock);
@@ -134,6 +155,109 @@ describe("retryFailedDeliveries", () => {
 
     expect(retried).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// #771: emitWebhook is the function EVERY booking webhook flows through, and it had
+// no direct coverage. Its three jobs: pick the right subscribers, record the delivery,
+// and never deliver the same logical event twice. That last one is the exactly-once
+// guarantee Regal and Cadence rely on, and it was only tested indirectly.
+describe("emitWebhook", () => {
+  const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+
+  it("delivers only to this org's ACTIVE endpoints subscribed to this event", async () => {
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    const eps = state.filters.filter((f) => f.table === "webhook_endpoints");
+    // A leak here would post one org's bookings to another org's receiver, or wake a
+    // deactivated endpoint, or send a subscriber an event it never asked for.
+    expect(eps).toContainEqual({ table: "webhook_endpoints", col: "org_id", val: "o1" });
+    expect(eps).toContainEqual({ table: "webhook_endpoints", col: "active", val: true });
+    expect(eps).toContainEqual({
+      table: "webhook_endpoints",
+      col: "events",
+      val: ["booking.created"],
+    });
+  });
+
+  it("fans out to every subscribed endpoint, one delivery row each", async () => {
+    state.endpoints = [endpoint, { ...endpoint, id: "ep2", url: "https://other.example/hook" }];
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(state.inserted).toHaveLength(2);
+    expect(state.inserted.map((r) => r.endpoint_id)).toEqual(["ep1", "ep2"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("records the delivery with its event, payload and dedupe key before sending", async () => {
+    await emitWebhook("o1", "booking.cancelled", payload, "evt-9");
+
+    expect(state.inserted[0]).toMatchObject({
+      endpoint_id: "ep1",
+      event: "booking.cancelled",
+      payload,
+      status: "pending",
+      dedupe_key: "evt-9",
+      suppressed: false,
+    });
+  });
+
+  it("does nothing at all when no endpoint subscribes", async () => {
+    state.endpoints = [];
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(state.inserted).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // The exactly-once guarantee (#436). The dedupe key is written under a partial
+  // UNIQUE (endpoint_id, event, dedupe_key), so a re-enqueue of the same logical
+  // event (a crash-resume re-running the side effects) hits a 23505. The ORIGINAL
+  // delivery owns the send and its retries, so this call must drop BOTH the second
+  // row and the second POST. Without this, a resumed booking double-fires into Regal.
+  it("drops both the row and the POST when the dedupe key collides (exactly-once)", async () => {
+    state.insertError = { code: "23505", message: "duplicate key value" };
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves no delivery half-sent when the insert fails for any other reason", async () => {
+    state.insertError = { code: "08006", message: "connection failure" };
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    // No row means nothing owns a retry, so posting here would be an unrecorded send.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Failure paths. The booking has already committed by the time these run, so a
+  // subscriber being down must never throw back into the booking flow. It must be
+  // recorded as failed instead, which is what makes the retry sweep pick it up.
+  it("marks the delivery failed (and does not throw) when the receiver rejects", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "boom" });
+
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).resolves.toBeUndefined();
+
+    expect(state.updates[0]).toMatchObject({ status: "failed", attempts: 1 });
+    expect(String(state.updates[0].last_response)).toContain("500");
+  });
+
+  it("marks the delivery failed (and does not throw) when the receiver times out", async () => {
+    fetchMock.mockRejectedValue(new Error("The operation was aborted"));
+
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).resolves.toBeUndefined();
+
+    expect(state.updates[0]).toMatchObject({ status: "failed", attempts: 1 });
+  });
+
+  it("marks the delivery a success when the receiver accepts", async () => {
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(state.updates[0]).toMatchObject({ status: "success", attempts: 1 });
   });
 });
 
