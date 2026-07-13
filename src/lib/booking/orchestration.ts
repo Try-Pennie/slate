@@ -433,6 +433,10 @@ export interface BookingDeps {
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   insertBusyBlock(block: BusyBlockInsert): Promise<void>;
+  /** One write for many blocks (#762). The reconcile-missing sweep can re-create up
+   *  to RECONCILE_LIMIT rows, and a write per row was that many serial round-trips
+   *  on the shared every-minute invocation. */
+  insertBusyBlocks(blocks: BusyBlockInsert[]): Promise<void>;
   /**
    * Atomically move a booking's slate busy_block to a new slot (#429 P3): delete
    * by booking_id + insert, in ONE statement, so a crash between can't leave the
@@ -812,9 +816,9 @@ export async function reconcileMissingBusyBlocks(
   const missing = bookings.filter((b) => !haveBlock.has(b.id));
   if (missing.length === 0) return empty;
 
-  for (const b of missing) {
-    await deps.insertBusyBlock(busyBlockFor(b.user_id, b.starts_at, b.ends_at, b.id));
-  }
+  await deps.insertBusyBlocks(
+    missing.map((b) => busyBlockFor(b.user_id, b.starts_at, b.ends_at, b.id)),
+  );
   return {
     recreated: missing.length,
     bookingIds: missing.map((b) => b.id),

@@ -32,7 +32,12 @@ function booking(id: string, user_id: string): ActiveUpcomingBooking {
 
 function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }) {
   const inserted: BusyBlockInsert[] = [];
-  const calls = { loadActiveUpcomingBookings: 0, loadBusyBlockBookingIds: [] as string[][] };
+  const calls = {
+    loadActiveUpcomingBookings: 0,
+    loadBusyBlockBookingIds: [] as string[][],
+    // #762: how many WRITES the sweep issued, as opposed to how many rows it wrote.
+    insertBatches: 0,
+  };
   const deps = {
     loadActiveUpcomingBookings: async (limit: number) => {
       calls.loadActiveUpcomingBookings = limit;
@@ -42,8 +47,9 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
       calls.loadBusyBlockBookingIds.push(ids);
       return new Set(opts.haveBlock.filter((id) => ids.includes(id)));
     },
-    insertBusyBlock: async (block: BusyBlockInsert) => {
-      inserted.push(block);
+    insertBusyBlocks: async (blocks: BusyBlockInsert[]) => {
+      calls.insertBatches++;
+      inserted.push(...blocks);
     },
   } as unknown as BookingDeps;
   return { deps, inserted, calls };
@@ -52,7 +58,7 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
 // --- a booking missing its block gets re-created ---------------------------
 {
   // A1/A2 have no block; A3 already has one. A1 + A3 share agent u1.
-  const { deps, inserted } = makeDeps({
+  const { deps, inserted, calls } = makeDeps({
     active: [booking("A1", "u1"), booking("A2", "u2"), booking("A3", "u1")],
     haveBlock: ["A3"],
   });
@@ -60,6 +66,12 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
 
   assert(res.recreated === 2, "re-creates a block for each active booking missing one (A1, A2)");
   assert(inserted.length === 2, "exactly two busy_blocks inserted");
+  // #762: the sweep scans up to RECONCILE_LIMIT=200 rows, so one write per missing
+  // row was up to 200 serial round-trips on the shared every-minute invocation.
+  assert(
+    calls.insertBatches === 1,
+    "#762: the missing blocks go out in ONE batched write, not one write per row",
+  );
   assert(
     inserted.every((b) => b.source === "slate" && b.booking_id !== null),
     "inserted blocks are slate-sourced and carry the booking id",
@@ -110,8 +122,9 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
     loadBusyBlockBookingIds: async () => {
       throw new Error("read blip");
     },
-    insertBusyBlock: async (block: BusyBlockInsert) => {
-      inserted.push(block);
+    insertBusyBlocks: async (blocks: BusyBlockInsert[]) => {
+      calls.insertBatches++;
+      inserted.push(...blocks);
     },
   } as unknown as BookingDeps;
   let threw = false;

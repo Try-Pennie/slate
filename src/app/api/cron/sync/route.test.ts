@@ -31,7 +31,10 @@ const pace = vi.hoisted(() => ({
   MAX_TOUCHED_AGENTS: 50,
   MAX_TOUCHED_BUCKETS: 50,
 }));
-const precompute = vi.hoisted(() => ({ bucketsForAgent: vi.fn(async () => []) }));
+const precompute = vi.hoisted(() => ({
+  // #762: the lane now resolves every changed agent's buckets in one batched call.
+  touchedBucketCodes: vi.fn(async () => [] as string[]),
+}));
 const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async () => {}) }));
 const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
 const alerts = vi.hoisted(() => ({

@@ -168,6 +168,8 @@ export function makeDeps(opts: FakeOpts) {
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
+    /** #762: how many batched WRITES the sweep issued, not how many rows it wrote. */
+    insertBusyBlocks: 0,
     moveBusyBlock: [] as { userId: string; startIso: string; endIso: string; bookingId: string }[],
     deleteBusyBlocks: [] as string[],
     deleteGcalMirror: [] as { userId: string; gcalEventId: string }[],
@@ -336,6 +338,10 @@ export function makeDeps(opts: FakeOpts) {
     },
     insertBusyBlock: async (block) => {
       calls.insertBusyBlock.push(block);
+    },
+    insertBusyBlocks: async (blocks) => {
+      calls.insertBusyBlocks++;
+      for (const b of blocks) calls.insertBusyBlock.push(b);
     },
     moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
       calls.moveBusyBlock.push({ userId, startIso, endIso, bookingId });

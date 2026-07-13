@@ -121,6 +121,7 @@ function makeTierDropDeps(): BookingDeps {
       booking: { ...row, id: "bk-new" } as unknown as Booking,
     }),
     insertBusyBlock: noop,
+    insertBusyBlocks: noop,
     moveBusyBlock: noop,
     reassignSwap: async () => ({ prevGcalEventId: null, prevAgentEmail: null, updated: true }),
     deleteBusyBlocksForBooking: noop,

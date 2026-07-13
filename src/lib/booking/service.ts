@@ -6,7 +6,7 @@ import {
   roundRobinCandidates,
 } from "@/lib/availability/service";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
-import { bucketsForAgent } from "@/lib/availability/precompute";
+import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
   createEvent,
   deleteEvent,
@@ -22,6 +22,7 @@ import {
   type CalendarBusy,
   type ValidatedReason,
   type BookingActor,
+  type BusyBlockInsert,
 } from "@/lib/booking/core";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
@@ -263,6 +264,34 @@ export type { BookingResult, CreateBookingInput };
 export type { BookingActor } from "@/lib/booking/core";
 
 /**
+ * The one busy_blocks INSERT path, for a single write-through block or a whole
+ * reconcile batch (#762).
+ *
+ * The booking/cancel itself already succeeded when this runs, so a cache write
+ * failure must not fail the request, but it cannot stay silent either (#34): a
+ * missed insert lets the embed keep offering a booked slot until sync mirrors the
+ * Google event (~1 min). Retry once, then log + throttled Slack alert.
+ */
+export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Promise<void> {
+  if (blocks.length === 0) return;
+
+  let { error } = await supabaseAdmin().from("busy_blocks").insert(blocks);
+  if (error) {
+    ({ error } = await supabaseAdmin().from("busy_blocks").insert(blocks));
+  }
+  if (!error) return;
+
+  const ids = blocks.map((b) => b.booking_id).join(", ");
+  const what = blocks.length === 1 ? `booking ${ids}` : `${blocks.length} bookings (${ids})`;
+  console.error(`busy_blocks insert failed for ${what}: ${error.message}`);
+  await sendThrottledAlert(
+    "busy_block_write_through",
+    CACHE_ALERT_COOLDOWN_MS,
+    `Slate: busy_blocks INSERT failed for ${what} (${error.message}). The slot(s) may show as free in the embed until the next sync pass.`,
+  ).catch(() => {});
+}
+
+/**
  * Binds the booking orchestration to real IO. This is the ONLY place the
  * booking flow touches Supabase, Google Calendar, or webhooks; the logic lives
  * in `orchestration.ts` and is exercised by `scripts/test-booking-orchestration.ts`.
@@ -494,20 +523,16 @@ function realDeps(): BookingDeps {
     // leaves phantom busy forever (slate rows have no gcal event to reconcile
     // against). Retry once, then log + throttled Slack alert.
     insertBusyBlock: async (block) => {
-      let { error } = await supabaseAdmin().from("busy_blocks").insert(block);
-      if (error) {
-        ({ error } = await supabaseAdmin().from("busy_blocks").insert(block));
-      }
-      if (error) {
-        console.error(
-          `busy_blocks write-through insert failed for booking ${block.booking_id}: ${error.message}`,
-        );
-        await sendThrottledAlert(
-          "busy_block_write_through",
-          CACHE_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks write-through INSERT failed for booking ${block.booking_id} (${error.message}). The slot may show as free in the embed until the next sync pass.`,
-        ).catch(() => {});
-      }
+      await insertBusyBlocksWithRetry([block]);
+    },
+
+    // #762: one write for the whole reconcile-missing batch (up to RECONCILE_LIMIT
+    // rows) instead of a serial round-trip per row. Conflict-safe: these are
+    // slate-sourced rows with a null gcal_event_id, and the only unique index on
+    // busy_blocks is (user_id, gcal_event_id), so no row in the batch can collide
+    // and abort the others.
+    insertBusyBlocks: async (blocks) => {
+      await insertBusyBlocksWithRetry(blocks);
     },
 
     moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
@@ -1697,17 +1722,13 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
   if (res.freed === 0) return res;
 
   // Map freed agents -> their buckets, dedupe, bound, recompute today's slots.
-  const touched = new Set<string>();
-  for (const userId of res.userIds) {
-    try {
-      for (const code of await bucketsForAgent(userId)) touched.add(code);
-    } catch (err) {
-      console.error(
-        `reconcile: bucket lookup failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-  for (const code of [...touched].slice(0, RECONCILE_MAX_TOUCHED_BUCKETS)) {
+  // One batched lookup for the whole freed set (#762), not one per agent.
+  const touched = await touchedBucketCodes(
+    res.userIds,
+    RECONCILE_MAX_TOUCHED_BUCKETS,
+    "reconcile",
+  );
+  for (const code of touched) {
     await recomputeBucketSlotsForToday(code, true).catch(() => {});
   }
 
@@ -1736,17 +1757,12 @@ export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
   // A missing block made the agent look free in EVERY bucket they serve, so
   // recompute all of each affected agent's buckets (deduped + bounded), exactly
   // as the #428 sweep does for freed agents - not just the booking's own bucket.
-  const touched = new Set<string>();
-  for (const userId of res.userIds) {
-    try {
-      for (const code of await bucketsForAgent(userId)) touched.add(code);
-    } catch (err) {
-      console.error(
-        `reconcile-missing: bucket lookup failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-  for (const code of [...touched].slice(0, RECONCILE_MAX_TOUCHED_BUCKETS)) {
+  const touched = await touchedBucketCodes(
+    res.userIds,
+    RECONCILE_MAX_TOUCHED_BUCKETS,
+    "reconcile-missing",
+  );
+  for (const code of touched) {
     await recomputeBucketSlotsForToday(code, true).catch(() => {});
   }
 
