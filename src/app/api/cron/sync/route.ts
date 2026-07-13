@@ -16,7 +16,7 @@ import {
   MAX_TOUCHED_AGENTS,
   MAX_TOUCHED_BUCKETS,
 } from "@/lib/google/sync-pace";
-import { bucketsForAgent } from "@/lib/availability/precompute";
+import { touchedBucketCodes } from "@/lib/availability/precompute";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
@@ -144,20 +144,11 @@ export async function GET(req: NextRequest) {
     // a no-op — most ticks have no changes (push handles the common case).
     const changed = agentsWithChanges(results, MAX_TOUCHED_AGENTS);
     if (changed.length > 0) {
-      const touched = new Set<string>();
-      for (const id of changed) {
-        // bucketsForAgent now fails loud on a DB error (#313); isolate it per
-        // agent so one bad lookup logs and is skipped instead of failing the
-        // whole tick (the recompute lane's freshness sweep still backstops).
-        try {
-          for (const code of await bucketsForAgent(id)) touched.add(code);
-        } catch (err) {
-          console.error(
-            `touched-bucket lookup failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-      for (const code of [...touched].slice(0, MAX_TOUCHED_BUCKETS)) {
+      // One batched lookup for every changed agent (#762). A failed read logs and
+      // yields nothing rather than failing the tick; the recompute lane's freshness
+      // sweep is the backstop.
+      const touched = await touchedBucketCodes(changed, MAX_TOUCHED_BUCKETS, "touched-bucket");
+      for (const code of touched) {
         await recomputeBucketSlotsForToday(code, true).catch(() => {});
       }
     }

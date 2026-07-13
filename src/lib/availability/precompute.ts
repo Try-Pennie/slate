@@ -91,40 +91,116 @@ export async function recomputeBucketSlots(
  * the buckets whose slots could move. One small read + an in-memory filter.
  */
 export async function bucketsForAgent(userId: string): Promise<string[]> {
-  const db = supabaseAdmin();
-  // Fail loud on a query error (#313, same class as #277): swallowing a failed
-  // read here returned no buckets, so a changed agent's buckets silently never
-  // recomputed. Throw instead; the best-effort caller logs and the freshness
-  // sweep still backstops.
-  const user = unwrap(
-    await db.from("users").select("org_id, attributes").eq("id", userId).maybeSingle(),
-    "bucketsForAgent user",
-  );
-  if (!user) return [];
-  const u = user as { org_id: string; attributes: Attributes | null };
+  return (await bucketsForAgents([userId])).get(userId) ?? [];
+}
 
+/**
+ * The same answer for MANY agents in a constant 3 queries (#762), rather than 3
+ * per agent. The per-agent version cost one `users` read, one `buckets` read (the
+ * whole org, identical on every call) and one `bucket_members` read EACH, so the
+ * every-minute lanes paid up to ~600 reads per sweep to answer a question that
+ * three reads answer. The matching itself is the same pure predicate.
+ *
+ * Fails loud on a query error (#313, same class as #277): swallowing a failed read
+ * returned no buckets, so a changed agent's buckets silently never recomputed.
+ * Throw instead; `touchedBucketCodes` logs it and the freshness sweep backstops.
+ */
+export async function bucketsForAgents(userIds: string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const ids = [...new Set(userIds)];
+  if (ids.length === 0) return out;
+
+  const db = supabaseAdmin();
+  const users = (unwrap(
+    await db.from("users").select("id, org_id, attributes").in("id", ids),
+    "bucketsForAgents users",
+  ) ?? []) as { id: string; org_id: string; attributes: Attributes | null }[];
+  if (users.length === 0) return out;
+
+  const orgIds = [...new Set(users.map((u) => u.org_id))];
   const [bucketsRes, memberRes] = await Promise.all([
-    db.from("buckets").select("id, code, criteria, fallback_user_id").eq("org_id", u.org_id),
-    db.from("bucket_members").select("bucket_id").eq("user_id", userId).eq("active", true),
+    db
+      .from("buckets")
+      .select("id, code, criteria, fallback_user_id, org_id")
+      .in("org_id", orgIds),
+    db.from("bucket_members").select("bucket_id, user_id").in("user_id", ids).eq("active", true),
   ]);
-  const manualBucketIds = new Set(
-    (unwrap(memberRes, "bucketsForAgent members") ?? []).map(
-      (m) => (m as { bucket_id: string }).bucket_id,
-    ),
-  );
-  const buckets: BucketForMatch[] = (unwrap(bucketsRes, "bucketsForAgent buckets") ?? []).map((b) => {
-    const row = b as {
-      id: string;
-      code: string;
-      criteria: Criteria | null;
-      fallback_user_id: string | null;
-    };
-    return {
+
+  const bucketRows = (unwrap(bucketsRes, "bucketsForAgents buckets") ?? []) as {
+    id: string;
+    code: string;
+    criteria: Criteria | null;
+    fallback_user_id: string | null;
+    org_id: string;
+  }[];
+  const memberRows = (unwrap(memberRes, "bucketsForAgents members") ?? []) as {
+    bucket_id: string;
+    user_id: string;
+  }[];
+
+  // Membership is per (bucket, agent), so it must stay keyed by both: one batched
+  // read now carries every requested agent's rows, and handing the whole list to
+  // each agent would make them all look like members of each other's buckets.
+  const membersByBucket = new Map<string, string[]>();
+  for (const m of memberRows) {
+    const list = membersByBucket.get(m.bucket_id);
+    if (list) list.push(m.user_id);
+    else membersByBucket.set(m.bucket_id, [m.user_id]);
+  }
+
+  const byOrg = new Map<string, BucketForMatch[]>();
+  for (const row of bucketRows) {
+    const forMatch: BucketForMatch = {
       code: row.code,
       criteria: row.criteria ?? {},
-      manualMemberIds: manualBucketIds.has(row.id) ? [userId] : [],
+      manualMemberIds: membersByBucket.get(row.id) ?? [],
       fallbackUserId: row.fallback_user_id,
     };
-  });
-  return bucketsMatchingAgent(userId, u.attributes ?? {}, buckets);
+    const list = byOrg.get(row.org_id);
+    if (list) list.push(forMatch);
+    else byOrg.set(row.org_id, [forMatch]);
+  }
+
+  for (const u of users) {
+    out.set(
+      u.id,
+      bucketsMatchingAgent(u.id, u.attributes ?? {}, byOrg.get(u.org_id) ?? []),
+    );
+  }
+  return out;
+}
+
+/**
+ * The deduped, bounded set of bucket codes a group of changed agents affects, ready
+ * to hand to the recompute fan-out (#762).
+ *
+ * This is the shape all three every-minute callers wanted (both self-heal reconcile
+ * sweeps and the Google sync lane), each of which had its own copy of a serial
+ * per-agent loop. The cap is what bounds the downstream recompute.
+ *
+ * A failed lookup logs and yields nothing rather than throwing: every caller is a
+ * best-effort refresh whose job is to make a change show up in ~1 min, and the
+ * recompute lane's freshness sweep is the real backstop. It must not fail silently,
+ * hence the log. (Unlike the old per-agent loop, one bad read now costs the whole
+ * batch, but a batched read fails at the DB level, not per agent.)
+ */
+export async function touchedBucketCodes(
+  userIds: string[],
+  max: number,
+  label: string,
+): Promise<string[]> {
+  if (userIds.length === 0) return [];
+  try {
+    const byAgent = await bucketsForAgents(userIds);
+    const touched = new Set<string>();
+    for (const codes of byAgent.values()) {
+      for (const code of codes) touched.add(code);
+    }
+    return [...touched].slice(0, max);
+  } catch (err) {
+    console.error(
+      `${label}: bucket lookup failed for ${userIds.length} agent(s): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
 }
