@@ -78,6 +78,17 @@ export function buildRegalEvent(
 ): RegalEvent {
   const tz = p.timezone;
   const start = DateTime.fromISO(p.starts_at, { zone: tz });
+  // This also runs on an admin resend and the dead-letter replay, which rebuild the
+  // event from the STORED payload, and payloads written before the routing summary
+  // existed have no `routing` key. Degrade to "nothing unusual happened" rather than
+  // throwing, or replaying a legacy delivery would fail outright.
+  const routing = p.routing ?? {
+    empty_pool_fallback: false,
+    tier_fallback: false,
+    requested_tier: null,
+    booked_tier: null,
+    rungs_dropped: 0,
+  };
   const agentName = p.agent.name ?? "Unknown";
   const { first, last } = nameParts(p.attendee.name);
   const isCreated = event === "booking.created";
@@ -105,6 +116,19 @@ export function buildRegalEvent(
       slateBookingDate: start.toFormat("yyyy-MM-dd"),
       slateBookingLink: p.manage_url,
       currentDayOfWeek: DateTime.now().setZone("America/New_York").toFormat("cccc"),
+      // #492: Regal alerts "Non-Ultra High Team Booking Detected" whenever a booking
+      // lands outside the top tier. Slate DELIBERATELY drops a rung when the requested
+      // tier has nobody free, so without this every intentional drop looks like a
+      // misroute and the alert cries wolf from the day of cutover. Gate the Regal
+      // journey on slateTierFallback: true means Slate meant to do this.
+      //
+      // Sent on every event, not just booking.created: a reassign emits
+      // booking.rescheduled and can land the booking on a different tier too.
+      slateTierFallback: routing.tier_fallback,
+      slateEmptyPoolFallback: routing.empty_pool_fallback,
+      slateRequestedTier: routing.requested_tier,
+      slateBookedTier: routing.booked_tier,
+      slateRungsDropped: routing.rungs_dropped,
     },
     traits: {},
   };

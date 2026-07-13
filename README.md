@@ -96,6 +96,32 @@ For AI / programmatic booking without the embed, use the key-authed
 slots + `POST /api/bookings` to book), which applies the same routing,
 round-robin, verify-on-book, and one-appointment-per-person dedupe.
 
+## Webhooks: the tier-fallback signal (#492)
+
+Slate emits `booking.created` / `.rescheduled` / `.cancelled` / `.completed` to each
+subscribed endpoint. Endpoints with `format: 'regal'` get the Regal event shape
+(`src/lib/webhooks/regal.ts`).
+
+Routing does not always book the tier that was asked for. When the requested tier has
+nobody free, Slate **deliberately** walks down a rung rather than showing the lead no
+availability. That is a healthy outcome, but it looks identical to a misroute from the
+outside, which is what makes Regal's "Non-Ultra High Team Booking Detected" alert fire
+on it.
+
+Every event therefore carries how it was routed, so a consumer can tell the two apart:
+
+| property | meaning |
+|---|---|
+| `slateTierFallback` | **true = Slate meant to do this.** The requested tier had nobody free, so it dropped a rung. |
+| `slateEmptyPoolFallback` | The pool was empty and the bucket's fallback agent took it (a different case). |
+| `slateRequestedTier` / `slateBookedTier` | The tier asked for, and the tier actually booked. |
+| `slateRungsDropped` | How far it fell (0 when no drop). |
+
+**Regal side:** gate the "Non-Ultra High Team Booking Detected" journey on
+`slateTierFallback == false`, so an intentional drop stays quiet and a genuine misroute
+still alerts. Without that, the alert fires on every intentional drop and stops being
+trusted.
+
 ## Embed
 
 ```html

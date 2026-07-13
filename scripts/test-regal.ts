@@ -31,6 +31,13 @@ const payload: BookingEventPayload = {
   prefill: { xbc: "411", loanRequest: "160000" },
   manage_url: "https://slate.app/booking/manage/tok123",
   reason: null,
+  routing: {
+    empty_pool_fallback: false,
+    tier_fallback: false,
+    requested_tier: "Ultra-High-Beyond",
+    booked_tier: "Ultra-High-Beyond",
+    rungs_dropped: 0,
+  },
 };
 
 const created = buildRegalEvent("booking.created", payload);
@@ -94,6 +101,98 @@ const reschedWithReason = buildRegalEvent("booking.rescheduled", {
 assert(reschedWithReason.properties.rescheduleReason === "found_better_time", "reschedule reason code maps to rescheduleReason");
 assert(reschedWithReason.properties.rescheduleReasonDetail === "earlier slot opened up", "reschedule detail maps through");
 assert(reschedWithReason.properties.rescheduledBy === "customer", "reschedule initiator maps to rescheduledBy");
+
+// #492: Regal alerts "Non-Ultra High Team Booking Detected" whenever a booking lands
+// outside the top tier. Slate now DELIBERATELY drops a rung when the requested tier
+// has nobody free, so every intentional drop looks like a misroute to Regal. Slate
+// already stamps the routing summary on the payload, but buildRegalEvent dropped it,
+// so the signal never reached Regal and it could not tell an intentional drop from a
+// real one. Carry it, so a Regal journey can branch on it and stay quiet.
+assert(
+  created.properties.slateTierFallback === false,
+  "#492: a normal booking reports slateTierFallback false (Regal alerts as usual)",
+);
+assert(
+  created.properties.slateRequestedTier === "Ultra-High-Beyond" &&
+    created.properties.slateBookedTier === "Ultra-High-Beyond",
+  "#492: the requested and booked tier both ride along",
+);
+
+{
+  // The whole point: the top tier had nobody free, so routing walked down a rung.
+  // This is a healthy outcome, not a misroute, and Regal must be able to see that.
+  const dropped = buildRegalEvent("booking.created", {
+    ...payload,
+    routing: {
+      empty_pool_fallback: false,
+      tier_fallback: true,
+      requested_tier: "Ultra-High-Beyond",
+      booked_tier: "High",
+      rungs_dropped: 1,
+    },
+  });
+  assert(
+    dropped.properties.slateTierFallback === true,
+    "#492: an intentional tier drop reports slateTierFallback true (Regal can suppress)",
+  );
+  assert(
+    dropped.properties.slateRequestedTier === "Ultra-High-Beyond" &&
+      dropped.properties.slateBookedTier === "High" &&
+      dropped.properties.slateRungsDropped === 1,
+    "#492: the drop names the tier asked for, the tier booked, and how far it fell",
+  );
+}
+
+{
+  // A different kind of fallback: the pool was empty and the bucket's fallback agent
+  // took it. Regal should be able to tell the two apart rather than lumping them.
+  const emptyPool = buildRegalEvent("booking.created", {
+    ...payload,
+    routing: { ...payload.routing, empty_pool_fallback: true },
+  });
+  assert(
+    emptyPool.properties.slateEmptyPoolFallback === true &&
+      emptyPool.properties.slateTierFallback === false,
+    "#492: an empty-pool fallback is reported separately from a tier drop",
+  );
+}
+
+{
+  // The signal must survive a reassign too: reassign emits booking.rescheduled, and a
+  // reassign can land the booking on a different tier than the one originally asked for.
+  const resched = buildRegalEvent("booking.rescheduled", {
+    ...payload,
+    routing: { ...payload.routing, tier_fallback: true, booked_tier: "High", rungs_dropped: 1 },
+  });
+  assert(
+    resched.properties.slateTierFallback === true,
+    "#492: the routing signal rides every event, not just booking.created",
+  );
+}
+
+{
+  // Failure path. buildRegalEvent also rebuilds the event from the STORED payload on
+  // an admin resend and on the dead-letter replay, and payloads written before the
+  // routing summary existed have no `routing` key at all (115 of 227 live rows as of
+  // 2026-07-13). Reading it blindly would throw and break the resend of every legacy
+  // delivery, so a missing summary must degrade to "nothing unusual happened".
+  const legacy = { ...payload } as Partial<BookingEventPayload>;
+  delete legacy.routing;
+
+  const replayed = buildRegalEvent("booking.created", legacy as BookingEventPayload);
+
+  assert(
+    replayed.properties.slateTierFallback === false &&
+      replayed.properties.slateEmptyPoolFallback === false &&
+      replayed.properties.slateRungsDropped === 0,
+    "#492: a legacy payload with no routing summary replays as 'no fallback' instead of throwing",
+  );
+  assert(
+    replayed.properties.slateRequestedTier === null &&
+      replayed.properties.slateBookedTier === null,
+    "#492: a legacy payload reports unknown tiers as null, not undefined",
+  );
+}
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
