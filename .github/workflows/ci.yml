@@ -1,9 +1,26 @@
 name: CI
 
-# Run on every push and every pull request.
+# `push` is restricted to main; PR branches are covered by `pull_request` (#602).
+# An unfiltered `push:` alongside `pull_request:` ran the ENTIRE pipeline twice on
+# every PR commit (typecheck + lint + ~126 node suites + vitest + the full OpenNext
+# build, all of it, twice). The push trigger still has to fire on main, because the
+# deploy job is gated on a push to main.
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+# Supersede an in-flight run when a newer commit lands on the same ref, so pushing a
+# fix-up to a PR doesn't leave the previous run grinding through a Cloudflare build
+# nobody is waiting for.
+#
+# NEVER on main: a run on main IS the production deploy, so cancelling one could
+# interrupt a deploy mid-flight and leave the live Worker on a half-shipped state.
+# Runs on main always go to completion. Pinned by scripts/test-ci-workflow.ts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   ci:
