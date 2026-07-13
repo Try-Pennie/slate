@@ -1,10 +1,16 @@
-// #459: bookings on an is_test bucket must never emit downstream webhooks.
+// #459: bookings on an is_test bucket must never reach Regal/Cadence.
 //
 // The smoke test books real bookings through the key-authed API (allowTestBuckets),
-// so without a gate every smoke run injects a synthetic lead into Regal/Cadence and
-// then cancels it. The gate lives in orchestration's `fire()`, the single choke point
+// so without a gate every smoke run injects a synthetic lead downstream and then
+// cancels it. The gate lives in orchestration's `fire()`, the single choke point
 // every booking webhook passes through, so create/cancel/reschedule/complete are all
 // covered by one check.
+//
+// The emission is still RECORDED, marked suppressed, and only the external POST is
+// skipped (mirroring the existing loadtest short-circuit). Dropping the emission
+// entirely would erase the webhook_deliveries rows that scripts/smoke-create-resume.ts
+// counts to prove the exactly-once dedupe on the crash-resume path. emit.test.ts owns
+// the "a suppressed row is never POSTed, by any send path" half of the guarantee.
 //
 // Suppression must be surgical: the booking itself, the calendar event, the busy
 // blocks and the history rows all still have to work, or the smoke test stops
@@ -48,8 +54,8 @@ async function run() {
     });
     const res = await createBooking({ ...input, allowTestBuckets: true }, deps);
     assert(
-      calls.webhooks.length === 0,
-      "create(test bucket): emits no booking.created (no synthetic lead in Regal/Cadence)",
+      calls.webhooks.length === 1 && calls.webhooks[0].suppressed === true,
+      "create(test bucket): records booking.created as suppressed (no synthetic lead in Regal/Cadence)",
     );
     // Surgical: the smoke test still has to actually book something.
     assert(res.booking.id === "bk-new", "create(test bucket): the booking is still made");
@@ -61,8 +67,10 @@ async function run() {
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     await createBooking(input, deps);
     assert(
-      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created",
-      "create(real bucket): still fires booking.created",
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.created" &&
+        calls.webhooks[0].suppressed === false,
+      "create(real bucket): fires booking.created unsuppressed",
     );
   }
 
@@ -72,8 +80,8 @@ async function run() {
     const { deps, calls } = makeDeps({ existing: ctx });
     await cancelBooking("tok1", CR, "customer", deps);
     assert(
-      calls.webhooks.length === 0,
-      "cancel(test bucket): emits no booking.cancelled (no phantom cancellation downstream)",
+      calls.webhooks.length === 1 && calls.webhooks[0].suppressed === true,
+      "cancel(test bucket): records booking.cancelled as suppressed (no phantom cancellation downstream)",
     );
     // Surgical: the teardown still has to clean up, or smoke runs leak calendar events.
     assert(calls.deleteEvent.length === 1, "cancel(test bucket): still deletes the calendar event");
@@ -90,8 +98,10 @@ async function run() {
     const { deps, calls } = makeDeps({ existing: ctx });
     await cancelBooking("tok1", CR, "customer", deps);
     assert(
-      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.cancelled",
-      "cancel(real bucket): still fires booking.cancelled",
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.cancelled" &&
+        calls.webhooks[0].suppressed === false,
+      "cancel(real bucket): fires booking.cancelled unsuppressed",
     );
   }
 
@@ -115,8 +125,8 @@ async function run() {
     });
     await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(
-      calls.webhooks.length === 0,
-      "reschedule(test bucket): emits no booking.rescheduled",
+      calls.webhooks.length === 1 && calls.webhooks[0].suppressed === true,
+      "reschedule(test bucket): records booking.rescheduled as suppressed",
     );
     // Surgical: the move itself still commits.
     assert(
@@ -145,8 +155,10 @@ async function run() {
     });
     await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(
-      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.rescheduled",
-      "reschedule(real bucket): still fires booking.rescheduled",
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.rescheduled" &&
+        calls.webhooks[0].suppressed === false,
+      "reschedule(real bucket): fires booking.rescheduled unsuppressed",
     );
   }
 
@@ -159,8 +171,8 @@ async function run() {
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
     await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
-      calls.webhooks.length === 0,
-      "reassign(test bucket): emits no booking.rescheduled",
+      calls.webhooks.length === 1 && calls.webhooks[0].suppressed === true,
+      "reassign(test bucket): records booking.rescheduled as suppressed",
     );
     assert(calls.createEvent.length === 1, "reassign(test bucket): the swap still happens");
   }
@@ -172,8 +184,10 @@ async function run() {
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
     await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
-      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.rescheduled",
-      "reassign(real bucket): still fires booking.rescheduled",
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.rescheduled" &&
+        calls.webhooks[0].suppressed === false,
+      "reassign(real bucket): fires booking.rescheduled unsuppressed",
     );
   }
 
@@ -190,12 +204,18 @@ async function run() {
     const completed = await completePastBookings(deps);
     assert(completed === 2, "complete(mixed batch): both bookings still transition to completed");
     assert(
-      calls.webhooks.length === 1,
-      "complete(mixed batch): exactly one booking.completed fires (the test bucket's is suppressed)",
+      calls.webhooks.length === 2,
+      "complete(mixed batch): both bookings record a booking.completed emission",
+    );
+    const testEmit = calls.webhooks.find((w) => w.bucket_code === "999");
+    const realEmit = calls.webhooks.find((w) => w.bucket_code === "412");
+    assert(
+      testEmit?.suppressed === true,
+      "complete(mixed batch): the test bucket's emission is suppressed",
     );
     assert(
-      calls.webhooks[0].event === "booking.completed" && calls.webhooks[0].bucket_code === "412",
-      "complete(mixed batch): the surviving webhook is the real bucket's, not the test bucket's",
+      realEmit?.suppressed === false,
+      "complete(mixed batch): the real lead's emission is NOT suppressed (the gate is per row, not per batch)",
     );
   }
 

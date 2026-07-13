@@ -182,7 +182,13 @@ export function makeDeps(opts: FakeOpts) {
     deletedReservations: [] as string[],
     reservationBumps: [] as { id: string; attempts: number; lastError: string }[],
     reassignSwaps: [] as { bookingId: string; userId: string; gcalEventId: string; prevGcal: string | null }[],
-    webhooks: [] as { event: string; reason: unknown; dedupeKey: string | null; bucket_code: string | undefined }[],
+    webhooks: [] as {
+      event: string;
+      reason: unknown;
+      dedupeKey: string | null;
+      bucket_code: string | undefined;
+      suppressed: boolean;
+    }[],
     bookingEvents: [] as {
       booking_id: string;
       action: string;
@@ -544,8 +550,14 @@ export function makeDeps(opts: FakeOpts) {
     },
     getAgentByEmail: async () => opts.agentByEmail ?? null,
     loadPastBookingsToComplete: async () => opts.pastDue ?? [],
-    emitWebhook: async (_orgId, event, payload, dedupeKey) => {
-      calls.webhooks.push({ event, reason: payload.reason, dedupeKey, bucket_code: payload.bucket_code });
+    emitWebhook: async (_orgId, event, payload, dedupeKey, suppressed = false) => {
+      calls.webhooks.push({
+        event,
+        reason: payload.reason,
+        dedupeKey,
+        bucket_code: payload.bucket_code,
+        suppressed,
+      });
     },
     newManageToken: () => "tok-fixed",
     newIdempotencyKey: () => "anon-fixed", // synthetic key for keyless bookings (#666)

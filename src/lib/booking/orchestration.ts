@@ -659,11 +659,14 @@ export interface BookingDeps {
   getAgentByEmail(email: string): Promise<User | null>;
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
+  /** `suppressed` records the delivery but skips the external POST (#459: an
+   *  is_test bucket's booking must never reach Regal/Cadence). */
   emitWebhook(
     orgId: string,
     event: WebhookEvent,
     payload: BookingEventPayload,
     dedupeKey: string | null,
+    suppressed: boolean,
   ): Promise<void>;
   newManageToken(): string;
   /** A fresh, unique synthetic idempotency key for a keyless (anonymous) booking
@@ -977,19 +980,18 @@ async function fire(
   // #459: the smoke test books real bookings on a hidden is_test bucket via the
   // key-authed API, so without this every smoke run would inject a synthetic lead
   // into Regal/Cadence and then cancel it. Every booking webhook passes through
-  // here, so this one gate covers created/cancelled/rescheduled/completed.
+  // here, so this one flag covers created/cancelled/rescheduled/completed.
   //
-  // Return rather than throw: this runs inside the outbox NOTIFY step, and a throw
-  // would mark the step failed and have the drain retry it forever. Suppressing at
-  // the source also means no webhook_deliveries row is written, so the retry, resend
-  // and replay sweeps (which have no bucket in scope) have nothing to pick up.
-  if (bucket.is_test) return;
-
+  // The delivery is still RECORDED and only the external POST is skipped (emit.ts).
+  // Dropping the emission entirely would erase the webhook_deliveries rows that
+  // scripts/smoke-create-resume.ts counts to prove the exactly-once dedupe survives
+  // a crash-resume on real Postgres.
   await deps.emitWebhook(
     booking.org_id,
     event,
     webhookPayload(deps, booking, bucket, eventType, reason),
     webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
+    bucket.is_test,
   );
 }
 
