@@ -42,6 +42,7 @@ import {
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
+import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
 import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
@@ -65,7 +66,14 @@ import type {
 
 type DeliveryRow = Pick<
   WebhookDelivery,
-  "id" | "endpoint_id" | "event" | "status" | "attempts" | "last_response" | "created_at"
+  | "id"
+  | "endpoint_id"
+  | "event"
+  | "status"
+  | "attempts"
+  | "last_response"
+  | "created_at"
+  | "suppressed"
 >;
 
 const AUDIT_LABEL: Record<string, string> = {
@@ -379,7 +387,9 @@ export default async function AdminPage({
     if (epList.length) {
       const { data: dels } = await db
         .from("webhook_deliveries")
-        .select("id, endpoint_id, event, status, attempts, last_response, created_at")
+        .select(
+          "id, endpoint_id, event, status, attempts, last_response, created_at, suppressed",
+        )
         .in(
           "endpoint_id",
           epList.map((e) => e.id),
@@ -1141,7 +1151,8 @@ export default async function AdminPage({
           <h2 className="mb-1 text-sm font-semibold">Webhook deliveries</h2>
           <p className="mb-3 text-xs text-fg-muted">
             The last {deliveries.length} delivery attempts. Resend re-fires one
-            immediately.
+            immediately. Test bucket bookings are recorded as &ldquo;not sent&rdquo;:
+            they never reach a downstream system, so they cannot be resent.
           </p>
           <form
             action={replayFailedWebhooks}
@@ -1182,48 +1193,51 @@ export default async function AdminPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {deliveries.map((d) => (
-                    <tr key={d.id} className="border-t border-border align-top">
-                      <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
-                        {new Date(d.created_at).toLocaleString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}
-                      </td>
-                      <td className="py-1.5 pr-3">{d.event}</td>
-                      <td
-                        className="max-w-[160px] truncate py-1.5 pr-3 text-fg-muted"
-                        title={endpointUrl.get(d.endpoint_id) ?? ""}
-                      >
-                        {endpointUrl.get(d.endpoint_id) ?? "?"}
-                      </td>
-                      <td className="py-1.5 pr-3">
-                        <Pill
-                          title={d.last_response ?? ""}
-                          variant={
-                            d.status === "success"
-                              ? "status-ok"
-                              : d.status === "failed"
-                                ? "status-error"
-                                : "status-pending"
-                          }
+                  {deliveries.map((d) => {
+                    const view = deliveryDisplay(d);
+                    return (
+                      <tr key={d.id} className="border-t border-border align-top">
+                        <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
+                          {new Date(d.created_at).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </td>
+                        <td className="py-1.5 pr-3">{d.event}</td>
+                        <td
+                          className="max-w-[160px] truncate py-1.5 pr-3 text-fg-muted"
+                          title={endpointUrl.get(d.endpoint_id) ?? ""}
                         >
-                          {d.status}
-                        </Pill>
-                      </td>
-                      <td className="py-1.5 pr-3 text-fg-muted tabular-nums">{d.attempts}</td>
-                      <td className="py-1.5">
-                        <form action={resendWebhookDelivery}>
-                          <input type="hidden" name="delivery_id" value={d.id} />
-                          <SubmitButton className={btnSecondaryCls} pendingLabel="Resending…">
-                            Resend
-                          </SubmitButton>
-                        </form>
-                      </td>
-                    </tr>
-                  ))}
+                          {endpointUrl.get(d.endpoint_id) ?? "?"}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <Pill
+                            title={view.hint ?? d.last_response ?? ""}
+                            variant={view.variant}
+                          >
+                            {view.label}
+                          </Pill>
+                        </td>
+                        <td className="py-1.5 pr-3 text-fg-muted tabular-nums">{d.attempts}</td>
+                        <td className="py-1.5">
+                          {view.resendable ? (
+                            <form action={resendWebhookDelivery}>
+                              <input type="hidden" name="delivery_id" value={d.id} />
+                              <SubmitButton className={btnSecondaryCls} pendingLabel="Resending…">
+                                Resend
+                              </SubmitButton>
+                            </form>
+                          ) : (
+                            // resendDelivery() refuses a suppressed row, so a button
+                            // here would be a no-op that looks like an action.
+                            <span className="text-xs text-fg-muted">Not resendable</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
