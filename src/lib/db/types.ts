@@ -247,6 +247,10 @@ export interface ReassignIntent {
   gcal_client_id: string;
   prev_agent_email: string | null;
   prev_gcal_event_id: string | null;
+  /** Set once the swap COMMITTED (#758). Null means the new event was never
+   *  adopted, which is what makes an abandoned intent a genuinely-lost reassign
+   *  rather than one that succeeded and was later superseded. */
+  swapped_at: string | null;
   lease_until: string;
   created_at: string;
 }
