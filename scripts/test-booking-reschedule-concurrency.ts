@@ -282,15 +282,17 @@ async function run() {
   }
 
   // --- abandoned-pin GC sweep (#439, #476): cleanup only ---
+  const OLD = "2026-06-09T10:00:00.000Z"; // where the booking still sits
+  const TARGET = "2026-06-09T14:00:00.000Z"; // where the reschedule meant to move it
   {
     const { deps, calls } = makeDeps({
       abandonedPins: [
         // never-adopted reassign pin -> enqueue its orphaned event, free the lock
-        { booking_id: "bk1", pinned_agent_email: "b@x.com", gcal_client_id: "slateorphan", branch: "reassign", booking_gcal_event_id: "gcal-old" },
+        { booking_id: "bk1", pinned_agent_email: "b@x.com", gcal_client_id: "slateorphan", branch: "reassign", booking_gcal_event_id: "gcal-old", target_starts_at: TARGET, booking_starts_at: OLD },
         // in-place pin -> no orphan event, just free the lock
-        { booking_id: "bk2", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-old", branch: "in_place", booking_gcal_event_id: "gcal-old" },
+        { booking_id: "bk2", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-old", branch: "in_place", booking_gcal_event_id: "gcal-old", target_starts_at: TARGET, booking_starts_at: OLD },
         // reassign pin that WAS adopted (client id == the live event) -> no enqueue
-        { booking_id: "bk3", pinned_agent_email: "c@x.com", gcal_client_id: "gcal-live", branch: "reassign", booking_gcal_event_id: "gcal-live" },
+        { booking_id: "bk3", pinned_agent_email: "c@x.com", gcal_client_id: "gcal-live", branch: "reassign", booking_gcal_event_id: "gcal-live", target_starts_at: TARGET, booking_starts_at: TARGET },
       ],
     });
     const res = await processAbandonedReschedulePins(deps, 0);
@@ -300,6 +302,49 @@ async function run() {
       "sweep: enqueues the orphaned reassign event for durable deletion",
     );
     assert(calls.releaseReschedule === 3, "sweep: frees every swept lock row");
+  }
+
+  // --- #757: the sweep must SAY when a reschedule was genuinely lost ---
+  // Cleanup alone is silent, so a crashed reschedule that never moved the booking
+  // vanished unnoticed. `dropped` counts the pins whose booking never reached the
+  // pinned target time; the caller alerts on it ("fail loud, not silent").
+  {
+    const { deps } = makeDeps({
+      abandonedPins: [
+        // Crashed reroute: booking never moved off its old time -> LOST.
+        { booking_id: "bk1", pinned_agent_email: "b@x.com", gcal_client_id: "slateorphan", branch: "reassign", booking_gcal_event_id: "gcal-old", target_starts_at: TARGET, booking_starts_at: OLD },
+        // Crashed in-place: same story, no orphan event to clean but still LOST.
+        { booking_id: "bk2", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-old", branch: "in_place", booking_gcal_event_id: "gcal-old", target_starts_at: TARGET, booking_starts_at: OLD },
+      ],
+    });
+    const res = await processAbandonedReschedulePins(deps, 0);
+    assert(res.dropped === 2, "sweep(#757): counts a lost reschedule on BOTH branches, not just the reroute");
+  }
+
+  // The false-positive case that decides whether this alert is trustworthy: the
+  // reschedule COMMITTED and only the lock release was lost. The booking is sitting
+  // at the target time, so nothing was dropped and nobody should be paged.
+  {
+    const { deps } = makeDeps({
+      abandonedPins: [
+        { booking_id: "bk1", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-live", branch: "in_place", booking_gcal_event_id: "gcal-live", target_starts_at: TARGET, booking_starts_at: TARGET },
+      ],
+    });
+    const res = await processAbandonedReschedulePins(deps, 0);
+    assert(res.swept === 1, "sweep(#757): still frees the stale lock");
+    assert(res.dropped === 0, "sweep(#757): a committed reschedule whose release was lost is NOT a dropped reschedule");
+  }
+
+  // The booking is gone entirely: there is no stranded reschedule to re-run, so
+  // this is cleanup, not a drop.
+  {
+    const { deps } = makeDeps({
+      abandonedPins: [
+        { booking_id: "bk1", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-old", branch: "in_place", booking_gcal_event_id: null, target_starts_at: TARGET, booking_starts_at: null },
+      ],
+    });
+    const res = await processAbandonedReschedulePins(deps, 0);
+    assert(res.dropped === 0, "sweep(#757): a vanished booking is not a dropped reschedule");
   }
 
   // --- reschedule: terminal states / not found ---

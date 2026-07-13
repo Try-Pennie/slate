@@ -137,6 +137,12 @@ export interface AbandonedReschedulePin {
   gcal_client_id: string | null;
   branch: "in_place" | "reassign" | null;
   booking_gcal_event_id: string | null;
+  /** Where the crashed reschedule meant to move the booking. */
+  target_starts_at: string;
+  /** Where the booking ACTUALLY sits now, so the sweep can tell a lost reschedule
+   *  from one that committed and merely failed to release its lock (#757). Null
+   *  when the booking no longer exists. */
+  booking_starts_at: string | null;
 }
 
 /**
@@ -1743,13 +1749,22 @@ export async function processBookingReservations(
  * for durable deletion, then delete the lock row. Cleanup ONLY — it never
  * completes or reassigns a booking, so it does not violate the "no completion
  * drain" decision. Runs on the existing /api/cron/outbox lane.
+ *
+ * `dropped` counts the pins whose reschedule was genuinely LOST: the booking never
+ * reached the pinned target time, so it is still sitting where it started and the
+ * move has to be re-run. The caller alerts on it, because cleaning this up in
+ * silence let a stranded reschedule vanish unnoticed (#757, "fail loud, not
+ * silent"). A pin whose booking DID reach the target is not dropped: that
+ * reschedule committed and only its lock release was lost, and alerting on it would
+ * cry wolf.
  */
 export async function processAbandonedReschedulePins(
   deps: BookingDeps,
   graceMs: number,
-): Promise<{ swept: number; enqueued: number }> {
+): Promise<{ swept: number; enqueued: number; dropped: number }> {
   const rows = await deps.loadAbandonedReschedulePins(graceMs);
   let enqueued = 0;
+  let dropped = 0;
   for (const row of rows) {
     if (
       row.branch === "reassign" &&
@@ -1759,9 +1774,18 @@ export async function processAbandonedReschedulePins(
       await deps.enqueueEventDeletion(row.pinned_agent_email, row.gcal_client_id, row.booking_id);
       enqueued += 1;
     }
+    // Compare instants, not strings: the DB and the pin can render the same moment
+    // with different ISO spellings (`+00:00` vs `Z`). A booking that no longer
+    // exists has no stranded reschedule to re-run, so it is cleanup, not a drop.
+    if (
+      row.booking_starts_at !== null &&
+      Date.parse(row.booking_starts_at) !== Date.parse(row.target_starts_at)
+    ) {
+      dropped += 1;
+    }
     await deps.releaseReschedule(row.booking_id);
   }
-  return { swept: rows.length, enqueued };
+  return { swept: rows.length, enqueued, dropped };
 }
 
 /**
