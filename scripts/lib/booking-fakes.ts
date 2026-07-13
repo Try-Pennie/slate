@@ -183,7 +183,13 @@ export function makeDeps(opts: FakeOpts) {
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
     deletedReservations: [] as string[],
     reservationBumps: [] as { id: string; attempts: number; lastError: string }[],
-    reassignSwaps: [] as { bookingId: string; userId: string; gcalEventId: string; prevGcal: string | null }[],
+    reassignSwaps: [] as {
+      bookingId: string;
+      userId: string;
+      gcalEventId: string;
+      gcalClientId: string;
+      prevGcal: string | null;
+    }[],
     webhooks: [] as {
       event: string;
       reason: unknown;
@@ -211,11 +217,16 @@ export function makeDeps(opts: FakeOpts) {
     removePendingEventDeletion: [] as string[],
     bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
     reassignIntents: [] as { bookingId: string; gcalClientId: string; pinnedAgentEmail: string }[],
-    reassignIntentPrev: [] as {
+    // #759: what the swap stamped onto the intent row INSIDE its own transaction. The
+    // real RPC does this in the same statement block as the booking update, so there is
+    // no window between the two; the fake records it from inside reassignSwap for the
+    // same reason.
+    reassignIntentStamps: [] as {
       bookingId: string;
       gcalClientId: string;
       prevAgentEmail: string | null;
       prevGcalEventId: string | null;
+      swappedAt: string;
     }[],
     reassignIntentDeletes: [] as { bookingId: string; gcalClientId: string }[],
   };
@@ -343,7 +354,15 @@ export function makeDeps(opts: FakeOpts) {
     moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
       calls.moveBusyBlock.push({ userId, startIso, endIso, bookingId });
     },
-    reassignSwap: async ({ bookingId, userId, agentName, agentEmail, gcalEventId, routingTrace }) => {
+    reassignSwap: async ({
+      bookingId,
+      userId,
+      agentName,
+      agentEmail,
+      gcalEventId,
+      gcalClientId,
+      routingTrace,
+    }) => {
       if (opts.reassignSwapThrows) throw new Error("rpc down");
       const ctx = [opts.bookingById, opts.existing].find((c) => c?.booking?.id === bookingId);
       const prev = ctx?.booking;
@@ -353,7 +372,17 @@ export function makeDeps(opts: FakeOpts) {
       }
       const prevGcal = prev.gcal_event_id ?? null;
       const prevEmail = prev.agent_email ?? null;
-      calls.reassignSwaps.push({ bookingId, userId, gcalEventId, prevGcal });
+      calls.reassignSwaps.push({ bookingId, userId, gcalEventId, gcalClientId, prevGcal });
+      // #759: the RPC stamps the intent in the SAME transaction as the booking update,
+      // so the fake records it here rather than in a separate dep the caller invokes
+      // afterwards. A crash cannot land between the two.
+      calls.reassignIntentStamps.push({
+        bookingId,
+        gcalClientId,
+        prevAgentEmail: prevEmail,
+        prevGcalEventId: prevGcal,
+        swappedAt: new Date().toISOString(),
+      });
       // Faithful stand-in for the fixed RPC (#519): seed from the ROW's current
       // trace (falling back to the caller base only when the row has none), derive
       // the record from the row (from = current agent under the lock, to = target),
@@ -471,9 +500,6 @@ export function makeDeps(opts: FakeOpts) {
         (r) => r.bookingId === bookingId && r.gcalClientId === gcalClientId,
       );
       if (!existing) calls.reassignIntents.push({ bookingId, gcalClientId, pinnedAgentEmail });
-    },
-    recordReassignIntentPrev: async (bookingId, gcalClientId, prevAgentEmail, prevGcalEventId) => {
-      calls.reassignIntentPrev.push({ bookingId, gcalClientId, prevAgentEmail, prevGcalEventId });
     },
     deleteReassignIntent: async (bookingId, gcalClientId) => {
       calls.reassignIntentDeletes.push({ bookingId, gcalClientId });

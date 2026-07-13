@@ -43,18 +43,53 @@ async function run() {
     );
   }
 
-  // --- after the swap, the replaced old event is recorded on the intent ---
+  // --- #759: the SWAP records the replaced event + swapped_at, atomically ---
+  // This used to be a separate write straight after the swap, which left a window: a
+  // crash in between lost the old event id (so the sweep could never clean the orphan)
+  // and left swapped_at unset on a swap that HAD committed, which the sweep then reads
+  // as a lost reassign and alerts on (#758). The stamp now rides inside the swap's own
+  // transaction, so it commits with the booking update or not at all.
   {
     const { deps, calls } = makeDeps({
       bookingById: { booking: makeBooking({ gcal_event_id: "gcal-old" }), bucket, eventType },
       agentByEmail: OWNER_B,
     });
     await reassignBooking("bk1", "b@x.com", SYS, deps);
+
     assert(
-      calls.reassignIntentPrev.length === 1 &&
-        calls.reassignIntentPrev[0].prevGcalEventId === "gcal-old",
-      "reassign-intent: the replaced old event is recorded on the intent after the swap",
+      calls.reassignSwaps[0]?.gcalClientId === calls.createEvent[0]?.clientId,
+      "#759: the swap is told WHICH intent row to stamp (not left to assume the event id matches)",
     );
+    const stamp = calls.reassignIntentStamps[0];
+    assert(
+      calls.reassignIntentStamps.length === 1 &&
+        stamp?.prevGcalEventId === "gcal-old" &&
+        stamp?.prevAgentEmail === "a@x.com",
+      "#759: the swap itself records the replaced old event on the intent",
+    );
+    assert(
+      stamp?.swappedAt !== null && stamp?.swappedAt !== undefined,
+      "#759: the swap itself stamps swapped_at, so a committed swap can never look never-adopted",
+    );
+  }
+
+  // The crash window, stated as a sequencing invariant: by the time ANY step after the
+  // swap runs, the intent is already recorded. There is no longer a separate write that
+  // a crash could land in front of.
+  {
+    const { deps, calls } = makeDeps({
+      bookingById: { booking: makeBooking({ gcal_event_id: "gcal-old" }), bucket, eventType },
+      agentByEmail: OWNER_B,
+    });
+    const origDelete = deps.deleteEvent;
+    deps.deleteEvent = async (email, id) => {
+      assert(
+        calls.reassignIntentStamps.length === 1,
+        "#759: the intent is already recorded before the delete-old runs (nothing to lose in a crash)",
+      );
+      return origDelete(email, id);
+    };
+    await reassignBooking("bk1", "b@x.com", SYS, deps);
   }
 
   // --- happy path deletes the intent (ephemeral; nothing left for the sweep) ---
