@@ -108,6 +108,9 @@ export interface Database {
           p_agent_email: string;
           p_gcal_event_id: string;
           p_routing_trace: RoutingTrace;
+          /** Which reassign_intents row the swap stamps with the replaced event +
+           *  swapped_at, in its own transaction (#759, migration 0069). */
+          p_gcal_client_id: string;
         };
         Returns: {
           prev_gcal_event_id: string | null;
