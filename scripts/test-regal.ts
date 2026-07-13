@@ -2,6 +2,7 @@
 // Run: node --experimental-strip-types scripts/test-regal.ts
 import { buildRegalEvent } from "../src/lib/webhooks/regal.ts";
 import type { BookingEventPayload } from "../src/lib/webhooks/types.ts";
+import type { WebhookEvent } from "../src/lib/db/types.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -192,6 +193,102 @@ assert(
       replayed.properties.slateBookedTier === null,
     "#492: a legacy payload reports unknown tiers as null, not undefined",
   );
+}
+
+// --- #779: the payload CONTRACT ------------------------------------------------
+// Regal's journeys key off exact property names. Renaming or dropping one silently
+// breaks a Regal automation, and the breakage is INVISIBLE from Slate's side: Regal
+// still returns a 200, so nothing here goes red and nothing alerts. Until now a
+// property could be deleted outright and this suite would stay green, because each
+// test only asserts the handful of properties it happens to name.
+//
+// So pin the whole key set. Adding a field is safe (Regal accepts arbitrary JSON in
+// `properties` and ignores what it does not use), which is why a NEW key is reported
+// as a soft note rather than a failure. Removing or renaming one is a CONTRACT BREAK
+// and fails: the rename shows up as a removal plus an addition, so it cannot slip by.
+//
+// Deliberately a key set, not a value snapshot: the payload embeds today's date
+// (`currentDayOfWeek`), so a value snapshot would be flaky, and a snapshot can be
+// blindly regenerated with `-u`. Editing this list has to be a conscious act.
+const BASE_KEYS = [
+  "type",
+  "bookingTitle",
+  "eventTitle",
+  "description",
+  "startTime",
+  "ownerEmail",
+  "agentName",
+  "agentFirstName",
+  "bookingId",
+  "salesforceId",
+  "bucketCode",
+  "status",
+  "location",
+  "slateBookingDayOfWeek",
+  "slateBookingTimeZone",
+  "slateBookingLocalTime",
+  "slateBookingDate",
+  "slateBookingLink",
+  "currentDayOfWeek",
+  // #492: lets Regal suppress its "Non-Ultra High Team Booking Detected" alert on an
+  // intentional tier drop. Removing these re-breaks that alert.
+  "slateTierFallback",
+  "slateEmptyPoolFallback",
+  "slateRequestedTier",
+  "slateBookedTier",
+  "slateRungsDropped",
+];
+
+// #326: reschedule and cancel each carry their own reason/initiator fields.
+const RESCHEDULE_KEYS = [
+  ...BASE_KEYS,
+  "rescheduleId",
+  "rescheduleReason",
+  "rescheduleReasonDetail",
+  "rescheduledBy",
+];
+const CANCEL_KEYS = [
+  ...BASE_KEYS,
+  "cancellationReason",
+  "cancellationReasonDetail",
+  "cancelledBy",
+];
+
+function checkContract(event: WebhookEvent, expected: string[]) {
+  const actual = Object.keys(buildRegalEvent(event, payload).properties);
+
+  const removed = expected.filter((k) => !actual.includes(k));
+  assert(
+    removed.length === 0,
+    `#779 CONTRACT: ${event} still sends every property Regal consumes` +
+      (removed.length ? ` (MISSING: ${removed.join(", ")} - a Regal journey keyed on these just broke, silently)` : ""),
+  );
+
+  // Additive is safe (Regal ignores unknown properties), so this is a note, not a
+  // failure. It exists so a new field is noticed and added to the list on purpose.
+  const added = actual.filter((k) => !expected.includes(k));
+  if (added.length) {
+    console.log(
+      `  note: ${event} gained ${added.join(", ")} - safe (Regal ignores unknown props), but add it to the contract list above.`,
+    );
+  }
+}
+
+checkContract("booking.created", BASE_KEYS);
+checkContract("booking.completed", BASE_KEYS);
+checkContract("booking.rescheduled", RESCHEDULE_KEYS);
+checkContract("booking.cancelled", CANCEL_KEYS);
+
+// The top-level envelope matters just as much: Regal routes on `name` and filters on
+// `eventSource`, and identity/opt-in ride in `traits`.
+for (const event of ["booking.created", "booking.rescheduled", "booking.cancelled", "booking.completed"] as WebhookEvent[]) {
+  const built = buildRegalEvent(event, payload);
+  assert(
+    typeof built.name === "string" && built.name.startsWith("Slate Booking "),
+    `#779 CONTRACT: ${event} keeps its 'Slate Booking ...' event name (Regal routes on it)`,
+  );
+  assert(built.eventSource === "slate", `#779 CONTRACT: ${event} keeps eventSource 'slate' (Regal filters on it)`);
+  assert(!!built.traits, `#779 CONTRACT: ${event} keeps its traits envelope (identity + opt-in)`);
 }
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
