@@ -450,6 +450,8 @@ export interface WebhookDelivery {
   status: DeliveryStatus;
   attempts: number;
   last_response: string | null;
+  /** Recorded but never POSTed (is_test bucket booking, #459). No send path may deliver it. */
+  suppressed: boolean;
   created_at: string;
   updated_at: string;
 }

@@ -8,6 +8,9 @@ import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 const WEBHOOK_TIMEOUT_MS = 5000;
 const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
 
+/** Stamped on a delivery that was recorded but deliberately never sent (#459). */
+const SUPPRESSED_RESPONSE = "suppressed: is_test bucket, external POST skipped (#459)";
+
 /**
  * Load-test short-circuit (#440): under SLATE_LOADTEST the delivery row is still
  * inserted (so the 200-agent soak exercises the dedupe unique index), but the
@@ -94,6 +97,7 @@ export async function emitWebhook(
   event: WebhookEvent,
   payload: BookingEventPayload,
   dedupeKey: string | null = null,
+  suppressed = false,
 ): Promise<void> {
   const db = supabaseAdmin();
   const { data: endpoints } = await db
@@ -111,8 +115,12 @@ export async function emitWebhook(
           endpoint_id: endpoint.id,
           event,
           payload: payload as unknown as Record<string, unknown>,
-          status: "pending",
+          // A suppressed delivery lands in a TERMINAL state, so the retry sweep
+          // (which picks up pending/failed) can never send it after the fact.
+          status: suppressed ? "success" : "pending",
           dedupe_key: dedupeKey,
+          suppressed,
+          last_response: suppressed ? SUPPRESSED_RESPONSE : null,
         })
         .select("id")
         .single();
@@ -120,9 +128,11 @@ export async function emitWebhook(
       // prior call: the original delivery owns the send/retry, so skip — never
       // double-fire. Any other insert error leaves no row, same as before.
       if (error) return;
-      if (delivery) {
-        await send(endpoint, (delivery as { id: string }).id, event, payload, 1);
-      }
+      if (!delivery) return;
+      // #459: the row is recorded (so the exactly-once dedupe stays observable on
+      // the smoke bucket) but nothing goes out the door.
+      if (suppressed) return;
+      await send(endpoint, (delivery as { id: string }).id, event, payload, 1);
     }),
   );
 }
@@ -159,6 +169,9 @@ export async function retryFailedDeliveries(): Promise<number> {
     .from("webhook_deliveries")
     .select("id, endpoint_id, event, payload, attempts, updated_at")
     .in("status", ["failed", "pending"])
+    // Belt and braces (#459): a suppressed row is already terminal ('success'), so
+    // it can't match the status filter, but never sweep one into a POST.
+    .eq("suppressed", false)
     .lt("attempts", WEBHOOK_MAX_ATTEMPTS)
     .limit(100);
 
@@ -205,7 +218,7 @@ export async function resendDelivery(deliveryId: string, orgId: string): Promise
   const db = supabaseAdmin();
   const { data: d } = await db
     .from("webhook_deliveries")
-    .select("id, endpoint_id, event, payload, attempts")
+    .select("id, endpoint_id, event, payload, attempts, suppressed")
     .eq("id", deliveryId)
     .maybeSingle();
   if (!d) return;
@@ -215,7 +228,11 @@ export async function resendDelivery(deliveryId: string, orgId: string): Promise
     event: WebhookEvent;
     payload: BookingEventPayload;
     attempts: number;
+    suppressed: boolean;
   };
+  // #459: a suppressed delivery (an is_test bucket's booking) must never leave the
+  // building, so the admin resend button can't leak a smoke booking into Regal.
+  if (row.suppressed) return;
 
   const { data: endpoint } = await db
     .from("webhook_endpoints")
@@ -262,6 +279,7 @@ export async function replayDeadLetteredDeliveries(
     .select("id, endpoint_id, event, payload, attempts, status")
     .in("endpoint_id", [...byId.keys()])
     .eq("status", "failed")
+    .eq("suppressed", false) // #459: never replay a suppressed (is_test) delivery
     .gte("attempts", WEBHOOK_MAX_ATTEMPTS)
     .gte("created_at", sinceIso)
     .order("created_at", { ascending: true })
