@@ -163,6 +163,18 @@ as their normal error code (e.g. `NO_ELIGIBLE_AGENTS`), so a dry run is a safe w
 to check that a bucket is bookable. A dry run is side-effect-free and does not
 alert.
 
+### Test buckets emit no webhooks (#459)
+
+A key-authed caller may book a hidden `is_test` bucket (that is how the smoke test
+books a real booking against a real calendar). Those bookings are **fully real
+everywhere except downstream**: they create the calendar event, hold the slot, and
+record history exactly like a lead's booking, but they emit **no** webhooks at all,
+on any event (created, rescheduled, cancelled, completed). So a smoke run never
+injects a synthetic lead into Regal or Cadence, and never cancels one there either.
+
+This is a property of the bucket, not of the caller: flag a bucket `is_test` and
+nothing booked on it can reach a downstream system.
+
 ### Idempotency
 
 Retrying with the same `externalId` + slot is safe: the same call dedupes to the
