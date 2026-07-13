@@ -974,6 +974,17 @@ async function fire(
   reason: BookingReasonMeta | null = null,
   bookingEventId: string | null = null,
 ): Promise<void> {
+  // #459: the smoke test books real bookings on a hidden is_test bucket via the
+  // key-authed API, so without this every smoke run would inject a synthetic lead
+  // into Regal/Cadence and then cancel it. Every booking webhook passes through
+  // here, so this one gate covers created/cancelled/rescheduled/completed.
+  //
+  // Return rather than throw: this runs inside the outbox NOTIFY step, and a throw
+  // would mark the step failed and have the drain retry it forever. Suppressing at
+  // the source also means no webhook_deliveries row is written, so the retry, resend
+  // and replay sweeps (which have no bucket in scope) have nothing to pick up.
+  if (bucket.is_test) return;
+
   await deps.emitWebhook(
     booking.org_id,
     event,
