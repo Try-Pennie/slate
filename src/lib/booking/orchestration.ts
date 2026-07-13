@@ -500,6 +500,12 @@ export interface BookingDeps {
   ): Promise<Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[]>;
   /** Status of each booking by id (absent from the map = the booking is gone). */
   loadBookingStatuses(bookingIds: string[]): Promise<Map<string, BookingStatus>>;
+  /**
+   * Of these bookings, the ones whose CANCEL is still being delivered (a `pending`
+   * cancel row in the outbox). Their busy_block is queued for deletion by a step
+   * that simply has not run yet, so they are mid-flight, not damaged (#784).
+   */
+  loadInflightCancelBookingIds(bookingIds: string[]): Promise<Set<string>>;
   /** Delete busy_blocks by id (the reconcile sweep's targeted cleanup). */
   deleteBusyBlocksByIds(ids: string[]): Promise<void>;
   /**
@@ -746,6 +752,15 @@ const ACTIVE_BUSY_STATUSES: ReadonlySet<BookingStatus> = new Set<BookingStatus>(
  * `gcal` mirror is NEVER freed (it tracks a real external-calendar event;
  * freeing it would reopen a slot the agent is genuinely busy on, risking a
  * double-book), and an active booking's row is kept.
+ *
+ * It also leaves alone a cancel that is still DELIVERING (#784). The cancel claims
+ * the status flip first and deletes the block later, as an outbox step queued behind
+ * a slow Google delete, so a healthy in-flight cancel is indistinguishable here from
+ * a missed delete. Freeing it was harmless (the step would have deleted the row
+ * anyway) but it was then reported as damage, and the caller's Slack alert told
+ * whoever read it to "check cancel-path health" on a cancel path that was working.
+ * Once the outbox row is delivered, a block that STILL exists is a genuine miss, and
+ * this sweep is exactly what heals it.
  */
 export async function reconcileCancelledBusyBlocks(
   deps: BookingDeps,
@@ -760,13 +775,18 @@ export async function reconcileCancelledBusyBlocks(
         .map((r) => r.booking_id as string),
     ),
   ];
-  const statuses = bookingIds.length
-    ? await deps.loadBookingStatuses(bookingIds)
-    : new Map<string, BookingStatus>();
+  const [statuses, inflightCancels] = bookingIds.length
+    ? await Promise.all([
+        deps.loadBookingStatuses(bookingIds),
+        deps.loadInflightCancelBookingIds(bookingIds),
+      ])
+    : [new Map<string, BookingStatus>(), new Set<string>()];
 
   const stuck = rows.filter((r) => {
     if (r.source !== "slate") return false; // never free a gcal mirror
     if (r.booking_id === null) return true; // orphan: no booking owns this slot
+    // The cancel's own busy_block delete is still queued: not damage, just in flight.
+    if (inflightCancels.has(r.booking_id)) return false;
     const status = statuses.get(r.booking_id);
     // Missing booking (not in the map) or an explicitly cancelled one is stuck;
     // anything still active stays busy.

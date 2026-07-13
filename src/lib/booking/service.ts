@@ -733,6 +733,31 @@ function realDeps(): BookingDeps {
       return map;
     },
 
+    // #784: bookings whose cancel is still being delivered. Their busy_block delete
+    // is a `pending` outbox step that simply has not run yet, so the block is in
+    // flight, not stuck, and freeing + reporting it slandered a healthy cancel path.
+    loadInflightCancelBookingIds: async (bookingIds) => {
+      if (bookingIds.length === 0) return new Set<string>();
+      const { data, error } = await supabaseAdmin()
+        .from("booking_outbox")
+        .select("booking_id")
+        .eq("action", "cancel")
+        .eq("status", "pending")
+        .in("booking_id", bookingIds);
+      if (error) {
+        // Fail safe toward NOT sweeping: an empty set on a read blip would make
+        // every in-flight cancel look stuck again, which is the exact false-alert
+        // this guard exists to stop. Throw so the sweep aborts this tick; the next
+        // tick retries, and an unfreed slot merely stays busy a minute longer.
+        throw new Error(`reconcile: loadInflightCancelBookingIds failed: ${error.message}`);
+      }
+      return new Set(
+        ((data ?? []) as { booking_id: string | null }[])
+          .map((r) => r.booking_id)
+          .filter((id): id is string => id !== null),
+      );
+    },
+
     deleteBusyBlocksByIds: async (ids) => {
       if (ids.length === 0) return;
       const { error } = await supabaseAdmin()
