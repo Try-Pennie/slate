@@ -135,6 +135,18 @@ if (outboxActionAdd) {
     /p_gcal_client_id/i.test(fn),
     "#759: the swap is told WHICH intent row to stamp, rather than assuming the event id matches",
   );
+
+  // #789: the 6-arg overload 0069 had to leave behind (the deployed code still called
+  // it mid-rollout) must not outlive that rollout. It still WORKS, and it silently does
+  // NOT stamp the intent, so any caller that reached it again would quietly reinstate
+  // the orphan-and-false-alert bug #759 fixed. Dead code that still runs is worse than
+  // dead code that doesn't.
+  assert(
+    /drop function if exists reassign_booking_swap\s*\(\s*uuid\s*,\s*uuid\s*,\s*text\s*,\s*text\s*,\s*text\s*,\s*jsonb\s*\)/i.test(
+      sql,
+    ),
+    "#789: the superseded 6-arg reassign_booking_swap is dropped (only the intent-stamping one survives)",
+  );
 }
 
 // The hand-written RPC arg types in src/lib/db/schema.ts must match the function
