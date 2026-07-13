@@ -1125,20 +1125,28 @@ function realDeps(): BookingDeps {
       const cutoff = new Date(Date.now() - graceMs).toISOString();
       const { data: rows } = await db
         .from("reschedule_locks")
-        .select("booking_id, pinned_agent_email, gcal_client_id, branch")
+        .select("booking_id, pinned_agent_email, gcal_client_id, branch, target_starts_at")
         .lt("lease_until", cutoff)
         .not("gcal_client_id", "is", null);
       const locks = rows ?? [];
       if (locks.length === 0) return [];
       const ids = locks.map((r) => r.booking_id);
-      const { data: bks } = await db.from("bookings").select("id, gcal_event_id").in("id", ids);
-      const liveById = new Map((bks ?? []).map((b) => [b.id, b.gcal_event_id]));
+      // starts_at rides along so the sweep can tell a LOST reschedule (the booking
+      // never reached the target time) from one that committed and only failed to
+      // release its lock (#757).
+      const { data: bks } = await db
+        .from("bookings")
+        .select("id, gcal_event_id, starts_at")
+        .in("id", ids);
+      const liveById = new Map((bks ?? []).map((b) => [b.id, b]));
       return locks.map((r) => ({
         booking_id: r.booking_id,
         pinned_agent_email: r.pinned_agent_email ?? "",
         gcal_client_id: r.gcal_client_id,
         branch: r.branch,
-        booking_gcal_event_id: liveById.get(r.booking_id) ?? null,
+        booking_gcal_event_id: liveById.get(r.booking_id)?.gcal_event_id ?? null,
+        target_starts_at: r.target_starts_at,
+        booking_starts_at: liveById.get(r.booking_id)?.starts_at ?? null,
       }));
     },
 
@@ -1857,19 +1865,36 @@ export async function drainBookingReservations() {
  * GC abandoned reschedule lease-pins (#439, milestone #7) on the /api/cron/outbox
  * lane. Cleanup ONLY — enqueues a never-adopted reassign event for deletion and
  * frees the stale lock; it never completes or reassigns a booking.
+ *
+ * ALERTS on a genuinely-lost reschedule (`dropped > 0`), like the #518 reassign
+ * sweep it sits beside: cleaning one up in silence let a crashed, never-retried
+ * reschedule vanish while the booking quietly stayed at its original time (#757).
+ * A pin whose booking DID reach its target is not counted, so a merely-unreleased
+ * lock stays quiet.
  */
 export async function sweepAbandonedReschedulePins() {
-  return orchestration.processAbandonedReschedulePins(realDeps(), ABANDONED_PIN_GRACE_MS);
+  const result = await orchestration.processAbandonedReschedulePins(
+    realDeps(),
+    ABANDONED_PIN_GRACE_MS,
+  );
+  if (result.dropped > 0) {
+    await sendThrottledAlert(
+      "reschedule_pin_dropped",
+      DRAIN_ALERT_COOLDOWN_MS,
+      `Slate: ${result.dropped} reschedule(s) were abandoned mid-flight (crash before the move committed) and cleaned up by the sweep. The booking(s) are STILL AT THEIR ORIGINAL TIME; the requested move did NOT happen, and the attendee may believe it did. Re-run the reschedule. Diagnose via the reschedule_locks table + booking_events.`,
+    ).catch(() => {});
+  }
+  return result;
 }
 
 /**
  * GC abandoned standalone-reassign create intents (#518) on the /api/cron/outbox
  * lane. Cleanup ONLY: deletes the orphaned event(s) and frees the stale intent;
  * it never completes/reassigns (resume is a verified trap, see
- * processAbandonedReassignIntents). Unlike the reschedule sweep it ALERTS when it
- * finds a genuinely-lost reassign (`dropped > 0`): the machine contact-owner
- * override caller has no human retry loop, so a silently-dropped reassignment
- * would otherwise vanish ("fail loud, not silent").
+ * processAbandonedReassignIntents). ALERTS when it finds a genuinely-lost reassign
+ * (`dropped > 0`): the machine contact-owner override caller has no human retry
+ * loop, so a silently-dropped reassignment would otherwise vanish ("fail loud, not
+ * silent"). The reschedule sweep beside it now does the same (#757).
  */
 export async function sweepAbandonedReassignIntents() {
   const result = await orchestration.processAbandonedReassignIntents(
