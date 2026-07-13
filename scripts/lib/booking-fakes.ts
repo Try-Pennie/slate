@@ -336,9 +336,6 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.insertBookingFails) return { ok: false, conflict: false };
       return { ok: true, booking: { ...row, id: "bk-new" } as unknown as Booking };
     },
-    insertBusyBlock: async (block) => {
-      calls.insertBusyBlock.push(block);
-    },
     insertBusyBlocks: async (blocks) => {
       calls.insertBusyBlocks++;
       for (const b of blocks) calls.insertBusyBlock.push(b);

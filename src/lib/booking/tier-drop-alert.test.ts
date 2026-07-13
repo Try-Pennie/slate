@@ -120,7 +120,6 @@ function makeTierDropDeps(): BookingDeps {
       ok: true as const,
       booking: { ...row, id: "bk-new" } as unknown as Booking,
     }),
-    insertBusyBlock: noop,
     insertBusyBlocks: noop,
     moveBusyBlock: noop,
     reassignSwap: async () => ({ prevGcalEventId: null, prevAgentEmail: null, updated: true }),
