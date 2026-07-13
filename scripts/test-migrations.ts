@@ -108,5 +108,34 @@ if (outboxActionAdd) {
   );
 }
 
+// #759: the reassign swap must record the REPLACED event and the fact that it
+// committed onto the intent row INSIDE its own transaction. Doing it as a separate
+// write after the swap left a window: a crash in between lost the old event id (so
+// the sweep could never clean the orphan) and, since #758, left swapped_at unset on a
+// committed swap, which the sweep then reads as a LOST reassign and alerts on. The
+// booking update and the intent stamp have to commit together or not at all.
+{
+  const fn =
+    sql.match(/create or replace function reassign_booking_swap[\s\S]*?\$\$;/gi)?.at(-1) ?? "";
+  assert(
+    /update reassign_intents/i.test(fn),
+    "#759: reassign_booking_swap records the intent inside the swap transaction",
+  );
+  assert(
+    /swapped_at\s*=\s*now\(\)/i.test(fn),
+    "#759: the swap stamps swapped_at itself, so a committed swap can never look never-adopted",
+  );
+  for (const col of ["prev_agent_email", "prev_gcal_event_id"]) {
+    assert(
+      new RegExp(`${col}\\s*=`, "i").test(fn),
+      `#759: the swap records ${col} atomically (no separate write to lose in a crash)`,
+    );
+  }
+  assert(
+    /p_gcal_client_id/i.test(fn),
+    "#759: the swap is told WHICH intent row to stamp, rather than assuming the event id matches",
+  );
+}
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

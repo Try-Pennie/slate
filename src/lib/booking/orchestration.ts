@@ -466,12 +466,23 @@ export interface BookingDeps {
    * booking is terminal (cancelled/completed), so the caller cleans up the event
    * it optimistically created.
    */
+  /**
+   * Atomic swap: moves the booking to the new agent/event AND stamps the intent row
+   * with the event this swap replaced plus `swapped_at`, in ONE transaction (#759).
+   * The stamp used to be a separate write right after this call, which a crash could
+   * land in front of: that lost the old event id (orphan never cleaned) and left a
+   * committed swap looking never-adopted, which the sweep alerts on as a lost
+   * reassign (#758). Same transaction, so it commits with the swap or not at all.
+   */
   reassignSwap(args: {
     bookingId: string;
     userId: string;
     agentName: string | null;
     agentEmail: string;
     gcalEventId: string;
+    /** Which intent row to stamp. Passed explicitly rather than assumed equal to
+     *  `gcalEventId` (it is today) so the stamp can never silently match zero rows. */
+    gcalClientId: string;
     // The base trace, used ONLY to seed the row's trace when it has none yet.
     // When the row has a trace, the swap appends the reassignment record onto the
     // row's own current history server-side under the lock (#519), so this array
@@ -621,14 +632,6 @@ export interface BookingDeps {
     pinnedAgentEmail: string;
     gcalClientId: string;
   }): Promise<void>;
-  /** After a committed swap, record the REPLACED old event on the intent (#518)
-   *  so the sweep finishes the delete-old if the inline delete is interrupted. */
-  recordReassignIntentPrev(
-    bookingId: string,
-    gcalClientId: string,
-    prevAgentEmail: string | null,
-    prevGcalEventId: string | null,
-  ): Promise<void>;
   /** Delete the reassign intent once the create+swap+delete-old completed (#518). */
   deleteReassignIntent(bookingId: string, gcalClientId: string): Promise<void>;
   /** Reassign intents past `lease_until + graceMs`, each with the booking's live
@@ -2706,6 +2709,7 @@ export async function reassignBooking(
       agentName: agent.name,
       agentEmail: agent.email,
       gcalEventId: newEventId,
+      gcalClientId,
       routingTrace: baseTrace,
     });
   } catch (err) {
@@ -2726,15 +2730,11 @@ export async function reassignBooking(
     throw new BookingNotChangeableError();
   }
 
-  // #518: record the REPLACED old event on the intent BEFORE deleting it, so a
-  // crash during the delete-old below leaves a durable record and the sweep
-  // finishes the deletion (closes the symmetric old-event orphan window).
-  await deps.recordReassignIntentPrev(
-    booking.id,
-    gcalClientId,
-    swap.prevAgentEmail,
-    swap.prevGcalEventId,
-  );
+  // The intent is ALREADY stamped with the replaced event + swapped_at: the swap did
+  // it in its own transaction (#759). It used to be a separate write here, which a
+  // crash could land in front of, losing the old event id (the sweep could then never
+  // clean the orphan) and leaving a committed swap looking never-adopted to the sweep,
+  // which pages about it as a lost reassign (#758).
 
   // Delete the event the swap REPLACED - the genuinely-current one at swap time,
   // not the stale read - so no calendar event is ever left dangling. Skip when a
