@@ -272,7 +272,7 @@ export type { BookingActor } from "@/lib/booking/core";
  * missed insert lets the embed keep offering a booked slot until sync mirrors the
  * Google event (~1 min). Retry once, then log + throttled Slack alert.
  */
-async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Promise<void> {
+export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Promise<void> {
   if (blocks.length === 0) return;
 
   let { error } = await supabaseAdmin().from("busy_blocks").insert(blocks);
