@@ -1196,7 +1196,15 @@ function realDeps(): BookingDeps {
     recordReassignIntentPrev: async (bookingId, gcalClientId, prevAgentEmail, prevGcalEventId) => {
       await supabaseAdmin()
         .from("reassign_intents")
-        .update({ prev_agent_email: prevAgentEmail, prev_gcal_event_id: prevGcalEventId })
+        .update({
+          prev_agent_email: prevAgentEmail,
+          prev_gcal_event_id: prevGcalEventId,
+          // #758: this call only ever runs AFTER a committed swap, so it is the
+          // honest place to record that the swap committed. prev_gcal_event_id can't
+          // carry that fact (it is legitimately null when the booking had no prior
+          // event), and without it the sweep reads a superseded reassign as a lost one.
+          swapped_at: new Date().toISOString(),
+        })
         .eq("booking_id", bookingId)
         .eq("gcal_client_id", gcalClientId);
     },
@@ -1212,7 +1220,9 @@ function realDeps(): BookingDeps {
       const cutoff = new Date(Date.now() - graceMs).toISOString();
       const { data: rows } = await db
         .from("reassign_intents")
-        .select("booking_id, pinned_agent_email, gcal_client_id, prev_agent_email, prev_gcal_event_id")
+        .select(
+          "booking_id, pinned_agent_email, gcal_client_id, prev_agent_email, prev_gcal_event_id, swapped_at",
+        )
         .lt("lease_until", cutoff);
       const intents = rows ?? [];
       if (intents.length === 0) return [];
@@ -1225,6 +1235,9 @@ function realDeps(): BookingDeps {
         gcal_client_id: r.gcal_client_id,
         prev_agent_email: r.prev_agent_email ?? null,
         prev_gcal_event_id: r.prev_gcal_event_id ?? null,
+        // #758: only a COMMITTED swap stamps this, so null still reads as "never
+        // adopted" and keeps the fail-loud alert for a genuinely-lost reassign.
+        swapped_at: r.swapped_at ?? null,
         booking_gcal_event_id: liveById.get(r.booking_id) ?? null,
       }));
     },

@@ -159,6 +159,9 @@ export interface AbandonedReassignIntent {
   gcal_client_id: string;
   prev_agent_email: string | null;
   prev_gcal_event_id: string | null;
+  /** When the swap COMMITTED, or null if it never did (#758). The difference between
+   *  a reassign that was LOST and one that succeeded and was later superseded. */
+  swapped_at: string | null;
   booking_gcal_event_id: string | null;
 }
 
@@ -1833,12 +1836,16 @@ export async function processAbandonedReassignIntents(
   let dropped = 0;
   for (const row of rows) {
     const live = row.booking_gcal_event_id;
-    // The NEW event: not adopted (booking never moved onto it) => the reassign
-    // crashed before the swap and was lost. Delete the orphan and flag dropped.
+    // The NEW event is not the live one, so it is an orphan either way: delete it.
+    // But whether that means the reassign was LOST depends on whether its swap ever
+    // committed (#758). A committed swap that a LATER reassign superseded also leaves
+    // its event non-live, and calling that "silently lost, re-run it" is a false alarm
+    // for a reassign that actually happened. `swapped_at` is written only after the
+    // swap commits, so it separates the two; null still means never adopted => lost.
     if (row.gcal_client_id !== live) {
       await deps.enqueueEventDeletion(row.pinned_agent_email, row.gcal_client_id, row.booking_id);
       enqueued += 1;
-      dropped += 1;
+      if (row.swapped_at === null) dropped += 1;
     }
     // The REPLACED old event (recorded post-swap): if it isn't the live event,
     // the swap committed (reassign succeeded) but the inline delete-old was

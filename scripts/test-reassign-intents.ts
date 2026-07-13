@@ -122,6 +122,7 @@ async function run() {
       gcal_client_id: "gcal-new-orphan",
       prev_agent_email: null,
       prev_gcal_event_id: null,
+      swapped_at: null, // the swap never committed => genuinely lost
       booking_gcal_event_id: "gcal-old", // booking still on the old event => not adopted
     };
     const { deps, calls } = makeDeps({ abandonedReassignIntents: [intent] });
@@ -152,6 +153,7 @@ async function run() {
       gcal_client_id: "gcal-new",
       prev_agent_email: "a@x.com",
       prev_gcal_event_id: "gcal-old",
+      swapped_at: "2026-07-13T12:00:00.000Z",
       booking_gcal_event_id: "gcal-new", // booking adopted the new event => reassign succeeded
     };
     const { deps, calls } = makeDeps({ abandonedReassignIntents: [intent] });
@@ -176,6 +178,7 @@ async function run() {
       gcal_client_id: "gcal-live",
       prev_agent_email: null,
       prev_gcal_event_id: null,
+      swapped_at: null,
       booking_gcal_event_id: "gcal-live", // the intent's event IS the live one
     };
     const { deps, calls } = makeDeps({ abandonedReassignIntents: [intent] });
@@ -187,6 +190,60 @@ async function run() {
     assert(
       calls.reassignIntentDeletes.length === 1,
       "reassign-sweep: the stale intent row is still removed",
+    );
+  }
+
+  // --- SWEEP (#758): ADOPTED-THEN-SUPERSEDED is not a dropped reassign ---
+  // The chained crash: reassign #1 committed its swap and recorded prev, then crashed
+  // before deleting its intent. Reassign #2 then moved the booking to a THIRD agent
+  // before the sweep ran. Intent #1's new event is no longer the live one, which used
+  // to be read as "never adopted" -> dropped -> a Slack alert saying a reassign was
+  // silently lost and must be re-run. It was not lost. It succeeded and was superseded.
+  // `swapped_at` is written ONLY after a committed swap, so it tells the two apart.
+  {
+    const intent: AbandonedReassignIntent = {
+      booking_id: "bk1",
+      pinned_agent_email: "b@x.com",
+      gcal_client_id: "gcal-new-1",
+      prev_agent_email: "a@x.com",
+      prev_gcal_event_id: "gcal-old",
+      swapped_at: "2026-07-13T12:00:00.000Z", // the swap COMMITTED
+      booking_gcal_event_id: "gcal-new-2", // ...but a later reassign moved it on again
+    };
+    const { deps, calls } = makeDeps({ abandonedReassignIntents: [intent] });
+    const result = await processAbandonedReassignIntents(deps, 0);
+    assert(
+      result.dropped === 0,
+      "reassign-sweep(#758): an adopted-then-superseded reassign is NOT counted as dropped",
+    );
+    // Cleanup is unchanged: the superseded event is still an orphan worth deleting.
+    assert(
+      calls.enqueueEventDeletion.some((c) => c.eventId === "gcal-new-1"),
+      "reassign-sweep(#758): still cleans up the superseded event",
+    );
+    assert(
+      calls.reassignIntentDeletes.length === 1,
+      "reassign-sweep(#758): still removes the stale intent row",
+    );
+  }
+
+  // The signal must stay LOUD for the case it exists for: a swap that never committed
+  // is still a genuinely-lost reassign, even once a later reassign moved the booking.
+  {
+    const intent: AbandonedReassignIntent = {
+      booking_id: "bk1",
+      pinned_agent_email: "b@x.com",
+      gcal_client_id: "gcal-never-adopted",
+      prev_agent_email: null,
+      prev_gcal_event_id: null,
+      swapped_at: null, // never committed
+      booking_gcal_event_id: "gcal-somewhere-else",
+    };
+    const { deps } = makeDeps({ abandonedReassignIntents: [intent] });
+    const result = await processAbandonedReassignIntents(deps, 0);
+    assert(
+      result.dropped === 1,
+      "reassign-sweep(#758): a never-committed reassign is STILL counted as dropped",
     );
   }
 }
