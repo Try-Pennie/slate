@@ -29,6 +29,8 @@ import {
 } from "@/lib/monitor/booking-volume";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
+import { runMigrationDriftCheck, readAppliedMigrationVersion } from "@/lib/monitor/migration-drift";
+import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
@@ -310,6 +312,25 @@ export async function GET(req: NextRequest) {
       log: (m) => log.info("thin-tier", { msg: m }),
     });
 
+    // Schema behind the deployed code (#516). Deploys do not apply migrations, so
+    // code can go live expecting a column, table, or function the database lacks;
+    // the failure is usually silent (0055 left the dead-man's switch dormant for a
+    // whole session). CI guards merge time, this guards PROD. Cheap: one RPC.
+    // A read that fails pages as "unverified" rather than passing as healthy.
+    const migrationStatus = await runMigrationDriftCheck({
+      shippedVersion: SHIPPED_MIGRATION_VERSION,
+      readAppliedVersion: readAppliedMigrationVersion,
+      notify: sendThrottledAlert,
+      cooldownMs: settings.cooldownMs.migration_version_lag,
+      log: (msg, status, applied) =>
+        log.info("migration-drift", {
+          msg,
+          status,
+          shipped: SHIPPED_MIGRATION_VERSION,
+          applied,
+        }),
+    });
+
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
@@ -326,6 +347,7 @@ export async function GET(req: NextRequest) {
       codes: page,
       fallbackCovered: covered,
       thinTiers: thinTierCount,
+      migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       truncated,
       volume,
     });

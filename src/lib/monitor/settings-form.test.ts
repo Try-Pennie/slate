@@ -1,19 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { parseMonitorSettingsForm } from "./settings";
+import { ALERT_KEYS, parseMonitorSettingsForm, type MonitorAlertKey } from "./settings";
 
 // #571 red-team S1: a blank field must revert to fallback by storing an explicit
 // NULL, never the number 0 (a blanked floor of 0 would permanently mute the
 // low-volume alert). Invalid values are rejected with an error, not silently
 // coerced. This pure parser owns that; the server action just calls it.
 
+// Derived from ALERT_KEYS rather than listed by hand, so adding an alert key
+// (#516 added migration_version_lag) does not break every fixture below.
 const blank = {
-  cooldownMin: {
-    availability_data_anomaly: "",
-    availability_booked_solid: "",
-    fallback_covered_availability: "",
-    low_booking_volume: "",
-    thin_tier_staffing: "",
-  },
+  cooldownMin: Object.fromEntries(ALERT_KEYS.map((k) => [k, ""])) as Record<
+    MonitorAlertKey,
+    string
+  >,
   floor30: "",
   floor120: "",
   alertsChannel: "",

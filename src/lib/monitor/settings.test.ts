@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  ALERT_FIELDS,
+  ALERT_KEYS,
   MONITOR_DEFAULTS,
   resolveCooldownMs,
   resolveFloors,
@@ -9,6 +11,27 @@ import {
 // store, with precedence store > env > coded default. These pure resolvers own
 // that precedence + validation; an empty/garbage store must fall through cleanly
 // so alerting never breaks. No DB here — the DB read is a thin wrapper elsewhere.
+
+describe("alert keys", () => {
+  it("includes the migration-lag page and defaults it to an hourly repeat (#516)", () => {
+    expect(ALERT_KEYS).toContain("migration_version_lag");
+    // It stays broken until a human applies the migration, and a dormant schema
+    // gap has twice gone unnoticed for a whole session, so it keeps asking hourly
+    // rather than whispering once.
+    expect(MONITOR_DEFAULTS.cooldownMs.migration_version_lag).toBe(60 * 60_000);
+    expect(resolveCooldownMs([]).migration_version_lag).toBe(60 * 60_000);
+  });
+
+  it("gives every alert key an admin field, and every field a real key", () => {
+    // A key with no field is a cooldown nobody can tune; a field with no key is a
+    // control that silently does nothing. Both have to be impossible.
+    expect(ALERT_FIELDS.map((f) => f.key).sort()).toEqual([...ALERT_KEYS].sort());
+    for (const f of ALERT_FIELDS) {
+      expect(f.label.length).toBeGreaterThan(0);
+      expect(f.help.length).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("resolveCooldownMs", () => {
   it("uses the coded default when the store has no row for a key", () => {
