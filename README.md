@@ -122,6 +122,17 @@ Every event therefore carries how it was routed, so a consumer can tell the two 
 still alerts. Without that, the alert fires on every intentional drop and stops being
 trusted.
 
+**One caveat on replays.** An admin resend and the dead-letter replay rebuild the event
+from the *stored* payload, and bookings written before this signal shipped (2026-07-13)
+have no routing summary at all. Those degrade to "nothing unusual happened"
+(`slateTierFallback: false`) rather than failing the replay, so resending an old booking
+that *was* an intentional drop can trip the alert once. It only affects manual resends of
+pre-2026-07-13 bookings.
+
+`src/lib/webhooks/regal.test.ts` is the regression lock on this contract: the properties
+above are only useful if they actually reach Regal, and the original bug was that they
+silently did not.
+
 ## Embed
 
 ```html
