@@ -69,9 +69,30 @@ a 10,000 ceiling, but it is a real CPU contributor worth capping.
 
 ## Reading the logs: the key trap that fakes a total outage
 
-**Cloudflare DOES capture `console.error` and `console.warn`**, at level `error` /
-`warn`, with the `Error` object serialized. Verified in production (#708) with a
-canary that logged a unique token and read it back.
+**Cloudflare captures every console method. Nothing is dropped.** Measured in
+production (#801) with a canary that emitted 50 tagged lines per method across 5
+invocations of the deployed Worker: **250 of 250 came back, a 100% capture rate at
+every level.**
+
+| method | captured | `level` on the row |
+|--------------------|---------|--------------------|
+| `console.debug`    | 50 / 50 | `debug`            |
+| `console.log`      | 50 / 50 | **none**           |
+| `console.info`     | 50 / 50 | `info`             |
+| `console.warn`     | 50 / 50 | `warn`             |
+| `console.error`    | 50 / 50 | `error`            |
+
+**The trap is `console.log`: it is stored, but it lands with NO `level` field.** So
+any query that filters or groups on level silently drops every `console.log` line,
+and you get zero rows from output that is sitting right there. That is what the
+#708 canary walked into when it concluded `console.log` "did not survive" (a single
+observation, read through a level filter).
+
+Because of that, **`console.log` is banned in `src/`** by an ESLint rule
+(`no-restricted-properties`, error severity). Use `console.info` for a routine
+operational line, `warn`/`error` for problems. Then everything the Worker emits is
+level-filterable. (`scripts/` is exempt: those are node harnesses printing to a
+terminal, not the Worker.)
 
 **Filter on the bare `message` and `level` fields, NEVER `$metadata.message` or
 `$metadata.level`.**
@@ -85,19 +106,34 @@ canary that logged a unique token and read it back.
   docs advertise `$metadata.message` as the *preferred* key, so this is easy to walk
   into.
 
-Three more ways to get a convincing false negative:
+More ways to get a convincing false negative. Every one of these returns **zero
+rows** from data that is actually present, so none of them can be told apart from
+"the logs are broken" without a positive control:
 
 - **Preview versions emit no observability events at all.** A version from
   `wrangler versions upload` serves traffic on its preview URL but produces zero
   events, not even invocation records. Only the **deployed** version is captured, so
   a log canary must run against a real deploy. Control for this by grouping on
   `$workers.scriptVersion.id` and checking your version even appears.
-- **`console.log` did not survive** the same canary where `warn` and `error` did.
-  Do not rely on it for anything you need to read back. Log at `warn` or `error` if
-  it must persist.
+- **Any level filter hides `console.log`** (see the table above). Searching by
+  `message` alone finds it.
+- **The MCP tool's `groupBys` on `level` silently returns an empty aggregation**
+  even when a `level` filter on the same rows matches them. Group-by is not a
+  reliable way to ask "what levels exist"; filter for a level and count instead.
+  This one is nasty, because an empty group-by reads as "no such level exists".
+- **The MCP `events` view is broken for app log rows.** It throws a schema error
+  (`expected string, received undefined` at `$workers.outcome`) because app log
+  rows carry no `outcome`, only invocation records do. The error means your query
+  *matched* rows. Use the `calculations` view with a `count`.
 - **A timeframe in the future silently returns zero rows.** Check `date -u` first.
-  Observability can also lag by a minute or two, and can miss a brand new Worker
-  entirely.
+- **Ingestion lags a minute or two, and a too-narrow window drops late arrivals.**
+  A count taken immediately after emitting returns 0, and a window that ends too
+  soon undercounts (a 50-line level read back as 30 until the window was widened).
+  Wait a couple of minutes and query a window that ends generously past the event.
+
+**Always run a positive control before believing a zero.** Query for something you
+know is in the window (the every-minute `recompute cycle` line is a good one). If
+the control also returns zero, your query is wrong, not the platform.
 
 Retention is **7 days** with **no alerting** on top. Logs are forensics after the
 fact, not a pager. Anything that must actively page someone still needs a real sink

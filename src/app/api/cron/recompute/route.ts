@@ -120,7 +120,7 @@ export async function GET(req: NextRequest) {
     const headroom = recomputeHeadroom(runMs, RECOMPUTE_BUDGET_MS, due.length, recomputed);
     // One line per cycle so the headroom TREND is visible in Worker logs without
     // having to reconstruct it from bucket_slots timestamps after the fact.
-    console.log(
+    console.info(
       `recompute cycle: refreshed ${recomputed}/${due.length} due (${allCodes.length} total), ${headroom.utilizationPct}% of budget, drained=${headroom.drained}`,
     );
     // Alert only when PERSISTENTLY behind, not on a single busy-but-drained cycle.
