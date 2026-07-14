@@ -22,7 +22,8 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
-import { isHeartbeatStale, readHeartbeatMs, recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 
 export const dynamic = "force-dynamic";
 
@@ -159,27 +160,13 @@ export async function GET(req: NextRequest) {
     // so as a tail call they could be starved exactly when self-heal is needed
     // most. They now run under their own lock + guaranteed every-minute lane.
 
-    // Dead-man's switch (#420): check whether the monitor lane is still running.
-    // The monitor lane stamps a heartbeat each tick; if it hasn't run in >15 min
-    // (3 missed 5-min ticks) the booker/sync alarms may be dark, so alert here
-    // since the sync lane runs every minute and is more reliable.
-    // Entirely best-effort: a read or alert failure must never break sync.
-    const MONITOR_HEARTBEAT_MAX_STALE_MS = 15 * 60_000;
-    await (async () => {
-      try {
-        const lastMs = await readHeartbeatMs("monitor");
-        if (isHeartbeatStale(lastMs, Date.now(), MONITOR_HEARTBEAT_MAX_STALE_MS)) {
-          const lastRanAt = lastMs ? new Date(lastMs).toISOString() : "unknown";
-          await sendThrottledAlert(
-            "monitor_lane_down",
-            30 * 60_000,
-            `Slate: the monitor lane has not run since ${lastRanAt} (>15m). The booker/sync/low-volume alarms may be dark. Check the cron_monitor lock and the /5 cron trigger.`,
-          ).catch(() => {});
-        }
-      } catch {
-        // swallow — heartbeat concern must never break sync
-      }
-    })();
+    // Dead-man's switch (#420, widened to every lane in #803). This used to watch
+    // only the monitor lane, which meant a mid-run CPU kill could silently take
+    // out recompute / outbox / selfheal and nothing would say so. Roughly 400
+    // invocations were killed that way before #760 and nobody noticed for days.
+    // Now every covered lane is judged against its own cadence bound. Never
+    // throws: a monitoring failure must not become a sync failure.
+    await alertOnStaleLanes();
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.

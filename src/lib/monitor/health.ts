@@ -39,6 +39,47 @@ export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
   monitor: 20 * MIN,
 };
 
+export interface StaleLane {
+  lane: string;
+  /** How long this lane has been quiet (ms). */
+  ageMs: number;
+  /** The bound it blew through. */
+  maxStaleMs: number;
+}
+
+/**
+ * Every covered lane that has gone quiet, worst offender first (#803).
+ *
+ * A cron invocation killed mid-run (`exceededCpu`) CANNOT report its own death,
+ * so absence is the only in-band signal: the lanes that had not finished simply
+ * never stamp. That is what this detects, and it is cause-agnostic: a CPU kill,
+ * a crash, a stuck lock and a bad deploy all surface the same way.
+ *
+ * Judges each lane against its OWN cadence bound (a 5-min lane quiet for 12 min
+ * is fine; a 1-min lane quiet for 12 min is not), and never alarms on a lane that
+ * has never stamped: that is a fresh deploy before its first tick, not a death.
+ * Alerting there would page on every deploy and train people to ignore it.
+ *
+ * PURE, so it is node-testable (scripts/test-stale-lanes.ts). Where
+ * computeHealthStatus reports only the single worst lane (it drives one 200/503),
+ * an alert wants EVERY quiet lane, since a CPU kill takes out several at once.
+ */
+export function findStaleLanes(
+  lastRanAtMsByLane: Record<string, number | null | undefined>,
+  nowMs: number,
+  bounds: Record<string, number> = LANE_STALE_BOUNDS_MS,
+): StaleLane[] {
+  const stale: StaleLane[] = [];
+  for (const [lane, maxStaleMs] of Object.entries(bounds)) {
+    const lastRanAtMs = lastRanAtMsByLane[lane];
+    if (lastRanAtMs === null || lastRanAtMs === undefined) continue;
+    const ageMs = nowMs - lastRanAtMs;
+    if (ageMs > maxStaleMs) stale.push({ lane, ageMs, maxStaleMs });
+  }
+  // Most-overdue first, so the alert leads with the worst offender.
+  return stale.sort((a, b) => b.ageMs - b.maxStaleMs - (a.ageMs - a.maxStaleMs));
+}
+
 export interface LaneObservation {
   lane: string;
   /** Age (ms) since this lane last stamped, or null if it has never stamped. */
