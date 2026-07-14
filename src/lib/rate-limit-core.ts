@@ -29,6 +29,22 @@ export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * #597: a coarse per-IP backstop for the direct booking API, checked ALONGSIDE the
+ * per-key ceiling above (separate prefixes, so the two counters never draw on each
+ * other). Per-key alone meant a leaked integrator key had a 6000/hr ceiling and no
+ * second bound: one machine could spend the whole budget.
+ *
+ * Sized to bound a single flooding host well below the key ceiling while leaving the
+ * real auto-booker (~2000/day, roughly 83/hr) about 5x headroom for bursts. Too tight
+ * here and a legitimate backlog run starts 429ing real bookings, which is worse than
+ * the abuse it prevents. Fails open like the rest, but no longer silently (rate-limit.ts).
+ */
+export const DIRECT_BOOKING_API_IP_RATE_RULES: RateLimitRule[] = [
+  { prefix: "bookapi:ip:m", windowSeconds: 60, max: 60 },
+  { prefix: "bookapi:ip:h", windowSeconds: 3600, max: 1200 },
+];
+
+/**
  * Read endpoints (lookup/list, #386/#392) get their OWN ceiling, with distinct
  * key prefixes so they draw from a separate bucket than writes (#393). Status
  * polling is cheap and bursty — frequent reads must never eat into the write
