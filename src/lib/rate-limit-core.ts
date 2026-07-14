@@ -9,6 +9,15 @@ export interface RateLimitRule {
   prefix: string;
   windowSeconds: number;
   max: number;
+  /**
+   * Alert when this rule BLOCKS a request (#796). Opt-in, because for most rules a block
+   * is the system working: the public booking limiter turns away spammy visitors all day
+   * and paging on that would be noise. Set it only where a block is itself suspicious,
+   * i.e. the machine-to-machine ceilings, where the caller is supposed to be our own bot
+   * staying well inside its budget, so a rejection means either the ceiling is too tight
+   * or the key has leaked. Both are things we want to hear about immediately.
+   */
+  alertOnBlock?: boolean;
 }
 
 /** Booking endpoint policy: a short burst window plus an hourly cap. */
@@ -40,8 +49,8 @@ export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
  * the abuse it prevents. Fails open like the rest, but no longer silently (rate-limit.ts).
  */
 export const DIRECT_BOOKING_API_IP_RATE_RULES: RateLimitRule[] = [
-  { prefix: "bookapi:ip:m", windowSeconds: 60, max: 60 },
-  { prefix: "bookapi:ip:h", windowSeconds: 3600, max: 1200 },
+  { prefix: "bookapi:ip:m", windowSeconds: 60, max: 60, alertOnBlock: true },
+  { prefix: "bookapi:ip:h", windowSeconds: 3600, max: 1200, alertOnBlock: true },
 ];
 
 /**
