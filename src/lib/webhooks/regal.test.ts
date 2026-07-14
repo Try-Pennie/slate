@@ -4,7 +4,7 @@ import type { BookingEventPayload, RoutingMeta } from "./types";
 import type { WebhookEvent } from "@/lib/db/types";
 
 // #492: Slate deliberately drops a rung when the requested tier has nobody free, which
-// from the outside is indistinguishable from a misroute — the exact thing Regal's
+// from the outside is indistinguishable from a misroute, which is the exact thing Regal's
 // "Non-Ultra High Team Booking Detected" alert fires on. Regal can only stay quiet on an
 // intentional drop if the signal actually REACHES it.
 //
@@ -111,7 +111,7 @@ describe("buildRegalEvent routing properties (#492)", () => {
 
   // Failure path: an admin resend and the dead-letter replay rebuild the event from the
   // STORED payload, and rows written before #776 have no `routing` key at all. Degrade to
-  // "nothing unusual happened" rather than throwing — a replay that crashes is worse than
+  // "nothing unusual happened" rather than throwing. A replay that crashes is worse than
   // a replay that under-reports.
   it("degrades instead of throwing when replaying a payload written before the routing summary existed", () => {
     const legacy = payload();
