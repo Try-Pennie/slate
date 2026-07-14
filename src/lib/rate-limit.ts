@@ -11,16 +11,50 @@ export type { RateLimitRule } from "@/lib/rate-limit-core";
  * enforced in-datacenter with no DB round-trip, so the cached slot hot path
  * stays fast. Per-datacenter + intentionally permissive (Cloudflare's design).
  * Fails OPEN: a limiter hiccup must never block a legitimate Booker load.
+ *
+ * #796: it used to fail open in TOTAL silence, on both of the paths that turn the throttle
+ * off. It now says so. A missing binding is treated as an outage rather than as "no limiter
+ * configured", because in this project there is no such thing: wrangler.jsonc always binds
+ * it, so absent means broken.
  */
 export async function availabilityWithinLimit(ip: string): Promise<boolean> {
   try {
     const limiter = getCloudflareContext().env.AVAIL_RATE_LIMITER;
-    if (!limiter) return true;
+    if (!limiter) {
+      await alertAvailabilityLimiterDown(
+        "the AVAIL_RATE_LIMITER binding is missing, so /api/availability has no throttle at all",
+      );
+      return true;
+    }
     const { success } = await limiter.limit({ key: ip });
     return success;
-  } catch {
-    return true;
+  } catch (err) {
+    await alertAvailabilityLimiterDown(`the limiter threw: ${String(err)}`);
+    return true; // fail open
   }
+}
+
+/** Last time THIS isolate tried to alert about the availability limiter.
+ *
+ *  The alert's real throttle is alert_state, in Postgres, which means attempting it costs a
+ *  DB round-trip. Everywhere else that is fine; here it is not. This is the Booker's slot hot
+ *  path, and the limiter is likeliest to fail under exactly the traffic flood it exists to
+ *  absorb, so alerting per request would answer a dead limiter by adding a database query to
+ *  every one of those requests. This gate keeps that bounded. It is per-isolate and
+ *  best-effort by design (a few duplicate attempts across isolates are harmless); alert_state
+ *  is still what makes the alert itself correct. */
+let lastAvailAlertAttemptMs = 0;
+
+async function alertAvailabilityLimiterDown(reason: string): Promise<void> {
+  const now = Date.now();
+  if (now - lastAvailAlertAttemptMs < LIMITER_BROKEN_COOLDOWN_MS) return;
+  lastAvailAlertAttemptMs = now;
+  console.error(`availability rate limiter is failing open: ${reason}`);
+  await alertBestEffort(
+    "rate_limit_broken:availability",
+    `Slate: the availability rate limiter is FAILING OPEN, so ${reason}. Every /api/availability request is being served unthrottled until this is fixed.`,
+    "availability",
+  );
 }
 
 /**
