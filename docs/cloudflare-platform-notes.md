@@ -135,6 +135,23 @@ rows** from data that is actually present, so none of them can be told apart fro
 know is in the window (the every-minute `recompute cycle` line is a good one). If
 the control also returns zero, your query is wrong, not the platform.
 
+**Don't hand-roll the query: use `scripts/logs.ts` (#807).** It encodes every trap
+above and *refuses* to report a zero unless the positive control found something in
+the same window, so "absent" and "my query is broken" can never be confused again:
+
+```sh
+CLOUDFLARE_API_TOKEN=... node --experimental-strip-types --import ./scripts/register-paths.mjs \
+  scripts/logs.ts "booking-api: authenticated request" --minutes 120
+```
+
+Exit codes are grep-like, with a distinct one for a broken query: **0** found,
+**1** trustworthy absence, **2** UNVERIFIABLE (the control came back empty, so
+believe nothing). The token needs Workers Observability read.
+
+One more trap it encodes, found while building it: the REST API's `timeframe` takes
+**Unix milliseconds** and 400s on ISO strings, even though the Cloudflare MCP tool
+happily accepts them.
+
 Retention is **7 days** with **no alerting** on top. Logs are forensics after the
 fact, not a pager. Anything that must actively page someone still needs a real sink
 (a Slack alert or an `alert_state` row).
