@@ -39,8 +39,10 @@ const eslintConfig = defineConfig([
     // was dropped). debug/info/warn/error all carry a level, so `console.info` is
     // the drop-in for a routine operational line. Errors severity, not warn: lint
     // exits 0 on warnings, so a warning here would guard nothing.
-    // Only src/ (the Worker); scripts/ are node harnesses printing to a terminal.
-    files: ["src/**/*.{ts,tsx}"],
+    // Covers everything that ships INSIDE the Worker: src/ plus worker/, which is
+    // the deployed entry point (wrangler `main`) and drives the cron lanes.
+    // scripts/ is exempt: node harnesses printing to a terminal, not the Worker.
+    files: ["src/**/*.{ts,tsx}", "worker/**/*.ts"],
     rules: {
       "no-restricted-properties": [
         "error",
