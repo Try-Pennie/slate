@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // #597: allowRequest fails OPEN when the rate_limit_hit RPC errors. That is a
 // DELIBERATE choice (a limiter hiccup must never block a real customer's booking,
@@ -13,12 +13,15 @@ const rpc = vi.hoisted(() => vi.fn());
 const sendThrottledAlert = vi.hoisted(() =>
   vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
 );
+const limit = vi.hoisted(() => vi.fn(async (_opts: { key: string }) => ({ success: true })));
+const cf = vi.hoisted(() => ({ env: {} as Record<string, unknown> }));
+const getCloudflareContext = vi.hoisted(() => vi.fn(() => ({ env: cf.env })));
 
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
-vi.mock("@opennextjs/cloudflare", () => ({ getCloudflareContext: () => ({ env: {} }) }));
+vi.mock("@opennextjs/cloudflare", () => ({ getCloudflareContext }));
 
-import { allowRequest, refundRequest } from "./rate-limit";
+import { allowRequest, refundRequest, availabilityWithinLimit } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
 const RULES: RateLimitRule[] = [
@@ -132,5 +135,99 @@ describe("refundRequest (#796)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(refundRequest("1.2.3.4", RULES2)).resolves.toBeUndefined();
+  });
+});
+
+// #796, the defect the issue actually names. The availability limiter guards the Booker's
+// slot hot path, and it swallowed EVERY failure and returned "allowed". Two ways it can be
+// off, both previously invisible:
+//
+//   1. it throws (the binding is broken, or we are not in a Worker at all), or
+//   2. the binding is simply absent, which is one deleted line of wrangler.jsonc away and
+//      leaves the endpoint with no throttle at all, forever, saying nothing.
+//
+// Fail open, as before: a limiter hiccup must never break a legitimate Booker load. But
+// fail LOUD, because a rate limiter nobody knows is dead is worse than no rate limiter.
+describe("availabilityWithinLimit (#796)", () => {
+  // The in-isolate alert gate is time-based, so each test starts past the last one's
+  // cooldown rather than reaching into module state to reset it.
+  let clock = Date.UTC(2026, 6, 14);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    cf.env = { AVAIL_RATE_LIMITER: { limit } };
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("allows a request the limiter permits", async () => {
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("blocks when the limiter says the IP is over, and stays silent (a throttled visitor is not an incident)", async () => {
+    limit.mockResolvedValue({ success: false });
+
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(false);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("ALERTS when the limiter throws, instead of failing open in silence", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+
+    // Still fails open.
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    expect(text).toMatch(/availability/i);
+    // Name the failure, or nobody can act on it.
+    expect(text).toMatch(/limiter unavailable/);
+  });
+
+  it("ALERTS when the binding is missing entirely (the throttle is simply OFF)", async () => {
+    cf.env = {};
+
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    expect(String(sendThrottledAlert.mock.calls[0]?.[2] ?? "")).toMatch(/AVAIL_RATE_LIMITER/);
+  });
+
+  // The alert's throttle lives in Postgres (alert_state), so attempting it means a DB
+  // round-trip. On THIS path that has teeth: the limiter is most likely to fail under a
+  // traffic flood, which is exactly when we must not add a database query to every request
+  // and turn a dead limiter into a dead database.
+  it("does not re-attempt the alert on every request during a sustained outage", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+
+    for (let i = 0; i < 25; i++) {
+      await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    }
+
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-alerts once the cooldown has passed, so a lasting outage is not forgotten", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+
+    await availabilityWithinLimit("1.2.3.4");
+    vi.setSystemTime(clock + 31 * 60_000);
+    await availabilityWithinLimit("1.2.3.4");
+
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(2);
+  });
+
+  it("still allows the request when the alert itself throws", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+    sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
+
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
   });
 });
