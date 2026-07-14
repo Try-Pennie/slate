@@ -257,6 +257,38 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(body.code).toBe("SLOT_TAKEN");
     expect(body.error).toBe("That time was just taken.");
   });
+
+  // #801: the key-attribution line is the audit trail for who called the booking
+  // API. Cloudflare stores console.log WITHOUT a `level`, so a console.log audit
+  // line is absent from every level-filtered query and cannot be read back in
+  // practice. It must go out at a level-carrying method (console.info).
+  it("emits the key-attribution audit line at a queryable level, never console.log", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+
+    await post("Bearer real-secret", VALID_BODY);
+
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("booking-api: authenticated request"));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("primary"));
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  // The failure path still has to be attributable: a call that errors out must
+  // not lose its audit line, or a misbehaving bot becomes untraceable.
+  it("still attributes the caller at a queryable level when the booking fails", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+
+    const res = await post("Bearer real-secret", VALID_BODY);
+
+    expect(res.status).toBe(409);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("booking-api: authenticated request"));
+    expect(log).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/bookings (list mode + lookup mode)", () => {

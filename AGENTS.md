@@ -60,12 +60,18 @@ Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
 
 # Reading production logs (Cloudflare observability)
 
-Cloudflare **does** capture `console.error` and `console.warn` from the deployed
-Worker, with the `Error` object serialized. This was verified in production
-(#708) by logging a unique token and reading it back at level `error`. So the
-"detail is kept server-side in the logs" guarantee in `internalErrorResponse`
-(`src/lib/api/errors.ts`) is real. An earlier belief that Cloudflare dropped
-`console.error` was wrong, and it was wrong for the reason below.
+Cloudflare captures **every** console method from the deployed Worker, with the
+`Error` object serialized. Nothing is dropped: a 250-line canary (#801) came back
+100% at every level. So the "detail is kept server-side in the logs" guarantee in
+`internalErrorResponse` (`src/lib/api/errors.ts`) is real.
+
+**`console.log` is banned in `src/`** (ESLint `no-restricted-properties`), because
+it is the one method Cloudflare stores with **no `level` field**. The line is kept,
+but it is invisible to every level-filtered query, which reads as a total drop.
+Use `console.info` for a routine operational line, `warn`/`error` for problems.
+That earlier "console.log doesn't come back" belief (and, before it, "console.error
+doesn't come back") were both this same false negative: a query that verified
+nothing, read as evidence of absence.
 
 **Filter on the bare `message` and `level` fields, never `$metadata.message` /
 `$metadata.level`.** The `$metadata.*` fields hold only *invocation* records (the
@@ -76,15 +82,24 @@ exactly like "Cloudflare is dropping our logs" and is how the false belief
 started. Note this contradicts the Cloudflare MCP tool's own docs, which
 advertise `$metadata.message` as the preferred key.
 
-Two more gotchas, both of which produce a convincing false negative:
+More gotchas, every one of which produces a convincing false negative (zero rows
+from data that is really there):
 
 - **Preview versions are not logged at all.** A version from `wrangler versions
   upload` serves traffic on its preview URL but emits **no** observability
   events, not even invocation records. Only the deployed version is captured, so
   a canary must run against a real deploy.
-- **`console.log` did not come back** in the same canary that `warn` and `error`
-  did. Don't rely on it for anything you need to read later; log at `warn` or
-  `error` if it must survive.
+- **Any `level` filter hides `console.log`.** Search by `message` alone.
+- **A `groupBys` on `level` returns an empty aggregation** even when a `level`
+  filter matches those same rows. Filter and count; don't group.
+- **The MCP `events` view throws on app log rows** (they have no
+  `$workers.outcome`). The schema error means your query matched. Use
+  `calculations` + `count`.
+- **Ingestion lags a minute or two**, so a count run immediately after emitting
+  returns 0, and a too-narrow window undercounts late arrivals.
+
+**Run a positive control before believing any zero** (the every-minute `recompute
+cycle` line is always there). If the control is also zero, the query is wrong.
 
 Retention is 7 days and there is no alerting on top of it, so logs are for
 forensics after the fact. Anything that must page someone still needs a real

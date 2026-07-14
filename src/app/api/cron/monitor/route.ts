@@ -251,7 +251,7 @@ export async function GET(req: NextRequest) {
         formatFallbackCoveredNotice(coveredDetail),
       ).catch(() => {});
     }
-    console.log(
+    console.info(
       `monitor: ${page.length} dead-end (${cause.dataAnomaly.length} anomaly, ` +
         `${cause.bookedSolid.length} booked-solid, ${cause.unverified.length} unverified) + ` +
         `${covered.length} fallback-covered of ${buckets.length} bucket(s)` +
@@ -281,7 +281,7 @@ export async function GET(req: NextRequest) {
           formatLowVolumeAlert(breaches),
         ).catch(() => {});
       }
-      console.log(
+      console.info(
         `monitor volume: 30m=${count30} 120m=${count120}, ${breaches.length} below floor, armed=${armed}`,
       );
       volume = { armed, windows, breaches: breaches.length };
@@ -297,7 +297,7 @@ export async function GET(req: NextRequest) {
       loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
       notify: sendThrottledInfo,
       cooldownMs: settings.cooldownMs.thin_tier_staffing,
-      log: (m) => console.log(m),
+      log: (m) => console.info(m),
     });
 
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.

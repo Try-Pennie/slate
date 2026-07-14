@@ -31,6 +31,28 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  {
+    // #801: in the deployed Worker, `console.log` is the ONE console method
+    // Cloudflare captures WITHOUT a `level` field. The line is stored, but it is
+    // invisible to every level-filtered or level-grouped query, which reads as
+    // "the logs are gone" (that false negative is how #708 concluded console.log
+    // was dropped). debug/info/warn/error all carry a level, so `console.info` is
+    // the drop-in for a routine operational line. Errors severity, not warn: lint
+    // exits 0 on warnings, so a warning here would guard nothing.
+    // Only src/ (the Worker); scripts/ are node harnesses printing to a terminal.
+    files: ["src/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "console",
+          property: "log",
+          message:
+            "console.log lands in Cloudflare with no `level`, so it never shows up in a level-filtered log query (#801). Use console.info for routine lines, console.warn/error for problems.",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

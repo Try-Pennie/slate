@@ -84,7 +84,7 @@ async function authorize(
 export async function POST(req: NextRequest) {
   const authd = await authorize(req);
   if (!authd.ok) return authd.response;
-  console.log(`booking-api: authenticated request via key '${authd.keyId}'`);
+  console.info(`booking-api: authenticated request via key '${authd.keyId}'`);
 
   const parsed = parseDirectBookingRequest(await req.json().catch(() => null));
   if (!parsed.ok) {
@@ -151,13 +151,13 @@ export async function POST(req: NextRequest) {
     // move it silently — 409 so the bot asks the lead, then retries with
     // confirmReschedule:true. Everything else is a success.
     const status = result.outcome === "confirm_required" ? 409 : 200;
-    console.log(
+    console.info(
       formatOutcomeLine({ outcome: result.outcome, bucketCode: v.bucketCode, keyId: authd.keyId, status }),
     );
     return NextResponse.json(body, { status });
   } catch (err) {
     const { status, code } = mapBookingError(err);
-    console.log(
+    console.info(
       formatOutcomeLine({ outcome: "error", bucketCode: v.bucketCode, keyId: authd.keyId, status, code }),
     );
     return NextResponse.json(

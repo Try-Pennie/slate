@@ -429,7 +429,7 @@ async function rankBucketShare(
   // (the live order is always equal-share). Skipped for the routing-API preview.
   if (shadowLog && !share.degraded) {
     const div = shadowRankingDivergence(candidateIds, share);
-    console.log(
+    console.info(
       JSON.stringify({
         tag: "routing_shadow",
         bucket_id: bucketId,
