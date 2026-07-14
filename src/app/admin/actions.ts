@@ -736,6 +736,11 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
 
   const format = form.get("format") === "regal" ? "regal" : "generic";
   // For Regal this is the API key sent as the Authorization header.
+  //
+  // #600: the form no longer round-trips the stored key to the browser, so a blank field
+  // means "leave it alone", NOT "clear it". Writing null on blank meant an admin editing
+  // the URL without retyping the key silently wiped it and took every booking event to
+  // Regal offline. Omit the column entirely unless a new key was actually typed.
   const authHeader = String(form.get("auth_header") ?? "").trim() || null;
 
   const { data: existing } = await db
@@ -748,7 +753,7 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   if (existing) {
     await db
       .from("webhook_endpoints")
-      .update({ url, format, auth_header: authHeader })
+      .update(authHeader ? { url, format, auth_header: authHeader } : { url, format })
       .eq("id", (existing as { id: string }).id);
   } else {
     await db.from("webhook_endpoints").insert({

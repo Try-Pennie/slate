@@ -32,13 +32,24 @@ export function buildRequest(
   timestamp: string = new Date().toISOString(),
 ): { body: string; headers: Record<string, string> } {
   if (endpoint.format === "regal") {
+    // #600: the API key IS the authentication on this path. The old `?? ""` posted an
+    // unauthenticated event that Regal rejects, and did it quietly, so a webhook saved
+    // without a key looked like a normal delivery attempt instead of the misconfiguration
+    // it is. Refuse to build the request at all: the delivery is recorded as failed and
+    // shows up in the webhook log, rather than every booking event silently 401ing.
+    const key = endpoint.auth_header?.trim();
+    if (!key) {
+      throw new Error(
+        "Regal webhook endpoint has no API key (auth_header). Set it in /admin; refusing to send an unauthenticated delivery (#600).",
+      );
+    }
     const regalEvent = buildRegalEvent(event, payload);
     regalEvent.properties.slateDeliveryId = deliveryId;
     return {
       body: JSON.stringify(regalEvent),
       headers: {
         "content-type": "application/json",
-        authorization: endpoint.auth_header ?? "",
+        authorization: key,
         "x-slate-delivery-id": deliveryId,
       },
     };

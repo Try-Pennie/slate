@@ -100,5 +100,39 @@ assert(
   "generic: body unchanged by the delivery id (signature compatibility)",
 );
 
+// --- #600: a Regal endpoint with no API key must FAIL LOUDLY ---
+// The Regal API key IS the authentication. Sending `authorization: ""` posts an
+// unauthenticated event that Regal rejects, and the old `?? ""` swallow made that
+// look like a normal delivery attempt rather than the misconfiguration it is. An
+// admin who saved the webhook form without retyping the key could silently take
+// every booking event offline this way.
+let threw = false;
+try {
+  buildRequest(
+    { ...regalEndpoint, auth_header: null } as WebhookEndpoint,
+    DELIVERY,
+    "booking.created",
+    payload,
+    TS,
+  );
+} catch {
+  threw = true;
+}
+assert(threw, "regal: buildRequest THROWS when auth_header is missing, never sends an empty Authorization (#600)");
+
+let threwOnBlank = false;
+try {
+  buildRequest(
+    { ...regalEndpoint, auth_header: "   " } as WebhookEndpoint,
+    DELIVERY,
+    "booking.created",
+    payload,
+    TS,
+  );
+} catch {
+  threwOnBlank = true;
+}
+assert(threwOnBlank, "regal: a whitespace-only key is treated as missing, not as a key (#600)");
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

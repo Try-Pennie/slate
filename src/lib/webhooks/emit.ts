@@ -32,12 +32,30 @@ async function send(
   attempt: number,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { body, headers } = buildRequest(endpoint, deliveryId, event, payload);
+
+  // #600: buildRequest REFUSES to build a Regal delivery with no API key, rather than
+  // posting an unauthenticated event. That refusal must not escape into the booking path:
+  // emitWebhook is awaited by the booking flow, so throwing here would fail real bookings
+  // over a webhook misconfiguration, and the outbox would retry the throw forever. Treat
+  // it as a failed attempt instead. It lands in the webhook log, the retry sweep picks it
+  // up once an admin sets the key, and the existing dead-letter alert fires if it doesn't.
+  let body: string;
+  let headers: Record<string, string>;
+  let configError: string | null = null;
+  try {
+    ({ body, headers } = buildRequest(endpoint, deliveryId, event, payload));
+  } catch (err) {
+    body = "";
+    headers = {};
+    configError = String(err).slice(0, 1000);
+  }
 
   let ok = false;
   let lastResponse = "";
   const stub = loadtestDeliveryResult();
-  if (stub) {
+  if (configError) {
+    lastResponse = configError;
+  } else if (stub) {
     ok = stub.ok;
     lastResponse = stub.lastResponse;
   } else {
