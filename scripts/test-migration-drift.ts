@@ -58,14 +58,14 @@ assert(
   /db push|apply/i.test(behind),
   "db-behind alert says what to do (apply the pending migration)",
 );
-assert(!/[—–]/.test(behind), "db-behind alert has no em/en dash (copy lint)");
+assert(!/[\u2014\u2013]/.test(behind), "db-behind alert has no em/en dash (copy lint)");
 
 const unverified = formatMigrationDriftAlert("unverified", "0071", null);
 assert(
   /could not|unable|cannot/i.test(unverified),
   "unverified alert says the version could not be read, not that things are fine",
 );
-assert(!/[—–]/.test(unverified), "unverified alert has no em/en dash (copy lint)");
+assert(!/[\u2014\u2013]/.test(unverified), "unverified alert has no em/en dash (copy lint)");
 
 // --- runner (hand-written fakes, no module mocking) --------------------------
 interface Sent {

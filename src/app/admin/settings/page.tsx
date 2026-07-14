@@ -4,7 +4,7 @@ import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMonitorSettings } from "@/app/admin/actions";
-import { MONITOR_DEFAULTS, type MonitorAlertKey } from "@/lib/monitor/settings";
+import { ALERT_FIELDS as COOLDOWN_FIELDS, MONITOR_DEFAULTS } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "./SettingsSaveNotice";
@@ -12,39 +12,6 @@ import { labelCls, inputCls, cardCls, btnCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
-
-const COOLDOWN_FIELDS: { key: MonitorAlertKey; label: string; help: string }[] = [
-  {
-    key: "availability_data_anomaly",
-    label: "Data-anomaly page cooldown",
-    help: "Urgent page when the cache disagrees with the calendars.",
-  },
-  {
-    key: "availability_booked_solid",
-    label: "Booked-solid notice cooldown",
-    help: "Quiet notice when agents are genuinely full.",
-  },
-  {
-    key: "fallback_covered_availability",
-    label: "Fallback-covered notice cooldown",
-    help: "Quiet notice when a thin tier is covered by the fallback.",
-  },
-  {
-    key: "low_booking_volume",
-    label: "Low-volume alert cooldown",
-    help: "Throttle for the low-booking-volume alert.",
-  },
-  {
-    key: "thin_tier_staffing",
-    label: "Thin-tier staffing cooldown",
-    help: "Quiet nudge when a tier rests on 1 to 2 bookable agents.",
-  },
-  {
-    key: "migration_version_lag",
-    label: "Migration-lag page cooldown",
-    help: "Urgent page when the live database is missing a migration the deployed code ships.",
-  },
-];
 
 /** Formats a stored/updated pair into "changed by X at Y", or a default note. */
 function lastChangedLine(

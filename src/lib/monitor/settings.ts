@@ -26,6 +26,45 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "migration_version_lag",
 ];
 
+/**
+ * The admin settings screen's cooldown fields, one per alert key. Kept beside
+ * ALERT_KEYS rather than in the page so the two cannot drift: a key with no field
+ * is a cooldown nobody can tune, and a field with no key is a control that does
+ * nothing. A test asserts they stay in lockstep.
+ */
+export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }[] = [
+  {
+    key: "availability_data_anomaly",
+    label: "Data-anomaly page cooldown",
+    help: "Urgent page when the cache disagrees with the calendars.",
+  },
+  {
+    key: "availability_booked_solid",
+    label: "Booked-solid notice cooldown",
+    help: "Quiet notice when agents are genuinely full.",
+  },
+  {
+    key: "fallback_covered_availability",
+    label: "Fallback-covered notice cooldown",
+    help: "Quiet notice when a thin tier is covered by the fallback.",
+  },
+  {
+    key: "low_booking_volume",
+    label: "Low-volume alert cooldown",
+    help: "Throttle for the low-booking-volume alert.",
+  },
+  {
+    key: "thin_tier_staffing",
+    label: "Thin-tier staffing cooldown",
+    help: "Quiet nudge when a tier rests on 1 to 2 bookable agents.",
+  },
+  {
+    key: "migration_version_lag",
+    label: "Migration-lag page cooldown",
+    help: "Urgent page when the live database is missing a migration the deployed code ships.",
+  },
+];
+
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
 export const MONITOR_DEFAULTS = {
   cooldownMs: {
