@@ -90,29 +90,24 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    `TICKS` for a longer read, `OUTBOX_BACKLOG` for a bigger drain.
 
 6. **Resource ceilings on a deployed Worker (CPU is the real one; subrequests are not).**
-   `pnpm dev` (Node) enforces neither limit. Verified against the deployed Worker (#724 /
-   #760, 2026-07-10). The four every-minute lanes (`sync`, `recompute`, `outbox`,
-   `selfheal`) run IN-PROCESS in ONE `scheduled()` invocation (`worker/index.ts`
-   `handler.fetch(...)`, no network hop), so they share that invocation's CPU AND subrequest
-   budgets. Budget the COMBINED total, never per-lane.
+   The platform facts behind this (why `limits.cpu_ms` works on a sub-hourly cron, the
+   10,000 subrequest ceiling, how to query CPU and outcomes, and the observability traps)
+   live in **[`docs/cloudflare-platform-notes.md`](../../docs/cloudflare-platform-notes.md)**.
+   Read that first; it is the single source of truth. The load-test-specific reads are:
 
-   - **Subrequests: NOT a constraint.** Cloudflare removed the old 1,000 cap on 2026-02-11;
-     Workers Paid is now **10,000/invocation** (configurable to 10M). Every `fetch()` counts
-     (each PostgREST query, Google call, Slack post; `caches.default` is colo-local and does
-     NOT). Observability exposes no subrequest counter, so derive from code and watch
-     `$workers.outcome` for a "Too many subrequests" breach (none ever seen). Code-derived
-     budget at 200 agents: steady state ≈ **760/tick**; even the combined worst case across
-     all four lanes (~4,300) sits well under 10,000. So the subrequest ceiling is comfortable.
-   - **CPU: the real ceiling, and it was being hit.** Cron-trigger CPU defaults to 30s
-     (Workers Paid, <1hr interval). At ~98 agents the shared minute invocation was hitting
-     it ~5% of ticks (median CPU ~11.5s, p95 pegged at ~32.5s). Fixed in #760 by raising
-     `limits.cpu_ms` to 120000 (2 min) in `wrangler.jsonc`. This IS honored for a sub-hourly
-     cron (empirically canary-verified: a burning every-minute cron ran to 302s under a
-     300000 limit, not clamped at 30s). CPU is billed on actual usage, not the limit.
+   - `pnpm dev` (Node) enforces neither limit, so a ceiling can only be measured against the
+     deployed Worker.
+   - The four every-minute lanes share ONE invocation's CPU and subrequest budget. Budget the
+     COMBINED total, never per-lane.
+   - **Subrequests are comfortable at 200 agents:** steady state ≈ **760/tick** against a
+     10,000 ceiling; even the worst case across all four lanes (~4,300) has ample room.
+   - **CPU is the ceiling to watch.** After the #760 fix (`limits.cpu_ms` = 120000) the
+     every-minute cron runs at ~10s median / ~28s p95 / ~44.7s max, with zero `exceededCpu`
+     since 2026-07-09. If a soak pushes max toward 120s, that is the signal to act.
    - **Watch item (#762):** the two selfheal reconcile sweeps loop `bucketsForAgent`
      (~3 subrequests + CPU) per freed/missing agent with NO per-tick cap (up to ~1,200
-     subrequests across both during a backlog). No longer a subrequest-ceiling threat at
-     10,000, but it is a CPU contributor worth capping.
+     subrequests across both during a backlog). Not a subrequest-ceiling threat at 10,000,
+     but a CPU contributor worth capping.
 
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
