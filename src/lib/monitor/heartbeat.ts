@@ -42,6 +42,30 @@ export async function recordHeartbeat(lane: string): Promise<void> {
 }
 
 /**
+ * Read EVERY lane's `last_ran_at` in one query, as `{ lane: ms | null }` (#803).
+ *
+ * One round trip rather than one per lane: this runs on the every-minute sync
+ * tick, which shares a subrequest budget with the other lanes. Best-effort in the
+ * same way as the rest of this module, but it THROWS on a read failure rather
+ * than returning `{}`: an empty map is indistinguishable from "every lane has
+ * gone quiet", and silently reporting a healthy fleet because the DB was
+ * unreachable is exactly the false-confidence bug this watchdog exists to catch.
+ * The caller (lane-watchdog) catches and stays quiet.
+ */
+export async function readAllHeartbeatMs(): Promise<Record<string, number | null>> {
+  const db = supabaseAdmin();
+  const { data, error } = await db.from("lane_heartbeats").select("lane, last_ran_at");
+  if (error) throw new Error(`heartbeat bulk read failed: ${error.message}`);
+
+  const out: Record<string, number | null> = {};
+  for (const row of (data ?? []) as { lane: string; last_ran_at: string }[]) {
+    const ms = Date.parse(row.last_ran_at);
+    out[row.lane] = isNaN(ms) ? null : ms;
+  }
+  return out;
+}
+
+/**
  * Read the `last_ran_at` timestamp for `lane` from `lane_heartbeats`.
  * Returns `Date.parse(last_ran_at)` (ms) or null if the row is missing or the
  * read fails. Best-effort: never throws.

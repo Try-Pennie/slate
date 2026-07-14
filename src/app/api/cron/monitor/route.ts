@@ -28,6 +28,7 @@ import {
   type VolumeWindow,
 } from "@/lib/monitor/booking-volume";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
@@ -299,6 +300,12 @@ export async function GET(req: NextRequest) {
       cooldownMs: settings.cooldownMs.thin_tier_staffing,
       log: (m) => console.info(m),
     });
+
+    // Watch the other lanes (#803). The sync lane does this too; running it from
+    // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
+    // so whichever survives a killed invocation reports the one that didn't. The
+    // per-lane alert cooldown dedupes the overlap. Never throws.
+    await alertOnStaleLanes();
 
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort — must never affect the monitor's own response.
