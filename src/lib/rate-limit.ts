@@ -2,6 +2,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
+import { log } from "@/lib/log";
 
 export { clientIp, BOOKING_RATE_RULES, ROUTING_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
@@ -49,7 +50,7 @@ async function alertAvailabilityLimiterDown(reason: string): Promise<void> {
   const now = Date.now();
   if (now - lastAvailAlertAttemptMs < LIMITER_BROKEN_COOLDOWN_MS) return;
   lastAvailAlertAttemptMs = now;
-  console.error(`availability rate limiter is failing open: ${reason}`);
+  log.error("rate-limit", { msg: "limiter failing open", reason });
   await alertBestEffort(
     "rate_limit_broken:availability",
     `Slate: the availability rate limiter is FAILING OPEN, so ${reason}. Every /api/availability request is being served unthrottled until this is fixed.`,
@@ -82,14 +83,15 @@ export async function allowRequest(
     });
     if (error) {
       // #597: still fail open (a limiter hiccup must never block a real booking), but
-      // never fail SILENTLY. This used to be a bare console.error, which Cloudflare does
-      // not capture for this project, so the limiter could switch itself off across every
-      // endpoint and nothing would say so.
+      // never fail SILENTLY. This used to be a bare log line, and nothing watches a 7-day
+      // log with no alerting on it, so the limiter could switch itself off across every
+      // endpoint and nobody would hear about it. (Cloudflare DOES capture the log, #801;
+      // the problem was that no one is reading it, not that it vanished.)
       //
       // Best effort: the alert writes to alert_state, so the outage that broke the limiter
       // can break the alert too. Swallow that. A failed alert must not turn a limiter
       // failure into a BOOKING failure, which would be the exact opposite of failing open.
-      console.error(`rate_limit_hit failed (${rule.prefix}): ${error.message}`);
+      log.error("rate-limit", { msg: "rate_limit_hit failed", rule: rule.prefix }, error);
       await alertBestEffort(
         `rate_limit_broken:${rule.prefix}`,
         `Slate: the rate limiter is FAILING OPEN. rate_limit_hit errored on '${rule.prefix}': ${error.message}. Requests are being allowed through unthrottled until this is fixed.`,
@@ -120,7 +122,7 @@ export async function allowRequest(
  *  failure must never become a booking failure. */
 async function alertBestEffort(key: string, text: string, label: string): Promise<void> {
   await sendThrottledAlert(key, LIMITER_BROKEN_COOLDOWN_MS, text).catch((err) => {
-    console.error(`rate-limit alert failed (${label}): ${String(err)}`);
+    log.error("rate-limit", { msg: "alert failed", label }, err);
   });
 }
 
@@ -129,8 +131,8 @@ async function alertBestEffort(key: string, text: string, label: string): Promis
  * that ISN'T the customer's doing (e.g. a verify-on-book outage → 503), so a
  * server fault can't consume their booking budget (#319). Never fails the response.
  *
- * #796: it used to only console.error on failure, which Cloudflare does not capture, so a
- * broken refund was invisible. The customer then quietly loses booking allowance because of
+ * #796: it used to only log on failure, and nothing watches the logs, so a broken refund
+ * went unheard. The customer then quietly loses booking allowance because of
  * OUR fault, a bad enough outcome that it has to be heard. Still swallowed either way: a
  * failed refund must not turn a server fault into a second failure for the same customer.
  */
@@ -144,7 +146,7 @@ export async function refundRequest(
       p_key: `${rule.prefix}:${ip}`,
     });
     if (error) {
-      console.error(`rate_limit_refund failed (${rule.prefix}): ${error.message}`);
+      log.error("rate-limit", { msg: "rate_limit_refund failed", rule: rule.prefix }, error);
       await alertBestEffort(
         `rate_limit_refund_broken:${rule.prefix}`,
         `Slate: a rate-limit REFUND failed on '${rule.prefix}': ${error.message}. Customers whose booking failed through no fault of their own are losing budget from their limit.`,

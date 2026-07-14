@@ -2,6 +2,7 @@ import { isMisroute } from "./explain.ts";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { Attributes, Criteria, RoutingExclusion, RoutingDecision } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 export { buildRoutingTraceExtras } from "./explain.ts";
 
@@ -43,7 +44,7 @@ export async function recordRoutingDecision(input: {
       outcome: input.outcome,
     });
   } catch (err) {
-    console.error(`routing_decisions insert failed: ${String(err)}`);
+    log.error("routing", { msg: "routing_decisions insert failed" }, err);
   }
 
   if (

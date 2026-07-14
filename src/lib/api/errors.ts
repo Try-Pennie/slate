@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { log } from "@/lib/log";
 
 /** The one client-facing message for an unexpected server fault. Shared so every
  *  route (the six #598 mutation routes and the direct bot API, #707) says the
@@ -33,7 +34,7 @@ const ALERT_DETAIL_CHARS = 300;
  * booking failure. Its own failure is logged, never swallowed into silence.
  */
 export async function reportInternalError(err: unknown, context: string): Promise<void> {
-  console.error(`[${context}] unexpected error`, err);
+  log.error("api", { msg: "unexpected error", context }, err);
 
   const detail = (err instanceof Error ? err.message : String(err)).slice(0, ALERT_DETAIL_CHARS);
   await sendThrottledAlert(
@@ -41,7 +42,7 @@ export async function reportInternalError(err: unknown, context: string): Promis
     INTERNAL_ERROR_COOLDOWN_MS,
     `Slate: unexpected server error on ${context} (${detail}). The caller got a generic 500. Full detail is in the Worker logs at level error.`,
   ).catch((alertErr) => {
-    console.error(`internal-error alert failed (${context}): ${String(alertErr)}`);
+    log.error("api", { msg: "internal-error alert failed", context }, alertErr);
   });
 }
 

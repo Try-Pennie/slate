@@ -39,7 +39,7 @@ const MIN = 60_000;
 // --- The query shape. Every one of these mistakes returns zero rows from data
 // that is present, which is the whole failure mode.
 const q = buildCountQuery({
-  needle: "recompute cycle",
+  needle: "tag=recompute",
   fromIso: iso(NOW - 60 * MIN),
   toIso: iso(NOW),
 });

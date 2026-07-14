@@ -12,6 +12,7 @@ import {
   listAllBucketCodes,
   listKnownBucketSlotRows,
 } from "@/lib/availability/precompute";
+import { log } from "@/lib/log";
 import {
   bucketsDueForRecompute,
   staleBuckets,
@@ -69,7 +70,7 @@ async function alertIfFallingBehind(
     p_max: 1,
   });
   if (error) {
-    console.error(`recompute behind-streak tracking failed: ${error.message}`);
+    log.error("recompute", { msg: "behind-streak tracking failed" }, error);
     return;
   }
   if (!isConsecutiveFailure(underLimit === false ? 2 : 1)) return;
@@ -120,9 +121,14 @@ export async function GET(req: NextRequest) {
     const headroom = recomputeHeadroom(runMs, RECOMPUTE_BUDGET_MS, due.length, recomputed);
     // One line per cycle so the headroom TREND is visible in Worker logs without
     // having to reconstruct it from bucket_slots timestamps after the fact.
-    console.info(
-      `recompute cycle: refreshed ${recomputed}/${due.length} due (${allCodes.length} total), ${headroom.utilizationPct}% of budget, drained=${headroom.drained}`,
-    );
+    log.info("recompute", {
+      msg: "cycle",
+      refreshed: recomputed,
+      due: due.length,
+      total: allCodes.length,
+      util_pct: headroom.utilizationPct,
+      drained: headroom.drained,
+    });
     // Alert only when PERSISTENTLY behind, not on a single busy-but-drained cycle.
     await alertIfFallingBehind(headroom, recomputed, due.length, allCodes.length);
 

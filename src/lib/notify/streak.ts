@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { log } from "@/lib/log";
 
 /**
  * Persistent consecutive-hit streak for a periodic job, built on the #31
@@ -32,14 +33,12 @@ export async function recordConsecutiveStreak(
       p_max: alertAt - 1,
     });
     if (error) {
-      console.error(`failure-streak tracking failed for ${key}: ${error.message}`);
+      log.error("streak", { msg: "tracking failed", key }, error);
       return false;
     }
     return underLimit === false;
   } catch (err) {
-    console.error(
-      `failure-streak tracking threw for ${key}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("streak", { msg: "tracking threw", key }, err);
     return false;
   }
 }

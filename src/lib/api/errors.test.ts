@@ -95,7 +95,12 @@ describe("internalErrorResponse alerting (#802)", () => {
     expect(body.error).not.toContain("db exploded");
     expect(body.error).not.toContain("slack");
     // The alert's own failure is itself logged, never swallowed into silence.
-    expect(JSON.stringify(errSpy.mock.calls)).toContain("slack is down");
+    // #808: the Error is passed THROUGH as the second argument (so Cloudflare
+    // serializes its stack) rather than being flattened into the message, so assert
+    // on the argument itself, not on a stringified copy of the call.
+    const loggedErrors = errSpy.mock.calls.map((c) => c[1]);
+    expect(loggedErrors.some((e) => e instanceof Error && e.message === "slack is down")).toBe(true);
+    expect(errSpy.mock.calls.some((c) => String(c[0]).includes("tag=api"))).toBe(true);
   });
 
   it("reportInternalError alerts without producing a response (for non-response 500 paths)", async () => {

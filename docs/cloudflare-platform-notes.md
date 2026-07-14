@@ -132,7 +132,7 @@ rows** from data that is actually present, so none of them can be told apart fro
   Wait a couple of minutes and query a window that ends generously past the event.
 
 **Always run a positive control before believing a zero.** Query for something you
-know is in the window (the every-minute `recompute cycle` line is a good one). If
+know is in the window (the every-minute `tag=recompute` line is a good one). If
 the control also returns zero, your query is wrong, not the platform.
 
 **Don't hand-roll the query: use `scripts/logs.ts` (#807).** It encodes every trap

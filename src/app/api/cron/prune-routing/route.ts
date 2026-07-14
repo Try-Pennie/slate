@@ -3,6 +3,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pruneCutoffIso } from "@/lib/routing/retention";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ pruned: count ?? 0, cutoff });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`prune-routing cron failed: ${message}`);
+    log.error("prune-routing", { msg: "cron failed", error: message });
     return NextResponse.json({ error: message }, { status: 500 });
   } finally {
     await releaseLock("cron_prune_routing", lock);

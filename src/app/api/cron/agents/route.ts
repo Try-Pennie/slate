@@ -7,6 +7,7 @@ import { alertOnEmptyBuckets } from "@/lib/availability/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +46,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ...sync, hoursApplied, emptyBuckets: coverage.empty });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`agents cron failed: ${message}`);
+    log.error("agents", { msg: "cron failed", error: message });
     // Only alert on CONSECUTIVE failures (#486): a single transient blip (e.g. a
     // Cloudflare 522 to Salesforce) self-heals on the next hourly run.
     const consecutive = await recordFailureStreak(

@@ -1,3 +1,4 @@
+import { log } from "@/lib/log";
 /**
  * Pure ordering/staleness helpers for the cron backstop (Phase 3). The cron
  * recomputes buckets changed this tick FIRST, then rotates through the
@@ -130,11 +131,7 @@ export async function recomputeDueBuckets(
       if (r.status === "fulfilled") {
         recomputed++;
       } else {
-        console.error(
-          `recompute failed for bucket ${wave[j]}: ${
-            r.reason instanceof Error ? r.reason.message : r.reason
-          }`,
-        );
+        log.error("precompute", { msg: "recompute failed", bucket: wave[j] }, r.reason);
       }
     });
   }

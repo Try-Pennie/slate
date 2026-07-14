@@ -1,6 +1,7 @@
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { findStaleLanes, type StaleLane } from "@/lib/monitor/health";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { log } from "@/lib/log";
 
 /** Per lane, so one dead lane can't throttle away the first alert for another. */
 const staleLaneAlertKey = (lane: string) => `cron_lane_stale:${lane}`;
@@ -43,21 +44,21 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   } catch (err) {
     // A failed read is NOT evidence that every lane is fine, and it is not
     // evidence they are all dead either. Say so, and alarm on nothing.
-    console.error(
-      `lane-watchdog: heartbeat read failed, lane staleness unknown this tick: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+    log.error(
+      "lane-watchdog",
+      { msg: "heartbeat read failed, lane staleness unknown this tick" },
+      err,
     );
     return [];
   }
 
   if (stale.length === 0) return [];
 
-  console.warn(
-    `lane-watchdog: ${stale.length} stale lane(s): ${stale
-      .map((l) => `${l.lane}=${minutes(l.ageMs)}m`)
-      .join(", ")}`,
-  );
+  log.warn("lane-watchdog", {
+    msg: "stale lanes",
+    count: stale.length,
+    lanes: stale.map((l) => `${l.lane}=${minutes(l.ageMs)}m`).join(","),
+  });
 
   for (const lane of stale) {
     await sendThrottledAlert(
@@ -68,11 +69,7 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
       )}m). Its work is not happening. A mid-run CPU kill on the shared cron invocation is the usual cause (#760): check the Worker's outcome for exceededCpu, and the cron_${lane.lane} lock.`,
     ).catch((err) => {
       // One lane's failed Slack post must not skip the remaining lanes.
-      console.error(
-        `lane-watchdog: alert failed for lane "${lane.lane}": ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
   }
 

@@ -24,6 +24,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +54,7 @@ async function alertSyncFailures(
     p_max: 1,
   });
   if (error) {
-    console.error(`sync-failure streak tracking failed: ${error.message}`);
+    log.error("sync", { msg: "failure-streak tracking failed" }, error);
     return;
   }
   // rate_limit_hit returns false once the count exceeds 1 in the window,

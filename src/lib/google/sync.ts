@@ -43,6 +43,7 @@ import { googlePushUrl } from "@/lib/env";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
@@ -151,9 +152,7 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
       `Slate: possible external double-book for ${email}. ${collisions.length} active Slate booking(s) overlap a Google event booked outside Slate (booking ids: ${ids}). Check the agent's calendar and reschedule one side.`,
     ).catch(() => {});
   } catch (err) {
-    console.error(
-      `external-collision detection failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("sync", { msg: "external-collision detection failed", user_id: userId }, err);
   }
 }
 
@@ -375,9 +374,7 @@ async function recordCalHealth(
       .update({ ...nextSyncState(prev, outcome, new Date().toISOString()), ...extra })
       .eq("id", calId);
   } catch (err) {
-    console.error(
-      `recordCalHealth(${calId}) failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("sync", { msg: "recordCalHealth failed", cal_id: calId }, err);
   }
 }
 

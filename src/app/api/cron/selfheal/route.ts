@@ -9,6 +9,7 @@ import {
   reconcileCancelledBusyBlocks,
   reconcileMissingBusyBlocks,
 } from "@/lib/booking/service";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +57,7 @@ export async function GET(req: NextRequest) {
   try {
     const deletions = await processPendingEventDeletions(DELETION_DRAIN_LIMIT).catch(
       (err) => {
-        console.error(`selfheal: deletion drain failed: ${err}`);
+        log.error("selfheal", { msg: "deletion drain failed" }, err);
         return null;
       },
     );
@@ -65,13 +66,13 @@ export async function GET(req: NextRequest) {
     // stored offset in and advances the cursor on a full page.
     const freed = await rotateSelfhealScan(RECONCILE_CANCELLED_SCAN_KEY, RECONCILE_LIMIT, (offset) =>
       reconcileCancelledBusyBlocks(RECONCILE_LIMIT, offset).catch((err) => {
-        console.error(`selfheal: cancelled-reconcile failed: ${err}`);
+        log.error("selfheal", { msg: "cancelled-reconcile failed" }, err);
         return null;
       }),
     );
     const recreated = await rotateSelfhealScan(RECONCILE_MISSING_SCAN_KEY, RECONCILE_LIMIT, (offset) =>
       reconcileMissingBusyBlocks(RECONCILE_LIMIT, offset).catch((err) => {
-        console.error(`selfheal: missing-reconcile failed: ${err}`);
+        log.error("selfheal", { msg: "missing-reconcile failed" }, err);
         return null;
       }),
     );

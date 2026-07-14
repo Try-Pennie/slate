@@ -12,6 +12,7 @@
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import handler from "../.open-next/worker.js";
 import { routesForCron } from "./cron-routes";
+import { log } from "@/lib/log";
 
 // Durable Object classes the generated worker exports must be re-exported
 // from the entry wrangler actually loads.
@@ -38,7 +39,7 @@ const worker = {
   ): Promise<void> {
     const paths = routesForCron(controller.cron);
     if (paths.length === 0) {
-      console.error(`scheduled: no route for cron "${controller.cron}"`);
+      log.error("cron", { msg: "no route for cron expression", cron: controller.cron });
       return;
     }
     // Fire each lane as an independent request so a co-scheduled lane's failure
@@ -52,9 +53,12 @@ const worker = {
         const res: Response = await handler.fetch(request, env, ctx);
         // Surface failures in the Workers dashboard/tail; cron has no retries.
         if (!res.ok) {
-          console.error(
-            `scheduled ${path} -> ${res.status} ${(await res.text()).slice(0, 300)}`,
-          );
+          log.error("cron", {
+            msg: "lane returned a non-ok response",
+            path,
+            status: res.status,
+            body: (await res.text()).slice(0, 300),
+          });
         }
       }),
     );

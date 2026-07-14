@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { nextScanOffset } from "./scan-rotation";
+import { log } from "@/lib/log";
 
 /**
  * Persisted rotating-scan cursor for the bounded self-heal sweeps (#512).
@@ -21,7 +22,7 @@ export async function loadScanOffset(key: string): Promise<number> {
     .eq("key", key)
     .maybeSingle();
   if (error) {
-    console.error(`selfheal-cursor: load failed for ${key}: ${error.message}`);
+    log.error("selfheal-cursor", { msg: "load failed", key }, error);
     return 0;
   }
   const offset = (data as { next_offset: number } | null)?.next_offset ?? 0;
@@ -32,7 +33,7 @@ export async function saveScanOffset(key: string, offset: number): Promise<void>
   const { error } = await supabaseAdmin()
     .from(TABLE)
     .upsert({ key, next_offset: offset, updated_at: new Date().toISOString() });
-  if (error) console.error(`selfheal-cursor: save failed for ${key}: ${error.message}`);
+  if (error) log.error("selfheal-cursor", { msg: "save failed", key }, error);
 }
 
 /**

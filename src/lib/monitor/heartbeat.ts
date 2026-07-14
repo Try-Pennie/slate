@@ -6,6 +6,7 @@
  *       These use an @/ alias so they cannot be node-tested directly; that's fine.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { log } from "@/lib/log";
 
 /**
  * Returns true ONLY when `lastRanAtMs` is non-null AND the gap since the last
@@ -24,7 +25,7 @@ export function isHeartbeatStale(
 
 /**
  * Upsert `{ lane, last_ran_at: now }` into `lane_heartbeats`. Best-effort:
- * never throws (swallows errors + console.error). Call after a lane's work
+ * never throws (swallows errors, logging them). Call after a lane's work
  * succeeds to prove it ran this tick.
  */
 export async function recordHeartbeat(lane: string): Promise<void> {
@@ -33,11 +34,9 @@ export async function recordHeartbeat(lane: string): Promise<void> {
     const { error } = await db
       .from("lane_heartbeats")
       .upsert({ lane, last_ran_at: new Date().toISOString() }, { onConflict: "lane" });
-    if (error) console.error(`heartbeat upsert failed for lane "${lane}": ${error.message}`);
+    if (error) log.error("heartbeat", { msg: "upsert failed", lane }, error);
   } catch (err) {
-    console.error(
-      `heartbeat upsert threw for lane "${lane}": ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("heartbeat", { msg: "upsert threw", lane }, err);
   }
 }
 
@@ -79,16 +78,14 @@ export async function readHeartbeatMs(lane: string): Promise<number | null> {
       .eq("lane", lane)
       .maybeSingle();
     if (error) {
-      console.error(`heartbeat read failed for lane "${lane}": ${error.message}`);
+      log.error("heartbeat", { msg: "read failed", lane }, error);
       return null;
     }
     if (!data) return null;
     const ms = Date.parse((data as { last_ran_at: string }).last_ran_at);
     return isNaN(ms) ? null : ms;
   } catch (err) {
-    console.error(
-      `heartbeat read threw for lane "${lane}": ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("heartbeat", { msg: "read threw", lane }, err);
     return null;
   }
 }

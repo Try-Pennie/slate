@@ -112,7 +112,10 @@ describe("loadActiveUpcomingBookings", () => {
 
     expect(scanned).toEqual([]);
     expect(err).toHaveBeenCalledOnce();
-    expect(String(err.mock.calls[0][0])).toContain("read timeout");
+    // #808: the line is tagged, and the real failure rides along as the second
+    // argument so Cloudflare serializes it rather than it being flattened away.
+    expect(String(err.mock.calls[0][0])).toContain("tag=reconcile-missing");
+    expect(JSON.stringify(err.mock.calls[0][1])).toContain("read timeout");
     err.mockRestore();
   });
 });
