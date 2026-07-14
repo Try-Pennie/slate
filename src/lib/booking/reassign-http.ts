@@ -23,7 +23,10 @@ import { internalErrorResponse } from "@/lib/api/errors";
  * Anything unrecognized is an unexpected fault: a generic 500 that never leaks
  * internal detail (#598), not a 409.
  */
-export function mapReassignError(err: unknown, context: string): NextResponse {
+export async function mapReassignError(
+  err: unknown,
+  context: string,
+): Promise<NextResponse> {
   // At-cap target: a distinct, recoverable 409 with a machine-readable code the
   // manager UI detects to drive the two-step "Reassign anyway" override (#546).
   if (err instanceof DailyCapExceededError) {

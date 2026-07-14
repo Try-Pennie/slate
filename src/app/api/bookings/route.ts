@@ -17,7 +17,7 @@ import {
 } from "@/lib/booking/service";
 import { formatOutcomeLine } from "@/lib/monitor/booking-api-outcome";
 import { allowRequest, clientIp } from "@/lib/rate-limit";
-import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
+import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
 import {
   DIRECT_BOOKING_API_RATE_RULES,
   DIRECT_BOOKING_API_READ_RATE_RULES,
@@ -116,7 +116,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(preview);
     } catch (err) {
       const { status, code } = mapBookingError(err);
-      return NextResponse.json(apiErrorBody(err, code, "preview", "Preview failed"), { status });
+      return NextResponse.json(await apiErrorBody(err, code, "preview", "Preview failed"), { status });
     }
   }
 
@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
       formatOutcomeLine({ outcome: "error", bucketCode: v.bucketCode, keyId: authd.keyId, status, code }),
     );
     return NextResponse.json(
-      apiErrorBody(err, code, "book", "Booking failed"),
+      await apiErrorBody(err, code, "book", "Booking failed"),
       { status },
     );
   }
@@ -222,7 +222,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ bookings: list });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(apiErrorBody(err, code, "lookup", "Lookup failed"), {
+    return NextResponse.json(await apiErrorBody(err, code, "lookup", "Lookup failed"), {
       status: httpStatus,
     });
   }
@@ -251,7 +251,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ outcome: "cancelled", booking });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(apiErrorBody(err, code, "cancel", "Cancel failed"), {
+    return NextResponse.json(await apiErrorBody(err, code, "cancel", "Cancel failed"), {
       status: httpStatus,
     });
   }
@@ -263,15 +263,20 @@ export async function DELETE(req: NextRequest) {
  * an unexpected INTERNAL returns the generic message and logs the real detail
  * server-side so table names / Google error text never leak to the client
  * (#707, sibling of #598). The machine-readable `code` is always preserved.
+ *
+ * An INTERNAL here goes through the SAME chokepoint as every other unexpected
+ * fault (`reportInternalError`, #802), so the bot API alerts too. It used to
+ * only `console.error`, which meant the one caller that is a machine, and so has
+ * nobody watching its responses, was also the one whose faults nobody heard.
  */
-function apiErrorBody(
+async function apiErrorBody(
   err: unknown,
   code: string,
   context: string,
   fallback: string,
-): { error: string; code: string } {
+): Promise<{ error: string; code: string }> {
   if (code === "INTERNAL") {
-    console.error(`[bookings-api/${context}] unexpected error`, err);
+    await reportInternalError(err, `bookings-api/${context}`);
     return { error: GENERIC_ERROR_MESSAGE, code };
   }
   return { error: err instanceof Error ? err.message : fallback, code };
