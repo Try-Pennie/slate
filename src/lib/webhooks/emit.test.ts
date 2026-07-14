@@ -318,3 +318,42 @@ describe("resendDelivery", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+// #600: a Regal endpoint with no API key is a misconfiguration. buildRequest refuses to
+// build the delivery rather than posting an unauthenticated event Regal will reject.
+//
+// The refusal must stay INSIDE the webhook machinery. emitWebhook is awaited by the
+// booking flow, so letting it throw would fail real bookings over a webhook config
+// mistake, and the outbox would retry the throw forever. Fail loud, but in the right
+// place: a failed delivery row, visible in the log, retried once the key is set.
+describe("misconfigured Regal endpoint (#600)", () => {
+  const regalNoKey = {
+    ...endpoint,
+    id: "ep1",
+    format: "regal",
+    url: "https://events.regalvoice.com/events",
+    auth_header: null,
+  };
+
+  it("does not throw into the booking path when the API key is missing", async () => {
+    state.endpoints = [regalNoKey];
+    const p = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+
+    await expect(emitWebhook("o1", "booking.created", p, "bk1")).resolves.toBeUndefined();
+  });
+
+  it("never posts an unauthenticated event, and records the delivery as failed", async () => {
+    state.endpoints = [regalNoKey];
+    const p = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+
+    await emitWebhook("o1", "booking.created", p, "bk1");
+
+    // The whole point: nothing goes out the door without the key.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const failed = state.updates.find((u) => u.status === "failed");
+    expect(failed).toBeTruthy();
+    // The log has to say WHY, or the admin cannot act on it.
+    expect(String(failed?.last_response)).toMatch(/api key/i);
+  });
+});

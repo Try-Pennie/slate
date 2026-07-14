@@ -1131,12 +1131,24 @@ export default async function AdminPage({
             <label className={labelCls}>
               Authorization header (Regal API key)
             </label>
+            {/* #600: never render the stored key. It used to come down as this input's
+                defaultValue, which put the live secret in the page HTML and on screen in
+                plain text. Write only: blank leaves the saved key untouched. */}
             <input
               name="auth_header"
-              defaultValue={webhook?.auth_header ?? ""}
-              placeholder="Regal API key"
+              type="password"
+              autoComplete="off"
+              defaultValue=""
+              placeholder={
+                webhook?.auth_header ? "Leave blank to keep the current key" : "Regal API key"
+              }
               className={inputCls}
             />
+            <p className="mt-1 text-xs text-fg-muted">
+              {webhook?.auth_header
+                ? "A key is saved. Leave this blank to keep it, or type a new one to replace it."
+                : "No key saved yet. Regal deliveries will fail until one is set."}
+            </p>
           </div>
           <SubmitButton className={btnCls} pendingLabel="Saving…">
             Save

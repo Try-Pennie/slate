@@ -33,7 +33,10 @@ const locks = vi.hoisted(() => ({
 
 const dbState = vi.hoisted(() => ({ single: null as unknown, count: 0 }));
 const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
-const update = vi.hoisted(() => vi.fn(() => ({ eq: updateEq })));
+const update = vi.hoisted(() =>
+  vi.fn((_patch: Record<string, unknown> = {}) => ({ eq: updateEq })),
+);
+const insert = vi.hoisted(() => vi.fn(async () => ({})));
 const from = vi.hoisted(() =>
   vi.fn(() => {
     const q: Record<string, unknown> = {
@@ -41,7 +44,9 @@ const from = vi.hoisted(() =>
       eq: vi.fn(() => q),
       in: vi.fn(async () => ({ count: dbState.count })),
       maybeSingle: vi.fn(async () => ({ data: dbState.single })),
+      limit: vi.fn(() => q),
       update,
+      insert,
     };
     return q;
   }),
@@ -63,6 +68,7 @@ import {
   endDroppedImpersonation,
   resendWebhookDelivery,
   replayFailedWebhooks,
+  setWebhookEndpoint,
 } from "./actions";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
 
@@ -244,5 +250,56 @@ describe("webhook re-delivery duplicate guard", () => {
     await replayFailedWebhooks(form({ hours: "24" }));
     expect(emit.replayDeadLetteredDeliveries).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+// #600: the Regal API key is the ONLY thing authenticating Slate's booking events to
+// Regal. The admin form used to round-trip it as an input's defaultValue and treat a
+// blank field as "set it to null", so an admin who edited the webhook URL without
+// retyping the key silently wiped it, and every booking event afterwards posted an
+// empty Authorization header. Blank must now mean "keep what is there".
+describe("setWebhookEndpoint key handling (#600)", () => {
+  it("does NOT wipe the stored key when the field is left blank", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { id: "ep1" };
+
+    await setWebhookEndpoint(
+      form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "" }),
+    );
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const patch = update.mock.calls[0][0] as Record<string, unknown>;
+    // The whole bug: `auth_header: null` here takes Regal offline silently.
+    expect(patch).not.toHaveProperty("auth_header");
+    expect(patch.url).toBe("https://events.regalvoice.com/events");
+    expect(patch.format).toBe("regal");
+  });
+
+  it("treats a whitespace-only field as blank, not as a new key", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { id: "ep1" };
+
+    await setWebhookEndpoint(
+      form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "   " }),
+    );
+
+    const patch = update.mock.calls[0][0] as Record<string, unknown>;
+    expect(patch).not.toHaveProperty("auth_header");
+  });
+
+  it("still updates the key when one is actually supplied", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { id: "ep1" };
+
+    await setWebhookEndpoint(
+      form({
+        url: "https://events.regalvoice.com/events",
+        format: "regal",
+        auth_header: "new-key",
+      }),
+    );
+
+    const patch = update.mock.calls[0][0] as Record<string, unknown>;
+    expect(patch.auth_header).toBe("new-key");
   });
 });
