@@ -14,7 +14,8 @@ export type MonitorAlertKey =
   | "availability_booked_solid"
   | "fallback_covered_availability"
   | "low_booking_volume"
-  | "thin_tier_staffing";
+  | "thin_tier_staffing"
+  | "migration_version_lag";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -22,6 +23,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "fallback_covered_availability",
   "low_booking_volume",
   "thin_tier_staffing",
+  "migration_version_lag",
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -34,6 +36,10 @@ export const MONITOR_DEFAULTS = {
     // Proactive staffing nudge (#569): a slow, once-a-day whisper. Staffing
     // changes over days, so a long cooldown keeps it from repeating every tick.
     thin_tier_staffing: 24 * 60 * 60_000,
+    // Schema behind the deployed code (#516). Repeats hourly while it persists:
+    // it stays broken until a human runs db push, and a dormant schema gap has
+    // twice gone unnoticed for a whole session, so it should keep asking.
+    migration_version_lag: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

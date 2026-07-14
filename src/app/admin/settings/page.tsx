@@ -39,6 +39,11 @@ const COOLDOWN_FIELDS: { key: MonitorAlertKey; label: string; help: string }[] =
     label: "Thin-tier staffing cooldown",
     help: "Quiet nudge when a tier rests on 1 to 2 bookable agents.",
   },
+  {
+    key: "migration_version_lag",
+    label: "Migration-lag page cooldown",
+    help: "Urgent page when the live database is missing a migration the deployed code ships.",
+  },
 ];
 
 /** Formats a stored/updated pair into "changed by X at Y", or a default note. */

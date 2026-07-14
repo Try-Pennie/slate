@@ -6,6 +6,7 @@
 // the anon/publishable client (this guard exists because 0011/0012 did).
 // Run: node --experimental-strip-types scripts/test-migrations.ts
 import { readdirSync, readFileSync } from "node:fs";
+import { SHIPPED_MIGRATION_VERSION } from "../src/lib/db/migration-version.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -189,6 +190,20 @@ if (outboxActionAdd) {
         (extra.length ? ` (not in SQL: ${extra.join(", ")})` : ""),
     );
   }
+}
+
+// The deployed build has no filesystem, so the prod lag alert (#516) compares the
+// live DB against a constant baked into the bundle. That constant is only as good
+// as this guard: adding a migration without bumping it would make prod look in
+// sync while the schema it needs is unapplied, which is the exact false-confidence
+// failure the alert exists to catch.
+{
+  const highest = String(Math.max(...nums)).padStart(4, "0");
+  assert(
+    SHIPPED_MIGRATION_VERSION === highest,
+    `SHIPPED_MIGRATION_VERSION (src/lib/db/migration-version.ts) is the highest migration ` +
+      `(${highest}); got ${SHIPPED_MIGRATION_VERSION}. Bump it in the same commit as the migration.`,
+  );
 }
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
