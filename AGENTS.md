@@ -58,6 +58,38 @@ holds one entry (`widget-embed.test.ts`, which drives the real `widget.js` in a
 browser environment). That guard fails the build if the boundary erodes again.
 Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
 
+# Reading production logs (Cloudflare observability)
+
+Cloudflare **does** capture `console.error` and `console.warn` from the deployed
+Worker, with the `Error` object serialized. This was verified in production
+(#708) by logging a unique token and reading it back at level `error`. So the
+"detail is kept server-side in the logs" guarantee in `internalErrorResponse`
+(`src/lib/api/errors.ts`) is real. An earlier belief that Cloudflare dropped
+`console.error` was wrong, and it was wrong for the reason below.
+
+**Filter on the bare `message` and `level` fields, never `$metadata.message` /
+`$metadata.level`.** The `$metadata.*` fields hold only *invocation* records (the
+`GET https://slate.trypennie.app/...` line, or the cron expression for a
+scheduled run). App console output lives in the bare `message` / `level` fields.
+Query `$metadata.message` for your log text and you get zero rows, which looks
+exactly like "Cloudflare is dropping our logs" and is how the false belief
+started. Note this contradicts the Cloudflare MCP tool's own docs, which
+advertise `$metadata.message` as the preferred key.
+
+Two more gotchas, both of which produce a convincing false negative:
+
+- **Preview versions are not logged at all.** A version from `wrangler versions
+  upload` serves traffic on its preview URL but emits **no** observability
+  events, not even invocation records. Only the deployed version is captured, so
+  a canary must run against a real deploy.
+- **`console.log` did not come back** in the same canary that `warn` and `error`
+  did. Don't rely on it for anything you need to read later; log at `warn` or
+  `error` if it must survive.
+
+Retention is 7 days and there is no alerting on top of it, so logs are for
+forensics after the fact. Anything that must page someone still needs a real
+sink (a Slack alert or an `alert_state` row); see the fail-loud rule.
+
 # Screenshotting the dev UI (Playwright/Peekaboo)
 
 Screenshots against `next dev` hang and time out — element shots wait forever on

@@ -17,8 +17,12 @@ export const GENERIC_ERROR_MESSAGE =
  * lead nor a compromised admin session must see internal detail. Low-grade info
  * disclosure that aids recon otherwise leaks straight through `err.message`.
  *
- * Logging is `console.error`, matching the rest of the app; see #708 on whether
- * Cloudflare reliably captures it.
+ * Logging is `console.error`, matching the rest of the app. Cloudflare DOES
+ * capture it: verified in production (#708) with a canary that logged a unique
+ * token, which came back at level `error` with the Error object serialized. To
+ * read it, filter on the bare `message`/`level` fields, NOT `$metadata.message`
+ * /`$metadata.level`: those hold only invocation records, so filtering on them
+ * returns nothing and makes the logs look empty. See AGENTS.md.
  */
 export function internalErrorResponse(err: unknown, context: string): NextResponse {
   console.error(`[${context}] unexpected error`, err);
