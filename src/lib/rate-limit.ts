@@ -56,25 +56,49 @@ export async function allowRequest(
       // can break the alert too. Swallow that. A failed alert must not turn a limiter
       // failure into a BOOKING failure, which would be the exact opposite of failing open.
       console.error(`rate_limit_hit failed (${rule.prefix}): ${error.message}`);
-      await sendThrottledAlert(
+      await alertBestEffort(
         `rate_limit_broken:${rule.prefix}`,
-        LIMITER_BROKEN_COOLDOWN_MS,
         `Slate: the rate limiter is FAILING OPEN. rate_limit_hit errored on '${rule.prefix}': ${error.message}. Requests are being allowed through unthrottled until this is fixed.`,
-      ).catch((err) => {
-        console.error(`rate-limit alert failed (${rule.prefix}): ${String(err)}`);
-      });
+        rule.prefix,
+      );
       continue; // fail open
     }
-    if (data === false) return false;
+    if (data === false) {
+      // #796: a block on a machine-to-machine ceiling is itself news. The caller is meant to
+      // be our own auto-booker sitting well inside its budget, so a rejection means either the
+      // ceiling is too tight (we are now failing real bookings that used to succeed) or the key
+      // has leaked. Until #418 lands there is no other way to see this. Best-effort, as above.
+      if (rule.alertOnBlock) {
+        await alertBestEffort(
+          `rate_limit_blocked:${rule.prefix}`,
+          `Slate: the booking API rate limit BLOCKED a request from ${ip} (rule '${rule.prefix}', ${rule.max} per ${rule.windowSeconds}s). If that is our own auto-booker, the ceiling is too tight and real bookings are being rejected. If it is not, a key may have leaked.`,
+          rule.prefix,
+        );
+      }
+      return false;
+    }
   }
   return true;
+}
+
+/** Alert without ever letting the alert's own failure escape. The alert writes to
+ *  alert_state, so whatever broke the limiter can break the alert too, and a monitoring
+ *  failure must never become a booking failure. */
+async function alertBestEffort(key: string, text: string, label: string): Promise<void> {
+  await sendThrottledAlert(key, LIMITER_BROKEN_COOLDOWN_MS, text).catch((err) => {
+    console.error(`rate-limit alert failed (${label}): ${String(err)}`);
+  });
 }
 
 /**
  * Give back a counted hit for every rule when the request failed for a reason
  * that ISN'T the customer's doing (e.g. a verify-on-book outage → 503), so a
- * server fault can't consume their booking budget (#319). Best-effort: a refund
- * error is logged and ignored — never fails the response.
+ * server fault can't consume their booking budget (#319). Never fails the response.
+ *
+ * #796: it used to only console.error on failure, which Cloudflare does not capture, so a
+ * broken refund was invisible. The customer then quietly loses booking allowance because of
+ * OUR fault, a bad enough outcome that it has to be heard. Still swallowed either way: a
+ * failed refund must not turn a server fault into a second failure for the same customer.
  */
 export async function refundRequest(
   ip: string,
@@ -87,6 +111,11 @@ export async function refundRequest(
     });
     if (error) {
       console.error(`rate_limit_refund failed (${rule.prefix}): ${error.message}`);
+      await alertBestEffort(
+        `rate_limit_refund_broken:${rule.prefix}`,
+        `Slate: a rate-limit REFUND failed on '${rule.prefix}': ${error.message}. Customers whose booking failed through no fault of their own are losing budget from their limit.`,
+        rule.prefix,
+      );
     }
   }
 }
