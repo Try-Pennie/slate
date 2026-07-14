@@ -32,27 +32,22 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    // #801: in the deployed Worker, `console.log` is the ONE console method
-    // Cloudflare captures WITHOUT a `level` field. The line is stored, but it is
-    // invisible to every level-filtered or level-grouped query, which reads as
-    // "the logs are gone" (that false negative is how #708 concluded console.log
-    // was dropped). debug/info/warn/error all carry a level, so `console.info` is
-    // the drop-in for a routine operational line. Errors severity, not warn: lint
-    // exits 0 on warnings, so a warning here would guard nothing.
-    // Covers everything that ships INSIDE the Worker: src/ plus worker/, which is
-    // the deployed entry point (wrangler `main`) and drives the cron lanes.
-    // scripts/ is exempt: node harnesses printing to a terminal, not the Worker.
+    // #808: every server log line goes through `src/lib/log.ts`, so the two things
+    // that kept getting decided wrongly per call site are decided once: the LEVEL
+    // (console.log is unreachable from the helper, and it is the one method
+    // Cloudflare stores with no `level`, which is how #801's lines went unreadable)
+    // and a searchable `tag=`.
+    //
+    // Error severity, not warn: `pnpm lint` exits 0 on warnings, so a warning here
+    // would guard nothing. Covers everything that ships INSIDE the Worker: src/ plus
+    // worker/ (the wrangler entry point). scripts/ is exempt: node harnesses
+    // printing to a terminal, not the Worker.
     files: ["src/**/*.{ts,tsx}", "worker/**/*.ts"],
+    ignores: ["src/lib/log.ts", "**/*.test.ts", "**/*.test.tsx"],
     rules: {
-      "no-restricted-properties": [
-        "error",
-        {
-          object: "console",
-          property: "log",
-          message:
-            "console.log lands in Cloudflare with no `level`, so it never shows up in a level-filtered log query (#801). Use console.info for routine lines, console.warn/error for problems.",
-        },
-      ],
+      // No allow-list: even console.error goes through the helper, so every line
+      // gets a tag. src/lib/log.ts is the one file exempt (it IS the console call).
+      "no-console": "error",
     },
   },
 ]);

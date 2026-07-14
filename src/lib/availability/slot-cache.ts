@@ -10,6 +10,7 @@ import {
 import { appUrl } from "@/lib/env";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
 import { tierKeyOf } from "@/lib/routing/tiers";
+import { log } from "@/lib/log";
 
 // Short L1 TTL: the precompute row is the source of truth, so the Cache API is
 // just a per-colo accelerator. 5s keeps a far-colo read self-healing well inside
@@ -115,9 +116,7 @@ export async function recomputeBucketsForAgent(userId: string): Promise<void> {
   } catch (err) {
     // Best-effort: the recompute lane's freshness sweep still backstops. Log the
     // cause (#313) so a failed fan-out isn't wholly silent.
-    console.error(
-      `recomputeBucketsForAgent failed for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("slot-cache", { msg: "recomputeBucketsForAgent failed", user_id: userId }, err);
   }
 }
 

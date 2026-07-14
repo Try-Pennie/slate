@@ -15,7 +15,6 @@ import {
   UnknownBucketError,
   BookingNotFoundError,
 } from "@/lib/booking/service";
-import { formatOutcomeLine } from "@/lib/monitor/booking-api-outcome";
 import { allowRequest, clientIp } from "@/lib/rate-limit";
 import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
 import {
@@ -24,6 +23,7 @@ import {
   DIRECT_BOOKING_API_IP_RATE_RULES,
 } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -84,7 +84,7 @@ async function authorize(
 export async function POST(req: NextRequest) {
   const authd = await authorize(req);
   if (!authd.ok) return authd.response;
-  console.info(`booking-api: authenticated request via key '${authd.keyId}'`);
+  log.info("booking-api", { msg: "authenticated request", key: authd.keyId });
 
   const parsed = parseDirectBookingRequest(await req.json().catch(() => null));
   if (!parsed.ok) {
@@ -151,15 +151,24 @@ export async function POST(req: NextRequest) {
     // move it silently — 409 so the bot asks the lead, then retries with
     // confirmReschedule:true. Everything else is a success.
     const status = result.outcome === "confirm_required" ? 409 : 200;
-    console.info(
-      formatOutcomeLine({ outcome: result.outcome, bucketCode: v.bucketCode, keyId: authd.keyId, status }),
-    );
+    log.info("booking-api", {
+      msg: "outcome",
+      outcome: result.outcome,
+      bucket: v.bucketCode,
+      key: authd.keyId,
+      status,
+    });
     return NextResponse.json(body, { status });
   } catch (err) {
     const { status, code } = mapBookingError(err);
-    console.info(
-      formatOutcomeLine({ outcome: "error", bucketCode: v.bucketCode, keyId: authd.keyId, status, code }),
-    );
+    log.info("booking-api", {
+      msg: "outcome",
+      outcome: "error",
+      bucket: v.bucketCode,
+      key: authd.keyId,
+      status,
+      code,
+    });
     return NextResponse.json(
       await apiErrorBody(err, code, "book", "Booking failed"),
       { status },

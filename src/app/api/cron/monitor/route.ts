@@ -33,6 +33,7 @@ import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import type { Bucket } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -252,14 +253,18 @@ export async function GET(req: NextRequest) {
         formatFallbackCoveredNotice(coveredDetail),
       ).catch(() => {});
     }
-    console.info(
-      `monitor: ${page.length} dead-end (${cause.dataAnomaly.length} anomaly, ` +
-        `${cause.bookedSolid.length} booked-solid, ${cause.unverified.length} unverified) + ` +
-        `${covered.length} fallback-covered of ${buckets.length} bucket(s)` +
-        (page.length ? ` [page: ${page.join(", ")}]` : "") +
-        (covered.length ? ` [covered: ${covered.map((c) => `${c.code}->${c.via}`).join(", ")}]` : "") +
-        (truncated ? " [scan truncated by budget]" : ""),
-    );
+    log.info("monitor", {
+      msg: "availability scan",
+      dead_end: page.length,
+      anomaly: cause.dataAnomaly.length,
+      booked_solid: cause.bookedSolid.length,
+      unverified: cause.unverified.length,
+      fallback_covered: covered.length,
+      buckets: buckets.length,
+      page: page.length ? page.join(",") : null,
+      covered: covered.length ? covered.map((c) => `${c.code}->${c.via}`).join(",") : null,
+      truncated,
+    });
 
     // --- Low booking volume (#370): only during business hours; disarmed until
     // cutover (counts + logs but does not alert) so the ramp can't cry wolf. ---
@@ -282,9 +287,13 @@ export async function GET(req: NextRequest) {
           formatLowVolumeAlert(breaches),
         ).catch(() => {});
       }
-      console.info(
-        `monitor volume: 30m=${count30} 120m=${count120}, ${breaches.length} below floor, armed=${armed}`,
-      );
+      log.info("monitor", {
+        msg: "booking volume",
+        count_30m: count30,
+        count_120m: count120,
+        below_floor: breaches.length,
+        armed,
+      });
       volume = { armed, windows, breaches: breaches.length };
     }
 
@@ -298,7 +307,7 @@ export async function GET(req: NextRequest) {
       loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
       notify: sendThrottledInfo,
       cooldownMs: settings.cooldownMs.thin_tier_staffing,
-      log: (m) => console.info(m),
+      log: (m) => log.info("thin-tier", { msg: m }),
     });
 
     // Watch the other lanes (#803). The sync lane does this too; running it from

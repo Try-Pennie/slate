@@ -65,13 +65,26 @@ Cloudflare captures **every** console method from the deployed Worker, with the
 100% at every level. So the "detail is kept server-side in the logs" guarantee in
 `internalErrorResponse` (`src/lib/api/errors.ts`) is real.
 
-**`console.log` is banned in `src/`** (ESLint `no-restricted-properties`), because
-it is the one method Cloudflare stores with **no `level` field**. The line is kept,
-but it is invisible to every level-filtered query, which reads as a total drop.
-Use `console.info` for a routine operational line, `warn`/`error` for problems.
-That earlier "console.log doesn't come back" belief (and, before it, "console.error
-doesn't come back") were both this same false negative: a query that verified
-nothing, read as evidence of absence.
+**Never call `console` directly in `src/`** (ESLint `no-console`, error severity).
+Every server line goes through **`src/lib/log.ts`** (#808):
+
+```ts
+log.info("recompute", { msg: "cycle", refreshed: 3, util_pct: 42 });
+log.warn("lane-watchdog", { msg: "stale lane", lane: "outbox" });
+log.error("booking", { msg: "insert failed", booking_id: id }, err);  // Error passed THROUGH
+```
+
+which emits `slate tag=recompute msg="cycle" refreshed=3 util_pct=42`. Two things
+that kept being decided wrongly per call site now live in one place:
+
+- **The level.** `console.log` is unreachable from the helper. It is the one method
+  Cloudflare stores with **no `level` field**, so the line is kept but is invisible
+  to every level-filtered query, which reads as a total drop. That "console.log
+  doesn't come back" belief (and, before it, "console.error doesn't come back") were
+  both the same false negative: a query that verified nothing, read as absence.
+- **A searchable `tag=`.** Filter on `tag=booking-api` instead of guessing at a
+  message substring. Pass the `Error` itself as the third argument so Cloudflare
+  serializes its stack rather than it being flattened into text.
 
 **Filter on the bare `message` and `level` fields, never `$metadata.message` /
 `$metadata.level`.** The `$metadata.*` fields hold only *invocation* records (the

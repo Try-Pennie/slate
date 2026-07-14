@@ -27,6 +27,7 @@ import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
 // this module, but since both modules only export functions (no module-level
 // execution), ESM live bindings ensure the reference is valid by call time.
 import { eligibleAgentIdsCached } from "./eligible-cache.ts";
+import { log } from "@/lib/log";
 
 export { agentIdsFromPool } from "@/lib/availability/pool";
 
@@ -429,19 +430,16 @@ async function rankBucketShare(
   // (the live order is always equal-share). Skipped for the routing-API preview.
   if (shadowLog && !share.degraded) {
     const div = shadowRankingDivergence(candidateIds, share);
-    console.info(
-      JSON.stringify({
-        tag: "routing_shadow",
-        bucket_id: bucketId,
-        anchor_ms: anchorMs,
-        candidates: candidateIds.length,
-        diverged: div.diverged,
-        equal_share_top: div.equalShareTop,
-        recency_top: div.recencyTop,
-        equal_share_order: div.equalShareOrder,
-        recency_order: div.recencyOrder,
-      }),
-    );
+    log.info("routing-shadow", {
+      bucket_id: bucketId,
+      anchor_ms: anchorMs,
+      candidates: candidateIds.length,
+      diverged: div.diverged,
+      equal_share_top: div.equalShareTop,
+      recency_top: div.recencyTop,
+      equal_share_order: div.equalShareOrder.join(","),
+      recency_order: div.recencyOrder.join(","),
+    });
     return div.equalShareOrder;
   }
   return orderByBucketShare(candidateIds, share);

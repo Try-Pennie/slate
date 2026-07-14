@@ -1,7 +1,7 @@
 // Read Slate's production Worker logs without walking into the traps (#807).
 //
 //   CLOUDFLARE_API_TOKEN=... node --experimental-strip-types --import ./scripts/register-paths.mjs \
-//     scripts/logs.ts "recompute cycle" [--minutes 60] [--control "recompute cycle"]
+//     scripts/logs.ts "tag=booking-api" [--minutes 60] [--control "tag=recompute"]
 //
 // Exit: 0 found, 1 trustworthy absence, 2 UNVERIFIABLE (the query itself is broken).
 //
@@ -37,9 +37,12 @@ const ACCOUNT_ID = "3e7f907a9c19e51417873e2cce4fbc5c";
  * minute, so it is ALWAYS present in any window of a healthy deploy. If a query
  * cannot find this, the query is wrong (bad window, bad credentials, wrong field)
  * and any other zero it returns means nothing.
- * Source: src/app/api/cron/recompute/route.ts.
+ *
+ * Every server line is now `slate tag=<subsystem> ...` (#808), so this is a tag
+ * match rather than a prose substring, and searching is the same shape:
+ * `logs.ts "tag=booking-api"`. Source: src/app/api/cron/recompute/route.ts.
  */
-export const CONTROL_NEEDLE = "recompute cycle";
+export const CONTROL_NEEDLE = "tag=recompute";
 
 /** Cloudflare's ingestion lag. A window ending inside it undercounts. */
 const INGESTION_LAG_MS = 2 * 60_000;

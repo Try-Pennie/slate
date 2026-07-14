@@ -3,6 +3,7 @@ import { reassignApiKey } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { reassignBooking } from "@/lib/booking/service";
 import { mapReassignError } from "@/lib/booking/reassign-http";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -50,9 +51,11 @@ export async function POST(req: NextRequest) {
       true,
     );
     if (result.overCap) {
-      console.warn(
-        `reassign forced agent ${result.booking.agent_email} over their daily cap (booking ${result.booking.id})`,
-      );
+      log.warn("reassign", {
+        msg: "forced agent over their daily cap",
+        agent: result.booking.agent_email,
+        booking_id: result.booking.id,
+      });
     }
     return NextResponse.json({
       booking: {

@@ -1,3 +1,4 @@
+import { log } from "@/lib/log";
 /**
  * DB writes for the sync cron, kept dependency-free (the Supabase client is
  * passed in) so the batching + guards are node-testable. Exercised by
@@ -35,10 +36,8 @@ export async function stampLastSynced(
       .from("users")
       .update({ last_synced_at: nowIso })
       .in("id", unique);
-    if (error) console.error(`stampLastSynced failed: ${error.message}`);
+    if (error) log.error("sync", { msg: "stampLastSynced failed" }, error);
   } catch (err) {
-    console.error(
-      `stampLastSynced threw: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("sync", { msg: "stampLastSynced threw" }, err);
   }
 }

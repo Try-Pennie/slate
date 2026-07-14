@@ -3,6 +3,7 @@ import { unwrap } from "@/lib/db/result";
 import { getBucketSlots, type BucketSlots } from "./service";
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import type { Attributes, Criteria } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -75,9 +76,7 @@ export async function recomputeBucketSlots(
     // is the silent "no availability" degrade. Skip the write so the prior row
     // stands and the recompute lane's stale-bucket alarm surfaces it; log the
     // cause here so the alarm isn't the only trace of WHY the bucket went stale.
-    console.error(
-      `recompute skipped for bucket ${code}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("precompute", { msg: "recompute skipped", bucket: code }, err);
     fresh = null;
   }
   if (fresh) await writeBucketSlotsRow(code, fresh);
@@ -198,9 +197,7 @@ export async function touchedBucketCodes(
     }
     return [...touched].slice(0, max);
   } catch (err) {
-    console.error(
-      `${label}: bucket lookup failed for ${userIds.length} agent(s): ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error("precompute", { msg: "bucket lookup failed", label, agents: userIds.length }, err);
     return [];
   }
 }

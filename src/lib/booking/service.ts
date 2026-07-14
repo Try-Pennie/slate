@@ -261,6 +261,7 @@ export {
   AgentNotAvailableError,
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
+import { log } from "@/lib/log";
 export type { BookingResult, CreateBookingInput };
 export type { BookingActor } from "@/lib/booking/core";
 
@@ -294,7 +295,7 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
 
   const ids = blocks.map((b) => b.booking_id).join(", ");
   const what = blocks.length === 1 ? `booking ${ids}` : `${blocks.length} bookings (${ids})`;
-  console.error(`busy_blocks insert failed for ${what}: ${error.message}`);
+  log.error("booking", { msg: "busy_blocks insert failed", what }, error);
   await sendThrottledAlert(
     "busy_block_write_through",
     CACHE_ALERT_COOLDOWN_MS,
@@ -338,7 +339,7 @@ export async function loadActiveUpcomingBookings(
     .order("id", { ascending: true })
     .range(offset, offset + limit - 1);
   if (error) {
-    console.error(`reconcile-missing: loadActiveUpcomingBookings failed: ${error.message}`);
+    log.error("reconcile-missing", { msg: "loadActiveUpcomingBookings failed" }, error);
     return [];
   }
   return ((data ?? []) as {
@@ -460,10 +461,7 @@ function realDeps(): BookingDeps {
         } catch (err) {
           // Total bulk failure (e.g. the subject's delegated token couldn't be
           // minted) — verify everyone directly per agent rather than fail.
-          console.error(
-            "verify-on-book bulk freeBusy failed; falling back to per-agent:",
-            err instanceof Error ? err.message : err,
-          );
+          log.error("booking", { msg: "verify-on-book bulk freeBusy failed, falling back to per-agent" }, err);
           for (const a of bulkAgents) fallback.add(a.email);
         }
       }
@@ -573,7 +571,7 @@ function realDeps(): BookingDeps {
         // 23505 = unique_violation: the active-slot index rejected a racing
         // double-book. Surface it as a conflict (→ SlotUnavailableError).
         const conflict = error?.code === "23505";
-        if (!conflict) console.error("insertBooking failed:", error?.message);
+        if (!conflict) log.error("booking", { msg: "insertBooking failed" }, error);
         return { ok: false, conflict };
       }
       return { ok: true, booking: data as Booking };
@@ -605,9 +603,7 @@ function realDeps(): BookingDeps {
         p_ends_at: endIso,
       });
       if (error) {
-        console.error(
-          `busy_blocks move failed for booking ${bookingId}: ${error.message}`,
-        );
+        log.error("booking", { msg: "busy_blocks move failed", booking_id: bookingId }, error);
         await sendThrottledAlert(
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
@@ -666,9 +662,7 @@ function realDeps(): BookingDeps {
         ({ error } = await del());
       }
       if (error) {
-        console.error(
-          `busy_blocks write-through delete failed for booking ${bookingId}: ${error.message}`,
-        );
+        log.error("booking", { msg: "busy_blocks write-through delete failed", booking_id: bookingId }, error);
         await sendThrottledAlert(
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
@@ -693,9 +687,7 @@ function realDeps(): BookingDeps {
       let { error } = await del();
       if (error) ({ error } = await del());
       if (error) {
-        console.error(
-          `busy_blocks gcal-mirror delete failed for event ${gcalEventId}: ${error.message}`,
-        );
+        log.error("booking", { msg: "busy_blocks gcal-mirror delete failed", gcal_event_id: gcalEventId }, error);
       }
     },
 
@@ -716,7 +708,7 @@ function realDeps(): BookingDeps {
         .order("id", { ascending: true })
         .range(offset, offset + limit - 1);
       if (error) {
-        console.error(`reconcile: loadReconcilableBusyBlocks failed: ${error.message}`);
+        log.error("reconcile", { msg: "loadReconcilableBusyBlocks failed" }, error);
         return [];
       }
       return (data ?? []) as {
@@ -778,7 +770,7 @@ function realDeps(): BookingDeps {
         .in("id", ids);
       if (error) {
         // Best-effort: the next tick re-finds and retries these rows.
-        console.error(`reconcile: deleteBusyBlocksByIds failed: ${error.message}`);
+        log.error("reconcile", { msg: "deleteBusyBlocksByIds failed" }, error);
       }
     },
 
@@ -836,7 +828,7 @@ function realDeps(): BookingDeps {
         .order("created_at", { ascending: true })
         .limit(limit);
       if (error) {
-        console.error(`outbox: loadDrainableOutbox failed: ${error.message}`);
+        log.error("outbox", { msg: "loadDrainableOutbox failed" }, error);
         return [];
       }
       return (data ?? []) as BookingOutbox[];
@@ -940,7 +932,7 @@ function realDeps(): BookingDeps {
         .order("created_at", { ascending: true })
         .limit(limit);
       if (error) {
-        console.error(`reservations: loadDrainable failed: ${error.message}`);
+        log.error("reservations", { msg: "loadDrainable failed" }, error);
         return [];
       }
       return (data ?? []) as BookingReservation[];
@@ -1063,7 +1055,7 @@ function realDeps(): BookingDeps {
         // with a retriable error rather than proceed, so a claim we can't trust
         // never re-opens the concurrent-duplicate window. No lock is held yet (the
         // claim is before the wrapper's try/finally), so nothing to release.
-        console.error(`reschedule lock claim failed for booking ${bookingId}: ${error.message}`);
+        log.error("reschedule", { msg: "lock claim failed", booking_id: bookingId }, error);
         throw new Error("Could not lock this booking for reschedule. Please try again.");
       }
       // A lease already exists — load it (+ the booking) to decide.
@@ -1253,9 +1245,7 @@ function realDeps(): BookingDeps {
         .select("id")
         .single();
       if (error) {
-        console.error(
-          `booking_events insert failed for booking ${row.booking_id} (${row.action}): ${error.message}`,
-        );
+        log.error("booking", { msg: "booking_events insert failed", booking_id: row.booking_id, action: row.action }, error);
         await sendThrottledAlert(
           "booking_event_insert",
           CACHE_ALERT_COOLDOWN_MS,
@@ -1502,7 +1492,7 @@ function logRescheduleSuccess(
   declineReason: orchestration.RescheduleDeclineReason | undefined,
 ): void {
   const line = rescheduleLogLine({ ok: true, bookingId, initiator, declineReason });
-  if (line) console.info(line.message);
+  if (line) log.info("reschedule", { msg: line.message });
 }
 
 /** Emit the #543 failure breadcrumb (WARN) ONLY for a reschedule-reroute failure
@@ -1518,7 +1508,7 @@ function logRescheduleFailure(err: unknown, initiator: string): void {
     declineReason: ctx.inPlaceDeclineReason,
     errorName: err instanceof Error ? err.name : String(err),
   });
-  if (line) (line.level === "warn" ? console.warn : console.info)(line.message);
+  if (line) log[line.level === "warn" ? "warn" : "info"]("reschedule", { msg: line.message });
 }
 
 /**

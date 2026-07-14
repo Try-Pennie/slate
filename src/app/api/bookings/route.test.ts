@@ -269,9 +269,45 @@ describe("POST /api/bookings (auth skeleton)", () => {
 
     await post("Bearer real-secret", VALID_BODY);
 
-    expect(info).toHaveBeenCalledWith(expect.stringContaining("booking-api: authenticated request"));
-    expect(info).toHaveBeenCalledWith(expect.stringContaining("primary"));
+    // #808: every line is now `slate tag=<subsystem> ...`, so the audit trail is
+    // found by filtering tag=booking-api rather than guessing at a substring.
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("tag=booking-api"));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('msg="authenticated request"'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="primary"'));
     expect(log).not.toHaveBeenCalled();
+  });
+
+  // The per-call outcome line (#375/#418) is the queryable signal for the bot's
+  // outcome mix (confirm_required rate, cross-bucket moves, errors). It used to be
+  // a bespoke prefix + JSON blob in its own module; #808 folded it into the one
+  // tagged format, so the fields it carries are pinned here instead.
+  it("emits the outcome line with the fields the bot's outcome mix is tallied from", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockResolvedValueOnce(result("confirm_required"));
+
+    await post("Bearer real-secret", VALID_BODY);
+
+    const outcome = info.mock.calls.map(String).find((l) => l.includes('msg="outcome"'));
+    expect(outcome).toContain("tag=booking-api");
+    expect(outcome).toContain('outcome="confirm_required"');
+    expect(outcome).toContain('bucket="411"');
+    expect(outcome).toContain('key="primary"');
+    expect(outcome).toContain("status=409");
+  });
+
+  it("carries the machine error code on the outcome line when the call fails", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+
+    await post("Bearer real-secret", VALID_BODY);
+
+    const outcome = info.mock.calls.map(String).find((l) => l.includes('msg="outcome"'));
+    expect(outcome).toContain('outcome="error"');
+    expect(outcome).toContain('code="SLOT_TAKEN"');
+    expect(outcome).toContain("status=409");
   });
 
   // The failure path still has to be attributable: a call that errors out must
@@ -286,7 +322,8 @@ describe("POST /api/bookings (auth skeleton)", () => {
     const res = await post("Bearer real-secret", VALID_BODY);
 
     expect(res.status).toBe(409);
-    expect(info).toHaveBeenCalledWith(expect.stringContaining("booking-api: authenticated request"));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("tag=booking-api"));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('msg="authenticated request"'));
     expect(log).not.toHaveBeenCalled();
   });
 });

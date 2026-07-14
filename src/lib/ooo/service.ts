@@ -27,6 +27,7 @@ import type {
   OooDeps,
   SubmitOooInput,
 } from "@/lib/ooo/orchestration";
+import { log } from "@/lib/log";
 
 export type { OooActionResult, SubmitOooInput, ModifyOooInput };
 
@@ -132,9 +133,7 @@ function realDeps(): OooDeps {
       let { data, error } = await insert();
       if (error) ({ data, error } = await insert());
       if (error || !data) {
-        console.error(
-          `busy_blocks OOO write-through insert failed: ${error?.message}`,
-        );
+        log.error("ooo", { msg: "busy_blocks write-through insert failed" }, error);
         await sendThrottledAlert(
           "busy_block_write_through",
           OOO_ALERT_COOLDOWN_MS,
