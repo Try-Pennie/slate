@@ -85,8 +85,9 @@ jobs:
           if-no-files-found: warn
 
   # Fails if a committed migration hasn't been applied to the linked project, so
-  # code can't merge expecting schema that isn't pushed. Skips (passes) until the
-  # SUPABASE_ACCESS_TOKEN + SUPABASE_DB_PASSWORD repo secrets are configured.
+  # code can't merge expecting schema that isn't pushed. REQUIRES the
+  # SUPABASE_ACCESS_TOKEN + SUPABASE_DB_PASSWORD repo secrets: without them the job
+  # fails loudly rather than passing green while checking nothing (#766).
   migration-drift:
     runs-on: ubuntu-latest
     steps:
@@ -102,9 +103,14 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
-            echo "SUPABASE_ACCESS_TOKEN not set; skipping migration drift check."
-            exit 0
+          # #766: this used to `exit 0` here, so a missing secret made the job pass green
+          # in ~9s having verified nothing, while claiming to guard against code merging
+          # ahead of its schema. A check that can pass while doing nothing is worse than
+          # no check. Both secrets are required: linked without the DB password, the CLI
+          # still cannot list migrations.
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
+            echo "::error::migration-drift cannot run: SUPABASE_ACCESS_TOKEN and/or SUPABASE_DB_PASSWORD is not set. Configure both repo secrets. Failing rather than passing green while checking nothing (#766)."
+            exit 1
           fi
           supabase link --project-ref drukfvgaynzrralbzkzj
           supabase migration list --linked | tee /tmp/mig.txt
