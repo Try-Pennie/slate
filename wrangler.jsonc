@@ -19,9 +19,9 @@
 	// The every-minute cron runs four lanes (sync/recompute/outbox/selfheal) in ONE
 	// scheduled() invocation sharing its CPU budget; at scale they exceeded the
 	// default 30s cron-CPU ceiling ~5% of ticks (#760). Raise it to 2 min. This IS
-	// honored for a sub-hourly cron (canary-verified: a burning every-minute cron
-	// ran to 302s under a 300000 limit, not clamped at 30s). Standard usage model
-	// (required for limits) confirmed. Billed on actual CPU used, not the ceiling.
+	// honored for a sub-hourly cron, despite the frequency-gated docs table.
+	// Billed on actual CPU used, not the ceiling, so a high limit is free.
+	// Evidence and current headroom: docs/cloudflare-platform-notes.md.
 	"limits": { "cpu_ms": 120000 },
 	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
 	"routes": [

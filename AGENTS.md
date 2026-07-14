@@ -90,6 +90,10 @@ Retention is 7 days and there is no alerting on top of it, so logs are for
 forensics after the fact. Anything that must page someone still needs a real
 sink (a Slack alert or an `alert_state` row); see the fail-loud rule.
 
+Full detail, plus the Worker CPU and subrequest ceilings and the queries that
+actually work, is in **`docs/cloudflare-platform-notes.md`**. Read it before
+investigating a limits question or concluding the logs are broken.
+
 # Screenshotting the dev UI (Playwright/Peekaboo)
 
 Screenshots against `next dev` hang and time out — element shots wait forever on
