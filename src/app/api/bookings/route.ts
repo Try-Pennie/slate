@@ -16,9 +16,13 @@ import {
   BookingNotFoundError,
 } from "@/lib/booking/service";
 import { formatOutcomeLine } from "@/lib/monitor/booking-api-outcome";
-import { allowRequest } from "@/lib/rate-limit";
+import { allowRequest, clientIp } from "@/lib/rate-limit";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
-import { DIRECT_BOOKING_API_RATE_RULES, DIRECT_BOOKING_API_READ_RATE_RULES } from "@/lib/rate-limit-core";
+import {
+  DIRECT_BOOKING_API_RATE_RULES,
+  DIRECT_BOOKING_API_READ_RATE_RULES,
+  DIRECT_BOOKING_API_IP_RATE_RULES,
+} from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +37,7 @@ type AuthOutcome =
 async function authorize(
   req: NextRequest,
   rules: RateLimitRule[] = DIRECT_BOOKING_API_RATE_RULES,
+  ipRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_RATE_RULES,
 ): Promise<AuthOutcome> {
   const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
@@ -44,6 +49,18 @@ async function authorize(
       ok: false,
       response: NextResponse.json(
         { error: "Rate limit exceeded for this API key." },
+        { status: 429 },
+      ),
+    };
+  }
+  // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
+  // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
+  // cannot spend the whole budget from a single host.
+  if (ipRules && !(await allowRequest(`ip:${clientIp(req.headers)}`, ipRules))) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Rate limit exceeded for this client." },
         { status: 429 },
       ),
     };
@@ -156,7 +173,12 @@ export async function POST(req: NextRequest) {
  * externalId and list filters mixed into a lookup request.
  */
 export async function GET(req: NextRequest) {
-  const authd = await authorize(req, DIRECT_BOOKING_API_READ_RATE_RULES);
+  // #597: reads deliberately opt OUT of the per-IP ceiling. That ceiling is sized for
+  // the write path (60/min), while status polling is cheap and bursty and runs against a
+  // ~10x larger per-key budget (#393). Inheriting the write ceiling here would throttle
+  // legitimate polling from the integrator's single host. Reads stay bounded by their own
+  // per-key ceiling; the threat in #597 is booking FLOODING, which is a write.
+  const authd = await authorize(req, DIRECT_BOOKING_API_READ_RATE_RULES, null);
   if (!authd.ok) return authd.response;
 
   const sp = new URL(req.url).searchParams;

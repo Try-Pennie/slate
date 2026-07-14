@@ -10,7 +10,15 @@ const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => ""),
   bookingApiKeySecondary: vi.fn(() => ""),
 }));
-const rateLimit = vi.hoisted(() => ({ allowRequest: vi.fn(async () => true) }));
+const rateLimit = vi.hoisted(() => ({
+  allowRequest: vi.fn(async (_key: string, _rules: unknown) => true),
+  // Real derivation, not a stub: the per-IP ceiling (#597) is only as good as the IP it
+  // keys on, and a faked clientIp would let a broken header order pass unnoticed.
+  clientIp: (headers: Headers) =>
+    headers.get("cf-connecting-ip")?.trim() ??
+    headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    "unknown",
+}));
 const service = vi.hoisted(() => {
   class SlotUnavailableError extends Error {}
   class VerifyUnavailableError extends Error {}
@@ -32,7 +40,11 @@ vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST, GET } from "./route";
-import { DIRECT_BOOKING_API_RATE_RULES, DIRECT_BOOKING_API_READ_RATE_RULES } from "@/lib/rate-limit-core";
+import {
+  DIRECT_BOOKING_API_RATE_RULES,
+  DIRECT_BOOKING_API_READ_RATE_RULES,
+  DIRECT_BOOKING_API_IP_RATE_RULES,
+} from "@/lib/rate-limit-core";
 
 function result(outcome: string) {
   return {
@@ -59,10 +71,11 @@ const VALID_BODY = {
   externalId: "lead-abc-123",
 };
 
-function post(authorization?: string, body?: unknown) {
+function post(authorization?: string, body?: unknown, ip?: string) {
   const headers = new Headers();
   if (authorization) headers.set("authorization", authorization);
   if (body !== undefined) headers.set("content-type", "application/json");
+  if (ip) headers.set("cf-connecting-ip", ip);
   return POST(
     new Request("http://localhost/api/bookings", {
       method: "POST",
@@ -121,13 +134,35 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(res.status).toBe(429);
   });
 
-  it("rate-limits on the matched key id, not the client IP", async () => {
+  it("rate-limits on the matched key id, in its own bucket", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
     await post("Bearer real-secret");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
       "key:primary",
-      expect.any(Array),
+      DIRECT_BOOKING_API_RATE_RULES,
     );
+  });
+
+  // #597: per-key alone meant a leaked integrator key had a 6000/hr ceiling and no
+  // second bound. The per-IP ceiling caps any single machine well below that.
+  it("ALSO applies a per-IP ceiling, keyed on the client IP in a separate bucket", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
+    expect(rateLimit.allowRequest).toHaveBeenCalledWith(
+      "ip:203.0.113.9",
+      DIRECT_BOOKING_API_IP_RATE_RULES,
+    );
+  });
+
+  it("trips 429 on the per-IP ceiling even when the key is well within its budget", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    // The key is fine; only the IP is flooding. This is the leaked-key case.
+    rateLimit.allowRequest.mockImplementation(async (key: string) => !key.startsWith("ip:"));
+
+    const res = await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
+
+    expect(res.status).toBe(429);
+    expect(service.bookViaApi).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an authenticated call with an invalid body", async () => {
@@ -265,5 +300,37 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
     await authedGet("http://localhost/api/bookings?status=confirmed");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_READ_RATE_RULES);
     expect(rateLimit.allowRequest).not.toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_RATE_RULES);
+  });
+});
+
+// #597: reads deliberately do NOT get the per-IP ceiling. It is sized for the write path
+// (60/min), while status polling is cheap, bursty, and runs against a ~10x larger per-key
+// budget (#393). Applying it here would throttle the integrator's legitimate polling from
+// their single host. Pinned so a well-meaning "make it consistent" change cannot quietly
+// start 429ing reads.
+describe("GET rate limiting (#597)", () => {
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.allowRequest.mockClear();
+    service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
+  });
+
+  it("applies the READ per-key ceiling and no per-IP ceiling", async () => {
+    await GET(
+      new Request("http://localhost/api/bookings", {
+        headers: new Headers({
+          authorization: "Bearer real-secret",
+          "cf-connecting-ip": "203.0.113.9",
+        }),
+      }) as never,
+    );
+
+    expect(rateLimit.allowRequest).toHaveBeenCalledWith(
+      "key:primary",
+      DIRECT_BOOKING_API_READ_RATE_RULES,
+    );
+    const keys = rateLimit.allowRequest.mock.calls.map(([k]) => k);
+    expect(keys.every((k) => !String(k).startsWith("ip:"))).toBe(true);
   });
 });
