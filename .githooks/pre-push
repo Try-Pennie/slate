@@ -5,16 +5,24 @@
 #      PR has already merged/closed (the commit would silently strand and never
 #      reach main). Override with ALLOW_MERGED_PUSH=1.
 #
-#   2. CI parity checks — runs the same fast checks CI runs (tsc, lint, the unit
-#      suite) so a CI-only failure is caught here instead of breaking main after
-#      merge. The unit suite includes the copy/dash lint and the migration
-#      invariants, both of which have broken main when they only ran in CI.
-#      Override with SKIP_PREPUSH_CHECKS=1. (The heavy Cloudflare build is left
-#      to CI — it's minutes-long and isn't what regresses.)
+#   2. CI parity checks: runs the same checks CI runs (tsc, lint, the unit
+#      suite, the Cloudflare build) so a CI-only failure is caught here instead
+#      of breaking main after merge. They run inside an isolated checkout of the
+#      exact commit being pushed, NOT the working tree, so the check sees exactly
+#      what CI checks out (committed files only). A forgotten-to-stage file (the
+#      #489 TS2307 that was green locally, red in CI) is now caught here (#490).
+#      Override with SKIP_PREPUSH_CHECKS=1.
 #
 # Enabled via `git config core.hooksPath .githooks` (the package.json "prepare"
 # script sets this on install). No-ops the merge guard when gh is missing.
+#
+# git hands this hook the refs being pushed on stdin, one per line:
+#   <local ref> <local sha> <remote ref> <remote sha>
 set -euo pipefail
+
+# Capture git's stdin ref lines up front (a tty means a manual run with none).
+push_refs=""
+[ -t 0 ] || push_refs="$(cat)"
 
 branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
 
@@ -45,8 +53,39 @@ if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
   exit 0
 fi
 
-cd "$(git rev-parse --show-toplevel)"
-echo "▶ pre-push: running CI parity checks (tsc · lint · tests · build). Skip with SKIP_PREPUSH_CHECKS=1." >&2
+root="$(git rev-parse --show-toplevel)"
+
+# Which commit is being pushed? Prefer the local sha git handed us on stdin (the
+# exact tip going to the remote); ignore branch deletions (an all-zero sha) and
+# fall back to HEAD for a manual run with no stdin.
+pushed_sha=""
+while read -r _lref lsha _rref _rsha; do
+  [ -z "$lsha" ] && continue
+  case "$lsha" in *[!0]*) pushed_sha="$lsha"; break ;; esac
+done <<EOF
+$push_refs
+EOF
+[ -n "$pushed_sha" ] || pushed_sha="$(git rev-parse HEAD)"
+
+echo "▶ pre-push: CI parity checks (tsc · lint · tests · build) against the pushed commit ${pushed_sha:0:12}, in an isolated checkout. Skip with SKIP_PREPUSH_CHECKS=1." >&2
+
+# Run the checks against the committed tree, not the working tree, so an
+# untracked/uncommitted file can't make them pass locally yet fail CI (#490).
+tmp_parent="$(mktemp -d)"
+tree="$tmp_parent/tree"
+cleanup() {
+  git worktree remove --force "$tree" >/dev/null 2>&1 || true
+  rm -rf "$tmp_parent" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+"$root/.githooks/lib/isolate-pushed-tree.sh" "$pushed_sha" "$tree"
+cd "$tree"
+
+# Real deps in the isolated tree: a symlinked node_modules escapes the worktree
+# root and Turbopack (next build) rejects it. --prefer-offline reuses the warm
+# pnpm store, so this is a few seconds and mirrors CI's clean install exactly.
+pnpm install --frozen-lockfile --prefer-offline
 
 # Stale Next.js route-type stubs make a clean tree fail tsc; clear them first.
 rm -rf .next/types 2>/dev/null || true
@@ -56,7 +95,11 @@ pnpm lint
 pnpm test
 # The full Cloudflare/OpenNext build (#412): catches build-only breaks (e.g. an
 # edge-incompatible import tsc accepts) before they reach main and skip the
-# deploy. ~10s on a warm cache; the build cache makes repeat runs cheap.
-pnpm cf:build
+# deploy. NEXT_PUBLIC_* mirror CI's build env (public, inlined at build time).
+NEXT_PUBLIC_APP_URL=https://slate.trypennie.app \
+NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co \
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_ci_placeholder \
+NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN=trypennie.com \
+  pnpm cf:build
 
 exit 0
