@@ -20,6 +20,7 @@
 // Optional env: SLATE_BASE_URL (default prod).
 import { DateTime } from "luxon";
 import { loadEnvFiles } from "./smoke-env.ts";
+import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 
 // Keys load from .env.local / .dev.vars if not already in the environment.
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -30,34 +31,7 @@ const BUCKET = "SMOKE";
 const SMOKE_BUCKET_ID = "44004a29-da8a-47fe-9ebc-6a95bccd1bfc";
 const SMOKETEST2_ID = "c0000000-0000-4000-8000-000000000002";
 
-let failures = 0;
-function check(cond: boolean, msg: string): void {
-  if (cond) console.log("ok:", msg);
-  else {
-    console.error("FAIL:", msg);
-    failures += 1;
-  }
-}
-
-type Json = Record<string, unknown>;
-async function jpost(path: string, body: Json, auth = false): Promise<{ status: number; body: Json }> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (auth) headers.authorization = `Bearer ${KEY}`;
-  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as Json };
-}
-
-async function slots(): Promise<string[]> {
-  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(BUCKET)}`, {
-    headers: { authorization: `Bearer ${KEY}` },
-  });
-  const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
-  return res.status === 200 ? body.slots ?? [] : [];
-}
-
-function tokenFrom(manageUrl: unknown): string {
-  return String(manageUrl ?? "").split("/").pop() ?? "";
-}
+const { check, failed } = createChecker();
 
 async function main(): Promise<void> {
   if (!KEY) {
@@ -94,7 +68,7 @@ async function main(): Promise<void> {
   let token = "";
   try {
     // Pick a slot comfortably mid-shift so +30 min stays within 9-5 ET and free.
-    const open = await slots();
+    const open = await slots(BUCKET);
     const usable = open.find((s) => {
       const h = DateTime.fromISO(s, { zone: "America/New_York" }).hour;
       return h >= 9 && h <= 15;
@@ -166,8 +140,8 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(failures === 0 ? "\n523 REPRO PASSED (stickiness held)" : `\n${failures} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  console.log(failed() === 0 ? "\n523 REPRO PASSED (stickiness held)" : `\n${failed()} CHECK(S) FAILED`);
+  process.exit(failed() === 0 ? 0 : 1);
 }
 
 main().catch((e) => {
