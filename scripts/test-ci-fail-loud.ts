@@ -88,5 +88,20 @@ assert(
   "migration-drift checks BOTH secrets it needs: linked with no DB password, it cannot list migrations either (#766)",
 );
 
+// #482: main must NOT deploy code ahead of unapplied schema. Deploys don't apply
+// migrations (that stays a human step, see docs/migrations-runbook.md), so the
+// deploy job DEPENDS ON migration-drift: if a migration is still unapplied when a
+// merge reaches main, deploy fails loudly instead of shipping a feature whose
+// schema is missing. Anchor to the whole deploy job block so dropping the `needs`
+// entirely is caught, not just changing it.
+const deployJob = ci.match(/\n {2}deploy:\n([\s\S]*?)(?=\n {2}\w[\w-]*:\n|$)/);
+assert(deployJob != null, "deploy job still exists in ci.yml (#482)");
+const deployNeeds = deployJob?.[1].match(/(?:^|\n)\s*needs:\s*(.+)/)?.[1] ?? "";
+assert(
+  /\bmigration-drift\b/.test(deployNeeds),
+  "deploy depends on migration-drift so main cannot ship code ahead of unapplied schema (#482)",
+);
+assert(/\bci\b/.test(deployNeeds), "deploy still depends on ci (#482)");
+
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

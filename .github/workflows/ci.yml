@@ -126,8 +126,14 @@ jobs:
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy
   # locally in the meantime. The NEXT_PUBLIC_* values are public (inlined into
   # the client bundle); set the publishable key as a repo variable.
+  #
+  # Also needs migration-drift (#482): deploys do NOT apply migrations (that stays
+  # a human `supabase db push` step, see docs/migrations-runbook.md). If a migration
+  # is still unapplied when a merge reaches main, this dependency fails the deploy
+  # loudly instead of shipping a feature whose schema is missing. Under the runbook
+  # the migration is applied before merge, so migration-drift is already green here.
   deploy:
-    needs: ci
+    needs: [ci, migration-drift]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

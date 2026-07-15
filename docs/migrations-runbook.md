@@ -1,0 +1,67 @@
+# Applying a database migration
+
+Deploys do **not** apply Supabase migrations. A Cloudflare/OpenNext deploy ships
+code only; the schema it expects has to be pushed to the database separately. If
+code goes live ahead of its schema, the feature errors on the missing table,
+column, or function (this has bitten with 0032 #214, 0037 #276, 0053 #439, 0055
+#516). Applying the migration is therefore a deliberate human step, run through
+`supabase db push` at or before the matching code merges.
+
+This runbook is the exact, repeatable sequence. Follow it for every schema change
+rather than reasoning it out per PR.
+
+## The safety nets (so a forgotten apply cannot ship silently)
+
+1. **Merge gate.** The CI `migration-drift` job runs `supabase migration list` and
+   fails the PR while any committed migration is unapplied on the remote DB. It
+   fail-closes if its secrets are missing (#766), so it cannot pass while checking
+   nothing.
+2. **Deploy gate.** The `deploy` job `needs: [ci, migration-drift]` (#482), so a
+   push to main will not deploy code while a migration is unapplied.
+3. **Prod monitor.** The monitor cron pages (`migration_version_lag`) if the
+   deployed code ships a migration the live DB has not applied, including one
+   missing from the middle of the sequence (#516, #814).
+4. **Version guard.** `scripts/test-migrations.ts` fails on pre-push and in CI
+   unless `SHIPPED_MIGRATION_VERSION` equals the highest migration file.
+
+## Procedure
+
+1. **Write the migration** at `supabase/migrations/NNNN_snake_case.sql`, numbered
+   sequentially with no gaps. Every table it creates must enable RLS or carry an
+   explicit `-- rls-exempt: <table>` marker (`scripts/test-migrations.ts` enforces
+   both). If it defines or changes an RPC the server calls, update the hand-written
+   types in `src/lib/db/schema.ts` to match.
+2. **Bump the shipped version** in `src/lib/db/migration-version.ts`
+   (`SHIPPED_MIGRATION_VERSION = "NNNN"`) in the **same commit** as the migration.
+3. **Push the branch and open the PR.** The `migration-drift` check will fail with
+   `Committed migrations are not applied to the remote DB. Run: supabase db push`.
+   That is expected: the migration is not on prod yet.
+4. **Apply to prod:**
+
+   ```
+   supabase db push
+   ```
+
+   Never apply a Slate migration through the Supabase MCP `apply_migration` tool.
+   It records a 14-digit **timestamp** version instead of the file's `NNNN` prefix,
+   which the prod lag monitor filters out (`^[0-9]{4}$`); the migration would then
+   read as never applied and, worse, could pin the check to a false "database is
+   ahead" and silence it. `supabase db push` records the `NNNN` version correctly.
+5. **Re-run the merge gate.** `gh run rerun <run-id> --failed`, then confirm the
+   `migration-drift` check is green (`gh pr checks <pr>`).
+6. **Merge.** The push to main deploys the code, now that its schema is already in
+   place.
+7. **Verify.** On the next monitor tick the `migration-drift` log line should read
+   `status=in-sync`. To confirm the schema directly, the applied set is readable via
+   the `applied_migration_versions()` RPC (server-only; deny-all to API clients).
+
+## Notes
+
+- **Ordering.** Apply **before** merge, not after. The merge gate enforces this,
+  and applying first means the code never deploys ahead of its schema.
+- **Rollback.** Migrations are forward-only; there is no automated down-migration
+  (accepted, #607). To undo, write a new forward migration that reverses the change
+  and run this same procedure.
+- **Credentials.** `supabase db push` needs the linked project (ref
+  `drukfvgaynzrralbzkzj`) and the DB password. The same `SUPABASE_ACCESS_TOKEN` +
+  `SUPABASE_DB_PASSWORD` are set as repo secrets for the CI `migration-drift` job.
