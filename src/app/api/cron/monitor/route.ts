@@ -29,7 +29,10 @@ import {
 } from "@/lib/monitor/booking-volume";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
-import { runMigrationDriftCheck, readAppliedMigrationVersion } from "@/lib/monitor/migration-drift";
+import {
+  runMigrationDriftCheck,
+  readAppliedMigrationVersions,
+} from "@/lib/monitor/migration-drift";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
@@ -319,7 +322,7 @@ export async function GET(req: NextRequest) {
     // A read that fails pages as "unverified" rather than passing as healthy.
     const migrationStatus = await runMigrationDriftCheck({
       shippedVersion: SHIPPED_MIGRATION_VERSION,
-      readAppliedVersion: readAppliedMigrationVersion,
+      readAppliedVersions: readAppliedMigrationVersions,
       notify: sendThrottledAlert,
       cooldownMs: settings.cooldownMs.migration_version_lag,
       log: (msg, status, applied) =>
@@ -327,7 +330,9 @@ export async function GET(req: NextRequest) {
           msg,
           status,
           shipped: SHIPPED_MIGRATION_VERSION,
-          applied,
+          // A full set of ~70+ versions per tick is log noise; the count is enough
+          // for forensics and the alert itself names any missing versions.
+          appliedCount: applied?.length ?? null,
         }),
     });
 

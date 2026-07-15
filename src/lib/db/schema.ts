@@ -83,12 +83,14 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
-      /** The highest migration version this database has applied (#516, migration
-       *  0071). PostgREST cannot see the supabase_migrations schema, so the prod
-       *  lag check reads it through this SECURITY DEFINER function. */
-      applied_migration_version: {
+      /** The full set of migration versions this database has applied, as the repo's
+       *  NNNN prefixes (#516, #814, migration 0072). PostgREST cannot see the
+       *  supabase_migrations schema, so the prod lag check reads it through this
+       *  SECURITY DEFINER function and diffs it against the shipped set to catch a
+       *  migration missing from the middle, not just a trailing one. */
+      applied_migration_versions: {
         Args: Record<string, never>;
-        Returns: string | null;
+        Returns: string[] | null;
       };
       rate_limit_hit: {
         Args: { p_key: string; p_window_seconds: number; p_max: number };
