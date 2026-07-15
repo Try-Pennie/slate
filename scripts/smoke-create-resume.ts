@@ -77,6 +77,8 @@ async function pgDelete(path: string): Promise<number> {
 
 /** Rows in webhook_deliveries for this booking's booking.created (dedupe_key = booking id). */
 async function createdDeliveryCount(bookingId: string): Promise<number> {
+  // cap-safe: filtered to ONE booking's booking.created (dedupe_key = booking id);
+  // at most one row per endpoint, so well under one PostgREST page (#730).
   const rows = await pgGet<Json[]>(
     `webhook_deliveries?select=id&event=eq.booking.created&dedupe_key=eq.${encodeURIComponent(bookingId)}`,
   );
@@ -153,6 +155,8 @@ async function main(): Promise<void> {
     // 3. Preconditions for observing dedupe: at least one active endpoint is
     //    subscribed to booking.created, and the create already recorded exactly
     //    one delivery per endpoint. Without an endpoint the dedupe is invisible.
+    // cap-safe: one org's active booking.created endpoints, a handful at most
+    // (well under one PostgREST page); the count is the assertion, not a sample (#730).
     const endpoints = await pgGet<Json[]>(
       `webhook_endpoints?select=id&org_id=eq.${row.org_id}&active=eq.true&events=cs.%7Bbooking.created%7D`,
     );
@@ -186,6 +190,7 @@ async function main(): Promise<void> {
     // 6. The drain deletes the reservation on success; poll for it to clear.
     let reservationGone = false;
     for (let i = 0; i < 6 && !reservationGone; i++) {
+      // cap-safe: idempotency_key is unique, so this returns at most one row (#730).
       const still = await pgGet<Json[]>(
         `booking_reservations?select=id&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}`,
       );
