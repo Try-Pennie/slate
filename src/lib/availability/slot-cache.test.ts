@@ -64,6 +64,9 @@ describe("getBucketSlotsWithFallback", () => {
     expect(result!.routing.rungs_dropped).toBe(0);
     expect(result!.routing.effective_code).toBe("411");
     expect(result!.routing.requested_code).toBe("411");
+    // Perf guard (#240): the common booker request is a SINGLE cached read; it
+    // must never enter the tier cascade (which does N reads) when slots exist.
+    expect(mockResolveBucketSlots).toHaveBeenCalledTimes(1);
   });
 
   it("returns null when the requested bucket does not exist", async () => {
@@ -94,6 +97,9 @@ describe("getBucketSlotsWithFallback", () => {
     // 4xx = very_high, 3xx = high
     expect(result!.routing.requested_tier).toBe("very_high");
     expect(result!.routing.booked_tier).toBe("high");
+    // Contrast with the perf guard above: the slow cascade path necessarily reads
+    // more than once, which is why the hot-path single-read assertion is meaningful.
+    expect(mockResolveBucketSlots.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("skips an is_test bucket in the cascade so a real lower tier wins", async () => {
