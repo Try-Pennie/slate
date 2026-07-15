@@ -27,65 +27,26 @@
 //   BOOKING_API_KEY, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, CRON_SECRET
 // Optional: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { buildResumeReservation, type PersistedBookingRow } from "./create-resume-reservation.ts";
+import { loadEnvFiles } from "./smoke-env.ts";
+import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 
 // --- config -----------------------------------------------------------------
 
-function loadEnv(): Record<string, string> {
-  let fileEnv: Record<string, string> = {};
-  try {
-    fileEnv = Object.fromEntries(
-      readFileSync(join(import.meta.dirname, "../.env.local"), "utf8")
-        .split("\n")
-        .filter((l) => l && !l.startsWith("#") && l.includes("="))
-        .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1).trim()]),
-    );
-  } catch {
-    // no .env.local: rely entirely on process.env
-  }
-  // process.env wins over the file so an operator can override per-run.
-  return { ...fileEnv, ...(process.env as Record<string, string>) };
-}
+// Keys load from .env.local if not already in the environment (process env wins).
+loadEnvFiles([".env.local"]);
+const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
+const KEY = process.env.BOOKING_API_KEY ?? "";
+const SB_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/$/, "");
+const SB_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
+const CRON = process.env.CRON_SECRET ?? "";
+const BUCKET = process.env.SMOKE_BUCKET ?? "SMOKE";
 
-const env = loadEnv();
-const BASE = (env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
-const KEY = env.BOOKING_API_KEY ?? "";
-const SB_URL = (env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/$/, "");
-const SB_KEY = env.SUPABASE_SECRET_KEY ?? "";
-const CRON = env.CRON_SECRET ?? "";
-const BUCKET = env.SMOKE_BUCKET ?? "SMOKE";
-
-let failures = 0;
-function check(cond: boolean, msg: string): void {
-  if (cond) console.log("ok:", msg);
-  else {
-    console.error("FAIL:", msg);
-    failures += 1;
-  }
-}
+const { check, failed } = createChecker();
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // --- HTTP helpers ------------------------------------------------------------
-
-type Json = Record<string, unknown>;
-
-async function apiPost(path: string, body: Json, auth = false): Promise<{ status: number; body: Json }> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (auth) headers.authorization = `Bearer ${KEY}`;
-  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as Json };
-}
-
-async function slots(): Promise<string[]> {
-  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(BUCKET)}`, {
-    headers: { authorization: `Bearer ${KEY}` },
-  });
-  const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
-  return res.status === 200 ? body.slots ?? [] : [];
-}
 
 // PostgREST against the same project the deployed app writes to.
 const PG = `${SB_URL}/rest/v1`;
@@ -127,10 +88,6 @@ async function driveDrain(): Promise<{ status: number; body: Json }> {
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Json };
 }
 
-function tokenFrom(manageUrl: unknown): string {
-  return String(manageUrl ?? "").split("/").pop() ?? "";
-}
-
 const BOOKING_COLS =
   "org_id,bucket_id,event_type_id,assigned_user_id,agent_name,agent_email,starts_at,ends_at," +
   "original_starts_at,original_ends_at,timezone,status,salesforce_id,attendee_name,attendee_email," +
@@ -151,7 +108,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`# create-resume smoke vs ${BASE} (bucket ${BUCKET})`);
-  const open = await slots();
+  const open = await slots(BUCKET);
   check(open.length >= 1, `SMOKE has >= 1 future slot (got ${open.length})`);
   if (open.length < 1) process.exit(1);
   const start = open[0];
@@ -164,7 +121,7 @@ async function main(): Promise<void> {
 
   try {
     // 1. Book a throwaway appointment via the direct API.
-    const created = await apiPost(
+    const created = await jpost(
       "/api/bookings",
       {
         bucketCode: BUCKET,
@@ -248,7 +205,7 @@ async function main(): Promise<void> {
   } finally {
     // 8. Teardown: cancel the booking, then drop any reservation the drain left.
     if (token) {
-      const cancelled = await apiPost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
+      const cancelled = await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
       check(cancelled.status === 200, `teardown: booking cancelled (got ${cancelled.status})`);
     }
     if (idempotencyKey) {
@@ -259,8 +216,8 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(failures === 0 ? "\nSMOKE PASSED" : `\n${failures} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  console.log(failed() === 0 ? "\nSMOKE PASSED" : `\n${failed()} CHECK(S) FAILED`);
+  process.exit(failed() === 0 ? 0 : 1);
 }
 
 main().catch((e) => {

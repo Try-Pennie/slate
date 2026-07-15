@@ -12,39 +12,14 @@
 //
 // Optional env: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
 
+import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
+
 const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
 const KEY = process.env.BOOKING_API_KEY ?? "";
 const BUCKET = process.env.SMOKE_BUCKET ?? "SMOKE";
 const REASON = "schedule_conflict";
 
-let failures = 0;
-function check(cond: boolean, msg: string): void {
-  if (cond) console.log("ok:", msg);
-  else {
-    console.error("FAIL:", msg);
-    failures += 1;
-  }
-}
-
-type Json = Record<string, unknown>;
-async function jpost(path: string, body: Json, auth = false): Promise<{ status: number; body: Json }> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (auth) headers.authorization = `Bearer ${KEY}`;
-  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as Json };
-}
-
-async function slots(): Promise<string[]> {
-  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(BUCKET)}`, {
-    headers: { authorization: `Bearer ${KEY}` },
-  });
-  const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
-  return res.status === 200 ? body.slots ?? [] : [];
-}
-
-function tokenFrom(manageUrl: unknown): string {
-  return String(manageUrl ?? "").split("/").pop() ?? "";
-}
+const { check, failed } = createChecker();
 
 async function main(): Promise<void> {
   if (!KEY) {
@@ -52,7 +27,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   console.log(`# reschedule smoke vs ${BASE} (bucket ${BUCKET})`);
-  const open = await slots();
+  const open = await slots(BUCKET);
   // Need 4 WELL-SPACED future slots: SMOKE slots are 10 min apart but the
   // appointment is longer, so adjacent slots overlap the booking's own time
   // (the agent looks busy -> reassign -> no other agent). Space them 6 slots
@@ -122,8 +97,8 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(failures === 0 ? "\nSMOKE PASSED" : `\n${failures} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  console.log(failed() === 0 ? "\nSMOKE PASSED" : `\n${failed()} CHECK(S) FAILED`);
+  process.exit(failed() === 0 ? 0 : 1);
 }
 
 main().catch((e) => {

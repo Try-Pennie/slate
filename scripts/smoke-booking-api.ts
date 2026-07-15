@@ -57,6 +57,7 @@
 // works without exporting them by hand (and without `source`, which dies on an
 // unmatched quote anywhere in the file).
 import { loadEnvFiles } from "./smoke-env.ts";
+import { slots } from "./smoke-lib.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -128,16 +129,6 @@ async function req(method: string, path: string): Promise<{ status: number; body
     headers: { authorization: `Bearer ${KEY}` },
   });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as DirectBody };
-}
-
-async function slotsFor(bucket: string): Promise<string[]> {
-  // Send the booking key: the default SMOKE/SMOKE2 buckets are test buckets,
-  // hidden from anonymous availability reads (#396), so an unauthed GET 404s.
-  const res = await fetch(`${BASE}/api/availability?bucket=${encodeURIComponent(bucket)}`, {
-    headers: { authorization: `Bearer ${KEY}` },
-  });
-  const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
-  return res.status === 200 ? body.slots ?? [] : [];
 }
 
 async function book(args: {
@@ -282,7 +273,7 @@ async function scenarioCrossBucket(slotsA: string[]) {
     skip("SMOKE_BUCKET_B not set — set it to a second bucket your test agent serves to run this");
     return;
   }
-  const slotsB = await slotsFor(BUCKET_B);
+  const slotsB = await slots(BUCKET_B);
   if (slotsB.length === 0) {
     skip(`bucket ${BUCKET_B} has no open slots`);
     return;
@@ -501,7 +492,7 @@ async function main() {
   }
   console.log(`Smoke test against ${BASE} (bucket ${BUCKET_A}${BUCKET_B ? `, cross-bucket ${BUCKET_B}` : ""})`);
 
-  const slotsA = await slotsFor(BUCKET_A);
+  const slotsA = await slots(BUCKET_A);
   check(slotsA.length >= 5, `bucket ${BUCKET_A} has enough open slots (got ${slotsA.length})`);
   if (slotsA.length < 5) {
     console.log("\nNot enough slots — pick a bucket with availability via SMOKE_BUCKET.");

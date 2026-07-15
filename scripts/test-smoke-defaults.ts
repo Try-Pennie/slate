@@ -47,12 +47,18 @@ assert(
 );
 
 // Test buckets are hidden from anonymous availability reads (#396), so the
-// smoke test must send its booking key when fetching slots — otherwise it'd 404
-// on its own SMOKE bucket.
-const slotsForFn = src.match(/async function slotsFor[\s\S]*?\n}/);
+// smoke scripts must send the booking key when fetching slots, else they'd 404
+// on their own SMOKE bucket. The slots helper is now shared in smoke-lib.ts
+// (#530): assert it authenticates, and that this script uses the shared one.
+const lib = readFileSync(join(import.meta.dirname, "smoke-lib.ts"), "utf8");
+const slotsFn = lib.match(/export async function slots[\s\S]*?\n}/);
 assert(
-  !!slotsForFn && /authorization/i.test(slotsForFn[0]),
-  "slotsFor sends the booking key (so it can read its hidden test-bucket slots)",
+  !!slotsFn && /authorization/i.test(slotsFn[0]),
+  "the shared slots() helper sends the booking key (so it can read hidden test-bucket slots)",
+);
+assert(
+  /import\s*\{[^}]*\bslots\b[^}]*\}\s*from\s*"\.\/smoke-lib\.ts"/.test(src),
+  "smoke-booking-api imports the shared slots() helper",
 );
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
