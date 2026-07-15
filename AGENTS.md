@@ -21,6 +21,17 @@ build, #412) — so a CI-only failure (including a build-only break) is caught
 locally instead of breaking main after merge. It's ~20s on a warm cache; skip it
 in a pinch with `SKIP_PREPUSH_CHECKS=1`.
 
+# Applying a database migration
+
+Deploys do **not** apply Supabase migrations. Every schema change is a deliberate
+`supabase db push` **before** the matching PR merges (the CI `migration-drift` job
+and the `deploy` job both fail while a committed migration is unapplied, and the
+prod monitor pages if code ships ahead of its schema). Bump
+`SHIPPED_MIGRATION_VERSION` in the same commit, and never apply through the Supabase
+MCP tool (it records a timestamp version that silently disables the lag monitor).
+The full step by step is **`docs/migrations-runbook.md`**; follow it rather than
+reasoning the order out per PR.
+
 # Where a new test goes
 
 Slate runs two test harnesses on purpose. They are not interchangeable, and the
