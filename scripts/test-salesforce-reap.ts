@@ -5,9 +5,7 @@
 // reapable user is selected purely by inactivity.
 // Run: node --experimental-strip-types scripts/test-salesforce-reap.ts
 import { reapableUserIds } from "../src/lib/salesforce/reap.ts";
-import { assert, finish } from "./lib/harness.ts";
-
-const eq = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
+import { eq, finish } from "./lib/harness.ts";
 
 const rows = [
   { id: "a", email: "Alice@Pennie.com" },
@@ -15,20 +13,24 @@ const rows = [
   { id: "c", email: "carol@pennie.com" },
 ];
 
-assert(
-  eq(reapableUserIds(rows, new Set(["alice@pennie.com"])), ["a"]),
+eq(
+  reapableUserIds(rows, new Set(["alice@pennie.com"])),
+  ["a"],
   "selects an inactive user, matching email case-insensitively",
 );
-assert(
-  eq(reapableUserIds(rows, new Set(["bob@pennie.com", "carol@pennie.com"])), ["b", "c"]),
+eq(
+  reapableUserIds(rows, new Set(["bob@pennie.com", "carol@pennie.com"])),
+  ["b", "c"],
   "selects every inactive user",
 );
-assert(
-  eq(reapableUserIds(rows, new Set<string>()), []),
+eq(
+  reapableUserIds(rows, new Set<string>()),
+  [],
   "nobody inactive selects nobody",
 );
-assert(
-  eq(reapableUserIds([], new Set(["x@pennie.com"])), []),
+eq(
+  reapableUserIds([], new Set(["x@pennie.com"])),
+  [],
   "empty roster selects nobody",
 );
 

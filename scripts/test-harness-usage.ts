@@ -18,8 +18,8 @@ const ALLOW = new Set(["test-harness.ts", SELF]);
 // arrow-helper pattern requires `=>` so a data variable like
 // `const ok = validateReason(...)` is not mistaken for a helper.
 const FORBIDDEN: Array<[RegExp, string]> = [
-  [/\bfunction (assert|ok|fail|check)\s*\(/, "a local function helper"],
-  [/\bconst (assert|ok|fail|check)\s*=\s*(?:async\s+)?\([^)]*\)\s*(?::[^=]*?)?=>/, "a local arrow helper"],
+  [/\bfunction (assert|ok|fail|check|eq)\s*\(/, "a local function helper"],
+  [/\bconst (assert|ok|fail|check|eq)\s*=\s*(?:async\s+)?\([^)]*\)\s*(?::[^=]*?)?=>/, "a local arrow helper"],
   [/\blet (failures|failed)\s*=\s*0\b/, "a local failure counter"],
 ];
 
