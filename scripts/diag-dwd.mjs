@@ -1,6 +1,6 @@
 // Local test: does Google domain-wide delegation work?
 // Mints a delegated token impersonating a user, then queries their free/busy.
-// Run: node scripts/test-dwd.mjs dwright@trypennie.com
+// Run: node scripts/diag-dwd.mjs dwright@trypennie.com
 import { readFileSync } from "node:fs";
 import crypto from "node:crypto";
 

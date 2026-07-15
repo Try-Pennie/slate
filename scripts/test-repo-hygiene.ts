@@ -6,6 +6,7 @@
 // orphan committed evidence.
 // Run: node --experimental-strip-types scripts/test-repo-hygiene.ts
 import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {
@@ -40,6 +41,18 @@ assert(
 assert(
   !isIgnored(".claude/orchestration-slate-brand-redesign/reports/screens/book-dark-desktop.png"),
   "tracked .claude orchestration reports store stays committable (#583)",
+);
+
+// Live-credential diagnostics (Google DWD, Salesforce) must NOT be named
+// scripts/test-*.mjs: `pnpm test` globs scripts/test-*.ts, so the ONLY thing
+// keeping these hand-run scripts out of CI is the .mjs extension. A plausible
+// ".mjs -> .ts" cleanup would fire real credential calls in every CI run
+// (secrets-in-logs risk). Force the diag- prefix so the hazard can't reappear
+// (#609 / AUD-033).
+const mjsTests = readdirSync(import.meta.dirname).filter((f) => /^test-.*\.mjs$/.test(f));
+assert(
+  mjsTests.length === 0,
+  `no scripts/test-*.mjs live-credential diagnostics (use the diag- prefix instead); found: ${mjsTests.join(", ") || "none"}`,
 );
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);

@@ -1,5 +1,5 @@
 // Local test: does the Salesforce External Client App (client-credentials) work?
-// Run: node scripts/test-sf.mjs
+// Run: node scripts/diag-sf.mjs
 import { readFileSync } from "node:fs";
 
 const env = Object.fromEntries(
