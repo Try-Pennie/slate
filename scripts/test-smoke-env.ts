@@ -4,14 +4,7 @@
 // shell-sourcing quirks (an unmatched quote on some unrelated line) can't break a
 // run. Run: node --experimental-strip-types scripts/test-smoke-env.ts
 import { parseEnvFile } from "./smoke-env.ts";
-
-let failures = 0;
-const assert = (c: boolean, m: string) => {
-  if (!c) {
-    console.error("FAIL:", m);
-    failures++;
-  } else console.log("ok:", m);
-};
+import { assert, finish } from "./lib/harness.ts";
 
 // Plain KEY=VALUE.
 assert(parseEnvFile("BOOKING_API_KEY=abc123").BOOKING_API_KEY === "abc123", "parses a plain KEY=VALUE");
@@ -38,5 +31,4 @@ assert(parseEnvFile("export TOKEN=xyz").TOKEN === "xyz", "tolerates an 'export '
 // Surrounding whitespace around the value is trimmed.
 assert(parseEnvFile("K=  spaced  ").K === "spaced", "trims surrounding whitespace on the value");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -5,14 +5,7 @@
 // the Booker + widget vitest suites.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-embed-origin.ts
 import { embedParentOrigin } from "@/lib/embed/parent-origin";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // The widget passes its own origin explicitly — use it verbatim.
 assert(
@@ -55,5 +48,4 @@ assert(
   "the opaque 'null' origin is rejected, not echoed back",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

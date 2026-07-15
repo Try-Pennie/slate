@@ -4,14 +4,7 @@
 // here with a stubbed fetch, so a drift in one place is caught in CI.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-smoke-lib.ts
 import { tokenFrom, jpost, slots, createChecker } from "./smoke-lib.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // A recording fetch stub. Each call shifts the next queued response off.
 type Rec = { url: string; init: RequestInit };
@@ -91,5 +84,4 @@ assert(tokenFrom(null) === "", "tokenFrom is safe on null");
   assert(other.failed() === 0, "createChecker: each checker is independent");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

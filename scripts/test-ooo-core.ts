@@ -11,15 +11,7 @@ import {
   overlaps,
   validateWindow,
 } from "../src/lib/ooo/core.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const agent = { id: "u-agent", role: "agent" as const };
 const manager = { id: "u-mgr", role: "manager" as const };
@@ -132,8 +124,4 @@ assert(
   "no unicode dashes in the when line",
 );
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

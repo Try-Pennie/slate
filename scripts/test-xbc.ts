@@ -3,14 +3,7 @@
 // screenshot parity cases and invalid-code rejection.
 // Run: node --experimental-strip-types scripts/test-xbc.ts
 import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -158,5 +151,4 @@ for (const bad of ["", "41", "4111", "041", "611", "441", "413", "4a1", "xbc", "
   assert(bucketSpecForXbc(bad) === null, `invalid "${bad}" -> null`);
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

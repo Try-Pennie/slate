@@ -7,16 +7,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-stale-lanes.ts
 import { findStaleLanes, LANE_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else {
-    console.log("ok:", msg);
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
 const NOW = 1_800_000_000_000;
@@ -109,5 +100,4 @@ assert(
   "the most-overdue lane is reported first",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -16,14 +16,7 @@ import {
   type PersonIdentity,
 } from "../src/lib/booking/person-dedupe.ts";
 import type { Booking } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // Minimal Booking builder — only the fields the matcher reads matter.
 function booking(over: Partial<Booking>): Booking {
@@ -163,5 +156,4 @@ assert(bookingBelongsToPerson(stranger, { externalId: "ext-1", salesforceId: "sf
 assert(bookingBelongsToPerson(ownExt, { externalId: null, salesforceId: null }) === false,
   "no ids supplied = not owned");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

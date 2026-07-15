@@ -8,16 +8,9 @@
 // Run: node --experimental-strip-types scripts/test-smoke-defaults.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const src = readFileSync(join(import.meta.dirname, "smoke-booking-api.ts"), "utf8");
-
-let failures = 0;
-const assert = (c: boolean, m: string) => {
-  if (!c) {
-    console.error("FAIL:", m);
-    failures++;
-  } else console.log("ok:", m);
-};
 
 // Default primary/secondary buckets are the isolated test buckets.
 assert(
@@ -61,5 +54,4 @@ assert(
   "smoke-booking-api imports the shared slots() helper",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

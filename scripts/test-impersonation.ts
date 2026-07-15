@@ -11,15 +11,7 @@ import {
   impersonationTargetId,
   IMPERSONATE_TTL_MS,
 } from "../src/lib/auth/impersonation.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const ADMIN = "admin-id";
 const SUPER = "super-id";
@@ -163,8 +155,4 @@ assert(
   "a malformed-timestamp cookie -> ended",
 );
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

@@ -5,15 +5,7 @@ import {
   resolveManagerSync,
   type SfAgentRef,
 } from "../src/lib/salesforce/manager-sync.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const agent = (
   email: string,
@@ -142,8 +134,4 @@ assert(
   "ambiguous initial+last (Michael & Mary Dugan) does NOT resolve",
 );
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

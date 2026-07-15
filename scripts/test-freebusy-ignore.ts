@@ -5,14 +5,7 @@
 // (which Google's freeBusy may merge into one busy block).
 // Run: node --experimental-strip-types scripts/test-freebusy-ignore.ts
 import { hasBlockingBusy } from "../src/lib/booking/core.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const ms = (s: string) => Date.parse(s);
 const at = (h: string) => `2026-06-08T${h}:00.000Z`;
@@ -73,8 +66,4 @@ assert(
   "busy ending exactly at window start is not a conflict (exclusive boundary)",
 );
 
-if (failures > 0) {
-  console.error(`\n${failures} test(s) failed`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

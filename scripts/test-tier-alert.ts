@@ -1,9 +1,5 @@
 import { tierFallbackAlert } from "../src/lib/routing/tier-alert.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) { console.error("FAIL:", msg); failures++; } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 assert(tierFallbackAlert({ requestedCode: "511", effectiveCode: "511", rungsDropped: 0 }) === null, "no drop => no alert");
 
@@ -17,5 +13,4 @@ assert(deep.key === "tier_fallback_deep:511", "deep-drop key is distinct");
 assert(deep.cooldownMs === 5 * 60 * 1000, "deep drop escalates (shorter cooldown)");
 assert(/ALERT/.test(deep.text), "deep-drop text is a loud alert");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

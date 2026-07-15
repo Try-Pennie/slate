@@ -6,14 +6,7 @@
 // Run: node --experimental-strip-types scripts/test-person-lookup-indexes.ts
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const migrationsDir = join(import.meta.dirname, "..", "supabase", "migrations");
 const sql = readdirSync(migrationsDir)
@@ -47,5 +40,4 @@ for (const col of ["external_id", "salesforce_id", "attendee_phone", "attendee_e
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

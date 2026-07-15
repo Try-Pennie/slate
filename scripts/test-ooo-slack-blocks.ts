@@ -10,15 +10,7 @@ import {
   OOO_REJECT_NOTE_BLOCK,
   OOO_REJECT_NOTE_INPUT,
 } from "../src/lib/notify/ooo-slack-blocks.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- approval blocks ---
 {
@@ -77,8 +69,4 @@ function assert(cond: boolean, msg: string) {
   assert(noteFromViewState({}) === "", "missing note resolves to empty string");
 }
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

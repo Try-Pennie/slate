@@ -5,14 +5,7 @@
 // never the secret) for caller attribution.
 // Run: node --experimental-strip-types scripts/test-booking-api-auth.ts
 import { parseApiKeys, authenticateBearer } from "../src/lib/booking/api-auth.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- parseApiKeys: build the labeled key set from the two env slots ---
 {
@@ -72,5 +65,4 @@ const keys = parseApiKeys("primary-secret", "secondary-secret");
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

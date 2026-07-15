@@ -5,14 +5,7 @@ import {
   humanizeZone,
   timezoneOptions,
 } from "../src/lib/booking/timezones.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // humanizeZone strips the region and underscores
 assert(humanizeZone("America/New_York") === "New York", "humanize strips region + underscore");
@@ -66,5 +59,4 @@ assert(
   "empty detected falls back to a real default zone",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

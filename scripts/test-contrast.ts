@@ -10,15 +10,7 @@
 // Run: node --experimental-strip-types scripts/test-contrast.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
-let failures = 0;
-function fail(msg: string) {
-  console.error("FAIL:", msg);
-  failures++;
-}
-function ok(msg: string) {
-  console.log("ok:", msg);
-}
+import { assert, fail, finish } from "./lib/harness.ts";
 
 type RGB = [number, number, number];
 
@@ -91,12 +83,12 @@ function ratio(a: RGB, b: RGB): number {
 
 function atLeast(fg: RGB, bg: RGB, min: number, label: string) {
   const v = ratio(fg, bg);
-  if (v + 1e-9 >= min) ok(`${label} = ${v.toFixed(2)}:1 (>= ${min})`);
+  if (v + 1e-9 >= min) assert(`${label} = ${v.toFixed(2)}:1 (>= ${min})`);
   else fail(`${label} = ${v.toFixed(2)}:1 (needs >= ${min})`);
 }
 function below(fg: RGB, bg: RGB, max: number, label: string) {
   const v = ratio(fg, bg);
-  if (v < max) ok(`${label} = ${v.toFixed(2)}:1 (correctly < ${max}, forbidden as text)`);
+  if (v < max) assert(`${label} = ${v.toFixed(2)}:1 (correctly < ${max}, forbidden as text)`);
   else fail(`${label} = ${v.toFixed(2)}:1 (expected < ${max} - token may have changed)`);
 }
 
@@ -143,5 +135,4 @@ atLeast(rose, white, 4.5, "Pill status-error rose-on-white"); // 5.14
 atLeast(roseDark, ink2, 4.5, "dark error rose-on-ink-2 surface"); // 4.96
 atLeast(roseDark, navy, 4.5, "dark error rose-on-navy bg"); // 6.72
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

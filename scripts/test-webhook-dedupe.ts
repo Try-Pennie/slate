@@ -6,14 +6,7 @@
 // with no history id degrades to null = no dedup (at-least-once, never dropped).
 // Run: node --experimental-strip-types scripts/test-webhook-dedupe.ts
 import { webhookDedupeKey } from "../src/lib/webhooks/dedupe.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const B = "booking-1";
 
@@ -48,5 +41,4 @@ assert(
   "a mutation with no history id degrades to null (no dedup, at-least-once)",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

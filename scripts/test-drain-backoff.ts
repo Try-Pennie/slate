@@ -8,14 +8,7 @@ import {
   DRAIN_ALERT_AFTER,
   DRAIN_GIVE_UP_AT,
 } from "../src/lib/booking/drain-backoff.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
 
@@ -37,5 +30,4 @@ assert(drainBackoffMs(-3) === MIN, "negative attempts floor at the base (never <
 assert(DRAIN_ALERT_AFTER < DRAIN_GIVE_UP_AT, "alert threshold is below the give-up cap");
 assert(DRAIN_ALERT_AFTER >= 3, "alert only after a few real failures (not a one-off blip)");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

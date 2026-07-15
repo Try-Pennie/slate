@@ -5,15 +5,7 @@ import {
   isDigestTime,
   type DigestManager,
 } from "../src/lib/ooo/digest.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- send-time gate (9am ET weekdays) across DST ---
 // EDT (summer): 9am ET = 13:00 UTC. 2026-07-01 is a Wednesday.
@@ -62,8 +54,4 @@ assert(
 // --- empty pending -> no digests ---
 assert(buildManagerDigests([], managers, "x").length === 0, "no pending, no digests");
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

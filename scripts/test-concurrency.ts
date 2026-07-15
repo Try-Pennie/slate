@@ -1,16 +1,7 @@
 // Unit test for the shared bounded-concurrency map helper (#224).
 // Run: node --experimental-strip-types scripts/test-concurrency.ts
 import { mapWithConcurrency } from "../src/lib/concurrency.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    failures++;
-    console.error(`  ✗ ${msg}`);
-  } else {
-    console.log(`  ✓ ${msg}`);
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 async function run() {
   // Preserves input order even when later items resolve first.
@@ -52,8 +43,4 @@ async function run() {
 
 await run();
 
-if (failures > 0) {
-  console.error(`\n${failures} assertion(s) failed`);
-  process.exit(1);
-}
-console.log("\nconcurrency: all assertions passed");
+finish();

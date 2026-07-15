@@ -10,14 +10,7 @@ import {
   selectAgent,
 } from "../src/lib/booking/core.ts";
 import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- bookingWindow ---
 const w = bookingWindow("2026-06-08T13:00:00.000Z", 30);
@@ -225,5 +218,4 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
   assert(orphan.length === 0, "join: drops a booking whose bucket isn't in the fetched set");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

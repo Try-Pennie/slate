@@ -6,14 +6,7 @@ import {
   computeBucketSlots,
   type MemberAvailability,
 } from "../src/lib/availability/compute.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const tz = "America/New_York";
 const base = {
@@ -65,5 +58,4 @@ assert(r.first === "2026-11-01T14:00:00.000Z" && r.count === 16, "fall-back day:
 r = firstSlotAndCount(1, "2026-11-02T00:00:00.000Z", "2026-11-03T00:00:00.000Z");
 assert(r.first === "2026-11-02T14:00:00.000Z" && r.count === 16, "post-fall-back Mon (EST): 09:00 = 14:00Z, 16 slots");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

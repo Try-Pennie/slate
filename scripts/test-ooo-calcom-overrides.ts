@@ -7,23 +7,7 @@ import {
   type CalcomAvailabilityRule,
 } from "../src/lib/calcom/overrides.ts";
 
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
-function eq(actual: unknown, expected: unknown, msg: string) {
-  const a = JSON.stringify(actual);
-  const b = JSON.stringify(expected);
-  if (a === b) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}\n  expected ${b}\n  got      ${a}`);
-    failures++;
-  }
-}
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const TZ = "America/New_York";
 // Mon-Fri 9-5 in two of Cal.com's encodings: day names and Sunday=0 numbers.
@@ -151,8 +135,4 @@ eq(
   );
 }
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

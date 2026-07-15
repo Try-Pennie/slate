@@ -6,11 +6,7 @@
 // Run: node --experimental-strip-types scripts/test-routing-pool.ts
 import { agentIdsFromPool } from "../src/lib/availability/pool.ts";
 import type { Attributes } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) { console.error("FAIL:", msg); failures++; } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // agentIdsFromPool is the pure filter extracted from resolveBucketAgentIds.
 const orgAgents: { id: string; attributes: Attributes }[] = [
@@ -21,5 +17,4 @@ const orgAgents: { id: string; attributes: Attributes }[] = [
 const ids = agentIdsFromPool(orgAgents, new Set(["c"]), { debt_team: "ultra_high" });
 assert(ids.sort().join(",") === "a,c", "matched criteria OR manual member");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -3,14 +3,7 @@
 import { buildRegalEvent } from "../src/lib/webhooks/regal.ts";
 import type { BookingEventPayload } from "../src/lib/webhooks/types.ts";
 import type { WebhookEvent } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const payload: BookingEventPayload = {
   booking_id: "11111111-1111-1111-1111-111111111111",
@@ -291,5 +284,4 @@ for (const event of ["booking.created", "booking.rescheduled", "booking.cancelle
   assert(!!built.traits, `#779 CONTRACT: ${event} keeps its traits envelope (identity + opt-in)`);
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

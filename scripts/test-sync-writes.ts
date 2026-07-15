@@ -4,14 +4,7 @@
 // passed in) so this is a real behavior test of the batching + guards.
 // Run: node --experimental-strip-types scripts/test-sync-writes.ts
 import { stampLastSynced } from "../src/lib/google/sync-writes.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 interface Call {
   table: string;
@@ -66,5 +59,4 @@ type DbArg = Parameters<typeof stampLastSynced>[0];
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

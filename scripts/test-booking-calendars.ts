@@ -7,20 +7,13 @@ import {
   freeAgentsFromBusy,
   busyByCalendarFromResponse,
 } from "../src/lib/booking/core.ts";
-
-let failed = 0;
-const ok = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failed++;
-  } else console.log("ok:", msg);
-};
+import { assert, finish } from "./lib/harness.ts";
 
 // A real query error -> readFailed, no ids. The caller skips the agent + alerts.
 {
   const r = calendarIdsFromResult({ data: null, error: { message: "boom" } });
-  ok(r.readFailed === true, "a query error is flagged readFailed");
-  ok(r.ids.length === 0, "a failed read yields no calendar ids");
+  assert(r.readFailed === true, "a query error is flagged readFailed");
+  assert(r.ids.length === 0, "a failed read yields no calendar ids");
 }
 
 // Rows present, no error -> the calendar ids, not failed.
@@ -29,8 +22,8 @@ const ok = (cond: boolean, msg: string) => {
     data: [{ calendar_id: "primary" }, { calendar_id: "team@x.com" }],
     error: null,
   });
-  ok(r.readFailed === false, "a clean read is not failed");
-  ok(
+  assert(r.readFailed === false, "a clean read is not failed");
+  assert(
     JSON.stringify(r.ids) === JSON.stringify(["primary", "team@x.com"]),
     "returns the calendar ids in order",
   );
@@ -40,11 +33,11 @@ const ok = (cond: boolean, msg: string) => {
 // pre-first-sync case; the caller falls back to the primary calendar as before.
 {
   const r = calendarIdsFromResult({ data: [], error: null });
-  ok(r.readFailed === false && r.ids.length === 0, "empty-with-no-error is a clean empty, not a failure");
+  assert(r.readFailed === false && r.ids.length === 0, "empty-with-no-error is a clean empty, not a failure");
 }
 {
   const r = calendarIdsFromResult({ data: null, error: null });
-  ok(r.readFailed === false && r.ids.length === 0, "null-data-no-error is a clean empty, not a failure");
+  assert(r.readFailed === false && r.ids.length === 0, "null-data-no-error is a clean empty, not a failure");
 }
 
 // --- freeAgentsFromBusy: map a bulk freeBusy response back to free agents ---
@@ -65,8 +58,8 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(r.free.has("a@x"), "clean, no busy -> free");
-  ok(r.needsFallback.size === 0, "clean agent needs no fallback");
+  assert(r.free.has("a@x"), "clean, no busy -> free");
+  assert(r.needsFallback.size === 0, "clean agent needs no fallback");
 }
 
 {
@@ -77,8 +70,8 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(!r.free.has("a@x"), "overlapping busy -> not free");
-  ok(!r.needsFallback.has("a@x"), "a cleanly-read busy agent needs no fallback");
+  assert(!r.free.has("a@x"), "overlapping busy -> not free");
+  assert(!r.needsFallback.has("a@x"), "a cleanly-read busy agent needs no fallback");
 }
 
 {
@@ -90,7 +83,7 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(r.free.has("a@x"), "busy starting exactly at slot end does not overlap -> free");
+  assert(r.free.has("a@x"), "busy starting exactly at slot end does not overlap -> free");
 }
 
 {
@@ -104,8 +97,8 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(!r.free.has("a@x"), "busy on any one calendar -> not free");
-  ok(!r.needsFallback.has("a@x"), "all calendars read cleanly -> no fallback");
+  assert(!r.free.has("a@x"), "busy on any one calendar -> not free");
+  assert(!r.needsFallback.has("a@x"), "all calendars read cleanly -> no fallback");
 }
 
 {
@@ -119,8 +112,8 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(!r.free.has("a@x"), "an errored calendar is never assumed free");
-  ok(r.needsFallback.has("a@x"), "an errored calendar routes the agent to fallback");
+  assert(!r.free.has("a@x"), "an errored calendar is never assumed free");
+  assert(r.needsFallback.has("a@x"), "an errored calendar routes the agent to fallback");
 }
 
 {
@@ -131,7 +124,7 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(!r.free.has("a@x") && r.needsFallback.has("a@x"), "missing calendar -> fallback");
+  assert(!r.free.has("a@x") && r.needsFallback.has("a@x"), "missing calendar -> fallback");
 }
 
 {
@@ -150,8 +143,8 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     START,
     END,
   );
-  ok(r.free.has("free@x") && r.free.size === 1, "mixed: only the clean-free agent is free");
-  ok(r.needsFallback.has("err@x") && r.needsFallback.size === 1, "mixed: only the errored agent falls back");
+  assert(r.free.has("free@x") && r.free.size === 1, "mixed: only the clean-free agent is free");
+  assert(r.needsFallback.has("err@x") && r.needsFallback.size === 1, "mixed: only the errored agent falls back");
 }
 
 // --- busyByCalendarFromResponse: parse a bulk freeBusy response safely ---
@@ -163,9 +156,9 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
     "b@x": { errors: [{ domain: "calendar", reason: "tooManyCalendarsRequested" }] },
     // c@x absent from the response entirely
   });
-  ok(m.get("a@x")?.error === false && m.get("a@x")?.busy.length === 1, "parses a clean busy calendar");
-  ok(m.get("b@x")?.error === true, "a calendar with errors is marked error");
-  ok(m.get("c@x")?.error === true, "a calendar absent from the response is marked error");
+  assert(m.get("a@x")?.error === false && m.get("a@x")?.busy.length === 1, "parses a clean busy calendar");
+  assert(m.get("b@x")?.error === true, "a calendar with errors is marked error");
+  assert(m.get("c@x")?.error === true, "a calendar absent from the response is marked error");
 }
 
 {
@@ -173,10 +166,9 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
   const m = busyByCalendarFromResponse(["a@x"], {
     "a@x": { busy: [{ start: "2026-06-08T13:00:00.000Z" }, { start: "x", end: "y" }] },
   });
-  ok(m.get("a@x")?.busy.length === 1, "drops a busy entry missing start or end");
+  assert(m.get("a@x")?.busy.length === 1, "drops a busy entry missing start or end");
   const none = busyByCalendarFromResponse(["a@x"], undefined);
-  ok(none.get("a@x")?.error === true, "no calendars object -> every requested id is error");
+  assert(none.get("a@x")?.error === true, "no calendars object -> every requested id is error");
 }
 
-console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish();

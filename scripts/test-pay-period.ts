@@ -4,22 +4,16 @@
 // UTC offset), so we assert by converting the returned ms back to ET.
 import { DateTime } from "luxon";
 import { payPeriod } from "../src/lib/availability/roundrobin.ts";
+import { assert, finish } from "./lib/harness.ts";
 
 const TZ = "America/New_York";
-let failed = 0;
-const ok = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failed++;
-  } else console.log("ok:", msg);
-};
 
 const et = (ms: number) => DateTime.fromMillis(ms, { zone: TZ });
 const ms = (iso: string) => DateTime.fromISO(iso, { zone: TZ }).toMillis();
 // Assert a boundary instant is the given local date at wall-clock midnight.
 const isMidnight = (boundaryMs: number, y: number, m: number, d: number, label: string) => {
   const b = et(boundaryMs);
-  ok(
+  assert(
     b.year === y && b.month === m && b.day === d && b.hour === 0 && b.minute === 0,
     `${label}: ${b.toISO()} is ${y}-${m}-${d} 00:00 ET`,
   );
@@ -59,5 +53,4 @@ const isMidnight = (boundaryMs: number, y: number, m: number, d: number, label: 
 isMidnight(payPeriod(ms("2026-03-20T12:00:00"), TZ).startMs, 2026, 3, 15, "March DST: 15th boundary");
 isMidnight(payPeriod(ms("2026-11-20T12:00:00"), TZ).startMs, 2026, 11, 15, "Nov DST: 15th boundary");
 
-console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish();

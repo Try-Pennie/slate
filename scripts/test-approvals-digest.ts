@@ -11,14 +11,7 @@ import {
   buildApprovalsCsv,
   type ApprovalRow,
 } from "../src/lib/ooo/approvals-digest.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // isApprovalsDigestTime — 7am ET, across DST (EDT 11:00 UTC, EST 12:00 UTC)
 assert(isApprovalsDigestTime(Date.UTC(2026, 5, 8, 11, 0)), "summer: 11:00 UTC is 7am ET");
@@ -90,5 +83,4 @@ assert(formatApprovalTime("not-a-date", "ET") === "not-a-date", "invalid iso fal
   assert(buildApprovalsCsv([]).split("\n").length === 1, "empty rows -> header only");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

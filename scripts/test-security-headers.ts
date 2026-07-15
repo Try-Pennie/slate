@@ -4,14 +4,7 @@
 // locks the policy values; the middleware wiring is exercised in the app.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-security-headers.ts
 import { SECURITY_HEADERS } from "@/lib/security-headers";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // Clickjacking defense: modern (CSP) + legacy (X-Frame-Options) both present.
 assert(
@@ -46,5 +39,4 @@ assert(
   "CSP is frame-ancestors only (no script/default-src that could break the app)",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

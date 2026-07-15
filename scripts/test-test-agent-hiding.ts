@@ -7,17 +7,10 @@
 // Run: node --experimental-strip-types scripts/test-test-agent-hiding.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const root = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
-
-let failures = 0;
-const assert = (c: boolean, m: string) => {
-  if (!c) {
-    console.error("FAIL:", m);
-    failures++;
-  } else console.log("ok:", m);
-};
 
 // Internal UI: every page that lists agents must filter is_test out of its
 // users query, so the test agent never shows in the roster, the bucket
@@ -44,5 +37,4 @@ assert(
   "book page short-circuits when the bucket is a test bucket",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

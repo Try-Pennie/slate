@@ -8,12 +8,7 @@
 // Run: node --experimental-strip-types scripts/test-deploy-env-coverage.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
-let failures = 0;
-function fail(msg: string) {
-  console.error("FAIL:", msg);
-  failures++;
-}
+import { fail, finish } from "./lib/harness.ts";
 
 // Directories whose runtime code reads env vars (worker + app server code).
 const CODE_DIRS = ["src", "worker"];
@@ -79,8 +74,4 @@ for (const name of required) {
   }
 }
 
-if (failures === 0) {
-  console.log(`ok: DEPLOY.md documents all ${required.length} runtime env vars`);
-}
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

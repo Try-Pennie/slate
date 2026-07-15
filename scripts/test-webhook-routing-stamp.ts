@@ -1,10 +1,6 @@
 import { routingMetaFromTrace } from "../src/lib/webhooks/types.ts";
 import type { RoutingTrace } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) { console.error("FAIL:", msg); failures++; } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const plain: RoutingTrace = {
   bucket_code: "500", bucket_id: "b", considered: ["a"], chosen_user_id: "a",
@@ -31,5 +27,4 @@ const emptyPool: RoutingTrace = {
 };
 assert(routingMetaFromTrace(emptyPool).empty_pool_fallback === true, "empty-pool flag carried");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

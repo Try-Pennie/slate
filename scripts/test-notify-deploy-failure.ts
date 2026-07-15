@@ -15,14 +15,7 @@ import {
   run,
   type DeployFailureContext,
 } from "./notify-deploy-failure.ts";
-
-let failures = 0;
-const assert = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-};
+import { assert, finish } from "./lib/harness.ts";
 
 const ctx: DeployFailureContext = {
   workflowName: "CI",
@@ -120,5 +113,4 @@ const baseEnv = {
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

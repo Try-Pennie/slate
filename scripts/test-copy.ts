@@ -4,12 +4,7 @@
 // Run: node --experimental-strip-types scripts/test-copy.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
-let failures = 0;
-function fail(msg: string) {
-  console.error("FAIL:", msg);
-  failures++;
-}
+import { fail, finish } from "./lib/harness.ts";
 
 const TARGET_DIRS = ["src/app", "src/components", "src/lib/notify"];
 const FORBIDDEN: { re: RegExp; label: string }[] = [
@@ -68,8 +63,4 @@ for (const file of files) {
   });
 }
 
-if (failures === 0) {
-  console.log(`ok: no forbidden dashes or names across ${files.length} user-facing files`);
-}
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

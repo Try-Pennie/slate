@@ -6,14 +6,7 @@
 // to the pacing facts both lanes rotate on.
 // Run: node --experimental-strip-types scripts/test-sync-agents.ts
 import { toSyncAgents } from "../src/lib/google/sync-pace.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const rows = [
   { id: "active", last_synced_at: null, deactivated_at: null },
@@ -49,5 +42,4 @@ assert(
   "never-synced agent keeps lastSyncedMs null",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

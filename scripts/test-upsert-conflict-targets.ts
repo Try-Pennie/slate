@@ -18,14 +18,7 @@
 // Run: node --experimental-strip-types scripts/test-upsert-conflict-targets.ts
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const MIGRATIONS = join(ROOT, "supabase", "migrations");
@@ -135,5 +128,4 @@ assert(
   "#770: busy_blocks has a non-partial UNIQUE index on booking_id",
 );
 
-console.log(failures === 0 ? "\nPASS" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -5,14 +5,7 @@ import { createHmac } from "node:crypto";
 import { buildRequest, sign } from "../src/lib/webhooks/wire.ts";
 import type { BookingEventPayload } from "../src/lib/webhooks/types.ts";
 import type { WebhookEndpoint } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const payload: BookingEventPayload = {
   booking_id: "b-1",
@@ -134,5 +127,4 @@ try {
 }
 assert(threwOnBlank, "regal: a whitespace-only key is treated as missing, not as a key (#600)");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

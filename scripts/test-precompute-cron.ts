@@ -5,9 +5,7 @@ import {
   recomputeHeadroom,
   recomputeDueBuckets,
 } from "../src/lib/availability/precompute-cron.ts";
-
-let failures = 0;
-const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
+import { assert, finish } from "./lib/harness.ts";
 
 const allCodes = ["100", "200", "300", "400"];
 const known = [
@@ -132,5 +130,4 @@ await (async () => {
   assert(recomputed === 2, `a failing bucket is isolated; others still recompute (got ${recomputed})`);
 })();
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

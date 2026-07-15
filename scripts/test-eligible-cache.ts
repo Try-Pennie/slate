@@ -3,11 +3,7 @@
 import { eligibleCacheKey, ELIGIBLE_TTL_SECONDS } from "../src/lib/availability/eligible-cache-key.ts";
 import { eligibleAgentIdsCached } from "../src/lib/availability/eligible-cache.ts";
 import type { Bucket } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) { console.error("FAIL:", msg); failures++; } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- Cache key: pure derivation from bucket id ---
 assert(typeof eligibleCacheKey("bucket-abc") === "string", "eligibleCacheKey returns a string");
@@ -80,5 +76,4 @@ assert(
   "bucket id isolation: different uuid-style ids have different keys",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

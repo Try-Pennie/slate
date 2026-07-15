@@ -16,16 +16,7 @@ import {
   runMigrationDriftCheck,
   MIGRATION_VERSION_LAG_KEY,
 } from "../src/lib/monitor/migration-drift.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else {
-    console.log("ok:", msg);
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // A complete applied set 0001..N as the RPC would return it (sorted text list).
 function fullSet(n: number): string[] {
@@ -193,5 +184,4 @@ function harness(opts: {
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

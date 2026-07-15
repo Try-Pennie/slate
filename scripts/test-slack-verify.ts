@@ -2,15 +2,7 @@
 // Run: node --experimental-strip-types scripts/test-slack-verify.ts
 import { createHmac } from "node:crypto";
 import { verifySlackSignature } from "../src/lib/slack/verify.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const secret = "shhh-signing-secret";
 const body = "payload=%7B%22type%22%3A%22block_actions%22%7D";
@@ -86,8 +78,4 @@ assert(
   "missing headers fail",
 );
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

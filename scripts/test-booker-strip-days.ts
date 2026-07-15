@@ -1,11 +1,9 @@
 import { DateTime } from "luxon";
 import { stripDayLabel } from "../src/components/booker-strip-labels.ts";
-let failures = 0;
-const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
+import { assert, finish } from "./lib/harness.ts";
 const tz = "America/New_York";
 const today = DateTime.fromISO("2026-06-18", { zone: tz });
 assert(stripDayLabel("2026-06-18", today, tz) === "Today", "today -> Today");
 assert(stripDayLabel("2026-06-19", today, tz) === "Tomorrow", "tomorrow -> Tomorrow");
 assert(stripDayLabel("2026-06-20", today, tz) === "Sat", "later -> weekday abbr");
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -1,8 +1,6 @@
 import { resolveBucketSlots, type ReadDeps } from "../src/lib/availability/precompute-core.ts";
 import type { BucketSlots } from "../src/lib/availability/service.ts";
-
-let failures = 0;
-const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
+import { assert, finish } from "./lib/harness.ts";
 
 const sampleSlots = (): BucketSlots => ({
   bucket: { code: "411", name: "Call" } as BucketSlots["bucket"],
@@ -57,5 +55,4 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   assert(calls.cachePut === 1, "fail-open warms the cache");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();
