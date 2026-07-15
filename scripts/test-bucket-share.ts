@@ -10,9 +10,7 @@ import {
   orderByRecency,
   shadowRankingDivergence,
 } from "../src/lib/availability/roundrobin.ts";
-import { assert, finish } from "./lib/harness.ts";
-
-const eq = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const PERIOD_START = Date.parse("2026-06-15T00:00:00Z");
 const inPeriod = "2026-06-18T00:00:00Z"; // >= start
@@ -50,71 +48,57 @@ const priorPeriod = "2026-06-10T00:00:00Z"; // < start
 
 // --- orderByBucketShare ---
 // Fewest count first.
-assert(
-  eq(
-    orderByBucketShare(["a", "b", "c"], { counts: { a: { count: 3, lastBookedAtMs: 1 }, b: { count: 1, lastBookedAtMs: 1 }, c: { count: 2, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "b", "c"] }),
-    ["b", "c", "a"],
-  ),
+eq(
+  orderByBucketShare(["a", "b", "c"], { counts: { a: { count: 3, lastBookedAtMs: 1 }, b: { count: 1, lastBookedAtMs: 1 }, c: { count: 2, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "b", "c"] }),
+  ["b", "c", "a"],
   "fewest in-bucket count this period wins",
 );
 // Tie on count -> least-recently-booked, then id.
-assert(
-  eq(
-    orderByBucketShare(["a", "b"], { counts: { a: { count: 2, lastBookedAtMs: 500 }, b: { count: 2, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] }),
-    ["b", "a"],
-  ),
+eq(
+  orderByBucketShare(["a", "b"], { counts: { a: { count: 2, lastBookedAtMs: 500 }, b: { count: 2, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] }),
+  ["b", "a"],
   "equal count breaks to least-recently-booked",
 );
-assert(
-  eq(
-    orderByBucketShare(["b", "a"], { counts: { a: { count: 1, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] }),
-    ["a", "b"],
-  ),
+eq(
+  orderByBucketShare(["b", "a"], { counts: { a: { count: 1, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] }),
+  ["a", "b"],
   "equal count + equal recency breaks to id",
 );
 // An established-but-quiet agent (count 0, but active last period) legitimately
 // sorts FIRST -- they are behind, not new.
-assert(
-  eq(
-    orderByBucketShare(["a", "d"], { counts: { a: { count: 4, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "d"] }),
-    ["d", "a"],
-  ),
+eq(
+  orderByBucketShare(["a", "d"], { counts: { a: { count: 4, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "d"] }),
+  ["d", "a"],
   "established-but-quiet agent (count 0) sorts first, not seeded",
 );
 // A brand-new agent (count 0, NOT active last period) is seeded at the pool
 // average so they land mid-pack, not first. counts a:4,b:2 established -> avg 3;
 // new c seeded 3 -> order b(2), c(3), a(4).
-assert(
-  eq(
-    orderByBucketShare(["a", "b", "c"], { counts: { a: { count: 4, lastBookedAtMs: 1 }, b: { count: 2, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "b"] }),
-    ["b", "c", "a"],
-  ),
+eq(
+  orderByBucketShare(["a", "b", "c"], { counts: { a: { count: 4, lastBookedAtMs: 1 }, b: { count: 2, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "b"] }),
+  ["b", "c", "a"],
   "brand-new agent is seeded at the pool average (lands mid-pack, not flooded)",
 );
 // Empty / single pass through.
-assert(eq(orderByBucketShare([], { counts: {}, priorActiveIds: [] }), []), "empty input yields empty");
-assert(eq(orderByBucketShare(["solo"], { counts: {}, priorActiveIds: [] }), ["solo"]), "single candidate passes through");
+eq(orderByBucketShare([], { counts: {}, priorActiveIds: [] }), [], "empty input yields empty");
+eq(orderByBucketShare(["solo"], { counts: {}, priorActiveIds: [] }), ["solo"], "single candidate passes through");
 
 // --- orderByRecency (the prior recency ranker, for shadow comparison, #321) ---
 // Pure least-recently-booked: ignores count; never-booked sorts first; tie by id.
-assert(
-  eq(
-    orderByRecency(["a", "b", "c"], {
-      counts: { a: { count: 5, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 500 } },
-      priorActiveIds: ["a", "b"],
-    }),
-    ["c", "a", "b"],
-  ),
+eq(
+  orderByRecency(["a", "b", "c"], {
+    counts: { a: { count: 5, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 500 } },
+    priorActiveIds: ["a", "b"],
+  }),
+  ["c", "a", "b"],
   "recency: never-booked first, then least-recently-booked (count ignored)",
 );
-assert(
-  eq(
-    orderByRecency(["b", "a"], {
-      counts: { a: { count: 0, lastBookedAtMs: 200 }, b: { count: 0, lastBookedAtMs: 200 } },
-      priorActiveIds: [],
-    }),
-    ["a", "b"],
-  ),
+eq(
+  orderByRecency(["b", "a"], {
+    counts: { a: { count: 0, lastBookedAtMs: 200 }, b: { count: 0, lastBookedAtMs: 200 } },
+    priorActiveIds: [],
+  }),
+  ["a", "b"],
   "recency: equal recency breaks to id",
 );
 
@@ -129,7 +113,7 @@ assert(
   assert(d.equalShareTop === "b", "divergence: equal-share top is the fewest-count agent");
   assert(d.recencyTop === "c", "divergence: recency top is the never-booked agent");
   assert(d.diverged === true, "divergence: flagged when the two rankers' tops differ");
-  assert(eq(d.recencyOrder, orderByRecency(["a", "b", "c"], share)), "divergence: carries the full recency order");
+  eq(d.recencyOrder, orderByRecency(["a", "b", "c"], share), "divergence: carries the full recency order");
 }
 {
   // When both rankers agree on the top, diverged is false.

@@ -2,39 +2,35 @@
 // Slate-managed keys survive the sync.
 // Run: node --experimental-strip-types scripts/test-sf-attributes.ts
 import { mergeSfAttributes, SF_MANAGED_KEYS } from "../src/lib/salesforce/attributes.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
-const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-
-assert(
-  eq(
-    mergeSfAttributes(
-      { debt_team: ["low"], legal_eligible: "Y" },
-      { debt_team: ["ultra_high"], role: "Sales" },
-    ),
-    { legal_eligible: "Y", debt_team: ["ultra_high"], role: "Sales" },
+eq(
+  mergeSfAttributes(
+    { debt_team: ["low"], legal_eligible: "Y" },
+    { debt_team: ["ultra_high"], role: "Sales" },
   ),
+  { legal_eligible: "Y", debt_team: ["ultra_high"], role: "Sales" },
   "Slate-managed legal_eligible survives; SF keys replaced",
 );
 
-assert(
-  eq(
-    mergeSfAttributes(
-      { debt_team: ["low"], backend_service: ["beyond"], legal_eligible: "N" },
-      { debt_team: ["low"] },
-    ),
-    { legal_eligible: "N", debt_team: ["low"] },
+eq(
+  mergeSfAttributes(
+    { debt_team: ["low"], backend_service: ["beyond"], legal_eligible: "N" },
+    { debt_team: ["low"] },
   ),
+  { legal_eligible: "N", debt_team: ["low"] },
   "an SF flag un-checked in Salesforce is REMOVED, not kept from the old value",
 );
 
-assert(
-  eq(mergeSfAttributes(null, { role: "Sales" }), { role: "Sales" }),
+eq(
+  mergeSfAttributes(null, { role: "Sales" }),
+  { role: "Sales" },
   "null existing attributes behave like empty",
 );
 
-assert(
-  eq(mergeSfAttributes({ legal_eligible: "Y" }, {}), { legal_eligible: "Y" }),
+eq(
+  mergeSfAttributes({ legal_eligible: "Y" }, {}),
+  { legal_eligible: "Y" },
   "agent dropped from every SF flag still keeps Slate-managed keys",
 );
 

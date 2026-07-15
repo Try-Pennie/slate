@@ -3,9 +3,7 @@
 // screenshot parity cases and invalid-code rejection.
 // Run: node --experimental-strip-types scripts/test-xbc.ts
 import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
-import { assert, finish } from "./lib/harness.ts";
-
-const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- Handwritten golden table: ALL 60 codes, uniform per-tier structure ---
 const LO = "low";
@@ -83,10 +81,9 @@ const golden: Record<string, Record<string, string>> = {
 
 for (const [code, criteria] of Object.entries(golden)) {
   const spec = bucketSpecForXbc(code);
-  assert(
-    !!spec && eq(spec.criteria, criteria),
-    `${code} -> ${JSON.stringify(criteria)} (got ${JSON.stringify(spec?.criteria)})`,
-  );
+  // A null spec makes spec?.criteria undefined, which never deep-equals the
+  // expected object, so the golden mismatch AND the missing-spec case both fail.
+  eq<unknown>(spec?.criteria, criteria, `${code} -> ${JSON.stringify(criteria)}`);
 }
 
 // --- structural extrapolation: every tier mirrors the Very High structure ---
@@ -97,10 +94,7 @@ for (const [advA, advB] of [["1", "4"], ["2", "4"], ["3", "4"], ["5", "4"]]) {
       const b = bucketSpecForXbc(`${advB}${bes}${leg}`)!;
       const { debt_team: _a, ...restA } = a.criteria;
       const { debt_team: _b, ...restB } = b.criteria;
-      assert(
-        eq(restA, restB),
-        `${advA}${bes}${leg} mirrors ${advB}${bes}${leg} apart from the tier`,
-      );
+      eq(restA, restB, `${advA}${bes}${leg} mirrors ${advB}${bes}${leg} apart from the tier`);
     }
   }
 }
@@ -110,16 +104,19 @@ assert(
   bucketSpecForXbc("411")!.name === "Very High | Both | Legal",
   "411 is named Very High (the old seed bucket called it Ultra High - wrong)",
 );
-assert(
-  eq(bucketSpecForXbc("512")!.criteria, { debt_team: UH }),
+eq<unknown>(
+  bucketSpecForXbc("512")!.criteria,
+  { debt_team: UH },
   "512 = ULTRA HIGH | BOTH (no legal filter)",
 );
-assert(
-  eq(bucketSpecForXbc("431")!.criteria, bucketSpecForXbc("432")!.criteria),
+eq(
+  bucketSpecForXbc("431")!.criteria,
+  bucketSpecForXbc("432")!.criteria,
   "431/432 route identically (ACHIEVE ignores legal, like cal.com)",
 );
-assert(
-  eq(bucketSpecForXbc("421")!.criteria, bucketSpecForXbc("422")!.criteria),
+eq(
+  bucketSpecForXbc("421")!.criteria,
+  bucketSpecForXbc("422")!.criteria,
   "421/422 route identically (BEYOND ignores legal, like cal.com)",
 );
 
