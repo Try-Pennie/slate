@@ -41,7 +41,8 @@ import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
 import { resolveBucketPool } from "../availability/service.ts";
 import { recordRoutingDecision } from "../routing/record.ts";
-import { tierLadder, tierKeyOf } from "../routing/tiers.ts";
+import { tierKeyOf } from "../routing/tiers.ts";
+import { walkTierLadder } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
@@ -958,29 +959,35 @@ async function assignAgentWithTierFallback(
   startInstantIso: string,
   allowTestBuckets: boolean,
 ): Promise<TierAssignResult> {
-  const ladder = tierLadder(requested.bucket.code);
+  // Shares walkTierLadder with the availability display cascade (#499), so the two
+  // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
+  // predicate differs (here: an agent verifies free for the slot).
   let lastErr: unknown = null;
-  for (let i = 0; i < ladder.length; i++) {
-    const resolved = i === 0 ? requested : await deps.resolveBucketByCode(ladder[i]);
-    if (!resolved) continue; // a lower tier with no bucket row: skip
-    if (resolved.bucket.is_test && !allowTestBuckets) continue;
-    const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
-    try {
-      const { userId, email, candidates } = await assignAgent(
-        deps, resolved.bucket, resolved.eventType, startIso, endIso,
-      );
-      return {
-        bucket: resolved.bucket, eventType: resolved.eventType,
-        startIso, endIso, userId, email, candidates, rungsDropped: i,
-      };
-    } catch (err) {
-      if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
-        lastErr = err; // this tier can't serve the slot; drop a rung
-        continue;
+  const winner = await walkTierLadder<Omit<TierAssignResult, "rungsDropped">>(
+    requested.bucket.code,
+    async (rungCode, i) => {
+      const resolved = i === 0 ? requested : await deps.resolveBucketByCode(rungCode);
+      if (!resolved) return { hit: false }; // a lower tier with no bucket row: skip
+      if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
+      const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
+      try {
+        const { userId, email, candidates } = await assignAgent(
+          deps, resolved.bucket, resolved.eventType, startIso, endIso,
+        );
+        return {
+          hit: true,
+          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates },
+        };
+      } catch (err) {
+        if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
+          lastErr = err; // this tier can't serve the slot; drop a rung
+          return { hit: false };
+        }
+        throw err; // VerifyUnavailableError and anything unexpected: do not mask
       }
-      throw err; // VerifyUnavailableError and anything unexpected: do not mask
-    }
-  }
+    },
+  );
+  if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped };
   throw lastErr ?? new SlotUnavailableError();
 }
 
