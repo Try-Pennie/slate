@@ -10,14 +10,8 @@ import {
   orderByRecency,
   shadowRankingDivergence,
 } from "../src/lib/availability/roundrobin.ts";
+import { assert, finish } from "./lib/harness.ts";
 
-let failed = 0;
-const ok = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failed++;
-  } else console.log("ok:", msg);
-};
 const eq = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
 
 const PERIOD_START = Date.parse("2026-06-15T00:00:00Z");
@@ -29,8 +23,8 @@ const priorPeriod = "2026-06-10T00:00:00Z"; // < start
 // and the caller fires the alert.
 {
   const r = bucketShareFromResult({ data: null, error: { message: "boom" } }, PERIOD_START);
-  ok(r.degraded === true, "errored read is degraded");
-  ok(Object.keys(r.counts).length === 0 && r.priorActiveIds.length === 0, "degraded read yields empty share");
+  assert(r.degraded === true, "errored read is degraded");
+  assert(Object.keys(r.counts).length === 0 && r.priorActiveIds.length === 0, "degraded read yields empty share");
 }
 // Rows split by the period boundary: in-period rows count; prior-period rows
 // only mark the agent as established (not new).
@@ -47,16 +41,16 @@ const priorPeriod = "2026-06-10T00:00:00Z"; // < start
     },
     PERIOD_START,
   );
-  ok(r.counts.a?.count === 2, "counts only in-period bookings per agent");
-  ok(r.counts.a?.lastBookedAtMs === Date.parse("2026-06-17T10:00:00Z"), "tracks newest created_at for the tiebreak");
-  ok(r.counts.b === undefined, "a prior-period-only agent has no in-period count");
-  ok(r.priorActiveIds.includes("b"), "a prior-period booking marks the agent established");
-  ok(!("null" in r.counts), "rows with a null assignee are skipped");
+  assert(r.counts.a?.count === 2, "counts only in-period bookings per agent");
+  assert(r.counts.a?.lastBookedAtMs === Date.parse("2026-06-17T10:00:00Z"), "tracks newest created_at for the tiebreak");
+  assert(r.counts.b === undefined, "a prior-period-only agent has no in-period count");
+  assert(r.priorActiveIds.includes("b"), "a prior-period booking marks the agent established");
+  assert(!("null" in r.counts), "rows with a null assignee are skipped");
 }
 
 // --- orderByBucketShare ---
 // Fewest count first.
-ok(
+assert(
   eq(
     orderByBucketShare(["a", "b", "c"], { counts: { a: { count: 3, lastBookedAtMs: 1 }, b: { count: 1, lastBookedAtMs: 1 }, c: { count: 2, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "b", "c"] }),
     ["b", "c", "a"],
@@ -64,14 +58,14 @@ ok(
   "fewest in-bucket count this period wins",
 );
 // Tie on count -> least-recently-booked, then id.
-ok(
+assert(
   eq(
     orderByBucketShare(["a", "b"], { counts: { a: { count: 2, lastBookedAtMs: 500 }, b: { count: 2, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] }),
     ["b", "a"],
   ),
   "equal count breaks to least-recently-booked",
 );
-ok(
+assert(
   eq(
     orderByBucketShare(["b", "a"], { counts: { a: { count: 1, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] }),
     ["a", "b"],
@@ -80,7 +74,7 @@ ok(
 );
 // An established-but-quiet agent (count 0, but active last period) legitimately
 // sorts FIRST -- they are behind, not new.
-ok(
+assert(
   eq(
     orderByBucketShare(["a", "d"], { counts: { a: { count: 4, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "d"] }),
     ["d", "a"],
@@ -90,7 +84,7 @@ ok(
 // A brand-new agent (count 0, NOT active last period) is seeded at the pool
 // average so they land mid-pack, not first. counts a:4,b:2 established -> avg 3;
 // new c seeded 3 -> order b(2), c(3), a(4).
-ok(
+assert(
   eq(
     orderByBucketShare(["a", "b", "c"], { counts: { a: { count: 4, lastBookedAtMs: 1 }, b: { count: 2, lastBookedAtMs: 1 } }, priorActiveIds: ["a", "b"] }),
     ["b", "c", "a"],
@@ -98,12 +92,12 @@ ok(
   "brand-new agent is seeded at the pool average (lands mid-pack, not flooded)",
 );
 // Empty / single pass through.
-ok(eq(orderByBucketShare([], { counts: {}, priorActiveIds: [] }), []), "empty input yields empty");
-ok(eq(orderByBucketShare(["solo"], { counts: {}, priorActiveIds: [] }), ["solo"]), "single candidate passes through");
+assert(eq(orderByBucketShare([], { counts: {}, priorActiveIds: [] }), []), "empty input yields empty");
+assert(eq(orderByBucketShare(["solo"], { counts: {}, priorActiveIds: [] }), ["solo"]), "single candidate passes through");
 
 // --- orderByRecency (the prior recency ranker, for shadow comparison, #321) ---
 // Pure least-recently-booked: ignores count; never-booked sorts first; tie by id.
-ok(
+assert(
   eq(
     orderByRecency(["a", "b", "c"], {
       counts: { a: { count: 5, lastBookedAtMs: 100 }, b: { count: 1, lastBookedAtMs: 500 } },
@@ -113,7 +107,7 @@ ok(
   ),
   "recency: never-booked first, then least-recently-booked (count ignored)",
 );
-ok(
+assert(
   eq(
     orderByRecency(["b", "a"], {
       counts: { a: { count: 0, lastBookedAtMs: 200 }, b: { count: 0, lastBookedAtMs: 200 } },
@@ -132,17 +126,16 @@ ok(
     priorActiveIds: ["a", "b"],
   };
   const d = shadowRankingDivergence(["a", "b", "c"], share);
-  ok(d.equalShareTop === "b", "divergence: equal-share top is the fewest-count agent");
-  ok(d.recencyTop === "c", "divergence: recency top is the never-booked agent");
-  ok(d.diverged === true, "divergence: flagged when the two rankers' tops differ");
-  ok(eq(d.recencyOrder, orderByRecency(["a", "b", "c"], share)), "divergence: carries the full recency order");
+  assert(d.equalShareTop === "b", "divergence: equal-share top is the fewest-count agent");
+  assert(d.recencyTop === "c", "divergence: recency top is the never-booked agent");
+  assert(d.diverged === true, "divergence: flagged when the two rankers' tops differ");
+  assert(eq(d.recencyOrder, orderByRecency(["a", "b", "c"], share)), "divergence: carries the full recency order");
 }
 {
   // When both rankers agree on the top, diverged is false.
   const share = { counts: { a: { count: 0, lastBookedAtMs: 100 } }, priorActiveIds: ["a", "b"] };
   const d = shadowRankingDivergence(["a", "b"], share);
-  ok(d.diverged === false, "divergence: not flagged when tops agree");
+  assert(d.diverged === false, "divergence: not flagged when tops agree");
 }
 
-console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish();

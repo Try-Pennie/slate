@@ -10,15 +10,7 @@ import {
   peopleWithNoTimeOff,
 } from "../src/lib/ooo/analytics-core.ts";
 import type { OooRequest, OooStatus } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
 // Fixed clock: 2026-06-12 noon ET.
@@ -243,8 +235,4 @@ assert(coverageAlerts([], [], NOW, ZONE).length === 0, "empty team no alerts");
   assert(busiestMonth([], ZONE, NOW) === "None ahead", "empty busiest month copy");
 }
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

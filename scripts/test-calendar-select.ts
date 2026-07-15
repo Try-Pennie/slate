@@ -2,14 +2,7 @@
 // Run: node --experimental-strip-types scripts/test-calendar-select.ts
 import { selectableCalendarIds } from "../src/lib/google/calendar-select.ts";
 import type { CalendarListEntry } from "../src/lib/google/calendar.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const entries: CalendarListEntry[] = [
   { id: "agent@trypennie.com", accessRole: "owner", primary: true },
@@ -44,5 +37,4 @@ assert(!ids.includes("deleted-primary@trypennie.com"), "excludes a deleted prima
 assert(!ids.includes(""), "excludes entries with no id");
 assert(ids.length === 1, `keeps exactly the primary calendar (got ${ids.length})`);
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

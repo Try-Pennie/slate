@@ -6,12 +6,7 @@
 // Run: node --experimental-strip-types scripts/test-public-pii.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
-let failures = 0;
-function fail(msg: string) {
-  console.error("FAIL:", msg);
-  failures++;
-}
+import { fail, finish } from "./lib/harness.ts";
 
 // Text formats a demo/example page might use. Binary assets (images, fonts) are
 // skipped — PII would have to be text to be readable anyway.
@@ -72,8 +67,4 @@ for (const file of files) {
     });
 }
 
-if (failures === 0) {
-  console.log(`ok: no real PII across ${files.length} public/ text files`);
-}
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -10,17 +10,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(resolve(repoRoot, p), "utf8");
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 
 const pkg = JSON.parse(read("package.json")) as {
   scripts: Record<string, string>;
@@ -44,5 +37,4 @@ assert(
 const ci = read(".github/workflows/ci.yml");
 assert(/pnpm\s+lint(\s|$)/.test(ci), "CI workflow runs `pnpm lint`");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

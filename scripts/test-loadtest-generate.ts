@@ -4,14 +4,7 @@
 // pool; realistic in-window busy_blocks density; deterministic for repeatable runs.
 // Run: node --experimental-strip-types scripts/test-loadtest-generate.ts
 import { generateSeed } from "./loadtest/generate.ts";
-
-let failures = 0;
-const assert = (c: boolean, m: string) => {
-  if (!c) {
-    console.error("FAIL:", m);
-    failures++;
-  } else console.log("ok:", m);
-};
+import { assert, finish } from "./lib/harness.ts";
 
 const NOW = Date.parse("2026-06-22T00:00:00Z");
 const DAY = 86_400_000;
@@ -113,5 +106,4 @@ assert(
   "agent emails are unique",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

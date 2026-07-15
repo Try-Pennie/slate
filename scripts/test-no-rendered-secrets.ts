@@ -14,16 +14,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-let failures = 0;
-const assert = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-};
 
 const SECRET_FIELDS = ["auth_header", "secret"];
 const SURFACES = ["src/app/admin/page.tsx"];
@@ -60,5 +53,4 @@ assert(
   "setWebhookEndpoint does not unconditionally write auth_header (blank would wipe the key) (#600)",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

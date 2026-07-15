@@ -7,19 +7,12 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
 const runner = resolve(here, "run-tests.ts");
 const fx = (name: string) => resolve(here, "__fixtures__/runner", name);
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 
 function runOrchestrator(files: string[]) {
   return spawnSync(
@@ -84,5 +77,4 @@ function runOrchestrator(files: string[]) {
   assert(r.status !== 0, "an uncaught-throw file is counted as failed");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

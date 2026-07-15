@@ -15,14 +15,7 @@ import {
   computeFreshness,
   type InvariantDeps,
 } from "./loadtest/invariants.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // A count() fake that dispatches on distinctive substrings of the PostgREST filter.
 function countFake(byFilter: (filter: string) => number) {
@@ -166,8 +159,7 @@ async function main() {
     assert(f.total === 0 && f.spreadSec === 0, "freshness: empty set yields zero total and spread");
   }
 
-  console.log(failures ? `\n${failures} FAILED` : "\nall passed");
-  process.exit(failures ? 1 : 0);
+  finish();
 }
 
 main().catch((e) => {

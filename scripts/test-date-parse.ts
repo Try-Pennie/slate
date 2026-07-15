@@ -5,14 +5,7 @@ import {
   roundDownToQuarterHour,
   roundUpToQuarterHour,
 } from "../src/lib/date/parse.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // dateFromParts: segmented MM/DD/YYYY entry.
 assert(dateFromParts("03", "14", "2027")?.toISODate() === "2027-03-14", "parts 03/14/2027");
@@ -69,5 +62,4 @@ for (const passthrough of ["", "nope", "25:00"]) {
   assert(roundUpToQuarterHour(passthrough) === passthrough, `round-up leaves "${passthrough}" unchanged`);
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

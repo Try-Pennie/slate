@@ -1,9 +1,6 @@
 import { selectWithTierFallback } from "../src/lib/routing/tier-fallback.ts";
+import { assert, finish } from "./lib/harness.ts";
 
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) { console.error("FAIL:", msg); failures++; } else console.log("ok:", msg);
-}
 async function run() {
   // requested tier has slots: no drop
   let r = await selectWithTierFallback("511", async (c) => (c === "511" ? ["s1"] : []));
@@ -21,7 +18,6 @@ async function run() {
   r = await selectWithTierFallback("511", async () => []);
   assert(r === null, "no availability anywhere => null");
 
-  console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  finish();
 }
 run();

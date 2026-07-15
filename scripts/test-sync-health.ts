@@ -4,14 +4,7 @@
 // failing agent. nextSyncState is pure so the transition is unit-tested.
 // Run: node --experimental-strip-types scripts/test-sync-health.ts
 import { nextSyncState, type CalSyncHealth } from "../src/lib/google/sync-health.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const NOW = "2026-06-19T12:00:00Z";
 
@@ -56,5 +49,4 @@ const NOW = "2026-06-19T12:00:00Z";
   assert(next.last_success_at === null, "a never-succeeded calendar keeps last_success_at null");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

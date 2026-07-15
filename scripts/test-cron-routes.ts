@@ -6,14 +6,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CRON_ROUTES, routesForCron } from "../worker/cron-routes.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const root = join(import.meta.dirname, "..");
 const wrangler = readFileSync(join(root, "wrangler.jsonc"), "utf8")
@@ -180,5 +173,4 @@ for (const base of ["src/lib", "src/app"]) {
 assert(/worker\//.test(layout), "README Layout names the worker/ dir");
 assert(/scripts\//.test(layout), "README Layout names the scripts/ dir");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

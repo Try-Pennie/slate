@@ -1,6 +1,5 @@
 import { shapePrecomputedRow } from "../src/lib/availability/precompute-shape.ts";
-let failures = 0;
-const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
+import { assert, finish } from "./lib/harness.ts";
 
 // A well-formed stored row reshapes back into the exact BucketSlots payload.
 const payload = {
@@ -26,5 +25,4 @@ assert(shapePrecomputedRow({ payload: { bucket: { code: "x" } } }) === null,
 assert(shapePrecomputedRow({ payload: { ...payload, slots: "nope" } }) === null,
   "row with non-array slots -> null");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -8,14 +8,7 @@
 // it). Pure -> runs under `node --experimental-strip-types`.
 // Run: node --experimental-strip-types scripts/test-sql-like.ts
 import { escapeLike } from "../src/lib/sql-like.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // Model Postgres (I)LIKE matching for the escaped pattern, so the tests assert
 // real match behavior, not just the escaped string. `\` is the default LIKE
@@ -73,5 +66,4 @@ function ilikeMatches(pattern: string, value: string): boolean {
   assert(!ilikeMatches(pat, "janeXexample.com"), "plain email is not a wildcard match");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

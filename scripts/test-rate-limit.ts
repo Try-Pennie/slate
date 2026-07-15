@@ -9,16 +9,9 @@ import {
   DIRECT_BOOKING_API_READ_RATE_RULES,
   ROUTING_RATE_RULES,
 } from "../src/lib/rate-limit-core.ts";
+import { assert, finish } from "./lib/harness.ts";
 
 const READ_PREFIXES = DIRECT_BOOKING_API_READ_RATE_RULES.map((r) => r.prefix);
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 
 const h = (entries: Record<string, string>) => new Headers(entries);
 
@@ -158,5 +151,4 @@ assert(
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -6,11 +6,7 @@
 // Run: node --experimental-strip-types scripts/test-routing-record.ts
 import { buildRoutingTraceExtras } from "../src/lib/routing/explain.ts";
 import type { Attributes } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) { console.error("FAIL:", msg); failures++; } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const pool = {
   orgAgents: [
@@ -27,5 +23,4 @@ assert(
   "non-matching agent recorded as criteria_miss",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

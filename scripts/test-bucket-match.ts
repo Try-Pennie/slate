@@ -1,7 +1,5 @@
 import { bucketsMatchingAgent, type BucketForMatch } from "../src/lib/availability/bucket-match.ts";
-
-let failures = 0;
-const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
+import { assert, finish } from "./lib/harness.ts";
 
 const AGENT = "agent-1";
 const attrs = { debt_team: "A", legal_eligible: "Y" };
@@ -26,5 +24,4 @@ assert(bucketsMatchingAgent(AGENT, attrs, [buckets[4]]).length === 0, "empty-cri
 assert(bucketsMatchingAgent("agent-2", attrs, buckets).sort().join(",") === "crit",
   "agent-2 matches only by criteria, not agent-1's manual/fallback");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

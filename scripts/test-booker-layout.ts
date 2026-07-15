@@ -1,10 +1,8 @@
 import { normalizeBookerLayout } from "../src/lib/booking/layout.ts";
-let failures = 0;
-const assert = (c: boolean, m: string) => { if (!c) { console.error("FAIL:", m); failures++; } else console.log("ok:", m); };
+import { assert, finish } from "./lib/harness.ts";
 assert(normalizeBookerLayout("month") === "month", "'month' stays month");
 assert(normalizeBookerLayout("strip") === "strip", "'strip' stays strip");
 assert(normalizeBookerLayout(null) === "strip", "null -> strip (default)");
 assert(normalizeBookerLayout(undefined) === "strip", "undefined -> strip");
 assert(normalizeBookerLayout("garbage") === "strip", "unknown -> strip");
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

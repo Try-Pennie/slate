@@ -16,14 +16,7 @@ import {
   roleLabel,
   isRole,
 } from "../src/lib/auth/roles.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 assert(
   ROLE_RANK.agent < ROLE_RANK.manager &&
@@ -188,5 +181,4 @@ assert(
   "isRole validates the enum",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

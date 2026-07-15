@@ -5,14 +5,7 @@ import {
   hexLuminance,
   labelColorFor,
 } from "../src/lib/brand-label.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const GRAPHITE = "var(--fg-on-sky)";
 const BEIGE = "rgb(249, 246, 240)";
@@ -53,5 +46,4 @@ for (const brand of ["#82D0FF", "#FF8800", "#1D212F", "#486CCA", "#ffffff", "#00
   assert(ratio >= other, `${brand}: picked label is the higher-contrast one (${ratio.toFixed(2)} vs ${other.toFixed(2)})`);
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

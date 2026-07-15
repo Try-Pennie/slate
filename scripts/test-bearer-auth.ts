@@ -5,14 +5,7 @@
 // one constant-time path, matching what the booking API already used.
 // Run: node --experimental-strip-types scripts/test-bearer-auth.ts
 import { bearerToken, timingSafeEqual, bearerTokenMatches } from "../src/lib/bearer-auth.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- bearerToken: extract the token from an Authorization header ---
 {
@@ -44,5 +37,4 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

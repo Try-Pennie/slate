@@ -1,14 +1,7 @@
 // Tests for the pure MIME assembly used by the Gmail sender.
 // Run: node --experimental-strip-types scripts/test-email-mime.ts
 import { buildMimeMessage, base64Mime } from "../src/lib/notify/email-mime.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 assert(base64Mime("hi") === "aGk=", "base64Mime encodes ascii");
 
@@ -35,5 +28,4 @@ assert(mime.includes('filename="260607 OOO Approvals.csv"'), "attachment keeps i
 assert(mime.includes(base64Mime("h1,h2\nv1,v2")), "attachment body is base64-encoded");
 assert(mime.trimEnd().endsWith("--BND--"), "closes the multipart envelope");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

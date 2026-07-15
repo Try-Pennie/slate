@@ -3,14 +3,7 @@
 // provision a Slate users row.
 // Run: node --experimental-strip-types scripts/test-auth-domain.ts
 import { isAllowedEmail } from "../src/lib/auth/domain.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // Empty domain = the open PoC mode: every account is allowed.
 assert(isAllowedEmail("anyone@gmail.com", ""), "empty domain allows any account");
@@ -53,5 +46,4 @@ assert(!isAllowedEmail("no-at-sign", "trypennie.com"), "email with no @ is rejec
 assert(!isAllowedEmail("", "trypennie.com"), "empty email is rejected");
 assert(!isAllowedEmail("trailing@", "trypennie.com"), "empty domain part is rejected");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

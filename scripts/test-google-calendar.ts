@@ -6,6 +6,7 @@
 // the Calendar API, and a throwaway RSA key satisfies the JWT signer.
 // Run: node --experimental-strip-types scripts/test-google-calendar.ts
 import { generateKeyPairSync } from "node:crypto";
+import { assert, finish } from "./lib/harness.ts";
 
 // A real (throwaway) service-account key so the domain-wide-delegation JWT
 // signer produces a valid signature without any live credentials.
@@ -17,15 +18,6 @@ process.env.GOOGLE_SA_CLIENT_EMAIL = "sa@slate-test.iam.gserviceaccount.com";
 process.env.GOOGLE_SA_PRIVATE_KEY = privateKey as string;
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
-
-let assertions = 0;
-function assert(cond: boolean, msg: string) {
-  assertions++;
-  if (!cond) {
-    console.error(`FAIL: ${msg}`);
-    process.exit(1);
-  }
-}
 
 /**
  * Install a fetch stub: the token endpoint always returns a fresh access token
@@ -101,7 +93,7 @@ async function main() {
     assert(threw, "listCalendars (ok()) throws on 410 instead of swallowing it");
   }
 
-  console.log(`ok - ${assertions} assertions`);
+  finish();
 }
 
 await main();

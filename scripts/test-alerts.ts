@@ -7,14 +7,7 @@ import {
   isConsecutiveFailure,
   dedupeFailingAgents,
 } from "../src/lib/notify/alerts.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const COOLDOWN = 30 * 60 * 1000; // 30 min
 const now = 1_000_000_000;
@@ -63,7 +56,6 @@ assert(
   "per-agent error detail is truncated",
 );
 
-
 // --- dedupeFailingAgents: collapse calendar rows to one entry per agent ---
 const deduped = dedupeFailingAgents([
   { consecutive_failures: 2, last_success_at: null, last_sync_error: "e1", email: "bob@pennie.com", bookable: true, deactivated_at: null },
@@ -111,5 +103,4 @@ assert(
   "sync alert truncates per-agent error detail",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

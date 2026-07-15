@@ -14,17 +14,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ci = readFileSync(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8");
-
-let failures = 0;
-const assert = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-};
 
 /** Shell only. A comment that mentions `exit 0` (this file's own rationale does) is prose,
  *  not a swallow, and matching it would fail the build for explaining itself. */
@@ -103,5 +96,4 @@ assert(
 );
 assert(/\bci\b/.test(deployNeeds), "deploy still depends on ci (#482)");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

@@ -9,16 +9,7 @@ import {
   LANE_STALE_BOUNDS_MS,
   type LaneObservation,
 } from "../src/lib/monitor/health.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else {
-    console.log("ok:", msg);
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
 const MINUTE_BOUND = 10 * MIN; // 1-min lanes (sync/recompute/outbox/selfheal)
@@ -122,5 +113,4 @@ assert(
   "hourly agents lane is intentionally excluded from the health check",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

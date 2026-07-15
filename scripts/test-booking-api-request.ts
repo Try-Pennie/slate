@@ -6,14 +6,7 @@
 // prefill) so the booking layer gets clean input.
 // Run: node --experimental-strip-types scripts/test-booking-api-request.ts
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, encodeCursor, decodeCursor } from "../src/lib/booking/api-request.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const valid = {
   bucketCode: "411",
@@ -225,5 +218,4 @@ const lBucketAgent = parseListQuery(new URLSearchParams("bucket=411&agentEmail=a
 assert(lBucketAgent.ok && lBucketAgent.value.bucketCode === "411" && lBucketAgent.value.agentEmail === "a@x.com",
   "list: bucket + agentEmail parsed");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

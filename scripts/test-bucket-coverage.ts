@@ -7,14 +7,7 @@ import {
   emptyBucketMessage,
   noEligibleAgentsAlert,
 } from "../src/lib/availability/bucket-coverage.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // --- emptyBuckets: zero eligible agents = a routing dead zone ---
 {
@@ -53,5 +46,4 @@ function assert(cond: boolean, msg: string) {
   assert(noEligibleAgentsAlert(null).length > 0, "reactive alert tolerates a missing bucket code");
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

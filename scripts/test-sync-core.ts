@@ -7,14 +7,7 @@ import {
   partitionBusyWrites,
   staleBlockIds,
 } from "../src/lib/google/sync-core.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 // eventWindow
 assert(
@@ -212,5 +205,4 @@ assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> n
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

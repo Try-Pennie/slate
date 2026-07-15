@@ -8,20 +8,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const wf = readFileSync(
   resolve(repoRoot, ".github/workflows/deploy-alert.yml"),
   "utf8",
 );
-
-let failures = 0;
-const assert = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-};
 
 // Triggered by the CI workflow completing (workflow_run), so it sees the whole
 // run's conclusion, not just one step.
@@ -65,5 +58,4 @@ assert(
   "passes the commit sha",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

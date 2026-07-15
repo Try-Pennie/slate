@@ -1,14 +1,7 @@
 // Sanity test for attribute-criteria matching.
 // Run: node --experimental-strip-types scripts/test-match.ts
 import { matchesCriteria } from "../src/lib/availability/match.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const agent = {
   debt_team: ["very_high", "ultra_high"],
@@ -64,5 +57,4 @@ assert(
   "negation-only criteria match unmarked agents (consistent with cal.com's !=; real buckets always also pin debt_team)",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

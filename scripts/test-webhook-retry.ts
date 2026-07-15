@@ -6,14 +6,7 @@ import {
   isDeadLettered,
   isDueForRetry,
 } from "../src/lib/webhooks/retry.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const M = 60_000;
 assert(webhookBackoffMs(0) === 1 * M, "0 attempts -> 1 min");
@@ -46,5 +39,4 @@ assert(
 assert(!isDeadLettered("pending", WEBHOOK_MAX_ATTEMPTS), "pending is never dead-lettered");
 assert(!isDeadLettered("success", WEBHOOK_MAX_ATTEMPTS), "success is never dead-lettered");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

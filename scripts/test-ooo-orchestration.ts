@@ -17,15 +17,7 @@ import {
   NO_MANAGER_MESSAGE,
 } from "../src/lib/ooo/core.ts";
 import type { OooRequest, User } from "../src/lib/db/types.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`ok: ${msg}`);
-  else {
-    console.error(`FAIL: ${msg}`);
-    failures++;
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const baseUser = {
   org_id: "org-1",
@@ -713,8 +705,4 @@ const input = {
   assert(w.audits.includes("ooo.retry"), "retry audited");
 }
 
-if (failures) {
-  console.error(`\n${failures} failure(s)`);
-  process.exit(1);
-}
-console.log("\nALL PASSED");
+finish();

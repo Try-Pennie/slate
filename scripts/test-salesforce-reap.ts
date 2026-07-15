@@ -5,14 +5,8 @@
 // reapable user is selected purely by inactivity.
 // Run: node --experimental-strip-types scripts/test-salesforce-reap.ts
 import { reapableUserIds } from "../src/lib/salesforce/reap.ts";
+import { assert, finish } from "./lib/harness.ts";
 
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 const eq = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
 
 const rows = [
@@ -38,5 +32,4 @@ assert(
   "empty roster selects nobody",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

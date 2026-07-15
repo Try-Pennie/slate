@@ -7,14 +7,7 @@
 // Run: node --experimental-strip-types scripts/test-vitest-environment.ts
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
-
-let failed = 0;
-const ok = (cond: boolean, msg: string) => {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failed++;
-  } else console.log("ok:", msg);
-};
+import { assert, finish } from "./lib/harness.ts";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const SRC = join(ROOT, "src");
@@ -41,13 +34,13 @@ const files = walk(SRC).map((f) => ({
   src: readFileSync(f, "utf8"),
 }));
 
-ok(files.length > 0, "found vitest test files to check");
+assert(files.length > 0, "found vitest test files to check");
 
 // 1. The config must default to node, or every file pays for jsdom regardless.
 {
   const cfg = readFileSync(join(ROOT, "vitest.config.ts"), "utf8");
-  ok(/environment:\s*"node"/.test(cfg), "vitest.config.ts defaults to the node environment");
-  ok(
+  assert(/environment:\s*"node"/.test(cfg), "vitest.config.ts defaults to the node environment");
+  assert(
     !/environment:\s*"jsdom"/.test(cfg),
     "vitest.config.ts does not force jsdom on the whole suite",
   );
@@ -55,7 +48,7 @@ ok(files.length > 0, "found vitest test files to check");
 
 // 2. Every component test opts into jsdom explicitly (it renders, so it needs one).
 for (const f of files.filter((f) => f.rel.endsWith(".test.tsx"))) {
-  ok(DOCBLOCK.test(f.src), `${f.rel} declares @vitest-environment jsdom`);
+  assert(DOCBLOCK.test(f.src), `${f.rel} declares @vitest-environment jsdom`);
 }
 
 // 3. No plain *.test.ts drags jsdom back in without being a documented exception.
@@ -63,11 +56,10 @@ for (const f of files.filter((f) => f.rel.endsWith(".test.ts"))) {
   const wants = DOCBLOCK.test(f.src);
   const allowed = JSDOM_TS_EXCEPTIONS.has(f.rel);
   if (wants) {
-    ok(allowed, `${f.rel} requests jsdom and is on the documented exception list`);
+    assert(allowed, `${f.rel} requests jsdom and is on the documented exception list`);
   } else {
-    ok(!allowed, `${f.rel} is listed as a jsdom exception but no longer requests it (prune the list)`);
+    assert(!allowed, `${f.rel} is listed as a jsdom exception but no longer requests it (prune the list)`);
   }
 }
 
-console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish();

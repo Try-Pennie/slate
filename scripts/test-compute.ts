@@ -12,16 +12,7 @@ import {
   type SlotRules,
   type WorkingRule,
 } from "../src/lib/availability/compute.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else {
-    console.log("ok:", msg);
-  }
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const tz = "America/New_York";
 // Monday 2026-06-08 .. Tuesday, NY time. Mon-Fri 09:00-17:00.
@@ -350,5 +341,4 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
   );
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

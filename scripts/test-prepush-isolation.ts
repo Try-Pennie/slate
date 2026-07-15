@@ -16,18 +16,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assert, finish } from "./lib/harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
 const helper = resolve(repoRoot, ".githooks/lib/isolate-pushed-tree.sh");
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 
 function git(cwd: string, ...args: string[]) {
   const r = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -71,5 +64,4 @@ try {
   rmSync(parent, { recursive: true, force: true });
 }
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

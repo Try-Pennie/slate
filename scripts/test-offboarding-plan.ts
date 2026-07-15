@@ -4,14 +4,8 @@
 // idempotent function of the current row.
 // Run: node --experimental-strip-types scripts/test-offboarding-plan.ts
 import { planLifecycleChange } from "../src/lib/offboarding/plan.ts";
+import { assert, finish } from "./lib/harness.ts";
 
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 const active = { deactivated_at: null };
@@ -26,5 +20,4 @@ assert(eq(planLifecycleChange(gone, "deactivate"), { status: "noop" }), "deactiv
 assert(eq(planLifecycleChange(gone, "reactivate"), { status: "apply", deactivate: false }), "reactivate a deactivated user applies");
 assert(eq(planLifecycleChange(active, "reactivate"), { status: "noop" }), "reactivate an already-active user is a no-op (idempotent)");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

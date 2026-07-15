@@ -6,14 +6,7 @@
 // seed idempotent (upsert-on-id) so re-running never duplicates rows.
 // Run: node --experimental-strip-types scripts/test-smoke-seed.ts
 import { buildSmokeSeed } from "./smoke-seed.ts";
-
-let failures = 0;
-const assert = (c: boolean, m: string) => {
-  if (!c) {
-    console.error("FAIL:", m);
-    failures++;
-  } else console.log("ok:", m);
-};
+import { assert, finish } from "./lib/harness.ts";
 
 const params = {
   orgId: "org-smoke",
@@ -144,5 +137,4 @@ assert(
 );
 assert(again.reassignTarget?.id === seed.reassignTarget?.id, "reassign target id is deterministic across runs");
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

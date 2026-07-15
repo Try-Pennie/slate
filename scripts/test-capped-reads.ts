@@ -27,14 +27,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { scanCappedReads } from "./lib/scan-capped-reads.ts";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 const HERE = import.meta.dirname; // scripts/
 const ROOT = join(HERE, "..");
@@ -150,5 +143,4 @@ for (const file of surface) {
 }
 if (siteCount === 0) console.log("ok: no capped single-page reads across the loadtest + smoke scripts");
 
-console.log(failures === 0 ? "\nPASS" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

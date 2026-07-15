@@ -7,14 +7,7 @@
 // Run: node --experimental-strip-types scripts/test-repo-hygiene.ts
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
+import { assert, finish } from "./lib/harness.ts";
 
 /** True if git would ignore `path` (check-ignore exits 0 on a match). */
 function isIgnored(path: string): boolean {
@@ -55,5 +48,4 @@ assert(
   `no scripts/test-*.mjs live-credential diagnostics (use the diag- prefix instead); found: ${mjsTests.join(", ") || "none"}`,
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();

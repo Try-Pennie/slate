@@ -2,14 +2,8 @@
 // Slate-managed keys survive the sync.
 // Run: node --experimental-strip-types scripts/test-sf-attributes.ts
 import { mergeSfAttributes, SF_MANAGED_KEYS } from "../src/lib/salesforce/attributes.ts";
+import { assert, finish } from "./lib/harness.ts";
 
-let failures = 0;
-function assert(cond: boolean, msg: string) {
-  if (!cond) {
-    console.error("FAIL:", msg);
-    failures++;
-  } else console.log("ok:", msg);
-}
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 assert(
@@ -52,5 +46,4 @@ assert(
   "SF owns debt_team/backend_service/role; legal_eligible is Slate-managed",
 );
 
-console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+finish();
