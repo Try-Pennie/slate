@@ -28,6 +28,7 @@ import {
   roleLabel,
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
+import { upsertUserSchedule } from "@/lib/schedule";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { acquireLock } from "@/lib/locks";
@@ -71,25 +72,7 @@ async function replaceUserSchedule(
   endMinute: number,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { data: existing } = await db
-    .from("availability_schedules")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle();
-  let scheduleId = (existing as { id: string } | null)?.id;
-  if (scheduleId) {
-    await db
-      .from("availability_schedules")
-      .update({ timezone })
-      .eq("id", scheduleId);
-  } else {
-    const { data: created } = await db
-      .from("availability_schedules")
-      .insert({ user_id: userId, timezone })
-      .select("id")
-      .single();
-    scheduleId = (created as { id: string }).id;
-  }
+  const scheduleId = await upsertUserSchedule(userId, timezone);
   await db.from("availability_rules").delete().eq("schedule_id", scheduleId);
   if (weekdays.length && endMinute > startMinute) {
     await db.from("availability_rules").insert(
@@ -290,7 +273,6 @@ export async function updateBucket(form: FormData): Promise<void> {
 }
 
 export async function setWorkingHours(form: FormData): Promise<void> {
-  const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
   await requireManageAgent(userId, "agent.hours");
   const timezone = String(form.get("timezone") ?? "America/New_York");
@@ -300,39 +282,9 @@ export async function setWorkingHours(form: FormData): Promise<void> {
     form.get(`day_${d}`),
   );
 
-  // One schedule per user for the PoC: upsert it, then replace its rules.
-  const { data: existing } = await db
-    .from("availability_schedules")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  let scheduleId = (existing as { id: string } | null)?.id;
-  if (scheduleId) {
-    await db
-      .from("availability_schedules")
-      .update({ timezone })
-      .eq("id", scheduleId);
-  } else {
-    const { data: created } = await db
-      .from("availability_schedules")
-      .insert({ user_id: userId, timezone })
-      .select("id")
-      .single();
-    scheduleId = (created as { id: string }).id;
-  }
-
-  await db.from("availability_rules").delete().eq("schedule_id", scheduleId);
-  if (weekdays.length && endMinute > startMinute) {
-    await db.from("availability_rules").insert(
-      weekdays.map((weekday) => ({
-        schedule_id: scheduleId,
-        weekday,
-        start_minute: startMinute,
-        end_minute: endMinute,
-      })),
-    );
-  }
+  // One schedule per user (enforced by the availability_schedules(user_id)
+  // unique index, #532): replaceUserSchedule upserts it, then replaces its rules.
+  await replaceUserSchedule(userId, timezone, weekdays, startMinute, endMinute);
   revalidatePath("/admin");
 }
 
@@ -424,20 +376,18 @@ export async function useDefaultHours(form: FormData): Promise<void> {
     default_weekdays: number[];
   };
 
+  // Applying the org default keeps the agent's own timezone if they have one,
+  // else adopts the org default. Pass it back through upsertUserSchedule so the
+  // single-row (user_id) unique index (#532) is honored without a check-then-
+  // insert race.
   const { data: existing } = await db
     .from("availability_schedules")
-    .select("id")
+    .select("timezone")
     .eq("user_id", userId)
     .maybeSingle();
-  let scheduleId = (existing as { id: string } | null)?.id;
-  if (!scheduleId) {
-    const { data: created } = await db
-      .from("availability_schedules")
-      .insert({ user_id: userId, timezone: o.default_timezone })
-      .select("id")
-      .single();
-    scheduleId = (created as { id: string }).id;
-  }
+  const tz =
+    (existing as { timezone: string } | null)?.timezone ?? o.default_timezone;
+  const scheduleId = await upsertUserSchedule(userId, tz);
 
   await db.from("availability_rules").delete().eq("schedule_id", scheduleId);
   await db.from("availability_rules").insert(

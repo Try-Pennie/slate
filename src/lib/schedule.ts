@@ -2,6 +2,30 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { defaultRuleRows, type OrgDefaults } from "@/lib/schedule-core";
 
 /**
+ * Get-or-create the single schedule row for a user and return its id, setting
+ * its timezone. One row per user is enforced by the availability_schedules
+ * (user_id) unique index (#532), so this upserts on that conflict target rather
+ * than the check-then-insert the admin hours actions used to duplicate: two
+ * concurrent edits now settle on the index (the loser updates the winner's row)
+ * instead of racing to a second, silently-divergent schedule.
+ */
+export async function upsertUserSchedule(
+  userId: string,
+  timezone: string,
+): Promise<string> {
+  const db = supabaseAdmin();
+  const { data, error } = await db
+    .from("availability_schedules")
+    .upsert({ user_id: userId, timezone }, { onConflict: "user_id" })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`schedule upsert failed: ${error?.message}`);
+  }
+  return (data as { id: string }).id;
+}
+
+/**
  * Gives every agent without a working-hours schedule the org default
  * (newly-synced agents arrive schedule-less and would show zero availability
  * once bookable). Idempotent: agents with a schedule are never touched, so
@@ -32,13 +56,18 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
   );
   if (missing.length === 0) return 0;
 
+  // Upsert (not insert) so a concurrent fill settles on the (user_id) unique
+  // index (#532): ignoreDuplicates makes each already-covered agent a no-op, and
+  // .select returns only the rows this call actually created, so rules are added
+  // for exactly those.
   const { data: created, error } = await db
     .from("availability_schedules")
-    .insert(
+    .upsert(
       missing.map((u) => ({
         user_id: u.id,
         timezone: defaults.default_timezone,
       })),
+      { onConflict: "user_id", ignoreDuplicates: true },
     )
     .select("id");
   if (error || !created) {
