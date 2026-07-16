@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Booking, Bucket, EventType } from "@/lib/db/types";
 
-// #223: the completion sweep silently caps at 200 finished bookings per run and
-// silently drops any booking whose bucket/event_type can't be resolved. Both are
-// fine at current volume but invisible when they bite (a backlog over the cap
-// quietly waits; a dropped booking never completes). joinBookingContexts is the
-// choke point that sees the whole fetched batch AND performs the drop, so both
-// conditions are made loud there via the log helper. These tests mock the helper
-// and assert the calls; they do NOT change the cap-at-200 / skip-unresolvable
-// behavior itself.
+// #223/#871: the completion sweep silently dropped any booking whose
+// bucket/event_type can't be resolved (a dropped booking never completes).
+// joinBookingContexts is the choke point that sees the whole fetched batch AND
+// performs the drop, so that condition is made loud there via the log helper.
+// The other #223 condition (a full batch signalling a backlog) moved to the
+// drain loop in completePastBookings (#871), which now clears the whole backlog
+// per run, so joinBookingContexts no longer warns about the cap. These tests
+// mock the log helper and assert the calls; they do NOT change the
+// skip-unresolvable behavior itself.
 
 const logMock = vi.hoisted(() => ({
   info: vi.fn(),
@@ -34,8 +35,8 @@ const eventType = (id: string): EventType => ({ id }) as unknown as EventType;
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("joinBookingContexts loudness (#223)", () => {
-  it("warns when the fetched batch fills the cap (a backlog is likely waiting)", () => {
+describe("joinBookingContexts loudness (#223/#871)", () => {
+  it("no longer warns about a full batch: the drain loop clears it, not waits (#871)", () => {
     const bookings = Array.from({ length: PAST_COMPLETION_BATCH_LIMIT }, (_, i) =>
       booking({ id: `b-${i}` }),
     );
@@ -49,22 +50,8 @@ describe("joinBookingContexts loudness (#223)", () => {
     // Behavior unchanged: every resolvable booking still comes through.
     expect(out).toHaveLength(PAST_COMPLETION_BATCH_LIMIT);
 
-    // ...but the full batch is now observable as a warn line.
-    expect(logMock.warn).toHaveBeenCalledTimes(1);
-    const [tag, fields] = logMock.warn.mock.calls[0];
-    expect(tag).toBe("completion-sweep");
-    expect(fields).toMatchObject({
-      count: PAST_COMPLETION_BATCH_LIMIT,
-      cap: PAST_COMPLETION_BATCH_LIMIT,
-    });
-  });
-
-  it("does not warn about the cap for a partial (under-cap) batch", () => {
-    joinBookingContexts(
-      [booking({ id: "b-a" })],
-      [bucket("bucket-1")],
-      [eventType("evt-1")],
-    );
+    // The cap warn relocated to completePastBookings; joinBookingContexts is
+    // silent about batch size now.
     expect(logMock.warn).not.toHaveBeenCalled();
   });
 

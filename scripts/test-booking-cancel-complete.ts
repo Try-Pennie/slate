@@ -9,6 +9,10 @@ import {
   BookingNotCancellableError,
 } from "../src/lib/booking/orchestration.ts";
 import {
+  PAST_COMPLETION_BATCH_LIMIT,
+  MAX_COMPLETION_DRAIN_BATCHES,
+} from "../src/lib/booking/core.ts";
+import {
   createAsserter,
   makeDeps,
   makeBooking,
@@ -163,6 +167,97 @@ async function run() {
     assert(
       cRace.webhooks.length === 1 && cRace.webhooks[0].event === "booking.completed",
       "complete: no duplicate booking.completed for an already-completed row",
+    );
+  }
+
+  // --- completePastBookings drains the whole backlog (#871) ---
+  {
+    const fullBatch = (tag: string) =>
+      Array.from({ length: PAST_COMPLETION_BATCH_LIMIT }, (_, i) => ({
+        booking: makeBooking({ id: `${tag}-${i}`, status: "confirmed" }),
+        bucket,
+        eventType,
+      }));
+
+    // A backlog spanning three loads (200 + 200 + 30) drains in a single run:
+    // two full batches keep the loop going, the under-cap third ends it.
+    const tail = Array.from({ length: 30 }, (_, i) => ({
+      booking: makeBooking({ id: `tail-${i}`, status: "rescheduled" }),
+      bucket,
+      eventType,
+    }));
+    const { deps, calls } = makeDeps({
+      pastDueBatches: [fullBatch("a"), fullBatch("b"), tail],
+    });
+    const drained = await completePastBookings(deps);
+    assert(
+      drained === PAST_COMPLETION_BATCH_LIMIT * 2 + 30,
+      "drain: completes every booking across the batches in one run",
+    );
+    assert(
+      calls.completeBookingsIfDue.length === 3,
+      "drain: one batched transition per loaded batch",
+    );
+    assert(
+      calls.webhooks.length === PAST_COMPLETION_BATCH_LIMIT * 2 + 30 &&
+        calls.webhooks.every((w) => w.event === "booking.completed"),
+      "drain: fires booking.completed for every drained booking",
+    );
+    // The loop stopped after the under-cap batch: no needless extra fetch.
+    assert(
+      calls.loadPastBookingsToComplete === 3,
+      "drain: stops loading once a batch comes back under the cap",
+    );
+
+    // Stall guard: a FULL batch that transitions zero rows (only unresolvable
+    // rows left, already error-logged per row) must stop the loop, not re-fetch
+    // the same set forever.
+    const stallBatch = fullBatch("stall");
+    const { deps: dStall, calls: cStall } = makeDeps({
+      pastDueBatches: [stallBatch, fullBatch("never")],
+      alreadyCompleted: new Set(stallBatch.map((b) => b.booking.id)),
+    });
+    const stalled = await completePastBookings(dStall);
+    assert(stalled === 0, "drain: zero-progress full batch completes nothing");
+    assert(
+      cStall.completeBookingsIfDue.length === 1 &&
+        cStall.loadPastBookingsToComplete === 1,
+      "drain: a zero-progress batch stops the loop instead of re-fetching",
+    );
+
+    // Budget guard: more full batches than the per-run cap allows. The run
+    // drains exactly the cap's worth and warns that a backlog still waits.
+    const overflow = Array.from(
+      { length: MAX_COMPLETION_DRAIN_BATCHES + 3 },
+      (_, i) => fullBatch(`of-${i}`),
+    );
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (line?: unknown) => {
+      warns.push(String(line));
+    };
+    let over = 0;
+    try {
+      const { deps: dOver, calls: cOver } = makeDeps({ pastDueBatches: overflow });
+      over = await completePastBookings(dOver);
+      assert(
+        cOver.completeBookingsIfDue.length === MAX_COMPLETION_DRAIN_BATCHES,
+        "drain: stops at the per-run batch cap",
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+    assert(
+      over === PAST_COMPLETION_BATCH_LIMIT * MAX_COMPLETION_DRAIN_BATCHES,
+      "drain: completes exactly the cap's worth when the backlog overflows",
+    );
+    assert(
+      warns.some(
+        (w) =>
+          w.includes("tag=completion-sweep") &&
+          w.includes("drain budget exhausted"),
+      ),
+      "drain: warns loudly when the backlog outgrows one run's budget",
     );
   }
 

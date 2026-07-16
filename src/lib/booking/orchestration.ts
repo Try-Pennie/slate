@@ -21,6 +21,8 @@ import {
   eventDescription,
   idempotencyKeyFor,
   selectAgent,
+  MAX_COMPLETION_DRAIN_BATCHES,
+  PAST_COMPLETION_BATCH_LIMIT,
   type AssignResult,
   type BusyBlockInsert,
   type BookingActor,
@@ -44,6 +46,7 @@ import { recordRoutingDecision } from "../routing/record.ts";
 import { tierKeyOf } from "../routing/tiers.ts";
 import { walkTierLadder } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
+import { log } from "@/lib/log";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
@@ -2941,11 +2944,17 @@ export async function cancelBooking(
 }
 
 /** Cron sweep: mark finished bookings complete and emit booking.completed. */
-export async function completePastBookings(deps: BookingDeps): Promise<number> {
-  const due = await deps.loadPastBookingsToComplete();
-  if (due.length === 0) return 0;
-
-  // One batched UPDATE for the whole sweep instead of a round-trip per booking
+/**
+ * Complete one loaded batch: flip the due rows and fire booking.completed for
+ * exactly the ones THIS call transitioned. Returns how many it transitioned so
+ * the drain loop can tell progress (>0) from a stall (0). Assumes `due` is
+ * non-empty.
+ */
+async function completeDueBatch(
+  deps: BookingDeps,
+  due: BookingContext[],
+): Promise<number> {
+  // One batched UPDATE for the whole batch instead of a round-trip per booking
   // (#164). The returned ids are the rows THIS call actually flipped, so an
   // overlapping cron tick that already completed some of them won't re-fire
   // their booking.completed — the receiver can't dedupe a second delivery (#163).
@@ -2970,6 +2979,55 @@ export async function completePastBookings(deps: BookingDeps): Promise<number> {
       ),
   );
   return toFire.length;
+}
+
+/**
+ * Drain the finished-booking backlog: load and complete successive batches in
+ * one run rather than clearing a single batch per tick and letting the rest
+ * wait (#871, follow-up to #223). Each batch flips its rows to `completed`, so
+ * the next `loadPastBookingsToComplete` query returns the following rows, so the
+ * loop advances on its own and stops as soon as a batch comes back under the
+ * cap (nothing more waiting).
+ *
+ * Two guards keep the loop bounded:
+ *   - A batch that transitions ZERO rows makes no progress (only unresolvable
+ *     rows remain, already error-logged per row in joinBookingContexts): stop
+ *     rather than re-fetch the same set.
+ *   - MAX_COMPLETION_DRAIN_BATCHES caps the run to stay inside the Worker
+ *     CPU/subrequest budget. Hitting it with a full batch still pending is the
+ *     fail-loud signal that the backlog is outgrowing the sweep, so warn (this
+ *     replaces #223's per-batch warn, which now fires mid-drain and would read
+ *     as "waiting" while we are in fact clearing it).
+ */
+export async function completePastBookings(deps: BookingDeps): Promise<number> {
+  let completed = 0;
+  let batches = 0;
+  let backlogRemains = false;
+
+  while (batches < MAX_COMPLETION_DRAIN_BATCHES) {
+    const due = await deps.loadPastBookingsToComplete();
+    if (due.length === 0) break;
+    batches += 1;
+
+    const batchFull = due.length >= PAST_COMPLETION_BATCH_LIMIT;
+    const transitioned = await completeDueBatch(deps, due);
+    completed += transitioned;
+
+    // Under-cap batch => nothing more waiting; zero progress => only stuck rows
+    // left. Either way, stop before re-fetching. A full batch with progress
+    // means more is likely queued: keep draining (subject to the cap).
+    if (!batchFull || transitioned === 0) break;
+    backlogRemains = batches >= MAX_COMPLETION_DRAIN_BATCHES;
+  }
+
+  if (backlogRemains) {
+    log.warn("completion-sweep", {
+      msg: "drain budget exhausted, backlog still waiting",
+      drained: completed,
+      batches,
+    });
+  }
+  return completed;
 }
 
 export async function getBookingByToken(
