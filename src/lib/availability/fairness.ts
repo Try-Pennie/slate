@@ -154,3 +154,37 @@ export function computeFairness(
 
   return { buckets, byAgent };
 }
+
+/**
+ * Strip synthetic test entities (#460) from the fairness inputs before the math.
+ *
+ * The smoke-test agent (`users.is_test`) and its isolated buckets
+ * (`buckets.is_test`) are real, bookable rows so the key-authed smoke test can
+ * route to them, but they must never be counted in cross-bucket or org-wide
+ * fairness reporting. Per-bucket fairness already ignores them (they live in
+ * their own SMOKE buckets), but the org-wide per-agent rollup and any raw
+ * bookings-received total would otherwise credit the synthetic agent.
+ *
+ * A row is synthetic when its booking landed in a test bucket OR was won by a
+ * test agent; either way it is dropped. Surviving real rows also have any test
+ * agent stripped from their `considered` set (defensive: test agents are only
+ * ever pool members of test buckets, so in practice this is a no-op). Raw
+ * assignments are filtered by test agent id, matching how the read-side gates
+ * exclude with `is_test = false`.
+ */
+export function excludeTestEntities(
+  rows: TraceRow[],
+  rawAssignments: string[],
+  opts: { testUserIds: Iterable<string>; testBucketCodes: Iterable<string> },
+): { rows: TraceRow[]; rawAssignments: string[] } {
+  const testUsers = new Set(opts.testUserIds);
+  const testBuckets = new Set(opts.testBucketCodes);
+
+  const cleanedRows = rows
+    .filter((r) => !testBuckets.has(r.bucketCode) && !testUsers.has(r.chosenUserId))
+    .map((r) => ({ ...r, considered: r.considered.filter((id) => !testUsers.has(id)) }));
+
+  const cleanedRaw = rawAssignments.filter((id) => !testUsers.has(id));
+
+  return { rows: cleanedRows, rawAssignments: cleanedRaw };
+}

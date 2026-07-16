@@ -6,6 +6,7 @@
 // count. Run: node --experimental-strip-types scripts/test-routing-fairness.ts
 import {
   computeFairness,
+  excludeTestEntities,
   type TraceRow,
 } from "../src/lib/availability/fairness.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -103,6 +104,68 @@ const out = computeFairness(rows, { minBookings: 3 });
   // A malformed empty id is filtered, not turned into a phantom agent.
   const withEmpty = computeFairness(rows, { minBookings: 3, rawAssignments: ["", "A"] });
   assert(withEmpty.byAgent.find((a) => a.userId === "") === undefined, "empty-string assigned_user_id is filtered out of the rollup");
+}
+
+// --- exclude synthetic test entities (#460) ---------------------------------
+// Cross-bucket and org-wide fairness reporting must not count the synthetic
+// smoke-test agent or its isolated test buckets. excludeTestEntities strips the
+// synthetic rows (a booking in a test bucket, or one won by a test agent) and
+// the synthetic raw assignments BEFORE the availability-corrected math runs, so
+// a hidden test entity can never distort the report.
+{
+  const realRaw = ["A", "B"];
+  const baseline = computeFairness(rows, { minBookings: 3, rawAssignments: realRaw });
+
+  // The real bookings above, plus one booking in the isolated SMOKE bucket won
+  // by the synthetic agent, and two of that agent's raw bookings.
+  const mixed: TraceRow[] = [
+    ...rows,
+    { bucketCode: "SMOKE", chosenUserId: "SMOKE_AGENT", considered: ["SMOKE_AGENT", "SMOKE2_AGENT"] },
+  ];
+  const mixedRaw = [...realRaw, "SMOKE_AGENT", "SMOKE_AGENT"];
+
+  const cleaned = excludeTestEntities(mixed, mixedRaw, {
+    testUserIds: ["SMOKE_AGENT", "SMOKE2_AGENT"],
+    testBucketCodes: ["SMOKE"],
+  });
+
+  // The synthetic rows and raw assignments are gone; only the real ones remain.
+  assert(cleaned.rows.every((r) => r.bucketCode !== "SMOKE"), "a booking in a test bucket is dropped from the fairness rows");
+  assert(
+    cleaned.rawAssignments.every((id) => id !== "SMOKE_AGENT" && id !== "SMOKE2_AGENT"),
+    "the test agents' raw bookings are excluded from the commission total",
+  );
+
+  // The edge case that matters: a mix of test and real bookings yields exactly
+  // the real-only report, agent for agent and bucket for bucket.
+  const report = computeFairness(cleaned.rows, { minBookings: 3, rawAssignments: cleaned.rawAssignments });
+  assert(
+    JSON.stringify(report) === JSON.stringify(baseline),
+    "a mix of test and real bookings produces exactly the real-only report (no synthetic rows counted)",
+  );
+  assert(report.byAgent.every((a) => a.userId !== "SMOKE_AGENT"), "the smoke-test agent never appears in the per-agent rollup");
+  assert(report.buckets.every((b) => b.bucketCode !== "SMOKE"), "the isolated test bucket never appears as a report row");
+
+  // Defensive: a test agent that somehow appears in a REAL bucket is stripped
+  // from the candidate set while the real booking itself is kept and re-scored.
+  const defensive = excludeTestEntities(
+    [{ bucketCode: "411", chosenUserId: "A", considered: ["A", "SMOKE_AGENT"] }],
+    [],
+    { testUserIds: ["SMOKE_AGENT"], testBucketCodes: [] },
+  );
+  assert(
+    defensive.rows.length === 1 && JSON.stringify(defensive.rows[0].considered) === JSON.stringify(["A"]),
+    "a test agent in a real bucket's candidate set is stripped, keeping the real row",
+  );
+
+  // Defensive: a booking WON by a test agent is dropped even outside a test
+  // bucket, so its ranker credit never lands on the synthetic agent.
+  const chosenByTest = excludeTestEntities(
+    [{ bucketCode: "411", chosenUserId: "SMOKE_AGENT", considered: ["SMOKE_AGENT", "A"] }],
+    [],
+    { testUserIds: ["SMOKE_AGENT"], testBucketCodes: [] },
+  );
+  assert(chosenByTest.rows.length === 0, "a booking won by a test agent is dropped even outside a test bucket");
 }
 
 finish();
