@@ -1,0 +1,13 @@
+-- #816: drop the orphaned single-value applied_migration_version() (0071).
+--
+-- 0072 (#814) replaced it with the set-returning applied_migration_versions() but
+-- deliberately kept the old function alive: the CI migration-drift gate applies a
+-- migration to prod BEFORE its PR merges, so 0072 ran while the pre-#814 code was
+-- still live and reading the single-value function. Dropping it then would have
+-- broken that code's monitor tick for the minutes until the new deploy landed.
+--
+-- #814 has since deployed. The only reader (src/lib/monitor/migration-drift.ts)
+-- now calls applied_migration_versions() exclusively, so the single-value function
+-- is dead SQL. `if exists` keeps this idempotent and safe on any DB where it was
+-- already absent.
+drop function if exists applied_migration_version();

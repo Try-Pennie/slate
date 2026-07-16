@@ -209,6 +209,18 @@ if (outboxActionAdd) {
   );
 }
 
+// #816: the single-value applied_migration_version() (0071) was superseded by the
+// set-returning applied_migration_versions() (0072, #814). 0072 deliberately left
+// the old one in place so the pre-#814 code (still live during the migrate-before-
+// merge window) kept reading it. Now that #814 has deployed, nothing reads it
+// (src/lib/monitor/migration-drift.ts calls only the plural), so it is dead SQL and
+// must be dropped. The `\(` anchor keeps this from matching the plural, whose next
+// char is `s`, not `(`.
+assert(
+  /drop function if exists applied_migration_version\s*\(\s*\)/i.test(sql),
+  "#816: the orphaned single-value applied_migration_version() is dropped (dead since #814)",
+);
+
 // The deployed build has no filesystem, so the prod lag alert (#516) compares the
 // live DB against a constant baked into the bundle. That constant is only as good
 // as this guard: adding a migration without bumping it would make prod look in
