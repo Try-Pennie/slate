@@ -173,4 +173,5 @@ supabase/migrations    schema (runs to 0060)
 ```
 
 Deeper context: `CONTEXT.md` (domain glossary), `DEPLOY.md` (deploy + cron runbook),
-`docs/booking-api.md` (Direct Booking API), and `docs/adr/` (architecture decisions).
+`docs/api.md` (full HTTP API reference), `docs/booking-api.md` (Direct Booking API
+integrator guide), and `docs/adr/` (architecture decisions).
