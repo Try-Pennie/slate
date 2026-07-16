@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 
-import { timezoneOptions } from "@/lib/booking/timezones";
+import { deviceTimeZone, timezoneOptions } from "@/lib/booking/timezones";
 import {
   RESCHEDULE_REASONS,
   CANCEL_REASONS,
@@ -36,11 +36,6 @@ function XIcon() {
   );
 }
 
-const tz = () =>
-  typeof Intl !== "undefined"
-    ? Intl.DateTimeFormat().resolvedOptions().timeZone
-    : "America/New_York";
-
 function fmt(iso: string, timeZone: string) {
   return new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -60,7 +55,7 @@ export default function ManageBooking({
   eventName,
   theme = "light",
 }: ManageBookingProps) {
-  const detectedZone = useMemo(() => tz(), []);
+  const detectedZone = useMemo(() => deviceTimeZone(), []);
   const [timeZone, setTimeZone] = useState(detectedZone);
   const zoneOptions = useMemo(() => timezoneOptions(detectedZone), [detectedZone]);
   const [start, setStart] = useState(startsAt);

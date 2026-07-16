@@ -26,6 +26,17 @@ export const CURATED_ZONES: readonly TimezoneOption[] = [
 
 const FALLBACK_ZONE = "America/New_York";
 
+/**
+ * The device's resolved IANA timezone (e.g. "America/New_York"), or the fallback
+ * zone when Intl is unavailable (SSR, or a runtime without the Intl API). Shared
+ * by the booker and the manage-booking screen so detection lives in one place.
+ */
+export function deviceTimeZone(): string {
+  return typeof Intl !== "undefined"
+    ? Intl.DateTimeFormat().resolvedOptions().timeZone
+    : FALLBACK_ZONE;
+}
+
 /** "Australia/Sydney" -> "Sydney"; "UTC" -> "UTC". */
 export function humanizeZone(id: string): string {
   const segment = id.split("/").pop() ?? id;
