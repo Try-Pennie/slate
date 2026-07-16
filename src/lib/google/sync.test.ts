@@ -41,7 +41,13 @@ const logSpy = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/log", () => ({ log: logSpy }));
 
-import { loadSlateBookingEventIds, purgeVanished, ensureWatches, runIncrementalSync } from "./sync";
+import {
+  loadSlateBookingEventIds,
+  purgeVanished,
+  ensureWatches,
+  runIncrementalSync,
+  loadSyncAgents,
+} from "./sync";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -62,6 +68,7 @@ function pagingDb(
     const b: Record<string, unknown> = {
       select: () => b,
       eq: () => b,
+      is: () => b,
       not: () => b,
       range: (f: number, t: number) => {
         range = [f, t];
@@ -164,6 +171,31 @@ beforeEach(() => {
   logSpy.info.mockClear();
   logSpy.warn.mockClear();
   logSpy.error.mockClear();
+});
+
+describe("loadSyncAgents fail-loud (#865)", () => {
+  it("throws when the bookable-agents read errors, instead of syncing zero agents", async () => {
+    // Before #865 this read swallowed the error and returned [], so the cron tick
+    // synced NO agents yet still recorded its heartbeat: a broken read that looked
+    // like a healthy quiet minute (the #277 class). unwrap makes it fail loud.
+    const { db } = pagingDb(
+      { users: [{ id: "u1", last_synced_at: null, deactivated_at: null }] },
+      { error: { message: "read timeout" } },
+    );
+    admin.current = db;
+    await expect(loadSyncAgents()).rejects.toThrow(/sync-agents/);
+  });
+
+  it("returns the roster when the reads succeed (an empty roster is not an error)", async () => {
+    const { db } = pagingDb({
+      users: [{ id: "u1", last_synced_at: null, deactivated_at: null }],
+      agent_calendars: [{ user_id: "u1" }],
+    });
+    admin.current = db;
+    const agents = await loadSyncAgents();
+    expect(agents.map((a) => a.userId)).toEqual(["u1"]);
+    expect(agents[0].hasCalendars).toBe(true);
+  });
 });
 
 describe("loadSlateBookingEventIds (#834)", () => {

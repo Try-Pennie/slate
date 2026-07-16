@@ -1,6 +1,8 @@
 // Static detector for the #315 guard: a swallowed-error Supabase list read in
-// the availability / booking paths. See scripts/test-swallowed-error-reads.ts
-// for the why and the fixtures that prove this actually catches the bad pattern.
+// the availability / booking / google-sync / routing paths (the scanned dirs
+// live in scripts/test-swallowed-error-reads.ts; #865 widened them to sync +
+// routing). See that file for the why and the fixtures that prove this actually
+// catches the bad pattern.
 //
 // The bug class (#277): an availability-critical read destructured
 // `const { data } = await db.from("t").select(...)` and IGNORED `error`. When
