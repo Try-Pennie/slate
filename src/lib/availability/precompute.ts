@@ -17,17 +17,23 @@ import { log } from "@/lib/log";
 export async function readBucketSlotsRow(
   code: string,
 ): Promise<{ payload: unknown } | null> {
-  const { data } = await supabaseAdmin()
-    .from("bucket_slots")
-    .select("payload")
-    .eq("bucket_code", code)
-    .maybeSingle();
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("bucket_slots")
+      .select("payload")
+      .eq("bucket_code", code)
+      .maybeSingle(),
+    "readBucketSlotsRow",
+  );
   return (data as { payload: unknown } | null) ?? null;
 }
 
 /** All bucket codes (for the cron backstop's rotation). */
 export async function listAllBucketCodes(): Promise<string[]> {
-  const { data } = await supabaseAdmin().from("buckets").select("code");
+  const data = unwrap(
+    await supabaseAdmin().from("buckets").select("code"),
+    "listAllBucketCodes",
+  );
   return (data ?? []).map((b) => (b as { code: string }).code);
 }
 
@@ -35,9 +41,12 @@ export async function listAllBucketCodes(): Promise<string[]> {
 export async function listKnownBucketSlotRows(): Promise<
   { code: string; computedAtMs: number }[]
 > {
-  const { data } = await supabaseAdmin()
-    .from("bucket_slots")
-    .select("bucket_code, computed_at");
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("bucket_slots")
+      .select("bucket_code, computed_at"),
+    "listKnownBucketSlotRows",
+  );
   return (data ?? []).map((r) => {
     const row = r as { bucket_code: string; computed_at: string };
     return { code: row.bucket_code, computedAtMs: Date.parse(row.computed_at) };
