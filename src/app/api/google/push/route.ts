@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, after, type NextRequest } from "next/server";
 import { googleChannelToken } from "@/lib/env";
 import { syncByChannel } from "@/lib/google/sync";
 
@@ -22,7 +22,10 @@ export async function POST(req: NextRequest) {
   const channelId = req.headers.get("x-goog-channel-id");
   if (channelId) {
     // Sync just the pinged calendar; don't block Google's delivery on it.
-    syncByChannel(channelId).catch(() => {});
+    // after() keeps the Worker alive until the sync settles. A bare
+    // fire-and-forget promise is cut off once the response is sent on the
+    // Cloudflare runtime, so the sync could silently never land (#191).
+    after(() => syncByChannel(channelId).catch(() => {}));
   }
 
   return new NextResponse(null, { status: 200 });
