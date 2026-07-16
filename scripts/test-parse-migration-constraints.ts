@@ -7,7 +7,11 @@
 // unique indexes in separate buckets and lets each guard pick.
 //
 // Run: node --experimental-strip-types scripts/test-parse-migration-constraints.ts
-import { parseMigrationConstraints, normCols } from "./lib/parse-migration-constraints.ts";
+import {
+  parseMigrationConstraints,
+  parseDeclaredTables,
+  normCols,
+} from "./lib/parse-migration-constraints.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // normCols strips quotes/whitespace and joins on comma.
@@ -84,6 +88,31 @@ eq(normCols(' "user_id" , calendar_id '), "user_id,calendar_id", "normCols norma
     "create table cfg (\n  id smallint primary key default 1 check (id = 1),\n  v text\n);",
   );
   eq(c.primaryKeys.get("cfg") ?? "", "id", "check(id=1) singleton table -> PK on id");
+}
+
+// parseDeclaredTables (#874/#875): enumerate every created table. This helper
+// backs both the singleton completeness check (#874) and the RLS-coverage check
+// (#875), so its edge cases are pinned here rather than only through those guards.
+{
+  const tables = parseDeclaredTables(
+    "create table users (\n  id uuid primary key\n);\n" +
+      "CREATE TABLE IF NOT EXISTS Audit_Log (\n  id uuid primary key\n);\n" +
+      "create table public.oauth2_tokens (\n  id uuid primary key\n);",
+  );
+  assert(tables.has("users"), "declares users");
+  // Case-insensitive: a `CREATE TABLE` in caps is still counted (the old local
+  // regex in test-migrations.ts missed this, leaving the table RLS-unchecked).
+  assert(tables.has("Audit_Log"), "case-insensitive create table is counted");
+  // Digit-in-name and a `public.` prefix are both handled.
+  assert(tables.has("oauth2_tokens"), "public. prefix stripped and digit-in-name kept");
+  eq(tables.size, 3, "exactly the three declared tables, no phantom entries");
+}
+{
+  // An `alter table ... add column` must NOT register a table (only create table does).
+  const tables = parseDeclaredTables(
+    "create table t (\n  id uuid primary key\n);\nalter table other add column x int;",
+  );
+  assert(tables.has("t") && !tables.has("other"), "alter table is not a declaration");
 }
 
 finish();
