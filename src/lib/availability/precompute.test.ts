@@ -40,7 +40,14 @@ function result(table: string) {
 const from = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 
-import { bucketsForAgent, bucketsForAgents, touchedBucketCodes } from "./precompute";
+import {
+  bucketsForAgent,
+  bucketsForAgents,
+  listAllBucketCodes,
+  listKnownBucketSlotRows,
+  readBucketSlotsRow,
+  touchedBucketCodes,
+} from "./precompute";
 
 const ORG = "org1";
 
@@ -159,5 +166,32 @@ describe("touchedBucketCodes", () => {
     expect(codes).toEqual([]);
     expect(err).toHaveBeenCalledOnce();
     err.mockRestore();
+  });
+});
+
+// #315: the precompute reads used to swallow the query error
+// (`const { data } = await ...`), so a failed read looked like an empty cache /
+// missing bucket instead of a broken deploy. They now route through unwrap and
+// must THROW on a real error rather than degrade to null/empty.
+describe("precompute reads fail loud on a query error (#315)", () => {
+  it("readBucketSlotsRow throws on a query error, returns null on a clean miss", async () => {
+    state.failTable = "bucket_slots";
+    await expect(readBucketSlotsRow("411")).rejects.toThrow();
+
+    state.failTable = null; // clean miss: data null, error null
+    expect(await readBucketSlotsRow("411")).toBeNull();
+  });
+
+  it("listAllBucketCodes throws on a query error, maps codes on success", async () => {
+    state.failTable = "buckets";
+    await expect(listAllBucketCodes()).rejects.toThrow();
+
+    state.failTable = null;
+    expect(await listAllBucketCodes()).toEqual(["411", "412", "413"]);
+  });
+
+  it("listKnownBucketSlotRows throws on a query error", async () => {
+    state.failTable = "bucket_slots";
+    await expect(listKnownBucketSlotRows()).rejects.toThrow();
   });
 });

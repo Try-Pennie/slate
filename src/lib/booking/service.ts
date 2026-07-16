@@ -372,6 +372,7 @@ function realDeps(): BookingDeps {
     // The agent's OTHER active bookings in a window (#536), epoch-ms, excluding the
     // booking being moved — the in-place guard counts these for the daily cap.
     agentActiveBookingStartsMs: async (userId, fromIso, toIso, excludeBookingId) => {
+      // error-ok: a read failure returns [] so the in-place reschedule guard re-routes (the safe default documented on busyIntervalsForAgent).
       const { data } = await supabaseAdmin()
         // cap-safe: one agent's active bookings within the reschedule window (the daily cap count).
         .from("bookings")
@@ -391,6 +392,7 @@ function realDeps(): BookingDeps {
     // off-shift agent). Consistent with assembleMemberAvailability's default.
     agentWorkingHours: async (userId) => {
       const fallback = { timezone: "America/New_York", rules: [] };
+      // error-ok: a read failure falls back to ET + no rules, so the guard treats the agent as off-shift and re-routes (safe default, documented above).
       const { data } = await supabaseAdmin()
         .from("availability_schedules")
         .select("timezone, availability_rules(weekday, start_minute, end_minute)")
@@ -493,6 +495,7 @@ function realDeps(): BookingDeps {
         );
     },
     loadPendingEventDeletions: async (limit) => {
+      // error-ok: best-effort retry worklist; a read error processes nothing this tick and the deletion lane retries next tick.
       const { data } = await supabaseAdmin()
         .from("pending_event_deletions")
         .select("*")
@@ -529,6 +532,7 @@ function realDeps(): BookingDeps {
     },
 
     getUser: async (userId) => {
+      // error-ok: agent lookup inside the crash-safe create/drain step; a read error is recovered by the outbox retry, not silently lost.
       const { data } = await supabaseAdmin()
         .from("users")
         .select("*")
@@ -540,6 +544,7 @@ function realDeps(): BookingDeps {
     loadEmails: async (userIds) => {
       const m = new Map<string, string>();
       if (userIds.length === 0) return m;
+      // error-ok: best-effort agent email map for notifications; a read error yields an empty map and the notify step is retried by the drain.
       const { data } = await supabaseAdmin()
         .from("users")
         .select("id, email")
@@ -553,6 +558,7 @@ function realDeps(): BookingDeps {
     findBookingByIdempotencyKey: async (key) => {
       // Active only — matches the partial unique index, so a cancelled booking
       // never blocks (or gets returned for) a fresh rebook of the same slot.
+      // error-ok: idempotency probe on the crash-safe create path; a null (incl. a read error) re-drives the unique-key-guarded insert, so it can never double-book.
       const { data } = await supabaseAdmin()
         .from("bookings")
         .select("*")
@@ -899,6 +905,7 @@ function realDeps(): BookingDeps {
       // UNIQUE(idempotency_key) violation: another create won the race. Its row
       // is committed (the unique check waits on the in-flight insert), so load +
       // adopt it — both creates converge on ONE pinned agent + client id.
+      // error-ok: reads the row that won the idempotent insert race; a null result (incl. a read error) falls through to the throw below.
       const { data: winner } = await db
         .from("booking_reservations")
         .select("*")
@@ -909,6 +916,7 @@ function realDeps(): BookingDeps {
     },
 
     loadReservationByKey: async (idempotencyKey) => {
+      // error-ok: reservation probe on the crash-safe create path; a null (incl. a read error) re-drives the unique-key-guarded insert.
       const { data } = await supabaseAdmin()
         .from("booking_reservations")
         .select("*")
@@ -972,6 +980,7 @@ function realDeps(): BookingDeps {
 
     deleteExpiredReservations: async (olderThanIso, limit) => {
       const db = supabaseAdmin();
+      // error-ok: best-effort GC of expired reservations; a read error deletes nothing this tick and the sweep retries.
       const { data } = await db
         .from("booking_reservations")
         .select("id")
@@ -1062,6 +1071,7 @@ function realDeps(): BookingDeps {
         throw new Error("Could not lock this booking for reschedule. Please try again.");
       }
       // A lease already exists — load it (+ the booking) to decide.
+      // error-ok: expired-lease takeover decision; a null lock (incl. a read error) returns { outcome: "won" } and the caller retries the claim.
       const { data: lock } = await db
         .from("reschedule_locks")
         .select(
@@ -1070,6 +1080,7 @@ function realDeps(): BookingDeps {
         .eq("booking_id", bookingId)
         .maybeSingle();
       if (!lock) return { outcome: "won" }; // released between insert + read; retry as fresh
+      // error-ok: idempotency check for an already-committed reschedule; a null (incl. a read error) proceeds to the lease-expiry decision, never a double move.
       const { data: bk } = await db
         .from("bookings")
         .select("starts_at")
@@ -1121,6 +1132,7 @@ function realDeps(): BookingDeps {
     },
 
     readReschedulePin: async (bookingId) => {
+      // error-ok: resume-pin lookup; an incomplete or absent pin (incl. a read error) returns null and the flow starts fresh.
       const { data } = await supabaseAdmin()
         .from("reschedule_locks")
         .select(
@@ -1155,6 +1167,7 @@ function realDeps(): BookingDeps {
     loadAbandonedReschedulePins: async (graceMs) => {
       const db = supabaseAdmin();
       const cutoff = new Date(Date.now() - graceMs).toISOString();
+      // error-ok: best-effort sweep of abandoned reschedule leases; a read error yields no work this tick and the sweep retries.
       const { data: rows } = await db
         .from("reschedule_locks")
         .select("booking_id, pinned_agent_email, gcal_client_id, branch, target_starts_at")
@@ -1166,6 +1179,7 @@ function realDeps(): BookingDeps {
       // starts_at rides along so the sweep can tell a LOST reschedule (the booking
       // never reached the target time) from one that committed and only failed to
       // release its lock (#757).
+      // error-ok: joins live bookings onto the swept locks; a read error leaves booking fields null and the sweep retries next tick.
       const { data: bks } = await db
         .from("bookings")
         .select("id, gcal_event_id, starts_at")
@@ -1210,6 +1224,7 @@ function realDeps(): BookingDeps {
     loadAbandonedReassignIntents: async (graceMs) => {
       const db = supabaseAdmin();
       const cutoff = new Date(Date.now() - graceMs).toISOString();
+      // error-ok: best-effort sweep of abandoned reassign leases; a read error yields no work this tick and the sweep retries.
       const { data: rows } = await db
         // cap-safe: abandoned reassign leases past the grace window, at most the in flight reassign count.
         .from("reassign_intents")
@@ -1220,6 +1235,7 @@ function realDeps(): BookingDeps {
       const intents = rows ?? [];
       if (intents.length === 0) return [];
       const ids = intents.map((r) => r.booking_id);
+      // error-ok: joins live bookings onto the swept intents; a read error leaves event ids null and the sweep retries.
       const { data: bks } = await db.from("bookings").select("id, gcal_event_id").in("id", ids);
       const liveById = new Map((bks ?? []).map((b) => [b.id, b.gcal_event_id]));
       return intents.map((r) => ({
@@ -1268,6 +1284,7 @@ function realDeps(): BookingDeps {
         .eq("action", action);
       q = toStartsIso === null ? q.is("to_starts_at", null) : q.eq("to_starts_at", toStartsIso);
       if (rescheduleSeq != null) q = q.eq("reschedule_seq", rescheduleSeq);
+      // error-ok: idempotency probe for a recorded reschedule/cancel event; a null (incl. a read error) treats it as not-yet-recorded and the step re-runs (idempotent).
       const { data } = await q.limit(1).maybeSingle();
       return data != null;
     },
@@ -1280,12 +1297,14 @@ function realDeps(): BookingDeps {
         .eq("action", action);
       q = toStartsIso === null ? q.is("to_starts_at", null) : q.eq("to_starts_at", toStartsIso);
       if (rescheduleSeq != null) q = q.eq("reschedule_seq", rescheduleSeq);
+      // error-ok: booking_events id probe; a null (incl. a read error) returns null and the caller re-derives the id.
       const { data } = await q.limit(1).maybeSingle();
       return data ? (data as { id: string }).id : null;
     },
 
     loadBookingContext: async (token) => {
       const db = supabaseAdmin();
+      // error-ok: manage-link lookup; a null (incl. a transient read error) renders as not-found for the manage page rather than throwing.
       const { data: booking } = await db
         .from("bookings")
         .select("*")
@@ -1316,6 +1335,7 @@ function realDeps(): BookingDeps {
       if (filter.updatedSince) q = q.gt("updated_at", filter.updatedSince);
       if (filter.bucketId) q = q.eq("bucket_id", filter.bucketId);
       if (filter.assignedUserId) q = q.eq("assigned_user_id", filter.assignedUserId);
+      // error-ok: admin cross-person list read; an empty result surfaces in the admin UI, not the booker's availability.
       const { data } = await q
         .order(filter.orderBy, { ascending: true })
         .order("id", { ascending: true })
@@ -1356,6 +1376,7 @@ function realDeps(): BookingDeps {
 
     loadBookingById: async (bookingId) => {
       const db = supabaseAdmin();
+      // error-ok: single booking lookup by id; a null (incl. a read error) returns null so the caller handles not-found.
       const { data: booking } = await db
         .from("bookings")
         .select("*")
@@ -1376,6 +1397,7 @@ function realDeps(): BookingDeps {
     },
 
     getAgentByEmail: async (email) => {
+      // error-ok: agent lookup by email; a null (incl. a read error) returns null and the caller handles the missing agent.
       const { data } = await supabaseAdmin()
         .from("users")
         .select("*")
@@ -1387,6 +1409,7 @@ function realDeps(): BookingDeps {
     loadPastBookingsToComplete: async () => {
       const db = supabaseAdmin();
       const nowIso = new Date().toISOString();
+      // error-ok: best-effort sweep of past bookings to mark complete; a read error yields none this tick and the completion lane retries.
       const { data: rows } = await db
         .from("bookings")
         .select("*")
@@ -1667,6 +1690,7 @@ export function reassignBooking(
 /** Resolve a booking's manage token by id, so admin actions can reuse the
  *  token-based reschedule/cancel flow (#326 admin screen). */
 async function manageTokenForBooking(bookingId: string): Promise<string | null> {
+  // error-ok: manage-token lookup for an email link; a null (incl. a read error) returns null and the caller omits the link.
   const { data } = await supabaseAdmin()
     .from("bookings")
     .select("manage_token")
@@ -1711,6 +1735,7 @@ export async function adminCancelBooking(
  * The picker filters/sorts these with `rankReassignAgents`.
  */
 export async function listActiveAgents(orgId: string): Promise<ReassignAgent[]> {
+  // error-ok: candidate agents for reassignment; a read error yields an empty list so the reassignment is retried, never run against a wrong pool.
   const { data } = await supabaseAdmin()
     .from("users")
     .select("id, name, email, bookable")

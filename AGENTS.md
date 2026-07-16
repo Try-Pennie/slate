@@ -132,6 +132,48 @@ a new table must be justified, not silently unguarded.** When you add a table
 whose row count is bounded by the roster rather than by booking volume or time,
 add it to `SAFE_TABLES`; otherwise leave it off and make each read cap-safe.
 
+# Swallowed-error reads (the `// error-ok:` convention)
+
+A read that destructures `const { data } = await db.from("t").select(...)` and
+ignores `error` fails silently: when the query errors (a missing column on a
+half-applied migration), `data` comes back null, the availability pool collapses
+to empty, and the booker shows NO times, a broken deploy that looks like a quiet
+day. That was #277; it routed the availability-critical reads through **`unwrap`**
+(`src/lib/db/result.ts`), which throws on a real error and passes a not-found
+(`data: null, error: null`) through unchanged.
+
+**`scripts/test-swallowed-error-reads.ts`** (#315) keeps that invariant from
+eroding. It scans `src/lib/availability/*` and `src/lib/booking/*` and fails if an
+awaited SELECT is destructured for `data` without also consulting `error`. The
+scan logic lives in `scripts/lib/scan-swallowed-error-reads.ts` (unit-testable),
+and the guard carries a positive control (stripping the opt-outs from the real
+`booking/service.ts` must be caught) so it can never rot into a no-op.
+
+A read is **compliant** when it does ONE of:
+
+- routes through `unwrap(await ...)` (or a paginating helper like
+  `selectAllPages`), so a real error throws;
+- also destructures `error` (`const { data, error } = ...`) and checks it;
+- is a write, not a list read (a `.insert`/`.update`/`.delete`/`.upsert` reached
+  before the `.select(`, the "update ... returning" shape); or
+- carries the `// error-ok:` escape hatch below.
+
+**The escape hatch** is a one-line opt-out on, or in the `//` block directly
+above, the destructure, for a read that DELIBERATELY tolerates a null/empty result
+on error:
+
+```ts
+// error-ok: best-effort worklist; a read error skips this tick and the lane retries
+const { data } = await db.from("pending_event_deletions").select("*").limit(n);
+```
+
+Use it only when a swallowed error degrades to a genuinely SAFE path (a retry next
+tick, a re-route, a caller null/empty branch), and say why. A read whose swallowed
+error would silently show no availability must use `unwrap` instead. The guard
+covers the `const { data } = await` object-destructure shape the bug keeps taking;
+an array destructure (`const [{ data }] = await Promise.all(...)`) or an inline
+`(await ...).data` is out of scope by design (documented in the scanner header).
+
 # Reading production logs (Cloudflare observability)
 
 Cloudflare captures **every** console method from the deployed Worker, with the
