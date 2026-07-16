@@ -69,6 +69,69 @@ holds one entry (`widget-embed.test.ts`, which drives the real `widget.js` in a
 browser environment). That guard fails the build if the boundary erodes again.
 Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
 
+# Capped single-page reads (the `// cap-safe:` convention)
+
+PostgREST returns at most **one 1000-row page** per list read. Code that then
+does `.length`, `.filter()`, `.map()`, or `.reduce()` on the result treats a
+truncated page as the whole set, and the read silently under-counts. This class
+shipped as #35 / #166 (the availability cache came back short and the booker
+over-offered slots) and false-passed a #440 soak invariant. Two static guards,
+both run by `pnpm test`, block a **new** capped read from reaching main:
+
+- **`scripts/test-capped-reads.ts`** (#730) scans `scripts/loadtest/**` and
+  `scripts/smoke-*.ts` for the raw `fetch(...select=...)` shape (and wrappers
+  like `pgGet` / `getJson`) whose result feeds a count or aggregate. Cap-safe
+  here means the read goes through the paginating `listAll` or server-side
+  `count` helper (`scripts/loadtest/invariants.ts`), carries an explicit
+  `limit=`, is a single-row `rows[0]` grab rather than an aggregate, or carries
+  the opt-out below.
+
+- **`scripts/test-src-capped-reads.ts`** (#822) scans production `src/` for the
+  supabase-js `.from("t").select(...)` shape that the fetch detector cannot see.
+  It only flags reads on a **growth table** (see below).
+
+The scan logic for each lives beside it in `scripts/lib/scan-capped-reads.ts`
+and `scripts/lib/scan-src-capped-reads.ts`, so both are unit-testable, and each
+guard carries a positive control proving it still catches the bad pattern.
+
+**To fix a flagged `src/` read**, paginate it (`selectAllPages`,
+`src/lib/supabase/paginate.ts`) or give the chain a bounding signal. A
+growth-table SELECT is cap-safe when it carries ONE of:
+
+- `.single()` / `.maybeSingle()` (at most one row),
+- `.limit(...)` / `.range(...)` (an explicit bounded or paginated page),
+- `.csv()` (streamed, not a row array),
+- `{ ..., head: true }` (a server-side count, no rows returned),
+- `.eq("id", ...)` / `.in("id", ...)` (a primary-key lookup, bounded set).
+
+A write (`.insert` / `.update` / `.delete` / `.upsert` reached before any
+`.select`) is not a read and is never flagged. A reused builder
+(`let q = db.from(...).select(...); ...; await q.range(...)`) is handled: a bound
+applied on a later line still counts.
+
+**The escape hatch** (both guards) is a one-line opt-out sitting on, or in the
+block of `//` comment lines directly above, the read:
+
+```ts
+// cap-safe: idempotency_key is unique, so this returns at most one row
+const rows = await pgGet("booking_reservations?select=id&idempotency_key=eq.abc");
+```
+
+Use it only when the set genuinely can never exceed one page, and say why.
+
+**Growth vs roster-bounded.** The `src/` guard is table-aware. Roster-bounded
+config, singleton, and lock tables are capped by the design target (100 to 200
+agents, ~60 buckets) or a fixed key space, so they can never fill a page and are
+never flagged. The allowlist (`SAFE_TABLES` in `scan-src-capped-reads.ts`) holds
+`organizations`, `users`, `buckets`, `bucket_members`, `availability_schedules`,
+`agent_calendars`, `event_types`, `google_credentials`, `webhook_endpoints`,
+`monitor_settings`, `monitor_alert_config`, `alert_state`, `bucket_slots`,
+`sync_locks`, `rate_limits`, `reschedule_locks`, `lane_heartbeats`, and
+`selfheal_scan_cursor`. **Every other table defaults to a growth table (flagged):
+a new table must be justified, not silently unguarded.** When you add a table
+whose row count is bounded by the roster rather than by booking volume or time,
+add it to `SAFE_TABLES`; otherwise leave it off and make each read cap-safe.
+
 # Reading production logs (Cloudflare observability)
 
 Cloudflare captures **every** console method from the deployed Worker, with the
