@@ -1,12 +1,14 @@
 // Copy guard: user-facing source must not contain em/en dashes or the
 // unreleased platform name (see slate-copy-rules). Scans src/app, src/components,
-// and src/lib/notify, ignoring code comments. Run via pnpm test (auto-discovered).
+// src/lib/notify, and src/lib/webhooks (webhook payloads and labels are sent to
+// Regal, so their strings are user-visible too, #174), ignoring code comments.
+// Run via pnpm test (auto-discovered).
 // Run: node --experimental-strip-types scripts/test-copy.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { fail, finish } from "./lib/harness.ts";
+import { assert, fail, finish } from "./lib/harness.ts";
 
-const TARGET_DIRS = ["src/app", "src/components", "src/lib/notify"];
+const TARGET_DIRS = ["src/app", "src/components", "src/lib/notify", "src/lib/webhooks"];
 const FORBIDDEN: { re: RegExp; label: string }[] = [
   { re: /[—–]/, label: "an em/en dash" },
   { re: /cadence/i, label: "the unreleased platform name" },
@@ -62,5 +64,26 @@ for (const file of files) {
     }
   });
 }
+
+// Positive control: the guard runs its checks as side effects while scanning, so
+// on a clean tree it can pass without ever having exercised the detector. These
+// asserts prove it still flags what it exists to catch (a code-level dash and the
+// codename) and still ignores comment-only hits, so it can't rot into a no-op.
+// The dash is written as a \u escape so this detector file holds no literal dash
+// for the style hook to trip on.
+function flaggedOnce(line: string): boolean {
+  const [code] = stripComments([line]);
+  return FORBIDDEN.some(({ re }) => re.test(code));
+}
+assert(flaggedOnce('const s = "book \u2014 now";'), "detector flags a code-level em dash");
+assert(flaggedOnce('const s = "book \u2013 now";'), "detector flags a code-level en dash");
+assert(flaggedOnce('const s = "sent via Cadence";'), "detector flags the codename in code");
+assert(
+  !flaggedOnce("// exactly-once to Cadence \u2014 skip the resend"),
+  "detector ignores a comment-only dash and codename",
+);
+
+// #174: src/lib/webhooks must be in the scan set (webhook copy reaches Regal).
+assert(TARGET_DIRS.includes("src/lib/webhooks"), "scan set includes src/lib/webhooks (#174)");
 
 finish();
