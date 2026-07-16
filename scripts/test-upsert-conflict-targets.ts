@@ -128,4 +128,11 @@ assert(
   "#770: busy_blocks has a non-partial UNIQUE index on booking_id",
 );
 
+// The #532 index itself: a user must never accumulate a second, silently
+// divergent availability_schedules row.
+assert(
+  uniqueIndexes.get("availability_schedules")?.has("user_id") ?? false,
+  "#532: availability_schedules has a non-partial UNIQUE index on user_id",
+);
+
 finish();
