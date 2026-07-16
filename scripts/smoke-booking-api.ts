@@ -57,7 +57,7 @@
 // works without exporting them by hand (and without `source`, which dies on an
 // unmatched quote anywhere in the file).
 import { loadEnvFiles } from "./smoke-env.ts";
-import { slots } from "./smoke-lib.ts";
+import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -492,11 +492,16 @@ async function main() {
   }
   console.log(`Smoke test against ${BASE} (bucket ${BUCKET_A}${BUCKET_B ? `, cross-bucket ${BUCKET_B}` : ""})`);
 
+  // Gate on real availability before booking anything. Zero slots means the
+  // isolated test agent is misconfigured, so the run would exercise NOTHING;
+  // that must fail LOUDLY as a configuration error, never exit quietly in a way
+  // that reads as a pass (#456). A thin-but-nonzero window is a distinct failure.
   const slotsA = await slots(BUCKET_A);
-  check(slotsA.length >= 5, `bucket ${BUCKET_A} has enough open slots (got ${slotsA.length})`);
-  if (slotsA.length < 5) {
-    console.log("\nNot enough slots — pick a bucket with availability via SMOKE_BUCKET.");
-    process.exit(1);
+  const availability = evaluateSlotAvailability(BUCKET_A, slotsA.length);
+  check(availability.ok, `bucket ${BUCKET_A} has enough open slots (got ${slotsA.length})`);
+  if (!availability.ok) {
+    console.error(`\n${availability.message}`);
+    process.exit(availability.kind === "setup_broken" ? 3 : 1);
   }
 
   // SMOKE_DRY_RUN_ONLY=1 runs ONLY the side-effect-free dry-run check — a safe

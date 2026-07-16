@@ -50,6 +50,54 @@ export async function slots(bucket: string): Promise<string[]> {
 }
 
 /**
+ * The result of gating a bucket's open-slot count before a booking smoke run.
+ * `setup_broken` means the isolated test agent is misconfigured (zero slots);
+ * `insufficient` means the window is merely too thin. Both stop the run, but the
+ * caller surfaces distinct guidance (#456).
+ */
+export type SlotAvailability =
+  | { ok: true }
+  | { ok: false; kind: "setup_broken" | "insufficient"; message: string };
+
+/**
+ * Decide whether a bucket has enough open slots to run the booking smoke suite,
+ * and classify a shortfall so a MISCONFIGURED test agent fails loudly instead of
+ * reading as a quiet pass (#456). Zero slots means the isolated test agent is
+ * broken (no Google Calendar connected, no availability schedule, or recompute
+ * has not published slots yet), so nothing would be exercised. A non-zero count
+ * below the floor means the window is only too thin. Pure (no I/O), so it is
+ * unit-testable without hitting production.
+ */
+export function evaluateSlotAvailability(
+  bucket: string,
+  slotCount: number,
+  minRequired = 5,
+): SlotAvailability {
+  if (slotCount >= minRequired) return { ok: true };
+  if (slotCount <= 0) {
+    return {
+      ok: false,
+      kind: "setup_broken",
+      message:
+        `SETUP BROKEN: bucket "${bucket}" returned ZERO open slots. The isolated ` +
+        `test agent is likely misconfigured (no Google Calendar connected, no ` +
+        `availability schedule, or recompute has not published slots yet). Re-seed ` +
+        `with scripts/seed-smoke-test.ts, confirm the availability cache is warm, ` +
+        `then re-run. Nothing was exercised, so this is a configuration failure, ` +
+        `not a passing run.`,
+    };
+  }
+  return {
+    ok: false,
+    kind: "insufficient",
+    message:
+      `SETUP INCOMPLETE: bucket "${bucket}" has only ${slotCount} open slot(s), but ` +
+      `the smoke run needs at least ${minRequired}. Free up the test agent's ` +
+      `calendar or widen its availability schedule, then re-run.`,
+  };
+}
+
+/**
  * A pass/fail checker with isolated counting. Each smoke script does:
  *   const { check, failed } = createChecker();
  *   ...
