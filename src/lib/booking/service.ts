@@ -373,6 +373,7 @@ function realDeps(): BookingDeps {
     // booking being moved — the in-place guard counts these for the daily cap.
     agentActiveBookingStartsMs: async (userId, fromIso, toIso, excludeBookingId) => {
       const { data } = await supabaseAdmin()
+        // cap-safe: one agent's active bookings within the reschedule window (the daily cap count).
         .from("bookings")
         .select("starts_at")
         .eq("assigned_user_id", userId)
@@ -743,6 +744,7 @@ function realDeps(): BookingDeps {
     loadInflightCancelBookingIds: async (bookingIds) => {
       if (bookingIds.length === 0) return new Set<string>();
       const { data, error } = await supabaseAdmin()
+        // cap-safe: bounded by the reconcile sweep's page of booking ids (.in over one page of rows).
         .from("booking_outbox")
         .select("booking_id")
         .eq("action", "cancel")
@@ -779,6 +781,7 @@ function realDeps(): BookingDeps {
     loadBusyBlockBookingIds: async (bookingIds) => {
       if (bookingIds.length === 0) return new Set<string>();
       const { data, error } = await supabaseAdmin()
+        // cap-safe: bounded by the reconcile sweep's page of booking ids (.in over one page of rows).
         .from("busy_blocks")
         .select("booking_id")
         .eq("source", "slate")
@@ -1208,6 +1211,7 @@ function realDeps(): BookingDeps {
       const db = supabaseAdmin();
       const cutoff = new Date(Date.now() - graceMs).toISOString();
       const { data: rows } = await db
+        // cap-safe: abandoned reassign leases past the grace window, at most the in flight reassign count.
         .from("reassign_intents")
         .select(
           "booking_id, pinned_agent_email, gcal_client_id, prev_agent_email, prev_gcal_event_id, swapped_at",

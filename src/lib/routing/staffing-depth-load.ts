@@ -84,6 +84,7 @@ export async function loadTierDepths(
   // Approved time off that covers `now`: starts_at <= now < ends_at (ends_at is
   // exclusive, matching the all-day busy_block convention).
   let oooQuery = db
+    // cap-safe: agents whose approved time off covers this instant, at most the roster size.
     .from("ooo_requests")
     .select("user_id")
     .eq("status", "approved")

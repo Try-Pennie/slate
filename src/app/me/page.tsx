@@ -172,6 +172,7 @@ export default async function MePage({
 
   const { data: rulesData } = sched
     ? await db
+        // cap-safe: the signed in agent's own schedule rules, at most a few per weekday.
         .from("availability_rules")
         .select("weekday, start_minute, end_minute")
         .eq("schedule_id", sched.id)

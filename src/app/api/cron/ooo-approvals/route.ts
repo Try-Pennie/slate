@@ -49,6 +49,7 @@ export async function GET(req: NextRequest) {
   const { startIso, endIso } = yesterdayEtRange(now);
   const db = supabaseAdmin();
   const { data: approvedRows } = await db
+    // cap-safe: one day's approved time off decisions across the org.
     .from("ooo_requests")
     .select(
       "id, legacy_request_id, user_id, manager_id, starts_at, ends_at, decided_at, display_tz_label",
