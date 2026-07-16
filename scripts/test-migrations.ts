@@ -7,6 +7,7 @@
 // Run: node --experimental-strip-types scripts/test-migrations.ts
 import { readdirSync, readFileSync } from "node:fs";
 import { SHIPPED_MIGRATION_VERSION } from "../src/lib/db/migration-version.ts";
+import { parseDeclaredTables } from "./lib/parse-migration-constraints.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const files = readdirSync("supabase/migrations")
@@ -38,9 +39,11 @@ nums.forEach((n, i) => {
 const sql = files
   .map((f) => readFileSync(`supabase/migrations/${f}`, "utf8"))
   .join("\n");
-const created = new Set(
-  [...sql.matchAll(/create table (?:if not exists )?([a-z_]+)/g)].map((m) => m[1]),
-);
+// Enumerate created tables through the shared parser (#875) so table detection
+// has ONE behavior across guards. It is also stricter than the old local regex:
+// case-insensitive and digit/`public.`-aware, so a `CREATE TABLE` or an
+// `oauth2_tokens`-style name can't slip past this RLS-coverage check unnoticed.
+const created = parseDeclaredTables(sql);
 const rlsEnabled = new Set(
   [...sql.matchAll(/alter table ([a-z_]+)\s+enable row level security/g)].map((m) => m[1]),
 );
