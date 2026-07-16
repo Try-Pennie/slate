@@ -17,6 +17,19 @@ describe("bookingFailureAlert", () => {
     expect(spec?.message).toContain("412");
   });
 
+  it("still alerts on a no-eligible-agents failure for a real (non-test) bucket", () => {
+    // A real bucket routing to zero agents is a genuine outage: keep paging ops.
+    const spec = bookingFailureAlert(new NoEligibleAgentsError("412", false));
+    expect(spec?.key).toBe("no_eligible_agents:412");
+  });
+
+  it("does NOT alert when the empty bucket is a test bucket (#465)", () => {
+    // The smoke test's is_test bucket routing to no eligible agent is expected;
+    // the booking still fails as designed, but it must not page ops.
+    const spec = bookingFailureAlert(new NoEligibleAgentsError("SMOKE", true));
+    expect(spec).toBeNull();
+  });
+
   it("alerts on a verify-on-book outage", () => {
     const spec = bookingFailureAlert(new VerifyUnavailableError());
     expect(spec?.key).toBe("verify_on_book_outage");

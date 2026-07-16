@@ -189,10 +189,17 @@ export class VerifyUnavailableError extends Error {
 export class NoEligibleAgentsError extends Error {
   /** The bucket that resolved to no eligible agents, for the alert (#327). */
   readonly bucketCode: string | null;
-  constructor(bucketCode: string | null = null) {
+  /**
+   * True when the dead bucket is a synthetic is_test bucket (the smoke test's).
+   * The booking still fails as designed, but the reactive routing alert is
+   * suppressed so test activity never looks like a real outage (#465).
+   */
+  readonly isTest: boolean;
+  constructor(bucketCode: string | null = null, isTest = false) {
     super("No advisors are configured for this booking type.");
     this.name = "NoEligibleAgentsError";
     this.bucketCode = bucketCode;
+    this.isTest = isTest;
   }
 }
 
@@ -924,7 +931,7 @@ async function assignAgent(
   if (!assignment) {
     // Zero candidates means the bucket pool is empty/misconfigured — a different
     // failure (and a different caller action) than a full slot (#358).
-    if (candidates.length === 0) throw new NoEligibleAgentsError(bucket.code);
+    if (candidates.length === 0) throw new NoEligibleAgentsError(bucket.code, bucket.is_test);
     // No agent was free. If at least one candidate couldn't be VERIFIED (read
     // error / outage), this isn't a genuinely-full slot — surface it distinctly
     // so the caller alerts + lets the lead retry, rather than showing "no times".
