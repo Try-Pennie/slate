@@ -30,7 +30,7 @@ export function stubCalendarList(): {
 export function stubSyncEvents(
   syncToken: string | null,
   nowMs: number,
-): { events: GoogleEvent[]; nextSyncToken: string | null } {
+): { events: GoogleEvent[]; nextSyncToken: string | null; truncated: boolean } {
   const n = syncToken ? 1 : BOOTSTRAP_EVENTS;
   const events: GoogleEvent[] = [];
   for (let i = 0; i < n; i++) {
@@ -43,7 +43,7 @@ export function stubSyncEvents(
       end: { dateTime: new Date(startMs + 30 * 60_000).toISOString() },
     });
   }
-  return { events, nextSyncToken: `lt-token-${nowMs}` };
+  return { events, nextSyncToken: `lt-token-${nowMs}`, truncated: false };
 }
 
 /** A watch registration result (no real channel created). */

@@ -7,6 +7,7 @@ import {
   watchCalendar,
   stopChannel,
   SyncTokenExpired,
+  CalendarListTruncated,
   type GoogleEvent,
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
@@ -426,6 +427,18 @@ async function syncCalendar(
       }
     }
 
+    // A page-capped pass (#171) fetched only the first MAX_SYNC_PAGES pages and
+    // advanced no sync token, so the stored token is retained and the next tick
+    // re-reads the same delta. Report it (a pathological calendar is the only way
+    // to hit this) rather than letting it pass silently.
+    if (result.truncated) {
+      log.warn("google-sync", {
+        msg: "events.list hit the page cap; retained sync token to resume next tick",
+        user_id: cal.user_id,
+        calendar_id: cal.calendar_id,
+      });
+    }
+
     // The agent's own Slate-booking event ids, so the sync skips mirroring them
     // into a duplicate gcal block (#166). Only load when there's something to
     // apply — the common incremental tick has no events, so it skips the query.
@@ -608,7 +621,13 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
     let wanted: string[];
     try {
       wanted = selectableCalendarIds(await listCalendars(email));
-    } catch {
+    } catch (err) {
+      // A truncated calendar list is NOT authoritative (#171): reconciling the
+      // stored set against a partial list would delete every calendar past the
+      // page cap along with its watch and cached busy blocks. Bubble it to the
+      // outer handler (status: error, no reconcile); the next tick retries. The
+      // primary-calendar fallback stays for the ordinary no-scope (403) case.
+      if (err instanceof CalendarListTruncated) throw err;
       wanted = ["primary"];
     }
     const wantedSet = new Set(wanted);

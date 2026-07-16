@@ -98,12 +98,34 @@ export interface CalendarListEntry {
   summary?: string;
 }
 
+/**
+ * Hard page cap for a single calendarList pagination pass (#171). At 250
+ * calendars per page this is orders of magnitude above any real agent's set;
+ * the cap only exists to stop a pathological account from issuing unbounded
+ * subrequests inside one Worker invocation.
+ */
+export const MAX_CALENDAR_PAGES = 50;
+
+/**
+ * Thrown when calendarList pagination exceeds MAX_CALENDAR_PAGES (#171). A
+ * truncated calendar list must never be treated as authoritative: ensureWatches
+ * reconciles the stored calendar set against it and would delete every calendar
+ * past the cap along with its push watch and cached busy blocks. Throwing keeps
+ * that reconcile from ever running on a partial view; the next tick retries.
+ */
+export class CalendarListTruncated extends Error {
+  constructor() {
+    super(`calendarList exceeded ${MAX_CALENDAR_PAGES} pages`);
+    this.name = "CalendarListTruncated";
+  }
+}
+
 /** Lists the calendars the impersonated agent can see (for busy aggregation). */
 export async function listCalendars(email: string): Promise<CalendarListEntry[]> {
   if (LOADTEST) return stubCalendarList();
   const entries: CalendarListEntry[] = [];
   let pageToken: string | undefined;
-  do {
+  for (let page = 0; ; page++) {
     const params = new URLSearchParams({ maxResults: "250", showHidden: "true" });
     if (pageToken) params.set("pageToken", pageToken);
     const res = await ok(
@@ -116,7 +138,9 @@ export async function listCalendars(email: string): Promise<CalendarListEntry[]>
     };
     entries.push(...(data.items ?? []));
     pageToken = data.nextPageToken;
-  } while (pageToken);
+    if (!pageToken) break;
+    if (page + 1 >= MAX_CALENDAR_PAGES) throw new CalendarListTruncated();
+  }
   return entries;
 }
 
@@ -385,7 +409,23 @@ export async function stopChannel(
 export interface SyncResult {
   events: GoogleEvent[];
   nextSyncToken: string | null;
+  /**
+   * True when the pagination stopped at MAX_SYNC_PAGES with more pages still
+   * outstanding (#171). On truncation `nextSyncToken` is null (Google only
+   * returns one on the final page), so syncCalendar keeps the stored token and
+   * the next tick re-reads the same delta rather than skipping the unread pages.
+   */
+  truncated: boolean;
 }
+
+/**
+ * Hard page cap for a single events.list pagination pass (#171). Google's page
+ * sizes bound this to one or two pages in practice; the cap stops a pathological
+ * calendar from issuing unbounded subrequests inside one Worker invocation. It
+ * is deliberately far above any real calendar's delta so normal syncs never hit
+ * it. Exported for the test that drives the loop past it.
+ */
+export const MAX_SYNC_PAGES = 50;
 
 /**
  * Incremental sync of an agent's events. Pass the stored syncToken for changes
@@ -401,8 +441,9 @@ export async function syncEvents(
   const events: GoogleEvent[] = [];
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
+  let truncated = false;
 
-  do {
+  for (let page = 0; ; page++) {
     const params = new URLSearchParams({
       singleEvents: "true",
       showDeleted: "true",
@@ -427,9 +468,18 @@ export async function syncEvents(
       nextSyncToken?: string;
     };
     events.push(...(data.items ?? []));
-    pageToken = data.nextPageToken;
+    // Google returns nextSyncToken only on the final page; an intermediate page
+    // carries nextPageToken and no token. So stopping on the cap below (which
+    // only happens while a nextPageToken remains) always leaves nextSyncToken
+    // null, and syncCalendar keeps the stored token to resume next tick.
     nextSyncToken = data.nextSyncToken ?? nextSyncToken;
-  } while (pageToken);
+    pageToken = data.nextPageToken;
+    if (!pageToken) break;
+    if (page + 1 >= MAX_SYNC_PAGES) {
+      truncated = true;
+      break;
+    }
+  }
 
-  return { events, nextSyncToken };
+  return { events, nextSyncToken, truncated };
 }
