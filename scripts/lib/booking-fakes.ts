@@ -109,6 +109,10 @@ export interface FakeOpts {
   bookingById?: BookingContext | null; // loadBookingById (reassign)
   agentByEmail?: User | null; // getAgentByEmail (reassign)
   pastDue?: BookingContext[];
+  // Successive completion-sweep batches for the drain loop (#871): each call to
+  // loadPastBookingsToComplete returns the next batch (empty once exhausted),
+  // modelling the DB query returning fewer rows as batches flip to completed.
+  pastDueBatches?: BookingContext[][];
   // A reschedule lease already held for the booking (#439): models a concurrent
   // holder. `target` = the instant it's reaching for (same as the request ->
   // idempotent no-op; different -> conflict); `expired` = a crashed holder.
@@ -158,7 +162,10 @@ export const DEFAULT_WORKING_HOURS: { timezone: string; rules: WorkingRule[] } =
 };
 
 export function makeDeps(opts: FakeOpts) {
+  // Cursor into opts.pastDueBatches for the completion drain loop (#871).
+  let pastBatchIdx = 0;
   const calls = {
+    loadPastBookingsToComplete: 0,
     busyIntervalsForAgent: [] as string[],
     agentActiveBookingStartsMs: [] as { userId: string; excludeBookingId: string }[],
     agentWorkingHours: [] as string[],
@@ -578,7 +585,16 @@ export function makeDeps(opts: FakeOpts) {
       return opts.listResult ?? { rows: [], buckets: [] };
     },
     getAgentByEmail: async () => opts.agentByEmail ?? null,
-    loadPastBookingsToComplete: async () => opts.pastDue ?? [],
+    loadPastBookingsToComplete: async () => {
+      // Drain loop (#871): hand back one batch per call when batches are given,
+      // else the single static list. `calls.loadPastBookingsToComplete` counts
+      // invocations so a test can prove the loop stopped (didn't re-fetch).
+      calls.loadPastBookingsToComplete += 1;
+      if (opts.pastDueBatches) {
+        return opts.pastDueBatches[pastBatchIdx++] ?? [];
+      }
+      return opts.pastDue ?? [];
+    },
     emitWebhook: async (_orgId, event, payload, dedupeKey, suppressed = false) => {
       calls.webhooks.push({
         event,

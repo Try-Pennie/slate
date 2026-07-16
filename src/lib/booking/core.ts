@@ -524,19 +524,37 @@ export function eventDescription(
 export const PAST_COMPLETION_BATCH_LIMIT = 200;
 
 /**
+ * The completion sweep drains its backlog by loading and completing successive
+ * `PAST_COMPLETION_BATCH_LIMIT`-sized batches within one run, rather than
+ * clearing only one batch per tick and letting the rest wait (#871, follow-up to
+ * #223). This caps the loop so a run stays inside the Worker CPU/subrequest
+ * budget (the sweep shares the every-5-minute invocation with the watch and
+ * monitor lanes):
+ * 25 batches = up to 5,000 bookings per run, ~2.5x a full day's volume at
+ * current scale, and a larger backlog keeps draining over consecutive ticks.
+ * When a run hits this cap with a full batch still pending, that is the
+ * fail-loud signal that the backlog is outgrowing the sweep (warned in
+ * `completePastBookings`), replacing #223's per-batch warn here.
+ */
+export const MAX_COMPLETION_DRAIN_BATCHES = 25;
+
+/**
  * Pairs each booking with its bucket + event type from already-fetched sets,
  * so the completion sweep can resolve them with two `.in()` queries instead of
  * a round-trip per booking (#164).
  *
  * This is the choke point that sees the whole fetched batch and performs the
- * drop, so the two conditions that used to fail silently are made loud here
- * (#223), without changing the behavior itself:
- *   - A full batch (at the cap) means more finished bookings are waiting than a
- *     run can clear, so a backlog is likely building. Warn.
- *   - A booking whose bucket or event type isn't in the fetched set is dropped
- *     and would never complete. FK integrity makes this unreachable in prod, so
- *     if it happens it is a real data anomaly, not routine: log it (id + which
- *     side was missing) at error, per the fail-loud rule, instead of vanishing.
+ * drop, so the silent data-loss condition is made loud here (#223), without
+ * changing the behavior itself: a booking whose bucket or event type isn't in
+ * the fetched set is dropped and would never complete. FK integrity makes this
+ * unreachable in prod, so if it happens it is a real data anomaly, not routine:
+ * log it (id + which side was missing) at error, per the fail-loud rule, instead
+ * of vanishing.
+ *
+ * The other #223 condition (a full batch signalling a backlog) moved to the
+ * drain loop in `completePastBookings` (#871): the sweep now clears the whole
+ * backlog per run, so a mid-drain full batch is being cleared, not left waiting.
+ * The loud signal is now "drain budget exhausted" when a run can't finish.
  */
 export function joinBookingContexts(
   bookings: Booking[],
@@ -545,14 +563,6 @@ export function joinBookingContexts(
 ): { booking: Booking; bucket: Bucket; eventType: EventType }[] {
   const bucketById = new Map(buckets.map((b) => [b.id, b]));
   const eventTypeById = new Map(eventTypes.map((e) => [e.id, e]));
-
-  if (bookings.length >= PAST_COMPLETION_BATCH_LIMIT) {
-    log.warn("completion-sweep", {
-      msg: "batch filled the cap, backlog likely waiting",
-      count: bookings.length,
-      cap: PAST_COMPLETION_BATCH_LIMIT,
-    });
-  }
 
   const out: { booking: Booking; bucket: Bucket; eventType: EventType }[] = [];
   for (const booking of bookings) {
