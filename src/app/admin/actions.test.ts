@@ -37,8 +37,11 @@ const update = vi.hoisted(() =>
   vi.fn((_patch: Record<string, unknown> = {}) => ({ eq: updateEq })),
 );
 const insert = vi.hoisted(() => vi.fn(async () => ({})));
+const upsert = vi.hoisted(() =>
+  vi.fn(async (_rows: unknown, _opts?: { onConflict: string }) => ({})),
+);
 const from = vi.hoisted(() =>
-  vi.fn(() => {
+  vi.fn((_table: string) => {
     const q: Record<string, unknown> = {
       select: vi.fn(() => q),
       eq: vi.fn(() => q),
@@ -47,6 +50,7 @@ const from = vi.hoisted(() =>
       limit: vi.fn(() => q),
       update,
       insert,
+      upsert,
     };
     return q;
   }),
@@ -69,7 +73,9 @@ import {
   resendWebhookDelivery,
   replayFailedWebhooks,
   setWebhookEndpoint,
+  setMonitorSettings,
 } from "./actions";
+import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
 
 const admin = { id: "admin1", role: "admin", org_id: "o1" };
@@ -301,5 +307,118 @@ describe("setWebhookEndpoint key handling (#600)", () => {
 
     const patch = update.mock.calls[0][0] as Record<string, unknown>;
     expect(patch.auth_header).toBe("new-key");
+  });
+});
+
+// #582: the monitor alert-settings save path (#571). The pure parser
+// (parseMonitorSettingsForm) is unit-tested on its own; this pins that the action
+// WIRES it correctly end to end (form parsing to full-row upsert to audit) so the
+// red-team S1/S2 fixes can't quietly regress: a blank field must persist as
+// explicit null (never 0), an out-of-range value must refuse to save, each row is
+// written whole so clearing one field can't wipe a sibling, and the actor is
+// stamped. The real parser runs; only auth, DB, audit and redirect are mocked.
+describe("setMonitorSettings save path (#582)", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+  });
+
+  // Every cooldown field plus floors and channels, all valid, as a baseline the
+  // individual cases override one field at a time.
+  function monitorForm(overrides: Record<string, string> = {}): FormData {
+    const base: Record<string, string> = {
+      floor_30: "5",
+      floor_120: "20",
+      alerts_channel: "#alerts",
+      info_channel: "#info",
+    };
+    for (const k of ALERT_KEYS) base[`cooldown_${k}`] = "30";
+    return form({ ...base, ...overrides });
+  }
+
+  function settingsUpsertPayload(): Record<string, unknown>[] {
+    const call = upsert.mock.calls.find(([payload]) => Array.isArray(payload));
+    return (call?.[0] ?? []) as Record<string, unknown>[];
+  }
+
+  function configUpsertPayload(): Record<string, unknown> {
+    const call = upsert.mock.calls.find(([payload]) => !Array.isArray(payload));
+    return (call?.[0] ?? {}) as Record<string, unknown>;
+  }
+
+  // S1: a blank field is "revert to fallback", which must be an explicit null so
+  // the resolver falls through to the coded default. Writing 0 would instead pin a
+  // real (broken) value: a 0-minute cooldown or a 0 low-volume floor.
+  it("persists a blank field as explicit null, never 0", async () => {
+    const key = ALERT_KEYS[0];
+    await expect(
+      setMonitorSettings(monitorForm({ [`cooldown_${key}`]: "", floor_30: "" })),
+    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/settings\?ok=1/);
+
+    const rows = settingsUpsertPayload();
+    const blankRow = rows.find((r) => r.key === key);
+    expect(blankRow?.cooldown_min).toBeNull();
+    expect(blankRow?.cooldown_min).not.toBe(0);
+    // A sibling with a real value is untouched by the blank one.
+    const otherRow = rows.find((r) => r.key === ALERT_KEYS[1]);
+    expect(otherRow?.cooldown_min).toBe(30);
+
+    const config = configUpsertPayload();
+    expect(config.floor_30).toBeNull();
+    expect(config.floor_30).not.toBe(0);
+  });
+
+  // S2: an out-of-range value is refused, not coerced. The action redirects to the
+  // error page and must NOT write anything (a partial save would be worse).
+  it("refuses an out-of-range value and writes nothing", async () => {
+    const key = ALERT_KEYS[0];
+    // 0 is below the 1-minute floor; the parser rejects it.
+    await expect(
+      setMonitorSettings(monitorForm({ [`cooldown_${key}`]: "0" })),
+    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/settings\?error=/);
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  // A full row is written per key (onConflict: "key"), each a complete object, so
+  // saving one field can never blank a sibling column.
+  it("upserts a complete row per key on the key conflict target", async () => {
+    await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=1/);
+
+    const settingsCall = upsert.mock.calls.find(([payload]) => Array.isArray(payload));
+    expect(settingsCall).toBeTruthy();
+    expect(settingsCall?.[1]).toEqual({ onConflict: "key" });
+
+    const rows = settingsUpsertPayload();
+    expect(rows).toHaveLength(ALERT_KEYS.length);
+    for (const row of rows) {
+      expect(row).toHaveProperty("key");
+      expect(row).toHaveProperty("cooldown_min");
+      expect(row).toHaveProperty("updated_at");
+      expect(row).toHaveProperty("updated_by");
+    }
+    expect(rows.map((r) => r.key).sort()).toEqual([...ALERT_KEYS].sort());
+
+    // The config row is a single upsert on id=1.
+    const configCall = upsert.mock.calls.find(([payload]) => !Array.isArray(payload));
+    expect(configCall?.[0]).toMatchObject({ id: 1 });
+    expect(configCall?.[1]).toEqual({ onConflict: "id" });
+  });
+
+  // The acting admin is stamped on both writes and in the audit trail.
+  it("stamps updated_by with the acting admin and audits the change", async () => {
+    await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=1/);
+
+    const rows = settingsUpsertPayload();
+    expect(rows.every((r) => r.updated_by === admin.id)).toBe(true);
+    expect(configUpsertPayload().updated_by).toBe(admin.id);
+
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: admin.id,
+        action: "monitor.settings",
+      }),
+    );
   });
 });
