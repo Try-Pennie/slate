@@ -47,6 +47,7 @@ import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
+import { afterResponse } from "@/lib/after-response";
 
 const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
@@ -597,9 +598,12 @@ export async function syncByChannel(
       .eq("sync_claimed_at", claimIso);
   }
   // The agent's calendar changed: refresh the precomputed slot rows for every
-  // bucket they affect so it shows up in <5s. Best-effort (debounced per bucket;
-  // the 1-min cron backstop guarantees it regardless).
-  void recomputeBucketsForAgent(cal.user_id).catch(() => {});
+  // bucket they affect so it shows up in <5s. Through afterResponse (#503) so
+  // the recompute survives the isolate teardown after the response instead of a
+  // float Cloudflare can drop; the 1-min cron backstops it regardless. The sole
+  // caller (the push route) already runs this inside an after(); afterResponse
+  // nests safely and degrades to a plain float if a nested schedule is refused.
+  afterResponse("sync-recompute", () => recomputeBucketsForAgent(cal.user_id));
   return "synced";
 }
 
