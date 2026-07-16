@@ -11,7 +11,7 @@ import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
-import { timezoneOptions } from "@/lib/booking/timezones";
+import { deviceTimeZone, timezoneOptions } from "@/lib/booking/timezones";
 import { embedParentOrigin } from "@/lib/embed/parent-origin";
 
 interface Attendee {
@@ -52,12 +52,6 @@ interface AvailabilityResponse {
   eventType: { name: string; description: string | null; durationMin: number };
   slots: string[];
 }
-
-const localZone = () =>
-  typeof Intl !== "undefined"
-    ? Intl.DateTimeFormat().resolvedOptions().timeZone
-    : "America/New_York";
-
 
 /** Avatar initials from the org name: "Pennie" -> "PE", "Acme Co" -> "AC". */
 function initials(name: string): string {
@@ -167,7 +161,7 @@ export default function Booker({
 }: BookerProps) {
   // Options derive from the *detected* zone (fixed) so a traveling lead's own
   // zone stays in the list even after they switch the selection to a curated one.
-  const detectedZone = useMemo(() => localZone(), []);
+  const detectedZone = useMemo(() => deviceTimeZone(), []);
   const [zone, setZone] = useState(detectedZone);
   const zoneOptions = useMemo(() => timezoneOptions(detectedZone), [detectedZone]);
   const today = useMemo(() => DateTime.now().setZone(zone).startOf("day"), [zone]);

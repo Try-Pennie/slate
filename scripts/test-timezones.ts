@@ -2,10 +2,38 @@
 // Run: node --experimental-strip-types scripts/test-timezones.ts
 import {
   CURATED_ZONES,
+  deviceTimeZone,
   humanizeZone,
   timezoneOptions,
 } from "../src/lib/booking/timezones.ts";
 import { assert, finish } from "./lib/harness.ts";
+
+// deviceTimeZone reports the runtime's resolved IANA zone when Intl is present,
+// matching what the booker and manage-booking screen previously computed inline.
+{
+  const detected = deviceTimeZone();
+  assert(
+    detected === Intl.DateTimeFormat().resolvedOptions().timeZone,
+    "deviceTimeZone returns the Intl-resolved zone when Intl is available",
+  );
+  assert(detected.length > 0, "deviceTimeZone never returns an empty string");
+}
+
+// When Intl is unavailable (SSR or a runtime without the Intl API) it falls back
+// to the canonical default zone instead of throwing.
+{
+  const savedIntl = globalThis.Intl;
+  // @ts-expect-error deliberately removing the global to exercise the fallback
+  delete globalThis.Intl;
+  try {
+    assert(
+      deviceTimeZone() === "America/New_York",
+      "deviceTimeZone falls back to America/New_York when Intl is unavailable",
+    );
+  } finally {
+    globalThis.Intl = savedIntl;
+  }
+}
 
 // humanizeZone strips the region and underscores
 assert(humanizeZone("America/New_York") === "New York", "humanize strips region + underscore");
