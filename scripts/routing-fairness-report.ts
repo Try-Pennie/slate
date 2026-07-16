@@ -15,7 +15,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { payPeriod } from "../src/lib/availability/roundrobin.ts";
-import { computeFairness, type TraceRow } from "../src/lib/availability/fairness.ts";
+import { computeFairness, excludeTestEntities, type TraceRow } from "../src/lib/availability/fairness.ts";
 
 function loadEnv(): { url: string; key: string } {
   const fromFile: Record<string, string> = {};
@@ -81,13 +81,31 @@ async function main() {
     .map((r) => r.assigned_user_id)
     .filter((id): id is string => !!id);
 
-  const users = (await get("users?select=id,name,email")) as { id: string; name: string | null; email: string | null }[];
+  const users = (await get("users?select=id,name,email,is_test")) as {
+    id: string;
+    name: string | null;
+    email: string | null;
+    is_test: boolean;
+  }[];
   const label = new Map(users.map((u) => [u.id, u.name || u.email || u.id]));
   const who = (id: string) => label.get(id) ?? id;
 
-  const report = computeFairness(rows, { minBookings, rawAssignments });
+  // Exclude synthetic test entities (#460): the smoke-test agent and its
+  // isolated test buckets are real, bookable rows (assignment must still reach
+  // them for the smoke test), but they must never be counted in this
+  // cross-bucket / org-wide fairness report. Drop their bookings and raw
+  // assignments before the math, matching how the read-side gates exclude with
+  // is_test = false.
+  const testUserIds = users.filter((u) => u.is_test).map((u) => u.id);
+  const testBuckets = (await get("buckets?select=code&is_test=eq.true")) as { code: string }[];
+  const cleaned = excludeTestEntities(rows, rawAssignments, {
+    testUserIds,
+    testBucketCodes: testBuckets.map((b) => b.code),
+  });
 
-  console.log(`\nRouting fairness  period ${fromIso.slice(0, 10)} to ${toIso.slice(0, 10)}  (${rows.length} ranker decisions)\n`);
+  const report = computeFairness(cleaned.rows, { minBookings, rawAssignments: cleaned.rawAssignments });
+
+  console.log(`\nRouting fairness  period ${fromIso.slice(0, 10)} to ${toIso.slice(0, 10)}  (${cleaned.rows.length} ranker decisions)\n`);
   console.log("Negative deviation = under-served (got fewer than a fair split would give, accounting for availability).\n");
 
   for (const b of report.buckets) {
