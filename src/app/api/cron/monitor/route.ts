@@ -38,6 +38,12 @@ import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
+import {
+  runScheduleCoverageCheck,
+  type ScheduleLessAgent,
+} from "@/lib/monitor/schedule-coverage";
+import { ensureDefaultSchedules } from "@/lib/schedule";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
@@ -305,6 +311,50 @@ export async function GET(req: NextRequest) {
       log: (m) => log.info("thin-tier", { msg: m }),
     });
 
+    // --- Schedule coverage (#838): a bookable agent with no availability_schedules
+    // row silently shows zero availability and takes no bookings. The row should
+    // exist (ensureDefaultSchedules fills it on roster sync), so first try to
+    // self-heal the benign case (a new agent between syncs), then whisper ONLY for
+    // the ones the fill could not create. Both reads are paged past PostgREST's
+    // 1,000-row cap; the schedule read is re-run after the heal so the recheck
+    // sees what the fill actually created. ---
+    const loadMissingAgents = async (): Promise<ScheduleLessAgent[]> => {
+      const [agents, scheds] = await Promise.all([
+        selectAllPages<ScheduleLessAgent>(
+          "monitor schedule-coverage bookable agents",
+          (from, to) =>
+            db
+              .from("users")
+              .select("id, name, email, org_id")
+              .eq("bookable", true)
+              .is("deactivated_at", null)
+              .eq("is_test", false)
+              .range(from, to),
+        ),
+        selectAllPages<{ user_id: string }>(
+          "monitor schedule-coverage schedules",
+          (from, to) => db.from("availability_schedules").select("user_id").range(from, to),
+        ),
+      ]);
+      const have = new Set(scheds.map((s) => s.user_id));
+      return agents.filter((a) => !have.has(a.id));
+    };
+    const scheduleCoverage = await runScheduleCoverageCheck({
+      loadMissingAgents,
+      heal: async (orgIds) => {
+        // Per-org so one org's failed fill can't skip the others; a throw is
+        // logged and left for the recheck to surface as the alert.
+        for (const orgId of orgIds) {
+          await ensureDefaultSchedules(orgId).catch(() =>
+            log.warn("schedule-coverage", { msg: "self-heal fill failed", org_id: orgId }),
+          );
+        }
+      },
+      notify: sendThrottledInfo,
+      cooldownMs: settings.cooldownMs.agents_without_schedule,
+      log: (m) => log.info("schedule-coverage", { msg: m }),
+    });
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -342,6 +392,7 @@ export async function GET(req: NextRequest) {
       codes: page,
       fallbackCovered: covered,
       thinTiers: thinTierCount,
+      scheduleCoverage,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       truncated,
       volume,
