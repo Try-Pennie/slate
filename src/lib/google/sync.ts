@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import {
   listCalendars,
   syncEvents,
@@ -262,18 +263,28 @@ const WRITE_CHUNK = 500;
  * double-count). Matched by the booking's stored gcal_event_id (exact, not a
  * name heuristic), so there are no false skips of externally-booked events.
  */
-async function loadSlateBookingEventIds(userId: string): Promise<Set<string>> {
-  const { data } = await supabaseAdmin()
-    // cap-safe: one agent's active (confirmed/rescheduled, never completed) bookings, bounded by the booking horizon.
-    .from("bookings")
-    .select("gcal_event_id")
-    .eq("assigned_user_id", userId)
-    .in("status", ["confirmed", "rescheduled"])
-    .not("gcal_event_id", "is", null);
+export async function loadSlateBookingEventIds(userId: string): Promise<Set<string>> {
+  // Paginate rather than trust a single page: this set had no time filter and was
+  // cap-safe only while past bookings reliably aged into `completed` (#834). At the
+  // 200-agent target a busy agent's active bookings could cross PostgREST's
+  // 1,000-row page, and a truncated set would let a Slate-owned event slip through
+  // and get mirrored as a duplicate source=gcal block, the exact #166 double-count.
+  // selectAllPages throws on a read error instead of returning a short list that
+  // would read as "nothing to skip".
+  const db = supabaseAdmin();
+  const rows = await selectAllPages<{ gcal_event_id: string | null }>(
+    "sync slate booking event ids",
+    (from, to) =>
+      db
+        .from("bookings")
+        .select("gcal_event_id")
+        .eq("assigned_user_id", userId)
+        .in("status", ["confirmed", "rescheduled"])
+        .not("gcal_event_id", "is", null)
+        .range(from, to),
+  );
   return new Set(
-    ((data ?? []) as { gcal_event_id: string | null }[])
-      .map((r) => r.gcal_event_id)
-      .filter((id): id is string => !!id),
+    rows.map((r) => r.gcal_event_id).filter((id): id is string => !!id),
   );
 }
 
@@ -320,7 +331,7 @@ async function applyEvents(
  * resync (bootstrap or expired token) just returns the current set, so events
  * deleted while the token was stale would otherwise linger and over-block.
  */
-async function purgeVanished(
+export async function purgeVanished(
   userId: string,
   calendarId: string,
   events: GoogleEvent[],
@@ -336,17 +347,25 @@ async function purgeVanished(
       .filter((e) => e.id && isBusyEvent(e) && !slateEventIds.has(e.id))
       .map((e) => e.id as string),
   );
-  const { data } = await db
-    // cap-safe: one agent and calendar's gcal source blocks (the reconcile keeps only in window rows).
-    .from("busy_blocks")
-    .select("id, gcal_event_id")
-    .eq("user_id", userId)
-    .eq("calendar_id", calendarId)
-    .eq("source", "gcal");
-  const stale = staleBlockIds(
-    (data ?? []) as { id: string; gcal_event_id: string | null }[],
-    seen,
+  // Reconcile against EVERY cached gcal block for this calendar, paged (#834). The
+  // read must see the whole set to find stale rows: a stale block sitting past
+  // PostgREST's 1,000-row page would otherwise never be seen and would over-block
+  // the agent forever (the orphaned-block bug this function exists to prevent). A
+  // time-window filter can't stand in here, since a vanished event's stale block
+  // may lie outside any window. selectAllPages throws on a read error rather than
+  // returning a short list that would leave real orphans behind.
+  const blocks = await selectAllPages<{ id: string; gcal_event_id: string | null }>(
+    "sync purge vanished busy_blocks",
+    (from, to) =>
+      db
+        .from("busy_blocks")
+        .select("id, gcal_event_id")
+        .eq("user_id", userId)
+        .eq("calendar_id", calendarId)
+        .eq("source", "gcal")
+        .range(from, to),
   );
+  const stale = staleBlockIds(blocks, seen);
   if (stale.length) {
     await db.from("busy_blocks").delete().in("id", stale);
   }
