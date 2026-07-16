@@ -96,8 +96,10 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
     { user_id: "a", starts_at: "2026-06-08T13:00:00.000Z", ends_at: "2026-06-08T13:30:00.000Z" },
     { user_id: "b", starts_at: "2026-06-08T14:00:00.000Z", ends_at: "2026-06-08T14:30:00.000Z" },
   ];
-  const bookings = [{ assigned_user_id: "a", starts_at: "2026-06-08T13:00:00.000Z" }];
-  const out = assembleMemberAvailability(userIds, schedules, rules, busy, bookings);
+  // #832: the daily-cap count arrives per agent as a precomputed local-date -> count
+  // map (from the server-side RPC), not a list of booking instants.
+  const dayCountsByUser = new Map([["a", new Map([["2026-06-08", 1]])]]);
+  const out = assembleMemberAvailability(userIds, schedules, rules, busy, dayCountsByUser);
 
   assert(out.length === 2 && out[0].userId === "a" && out[1].userId === "b", "preserves userIds order");
   const a = out[0];
@@ -108,9 +110,9 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
     a.busy.length === 1 && a.busy[0].start === Date.parse("2026-06-08T13:00:00.000Z"),
     "busy parsed to epoch-ms for the right user",
   );
-  assert(a.bookingStartsMs.length === 1 && a.bookingStartsMs[0] === Date.parse("2026-06-08T13:00:00.000Z"), "booking starts grouped per user");
+  assert(a.dayCounts?.get("2026-06-08") === 1, "adopts the per-agent dayCounts map");
   assert(b.timezone === "America/New_York" && b.rules.length === 0, "no schedule -> default tz + no rules");
-  assert(b.busy.length === 1 && b.bookingStartsMs.length === 0, "user b's busy grouped; no bookings");
+  assert(b.busy.length === 1 && (b.dayCounts?.size ?? 0) === 0, "user b's busy grouped; empty day counts");
 }
 
 // --- isWithinWorkingHours (#527): rules-only on-shift guard for in-place reschedule ---
