@@ -28,6 +28,7 @@ import type {
   SubmitOooInput,
 } from "@/lib/ooo/orchestration";
 import { log } from "@/lib/log";
+import { afterResponse } from "@/lib/after-response";
 
 export type { OooActionResult, SubmitOooInput, ModifyOooInput };
 
@@ -143,10 +144,12 @@ function realDeps(): OooDeps {
         return null;
       }
       // OOO just blocked this agent: refresh the precomputed rows for the buckets
-      // they affect so they drop out of availability promptly (cron backstops it).
-      void recomputeBucketsForAgent(
-        (block as { user_id: string }).user_id,
-      ).catch(() => {});
+      // they affect so they drop out of availability promptly. Through after()
+      // (#503) so the recompute survives the isolate teardown after the response,
+      // instead of a float Cloudflare can drop; cron backstops it regardless.
+      afterResponse("ooo-recompute", () =>
+        recomputeBucketsForAgent((block as { user_id: string }).user_id),
+      );
       return (data as { id: string }).id;
     },
 
@@ -164,8 +167,9 @@ function realDeps(): OooDeps {
       try {
         await run();
         // OOO ended / was removed: the agent is bookable again, so refresh their
-        // buckets' precomputed rows (cron backstops it).
-        void recomputeBucketsForAgent(userId).catch(() => {});
+        // buckets' precomputed rows. Through after() (#503) so it survives the
+        // isolate teardown after the response; cron backstops it regardless.
+        afterResponse("ooo-recompute", () => recomputeBucketsForAgent(userId));
       } catch {
         // Sync self-heals gcal-source rows once the Google event is deleted;
         // a slate-source leftover is the bad case, so alert.
