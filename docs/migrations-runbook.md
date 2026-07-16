@@ -60,8 +60,41 @@ rather than reasoning it out per PR.
 - **Ordering.** Apply **before** merge, not after. The merge gate enforces this,
   and applying first means the code never deploys ahead of its schema.
 - **Rollback.** Migrations are forward-only; there is no automated down-migration
-  (accepted, #607). To undo, write a new forward migration that reverses the change
-  and run this same procedure.
+  (accepted, #607; the rationale is in "Roll-forward only, and what the migration
+  tests cover" below). To undo, write a new forward migration that reverses the
+  change and run this same procedure.
 - **Credentials.** `supabase db push` needs the linked project (ref
   `drukfvgaynzrralbzkzj`) and the DB password. The same `SUPABASE_ACCESS_TOKEN` +
   `SUPABASE_DB_PASSWORD` are set as repo secrets for the CI `migration-drift` job.
+
+## Roll-forward only, and what the migration tests cover (#607)
+
+Slate deliberately uses **roll-forward-only** migrations. There are no
+down-migrations, and `scripts/test-migrations.ts` intentionally guards only
+**repo hygiene invariants**, not rollback. This is a settled decision (#607);
+this section records the reasoning so it is not re-litigated.
+
+**What the test guards.** `scripts/test-migrations.ts` is a static file scan. It
+checks sequencing (files are `NNNN_snake_case.sql`, numbered from 0001 with no
+gaps or duplicates), that every created table enables RLS or is explicitly
+`-- rls-exempt`, that hand-written RPC arg types in `src/lib/db/schema.ts` match
+each function's SQL definition, and that `SHIPPED_MIGRATION_VERSION` equals the
+highest migration file. These are cheap, deterministic regression guards that run
+on pre-push and in CI without touching a database.
+
+**What it does not guard, and why.** It does not test that any migration can be
+reversed, because there is nothing to reverse: the model is forward-only. To undo
+a change you write a **new forward migration** that reverses it and run the normal
+procedure above. Testing rollback would mean standing up a disposable database to
+apply and then revert each migration against, which is a different class of test
+entirely (stateful, slow, infrastructure-dependent) from the static invariant
+guards this file holds. The cost is not justified for a forward-only model where
+no down-migration is ever run.
+
+**Where the real risk actually lives.** The failure this project has repeatedly
+hit is not a bad rollback; it is **drift**, code deploying ahead of the schema it
+needs (0032 #214, 0037 #276, 0053 #439, 0055 #516). That gap is covered by the
+safety nets listed above (the `migration-drift` merge gate, the `deploy` gate, the
+prod `migration_version_lag` monitor, and the `SHIPPED_MIGRATION_VERSION` guard),
+not by rollback tests. Effort on migration reliability belongs there, not on a
+down-migration harness.
