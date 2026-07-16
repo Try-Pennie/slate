@@ -5,6 +5,7 @@ import { mapWithConcurrency } from "@/lib/google/sync-pace";
 import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
+import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { HORIZON_DAYS } from "@/lib/availability/slot-cache";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -135,22 +136,11 @@ export async function GET(req: NextRequest) {
       ]),
     );
 
-    // Per-agent working hours, for the on-shift gate. Two reads joined in JS.
-    const schedules = ((await db
-      .from("availability_schedules")
-      .select("id, user_id, timezone")).data ?? []) as {
-      id: string;
-      user_id: string;
-      timezone: string;
-    }[];
-    const ruleRows = ((await db
-      .from("availability_rules")
-      .select("schedule_id, weekday, start_minute, end_minute")).data ?? []) as {
-      schedule_id: string;
-      weekday: number;
-      start_minute: number;
-      end_minute: number;
-    }[];
+    // Per-agent working hours, for the on-shift gate. Two whole-table reads
+    // joined in JS; both are paged past PostgREST's 1,000-row cap (#828): the
+    // rules table alone crosses 1,000 at full roster, and a truncated read would
+    // silently mis-judge who is on shift.
+    const { schedules, rules: ruleRows } = await loadAllWorkingHours(db);
     const scheduleByUser = new Map(schedules.map((s) => [s.user_id, { id: s.id, timezone: s.timezone }]));
     const rulesBySchedule = new Map<string, WorkingRule[]>();
     for (const r of ruleRows) {
