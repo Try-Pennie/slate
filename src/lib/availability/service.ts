@@ -216,52 +216,38 @@ export async function loadMembersAvailability(
   // the exact window so conflict logic is unchanged.
   const capWindow = capCountWindow(from, to);
 
-  // Fetch the schedules WITH their rules nested (one query instead of a separate
-  // sequential hop for rules), alongside busy + bookings, all in parallel (#249).
-  // busy_blocks and bookings are read as aggregates over a whole tier pool and a
-  // multi-day window, so a large pool crosses PostgREST's 1,000-row cap; page
-  // past it (#828) or a silent truncation drops busy blocks (overbooking) and
-  // bookings (the daily cap under-counts, over-offering slots); see #35 / #166.
-  // The schedules read stays single-shot: it is one row per agent, pool-bounded.
-  const [schedulesRes, busy, bookingStarts] = await Promise.all([
-    db
-      .from("availability_schedules")
-      .select(
-        "id, user_id, timezone, availability_rules(schedule_id, weekday, start_minute, end_minute)",
-      )
-      .in("user_id", userIds),
-    selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>(
-      "busy_blocks",
-      (pageFrom, pageTo) =>
-        db
-          .from("busy_blocks")
-          .select("user_id, starts_at, ends_at")
-          .in("user_id", userIds)
-          .lt("starts_at", to)
-          .gt("ends_at", from)
-          .range(pageFrom, pageTo),
-    ),
-    selectAllPages<{ assigned_user_id: string; starts_at: string }>(
-      "bookings",
-      (pageFrom, pageTo) =>
-        db
-          .from("bookings")
-          .select("assigned_user_id, starts_at")
-          .in("assigned_user_id", userIds)
-          .in("status", ["confirmed", "rescheduled"])
-          .gte("starts_at", capWindow.from)
-          .lte("starts_at", capWindow.to)
-          .range(pageFrom, pageTo),
-    ),
-  ]);
+  // The daily-cap count (#832) buckets each agent's bookings by their LOCAL day, so it
+  // needs the agent's timezone, and it MUST be the SAME tz the compute uses for the
+  // slot-day and working-hours checks, or the cap miscounts and overbooks. So resolve
+  // schedules FIRST (one row per agent, single-shot, pool-bounded), then hand each
+  // agent's tz to the server-side count RPC. busy_blocks reads in parallel throughout;
+  // the count RPC then runs parallel with it once the tz map is known.
+  const schedulesP = db
+    .from("availability_schedules")
+    .select(
+      "id, user_id, timezone, availability_rules(schedule_id, weekday, start_minute, end_minute)",
+    )
+    .in("user_id", userIds);
+  // busy_blocks over the whole pool + window is an aggregate; a large pool crosses
+  // PostgREST's 1,000-row cap, so page past it (#828) or a silent truncation drops busy
+  // blocks and an agent looks free and gets overbooked (#35 / #166). selectAllPages
+  // throws on a read error (fail-loud).
+  const busyP = selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>(
+    "busy_blocks",
+    (pageFrom, pageTo) =>
+      db
+        .from("busy_blocks")
+        .select("user_id, starts_at, ends_at")
+        .in("user_id", userIds)
+        .lt("starts_at", to)
+        .gt("ends_at", from)
+        .range(pageFrom, pageTo),
+  );
 
-  // Fail loud on the schedules read (#277); selectAllPages already throws on a
-  // busy_blocks / bookings read error. A swallowed busy_blocks error is the
-  // worst case: an agent looks fully free and gets overbooked.
-  // Cast through `unknown`: our hand-written DB types don't declare PostgREST
-  // embed relationships, so the typed client can't see the nested rules; the FK
-  // makes the embed valid at runtime.
-  const schedules = (unwrap(schedulesRes, "availability_schedules") ?? []) as unknown as {
+  // Fail loud on the schedules read (#277). Cast through `unknown`: our hand-written DB
+  // types don't declare PostgREST embed relationships, so the typed client can't see the
+  // nested rules; the FK makes the embed valid at runtime.
+  const schedules = (unwrap(await schedulesP, "availability_schedules") ?? []) as unknown as {
     id: string;
     user_id: string;
     timezone: string;
@@ -273,8 +259,51 @@ export async function loadMembersAvailability(
     }[];
   }[];
 
+  // Per-agent tz: the SAME last-wins pick assembleMemberAvailability makes (both fall
+  // back to America/New_York for an agent with no schedule, matching the RPC's coalesce),
+  // so the count's local-day bucketing matches the member's tz exactly.
+  const tzByUser: Record<string, string> = {};
+  for (const s of schedules) tzByUser[s.user_id] = s.timezone;
+
+  const [busy, countRes] = await Promise.all([
+    busyP,
+    db.rpc("count_bookings_per_local_day", {
+      p_user_ids: userIds,
+      p_tz_by_user: tzByUser,
+      p_from: capWindow.from,
+      p_to: capWindow.to,
+    }),
+  ]);
+  // Fail loud: a swallowed count error would under-count the cap and over-offer slots
+  // (the #35 / #166 direction), so throw rather than default to an empty count.
+  if (countRes.error) {
+    throw new Error(`loadMembersAvailability: daily-cap count failed: ${countRes.error.message}`);
+  }
+  const dayCountsByUser = parseDayCounts(countRes.data);
+
   const rules = schedules.flatMap((s) => s.availability_rules ?? []);
-  return assembleMemberAvailability(userIds, schedules, rules, busy, bookingStarts);
+  return assembleMemberAvailability(userIds, schedules, rules, busy, dayCountsByUser);
+}
+
+/**
+ * Parse the `count_bookings_per_local_day` RPC's jsonb (`"<user_id>|<local_date>" ->
+ * count`) into a per-user local-date -> count map. Returning one jsonb scalar keeps the
+ * whole count under a single PostgREST row, so it never hits the 1,000-row SETOF cap the
+ * old paged row-read had to walk (#832).
+ */
+function parseDayCounts(data: unknown): Map<string, Map<string, number>> {
+  const out = new Map<string, Map<string, number>>();
+  if (!data || typeof data !== "object") return out;
+  for (const [key, n] of Object.entries(data as Record<string, number>)) {
+    const sep = key.indexOf("|");
+    if (sep === -1) continue;
+    const userId = key.slice(0, sep);
+    const localDate = key.slice(sep + 1);
+    const perDay = out.get(userId) ?? new Map<string, number>();
+    perDay.set(localDate, n);
+    out.set(userId, perDay);
+  }
+  return out;
 }
 
 export interface BucketSlots {

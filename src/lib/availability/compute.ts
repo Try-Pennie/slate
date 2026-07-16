@@ -13,8 +13,13 @@ export interface MemberAvailability {
   rules: WorkingRule[];
   /** Busy intervals as epoch-ms [start, end). Slate + gcal merged. */
   busy: { start: number; end: number }[];
-  /** Confirmed booking start instants (epoch-ms) — for the daily cap. */
+  /** Confirmed booking start instants (epoch-ms), for the daily cap. Used only
+   *  when `dayCounts` is absent (the in-place reschedule / reassign paths). */
   bookingStartsMs: number[];
+  /** #832: precomputed local-date -> count for the daily cap, from the server-side
+   *  RPC. When present it IS the cap count; otherwise it is derived from
+   *  `bookingStartsMs`. An empty map means zero bookings (still authoritative). */
+  dayCounts?: Map<string, number>;
 }
 
 /**
@@ -30,7 +35,7 @@ export function assembleMemberAvailability(
   schedules: { id: string; user_id: string; timezone: string }[],
   rules: { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[],
   busy: { user_id: string; starts_at: string; ends_at: string }[],
-  bookingStarts: { assigned_user_id: string; starts_at: string }[],
+  dayCountsByUser: Map<string, Map<string, number>>,
 ): MemberAvailability[] {
   const scheduleByUser = new Map<string, { id: string; timezone: string }>();
   for (const s of schedules) scheduleByUser.set(s.user_id, { id: s.id, timezone: s.timezone });
@@ -49,21 +54,17 @@ export function assembleMemberAvailability(
     busyByUser.set(b.user_id, list);
   }
 
-  const bookingsByUser = new Map<string, number[]>();
-  for (const bk of bookingStarts) {
-    const list = bookingsByUser.get(bk.assigned_user_id) ?? [];
-    list.push(Date.parse(bk.starts_at));
-    bookingsByUser.set(bk.assigned_user_id, list);
-  }
-
   return userIds.map((userId) => {
     const schedule = scheduleByUser.get(userId);
+    // The RPC bucketed with the SAME per-agent tz this member carries (the caller
+    // passed it in), so the cap count and the slot-day lookup can't diverge (#832).
     return {
       userId,
       timezone: schedule?.timezone ?? "America/New_York",
       rules: schedule ? (rulesBySchedule.get(schedule.id) ?? []) : [],
       busy: busyByUser.get(userId) ?? [],
-      bookingStartsMs: bookingsByUser.get(userId) ?? [],
+      bookingStartsMs: [],
+      dayCounts: dayCountsByUser.get(userId) ?? new Map<string, number>(),
     } satisfies MemberAvailability;
   });
 }
@@ -270,7 +271,9 @@ function memberOpenStarts(
 
   // Pre-count bookings per local day once; shared with the cap check below and
   // passed to the predicate so the per-slot daily-cap decision isn't recomputed.
-  const dayCounts = bookingsPerLocalDay(m.bookingStartsMs, m.timezone);
+  // Prefer the server-side count (#832) when present; an empty map is authoritative
+  // (zero bookings), so use nullish presence, not truthiness/size.
+  const dayCounts = m.dayCounts ?? bookingsPerLocalDay(m.bookingStartsMs, m.timezone);
 
   // Iterate local calendar days spanning the window.
   let day = DateTime.fromMillis(fromMs, { zone: m.timezone }).startOf("day");

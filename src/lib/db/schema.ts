@@ -92,6 +92,18 @@ export interface Database {
         Args: Record<string, never>;
         Returns: string[] | null;
       };
+      /** #832: per-agent, per-local-day booking count for the daily cap. Returns a
+       *  jsonb map "<user_id>|<YYYY-MM-DD>" -> count (a single row, so it never hits
+       *  PostgREST's 1000-row SETOF cap). Caller passes each agent's tz. */
+      count_bookings_per_local_day: {
+        Args: {
+          p_user_ids: string[];
+          p_tz_by_user: Record<string, string>;
+          p_from: string;
+          p_to: string;
+        };
+        Returns: Record<string, number> | null;
+      };
       rate_limit_hit: {
         Args: { p_key: string; p_window_seconds: number; p_max: number };
         Returns: boolean;
