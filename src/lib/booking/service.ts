@@ -1462,6 +1462,9 @@ export function bookingFailureAlert(
     };
   }
   if (err instanceof orchestration.NoEligibleAgentsError) {
+    // A test bucket routing to no eligible agent is expected during the smoke
+    // test; the booking still fails, but it must not page ops as a real outage (#465).
+    if (err.isTest) return null;
     return {
       // Per-bucket key so a second dead bucket isn't suppressed by the first's throttle.
       key: `${NO_ELIGIBLE_AGENTS_ALERT_KEY}:${err.bucketCode ?? "unknown"}`,
