@@ -6,9 +6,11 @@
 // collapses to empty, and the booker silently shows NO times. #277 routed the
 // availability-critical reads through `unwrap` (which throws on a real error);
 // nothing stopped a NEW ignore-the-error read from creeping back in. This scans
-// src/lib/availability/* and src/lib/booking/* and fails if any awaited select is
-// destructured for `data` without also consulting `error` (and without the
-// documented `// error-ok:` opt-out for a deliberately null-tolerant read).
+// src/lib/availability/*, src/lib/booking/*, src/lib/google/* and
+// src/lib/routing/* (#865 widened it to the sync + routing paths, where #315 and
+// #834 both found risky reads) and fails if any awaited select is destructured
+// for `data` without also consulting `error` (and without the documented
+// `// error-ok:` opt-out for a deliberately null-tolerant read).
 //
 // The scan logic lives in scripts/lib/scan-swallowed-error-reads.ts so it is
 // unit-testable. This file exercises it against fixtures (a positive control that
@@ -130,7 +132,7 @@ for (const f of FIXTURES) {
   assert(found === f.flagged, `${f.flagged ? "flags" : "allows"}: ${f.name}`);
 }
 
-// --- the scan surface: src/lib/availability/* and src/lib/booking/* -----------
+// --- the scan surface: availability, booking, google, routing (#865) ----------
 
 function tsFiles(dir: string): string[] {
   const out: string[] = [];
@@ -144,6 +146,8 @@ function tsFiles(dir: string): string[] {
 const surface = [
   ...tsFiles(join(ROOT, "src", "lib", "availability")),
   ...tsFiles(join(ROOT, "src", "lib", "booking")),
+  ...tsFiles(join(ROOT, "src", "lib", "google")),
+  ...tsFiles(join(ROOT, "src", "lib", "routing")),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -165,6 +169,25 @@ const stripped = serviceSrc
 assert(
   scanSwallowedErrorReads(stripped, servicePath).length > 0,
   "positive control: stripping the // error-ok: opt-outs is caught",
+);
+
+// Same real-file mutation control on the newly-scanned sync path (#865):
+// google/sync.ts carries the `// error-ok:` opt-outs on its deliberately
+// null-tolerant reads. Strip them and those real reads must be flagged, proving
+// the guard actually reaches src/lib/google and isn't a no-op there.
+const syncPath = join(ROOT, "src", "lib", "google", "sync.ts");
+const syncSrc = readFileSync(syncPath, "utf8");
+assert(
+  scanSwallowedErrorReads(syncSrc, syncPath).length === 0,
+  "the real google/sync.ts is clean",
+);
+const syncStripped = syncSrc
+  .split("\n")
+  .filter((l) => !/^\s*\/\/\s*error-ok:/i.test(l))
+  .join("\n");
+assert(
+  scanSwallowedErrorReads(syncStripped, syncPath).length > 0,
+  "positive control: stripping google/sync.ts's // error-ok: opt-outs is caught",
 );
 
 // A second control on the availability file: the exact #277 regression shape
@@ -202,7 +225,7 @@ for (const file of surface) {
 }
 if (siteCount === 0) {
   console.log(
-    `ok: no swallowed-error reads across ${surface.length} availability + booking source files`,
+    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, and routing source files`,
   );
 }
 

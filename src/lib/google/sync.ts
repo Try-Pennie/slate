@@ -45,6 +45,7 @@ import { googlePushUrl } from "@/lib/env";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
+import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 
 const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -56,6 +57,8 @@ const COLLISION_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const COLLISION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 async function loadAgentEmail(userId: string): Promise<string | null> {
+  // error-ok: push-path agent-email lookup; a read error skips this push-triggered
+  // sync and the 1-min cron backstop reconverges the calendar.
   const { data } = await supabaseAdmin()
     .from("users")
     .select("email")
@@ -71,6 +74,8 @@ async function loadAgentEmail(userId: string): Promise<string | null> {
  * day an all-day OOO/holiday occupies.
  */
 async function loadAgentTimezone(userId: string): Promise<string> {
+  // error-ok: degrades to the America/New_York roster default (identical to an
+  // empty result), so a transient read error can't block all-day event anchoring.
   const { data } = await supabaseAdmin()
     .from("availability_schedules")
     .select("timezone")
@@ -83,6 +88,8 @@ async function loadAgentTimezone(userId: string): Promise<string> {
 }
 
 async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
+  // error-ok: a read error yields no calendars for this pass; Google push and the
+  // 1-min cron backstop reconverge the agent next tick.
   const { data } = await supabaseAdmin()
     .from("agent_calendars")
     .select("*")
@@ -104,6 +111,8 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     const nowIso = new Date().toISOString();
     const toIso = new Date(Date.now() + COLLISION_WINDOW_MS).toISOString();
     // Active future bookings first — if none, there's nothing to collide with.
+    // error-ok: best-effort external-collision scan (never throws into sync); a
+    // read error just skips detection this pass and retries next sync.
     const { data: bookingRows } = await db
       // cap-safe: one agent's active bookings inside the short collision window.
       .from("bookings")
@@ -120,6 +129,8 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     }[];
     if (bookings.length === 0) return;
 
+    // error-ok: best-effort external-collision scan; a read error skips detection
+    // this pass and retries next sync.
     const { data: blockRows } = await db
       // cap-safe: one agent's gcal busy blocks inside the short collision window.
       .from("busy_blocks")
@@ -171,19 +182,25 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
  */
 export async function loadSyncAgents(): Promise<SyncAgent[]> {
   const db = supabaseAdmin();
-  const { data: users } = await db
-    .from("users")
-    .select("id, last_synced_at, deactivated_at")
-    .eq("bookable", true)
-    .is("deactivated_at", null);
-  const rows = (users ?? []) as SyncCandidateRow[];
+  // Fail loud (unwrap): a swallowed error here returns [] and the cron tick syncs
+  // ZERO agents while still recording its heartbeat, so a broken read looks like a
+  // healthy quiet minute (the #277 class). A legitimately empty roster still
+  // returns [] via unwrap; only a real query error throws.
+  const rows = (unwrap(
+    await db
+      .from("users")
+      .select("id, last_synced_at, deactivated_at")
+      .eq("bookable", true)
+      .is("deactivated_at", null),
+    "sync-agents",
+  ) ?? []) as SyncCandidateRow[];
   if (rows.length === 0) return [];
 
   const ids = rows.map((r) => r.id);
-  const { data: cals } = await db
-    .from("agent_calendars")
-    .select("user_id")
-    .in("user_id", ids);
+  const cals = unwrap(
+    await db.from("agent_calendars").select("user_id").in("user_id", ids),
+    "sync-agents-calendars",
+  );
   const withCalendars = new Set(
     ((cals ?? []) as { user_id: string }[]).map((c) => c.user_id),
   );
@@ -213,6 +230,8 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
   const db = supabaseAdmin();
   // Two reads joined in code (the codebase convention, cf. loadSyncAgents):
   // the failing calendars, then the users they belong to.
+  // error-ok: best-effort watch-lapse alert input; a read error skips the alert
+  // this tick and the every-minute lane retries.
   const { data: cals } = await db
     .from("agent_calendars")
     .select("user_id, consecutive_failures, last_success_at, last_sync_error")
@@ -225,6 +244,8 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
   }[];
   if (calRows.length === 0) return [];
 
+  // error-ok: best-effort alert enrichment; a read error drops agent names this
+  // tick and the every-minute lane retries.
   const { data: users } = await db
     .from("users")
     .select("id, email, bookable, deactivated_at")
@@ -517,6 +538,8 @@ export async function syncByChannel(
   channelId: string,
 ): Promise<"synced" | "coalesced" | "unknown-channel"> {
   const db = supabaseAdmin();
+  // error-ok: push-path channel resolution; a read error is treated as
+  // unknown-channel and the 1-min cron backstop reconverges the calendar.
   const { data } = await db
     .from("agent_calendars")
     .select("*")
@@ -544,6 +567,8 @@ export async function syncByChannel(
     const timeZone = await loadAgentTimezone(cal.user_id);
     for (let pass = 1; pass <= MAX_SYNC_PASSES; pass++) {
       await db.from("agent_calendars").update({ sync_pending: false }).eq("id", cal.id);
+      // error-ok: re-read of the calendar we already hold the claim on; a read
+      // error breaks this pass and the 1-min cron backstop reconverges it.
       const { data: fresh } = await db
         .from("agent_calendars")
         .select("*")
@@ -551,6 +576,8 @@ export async function syncByChannel(
         .maybeSingle();
       if (!fresh) break;
       await syncCalendar(email, fresh as AgentCalendar, timeZone);
+      // error-ok: post-pass sync_pending check; a read error just ends the rerun
+      // loop and the 1-min cron backstop owns anything missed.
       const { data: after } = await db
         .from("agent_calendars")
         .select("sync_pending")
