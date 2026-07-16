@@ -7,36 +7,12 @@ import {
   type TierDepth,
 } from "./staffing-depth";
 import { isAllDayBlock } from "@/lib/google/sync-core";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Bucket, BucketMember, BusyBlock, OooRequest, User } from "@/lib/db/types";
 
 /** Mirrors the sync + availability compute fallback, so the depth math and the
  *  cached blocks agree on which local day an all-day event occupies (#616). */
 const FALLBACK_TIMEZONE = "America/New_York";
-
-const PAGE_SIZE = 1000;
-
-/**
- * Read every row of a query, page by page. PostgREST caps a single response at
- * 1,000 rows, and a silently truncated read here would overstate coverage (an
- * agent on all-day time off would look available), which is the very failure
- * this loader exists to prevent. Throws on a read error rather than returning a
- * short list that reads as "nobody is out".
- */
-async function selectAllPages<T>(
-  page: (
-    from: number,
-    to: number,
-  ) => PromiseLike<{ data: unknown[] | null; error?: { message: string } | null }>,
-): Promise<T[]> {
-  const rows: T[] = [];
-  for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await page(from, from + PAGE_SIZE - 1);
-    if (error) throw new Error(`staffing depth read failed: ${error.message}`);
-    const batch = (data ?? []) as T[];
-    rows.push(...batch);
-    if (batch.length < PAGE_SIZE) return rows;
-  }
-}
 
 /**
  * The agents who are out right now because their own Google calendar is blocked
@@ -55,7 +31,7 @@ async function loadAllDayOutUserIds(
   const [blocks, schedules] = await Promise.all([
     // Google-sourced blocks covering `now` (starts_at <= now < ends_at). Scoped
     // to the roster's agents, which also keeps this org-scoped.
-    selectAllPages<BlockRow>((from, to) =>
+    selectAllPages<BlockRow>("staffing depth busy_blocks", (from, to) =>
       db
         .from("busy_blocks")
         .select("user_id, starts_at, ends_at")
@@ -65,7 +41,7 @@ async function loadAllDayOutUserIds(
         .gt("ends_at", nowIso)
         .range(from, to),
     ),
-    selectAllPages<ScheduleRow>((from, to) =>
+    selectAllPages<ScheduleRow>("staffing depth availability_schedules", (from, to) =>
       db.from("availability_schedules").select("user_id, timezone").in("user_id", agentIds).range(from, to),
     ),
   ]);

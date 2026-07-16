@@ -3,6 +3,7 @@ import { currentUser } from "@/lib/auth";
 import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { formatWhenLine, overlaps } from "@/lib/ooo/core";
+import { loadOrgOooHistory } from "@/lib/ooo/history-load";
 import {
   approvalStats,
   busiestMonth,
@@ -120,7 +121,7 @@ export default async function OooQueuePage({
     .limit(50);
   if (!seesAll) historyQuery = historyQuery.eq("manager_id", me.id);
 
-  const [pendingRes, historyRes, usersRes, orgRes, allRes] = await Promise.all([
+  const [pendingRes, historyRes, usersRes, orgRes, allRequestsRaw] = await Promise.all([
     pendingQuery,
     historyQuery,
     db
@@ -134,8 +135,10 @@ export default async function OooQueuePage({
       .select("default_timezone")
       .eq("id", me.org_id)
       .single(),
-    // Insights run over the full request history, not just the 90-day list.
-    db.from("ooo_requests").select("*").eq("org_id", me.org_id),
+    // Insights run over the full request history, not just the 90-day list. That
+    // history grows past PostgREST's 1,000-row cap within a year, so it must be
+    // paged or the aggregates silently under-report (#828).
+    loadOrgOooHistory(db, me.org_id),
   ]);
   const users = (usersRes.data ?? []) as Pick<
     User,
@@ -172,7 +175,7 @@ export default async function OooQueuePage({
 
   const pending = ((pendingRes.data ?? []) as OooRequest[]).filter(notStaff);
   const history = ((historyRes.data ?? []) as OooRequest[]).filter(notStaff);
-  const allRequests = ((allRes.data ?? []) as OooRequest[])
+  const allRequests = allRequestsRaw
     .filter(notStaff)
     .map(deOperatorManager);
 

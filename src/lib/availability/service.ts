@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
 import {
   computeBucketSlots,
@@ -217,31 +218,46 @@ export async function loadMembersAvailability(
 
   // Fetch the schedules WITH their rules nested (one query instead of a separate
   // sequential hop for rules), alongside busy + bookings, all in parallel (#249).
-  const [schedulesRes, busyRes, bookingsRes] = await Promise.all([
+  // busy_blocks and bookings are read as aggregates over a whole tier pool and a
+  // multi-day window, so a large pool crosses PostgREST's 1,000-row cap; page
+  // past it (#828) or a silent truncation drops busy blocks (overbooking) and
+  // bookings (the daily cap under-counts, over-offering slots); see #35 / #166.
+  // The schedules read stays single-shot: it is one row per agent, pool-bounded.
+  const [schedulesRes, busy, bookingStarts] = await Promise.all([
     db
       .from("availability_schedules")
       .select(
         "id, user_id, timezone, availability_rules(schedule_id, weekday, start_minute, end_minute)",
       )
       .in("user_id", userIds),
-    db
-      .from("busy_blocks")
-      .select("user_id, starts_at, ends_at")
-      .in("user_id", userIds)
-      .lt("starts_at", to)
-      .gt("ends_at", from),
-    db
-      .from("bookings")
-      .select("assigned_user_id, starts_at")
-      .in("assigned_user_id", userIds)
-      .in("status", ["confirmed", "rescheduled"])
-      .gte("starts_at", capWindow.from)
-      .lte("starts_at", capWindow.to),
+    selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>(
+      "busy_blocks",
+      (pageFrom, pageTo) =>
+        db
+          .from("busy_blocks")
+          .select("user_id, starts_at, ends_at")
+          .in("user_id", userIds)
+          .lt("starts_at", to)
+          .gt("ends_at", from)
+          .range(pageFrom, pageTo),
+    ),
+    selectAllPages<{ assigned_user_id: string; starts_at: string }>(
+      "bookings",
+      (pageFrom, pageTo) =>
+        db
+          .from("bookings")
+          .select("assigned_user_id, starts_at")
+          .in("assigned_user_id", userIds)
+          .in("status", ["confirmed", "rescheduled"])
+          .gte("starts_at", capWindow.from)
+          .lte("starts_at", capWindow.to)
+          .range(pageFrom, pageTo),
+    ),
   ]);
 
-  // Fail loud on any of these reads (#277). A swallowed busy_blocks error is
-  // the worst case: an agent looks fully free and gets overbooked. Throwing
-  // surfaces the broken query instead of silently degrading availability.
+  // Fail loud on the schedules read (#277); selectAllPages already throws on a
+  // busy_blocks / bookings read error. A swallowed busy_blocks error is the
+  // worst case: an agent looks fully free and gets overbooked.
   // Cast through `unknown`: our hand-written DB types don't declare PostgREST
   // embed relationships, so the typed client can't see the nested rules; the FK
   // makes the embed valid at runtime.
@@ -255,15 +271,6 @@ export async function loadMembersAvailability(
       start_minute: number;
       end_minute: number;
     }[];
-  }[];
-  const busy = (unwrap(busyRes, "busy_blocks") ?? []) as {
-    user_id: string;
-    starts_at: string;
-    ends_at: string;
-  }[];
-  const bookingStarts = (unwrap(bookingsRes, "bookings") ?? []) as {
-    assigned_user_id: string;
-    starts_at: string;
   }[];
 
   const rules = schedules.flatMap((s) => s.availability_rules ?? []);
