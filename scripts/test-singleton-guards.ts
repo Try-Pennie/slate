@@ -28,6 +28,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   parseMigrationConstraints,
+  parseDeclaredTables,
   hasSingletonGuard,
 } from "./lib/parse-migration-constraints.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -75,6 +76,56 @@ for (const inv of SINGLETON_INVARIANTS) {
   );
 }
 
+// #874: the registry above only proves the KNOWN singletons stay guarded. It says
+// nothing about a table that ships later and SHOULD have been a singleton but
+// arrives with neither a unique constraint nor a registry entry, which is exactly
+// how #513 and #532 slipped through. So force a conscious choice: every table the
+// migrations declare must be listed either in SINGLETON_INVARIANTS above (a
+// per-entity "one row per X" table, asserted guarded) OR here, as a table that is
+// deliberately NOT a singleton. A new table in neither fails the build until its
+// author classifies it. Fail-loud over churn, mirroring the #822 SAFE_TABLES posture.
+//
+// This is intentionally SEPARATE from #822's SAFE_TABLES (scan-src-capped-reads.ts):
+// the two lists mirror each other's posture but draw the line differently. `bookings`
+// is a growth table there (its row count scales with volume) yet carries singleton
+// invariants here (manage_token), so one registry could not serve both.
+const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] = [
+  // Bounded-by-PK lock / counter / cursor tables: the row is keyed by a fixed or
+  // text primary key, so a second row is structurally impossible. No separate
+  // singleton guard needed (the PK is the guard).
+  { table: "alert_state", category: "lock/counter", why: "one alert-cooldown row per text alert key (PK)" },
+  { table: "sync_locks", category: "lock/counter", why: "one lock row per text lock key (PK)" },
+  { table: "rate_limits", category: "lock/counter", why: "one window row per text rate-limit key (PK)" },
+  { table: "lane_heartbeats", category: "lock/counter", why: "one heartbeat row per text lane name (PK)" },
+  { table: "monitor_settings", category: "lock/counter", why: "single pinned settings row keyed by PK" },
+  { table: "selfheal_scan_cursor", category: "lock/counter", why: "single scan-cursor row keyed by PK" },
+  { table: "bucket_slots", category: "lock/counter", why: "one precomputed cache row per bucket_code (PK), ~60 rows" },
+  // Roster / config-bounded: row count is capped by the roster or org, not by
+  // booking volume or time, so duplicates are not the failure mode.
+  { table: "organizations", category: "roster/config", why: "single-org PoC; bounded config table" },
+  { table: "event_types", category: "roster/config", why: "a handful of booking event types per org" },
+  { table: "webhook_endpoints", category: "roster/config", why: "a few configured webhook targets per org" },
+  { table: "availability_rules", category: "roster/config", why: "per-schedule weekday rules, bounded by roster x 7" },
+  // Growth / append-only / queue: rows scale with volume or time BY DESIGN. A
+  // second row is the point, not a bug (no singleton invariant applies).
+  { table: "audit_log", category: "growth/append-only", why: "append-only audit trail" },
+  { table: "booking_events", category: "growth/append-only", why: "append-only per-booking event log" },
+  { table: "routing_decisions", category: "growth/append-only", why: "append-only routing decision log" },
+  { table: "webhook_deliveries", category: "growth/append-only", why: "append-only webhook delivery attempts" },
+  { table: "booking_outbox", category: "queue", why: "crash-safe mutation queue; one booking gets many rows" },
+];
+
+{
+  const singletonTables = new Set(SINGLETON_INVARIANTS.map((i) => i.table));
+  const nonSingletonTables = new Set(NON_SINGLETON_TABLES.map((t) => t.table));
+  for (const table of parseDeclaredTables(sql)) {
+    assert(
+      singletonTables.has(table) || nonSingletonTables.has(table),
+      `#874: table "${table}" is consciously classified in SINGLETON_INVARIANTS (with its unique guard) or NON_SINGLETON_TABLES (growth/queue/lock/config). A new table in neither fails until its author classifies it, so a new singleton can't ship unguarded`,
+    );
+  }
+}
+
 // Positive control: the guard must actually have teeth. A synthetic table meant
 // to be one row per user, but with NO unique constraint, MUST read as unguarded;
 // once given the constraint (even a PARTIAL one) it MUST read as guarded. If
@@ -94,6 +145,25 @@ for (const inv of SINGLETON_INVARIANTS) {
   assert(
     hasSingletonGuard(guardedPartial, "widget_prefs", "user_id"),
     "positive control: a PARTIAL unique index counts as a singleton guard",
+  );
+}
+
+// Positive control for the #874 completeness check: a table the migrations declare
+// but that appears in NEITHER registry must be seen as unclassified. If this flips,
+// the completeness assertion above has become a no-op and a new singleton could ship
+// unguarded again.
+{
+  const declared = parseDeclaredTables(
+    "create table brand_new_growth_thing (\n  id uuid primary key default gen_random_uuid()\n);",
+  );
+  const singletonTables = new Set(SINGLETON_INVARIANTS.map((i) => i.table));
+  const nonSingletonTables = new Set(NON_SINGLETON_TABLES.map((t) => t.table));
+  const unclassified = [...declared].filter(
+    (t) => !singletonTables.has(t) && !nonSingletonTables.has(t),
+  );
+  assert(
+    unclassified.length === 1 && unclassified[0] === "brand_new_growth_thing",
+    "positive control: an unlisted new table is correctly detected as unclassified",
   );
 }
 

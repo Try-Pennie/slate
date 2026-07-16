@@ -38,6 +38,16 @@ function add(map: Map<string, Set<string>>, table: string, cols: string): void {
   map.set(table, set);
 }
 
+/** Every table name a set of migrations declares via `create table`. Used by the
+ *  #874 completeness check so a new table can't ship unclassified. */
+export function parseDeclaredTables(sql: string): Set<string> {
+  const tables = new Set<string>();
+  for (const m of sql.matchAll(/create table (?:if not exists )?(?:public\.)?(\w+)/gi)) {
+    tables.add(m[1]);
+  }
+  return tables;
+}
+
 /** Parse the concatenated SQL of all migrations into the constraints it declares. */
 export function parseMigrationConstraints(sql: string): MigrationConstraints {
   const uniqueIndexes = new Map<string, Set<string>>();
