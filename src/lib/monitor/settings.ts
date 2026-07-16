@@ -15,6 +15,7 @@ export type MonitorAlertKey =
   | "fallback_covered_availability"
   | "low_booking_volume"
   | "thin_tier_staffing"
+  | "agents_without_schedule"
   | "migration_version_lag";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
@@ -23,6 +24,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "fallback_covered_availability",
   "low_booking_volume",
   "thin_tier_staffing",
+  "agents_without_schedule",
   "migration_version_lag",
 ];
 
@@ -59,6 +61,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Quiet nudge when a tier rests on 1 to 2 bookable agents.",
   },
   {
+    key: "agents_without_schedule",
+    label: "Schedule-less agent cooldown",
+    help: "Whisper when a bookable agent's working-hours schedule could not be auto-created.",
+  },
+  {
     key: "migration_version_lag",
     label: "Migration-lag page cooldown",
     help: "Urgent page when the live database is missing a migration the deployed code ships.",
@@ -75,6 +82,10 @@ export const MONITOR_DEFAULTS = {
     // Proactive staffing nudge (#569): a slow, once-a-day whisper. Staffing
     // changes over days, so a long cooldown keeps it from repeating every tick.
     thin_tier_staffing: 24 * 60 * 60_000,
+    // Schedule-coverage gap (#838): the check self-heals first, so an alert means
+    // the fill is broken and persists until a human acts. Once-a-day whisper, like
+    // the thin-tier nudge; the settings screen can tighten it.
+    agents_without_schedule: 24 * 60 * 60_000,
     // Schema behind the deployed code (#516). Repeats hourly while it persists:
     // it stays broken until a human runs db push, and a dormant schema gap has
     // twice gone unnoticed for a whole session, so it should keep asking.
