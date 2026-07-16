@@ -7,7 +7,11 @@
 // Run: node --experimental-strip-types scripts/test-migrations.ts
 import { readdirSync, readFileSync } from "node:fs";
 import { SHIPPED_MIGRATION_VERSION } from "../src/lib/db/migration-version.ts";
-import { parseDeclaredTables } from "./lib/parse-migration-constraints.ts";
+import {
+  parseDeclaredTables,
+  parseMigrationConstraints,
+  hasUpsertTarget,
+} from "./lib/parse-migration-constraints.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const files = readdirSync("supabase/migrations")
@@ -186,6 +190,23 @@ if (outboxActionAdd) {
         (extra.length ? ` (not in SQL: ${extra.join(", ")})` : ""),
     );
   }
+}
+
+// #876: webhook fan-out (emitWebhook) POSTs to EVERY active endpoint matching
+// (org_id, event), and the exactly-once dedupe is scoped per endpoint_id. So two
+// endpoint rows sharing a URL (different ids) each fire, double-delivering every
+// booking event to that URL (e.g. two Regal alerts, cf. #492). The admin UI is
+// singleton-per-org so it can't create a duplicate, but nothing at the DB level
+// forbids one from a seed script, manual SQL, or a later multi-endpoint feature.
+// A full (non-partial) unique index on (org_id, url) blocks the duplicate at the
+// source while still allowing an org's several DISTINCT targets (Regal + Cadence).
+{
+  const constraints = parseMigrationConstraints(sql);
+  assert(
+    hasUpsertTarget(constraints, "webhook_endpoints", "org_id,url"),
+    "#876: webhook_endpoints(org_id, url) is UNIQUE, so the same destination URL " +
+      "cannot be configured twice for an org and double-send to Regal",
+  );
 }
 
 // The deployed build has no filesystem, so the prod lag alert (#516) compares the
