@@ -143,6 +143,66 @@ describe("AdminBookingActions", () => {
     expect(reassignPicks(fn)).toHaveLength(1);
   });
 
+  // #566: out-of-pool (bookable=false) agents are still selectable for coverage
+  // reassignment, but must render greyed with a "not in rotation" flag and sort
+  // below in-pool agents. rankReassignAgents is unit-tested; this locks the
+  // component rendering + that clicking a flagged agent still POSTs the reassign.
+  // Ada is out-of-rotation and alphabetically first, so its position below Bea
+  // proves the below-sort is not just alphabetical.
+  const MIXED_AGENTS = [
+    { id: "ag-1", name: "Bea Agent", email: "bea@x.com", bookable: true },
+    { id: "ag-2", name: "Ada Agent", email: "ada@x.com", bookable: false },
+  ];
+
+  function mockFetchMixed() {
+    const fn = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/admin/agents")) {
+        return { ok: true, json: async () => ({ agents: MIXED_AGENTS }) } as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true }) } as Response;
+    });
+    global.fetch = fn as unknown as typeof fetch;
+    return fn;
+  }
+
+  it("renders an out-of-rotation agent greyed with a 'not in rotation' flag, sorted below in-pool", async () => {
+    mockFetchMixed();
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
+
+    const inPool = await screen.findByRole("button", { name: /bea agent/i });
+    const outOfPool = screen.getByRole("button", { name: /ada agent/i });
+
+    // The flag text sits only on the out-of-rotation agent.
+    expect(outOfPool.textContent).toMatch(/not in rotation/i);
+    expect(inPool.textContent).not.toMatch(/not in rotation/i);
+
+    // Greyed style on the flagged agent; the in-pool agent keeps the plain surface.
+    expect(outOfPool.className).toContain("bg-fg/[0.04]");
+    expect(inPool.className).not.toContain("bg-fg/[0.04]");
+
+    // Sorted below the in-pool agent despite coming first alphabetically.
+    expect(inPool.compareDocumentPosition(outOfPool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("still POSTs the reassign when an out-of-rotation agent is picked", async () => {
+    const fn = mockFetchMixed();
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /ada agent/i }));
+
+    const body = bodyFor(fn, "/api/admin/bookings/bk1/reassign");
+    expect(body.agentEmail).toBe("ada@x.com");
+    expect(body.overrideCap).toBe(false);
+    expect(body.reason).toBe("owner_reassignment");
+    expect(refresh).toHaveBeenCalled();
+  });
+
   // #625: a network rejection must surface an error and re-enable the control,
   // never leave it frozen in its busy state.
   it("surfaces an error and re-enables when the admin cancel POST rejects", async () => {
