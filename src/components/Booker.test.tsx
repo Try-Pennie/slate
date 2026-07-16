@@ -377,4 +377,76 @@ describe("Booker embed postMessage origin (#593)", () => {
   });
 });
 
+// #215 / #168 / #173: the availability panel has three states that are easy to
+// break silently. A failed fetch must offer a retry (not a permanent dead end);
+// a loaded-but-empty month must say so honestly; and the calendar must stop
+// paging once a loaded month comes back empty (the cache-limited horizon), so a
+// lead can never walk off into months that will never have slots.
+describe("Booker availability states (#215)", () => {
+  it("shows the load-error notice with a working retry when availability fails to load", async () => {
+    let calls = 0;
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        calls += 1;
+        // First load fails at the HTTP layer; the retry succeeds.
+        if (calls === 1) return { ok: false, status: 500, json: async () => ({}) } as Response;
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+
+    // The failed load surfaces the retry affordance, not a slot list or a
+    // permanent empty message.
+    expect(await screen.findByText(/couldn.t load available times/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /:\d{2}/ })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+
+    // The retry refetches, so the real slot appears and the error clears.
+    expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
+    expect(screen.queryByText(/couldn.t load available times/i)).toBeNull();
+  });
+
+  it("shows the empty-month message and disables paging past an empty future month (canNext cap)", async () => {
+    // Anchor time so "next month" sits entirely beyond the ~4-day availability
+    // horizon: the current month has a slot, the next does not. (The strip-layout
+    // empty copy is already locked by the #585 test; this drives the month layout
+    // to also pin the canNext cap.)
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-15T12:00:00Z"));
+
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return {
+          ok: true,
+          json: async () => ({ ...availability, slots: ["2026-01-16T15:00:00.000Z"] }),
+        } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} layout="month" />);
+
+    // January loaded with a slot, so paging forward is allowed.
+    await screen.findByRole("button", { name: /:\d{2}/ });
+    const nextInJan = screen.getByRole("button", { name: /next month/i }) as HTMLButtonElement;
+    expect(nextInJan.disabled).toBe(false);
+
+    // February is beyond the horizon: it resolves empty without a fetch.
+    await act(async () => {
+      fireEvent.click(nextInJan);
+      await Promise.resolve();
+    });
+
+    // The empty month is stated honestly and paging further is now blocked.
+    expect(screen.getAllByText(/all times are taken/i).length).toBeGreaterThan(0);
+    const nextInFeb = screen.getByRole("button", { name: /next month/i }) as HTMLButtonElement;
+    expect(nextInFeb.disabled).toBe(true);
+
+    vi.useRealTimers();
+  });
+});
+
 afterEach(() => vi.useRealTimers());
