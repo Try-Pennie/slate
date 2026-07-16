@@ -101,6 +101,7 @@ export default async function OooQueuePage({
 
   // Managers see their reports' requests; team leads and up see the whole org.
   let pendingQuery = db
+    // cap-safe: the org's pending time off queue, drained by moderation, well under a page.
     .from("ooo_requests")
     .select("*")
     .eq("org_id", me.org_id)
@@ -249,6 +250,7 @@ export default async function OooQueuePage({
       .map((r) => r.ends_at)
       .reduce((a, b) => (a > b ? a : b));
     const { data } = await db
+      // cap-safe: active bookings for the few agents with pending time off, within their requested dates.
       .from("bookings")
       .select("*")
       .eq("org_id", me.org_id)

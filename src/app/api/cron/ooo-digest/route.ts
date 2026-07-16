@@ -28,6 +28,7 @@ export async function GET(req: NextRequest) {
 
   const db = supabaseAdmin();
   const { data: pendingRows } = await db
+    // cap-safe: the org's pending time off queue, drained by moderation.
     .from("ooo_requests")
     .select("manager_id")
     .eq("status", "pending")

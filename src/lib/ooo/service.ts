@@ -52,6 +52,7 @@ function realDeps(): OooDeps {
 
     listActiveRequests: async (userId) => {
       const { data } = await db()
+        // cap-safe: one user's active (pending/approved) time off requests.
         .from("ooo_requests")
         .select("id, starts_at, ends_at, display_tz_id, display_tz_label")
         .eq("user_id", userId)

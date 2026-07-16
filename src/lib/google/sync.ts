@@ -103,6 +103,7 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     const toIso = new Date(Date.now() + COLLISION_WINDOW_MS).toISOString();
     // Active future bookings first — if none, there's nothing to collide with.
     const { data: bookingRows } = await db
+      // cap-safe: one agent's active bookings inside the short collision window.
       .from("bookings")
       .select("id, gcal_event_id, starts_at, ends_at")
       .eq("assigned_user_id", userId)
@@ -118,6 +119,7 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     if (bookings.length === 0) return;
 
     const { data: blockRows } = await db
+      // cap-safe: one agent's gcal busy blocks inside the short collision window.
       .from("busy_blocks")
       .select("gcal_event_id, starts_at, ends_at")
       .eq("user_id", userId)
@@ -262,6 +264,7 @@ const WRITE_CHUNK = 500;
  */
 async function loadSlateBookingEventIds(userId: string): Promise<Set<string>> {
   const { data } = await supabaseAdmin()
+    // cap-safe: one agent's active (confirmed/rescheduled, never completed) bookings, bounded by the booking horizon.
     .from("bookings")
     .select("gcal_event_id")
     .eq("assigned_user_id", userId)
@@ -334,6 +337,7 @@ async function purgeVanished(
       .map((e) => e.id as string),
   );
   const { data } = await db
+    // cap-safe: one agent and calendar's gcal source blocks (the reconcile keeps only in window rows).
     .from("busy_blocks")
     .select("id, gcal_event_id")
     .eq("user_id", userId)

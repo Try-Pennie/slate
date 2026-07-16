@@ -417,6 +417,7 @@ async function rankBucketShare(
   const priorStartMs = payPeriod(period.startMs - 1).startMs;
   const share = bucketShareFromResult(
     await supabaseAdmin()
+      // cap-safe: one bucket's bookings across two pay periods, scoped to the tier's candidate agents.
       .from("bookings")
       .select("assigned_user_id, starts_at, created_at")
       .eq("bucket_id", bucketId)
