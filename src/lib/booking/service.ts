@@ -17,6 +17,7 @@ import {
 } from "@/lib/google/calendar";
 import {
   joinBookingContexts,
+  PAST_COMPLETION_BATCH_LIMIT,
   calendarIdsFromResult,
   freeAgentsFromBusy,
   type CalendarBusy,
@@ -1415,7 +1416,7 @@ function realDeps(): BookingDeps {
         .select("*")
         .in("status", ["confirmed", "rescheduled"])
         .lt("ends_at", nowIso)
-        .limit(200);
+        .limit(PAST_COMPLETION_BATCH_LIMIT);
 
       const bookings = (rows ?? []) as Booking[];
       if (bookings.length === 0) return [];

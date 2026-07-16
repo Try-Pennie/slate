@@ -6,6 +6,7 @@ import type {
   BusySource,
   EventType,
 } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -513,11 +514,29 @@ export function eventDescription(
 }
 
 /**
+ * The completion sweep loads at most this many finished bookings per run and
+ * completes them. It is the source of truth for the cap: `loadPastBookingsTo
+ * complete` bounds its query by it, and `joinBookingContexts` warns when a run
+ * comes back full (see below). Fine at current volume (~2k bookings/day), but a
+ * backlog over the cap quietly waits a tick, so the full-batch case is made
+ * observable rather than silent (#223).
+ */
+export const PAST_COMPLETION_BATCH_LIMIT = 200;
+
+/**
  * Pairs each booking with its bucket + event type from already-fetched sets,
  * so the completion sweep can resolve them with two `.in()` queries instead of
- * a round-trip per booking (#164). A booking whose bucket or event type isn't
- * in the fetched set is dropped (FK integrity makes this unreachable in prod;
- * dropping is the safe choice if it ever happens).
+ * a round-trip per booking (#164).
+ *
+ * This is the choke point that sees the whole fetched batch and performs the
+ * drop, so the two conditions that used to fail silently are made loud here
+ * (#223), without changing the behavior itself:
+ *   - A full batch (at the cap) means more finished bookings are waiting than a
+ *     run can clear, so a backlog is likely building. Warn.
+ *   - A booking whose bucket or event type isn't in the fetched set is dropped
+ *     and would never complete. FK integrity makes this unreachable in prod, so
+ *     if it happens it is a real data anomaly, not routine: log it (id + which
+ *     side was missing) at error, per the fail-loud rule, instead of vanishing.
  */
 export function joinBookingContexts(
   bookings: Booking[],
@@ -527,11 +546,33 @@ export function joinBookingContexts(
   const bucketById = new Map(buckets.map((b) => [b.id, b]));
   const eventTypeById = new Map(eventTypes.map((e) => [e.id, e]));
 
+  if (bookings.length >= PAST_COMPLETION_BATCH_LIMIT) {
+    log.warn("completion-sweep", {
+      msg: "batch filled the cap, backlog likely waiting",
+      count: bookings.length,
+      cap: PAST_COMPLETION_BATCH_LIMIT,
+    });
+  }
+
   const out: { booking: Booking; bucket: Bucket; eventType: EventType }[] = [];
   for (const booking of bookings) {
     const bucket = bucketById.get(booking.bucket_id);
     const eventType = eventTypeById.get(booking.event_type_id);
-    if (bucket && eventType) out.push({ booking, bucket, eventType });
+    if (bucket && eventType) {
+      out.push({ booking, bucket, eventType });
+      continue;
+    }
+    const reason =
+      !bucket && !eventType
+        ? "bucket_and_event_type_missing"
+        : !bucket
+          ? "bucket_missing"
+          : "event_type_missing";
+    log.error("completion-sweep", {
+      msg: "unresolvable booking skipped, will never complete",
+      booking_id: booking.id,
+      reason,
+    });
   }
   return out;
 }
