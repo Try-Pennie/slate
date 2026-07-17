@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
-import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
+import {
+  RecentRoutingTable,
+  formatRoutingWhen,
+  type RecentRoutingRow,
+} from "@/components/RecentRoutingTable";
 
 // #905: the recent-routing table extracted from the ~1300-line admin page so it
 // can be unit-tested (the #900 row-to-detail-page link couldn't be, forcing a
@@ -29,6 +33,18 @@ const row: RecentRoutingRow = {
     reassignments: [{ from: "u1", to: "u2", at: "2026-07-02T00:00:00Z" }],
   },
 };
+
+describe("formatRoutingWhen", () => {
+  it("renders the time in Eastern, not the machine/UTC zone", () => {
+    // 6:00 PM UTC on Jul 3 2026 is 2:00 PM Eastern (UTC-4). Pinning the zone
+    // makes this deterministic regardless of where the test runs (prod is UTC).
+    const out = formatRoutingWhen("2026-07-03T18:00:00Z");
+    expect(out).toMatch(/Jul 3/);
+    expect(out).toMatch(/2:00/);
+    expect(out).toMatch(/PM/);
+    expect(out).not.toMatch(/6:00/);
+  });
+});
 
 describe("RecentRoutingTable", () => {
   it("shows an empty state when there are no bookings", () => {
