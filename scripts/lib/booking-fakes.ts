@@ -98,6 +98,9 @@ export function makeBooking(over: Partial<Booking>): Booking {
 export interface FakeOpts {
   candidates?: string[];
   freeEmails?: Set<string>;
+  // #884: when set, the deps carry a send scheduler (as a user-facing request
+  // does), so fire() records the emission as deferred. Cron drains leave it unset.
+  deferSend?: (work: () => Promise<void>) => void;
   insertBookingFails?: boolean;
   insertBookingConflict?: boolean;
   existingByKey?: Booking | null; // idempotency hit on the pre-check
@@ -203,6 +206,9 @@ export function makeDeps(opts: FakeOpts) {
       dedupeKey: string | null;
       bucket_code: string | undefined;
       suppressed: boolean;
+      // #884: whether fire() handed this emission a send scheduler (deps.deferSend).
+      // true on user-facing paths (confirm/cancel/reschedule), false on cron drains.
+      deferred: boolean;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -263,6 +269,7 @@ export function makeDeps(opts: FakeOpts) {
     if (b) opts.concurrentBeforeCommit(b);
   };
   const deps: BookingDeps = {
+    deferSend: opts.deferSend,
     resolveBucketByCode: async () =>
       opts.unknownBucket
         ? null
@@ -595,13 +602,14 @@ export function makeDeps(opts: FakeOpts) {
       }
       return opts.pastDue ?? [];
     },
-    emitWebhook: async (_orgId, event, payload, dedupeKey, suppressed = false) => {
+    emitWebhook: async (_orgId, event, payload, dedupeKey, suppressed = false, deferSend) => {
       calls.webhooks.push({
         event,
         reason: payload.reason,
         dedupeKey,
         bucket_code: payload.bucket_code,
         suppressed,
+        deferred: typeof deferSend === "function",
       });
     },
     newManageToken: () => "tok-fixed",

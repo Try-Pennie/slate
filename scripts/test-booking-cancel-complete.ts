@@ -71,6 +71,22 @@ async function run() {
     );
   }
 
+  // --- #884: a user-facing cancel defers the booking.cancelled send ---
+  // The cancel runs the outbox NOTIFY step inline on the request; with a scheduler
+  // on its deps, that emission is handed off so the cancel response isn't blocked
+  // on the Regal/Cadence round-trip. The outbox drain (no scheduler) sends inline.
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, deferSend: () => {} });
+    await cancelBooking("tok1", CR, "customer", deps, NOW);
+    assert(
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.cancelled" &&
+        calls.webhooks[0].deferred === true,
+      "#884: cancel defers the booking.cancelled send off the response path",
+    );
+  }
+
   // --- cancel: completed booking cannot be flipped to cancelled (#618) ---
   {
     // Customer clicks the cancel link AFTER the meeting completed. The status
@@ -151,6 +167,10 @@ async function run() {
     assert(
       calls.webhooks.length === 2 && calls.webhooks.every((w) => w.event === "booking.completed"),
       "complete: fires booking.completed for each",
+    );
+    assert(
+      calls.webhooks.every((w) => w.deferred === false),
+      "#884: the completion sweep sends inline (no scheduler), so its bounded fan-out still caps connections",
     );
 
     const { deps: dEmpty } = makeDeps({ pastDue: [] });

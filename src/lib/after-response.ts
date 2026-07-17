@@ -49,3 +49,18 @@ export function afterResponse(
     void run();
   }
 }
+
+/**
+ * The webhook-send scheduler (#884) the user-facing booking paths inject into
+ * their deps so `emitWebhook`'s outbound POST lands post-response under
+ * waitUntil, off the confirm/cancel/reschedule critical path. A dropped send is
+ * still recoverable: emitWebhook writes the durable pending row synchronously and
+ * the retry sweep redelivers it. The cron drains inject nothing and send inline,
+ * so their bounded fan-out keeps capping simultaneous connections.
+ *
+ * Lives here (not in orchestration) so the node-tested domain code never imports
+ * `next/server`: the capability is passed in from this Next-runtime layer.
+ */
+export function deferWebhookSend(work: () => Promise<void>): void {
+  afterResponse("booking-webhook", work);
+}

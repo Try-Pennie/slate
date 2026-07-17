@@ -42,7 +42,8 @@ import type {
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
-import { emitWebhook } from "@/lib/webhooks/emit";
+import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
+import { deferWebhookSend } from "@/lib/after-response";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type {
   Booking,
@@ -361,8 +362,18 @@ export async function loadActiveUpcomingBookings(
  * booking flow touches Supabase, Google Calendar, or webhooks; the logic lives
  * in `orchestration.ts` and is exercised by `scripts/test-booking-orchestration.ts`.
  */
-function realDeps(): BookingDeps {
+/**
+ * Build the live deps. `deferSend` (#884) is passed ONLY by the user-facing
+ * entry points (create confirm, cancel, reschedule, reassign), so `fire()` hands
+ * their webhook's outbound POST to Next after() and the response isn't blocked on
+ * the Regal/Cadence round-trip. The cron drains call `realDeps()` with no
+ * scheduler and send inline, so their bounded fan-out still caps simultaneous
+ * connections. Default is inline: a new caller that forgets to opt in stays on
+ * today's safe (if slower) behavior rather than silently deferring.
+ */
+function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
   return {
+    deferSend,
     resolveBucketByCode,
     roundRobinCandidates,
     // Live busy intervals for the in-place reschedule guard (#536): checks ALL the
@@ -1556,7 +1567,7 @@ async function rescheduleWithLog(
 ): Promise<BookingResult> {
   try {
     const res = await orchestration.rescheduleBooking(
-      token, newStartIso, reason, initiator, realDeps(), Date.now(), actor,
+      token, newStartIso, reason, initiator, realDeps(deferWebhookSend), Date.now(), actor,
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
@@ -1568,7 +1579,7 @@ async function rescheduleWithLog(
 
 export function createBooking(input: CreateBookingInput): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    orchestration.createBooking(input, realDeps()),
+    orchestration.createBooking(input, realDeps(deferWebhookSend)),
   );
 }
 
@@ -1598,7 +1609,7 @@ export async function findDuplicateBookingWarning(input: {
 export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
   return alertOnBookingFailure(async () => {
     try {
-      const res = await orchestration.bookViaApi(input, realDeps());
+      const res = await orchestration.bookViaApi(input, realDeps(deferWebhookSend));
       // Only a "rescheduled" outcome can carry a decline reason (#543).
       if (res.outcome === "rescheduled") {
         logRescheduleSuccess(res.booking.id, "system", res.rescheduleDecline);
@@ -1652,7 +1663,7 @@ export function cancelDirectBooking(input: {
 }): Promise<orchestration.ApiBookingView> {
   return orchestration.cancelDirectBooking(
     { bookingId: input.bookingId, identity: input.identity, reason: input.reason ?? API_CANCEL_REASON },
-    realDeps(),
+    realDeps(deferWebhookSend),
   );
 }
 
@@ -1679,7 +1690,7 @@ export async function cancelBooking(
 ): Promise<void> {
   // Manage-link/admin cancel is idempotent: a re-cancel is a fine no-op, so the
   // transition flag is discarded here (only the direct API maps it to 404, #398).
-  await orchestration.cancelBooking(token, reason, initiator, realDeps());
+  await orchestration.cancelBooking(token, reason, initiator, realDeps(deferWebhookSend));
 }
 
 export function reassignBooking(
@@ -1688,7 +1699,7 @@ export function reassignBooking(
   reason: ValidatedReason,
   overrideCap = false,
 ) {
-  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(), { overrideCap });
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), { overrideCap });
 }
 
 /** Resolve a booking's manage token by id, so admin actions can reuse the
@@ -1730,7 +1741,7 @@ export async function adminCancelBooking(
 ): Promise<void> {
   const token = await manageTokenForBooking(bookingId);
   if (!token) throw new Error("Booking not found");
-  await orchestration.cancelBooking(token, reason, "admin", realDeps(), actor);
+  await orchestration.cancelBooking(token, reason, "admin", realDeps(deferWebhookSend), actor);
 }
 
 /**
@@ -1763,7 +1774,7 @@ export function adminReassignBooking(
   actor: BookingActor,
   overrideCap = false,
 ): Promise<BookingResult & { overCap: boolean }> {
-  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(), {
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), {
     overrideCap,
     actor,
     initiator: "admin",

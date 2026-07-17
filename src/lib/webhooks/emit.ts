@@ -99,6 +99,15 @@ async function send(
 }
 
 /**
+ * Schedules the deferred outbound send. A user-facing caller (the booking create
+ * confirm, cancel, reschedule) passes Next `after()` (via `deferWebhookSend`) so
+ * the response returns without waiting on the Regal/Cadence round-trip; the cron
+ * drains pass none and send inline, keeping their bounded fan-out in charge of
+ * simultaneous connections.
+ */
+export type WebhookSendScheduler = (work: () => Promise<void>) => void;
+
+/**
  * Records and fires a webhook to every active endpoint subscribed to `event`.
  * The send is bounded by a timeout so a slow subscriber can't block the booking;
  * any failure is retried with backoff by the cron sweep.
@@ -106,9 +115,14 @@ async function send(
  * `dedupeKey` makes the call idempotent (#436): the row is written under the
  * partial UNIQUE (endpoint_id, event, dedupe_key), so a re-enqueue of the same
  * logical event hits a 23505 and we skip both the second row and the second POST
- * — exactly-once to Regal/Cadence. The FIRST call still sends inline (no added
- * latency). A null `dedupeKey` opts out of dedup (the partial index ignores
- * nulls) and behaves exactly as before (at-least-once).
+ * (exactly-once to Regal/Cadence). A null `dedupeKey` opts out of dedup (the
+ * partial index ignores nulls) and behaves exactly as before (at-least-once).
+ *
+ * The durable pending row is ALWAYS written synchronously, so the retry sweep is
+ * the backstop for a send that never lands. `deferSend` (#884) only moves the
+ * outbound POST off the response's critical path: when supplied, the POST is
+ * handed to the scheduler (Next after()) instead of awaited; when omitted the
+ * send stays inline, unchanged.
  */
 export async function emitWebhook(
   orgId: string,
@@ -116,6 +130,7 @@ export async function emitWebhook(
   payload: BookingEventPayload,
   dedupeKey: string | null = null,
   suppressed = false,
+  deferSend?: WebhookSendScheduler,
 ): Promise<void> {
   const db = supabaseAdmin();
   const { data: endpoints } = await db
@@ -150,7 +165,13 @@ export async function emitWebhook(
       // #459: the row is recorded (so the exactly-once dedupe stays observable on
       // the smoke bucket) but nothing goes out the door.
       if (suppressed) return;
-      await send(endpoint, (delivery as { id: string }).id, event, payload, 1);
+      // #884: the durable pending row is written above, so a dropped send is
+      // recoverable by the retry sweep. On a user-facing path the scheduler
+      // hands the POST to Next after() so the response isn't blocked on it; the
+      // cron drains send inline (deferSend undefined) under their fan-out cap.
+      const doSend = () => send(endpoint, (delivery as { id: string }).id, event, payload, 1);
+      if (deferSend) deferSend(doSend);
+      else await doSend();
     }),
   );
 }
