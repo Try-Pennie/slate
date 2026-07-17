@@ -50,6 +50,7 @@ import { SyncButton } from "@/components/SyncButton";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import BookingHistory from "@/components/BookingHistory";
+import BookingLookup from "@/components/BookingLookup";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
   AuditEntry,
@@ -991,6 +992,17 @@ export default async function AdminPage({
         </div>
       </section>
       )}
+
+      {/* Look up any booking's history (beyond the recent list, #901) */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Look up a booking</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          Find any booking by attendee email, name, phone, or booking id to see
+          its reschedule, cancel, and reassign history, including bookings older
+          than the recent list below.
+        </p>
+        <BookingLookup />
+      </section>
 
       {/* Recent routing (trace viewer) */}
       <section className={cardCls}>

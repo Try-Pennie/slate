@@ -110,11 +110,21 @@ export interface BookingEventView {
   lead: string | null;
 }
 
-/** Minimal roster row for resolving an event's user ids to a display name. */
+/** Minimal roster row for resolving a user id to a display name. */
 export interface HistoryRosterUser {
   id: string;
   name: string | null;
   email: string;
+}
+
+/**
+ * A name resolver over a roster: id -> name (else email), "Unknown user" for an
+ * id absent from the roster or a null id. Shared by the history and booking
+ * search views so both label users identically.
+ */
+export function rosterNameResolver(roster: HistoryRosterUser[]): NameResolver {
+  const byId = new Map(roster.map((u) => [u.id, u.name ?? u.email]));
+  return (id) => (id ? byId.get(id) ?? "Unknown user" : "Unknown user");
 }
 
 /**
@@ -128,8 +138,7 @@ export function buildHistoryViews(
   roster: HistoryRosterUser[],
   timeZone: string,
 ): BookingEventView[] {
-  const byId = new Map(roster.map((u) => [u.id, u.name ?? u.email]));
-  const nameOf: NameResolver = (id) => (id ? byId.get(id) ?? "Unknown user" : "Unknown user");
+  const nameOf = rosterNameResolver(roster);
   return [...events]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .map((e) => toBookingEventView(e, nameOf, timeZone));
