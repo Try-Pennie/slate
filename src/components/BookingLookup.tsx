@@ -3,8 +3,8 @@
 import { useState, type FormEvent } from "react";
 
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
-import BookingHistory from "@/components/BookingHistory";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
+import { bookingDetailHref } from "@/lib/booking/detail";
 import type { BookingSearchRow } from "@/lib/booking/search";
 
 /** The whole roster is Eastern (matches the server-side history formatting). */
@@ -71,20 +71,20 @@ export default function BookingLookup() {
             containerClassName="space-y-2"
             emptyNode={<p className="text-sm text-fg-muted">No bookings found for that search.</p>}
           >
-            <ul className="space-y-3">
+            <ul className="space-y-2">
               {items.map((b) => (
-                <li key={b.id} className="border-t border-border pt-2 text-sm">
-                  <div className="flex flex-wrap items-baseline gap-x-2">
+                <li key={b.id} className="border-t border-border">
+                  <a
+                    href={bookingDetailHref(b.id)}
+                    className="flex flex-wrap items-baseline gap-x-2 rounded-md px-1 py-2 text-sm hover:bg-fg/5"
+                  >
                     <span className="font-semibold text-fg">
                       {b.attendeeName || b.attendeeEmail || b.attendeePhone || "(no name)"}
                     </span>
                     <span className="text-fg-muted tabular-nums">{formatWhen(b.startsAt)}</span>
                     <span className="text-fg-muted">{b.agentName}</span>
                     <span className="capitalize text-fg-muted">{b.status}</span>
-                  </div>
-                  <div className="mt-1">
-                    <BookingHistory bookingId={b.id} />
-                  </div>
+                  </a>
                 </li>
               ))}
             </ul>

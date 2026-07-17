@@ -37,16 +37,16 @@ describe("BookingLookup", () => {
     expect(screen.getByRole("button", { name: /search/i })).toBeTruthy();
   });
 
-  it("searches on submit and renders each match with a History toggle", async () => {
+  it("searches on submit and renders each match as a link to its detail page", async () => {
     const fn = mockFetch(() => ({ ok: true, json: async () => ({ bookings: ROWS }) }) as Response);
     render(<BookingLookup />);
     await userEvent.type(screen.getByRole("searchbox"), "jane@acme.co");
     await userEvent.click(screen.getByRole("button", { name: /^search$/i }));
     await waitFor(() => expect(fn).toHaveBeenCalled());
     expect(fn.mock.calls[0][0]).toContain("/api/admin/bookings/search?q=jane%40acme.co");
-    await screen.findByText("Jane Doe");
+    const link = (await screen.findByRole("link", { name: /jane doe/i })) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/admin/bookings/b1");
     expect(screen.getByText(/Jamie Smith/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /history/i })).toBeTruthy();
   });
 
   it("shows an empty message when nothing matches", async () => {
