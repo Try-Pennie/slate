@@ -58,6 +58,7 @@
 // unmatched quote anywhere in the file).
 import { loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
+import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -205,6 +206,21 @@ async function cleanup() {
     }
   }
   identitiesToClean.clear();
+
+  // #524: cancel above deletes the booking's Google event on the happy path, but
+  // per #166 a cancel can orphan it, leaving a busy block that flakes the next
+  // reschedule (which reads Google live). Sweep the two test mailboxes for any
+  // stale smoke orphans. Best-effort: it needs the SA creds (absent in some CI
+  // contexts) and a purge failure must not fail the smoke run, but we surface it
+  // rather than swallow it. Set SMOKE_SKIP_EVENT_CLEANUP=1 to opt out.
+  if (!process.env.SMOKE_SKIP_EVENT_CLEANUP) {
+    const res = await sweepQuietly([AGENT_A_EMAIL, AGENT_B_EMAIL]);
+    if (res.ok && res.deleted > 0) {
+      console.log(`  cleanup: swept ${res.deleted} orphaned smoke event(s) off the test calendars (#524)`);
+    } else if (!res.ok) {
+      console.warn(`  cleanup: smoke event sweep skipped (${res.error})`);
+    }
+  }
 }
 
 function uniq(tag: string) {
