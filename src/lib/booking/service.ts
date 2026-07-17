@@ -480,19 +480,14 @@ async function fetchAgentWorkingHours(
 ): Promise<{ timezone: string; rules: { weekday: number; start_minute: number; end_minute: number }[] }> {
   const fallback = { timezone: "America/New_York", rules: [] };
   // error-ok: a read failure falls back to ET + no rules, so the guard treats the agent as off-shift and re-routes (safe default, documented above).
+  // availability_rules is embedded via the rules.schedule_id FK; the DB
+  // Relationships (#354) type the nested rows, so no `unknown` cast is needed.
   const { data } = await supabaseAdmin()
     .from("availability_schedules")
     .select("timezone, availability_rules(weekday, start_minute, end_minute)")
     .eq("user_id", userId)
     .limit(1);
-  const row = (
-    data as unknown as
-      | {
-          timezone: string;
-          availability_rules: { weekday: number; start_minute: number; end_minute: number }[];
-        }[]
-      | null
-  )?.[0];
+  const row = data?.[0];
   if (!row) return fallback;
   return {
     timezone: row.timezone,
