@@ -91,6 +91,44 @@ async function run() {
     );
   }
 
+  // --- #538: the in-place guard's working-hours read is FOLDED into the
+  // booking-context load (batched with bucket + event type), so the reschedule
+  // hot path never issues a separate agentWorkingHours round-trip. The in-place
+  // move must still land, proving the folded working hours actually drove the
+  // on-shift gate rather than being ignored. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-09T14:00:00.000Z",
+        ends_at: "2026-06-09T14:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      freeEmails: new Set(["a@x.com"]),
+    });
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      calls.updateEventTime.length === 1,
+      "#538: in-place move still lands (folded working hours drove the on-shift gate)",
+    );
+    assert(
+      calls.agentWorkingHours.length === 0,
+      "#538: no standalone agentWorkingHours read on the reschedule hot path",
+    );
+    assert(
+      calls.loadBookingContext.length >= 1 &&
+        calls.loadBookingContext.every((o) => o?.withWorkingHours === true),
+      "#538: reschedule loads the booking context with the working-hours fold opted in",
+    );
+  }
+
   // --- #614: an oscillating reschedule that returns to a previously-used start
   // time must still emit its own rescheduled webhook + history row. The dedupe
   // key is versioned by the booking's reschedule_seq, so a move back to a used
@@ -293,8 +331,9 @@ async function run() {
       "reschedule(off-shift): re-routes to a working agent instead of staying in-place (#527)",
     );
     assert(
-      calls.agentWorkingHours.includes("a"),
-      "reschedule(off-shift): consults the assigned agent's working hours",
+      calls.agentWorkingHours.length === 0 &&
+        calls.loadBookingContext.some((o) => o?.withWorkingHours === true),
+      "reschedule(off-shift): consults working hours via the folded context load, not a separate read (#538)",
     );
     assert(
       calls.updateEventTime.length === 0 && calls.createEvent.length === 1 && calls.deleteEvent.length === 1,

@@ -467,6 +467,44 @@ export async function claimRescheduleLock(
 }
 
 /**
+ * One agent's working-hours schedule (#527): timezone + shift rules from
+ * availability_schedules + availability_rules, mirroring loadMembersAvailability's
+ * nested select. A schedule-less agent (or a transient read error) falls back to
+ * America/New_York + no rules, so the in-place reschedule guard treats them as
+ * off-shift and re-routes (the SAFE default; consistent with
+ * assembleMemberAvailability's default). Shared by the standalone `agentWorkingHours`
+ * dep and the folded `loadBookingContext` read (#538) so the query lives in one place.
+ */
+async function fetchAgentWorkingHours(
+  userId: string,
+): Promise<{ timezone: string; rules: { weekday: number; start_minute: number; end_minute: number }[] }> {
+  const fallback = { timezone: "America/New_York", rules: [] };
+  // error-ok: a read failure falls back to ET + no rules, so the guard treats the agent as off-shift and re-routes (safe default, documented above).
+  const { data } = await supabaseAdmin()
+    .from("availability_schedules")
+    .select("timezone, availability_rules(weekday, start_minute, end_minute)")
+    .eq("user_id", userId)
+    .limit(1);
+  const row = (
+    data as unknown as
+      | {
+          timezone: string;
+          availability_rules: { weekday: number; start_minute: number; end_minute: number }[];
+        }[]
+      | null
+  )?.[0];
+  if (!row) return fallback;
+  return {
+    timezone: row.timezone,
+    rules: (row.availability_rules ?? []).map((r) => ({
+      weekday: r.weekday,
+      start_minute: r.start_minute,
+      end_minute: r.end_minute,
+    })),
+  };
+}
+
+/**
  * Binds the booking orchestration to real IO. This is the ONLY place the
  * booking flow touches Supabase, Google Calendar, or webhooks; the logic lives
  * in `orchestration.ts` and is exercised by `scripts/test-booking-orchestration.ts`.
@@ -505,38 +543,10 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .neq("id", excludeBookingId);
       return ((data as { starts_at: string }[] | null) ?? []).map((r) => Date.parse(r.starts_at));
     },
-    // Working-hours schedule for one agent (#527), used by the in-place reschedule
-    // guard. Mirrors loadMembersAvailability's nested select. A schedule-less agent
-    // — or a transient read error — falls back to America/New_York + no rules, so
-    // the guard treats them as off-shift and re-routes (the SAFE default here: it
-    // sends the booking through the schedule-aware reassign path, never keeps an
-    // off-shift agent). Consistent with assembleMemberAvailability's default.
-    agentWorkingHours: async (userId) => {
-      const fallback = { timezone: "America/New_York", rules: [] };
-      // error-ok: a read failure falls back to ET + no rules, so the guard treats the agent as off-shift and re-routes (safe default, documented above).
-      const { data } = await supabaseAdmin()
-        .from("availability_schedules")
-        .select("timezone, availability_rules(weekday, start_minute, end_minute)")
-        .eq("user_id", userId)
-        .limit(1);
-      const row = (
-        data as unknown as
-          | {
-              timezone: string;
-              availability_rules: { weekday: number; start_minute: number; end_minute: number }[];
-            }[]
-          | null
-      )?.[0];
-      if (!row) return fallback;
-      return {
-        timezone: row.timezone,
-        rules: (row.availability_rules ?? []).map((r) => ({
-          weekday: r.weekday,
-          start_minute: r.start_minute,
-          end_minute: r.end_minute,
-        })),
-      };
-    },
+    // Working-hours schedule for one agent (#527), used by the reassign path's
+    // target-agent daily-cap check. The reschedule in-place guard now reads this
+    // from the folded context load (#538); the shared helper keeps both on one query.
+    agentWorkingHours: (userId) => fetchAgentWorkingHours(userId),
     // Batched verify-on-book (#167): read the whole candidate wave's free/busy
     // in ONE cross-identity freeBusy call (chunked at Google's 20-calendar cap,
     // chunks fired with bounded concurrency) instead of one serial Google call
@@ -1368,7 +1378,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return data ? (data as { id: string }).id : null;
     },
 
-    loadBookingContext: async (token) => {
+    loadBookingContext: async (token, ctxOpts) => {
       const db = supabaseAdmin();
       // error-ok: manage-link lookup; a null (incl. a transient read error) renders as not-found for the manage page rather than throwing.
       const { data: booking } = await db
@@ -1379,14 +1389,20 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       if (!booking) return null;
 
       const b = booking as Booking;
-      const [{ data: bucket }, { data: eventType }] = await Promise.all([
+      // #538: when the reschedule path opts in and the booking has an assigned
+      // agent, batch the working-hours read into THIS wave (alongside bucket +
+      // event type) so the in-place guard adds no extra round-trip.
+      const wantWorkingHours = Boolean(ctxOpts?.withWorkingHours && b.assigned_user_id);
+      const [{ data: bucket }, { data: eventType }, agentWorkingHours] = await Promise.all([
         db.from("buckets").select("*").eq("id", b.bucket_id).single(),
         db.from("event_types").select("*").eq("id", b.event_type_id).single(),
+        wantWorkingHours ? fetchAgentWorkingHours(b.assigned_user_id!) : Promise.resolve(undefined),
       ]);
       return {
         booking: b,
         bucket: bucket as Bucket,
         eventType: eventType as EventType,
+        ...(agentWorkingHours ? { agentWorkingHours } : {}),
       };
     },
 
