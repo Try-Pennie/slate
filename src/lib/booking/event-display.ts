@@ -1,0 +1,172 @@
+import {
+  RESCHEDULE_REASONS,
+  CANCEL_REASONS,
+  REASSIGN_REASONS,
+  type ReasonAction,
+  type ReasonOption,
+} from "./core.ts";
+import { formatSlotDay, formatSlotTime } from "./slot-label.ts";
+import type { BookingEvent, BookingEventAction } from "../db/types.ts";
+
+/** Resolves a user id to a display name (roster lookup on the server, #561). */
+export type NameResolver = (id: string | null) => string;
+
+/** The BookingEventAction -> the ReasonAction whose option list labels it. */
+const REASON_ACTION: Record<BookingEventAction, ReasonAction> = {
+  rescheduled: "reschedule",
+  cancelled: "cancel",
+  reassigned: "reassign",
+};
+
+const ACTION_LABEL: Record<BookingEventAction, string> = {
+  rescheduled: "Rescheduled",
+  cancelled: "Cancelled",
+  reassigned: "Reassigned",
+};
+
+const REASONS_BY_ACTION: Record<ReasonAction, ReasonOption[]> = {
+  reschedule: RESCHEDULE_REASONS,
+  cancel: CANCEL_REASONS,
+  reassign: REASSIGN_REASONS,
+};
+
+/** "api_cancellation" -> "Api cancellation" (fallback for system/historical codes). */
+function humanizeCode(code: string): string {
+  const spaced = code.replace(/_/g, " ").trim();
+  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : code;
+}
+
+function plural(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * Signed lead-time minutes -> a human phrase relative to the appointment.
+ * Positive = the action happened before the appointment; negative = after it
+ * (see BookingEvent.lead_time_minutes). Null in -> null out.
+ */
+export function formatLeadTime(minutes: number | null): string | null {
+  if (minutes == null) return null;
+  if (minutes === 0) return "at the scheduled time";
+  const suffix = minutes > 0 ? "before" : "after";
+  const abs = Math.abs(minutes);
+  let magnitude: string;
+  if (abs >= 1440) magnitude = plural(Math.round(abs / 1440), "day");
+  else if (abs >= 60) magnitude = plural(Math.round(abs / 60), "hour");
+  else magnitude = plural(abs, "minute");
+  return `${magnitude} ${suffix}`;
+}
+
+/**
+ * Human label for a reason code. Known codes resolve to their option label;
+ * "other" shows the free-text detail (or "Other" if blank); an unknown/system
+ * code (e.g. api_cancellation) falls back to a humanized form of the code.
+ */
+export function reasonLabel(
+  action: ReasonAction,
+  code: string,
+  detail: string | null,
+): string {
+  if (code === "other") {
+    const d = (detail ?? "").trim();
+    return d || "Other";
+  }
+  const match = REASONS_BY_ACTION[action].find((o) => o.code === code);
+  return match ? match.label : humanizeCode(code);
+}
+
+/**
+ * Who drove the event, with #549 accountability surfaced: an impersonated admin
+ * action reads "X, acting as Y"; a direct staff action reads "Name (role)";
+ * customer/system events read plainly; a staff event with no recorded actor
+ * (historical rows) falls back to the capitalized initiator.
+ */
+export function attributionLine(e: BookingEvent, nameOf: NameResolver): string {
+  if (e.initiator === "customer") return "Customer";
+  if (e.initiator === "system") return "System (automated)";
+  if (!e.actor_user_id) {
+    return e.initiator.charAt(0).toUpperCase() + e.initiator.slice(1);
+  }
+  if (e.acting_as_user_id) {
+    return `${nameOf(e.actor_user_id)}, acting as ${nameOf(e.acting_as_user_id)}`;
+  }
+  return `${nameOf(e.actor_user_id)} (${e.initiator})`;
+}
+
+/** A fully-resolved event ready for the history panel to render (#561). */
+export interface BookingEventView {
+  id: string;
+  /** ISO timestamp the event was recorded. */
+  at: string;
+  action: BookingEventAction;
+  actionLabel: string;
+  who: string;
+  reason: string;
+  /** "Fri, Jul 3, 2:00 PM → Sun, Jul 5, 2:00 PM" for a time move; null otherwise. */
+  timeChange: string | null;
+  /** "Jo Lee → Dan Wright" for an agent change; null otherwise. */
+  agentChange: string | null;
+  /** "2 days before" / "4 hours after"; null when no lead time recorded. */
+  lead: string | null;
+}
+
+/** Minimal roster row for resolving an event's user ids to a display name. */
+export interface HistoryRosterUser {
+  id: string;
+  name: string | null;
+  email: string;
+}
+
+/**
+ * Map a booking's append-only events into newest-first view models, resolving
+ * user ids to names from the given roster (name, else email, else "Unknown
+ * user" for an id not on the roster). Pure: the server pairs it with the
+ * fetched events + roster.
+ */
+export function buildHistoryViews(
+  events: BookingEvent[],
+  roster: HistoryRosterUser[],
+  timeZone: string,
+): BookingEventView[] {
+  const byId = new Map(roster.map((u) => [u.id, u.name ?? u.email]));
+  const nameOf: NameResolver = (id) => (id ? byId.get(id) ?? "Unknown user" : "Unknown user");
+  return [...events]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .map((e) => toBookingEventView(e, nameOf, timeZone));
+}
+
+function formatAppt(iso: string, timeZone: string): string {
+  return `${formatSlotDay(iso, timeZone)}, ${formatSlotTime(iso, timeZone)}`;
+}
+
+/**
+ * Map one append-only booking_events row into the panel's view model, resolving
+ * user ids to names and formatting all times in the given zone. Pure.
+ */
+export function toBookingEventView(
+  e: BookingEvent,
+  nameOf: NameResolver,
+  timeZone: string,
+): BookingEventView {
+  const timeChange =
+    e.from_starts_at && e.to_starts_at
+      ? `${formatAppt(e.from_starts_at, timeZone)} → ${formatAppt(e.to_starts_at, timeZone)}`
+      : null;
+  const agentChange =
+    e.from_agent_user_id &&
+    e.to_agent_user_id &&
+    e.from_agent_user_id !== e.to_agent_user_id
+      ? `${nameOf(e.from_agent_user_id)} → ${nameOf(e.to_agent_user_id)}`
+      : null;
+  return {
+    id: e.id,
+    at: e.created_at,
+    action: e.action,
+    actionLabel: ACTION_LABEL[e.action],
+    who: attributionLine(e, nameOf),
+    reason: reasonLabel(REASON_ACTION[e.action], e.reason_code, e.reason_detail),
+    timeChange,
+    agentChange,
+    lead: formatLeadTime(e.lead_time_minutes),
+  };
+}

@@ -49,6 +49,7 @@ import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import AdminBookingActions from "@/components/AdminBookingActions";
+import BookingHistory from "@/components/BookingHistory";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
   AuditEntry,
@@ -1049,12 +1050,15 @@ export default async function AdminPage({
                         )}
                       </td>
                       <td className="py-1.5 align-top">
-                        <AdminBookingActions
-                          bookingId={b.id}
-                          bucketCode={t?.bucket_code ?? null}
-                          status={b.status}
-                          currentAgentId={b.assigned_user_id}
-                        />
+                        <div className="space-y-2">
+                          <AdminBookingActions
+                            bookingId={b.id}
+                            bucketCode={t?.bucket_code ?? null}
+                            status={b.status}
+                            currentAgentId={b.assigned_user_id}
+                          />
+                          <BookingHistory bookingId={b.id} />
+                        </div>
                       </td>
                     </tr>
                   );
