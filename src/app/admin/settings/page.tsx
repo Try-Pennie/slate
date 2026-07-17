@@ -238,12 +238,20 @@ export default async function MonitorSettingsPage({
             crash-recovered create keep failing to deliver, the row backs off and
             alerts. This view lists what is currently wedged and why.
           </p>
-          <a
-            href="/admin/drain"
-            className="text-sm font-semibold text-pennie-blue underline dark:text-pennie-sky"
-          >
-            View stuck deliveries
-          </a>
+          <div className="flex flex-col gap-2">
+            <a
+              href="/admin/drain"
+              className="text-sm font-semibold text-pennie-blue underline dark:text-pennie-sky"
+            >
+              View stuck deliveries
+            </a>
+            <a
+              href="/admin/booking-outcomes"
+              className="text-sm font-semibold text-pennie-blue underline dark:text-pennie-sky"
+            >
+              View booking API outcomes
+            </a>
+          </div>
         </section>
       </main>
     </>

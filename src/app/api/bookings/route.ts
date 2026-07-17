@@ -24,6 +24,7 @@ import {
 } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
+import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 
 export const dynamic = "force-dynamic";
 
@@ -158,6 +159,7 @@ export async function POST(req: NextRequest) {
       key: authd.keyId,
       status,
     });
+    recordApiOutcome(result.outcome, v.bucketCode, null);
     return NextResponse.json(body, { status });
   } catch (err) {
     const { status, code } = mapBookingError(err);
@@ -169,6 +171,7 @@ export async function POST(req: NextRequest) {
       status,
       code,
     });
+    recordApiOutcome("error", v.bucketCode, code);
     return NextResponse.json(
       await apiErrorBody(err, code, "book", "Booking failed"),
       { status },

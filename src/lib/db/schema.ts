@@ -13,6 +13,7 @@ import type {
   BookingEvent,
   BookingOutbox,
   BookingReservation,
+  BookingApiOutcomeDaily,
   Bucket,
   BucketMember,
   BucketSlotsRow,
@@ -109,6 +110,7 @@ export interface Database {
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
       booking_reservations: Table<BookingReservation>;
+      booking_api_outcome_daily: Table<BookingApiOutcomeDaily>;
       routing_decisions: Table<RoutingDecision>;
       lane_heartbeats: Table<LaneHeartbeat>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
@@ -137,6 +139,18 @@ export interface Database {
           p_to: string;
         };
         Returns: Record<string, number> | null;
+      };
+      /** #418: atomic per-call increment of the booking-API outcome tally
+       *  (INSERT ... ON CONFLICT DO UPDATE count + 1). */
+      bump_booking_api_outcome: {
+        Args: { p_day: string; p_outcome: string; p_bucket: string; p_error_code: string };
+        Returns: undefined;
+      };
+      /** #418: the aggregated outcome mix over [p_since, today] as a single jsonb
+       *  row ({ by_outcome, by_error }) so it never hits the 1000-row SETOF cap. */
+      booking_api_outcome_mix: {
+        Args: { p_since: string };
+        Returns: { by_outcome?: Record<string, number>; by_error?: Record<string, number> } | null;
       };
       rate_limit_hit: {
         Args: { p_key: string; p_window_seconds: number; p_max: number };

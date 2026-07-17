@@ -616,6 +616,20 @@ export interface BookingReservation {
   updated_at: string;
 }
 
+/** #418: a daily tally of direct-booking-API outcomes, keyed by
+ *  (day, outcome, bucket_code, error_code). Written by the bump RPC, read
+ *  aggregated by the mix RPC. Server-only (RLS default-deny). */
+export interface BookingApiOutcomeDaily {
+  id: string;
+  day: string;
+  outcome: string;
+  bucket_code: string;
+  error_code: string;
+  count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type BookingReservationInsert = {
   idempotency_key: string;
   pinned_user_id: string;
