@@ -631,6 +631,11 @@ export interface BookingDeps {
   readReschedulePin(bookingId: string): Promise<ReschedulePin | null>;
   /** Release the per-booking lease (keyed on booking_id alone now). */
   releaseReschedule(bookingId: string): Promise<void>;
+  /** Atomically release the per-booking lease ONLY if its target still matches
+   *  `targetStartIso`: a single conditional delete (booking_id AND target), so a
+   *  concurrent different-target holder's fresh lease is never clobbered by
+   *  Guard-1's commit-then-crash cleanup (#480, closes the read->delete window). */
+  releaseRescheduleIfTarget(bookingId: string, targetStartIso: string): Promise<void>;
   /** Lease-pins past `lease_until + graceMs`, each with the booking's live
    *  gcal_event_id, for the abandoned-pin GC sweep (#439). */
   loadAbandonedReschedulePins(graceMs: number): Promise<AbandonedReschedulePin[]>;
@@ -2242,14 +2247,12 @@ export async function rescheduleBooking(
         }),
       );
     }
-    // Conditionally clean up a lock row a commit-then-crash may have left for
-    // THIS now-committed target. Only when the pin's target matches ours: a
-    // concurrent different-target holder will have re-pinned to its own target,
-    // so this never clobbers an active different-target lease.
-    const lingering = await deps.readReschedulePin(booking.id);
-    if (lingering && Date.parse(lingering.target_starts_at) === Date.parse(startIso)) {
-      await deps.releaseReschedule(booking.id);
-    }
+    // Atomically clean up a lock row a commit-then-crash may have left for THIS
+    // now-committed target: one conditional delete (booking_id AND target) instead
+    // of read-then-delete (#480). A concurrent different-target holder re-pinned to
+    // its own target, so its live lease is never clobbered, and there is no
+    // read->delete window for such a re-pin to slip into.
+    await deps.releaseRescheduleIfTarget(booking.id, startIso);
     return { booking, manageUrl: manageUrl(deps, token) };
   }
 

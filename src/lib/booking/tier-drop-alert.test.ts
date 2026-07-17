@@ -164,6 +164,7 @@ function makeTierDropDeps(): BookingDeps {
     writeReschedulePin: noop,
     readReschedulePin: async () => null,
     releaseReschedule: noop,
+    releaseRescheduleIfTarget: noop,
     loadAbandonedReschedulePins: async () => [],
     writeReassignIntent: noop,
     deleteReassignIntent: noop,

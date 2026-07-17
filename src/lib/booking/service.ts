@@ -38,6 +38,7 @@ import type {
   BookingResult,
   CreateBookingInput,
   ReschedulePin,
+  RescheduleClaim,
 } from "@/lib/booking/orchestration";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
@@ -355,6 +356,106 @@ export async function loadActiveUpcomingBookings(
     starts_at: r.starts_at,
     ends_at: r.ends_at,
   }));
+}
+
+/**
+ * Claim the per-booking reschedule lease (#439, migration 0053). The booking_id
+ * PK is the atomic arbiter: at most one in-flight reschedule per booking. The
+ * discriminated outcome distinguishes a fresh win, a crash-resume (expired lease
+ * + a written pin), a different-target abandon, a same-target no-op, and a
+ * different-target conflict. Fails CLOSED on an unexpected DB error (throws a
+ * retriable error), so a claim we can't trust never re-opens the concurrent
+ * -duplicate window. Extracted from `realDeps` as a `db`-injected seam so the
+ * expired-lease takeover CAS is unit-testable (#480 / AUD-050).
+ */
+export async function claimRescheduleLock(
+  db: ReturnType<typeof supabaseAdmin>,
+  bookingId: string,
+  targetStartIso: string,
+  now: number,
+): Promise<RescheduleClaim> {
+  const nowIso = new Date(now).toISOString();
+  const leaseUntil = new Date(now + RESCHEDULE_LOCK_TTL_MS).toISOString();
+  const { error } = await db.from("reschedule_locks").insert({
+    booking_id: bookingId,
+    target_starts_at: targetStartIso,
+    claimed_at: nowIso,
+    lease_until: leaseUntil,
+  });
+  if (!error) return { outcome: "won" };
+  if (error.code !== "23505") {
+    // Fail CLOSED on an unexpected DB error (user escalation decision): block
+    // with a retriable error rather than proceed, so a claim we can't trust
+    // never re-opens the concurrent-duplicate window. No lock is held yet (the
+    // claim is before the wrapper's try/finally), so nothing to release.
+    log.error("reschedule", { msg: "lock claim failed", booking_id: bookingId }, error);
+    throw new Error("Could not lock this booking for reschedule. Please try again.");
+  }
+  // A lease already exists: load it (+ the booking) to decide.
+  // error-ok: expired-lease takeover decision; a null lock (incl. a read error) returns { outcome: "won" } and the caller retries the claim.
+  const { data: lock } = await db
+    .from("reschedule_locks")
+    .select(
+      "target_starts_at, lease_until, pinned_user_id, pinned_agent_email, gcal_client_id, branch, reschedule_seq",
+    )
+    .eq("booking_id", bookingId)
+    .maybeSingle();
+  if (!lock) return { outcome: "won" }; // released between insert + read; retry as fresh
+  // error-ok: idempotency check for an already-committed reschedule; a null (incl. a read error) proceeds to the lease-expiry decision, never a double move.
+  const { data: bk } = await db
+    .from("bookings")
+    .select("starts_at")
+    .eq("id", bookingId)
+    .maybeSingle();
+  if (bk && Date.parse(bk.starts_at) === Date.parse(targetStartIso)) {
+    return { outcome: "idempotent" }; // already at target (a holder committed)
+  }
+  const expired = !lock.lease_until || Date.parse(lock.lease_until) <= now;
+  const sameTarget = Date.parse(lock.target_starts_at) === Date.parse(targetStartIso);
+  if (!expired) {
+    return sameTarget ? { outcome: "idempotent" } : { outcome: "conflict" };
+  }
+  // Expired lease = a crashed holder. Take it over with a compare-and-swap on the
+  // still-expired lease so only ONE concurrent claimant adopts the pin (#480 /
+  // AUD-050): the WHERE re-checks lease_until is null OR <= now, and `.select()`
+  // reports whether THIS statement won the row. Two racers that both read the
+  // expired lease can't both re-lease: the first flips lease_until into the
+  // future, the second's CAS then matches 0 rows.
+  const { data: took, error: takeoverErr } = await db
+    .from("reschedule_locks")
+    .update({ claimed_at: nowIso, lease_until: leaseUntil })
+    .eq("booking_id", bookingId)
+    .or(`lease_until.is.null,lease_until.lte.${nowIso}`)
+    .select("booking_id");
+  if (takeoverErr) {
+    // Fail CLOSED on an unexpected DB error, same rule as the claim insert: a
+    // takeover we can't confirm must not proceed as a holder.
+    log.error("reschedule", { msg: "lease takeover failed", booking_id: bookingId }, takeoverErr);
+    throw new Error("Could not lock this booking for reschedule. Please try again.");
+  }
+  if (!took || took.length === 0) {
+    // Lost the takeover race: another claimant re-leased first and its lease is
+    // now live. Mirror the non-expired branch (same target = idempotent, since it
+    // runs our exact move; different target = conflict). Never a holder outcome,
+    // so the move fires once.
+    return sameTarget ? { outcome: "idempotent" } : { outcome: "conflict" };
+  }
+  const hasPin =
+    lock.gcal_client_id != null &&
+    lock.pinned_user_id != null &&
+    lock.pinned_agent_email != null &&
+    lock.branch != null &&
+    lock.reschedule_seq != null;
+  if (!hasPin) return { outcome: "won" }; // crashed before any Google call -> fresh
+  const pin: ReschedulePin = {
+    reschedule_seq: lock.reschedule_seq!,
+    branch: lock.branch as "in_place" | "reassign",
+    pinned_user_id: lock.pinned_user_id!,
+    pinned_agent_email: lock.pinned_agent_email!,
+    gcal_client_id: lock.gcal_client_id!,
+    target_starts_at: lock.target_starts_at,
+  };
+  return sameTarget ? { outcome: "resume", pin } : { outcome: "fresh-after-abandon", pin };
 }
 
 /**
@@ -1056,78 +1157,11 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return ((data ?? []) as { id: string }[]).map((r) => r.id);
     },
 
-    // Per-booking reschedule lease (#439, migration 0053). The booking_id PK is
-    // the atomic arbiter: at most one in-flight reschedule per booking. The
-    // discriminated outcome distinguishes a fresh win, a crash-resume (expired
-    // lease + a written pin), a different-target abandon, a same-target no-op, and
-    // a different-target conflict. Fails CLOSED on an unexpected DB error (user
-    // escalation decision): throws a retriable error rather than proceeding, so a
-    // claim we can't trust never re-opens the concurrent-duplicate window.
-    claimReschedule: async (bookingId, targetStartIso) => {
-      const db = supabaseAdmin();
-      const now = Date.now();
-      const leaseUntil = new Date(now + RESCHEDULE_LOCK_TTL_MS).toISOString();
-      const { error } = await db.from("reschedule_locks").insert({
-        booking_id: bookingId,
-        target_starts_at: targetStartIso,
-        claimed_at: new Date(now).toISOString(),
-        lease_until: leaseUntil,
-      });
-      if (!error) return { outcome: "won" };
-      if (error.code !== "23505") {
-        // Fail CLOSED on an unexpected DB error (user escalation decision): block
-        // with a retriable error rather than proceed, so a claim we can't trust
-        // never re-opens the concurrent-duplicate window. No lock is held yet (the
-        // claim is before the wrapper's try/finally), so nothing to release.
-        log.error("reschedule", { msg: "lock claim failed", booking_id: bookingId }, error);
-        throw new Error("Could not lock this booking for reschedule. Please try again.");
-      }
-      // A lease already exists — load it (+ the booking) to decide.
-      // error-ok: expired-lease takeover decision; a null lock (incl. a read error) returns { outcome: "won" } and the caller retries the claim.
-      const { data: lock } = await db
-        .from("reschedule_locks")
-        .select(
-          "target_starts_at, lease_until, pinned_user_id, pinned_agent_email, gcal_client_id, branch, reschedule_seq",
-        )
-        .eq("booking_id", bookingId)
-        .maybeSingle();
-      if (!lock) return { outcome: "won" }; // released between insert + read; retry as fresh
-      // error-ok: idempotency check for an already-committed reschedule; a null (incl. a read error) proceeds to the lease-expiry decision, never a double move.
-      const { data: bk } = await db
-        .from("bookings")
-        .select("starts_at")
-        .eq("id", bookingId)
-        .maybeSingle();
-      if (bk && Date.parse(bk.starts_at) === Date.parse(targetStartIso)) {
-        return { outcome: "idempotent" }; // already at target (a holder committed)
-      }
-      const expired = !lock.lease_until || Date.parse(lock.lease_until) <= now;
-      const sameTarget = Date.parse(lock.target_starts_at) === Date.parse(targetStartIso);
-      if (!expired) {
-        return sameTarget ? { outcome: "idempotent" } : { outcome: "conflict" };
-      }
-      // Expired lease = a crashed holder. Take it over (re-lease).
-      await db
-        .from("reschedule_locks")
-        .update({ claimed_at: new Date(now).toISOString(), lease_until: leaseUntil })
-        .eq("booking_id", bookingId);
-      const hasPin =
-        lock.gcal_client_id != null &&
-        lock.pinned_user_id != null &&
-        lock.pinned_agent_email != null &&
-        lock.branch != null &&
-        lock.reschedule_seq != null;
-      if (!hasPin) return { outcome: "won" }; // crashed before any Google call -> fresh
-      const pin: ReschedulePin = {
-        reschedule_seq: lock.reschedule_seq!,
-        branch: lock.branch as "in_place" | "reassign",
-        pinned_user_id: lock.pinned_user_id!,
-        pinned_agent_email: lock.pinned_agent_email!,
-        gcal_client_id: lock.gcal_client_id!,
-        target_starts_at: lock.target_starts_at,
-      };
-      return sameTarget ? { outcome: "resume", pin } : { outcome: "fresh-after-abandon", pin };
-    },
+    // Per-booking reschedule lease (#439). Bound to the live client; the full
+    // state machine (incl. the expired-lease takeover CAS) lives in the
+    // db-injected `claimRescheduleLock` seam so it is unit-testable.
+    claimReschedule: (bookingId, targetStartIso) =>
+      claimRescheduleLock(supabaseAdmin(), bookingId, targetStartIso, Date.now()),
 
     writeReschedulePin: async (bookingId, pin) => {
       await supabaseAdmin()
@@ -1174,6 +1208,18 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
 
     releaseReschedule: async (bookingId) => {
       await supabaseAdmin().from("reschedule_locks").delete().eq("booking_id", bookingId);
+    },
+
+    releaseRescheduleIfTarget: async (bookingId, targetStartIso) => {
+      // #480: a single atomic conditional delete instead of read-then-delete. The
+      // WHERE clause pins BOTH the booking and the target, so a concurrent
+      // different-target holder that re-pinned into the old read->delete window has
+      // its fresh lease left untouched (its target no longer matches ours).
+      await supabaseAdmin()
+        .from("reschedule_locks")
+        .delete()
+        .eq("booking_id", bookingId)
+        .eq("target_starts_at", targetStartIso);
     },
 
     loadAbandonedReschedulePins: async (graceMs) => {
