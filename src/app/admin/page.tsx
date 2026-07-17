@@ -7,6 +7,7 @@ import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
+import { bookingDetailHref } from "@/lib/booking/detail";
 import { isActive } from "@/lib/active-user";
 import { dedupeFailingAgents, type FailingCalendarRow } from "@/lib/notify/alerts";
 import {
@@ -48,8 +49,6 @@ import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import AdminBookingActions from "@/components/AdminBookingActions";
-import BookingHistory from "@/components/BookingHistory";
 import BookingLookup from "@/components/BookingLookup";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
@@ -1023,7 +1022,9 @@ export default async function AdminPage({
                   <th className="py-1 pr-3 font-semibold">Bucket</th>
                   <th className="py-1 pr-3 font-semibold">Routed to</th>
                   <th className="py-1 pr-3 font-semibold">Trace</th>
-                  <th className="py-1 font-semibold">Actions</th>
+                  <th className="py-1 font-semibold">
+                    <span className="sr-only">Open booking</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1062,15 +1063,12 @@ export default async function AdminPage({
                         )}
                       </td>
                       <td className="py-1.5 align-top">
-                        <div className="space-y-2">
-                          <AdminBookingActions
-                            bookingId={b.id}
-                            bucketCode={t?.bucket_code ?? null}
-                            status={b.status}
-                            currentAgentId={b.assigned_user_id}
-                          />
-                          <BookingHistory bookingId={b.id} />
-                        </div>
+                        <a
+                          href={bookingDetailHref(b.id)}
+                          className="inline-flex min-h-9 items-center rounded-md border border-border bg-surface px-2 py-1 text-fg hover:border-fg/45"
+                        >
+                          Open
+                        </a>
                       </td>
                     </tr>
                   );
