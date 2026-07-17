@@ -61,6 +61,10 @@ async function run() {
       calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.cancelled",
       "resume: fires the pending webhook exactly once",
     );
+    assert(
+      calls.webhooks[0].deferred === false,
+      "#884: the outbox drain sends inline (no scheduler), under its bounded fan-out",
+    );
   }
 
   // --- outbox reschedule resume after a crash (#429 P3) ---

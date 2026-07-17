@@ -88,6 +88,26 @@ async function run() {
     );
   }
 
+  // --- #884: the create confirm DEFERS the booking.created send ---
+  // A user-facing request carries a send scheduler on its deps; fire() routes the
+  // outbound POST through it so the confirm returns without waiting on the
+  // Regal/Cadence round-trip. The delivery row is still recorded synchronously, so
+  // the retry sweep is the backstop if a deferred send is ever dropped.
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      deferSend: () => {},
+    });
+    await createBooking(input, deps);
+    assert(
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.created" &&
+        calls.webhooks[0].deferred === true,
+      "#884: create confirm defers the booking.created send off the response path",
+    );
+  }
+
   // --- createBooking: the #586 gcal-mirror heal is BEST-EFFORT ---
   // The booking has already committed by the time the heal runs, so a transient
   // failure of the mirror delete must NOT fail the booking. It is attempted, it
@@ -237,6 +257,10 @@ async function run() {
         calls.webhooks[0].event === "booking.created" &&
         calls.webhooks[0].dedupeKey === "bk-anon",
       "#666 drain: redelivers the previously-lost booking.created exactly once",
+    );
+    assert(
+      calls.webhooks[0].deferred === false,
+      "#884 drain: the reservation drain sends inline (no scheduler), not deferred",
     );
     assert(
       calls.deletedReservations.length === 1 && calls.deletedReservations[0] === "resv-anon",

@@ -50,6 +50,9 @@ import { log } from "@/lib/log";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
+// Type-only (erased under --experimental-strip-types), so this never pulls the
+// emit module's runtime deps into the node-tested domain code.
+import type { WebhookSendScheduler } from "@/lib/webhooks/emit";
 import type {
   Booking,
   BookingEventAction,
@@ -693,14 +696,22 @@ export interface BookingDeps {
   loadPastBookingsToComplete(): Promise<BookingContext[]>;
   // webhooks + misc
   /** `suppressed` records the delivery but skips the external POST (#459: an
-   *  is_test bucket's booking must never reach Regal/Cadence). */
+   *  is_test bucket's booking must never reach Regal/Cadence). `deferSend` (#884)
+   *  hands the outbound POST to a scheduler (Next after()) instead of awaiting it;
+   *  fire() passes `deps.deferSend`, so it is set only on user-facing requests. */
   emitWebhook(
     orgId: string,
     event: WebhookEvent,
     payload: BookingEventPayload,
     dedupeKey: string | null,
     suppressed: boolean,
+    deferSend?: WebhookSendScheduler,
   ): Promise<void>;
+  /** #884: when set (user-facing requests only), `fire()` routes the webhook's
+   *  outbound POST through this scheduler so the response isn't blocked on the
+   *  Regal/Cadence round-trip. The cron drains leave it unset and send inline,
+   *  so their bounded fan-out still caps simultaneous connections. */
+  deferSend?: WebhookSendScheduler;
   newManageToken(): string;
   /** A fresh, unique synthetic idempotency key for a keyless (anonymous) booking
    *  (#666), so it still gets the reservation-backed crash-safe create every keyed
@@ -1067,6 +1078,10 @@ async function fire(
     webhookPayload(deps, booking, bucket, eventType, reason),
     webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
     bucket.is_test,
+    // #884: set only on user-facing requests, so the confirm/cancel/reschedule
+    // response returns without waiting on the send. Unset on the cron drains
+    // (completion sweep, outbox + reservation drains), which stay inline-bounded.
+    deps.deferSend,
   );
 }
 

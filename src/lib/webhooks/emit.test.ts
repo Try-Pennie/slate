@@ -261,6 +261,54 @@ describe("emitWebhook", () => {
   });
 });
 
+// #884: on a user-facing path (create confirm, cancel, reschedule) the customer's
+// response should not wait on the outbound Regal/Cadence round-trip. emitWebhook
+// still writes the durable pending row synchronously (so the retry sweep is the
+// backstop for a dropped send), but hands the POST to a scheduler (Next after())
+// when one is supplied. The cron drains pass none and keep sending inline, so
+// their bounded fan-out still caps simultaneous connections.
+describe("emitWebhook deferred send (#884)", () => {
+  const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+
+  it("records the delivery synchronously but hands the outbound POST to the scheduler", async () => {
+    const scheduled: Array<() => Promise<void>> = [];
+    const deferSend = (work: () => Promise<void>) => {
+      scheduled.push(work);
+    };
+
+    await emitWebhook("o1", "booking.created", payload, "bk1", false, deferSend);
+
+    // The durable pending row IS written on the hot path: this is what makes a
+    // dropped after() send recoverable by the retry sweep.
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0]).toMatchObject({ status: "pending", suppressed: false });
+    // But the POST is deferred, not awaited: nothing has left the door yet.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(1);
+
+    // Running the scheduled work is what performs the send and marks the row.
+    await scheduled[0]();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(state.updates[0]).toMatchObject({ status: "success", attempts: 1 });
+  });
+
+  it("sends inline when no scheduler is supplied (unchanged for cron drains)", async () => {
+    await emitWebhook("o1", "booking.created", payload, "bk1", false);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never schedules a send for a suppressed delivery", async () => {
+    const scheduled: Array<() => Promise<void>> = [];
+
+    await emitWebhook("o1", "booking.created", payload, "bk1", true, (w) => scheduled.push(w));
+
+    expect(scheduled).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state.inserted[0].suppressed).toBe(true);
+  });
+});
+
 // #459: a booking on an is_test bucket (the smoke test's hidden bucket) must never
 // reach Regal/Cadence. The delivery is still RECORDED, so the exactly-once dedupe
 // stays observable in production (scripts/smoke-create-resume.ts counts these rows),

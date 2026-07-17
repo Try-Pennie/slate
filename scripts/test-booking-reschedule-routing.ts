@@ -44,6 +44,7 @@ async function run() {
       existing: ctx,
       bookingById: rescheduled,
       freeEmails: new Set(["a@x.com"]),
+      deferSend: () => {}, // #884: this is a user-facing reschedule request
     });
     const res = await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
     assert(
@@ -61,6 +62,10 @@ async function run() {
     );
     assert(res.booking.status === "rescheduled" && res.booking.starts_at === "2026-06-09T14:00:00.000Z", "reschedule: status + new start applied");
     assert(calls.webhooks[0].event === "booking.rescheduled", "reschedule: fires booking.rescheduled");
+    assert(
+      calls.webhooks[0].deferred === true,
+      "#884: a user-facing reschedule defers the booking.rescheduled send off the response path",
+    );
     assert(
       calls.claimReschedule === 1 && calls.releaseReschedule === 1,
       "reschedule: claims then releases the idempotency lock",
