@@ -15,6 +15,7 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
 import {
   reportSweepSaturation,
   reportCompletionSaturation,
+  reportDeletionSaturation,
   SATURATION_ALERT_AFTER_TICKS,
   SATURATION_WINDOW_SECONDS,
   COMPLETION_SATURATION_ALERT_AFTER_RUNS,
@@ -122,5 +123,82 @@ describe("reportCompletionSaturation (#883)", () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
     sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
     await expect(crun(true)).resolves.toBeUndefined();
+  });
+});
+
+// #888: the deletion drain loads a page of up to `limit` rows and attempts every
+// one, so its saturation signal is the size of the page it LOADED (deleted +
+// failed), not the number it managed to delete. The reporter owns that sum on
+// purpose: see the all-failed case below for why a caller must never decide it.
+describe("reportDeletionSaturation (#888)", () => {
+  const DKEY = "deletion_drain_saturated";
+  const DLIMIT = 20;
+  const drun = (drain: { deleted: number; failed: number } | null) =>
+    reportDeletionSaturation(DKEY, drain, DLIMIT);
+
+  it("clears the streak when a tick drains a partial page", async () => {
+    await drun({ deleted: 3, failed: 1 });
+    expect(clearFailureStreak).toHaveBeenCalledWith(DKEY);
+    expect(recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("counts a full page toward the streak without paging yet", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await drun({ deleted: DLIMIT, failed: 0 });
+    expect(recordConsecutiveStreak).toHaveBeenCalledWith(
+      DKEY,
+      SATURATION_WINDOW_SECONDS,
+      SATURATION_ALERT_AFTER_TICKS,
+    );
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("pages once the saturated streak is sustained", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(true);
+    await drun({ deleted: DLIMIT, failed: 0 });
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const body = sendThrottledAlert.mock.calls[0][2];
+    expect(body).toContain("deletion");
+    expect(body).toContain(String(DLIMIT));
+  });
+
+  // THE failure path this issue exists for. Every row in a full page failing is
+  // the WORST case: the backlog cannot drain at all. Keying saturation off the
+  // delete count alone would read deleted=0, call the tick healthy, and clear the
+  // streak on exactly the ticks where the queue is most stuck.
+  it("counts a full page of failures as saturated, not as a drained backlog", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(true);
+    await drun({ deleted: 0, failed: DLIMIT });
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(recordConsecutiveStreak).toHaveBeenCalledWith(
+      DKEY,
+      SATURATION_WINDOW_SECONDS,
+      SATURATION_ALERT_AFTER_TICKS,
+    );
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+
+  // A mixed full page is still a full page: the loader had at least `limit` rows.
+  it("counts a mixed full page as saturated", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await drun({ deleted: 12, failed: 8 });
+    expect(recordConsecutiveStreak).toHaveBeenCalledTimes(1);
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+  });
+
+  // A drain that THREW says nothing about the backlog: never counted, never cleared.
+  it("neither counts nor clears when the drain itself failed", async () => {
+    await drun(null);
+    expect(recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when the alert dispatch fails", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(true);
+    sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+    await expect(drun({ deleted: DLIMIT, failed: 0 })).resolves.toBeUndefined();
   });
 });

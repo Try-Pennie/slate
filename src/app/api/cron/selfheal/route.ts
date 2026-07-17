@@ -2,7 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
-import { reportSweepSaturation } from "@/lib/monitor/sweep-saturation";
+import {
+  reportDeletionSaturation,
+  reportSweepSaturation,
+} from "@/lib/monitor/sweep-saturation";
 import { rotateSelfhealScan } from "@/lib/booking/selfheal-cursor";
 import {
   processPendingEventDeletions,
@@ -29,6 +32,9 @@ const RECONCILE_LIMIT = 200;
 // #726 saturation streak keys (rate_limits + alert_state rows).
 const RECONCILE_CANCELLED_SATURATED_KEY = "reconcile_cancelled_saturated";
 const RECONCILE_MISSING_SATURATED_KEY = "reconcile_missing_saturated";
+// #888: same treatment for the deletion drain, the one capped sweep on this lane
+// that was never wired to a saturation signal.
+const DELETION_DRAIN_SATURATED_KEY = "deletion_drain_saturated";
 
 // #512 rotating-scan cursor keys (selfheal_scan_cursor rows). Distinct row sets,
 // so each sweep rotates its own offset.
@@ -92,6 +98,15 @@ export async function GET(req: NextRequest) {
       recreated?.recreated ?? null,
       RECONCILE_LIMIT,
     );
+
+    // #888: the deletion drain is capped too, so it hides a growing backlog the
+    // same way. Passes the whole drain result: saturation is the size of the page
+    // it loaded (deleted + failed), which the reporter owns.
+    await reportDeletionSaturation(
+      DELETION_DRAIN_SATURATED_KEY,
+      deletions,
+      DELETION_DRAIN_LIMIT,
+    ).catch(() => {});
 
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
     // Stamped even when a sub-sweep returned its "error" marker (those are

@@ -167,3 +167,57 @@ export async function reportCompletionSaturation(
     (runs) => formatCompletionSaturationAlert(runs, COMPLETION_DRAIN_BUDGET_PER_RUN),
   );
 }
+
+/**
+ * Saturation signal for the failed-deletion drain (#888, sibling of #883).
+ *
+ * `processPendingEventDeletions` re-attempts at most DELETION_DRAIN_LIMIT queued
+ * calendar-event deletions per self-heal tick. A backlog bigger than that clears
+ * slowly or never, and every tick still reports a normal-looking full batch. The
+ * lane runs 1/min like the reconciles, so it reuses their tick tuning.
+ *
+ * This is INDEPENDENT of the existing per-row "stuck" alert (a row that failed
+ * PENDING_DELETION_ALERT_AFTER+ times). They measure different things: stuck says
+ * one row is poisoned, saturation says the QUEUE is growing faster than the drain
+ * rate even when every delete succeeds. Both can be true at once and each throttles
+ * separately.
+ */
+
+/** Page body. `ticks` is the crossed threshold, so the wording says "at least".
+ *  No em/en dashes (copy lint). */
+export function formatDeletionSaturationAlert(ticks: number, limit: number): string {
+  return (
+    `Slate: the failed calendar event deletion drain has been running at its cap ` +
+    `(${limit} per tick) for at least ${ticks} consecutive minute(s). Queued deletions ` +
+    `are arriving faster than the drain can clear them, so cancelled bookings may keep ` +
+    `firing orphaned calendar reminders. Check Google Calendar API health and the cancel ` +
+    `path, and consider raising the per tick cap.`
+  );
+}
+
+/**
+ * Fold one deletion-drain tick into its saturation streak, and page when sustained.
+ * See `pageOnSaturationStreak` for the null/false/true rules.
+ *
+ * Takes the drain's whole result rather than a count because the saturation signal
+ * is the size of the page it LOADED: `deleted + failed`. The delete count alone is
+ * NOT the signal, and the reporter owns that sum so no call site can get it wrong.
+ * A full page that failed every row is the worst case (the backlog cannot drain at
+ * all), yet its `deleted` is 0, which a naive count check would read as a healthy,
+ * under-cap tick and use to CLEAR the streak.
+ */
+export async function reportDeletionSaturation(
+  key: string,
+  drain: { deleted: number; failed: number } | null,
+  limit: number,
+): Promise<void> {
+  const saturated = drain === null ? null : isSweepSaturated(drain.deleted + drain.failed, limit);
+  await pageOnSaturationStreak(
+    key,
+    saturated,
+    SATURATION_WINDOW_SECONDS,
+    SATURATION_ALERT_AFTER_TICKS,
+    SATURATION_ALERT_COOLDOWN_MS,
+    (ticks) => formatDeletionSaturationAlert(ticks, limit),
+  );
+}
