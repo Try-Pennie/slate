@@ -21,8 +21,8 @@ export async function GET(req: NextRequest) {
   }
   const q = req.nextUrl.searchParams.get("q") ?? "";
   try {
-    const bookings = await searchBookings(me.org_id, q);
-    return NextResponse.json({ bookings });
+    const { rows, truncated } = await searchBookings(me.org_id, q);
+    return NextResponse.json({ bookings: rows, truncated });
   } catch (err) {
     return internalErrorResponse(err, "admin/bookings/search");
   }

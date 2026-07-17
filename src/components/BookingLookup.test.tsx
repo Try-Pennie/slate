@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import BookingLookup from "@/components/BookingLookup";
-import type { BookingSearchRow } from "@/lib/booking/search";
+import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
 
 // #901: look up ANY booking (not just the recent 25) and view its history. The
 // search fetches on submit, shows distinct loading/error/empty states, and each
@@ -55,6 +55,27 @@ describe("BookingLookup", () => {
     await userEvent.type(screen.getByRole("searchbox"), "nobody");
     await userEvent.click(screen.getByRole("button", { name: /^search$/i }));
     await screen.findByText(/no bookings found for that search/i);
+  });
+
+  it("warns when the result filled the row cap (there may be more)", async () => {
+    const many: BookingSearchRow[] = Array.from({ length: SEARCH_LIMIT }, (_, i) => ({
+      ...ROWS[0],
+      id: `b${i}`,
+    }));
+    mockFetch(() => ({ ok: true, json: async () => ({ bookings: many, truncated: true }) }) as Response);
+    render(<BookingLookup />);
+    await userEvent.type(screen.getByRole("searchbox"), "smith");
+    await userEvent.click(screen.getByRole("button", { name: /^search$/i }));
+    await screen.findByText(/showing the first 20/i);
+  });
+
+  it("does not warn when the result is under the cap", async () => {
+    mockFetch(() => ({ ok: true, json: async () => ({ bookings: ROWS }) }) as Response);
+    render(<BookingLookup />);
+    await userEvent.type(screen.getByRole("searchbox"), "jane");
+    await userEvent.click(screen.getByRole("button", { name: /^search$/i }));
+    await screen.findByRole("link", { name: /jane doe/i });
+    expect(screen.queryByText(/showing the first 20/i)).toBeNull();
   });
 
   it("shows an error (not empty) when the search fails", async () => {

@@ -28,20 +28,20 @@ describe("GET /admin/bookings/search", () => {
     expect(search.searchBookings).not.toHaveBeenCalled();
   });
 
-  it("searches within the caller's org and returns matches", async () => {
+  it("searches within the caller's org and returns matches + truncated flag", async () => {
     const rows = [{ id: "b1", attendeeName: "Jane", agentName: "Jamie" }];
-    search.searchBookings.mockResolvedValueOnce(rows);
+    search.searchBookings.mockResolvedValueOnce({ rows, truncated: true });
     const res = await GET(req("http://x/api/admin/bookings/search?q=jane"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ bookings: rows });
+    expect(await res.json()).toEqual({ bookings: rows, truncated: true });
     expect(search.searchBookings).toHaveBeenCalledWith("org1", "jane");
   });
 
-  it("passes an empty query through (searchBookings returns [])", async () => {
-    search.searchBookings.mockResolvedValueOnce([]);
+  it("passes an empty query through (searchBookings returns no rows)", async () => {
+    search.searchBookings.mockResolvedValueOnce({ rows: [], truncated: false });
     const res = await GET(req("http://x/api/admin/bookings/search"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ bookings: [] });
+    expect(await res.json()).toEqual({ bookings: [], truncated: false });
     expect(search.searchBookings).toHaveBeenCalledWith("org1", "");
   });
 

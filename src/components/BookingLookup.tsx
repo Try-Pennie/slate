@@ -5,7 +5,7 @@ import { useState, type FormEvent } from "react";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { bookingDetailHref } from "@/lib/booking/detail";
-import type { BookingSearchRow } from "@/lib/booking/search";
+import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
 
 /** The whole roster is Eastern (matches the server-side history formatting). */
 const ROSTER_ZONE = "America/New_York";
@@ -71,6 +71,12 @@ export default function BookingLookup() {
             containerClassName="space-y-2"
             emptyNode={<p className="text-sm text-fg-muted">No bookings found for that search.</p>}
           >
+            {items.length >= SEARCH_LIMIT && (
+              <p className="mb-2 text-xs text-fg-muted">
+                Showing the first {SEARCH_LIMIT} matches. If you don&apos;t see the booking,
+                narrow your search.
+              </p>
+            )}
             <ul className="space-y-2">
               {items.map((b) => (
                 <li key={b.id} className="border-t border-border">

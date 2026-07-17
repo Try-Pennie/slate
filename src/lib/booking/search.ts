@@ -5,8 +5,9 @@ import {
   type HistoryRosterUser,
 } from "./event-display.ts";
 
-/** Max booking rows a lookup returns (bounds the growth-table read, cap-safe). */
-const SEARCH_LIMIT = 20;
+/** Max booking rows a lookup returns (bounds the growth-table read, cap-safe).
+ *  Exported so the lookup UI can tell when a text result filled the bound (#903). */
+export const SEARCH_LIMIT = 20;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -103,27 +104,37 @@ const defaultDeps: BookingSearchDeps = {
   },
 };
 
+/** A lookup result: the rows plus whether the text search filled its bound
+ *  (so there may be more matches the user isn't seeing, #903). */
+export interface BookingSearchResult {
+  rows: BookingSearchRow[];
+  truncated: boolean;
+}
+
 /**
  * Find bookings for the lookup viewer (#901): a UUID query routes to an exact,
  * tenant-scoped id lookup; any other non-empty query matches attendee
  * email/name/phone (bounded to SEARCH_LIMIT). A blank query does no read and
- * returns []. Reads route through unwrap so a fault throws rather than degrading
- * to an empty result set.
+ * returns no rows. A text search that fills the bound is flagged `truncated` so
+ * the UI can prompt the user to narrow it (#903); an id lookup never is. Reads
+ * route through unwrap so a fault throws rather than degrading to empty.
  */
 export async function searchBookings(
   orgId: string,
   query: string,
   deps: BookingSearchDeps = defaultDeps,
-): Promise<BookingSearchRow[]> {
+): Promise<BookingSearchResult> {
   const q = query.trim();
-  if (!q) return [];
+  if (!q) return { rows: [], truncated: false };
   const limit = deps.limit ?? SEARCH_LIMIT;
-  const bookings = isBookingIdQuery(q)
+  const byId = isBookingIdQuery(q);
+  const bookings = byId
     ? await deps.byId(q, orgId)
     : await deps.byText(q, orgId, limit);
+  const truncated = !byId && bookings.length >= limit;
   const agentIds = [
     ...new Set(bookings.map((b) => b.assigned_user_id).filter((v): v is string => !!v)),
   ];
   const roster = agentIds.length ? await deps.users(agentIds) : [];
-  return buildSearchRows(bookings, roster);
+  return { rows: buildSearchRows(bookings, roster), truncated };
 }
