@@ -155,8 +155,9 @@ async function run() {
       { booking: makeBooking({ id: "p2", status: "rescheduled" }), bucket, eventType },
     ];
     const { deps, calls } = makeDeps({ pastDue: due });
-    const n = await completePastBookings(deps);
+    const { completed: n, backlogRemains: nBacklog } = await completePastBookings(deps);
     assert(n === 2, "complete: returns the count of completed bookings");
+    assert(nBacklog === false, "complete: an under-cap batch reports no backlog remaining");
     assert(
       calls.completeBookingsIfDue.length === 1 &&
         calls.completeBookingsIfDue[0].length === 2 &&
@@ -174,7 +175,10 @@ async function run() {
     );
 
     const { deps: dEmpty } = makeDeps({ pastDue: [] });
-    assert((await completePastBookings(dEmpty)) === 0, "complete: zero when nothing is due");
+    assert(
+      (await completePastBookings(dEmpty)).completed === 0,
+      "complete: zero when nothing is due",
+    );
 
     // #163: an overlapping cron tick already flipped p1 to completed, so the
     // conditional transition no-ops there and booking.completed must NOT re-fire.
@@ -182,7 +186,7 @@ async function run() {
       pastDue: due,
       alreadyCompleted: new Set(["p1"]),
     });
-    const raced = await completePastBookings(dRace);
+    const raced = (await completePastBookings(dRace)).completed;
     assert(raced === 1, "complete: counts only rows this tick actually transitioned");
     assert(
       cRace.webhooks.length === 1 && cRace.webhooks[0].event === "booking.completed",
@@ -209,10 +213,15 @@ async function run() {
     const { deps, calls } = makeDeps({
       pastDueBatches: [fullBatch("a"), fullBatch("b"), tail],
     });
-    const drained = await completePastBookings(deps);
+    const { completed: drained, backlogRemains: drainedBacklog } =
+      await completePastBookings(deps);
     assert(
       drained === PAST_COMPLETION_BATCH_LIMIT * 2 + 30,
       "drain: completes every booking across the batches in one run",
+    );
+    assert(
+      drainedBacklog === false,
+      "drain: a run that clears the whole backlog reports none remaining",
     );
     assert(
       calls.completeBookingsIfDue.length === 3,
@@ -237,8 +246,13 @@ async function run() {
       pastDueBatches: [stallBatch, fullBatch("never")],
       alreadyCompleted: new Set(stallBatch.map((b) => b.booking.id)),
     });
-    const stalled = await completePastBookings(dStall);
+    const { completed: stalled, backlogRemains: stalledBacklog } =
+      await completePastBookings(dStall);
     assert(stalled === 0, "drain: zero-progress full batch completes nothing");
+    assert(
+      stalledBacklog === false,
+      "drain: a zero-progress stop is not an over-budget backlog signal",
+    );
     assert(
       cStall.completeBookingsIfDue.length === 1 &&
         cStall.loadPastBookingsToComplete === 1,
@@ -257,9 +271,10 @@ async function run() {
       warns.push(String(line));
     };
     let over = 0;
+    let overBacklog = false;
     try {
       const { deps: dOver, calls: cOver } = makeDeps({ pastDueBatches: overflow });
-      over = await completePastBookings(dOver);
+      ({ completed: over, backlogRemains: overBacklog } = await completePastBookings(dOver));
       assert(
         cOver.completeBookingsIfDue.length === MAX_COMPLETION_DRAIN_BATCHES,
         "drain: stops at the per-run batch cap",
@@ -270,6 +285,10 @@ async function run() {
     assert(
       over === PAST_COMPLETION_BATCH_LIMIT * MAX_COMPLETION_DRAIN_BATCHES,
       "drain: completes exactly the cap's worth when the backlog overflows",
+    );
+    assert(
+      overBacklog === true,
+      "drain: an over-budget run reports backlog still waiting (#883 saturation signal)",
     );
     assert(
       warns.some(
