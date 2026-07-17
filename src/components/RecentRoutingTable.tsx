@@ -15,6 +15,18 @@ export type RecentRoutingRow = Pick<
 
 type RosterUser = { id: string; name: string | null; email: string };
 
+/** The whole roster is Eastern, so the "When" column renders in that zone to
+ *  match the history, lookup, and detail surfaces (not the server's UTC clock). */
+export function formatRoutingWhen(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /**
  * The admin "Recent routing" table (#905), extracted from the admin page so it
  * is unit-testable on its own. Read-only: each row links to the per-booking
@@ -59,12 +71,7 @@ export function RecentRoutingTable({
             return (
               <tr key={b.id} className="border-t border-border align-top">
                 <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
-                  {new Date(b.starts_at).toLocaleString("en-US", {
-                    month: "short",
-                    day: "numeric",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
+                  {formatRoutingWhen(b.starts_at)}
                 </td>
                 <td className="py-1.5 pr-3">{lead}</td>
                 <td className="py-1.5 pr-3 text-fg-muted">{t?.bucket_code ?? "?"}</td>
