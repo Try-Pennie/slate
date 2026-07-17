@@ -6,6 +6,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { reportCompletionSaturation } from "@/lib/monitor/sweep-saturation";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -30,17 +31,33 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { completed, backlogRemains } = await completePastBookings();
-    const retried = await retryFailedDeliveries();
+    // #887: the two jobs are independent and best-effort, mirroring the self-heal
+    // lane. One throwing must not stop the other, skip the heartbeat, or 500 the
+    // lane (which would fire the dead-man's switch for an unrelated failure).
+    const completion = await completePastBookings().catch((err) => {
+      log.error("complete", { msg: "completion sweep failed" }, err);
+      return null;
+    });
+    const retried = await retryFailedDeliveries().catch((err) => {
+      log.error("complete", { msg: "delivery retry failed" }, err);
+      return null;
+    });
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    // Stamped even when a job failed above (those log/alert on their own path);
+    // the heartbeat only proves the lane executed.
     await recordHeartbeat("complete").catch(() => {});
     // #883: page when the sweep can't drain its backlog for several runs running.
     // After the heartbeat and guarded, so a monitoring hiccup can neither skip the
-    // health stamp nor fail the lane it watches.
-    await reportCompletionSaturation(COMPLETION_SATURATED_KEY, backlogRemains).catch(
-      () => {},
-    );
-    return NextResponse.json({ completed, retried });
+    // health stamp nor fail the lane it watches. A failed sweep (null) tells the
+    // streak nothing; it must not fabricate a `false` that would clear a real backlog.
+    await reportCompletionSaturation(
+      COMPLETION_SATURATED_KEY,
+      completion?.backlogRemains ?? null,
+    ).catch(() => {});
+    return NextResponse.json({
+      completed: completion?.completed ?? "error",
+      retried: retried ?? "error",
+    });
   } finally {
     await releaseLock("cron_complete", lock);
   }

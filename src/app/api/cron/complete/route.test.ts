@@ -75,4 +75,37 @@ describe("GET /api/cron/complete", () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
   });
+
+  // #887: the two jobs are isolated. A completion-sweep failure must not stop the
+  // delivery retry or the heartbeat, and must not 500 the lane.
+  it("still retries deliveries and stamps the heartbeat when the completion sweep throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.completePastBookings.mockRejectedValueOnce(new Error("completion boom"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(emit.retryFailedDeliveries).toHaveBeenCalled();
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("complete");
+  });
+
+  // #887: a failed completion sweep tells the saturation streak NOTHING (null),
+  // never a fabricated `false` that would wrongly clear a real backlog streak.
+  it("reports a null backlog verdict when the completion sweep throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.completePastBookings.mockRejectedValueOnce(new Error("completion boom"));
+    await GET(req());
+    expect(saturation.reportCompletionSaturation).toHaveBeenCalledWith(
+      "completion_sweep_saturated",
+      null,
+    );
+  });
+
+  // #887: the other direction. A delivery-retry failure must not stop the
+  // heartbeat or 500 the lane.
+  it("still stamps the heartbeat when the delivery retry throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    emit.retryFailedDeliveries.mockRejectedValueOnce(new Error("retry boom"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("complete");
+  });
 });
