@@ -10,6 +10,7 @@
     "test": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/run-tests.ts && pnpm test:components",
     "test:components": "vitest run",
     "test:coverage": "node scripts/coverage.mjs",
+    "cleanup:smoke-events": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/cleanup-smoke-events.ts",
     "cf:build": "opennextjs-cloudflare build",
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
