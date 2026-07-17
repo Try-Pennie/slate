@@ -201,7 +201,7 @@ async function run() {
       { booking: makeBooking({ id: "p-real", status: "confirmed" }), bucket: realBucket, eventType },
     ];
     const { deps, calls } = makeDeps({ pastDue });
-    const completed = await completePastBookings(deps);
+    const { completed } = await completePastBookings(deps);
     assert(completed === 2, "complete(mixed batch): both bookings still transition to completed");
     assert(
       calls.webhooks.length === 2,

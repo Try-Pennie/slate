@@ -1782,7 +1782,10 @@ export function adminReassignBooking(
   });
 }
 
-export function completePastBookings(): Promise<number> {
+export function completePastBookings(): Promise<{
+  completed: number;
+  backlogRemains: boolean;
+}> {
   return orchestration.completePastBookings(realDeps());
 }
 

@@ -9,9 +9,12 @@ const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "lease"),
   releaseLock: vi.fn(async () => {}),
 }));
-const service = vi.hoisted(() => ({ completePastBookings: vi.fn(async () => 0) }));
+const service = vi.hoisted(() => ({
+  completePastBookings: vi.fn(async () => ({ completed: 0, backlogRemains: false })),
+}));
 const emit = vi.hoisted(() => ({ retryFailedDeliveries: vi.fn(async () => 0) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
+const saturation = vi.hoisted(() => ({ reportCompletionSaturation: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
@@ -19,6 +22,7 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/google/sync-coalesce", () => ({ CRON_LOCK_TTL_MS: 1000 }));
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+vi.mock("@/lib/monitor/sweep-saturation", () => saturation);
 
 import { GET } from "./route";
 
@@ -47,6 +51,27 @@ describe("GET /api/cron/complete", () => {
   it("still returns 200 when the heartbeat stamp fails (best-effort)", async () => {
     cron.isAuthorizedCron.mockReturnValueOnce(true);
     heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+  });
+
+  // #883: the sweep's over-budget verdict is handed to the saturation reporter so
+  // a sustained backlog pages instead of only logging.
+  it("reports the completion sweep's backlog verdict for the saturation streak", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.completePastBookings.mockResolvedValueOnce({ completed: 5000, backlogRemains: true });
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(saturation.reportCompletionSaturation).toHaveBeenCalledWith(
+      "completion_sweep_saturated",
+      true,
+    );
+  });
+
+  // Monitoring must never take down the lane it watches.
+  it("still returns 200 when the saturation report throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    saturation.reportCompletionSaturation.mockRejectedValueOnce(new Error("slack down"));
     const res = await GET(req());
     expect(res.status).toBe(200);
   });

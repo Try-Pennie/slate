@@ -3014,7 +3014,9 @@ async function completeDueBatch(
  *     replaces #223's per-batch warn, which now fires mid-drain and would read
  *     as "waiting" while we are in fact clearing it).
  */
-export async function completePastBookings(deps: BookingDeps): Promise<number> {
+export async function completePastBookings(
+  deps: BookingDeps,
+): Promise<{ completed: number; backlogRemains: boolean }> {
   let completed = 0;
   let batches = 0;
   let backlogRemains = false;
@@ -3042,7 +3044,9 @@ export async function completePastBookings(deps: BookingDeps): Promise<number> {
       batches,
     });
   }
-  return completed;
+  // `backlogRemains` is the completion sweep's saturation verdict: the caller
+  // folds it into a consecutive-run streak and pages when sustained (#883).
+  return { completed, backlogRemains };
 }
 
 export async function getBookingByToken(
