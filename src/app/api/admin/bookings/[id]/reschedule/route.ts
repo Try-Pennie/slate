@@ -7,6 +7,7 @@ import {
   SlotUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
+  RescheduleLockUnavailableError,
   NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
@@ -54,6 +55,10 @@ export async function POST(
     });
   } catch (err) {
     if (err instanceof VerifyUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    // Fail-closed lock claim on a transient DB error (#479): retryable, so 503.
+    if (err instanceof RescheduleLockUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // A concurrent reschedule moved this booking under us (#439): 409 + a distinct

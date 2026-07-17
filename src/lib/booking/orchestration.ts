@@ -186,6 +186,23 @@ export class VerifyUnavailableError extends Error {
 }
 
 /**
+ * Thrown when the per-booking reschedule lease can't be claimed because of an
+ * unexpected DB error (NOT a genuine conflict). The claim fails CLOSED (a claim
+ * we can't trust must never re-open the concurrent-duplicate window, #439), but
+ * the fault is transient and safe to retry, so it maps to a retriable 503 (like
+ * VerifyUnavailableError), not a generic 500 (#479). Routed through
+ * `bookingFailureAlert` so the outage still pages ops: before #479 it reached
+ * `internalErrorResponse` (which alerts per route), and mapping it to 503 earlier
+ * would otherwise silently drop that alert.
+ */
+export class RescheduleLockUnavailableError extends Error {
+  constructor() {
+    super("Could not lock this booking for reschedule. Please try again.");
+    this.name = "RescheduleLockUnavailableError";
+  }
+}
+
+/**
  * Thrown when a bucket has ZERO eligible agents (an empty/misconfigured pool —
  * e.g. an XBC code the attribute sync hasn't populated), as opposed to every
  * agent being genuinely busy (SlotUnavailableError). Distinct so a machine caller
