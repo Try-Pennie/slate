@@ -181,6 +181,8 @@ export async function resolveBucketByCode(
   const db = supabaseAdmin();
   // Fetch the bucket WITH its event type nested (one query instead of two
   // sequential cross-region hops) (#249). event_type_id is a FK to event_types.
+  // event_types is embedded via the buckets.event_type_id FK; the DB
+  // Relationships (#354) type the nested row, so no `unknown` cast is needed.
   const row = unwrap(
     await db
       .from("buckets")
@@ -188,7 +190,7 @@ export async function resolveBucketByCode(
       .eq("code", code)
       .maybeSingle(),
     "bucket by code",
-  ) as (Bucket & { event_types: EventType | null }) | null;
+  );
   if (!row) return null;
 
   const { event_types: eventType, ...bucket } = row;
@@ -244,20 +246,10 @@ export async function loadMembersAvailability(
         .range(pageFrom, pageTo),
   );
 
-  // Fail loud on the schedules read (#277). Cast through `unknown`: our hand-written DB
-  // types don't declare PostgREST embed relationships, so the typed client can't see the
-  // nested rules; the FK makes the embed valid at runtime.
-  const schedules = (unwrap(await schedulesP, "availability_schedules") ?? []) as unknown as {
-    id: string;
-    user_id: string;
-    timezone: string;
-    availability_rules: {
-      schedule_id: string;
-      weekday: number;
-      start_minute: number;
-      end_minute: number;
-    }[];
-  }[];
+  // Fail loud on the schedules read (#277). availability_rules is embedded via the
+  // rules.schedule_id FK; the DB Relationships (#354) type the nested rows, so no
+  // `unknown` cast is needed.
+  const schedules = unwrap(await schedulesP, "availability_schedules") ?? [];
 
   // Per-agent tz: the SAME last-wins pick assembleMemberAvailability makes (both fall
   // back to America/New_York for an agent with no schedule, matching the RPC's coalesce),

@@ -37,14 +37,26 @@ import type {
   WebhookEndpoint,
 } from "@/lib/db/types";
 
+// PostgREST embed relationship (#354): the same shape postgrest-js's
+// GenericRelationship expects. Hand-declared per table (in the FK-holder table)
+// so nested `.select()` embeds are type-checked instead of cast through unknown.
+type Relationship = {
+  foreignKeyName: string;
+  columns: string[];
+  isOneToOne?: boolean;
+  referencedRelation: string;
+  referencedColumns: string[];
+};
+
 // Intersecting with Record<string, unknown> gives our interfaces the implicit
 // index signature postgrest-js's GenericTable requires (interfaces lack one),
 // while keeping named columns for `.select()` results and insert payloads.
-type Table<Row> = {
+// `Rels` carries this table's embed relationships (default none).
+type Table<Row, Rels extends Relationship[] = []> = {
   Row: Row & Record<string, unknown>;
   Insert: Partial<Row> & Record<string, unknown>;
   Update: Partial<Row> & Record<string, unknown>;
-  Relationships: [];
+  Relationships: Rels;
 };
 
 export interface Database {
@@ -54,10 +66,32 @@ export interface Database {
       users: Table<User>;
       google_credentials: Table<GoogleCredentials>;
       event_types: Table<EventType>;
-      buckets: Table<Bucket>;
+      buckets: Table<
+        Bucket,
+        [
+          {
+            foreignKeyName: "buckets_event_type_id_fkey";
+            columns: ["event_type_id"];
+            isOneToOne: false;
+            referencedRelation: "event_types";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       bucket_members: Table<BucketMember>;
       availability_schedules: Table<AvailabilitySchedule>;
-      availability_rules: Table<AvailabilityRule>;
+      availability_rules: Table<
+        AvailabilityRule,
+        [
+          {
+            foreignKeyName: "availability_rules_schedule_id_fkey";
+            columns: ["schedule_id"];
+            isOneToOne: false;
+            referencedRelation: "availability_schedules";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       busy_blocks: Table<BusyBlock>;
       bookings: Table<Booking>;
       booking_events: Table<BookingEvent>;
