@@ -228,6 +228,10 @@ export function makeDeps(opts: FakeOpts) {
       lead_time_minutes: number | null;
       reschedule_seq: number | null;
     }[],
+    // #538: each loadBookingContext call's opts, so a test can assert the
+    // reschedule path folds the working-hours read in (withWorkingHours) rather
+    // than issuing a separate agentWorkingHours round-trip.
+    loadBookingContext: [] as ({ withWorkingHours?: boolean } | undefined)[],
     claimReschedule: 0,
     releaseReschedule: 0,
     releaseRescheduleIfTarget: 0,
@@ -559,7 +563,20 @@ export function makeDeps(opts: FakeOpts) {
           e.to_starts_at === toStartsIso &&
           (rescheduleSeq == null || e.reschedule_seq === rescheduleSeq),
       ),
-    loadBookingContext: async () => opts.existing ?? null,
+    loadBookingContext: async (_token: string, ctxOpts?: { withWorkingHours?: boolean }) => {
+      calls.loadBookingContext.push(ctxOpts);
+      const existing = opts.existing;
+      if (!existing) return null;
+      // #538: when the reschedule path opts in, the WH read is folded into the
+      // context load (mirrors realDeps), so the in-place guard consults
+      // ctx.agentWorkingHours instead of a separate agentWorkingHours call.
+      if (ctxOpts?.withWorkingHours && existing.booking.assigned_user_id) {
+        const wh =
+          opts.workingHoursByUser?.get(existing.booking.assigned_user_id) ?? DEFAULT_WORKING_HOURS;
+        return { ...existing, agentWorkingHours: wh };
+      }
+      return existing;
+    },
     // The outbox cancel handlers re-load by id; fall back to the same context
     // loadBookingContext returns so the inline run has the booking to act on.
     loadBookingById: async () => opts.bookingById ?? opts.existing ?? null,

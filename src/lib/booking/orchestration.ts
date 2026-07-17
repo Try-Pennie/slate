@@ -394,6 +394,14 @@ export interface BookingContext {
   booking: Booking;
   bucket: Bucket;
   eventType: EventType;
+  /**
+   * The assigned agent's working-hours schedule, folded into the context load on
+   * the reschedule path (#538) so the in-place guard's on-shift check adds no
+   * extra round-trip. Present only when loaded with `{ withWorkingHours: true }`
+   * AND the booking has an assigned agent; other callers (cancel, manage render)
+   * leave it undefined.
+   */
+  agentWorkingHours?: { timezone: string; rules: WorkingRule[] };
 }
 
 /** Every side effect the orchestration needs. `service.ts` wires the real ones. */
@@ -702,7 +710,15 @@ export interface BookingDeps {
     toStartsIso: string | null,
     rescheduleSeq?: number | null,
   ): Promise<string | null>;
-  loadBookingContext(token: string): Promise<BookingContext | null>;
+  /**
+   * `withWorkingHours` (#538) batches the assigned agent's working-hours read into
+   * the same round-trip as bucket + event type, so the reschedule in-place guard
+   * reads `ctx.agentWorkingHours` instead of a separate `agentWorkingHours` call.
+   */
+  loadBookingContext(
+    token: string,
+    opts?: { withWorkingHours?: boolean },
+  ): Promise<BookingContext | null>;
   loadBookingById(bookingId: string): Promise<BookingContext | null>;
   /**
    * Active bookings that may belong to this person, for the direct booking API's
@@ -2227,7 +2243,9 @@ export async function rescheduleBooking(
   nowMs: number = Date.now(),
   actor?: BookingActor,
 ): Promise<BookingResult> {
-  const ctx = await deps.loadBookingContext(token);
+  // #538: fold the in-place guard's working-hours read into the context load so
+  // it costs no extra round-trip on the hot reschedule path.
+  const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
   if (!ctx) throw new Error("Booking not found");
   const { booking, eventType } = ctx;
   if (booking.status === "cancelled" || booking.status === "completed") {
@@ -2375,7 +2393,9 @@ async function applyReschedule(
     // min_notice | buffer. daily_cap can't fire on a keep-same-agent move
     // (enforceDailyCap is off). null while there was no in-place candidate.
     if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
-      const wh = await deps.agentWorkingHours(booking.assigned_user_id);
+      // Folded into the context load (#538); the fallback covers a context loaded
+      // without the fold (it re-reads rather than crash on a missing schedule).
+      const wh = ctx.agentWorkingHours ?? (await deps.agentWorkingHours(booking.assigned_user_id));
       // Cheap rules-only on-shift gate first, so an off-shift reschedule re-routes
       // without a needless live Google read (the common #527 case).
       if (!isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {
