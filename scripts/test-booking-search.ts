@@ -84,7 +84,8 @@ async function main() {
       byText: async () => ((textCalled = true), []),
     }),
   );
-  eq(blank.length, 0, "blank query -> empty");
+  eq(blank.rows.length, 0, "blank query -> empty");
+  eq(blank.truncated, false, "blank query -> not truncated");
   assert(!idCalled && !textCalled, "blank query performs no DB read");
 
   // A non-UUID query routes to text search, NOT the id path.
@@ -97,7 +98,8 @@ async function main() {
       byText: async () => [bookings[0]],
     }),
   );
-  eq(textMatch.length, 1, "a non-uuid query matches via text search");
+  eq(textMatch.rows.length, 1, "a non-uuid query matches via text search");
+  eq(textMatch.truncated, false, "a small text result is not truncated");
   assert(!hitIdOnText, "a non-uuid query does NOT hit the id path");
 
   // A real UUID routes to byId with the org.
@@ -116,7 +118,8 @@ async function main() {
     }),
   );
   assert(hitId, "uuid query hits the byId path");
-  eq(idRows[0].id, uuid, "id row returned");
+  eq(idRows.rows[0].id, uuid, "id row returned");
+  eq(idRows.truncated, false, "an id lookup is never truncated");
 
   // Text query routes to byText with the org + limit and resolves names.
   let textArgs: { q: string; orgId: string; limit: number } | null = null;
@@ -130,11 +133,24 @@ async function main() {
       },
     }),
   );
-  eq(textRows.length, 3, "text query returns rows");
+  eq(textRows.rows.length, 3, "text query returns rows");
   assert(textArgs !== null, "byText was called");
   eq(textArgs!.orgId, "org1", "byText is tenant-scoped");
   eq(textArgs!.limit, 20, "byText carries the bound");
-  eq(textRows[0].agentName, "Jamie Smith", "text rows resolve agent names");
+  eq(textRows.rows[0].agentName, "Jamie Smith", "text rows resolve agent names");
+  eq(textRows.truncated, false, "3 rows under the bound -> not truncated");
+
+  // A text search that fills the bound is flagged truncated (there may be more).
+  const full = await searchBookings(
+    "org1",
+    "smith",
+    deps({
+      limit: 2,
+      byText: async () => [bookings[0], bookings[1]],
+    }),
+  );
+  eq(full.rows.length, 2, "returns the full page of rows");
+  eq(full.truncated, true, "a text result at the bound -> truncated");
 
   finish();
 }
