@@ -7,7 +7,7 @@ import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
-import { bookingDetailHref } from "@/lib/booking/detail";
+import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
 import { isActive } from "@/lib/active-user";
 import { dedupeFailingAgents, type FailingCalendarRow } from "@/lib/notify/alerts";
 import {
@@ -53,13 +53,11 @@ import BookingLookup from "@/components/BookingLookup";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import type {
   AuditEntry,
-  Booking,
   Bucket,
   BucketMember,
   Criteria,
   EventType,
   Organization,
-  RoutingTrace,
   User,
   WebhookDelivery,
   WebhookEndpoint,
@@ -86,16 +84,6 @@ const AUDIT_LABEL: Record<string, string> = {
   "monitor.settings": "changed alert settings",
 };
 
-type TraceRow = Pick<
-  Booking,
-  | "id"
-  | "attendee_name"
-  | "attendee_email"
-  | "attendee_phone"
-  | "starts_at"
-  | "assigned_user_id"
-  | "status"
-> & { routing_trace: RoutingTrace | null };
 
 export const dynamic = "force-dynamic";
 
@@ -370,7 +358,7 @@ export default async function AdminPage({
   const webhook = webhookRes.data as WebhookEndpoint | null;
 
   // Routing trace viewer: recent bookings + how each one routed.
-  const recent = (recentRes.data ?? []) as TraceRow[];
+  const recent = (recentRes.data ?? []) as RecentRoutingRow[];
   const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
   const nameOf = (id: string | null) =>
     id ? (agentName.get(id) ?? id.slice(0, 8)) : "unassigned";
@@ -1010,73 +998,7 @@ export default async function AdminPage({
           How the last {recent.length} bookings routed: agents considered, who
           was chosen, whether the fallback fired, and any manual reassignments.
         </p>
-        {recent.length === 0 ? (
-          <p className="text-sm text-fg-muted">No bookings yet.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="text-fg-muted">
-                <tr>
-                  <th className="py-1 pr-3 font-semibold">When</th>
-                  <th className="py-1 pr-3 font-semibold">Lead</th>
-                  <th className="py-1 pr-3 font-semibold">Bucket</th>
-                  <th className="py-1 pr-3 font-semibold">Routed to</th>
-                  <th className="py-1 pr-3 font-semibold">Trace</th>
-                  <th className="py-1 font-semibold">
-                    <span className="sr-only">Open booking</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {recent.map((b) => {
-                  const t = b.routing_trace;
-                  const lead =
-                    b.attendee_name || b.attendee_email || b.attendee_phone || "(none)";
-                  return (
-                    <tr key={b.id} className="border-t border-border align-top">
-                      <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
-                        {new Date(b.starts_at).toLocaleString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}
-                      </td>
-                      <td className="py-1.5 pr-3">{lead}</td>
-                      <td className="py-1.5 pr-3 text-fg-muted">{t?.bucket_code ?? "?"}</td>
-                      <td className="py-1.5 pr-3 font-semibold">{nameOf(b.assigned_user_id)}</td>
-                      <td className="py-1.5 text-fg-muted">
-                        {t ? (
-                          <div className="space-y-0.5">
-                            <div>
-                              {t.considered.length} considered
-                              {t.fallback_applied ? " · fallback used" : ""}
-                            </div>
-                            {(t.reassignments ?? []).map((r, i) => (
-                              <div key={i} className="text-pennie-blue dark:text-pennie-sky">
-                                reassigned {nameOf(r.from)} → {nameOf(r.to)}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          "no trace"
-                        )}
-                      </td>
-                      <td className="py-1.5 align-top">
-                        <a
-                          href={bookingDetailHref(b.id)}
-                          className="inline-flex min-h-9 items-center rounded-md border border-border bg-surface px-2 py-1 text-fg hover:border-fg/45"
-                        >
-                          Open
-                        </a>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <RecentRoutingTable rows={recent} users={users} />
       </section>
 
       {/* Reassign API key (admin only) */}
