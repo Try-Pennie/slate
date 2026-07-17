@@ -98,6 +98,13 @@ const VERIFY_OUTAGE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
 const NO_ELIGIBLE_AGENTS_ALERT_KEY = "no_eligible_agents";
 const NO_ELIGIBLE_AGENTS_COOLDOWN_MS = 60 * 60 * 1000;
 
+// Fires when a reschedule fails CLOSED because the per-booking lock claim hit an
+// unexpected DB error (not a real conflict) (#479). Before #479 this reached
+// internalErrorResponse (a generic 500 that alerts per route); now it maps to a
+// typed 503 earlier, so the outage alert must live here or it would be dropped.
+const RESCHEDULE_LOCK_OUTAGE_ALERT_KEY = "reschedule_lock_outage";
+const RESCHEDULE_LOCK_OUTAGE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
+
 // Google caps a freeBusy query at 20 calendar `items` (verified live against the
 // production domain — 20 → 0 errors, 21 → tooManyCalendarsRequested), so the
 // bulk verifier chunks calendar ids at 20 per call.
@@ -256,6 +263,7 @@ export {
   SlotUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
+  RescheduleLockUnavailableError,
   NoEligibleAgentsError,
   DailyCapExceededError,
   UnknownBucketError,
@@ -389,7 +397,7 @@ export async function claimRescheduleLock(
     // never re-opens the concurrent-duplicate window. No lock is held yet (the
     // claim is before the wrapper's try/finally), so nothing to release.
     log.error("reschedule", { msg: "lock claim failed", booking_id: bookingId }, error);
-    throw new Error("Could not lock this booking for reschedule. Please try again.");
+    throw new orchestration.RescheduleLockUnavailableError();
   }
   // A lease already exists: load it (+ the booking) to decide.
   // error-ok: expired-lease takeover decision; a null lock (incl. a read error) returns { outcome: "won" } and the caller retries the claim.
@@ -431,7 +439,7 @@ export async function claimRescheduleLock(
     // Fail CLOSED on an unexpected DB error, same rule as the claim insert: a
     // takeover we can't confirm must not proceed as a holder.
     log.error("reschedule", { msg: "lease takeover failed", booking_id: bookingId }, takeoverErr);
-    throw new Error("Could not lock this booking for reschedule. Please try again.");
+    throw new orchestration.RescheduleLockUnavailableError();
   }
   if (!took || took.length === 0) {
     // Lost the takeover race: another claimant re-leased first and its lease is
@@ -1517,6 +1525,14 @@ export function bookingFailureAlert(
       cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
       message:
         "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
+    };
+  }
+  if (err instanceof orchestration.RescheduleLockUnavailableError) {
+    return {
+      key: RESCHEDULE_LOCK_OUTAGE_ALERT_KEY,
+      cooldownMs: RESCHEDULE_LOCK_OUTAGE_ALERT_COOLDOWN_MS,
+      message:
+        "Slate: a reschedule failed CLOSED because the per-booking lock claim hit an unexpected DB error (not a real conflict). The actor saw a retryable 503. Check DB health.",
     };
   }
   if (err instanceof orchestration.NoEligibleAgentsError) {

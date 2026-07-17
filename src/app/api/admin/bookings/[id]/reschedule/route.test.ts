@@ -20,6 +20,12 @@ const service = vi.hoisted(() => {
   }
   class SlotUnavailableError extends Error {}
   class VerifyUnavailableError extends Error {}
+  class RescheduleLockUnavailableError extends Error {
+    constructor() {
+      super("Could not lock this booking for reschedule. Please try again.");
+      this.name = "RescheduleLockUnavailableError";
+    }
+  }
   class NoEligibleAgentsError extends Error {
     constructor(bucketCode: string) {
       super(`No eligible agents for bucket ${bucketCode}`);
@@ -31,6 +37,7 @@ const service = vi.hoisted(() => {
     RescheduleConflictError,
     SlotUnavailableError,
     VerifyUnavailableError,
+    RescheduleLockUnavailableError,
     NoEligibleAgentsError,
   };
 });
@@ -91,6 +98,14 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain("411");
+  });
+
+  it("maps RescheduleLockUnavailableError to a retriable 503 (not a generic 500) (#479)", async () => {
+    // Fail-closed lock claim on a transient DB error: safe to retry, so 503.
+    service.adminRescheduleBooking.mockRejectedValueOnce(new service.RescheduleLockUnavailableError());
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe("Could not lock this booking for reschedule. Please try again.");
   });
 
   it("maps an unexpected failure to a generic 500 that does not leak internals (#598)", async () => {

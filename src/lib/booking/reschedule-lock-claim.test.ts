@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { claimRescheduleLock } from "./service";
+import { RescheduleLockUnavailableError } from "./orchestration";
 
 // AUD-050 / #480: the expired-lease takeover in claimReschedule used to re-lease
 // UNCONDITIONALLY, so two claimants that both read the same crashed (expired)
@@ -17,7 +18,9 @@ type Row = Record<string, unknown>;
 // Minimal query-builder fake honoring the exact chains claimRescheduleLock uses:
 // insert (PK-conflict aware), select().eq().maybeSingle(), and
 // update().eq().or().select() with the `.or()` predicate actually evaluated.
-function makeFakeDb(seed: { locks?: Row[]; bookings?: Row[]; updateError?: { code?: string } } = {}) {
+function makeFakeDb(
+  seed: { locks?: Row[]; bookings?: Row[]; updateError?: { code?: string }; insertError?: { code?: string } } = {},
+) {
   const store: Record<string, Map<string, Row>> = {
     reschedule_locks: new Map((seed.locks ?? []).map((r) => [String(r.booking_id), r])),
     bookings: new Map((seed.bookings ?? []).map((r) => [String(r.id), r])),
@@ -74,6 +77,10 @@ function makeFakeDb(seed: { locks?: Row[]; bookings?: Row[]; updateError?: { cod
     private run(): { data: unknown; error: { code?: string } | null } {
       const table = store[this.table];
       if (this.mode === "insert") {
+        // A non-conflict insert error (e.g. a half-applied migration): fail closed.
+        if (this.table === "reschedule_locks" && seed.insertError) {
+          return { data: null, error: seed.insertError };
+        }
         const key = String(this.insertRow![pkCol(this.table)]);
         if (table.has(key)) return { data: null, error: { code: "23505" } };
         table.set(key, { ...this.insertRow! });
@@ -143,13 +150,22 @@ describe("claimRescheduleLock expired-lease takeover CAS (AUD-050)", () => {
     expect(claim.outcome).toBe("resume");
   });
 
-  it("fails CLOSED (throws) when the takeover UPDATE errors", async () => {
-    // A takeover we can't confirm must not silently proceed as a holder.
+  it("fails CLOSED with a typed retriable error when the takeover UPDATE errors (#479)", async () => {
+    // A takeover we can't confirm must not silently proceed as a holder. The throw
+    // is the typed RescheduleLockUnavailableError so the route maps it to 503 (a
+    // retriable transient fault), not a generic 500.
     const db = makeFakeDb({
       locks: [expiredLockAtT()],
       bookings: [{ id: "bk1", starts_at: OLD }],
       updateError: { code: "57014" },
     });
-    await expect(claimRescheduleLock(db, "bk1", T, NOW)).rejects.toThrow(/lock this booking/i);
+    await expect(claimRescheduleLock(db, "bk1", T, NOW)).rejects.toThrow(RescheduleLockUnavailableError);
+  });
+
+  it("fails CLOSED with a typed retriable error when the claim INSERT errors (#479)", async () => {
+    // A non-conflict insert error (not a 23505 lease-exists) must also fail closed
+    // with the typed retriable error, never re-open the concurrent-duplicate window.
+    const db = makeFakeDb({ insertError: { code: "57014" } });
+    await expect(claimRescheduleLock(db, "bk1", T, NOW)).rejects.toThrow(RescheduleLockUnavailableError);
   });
 });

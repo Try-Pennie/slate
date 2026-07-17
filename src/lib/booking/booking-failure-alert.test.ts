@@ -3,6 +3,7 @@ import { bookingFailureAlert } from "./service";
 import {
   NoEligibleAgentsError,
   VerifyUnavailableError,
+  RescheduleLockUnavailableError,
   SlotUnavailableError,
 } from "./orchestration";
 
@@ -33,6 +34,15 @@ describe("bookingFailureAlert", () => {
   it("alerts on a verify-on-book outage", () => {
     const spec = bookingFailureAlert(new VerifyUnavailableError());
     expect(spec?.key).toBe("verify_on_book_outage");
+  });
+
+  it("alerts on a fail-closed reschedule lock claim (a DB outage, not a conflict) (#479)", () => {
+    // Before #479 this reached internalErrorResponse (a generic 500) which fired a
+    // per-route internal_error alert. Now it maps to a typed 503 BEFORE that point,
+    // so the outage alert must live here or it would be silently dropped.
+    const spec = bookingFailureAlert(new RescheduleLockUnavailableError());
+    expect(spec?.key).toBe("reschedule_lock_outage");
+    expect(spec?.message).toMatch(/reschedule/i);
   });
 
   it("does NOT alert on an ordinary taken slot", () => {

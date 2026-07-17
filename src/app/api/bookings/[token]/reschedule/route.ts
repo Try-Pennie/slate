@@ -5,6 +5,7 @@ import {
   SlotUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
+  RescheduleLockUnavailableError,
   NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
@@ -56,6 +57,11 @@ export async function POST(
   } catch (err) {
     // Outage (couldn't verify), not a full slot — retryable (#319).
     if (err instanceof VerifyUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    // Fail-closed lock claim on a transient DB error (#479): safe to retry, so a
+    // 503 like a verify outage, not a hard 500.
+    if (err instanceof RescheduleLockUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // A concurrent reschedule moved this booking under us (#439). 409 like a slot
