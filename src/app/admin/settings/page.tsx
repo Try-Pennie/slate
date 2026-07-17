@@ -230,6 +230,21 @@ export default async function MonitorSettingsPage({
             </a>
           </div>
         </form>
+
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Diagnostics</h2>
+          <p className="mb-3 text-xs text-fg-muted">
+            When a booking&apos;s side effects (calendar, webhook) or a
+            crash-recovered create keep failing to deliver, the row backs off and
+            alerts. This view lists what is currently wedged and why.
+          </p>
+          <a
+            href="/admin/drain"
+            className="text-sm font-semibold text-pennie-blue underline dark:text-pennie-sky"
+          >
+            View stuck deliveries
+          </a>
+        </section>
       </main>
     </>
   );
