@@ -229,6 +229,40 @@ async function run() {
     );
   }
 
+  // --- #480: Guard-1 cleanup must NOT clobber a concurrent different-target lease ---
+  // The booking already sits at target T (a commit-then-crash left a T-pinned lock).
+  // Guard-1 cleans that leftover up, but between the OLD read-then-delete a DIFFERENT
+  // -target holder re-pins to T2. An unconditional delete clobbers that fresh T2 lease
+  // (the documented micro-race); the atomic target-conditional delete leaves it alone.
+  {
+    const T = "2026-06-08T13:00:00.000Z"; // the booking's current time (Guard-1 path)
+    const T2 = "2026-06-11T10:00:00.000Z"; // the concurrent holder's different target
+    const ctx = { booking: makeBooking({ starts_at: T }), bucket, eventType };
+    const pinAt = (target: string, seq: number) => ({
+      reschedule_seq: seq,
+      branch: "in_place" as const,
+      pinned_user_id: "a",
+      pinned_agent_email: "a@x.com",
+      gcal_client_id: "gcal-old",
+      target_starts_at: target,
+    });
+    const { deps, calls, getLease } = makeDeps({
+      existing: ctx,
+      heldLease: { target: T, pin: pinAt(T, 0) }, // the commit-then-crash leftover at T
+      repinAtCleanup: { toTarget: T2, pin: pinAt(T2, 1) }, // a different-target holder slips in
+    });
+    await rescheduleBooking("tok1", T, RR, "customer", deps, NOW);
+    const lease = getLease("bk1");
+    assert(
+      lease != null && Date.parse(lease.target) === Date.parse(T2),
+      "#480: Guard-1 cleanup leaves a concurrent different-target lease intact (no read->delete clobber)",
+    );
+    assert(
+      calls.releaseRescheduleIfTarget === 1 && calls.releaseReschedule === 0,
+      "#480: Guard-1 cleans up via the atomic target-conditional delete, not the unconditional one",
+    );
+  }
+
   // --- oscillation guard: reassign-branch create must use a deterministic seq-keyed id ---
   // (A->T1->T2->T1 must not reuse a tombstoned id; the full seq-increment assertion
   //  lands in Phase 2/3 unit tests once reschedule_seq exists. Here we pin the core:

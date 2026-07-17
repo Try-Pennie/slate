@@ -154,6 +154,12 @@ export interface FakeOpts {
   // EventGone so the reschedule recreates the event instead of committing a
   // phantom move.
   updateEventTimeGone?: boolean;
+  // #480: a concurrent different-target holder re-pins the lease at the exact
+  // instant Guard-1 runs its commit-then-crash cleanup delete. Fired at the
+  // ENTRY of the cleanup-delete method, modelling the documented read->delete
+  // micro-race: an unconditional delete clobbers this fresh lease; the atomic
+  // target-conditional delete leaves it untouched.
+  repinAtCleanup?: { toTarget: string; pin: ReschedulePin };
 }
 
 // Default fake working hours: Mon-Fri 09:00-17:00 America/New_York. Covers every
@@ -224,6 +230,7 @@ export function makeDeps(opts: FakeOpts) {
     }[],
     claimReschedule: 0,
     releaseReschedule: 0,
+    releaseRescheduleIfTarget: 0,
     invalidateSlots: [] as string[],
     roundRobinPreview: [] as (boolean | undefined)[],
     queryBookings: [] as unknown[],
@@ -258,6 +265,20 @@ export function makeDeps(opts: FakeOpts) {
       pin: opts.heldLease.pin ?? null,
     });
   }
+  // #480: models a concurrent different-target holder re-pinning the lease right
+  // as Guard-1's cleanup delete fires (the read->delete micro-race window). Fired
+  // ONCE, from the entry of the cleanup-delete method.
+  let repinFired = false;
+  const fireRepinAtCleanup = (bookingId: string): void => {
+    if (repinFired || !opts.repinAtCleanup) return;
+    repinFired = true;
+    const l = locks.get(bookingId);
+    if (l) {
+      l.target = opts.repinAtCleanup.toTarget;
+      l.pin = opts.repinAtCleanup.pin;
+      l.leaseUntilMs = Date.now() + RESCHEDULE_TTL;
+    }
+  };
   const free = opts.freeEmails ?? new Set(["a@x.com", "b@x.com"]);
   // #615: fire the injected concurrent op ONCE, from inside the Google call that
   // precedes the commit, so the gated commit sees a row a cancel/reassign changed.
@@ -503,7 +524,14 @@ export function makeDeps(opts: FakeOpts) {
     readReschedulePin: async (bookingId) => locks.get(bookingId)?.pin ?? null,
     releaseReschedule: async (bookingId) => {
       calls.releaseReschedule++;
+      fireRepinAtCleanup(bookingId);
       locks.delete(bookingId);
+    },
+    releaseRescheduleIfTarget: async (bookingId, target) => {
+      calls.releaseRescheduleIfTarget++;
+      fireRepinAtCleanup(bookingId);
+      const l = locks.get(bookingId);
+      if (l && Date.parse(l.target) === Date.parse(target)) locks.delete(bookingId);
     },
     loadAbandonedReschedulePins: async () => opts.abandonedPins ?? [],
     // #518 reassign-intent state. writeReassignIntent is an idempotent UPSERT on
@@ -628,7 +656,11 @@ export function makeDeps(opts: FakeOpts) {
     const l = locks.get(bookingId);
     if (l) l.leaseUntilMs = Date.now() - 1000;
   };
-  return { deps, calls, expireLease };
+  // Test helper: peek at a booking's in-memory reschedule lease (or undefined if
+  // released), so a test can assert whether a cleanup delete clobbered it (#480).
+  const getLease = (bookingId: string): { target: string; leaseUntilMs: number; pin: ReschedulePin | null } | undefined =>
+    locks.get(bookingId);
+  return { deps, calls, expireLease, getLease };
 }
 
 // Validated reasons for the changed reschedule/cancel/reassign signatures.
