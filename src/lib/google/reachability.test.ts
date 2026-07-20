@@ -10,14 +10,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const cal = vi.hoisted(() => ({ listCalendars: vi.fn() }));
 vi.mock("@/lib/google/calendar", () => cal);
 
-import { classifyCalendarReachability } from "./reachability";
+import { classifyCalendarReachability, REACHABILITY_PROBE_TIMEOUT_MS } from "./reachability";
 
 beforeEach(() => cal.listCalendars.mockReset());
 
 describe("classifyCalendarReachability", () => {
-  it("is reachable when the calendar list resolves, and probes by email", async () => {
+  it("is reachable when the calendar list resolves, and probes by email under a bounded timeout", async () => {
     cal.listCalendars.mockResolvedValue([{ id: "primary" }]);
     expect(await classifyCalendarReachability("a@b.com")).toBe("reachable");
-    expect(cal.listCalendars).toHaveBeenCalledWith("a@b.com");
+    // #922: the probe must carry a bound so a hanging Google can't stall the
+    // 'Make bookable' click indefinitely.
+    expect(cal.listCalendars).toHaveBeenCalledWith("a@b.com", REACHABILITY_PROBE_TIMEOUT_MS);
   });
+
 });
+// The abort/timeout -> transient mapping is covered exhaustively in
+// scripts/test-google-reachability.ts ("no status (network/abort) = transient"),
+// and that listCalendars actually aborts a hung fetch under this bound is proven
+// in calendar.test.ts (#922).
