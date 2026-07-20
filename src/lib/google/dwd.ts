@@ -1,5 +1,6 @@
 import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
 import { GoogleHttpError } from "@/lib/google/http-error";
+import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
 
 /**
  * Google domain-wide delegation: mint an access token that impersonates a
@@ -93,9 +94,11 @@ export async function getDelegatedToken(
     }),
   });
   if (!res.ok) {
+    const text = await res.text();
     throw new GoogleHttpError(
-      `Delegated token failed for ${email}: ${res.status} ${await res.text()}`,
+      `Delegated token failed for ${email}: ${res.status} ${text}`,
       res.status,
+      parseGoogleErrorReason(text),
     );
   }
   const data = (await res.json()) as { access_token: string; expires_in: number };

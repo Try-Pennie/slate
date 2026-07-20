@@ -1,5 +1,6 @@
 import { getDelegatedToken } from "@/lib/google/dwd";
 import { GoogleHttpError } from "@/lib/google/http-error";
+import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
 import {
   busyByCalendarFromResponse,
   hasBlockingBusy,
@@ -84,9 +85,15 @@ async function ok(res: Response, label: string): Promise<Response> {
   // calling ok(), so this stays strict for every other caller: a 410 (e.g. a
   // PATCH on a deleted event) is a failure, never a silent success.
   if (!res.ok) {
-    // Carry the status (#913) so callers like the reachability probe can tell a
-    // definitive account/permission failure apart from a transient one.
-    throw new GoogleHttpError(`${label} failed: ${res.status} ${await res.text()}`, res.status);
+    // Carry the status (#913) and the parsed reason (#917) so callers like the
+    // reachability probe can tell a definitive account/permission failure apart
+    // from a transient one (a 403 rate limit vs a 403 permission failure).
+    const text = await res.text();
+    throw new GoogleHttpError(
+      `${label} failed: ${res.status} ${text}`,
+      res.status,
+      parseGoogleErrorReason(text),
+    );
   }
   return res;
 }
