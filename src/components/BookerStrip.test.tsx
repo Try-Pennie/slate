@@ -43,6 +43,9 @@ describe("BookerStrip empty-window state (#261)", () => {
     // The bookable day's chip is enabled; a non-available day's chip is disabled.
     const enabled = chips.filter((b) => !(b as HTMLButtonElement).disabled);
     expect(enabled).toHaveLength(1);
+    // #260: chips hold a uniform min width so they stay tappable and scroll
+    // (rather than squish) on a narrow phone instead of sizing to label length.
+    chips.forEach((chip) => expect(chip.className).toContain("min-w-16"));
   });
 });
 
