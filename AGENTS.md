@@ -12,7 +12,11 @@ it never reaches main. Always start new work on a **fresh branch off `origin/mai
 (`git checkout -b <name> origin/main`); to continue work after a PR merges,
 branch fresh and cherry-pick. A `pre-push` hook (`.githooks/pre-push`, enabled by
 the `prepare` script) blocks pushing onto an already-merged/closed PR branch;
-override only when intentional with `ALLOW_MERGED_PUSH=1`.
+override only when intentional with `ALLOW_MERGED_PUSH=1`. That local hook fails
+open (no `gh`, no `hooksPath`, non-interactive contexts), so a server-side
+backstop (`.github/workflows/merge-gap.yml`, #113) also fires on every push to a
+non-main branch and fails the run when the branch has a merged/closed PR and no
+open one. `ALLOW_MERGED_PUSH=1` bypasses only the local hook, not the backstop.
 
 The same hook also runs CI's checks before every push — `tsc --noEmit`,
 `pnpm lint`, `pnpm test` (the unit suite, which includes the copy/dash lint and
