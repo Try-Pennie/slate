@@ -6,6 +6,15 @@ import { reachabilityFromError, type Reachability } from "@/lib/google/reachabil
 export type { Reachability } from "@/lib/google/reachability-classify";
 
 /**
+ * Bound for the activation reachability probe (#922). The admin 'Make bookable'
+ * click waits on this call (and the gate retries it once on a transient
+ * failure), so a slow or hanging Google must abort rather than stall the request
+ * indefinitely. An abort surfaces as a non-GoogleHttpError, which classifies as
+ * transient, feeding the existing retry-then-`google_unverified` path.
+ */
+export const REACHABILITY_PROBE_TIMEOUT_MS = 8000;
+
+/**
  * Live reachability probe for the bookable activation guard (#281, #913): can
  * Slate reach this agent's Google calendar via domain-wide delegation right now,
  * and if not, is the failure definitive or transient? There is no stored
@@ -21,7 +30,7 @@ export type { Reachability } from "@/lib/google/reachability-classify";
  */
 export async function classifyCalendarReachability(email: string): Promise<Reachability> {
   try {
-    await listCalendars(email);
+    await listCalendars(email, REACHABILITY_PROBE_TIMEOUT_MS);
     return "reachable";
   } catch (err) {
     const status = err instanceof GoogleHttpError ? err.status : undefined;

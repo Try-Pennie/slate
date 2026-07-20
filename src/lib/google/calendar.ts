@@ -130,8 +130,16 @@ export class CalendarListTruncated extends Error {
   }
 }
 
-/** Lists the calendars the impersonated agent can see (for busy aggregation). */
-export async function listCalendars(email: string): Promise<CalendarListEntry[]> {
+/**
+ * Lists the calendars the impersonated agent can see (for busy aggregation).
+ * Pass `timeoutMs` to bound each page fetch (#922, used by the bookable
+ * reachability probe so a hanging Google can't stall activation); the read/sync
+ * hot paths leave it unbounded as before.
+ */
+export async function listCalendars(
+  email: string,
+  timeoutMs?: number,
+): Promise<CalendarListEntry[]> {
   if (LOADTEST) return stubCalendarList();
   const entries: CalendarListEntry[] = [];
   let pageToken: string | undefined;
@@ -139,7 +147,7 @@ export async function listCalendars(email: string): Promise<CalendarListEntry[]>
     const params = new URLSearchParams({ maxResults: "250", showHidden: "true" });
     if (pageToken) params.set("pageToken", pageToken);
     const res = await ok(
-      await gfetch(email, `${BASE}/users/me/calendarList?${params.toString()}`),
+      await gfetch(email, `${BASE}/users/me/calendarList?${params.toString()}`, {}, timeoutMs),
       "calendarList.list",
     );
     const data = (await res.json()) as {
