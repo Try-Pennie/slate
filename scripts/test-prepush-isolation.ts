@@ -16,6 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scrubbedGitEnv } from "./lib/git-env.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,25 +28,11 @@ const helper = resolve(repoRoot, ".githooks/lib/isolate-pushed-tree.sh");
 // GIT_DIR overrides `cwd`, so a `git commit` meant for the throwaway repo below
 // would instead land in the REAL repo on the branch being pushed (#848: this
 // leaked an "add tracked" commit onto seven branches at once). Every git and
-// bash subprocess this test spawns must therefore run with those vars stripped,
-// so the throwaway repo is always fully self-contained.
-const GIT_ENV_VARS = [
-  "GIT_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_WORK_TREE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_COMMON_DIR",
-  "GIT_NAMESPACE",
-];
-
-function scrubbedEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const k of GIT_ENV_VARS) delete env[k];
-  return env;
-}
-
+// bash subprocess this test spawns must therefore run with those vars stripped
+// (scrubbedGitEnv, scripts/lib/git-env.ts), so the throwaway repo is always
+// fully self-contained.
 function git(cwd: string, ...args: string[]) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", env: scrubbedEnv() });
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", env: scrubbedGitEnv() });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
   return r.stdout.trim();
 }
@@ -59,7 +46,7 @@ mkdirSync(srcRepo);
 // We poison GIT_DIR/GIT_WORK_TREE to it for the duration of the test, exactly as
 // the pre-push hook environment would, and assert nothing ever leaks into it.
 const sentinel = join(parent, "sentinel.git");
-spawnSync("git", ["init", "--bare", "-q", sentinel], { env: scrubbedEnv() });
+spawnSync("git", ["init", "--bare", "-q", sentinel], { env: scrubbedGitEnv() });
 const savedGitDir = process.env.GIT_DIR;
 const savedGitWorkTree = process.env.GIT_WORK_TREE;
 process.env.GIT_DIR = sentinel;
@@ -83,7 +70,7 @@ try {
 
   const dest = join(parent, "isolated");
   const head = git(srcRepo, "rev-parse", "HEAD");
-  const r = spawnSync("bash", [helper, head, dest], { cwd: srcRepo, encoding: "utf8", env: scrubbedEnv() });
+  const r = spawnSync("bash", [helper, head, dest], { cwd: srcRepo, encoding: "utf8", env: scrubbedGitEnv() });
   assert(r.status === 0, `helper exits 0 (stderr: ${r.stderr})`);
 
   // The committed file is there...
@@ -98,7 +85,7 @@ try {
   const leaked = spawnSync(
     "git",
     ["--git-dir", sentinel, "rev-list", "--all", "--count"],
-    { encoding: "utf8", env: scrubbedEnv() },
+    { encoding: "utf8", env: scrubbedGitEnv() },
   ).stdout.trim();
   assert(leaked === "0", `no commit leaks into an inherited GIT_DIR (#848; sentinel commit count ${leaked})`);
 } finally {
@@ -107,7 +94,7 @@ try {
   else process.env.GIT_DIR = savedGitDir;
   if (savedGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
   else process.env.GIT_WORK_TREE = savedGitWorkTree;
-  spawnSync("git", ["worktree", "remove", "--force", join(parent, "isolated")], { cwd: srcRepo, env: scrubbedEnv() });
+  spawnSync("git", ["worktree", "remove", "--force", join(parent, "isolated")], { cwd: srcRepo, env: scrubbedGitEnv() });
   rmSync(parent, { recursive: true, force: true });
 }
 
