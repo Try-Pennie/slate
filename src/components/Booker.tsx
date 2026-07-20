@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
-import { BookerStrip } from "@/components/BookerStrip";
+import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
@@ -685,7 +685,7 @@ export default function Booker({
           <div className="-mx-2 -my-1 flex-1 space-y-2 overflow-y-auto px-2 py-1">
             {loading ? (
               Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className={`h-11 animate-pulse rounded-md ${c.skeleton}`} />
+                <div key={i} className={`h-11 animate-pulse rounded-md motion-reduce:animate-none ${c.skeleton}`} />
               ))
             ) : loadError ? (
               <div className="space-y-2">
@@ -808,16 +808,20 @@ export default function Booker({
           <div className="flex flex-col">
             {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
             <div className="px-6 pt-6">
-              <BookerStrip
-                today={today}
-                availableDays={[...slotsByDay.keys()].sort()}
-                activeDay={activeDay}
-                zone={zone}
-                onSelect={(iso) => {
-                  setSelectedDay(iso);
-                  setSelectedSlot(null);
-                }}
-              />
+              {loading ? (
+                <BookerStripSkeleton skeletonClass={c.skeleton} />
+              ) : (
+                <BookerStrip
+                  today={today}
+                  availableDays={[...slotsByDay.keys()].sort()}
+                  activeDay={activeDay}
+                  zone={zone}
+                  onSelect={(iso) => {
+                    setSelectedDay(iso);
+                    setSelectedSlot(null);
+                  }}
+                />
+              )}
             </div>
             {timesPanel}
           </div>

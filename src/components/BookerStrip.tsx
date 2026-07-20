@@ -2,6 +2,28 @@
 import { DateTime } from "luxon";
 import { stripDayLabel, bookerWeekDays, isStripDayEnabled } from "./booker-strip-labels";
 
+/**
+ * Cold-case loading treatment for the strip (#252): a branded row of placeholder
+ * chips while /api/availability is in flight, so the picker area reads as
+ * deliberately loading instead of a blank gap that then pops. Decorative
+ * (aria-hidden); the times panel's polite region announces "Loading available
+ * times". The pulse stops under prefers-reduced-motion. `skeletonClass` carries
+ * the theme-aware wash so light and dark both look right.
+ */
+export function BookerStripSkeleton({ skeletonClass }: { skeletonClass: string }) {
+  return (
+    <div aria-hidden="true" className="flex gap-2 overflow-x-auto">
+      {Array.from({ length: 7 }).map((_, i) => (
+        <div
+          key={i}
+          data-skeleton-chip
+          className={`h-[58px] flex-1 animate-pulse rounded-lg motion-reduce:animate-none ${skeletonClass}`}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function BookerStrip({
   today, availableDays, activeDay, zone, onSelect,
 }: {
