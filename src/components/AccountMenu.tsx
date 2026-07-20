@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import type { ThemePreference } from "@/lib/db/types";
+import type { CalendarMenuStatus } from "@/lib/calendar/header-status";
 
 /**
  * Collapses the header's secondary chrome — identity, theme, calendar status —
@@ -20,7 +21,7 @@ export function AccountMenu({
   email: string;
   role?: string;
   themePreference: ThemePreference;
-  calendar: "connected" | "disconnected" | "na";
+  calendar: CalendarMenuStatus;
   avatarUrl?: string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -111,7 +112,7 @@ export function AccountMenu({
 
           {calendar !== "na" && (
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-sm">
-              {calendar === "connected" ? (
+              {calendar === "connected" && (
                 <span className="inline-flex items-center gap-2 text-fg-muted">
                   <span
                     aria-hidden
@@ -119,7 +120,19 @@ export function AccountMenu({
                   />
                   Calendar connected
                 </span>
-              ) : (
+              )}
+              {calendar === "degraded" && (
+                // Real-time push is delayed but the every-minute backstop still
+                // syncs this agent, so this is informational, not the loud case.
+                <span className="inline-flex items-center gap-2 text-fg-muted">
+                  <span
+                    aria-hidden
+                    className="h-2 w-2 rounded-full bg-[var(--pennie-yellow)]"
+                  />
+                  Calendar syncing (live updates delayed)
+                </span>
+              )}
+              {calendar === "disconnected" && (
                 <>
                   <span className="inline-flex items-center gap-2 font-semibold text-error">
                     <span

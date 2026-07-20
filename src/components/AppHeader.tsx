@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/roles";
 import { getImpersonationView } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { calendarHeaderStatus } from "@/lib/calendar/header-status";
 import { stopImpersonation } from "@/app/admin/actions";
 import { ImpersonationDropNotice } from "@/components/ImpersonationDropNotice";
 import type { ThemePreference } from "@/lib/db/types";
@@ -106,21 +107,30 @@ export async function AppHeader({
   // a one-time notice when a "view as" session was silently dropped (#652).
   const impersonation = await getImpersonationView();
 
-  // Google Calendar sync status. DWD reaches calendars by email, so the real
-  // per-user "actively syncing" signal is a live push-watch channel. null =
-  // not checked (OOO-only agents don't sync). A bookable user with no live
-  // watch is the urgent case: their availability can drift and double-book.
-  let calendarConnected: boolean | null = null;
+  // Google Calendar sync status (#87). A live push-watch means real-time sync,
+  // but a watch lapses and auto-renews on the cron and the 1-min backstop syncs
+  // regardless, so "no live watch" is NOT the urgent case. Only a bookable agent
+  // with NO calendar row at all (we can't sync them) gets the loud banner; a
+  // lapsed watch with a row is "degraded". calendarHeaderStatus owns that call.
+  let calendar = calendarHeaderStatus({
+    checked: false,
+    bookable: bookable === true,
+    hasCalendars: false,
+    hasLiveWatch: false,
+  });
   if (userId && !oooOnly) {
     const { data } = await supabaseAdmin()
       .from("agent_calendars")
       .select("watch_expiration")
       .eq("user_id", userId);
-    calendarConnected = hasLiveWatch(
-      (data ?? []) as { watch_expiration: string | null }[],
-    );
+    const rows = (data ?? []) as { watch_expiration: string | null }[];
+    calendar = calendarHeaderStatus({
+      checked: true,
+      bookable: bookable === true,
+      hasCalendars: rows.length > 0,
+      hasLiveWatch: hasLiveWatch(rows),
+    });
   }
-  const calendarUrgent = bookable === true && calendarConnected === false;
 
   // Pending-OOO count on the Team Requests tab, so approvals don't depend on a
   // manager catching the Slack DM or the daily digest. Scoped to the manager's
@@ -169,7 +179,7 @@ export async function AppHeader({
     {impersonation.status === "dropped" && (
       <ImpersonationDropNotice reason={impersonation.reason} />
     )}
-    {calendarUrgent && (
+    {calendar.urgent && (
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-[var(--error)] px-4 py-2 text-center text-sm text-white">
         <span>
           Your Google Calendar isn&apos;t syncing, so your availability can be
@@ -218,13 +228,7 @@ export async function AppHeader({
             role={role}
             avatarUrl={avatarUrl}
             themePreference={themePreference}
-            calendar={
-              oooOnly || calendarConnected === null
-                ? "na"
-                : calendarConnected
-                  ? "connected"
-                  : "disconnected"
-            }
+            calendar={calendar.menu}
           />
         </div>
       </div>
