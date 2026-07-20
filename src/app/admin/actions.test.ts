@@ -26,6 +26,10 @@ const emit = vi.hoisted(() => ({
   resendDelivery: vi.fn(async () => {}),
   replayDeadLetteredDeliveries: vi.fn(async () => 0),
 }));
+const offboarding = vi.hoisted(() => ({
+  applyLifecycleByUserId: vi.fn(async () => ({ status: "applied", userId: "u2", deactivate: true })),
+  applyLifecycleByEmail: vi.fn(),
+}));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "claim" as string | null),
   releaseLock: vi.fn(async () => {}),
@@ -64,6 +68,7 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/locks", () => locks);
+vi.mock("@/lib/offboarding/service", () => offboarding);
 
 import {
   setUserRole,
@@ -74,6 +79,7 @@ import {
   replayFailedWebhooks,
   setWebhookEndpoint,
   setMonitorSettings,
+  setUserLifecycle,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
@@ -419,6 +425,48 @@ describe("setMonitorSettings save path (#582)", () => {
         actorId: admin.id,
         action: "monitor.settings",
       }),
+    );
+  });
+});
+
+// #278: the admin deactivate/reactivate action. The escalation guard
+// (requireManageAgent) is unit-tested via its predicates elsewhere; here we pin
+// the action-specific gates: a bad action is a no-op, deactivating YOURSELF is
+// refused before any write (self-lockout), and a valid call reaches the service
+// with the right direction and audits it.
+describe("setUserLifecycle (#278)", () => {
+  beforeEach(() => {
+    auth.requireManager.mockResolvedValue(admin);
+  });
+
+  it("ignores an unknown action without touching auth or the service", async () => {
+    await setUserLifecycle(form({ user_id: "u2", action: "frobnicate" }));
+    expect(auth.requireManager).not.toHaveBeenCalled();
+    expect(offboarding.applyLifecycleByUserId).not.toHaveBeenCalled();
+  });
+
+  it("refuses to deactivate your own account, and never calls the service", async () => {
+    await expect(
+      setUserLifecycle(form({ user_id: admin.id, action: "deactivate" })),
+    ).rejects.toThrow(/your own account/i);
+    expect(offboarding.applyLifecycleByUserId).not.toHaveBeenCalled();
+  });
+
+  it("deactivates a lower-ranked target and audits agent.deactivate", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate");
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "agent.deactivate", targetId: "u2" }),
+    );
+  });
+
+  it("reactivates through the service with the reactivate direction", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "reactivate" }));
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "reactivate");
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "agent.reactivate", targetId: "u2" }),
     );
   });
 });

@@ -30,6 +30,7 @@ import {
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { upsertUserSchedule } from "@/lib/schedule";
 import { writeBookable } from "@/lib/bookable/service";
+import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { acquireLock } from "@/lib/locks";
@@ -411,6 +412,29 @@ export async function setBookable(form: FormData): Promise<void> {
   // call here, and the read-only pill on the page already shows calendar health.
   await writeBookable(userId, form.get("bookable") === "true");
   revalidatePath("/admin");
+}
+
+/**
+ * Manager+-only: deactivate or reactivate a user by hand (#278), the same
+ * lifecycle the offboarding automation drives, so an admin can offboard or
+ * rehire without invoking the API. `action` is "deactivate" | "reactivate".
+ * Self-lockout guard: you cannot deactivate your own account (you'd lose access
+ * immediately); reactivating yourself is moot since you couldn't reach this page
+ * while deactivated. requireManageAgent enforces the manager+ / strict-outrank
+ * escalation gate and writes the audit row.
+ */
+export async function setUserLifecycle(form: FormData): Promise<void> {
+  const userId = String(form.get("user_id") ?? "");
+  const action = String(form.get("action") ?? "");
+  if (!userId || (action !== "deactivate" && action !== "reactivate")) return;
+  const actor = await requireManager();
+  if (action === "deactivate" && actor.id === userId) {
+    throw new Error("You cannot deactivate your own account.");
+  }
+  await requireManageAgent(userId, action === "deactivate" ? "agent.deactivate" : "agent.reactivate");
+  await applyLifecycleByUserId(userId, action);
+  revalidatePath("/admin");
+  revalidatePath(`/admin/agents/${userId}`);
 }
 
 /**

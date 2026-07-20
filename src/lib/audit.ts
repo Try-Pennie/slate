@@ -5,6 +5,8 @@ export type AuditAction =
   | "agent.hours"
   | "agent.use_default_hours"
   | "agent.bookable"
+  | "agent.deactivate"
+  | "agent.reactivate"
   | "agent.attributes"
   | "agent.manager"
   | "agent.ooo_calendar"
