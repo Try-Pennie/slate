@@ -14,11 +14,14 @@ export function BookerStrip({
   const week = bookerWeekDays(today);
   const anyEnabled = week.some((iso) => isStripDayEnabled(iso, availableDays, zone));
 
+  // #261: with no bookable day in the window, showing a row of seven greyed,
+  // disabled chips plus a message read oddly and duplicated the times panel's own
+  // "All times are taken right now. Check back soon." So the strip renders nothing
+  // here and lets the times panel own the single empty affordance.
+  if (!anyEnabled) return null;
+
   return (
     <div role="group" aria-label="Available days" className="flex gap-2 overflow-x-auto">
-      {!anyEnabled ? (
-        <p className="text-sm text-fg-muted">No times available in the next few days.</p>
-      ) : null}
       {week.map((iso) => {
         const d = DateTime.fromISO(iso, { zone });
         const enabled = isStripDayEnabled(iso, availableDays, zone);
