@@ -92,11 +92,13 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
 ## 4. Post-deploy config
 - **Offboarding API (optional):** to let the offboarding automation deactivate
   departed users, set `OFFBOARDING_API_KEY` (above), then point the automation at
-  `POST https://slate.trypennie.app/api/users/deactivate` (and `/reactivate` for a
-  rehire) with header `Authorization: Bearer <key>` and JSON body
-  `{ "email": "person@trypennie.com" }`. Deactivate-not-delete (history is kept);
-  idempotent. Unset key ⇒ the endpoints return 503 (disabled). Same pattern as
-  `REASSIGN_API_KEY`.
+  `POST https://slate.trypennie.app/api/users/lifecycle` with header
+  `Authorization: Bearer <key>` and JSON body
+  `{ "email": "person@trypennie.com", "action": "activate" | "deactivate" }`
+  (one URL, both directions). The original `/api/users/deactivate` and
+  `/api/users/reactivate` (body `{ "email": … }`) still work for callers not yet
+  migrated. Deactivate-not-delete (history is kept); idempotent. Unset key ⇒ the
+  endpoints return 503 (disabled). Same pattern as `REASSIGN_API_KEY`.
 - **Direct booking API (optional):** to let the programmatic/AI auto-booker book
   without the embed, set `BOOKING_API_KEY` (above) and share it with the
   integrator. Unset ⇒ `POST /api/bookings` returns 503. Set a second

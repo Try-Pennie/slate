@@ -35,7 +35,7 @@ names which one it requires.
 |---|---|---|---|
 | Booking API key | `Authorization: Bearer <key>` | `BOOKING_API_KEY`, `BOOKING_API_KEY_2` | `POST/GET/DELETE /api/bookings`, and (for hidden test buckets only) `GET /api/availability` |
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
-| Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/deactivate`, `POST /api/users/reactivate` |
+| Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Cron secret | `Authorization: Bearer <secret>` | `CRON_SECRET` | every `GET /api/cron/*` lane |
 | Google channel token | `X-Goog-Channel-Token` header | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` |
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
@@ -351,20 +351,28 @@ booking that can no longer change is `409`, anything unexpected is a generic
 
 ## Offboarding lifecycle (key-authed)
 
-Source: `src/app/api/users/deactivate/route.ts`,
-`src/app/api/users/reactivate/route.ts`, both built by
-`src/lib/offboarding/route-handler.ts` (#264 and #265). The existing offboarding
-automation POSTs here when someone joins or leaves. Deactivate does not delete
-(history is kept, reversible via reactivate).
+Source: `src/app/api/users/lifecycle/route.ts` (#282), plus the original
+`src/app/api/users/deactivate/route.ts` and
+`src/app/api/users/reactivate/route.ts` (#264 and #265), all built by
+`src/lib/offboarding/route-handler.ts`. The existing offboarding automation
+POSTs here when someone joins or leaves. Deactivate does not delete (history is
+kept, reversible via activate).
 
 **Auth:** `Authorization: Bearer <OFFBOARDING_API_KEY>`. Wrong key: `401`. No key
 configured: `503`.
+
+Preferred (one URL, both directions):
+
+- `POST /api/users/lifecycle` body `{ "email": "…", "action": "activate" | "deactivate" }`
+
+An unknown or missing `action` is a `400`. Kept for callers not yet migrated
+(same auth, body, and responses):
 
 - `POST /api/users/deactivate` body `{ "email": "…" }`
 - `POST /api/users/reactivate` body `{ "email": "…" }`
 
 Missing email: `400`. Response: `200 { "status", "userId"?, "deactivate"? }`.
-Unknown email: `404`.
+Deactivating an unknown email is an idempotent `200`; activating one is `404`.
 
 ---
 
@@ -511,7 +519,7 @@ accounted for.
 | `BOOKING_API_KEY` | Booking API (primary key) | `503` on `/api/bookings` (endpoint disabled) |
 | `BOOKING_API_KEY_2` | Booking API (secondary, for zero-downtime rotation) | Ignored; primary still works |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
-| `OFFBOARDING_API_KEY` | `/api/users/deactivate`, `/api/users/reactivate` | `503` |
+| `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |
 | `CRON_SECRET` | every `/api/cron/*` lane | required env; lane returns `401` without a matching Bearer |
 | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` | required env; `403` on token mismatch |
 

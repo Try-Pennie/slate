@@ -10,13 +10,25 @@ const svc = vi.hoisted(() => ({ applyLifecycleByEmail: vi.fn() }));
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/offboarding/service", () => svc);
 
-import { makeLifecycleHandler } from "./route-handler";
+import { makeLifecycleHandler, makeLifecycleActionHandler } from "./route-handler";
 
 function post(action: "deactivate" | "reactivate", body: unknown, auth = "Bearer secret") {
   const headers = new Headers({ "content-type": "application/json" });
   if (auth) headers.set("authorization", auth);
   return makeLifecycleHandler(action)(
     new Request("http://localhost/api/users/" + action, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    }) as never,
+  );
+}
+
+function postAction(body: unknown, auth = "Bearer secret") {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (auth) headers.set("authorization", auth);
+  return makeLifecycleActionHandler()(
+    new Request("http://localhost/api/users/lifecycle", {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -57,5 +69,54 @@ describe("offboarding lifecycle handler", () => {
     expect((await post("deactivate", { email: "x@y.com" })).status).toBe(503);
     env.offboardingApiKey.mockReturnValue("secret");
     expect((await post("deactivate", { email: "x@y.com" }, "Bearer wrong")).status).toBe(401);
+  });
+});
+
+// #282: one URL taking email + action (activate|deactivate), so the offboarding
+// automation integrates against a single endpoint. Maps the API's activate word
+// to the internal reactivate, and preserves the per-action not_found semantics
+// (deactivate is idempotent -> 200; activate of a missing user -> 404).
+describe("consolidated lifecycle action handler", () => {
+  beforeEach(() => {
+    env.offboardingApiKey.mockReturnValue("secret");
+    svc.applyLifecycleByEmail.mockReset();
+  });
+
+  it("maps action 'activate' to a reactivate call", async () => {
+    svc.applyLifecycleByEmail.mockResolvedValue({ status: "applied", userId: "u1", deactivate: false });
+    const res = await postAction({ email: "rehire@trypennie.com", action: "activate" });
+    expect(res.status).toBe(200);
+    expect(svc.applyLifecycleByEmail).toHaveBeenCalledWith("rehire@trypennie.com", "reactivate");
+  });
+
+  it("maps action 'deactivate' to a deactivate call", async () => {
+    svc.applyLifecycleByEmail.mockResolvedValue({ status: "applied", userId: "u1", deactivate: true });
+    const res = await postAction({ email: "leaver@trypennie.com", action: "deactivate" });
+    expect(res.status).toBe(200);
+    expect(svc.applyLifecycleByEmail).toHaveBeenCalledWith("leaver@trypennie.com", "deactivate");
+  });
+
+  it("deactivating a non-existent user succeeds (200), activating one is 404", async () => {
+    svc.applyLifecycleByEmail.mockResolvedValue({ status: "not_found" });
+    expect((await postAction({ email: "gone@trypennie.com", action: "deactivate" })).status).toBe(200);
+    expect((await postAction({ email: "gone@trypennie.com", action: "activate" })).status).toBe(404);
+  });
+
+  it("rejects a missing or unknown action with 400", async () => {
+    expect((await postAction({ email: "x@y.com" })).status).toBe(400);
+    expect((await postAction({ email: "x@y.com", action: "reactivate" })).status).toBe(400);
+    expect((await postAction({ email: "x@y.com", action: "bookable" })).status).toBe(400);
+    expect(svc.applyLifecycleByEmail).not.toHaveBeenCalled();
+  });
+
+  it("requires an email (400)", async () => {
+    expect((await postAction({ action: "deactivate" })).status).toBe(400);
+  });
+
+  it("requires a key (503) and rejects a bad one (401)", async () => {
+    env.offboardingApiKey.mockReturnValue("");
+    expect((await postAction({ email: "x@y.com", action: "deactivate" })).status).toBe(503);
+    env.offboardingApiKey.mockReturnValue("secret");
+    expect((await postAction({ email: "x@y.com", action: "deactivate" }, "Bearer wrong")).status).toBe(401);
   });
 });
