@@ -21,6 +21,36 @@ build, #412) — so a CI-only failure (including a build-only break) is caught
 locally instead of breaking main after merge. It's ~20s on a warm cache; skip it
 in a pinch with `SKIP_PREPUSH_CHECKS=1`.
 
+# Parallel-agent dispatch playbook (worktree fan-out)
+
+This repo is often worked in fan-out mode: dispatch several subagents at once,
+each in its own git worktree (`isolation: "worktree"`, created under
+`.claude/worktrees/`), one small issue per agent. The rules below get
+re-derived by hand every time and one was missed once (a branch-contamination
+scare in the first wave), so they live here now.
+
+- **Pick disjoint issues.** Give each agent an issue whose files do **not**
+  overlap another agent's. Overlapping edits collide at merge and undo the point
+  of parallelism. If two issues touch the same file, run them in sequence, not in
+  the same wave.
+- **Each worktree starts with no `node_modules`.** A fresh worktree does not
+  inherit the main checkout's install, so every agent must run `pnpm install`
+  (with the sandbox network override) **before** the pre-push gate
+  (`tsc` / `lint` / `pnpm test` / `cf:build`) can run. Until #852 pre-seeds them,
+  budget for one full install per agent.
+- **Verify each branch against its own merge-base, not `origin/main`.** Under a
+  live fleet `origin/main` advances while the wave runs, so diffing a branch
+  against current `origin/main` shows other agents' merged work as if it were
+  this branch's. Diff against the branch's merge-base
+  (`git diff $(git merge-base origin/main <branch>)..<branch>`) to see only what
+  this agent actually changed.
+- **Never trust an agent's self-reported "clean."** A subagent will report a
+  branch green that never had `node_modules` and so never ran the gate. Confirm
+  each branch yourself (gate ran, diff is scoped, tests pass) before merging.
+
+Refs: `.githooks/pre-push`, #852 (pre-seed node_modules), #853 (audit tests for
+real git/fs writes under the hook).
+
 # Applying a database migration
 
 Deploys do **not** apply Supabase migrations. Every schema change is a deliberate
