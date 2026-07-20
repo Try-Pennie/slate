@@ -4,6 +4,7 @@ import { planBookableChange } from "@/lib/bookable/plan";
 import { classifyCalendarReachability } from "@/lib/google/reachability";
 import type { Reachability } from "@/lib/google/reachability-classify";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { cleanupOnPoolExit } from "@/lib/google/sync";
 import { log } from "@/lib/log";
 
 /**
@@ -29,6 +30,8 @@ export interface BookableDeps {
   checkReachable: (email: string) => Promise<Reachability>;
   /** Throttled named alert (injected in tests). */
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  /** Pool-exit cleanup on deactivation: stop watches + prune busy_blocks (#239/#248). */
+  cleanupOnPoolExit: (userId: string) => Promise<void>;
 }
 
 const defaultDeps: BookableDeps = {
@@ -36,6 +39,14 @@ const defaultDeps: BookableDeps = {
   // Best-effort: a flaky Slack must never fail the flip (the write already
   // didn't happen on a block; the alert is the only side effect left).
   notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text).catch(() => {}),
+  // Best-effort: the flip already succeeded, so a cleanup failure must not fail
+  // it. The self-heal reconcile backstop retries any leftover watch/blocks.
+  cleanupOnPoolExit: (userId) =>
+    cleanupOnPoolExit(userId)
+      .then(() => {})
+      .catch((err) =>
+        log.error("bookable-api", { msg: "pool-exit cleanup failed", user_id: userId }, err),
+      ),
 };
 
 /**
@@ -136,6 +147,11 @@ async function applyBookableToRow(
   }
 
   await writeBookable(user!.id, plan.bookable);
+  // Left the pool: stop the agent's Google watches and prune their cached busy
+  // time so we're no longer POSTed for someone we don't book (#239/#248).
+  if (plan.bookable === false) {
+    await deps.cleanupOnPoolExit(user!.id);
+  }
   log.info("bookable-api", { msg: "bookable set", user_id: user!.id, bookable: plan.bookable });
   return { status: "applied", userId: user!.id, bookable: plan.bookable };
 }

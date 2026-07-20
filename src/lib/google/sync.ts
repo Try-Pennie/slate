@@ -736,3 +736,118 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
     return { status: "error", error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+export interface PoolExitCleanup {
+  /** Google watch channels we attempted to stop this run (0 once cleaned). */
+  watchesStopped: number;
+  /** Cached busy_blocks rows removed for the agent. */
+  blocksDeleted: number;
+}
+
+/**
+ * Clean up after an agent leaves the bookable pool (#239, #248). Stops every
+ * Google push-watch channel the agent still holds and nulls the watch columns,
+ * so Google stops POSTing change notifications to `/api/google/push` for someone
+ * we no longer book, and deletes the agent's cached `busy_blocks` (availability
+ * never reads them for a non-bookable agent, so they only bloat the table).
+ *
+ * Idempotent and best-effort per side effect: a failed `stopChannel` is
+ * swallowed (the channel auto-expires within days regardless) and the watch
+ * columns are still cleared, so a re-run or the periodic reconcile backstop
+ * converges. Safe to run twice.
+ */
+export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup> {
+  const db = supabaseAdmin();
+  const email = await loadAgentEmail(userId);
+  const cals = await loadAgentCalendars(userId);
+
+  let watchesStopped = 0;
+  for (const c of cals) {
+    if (email && c.watch_channel_id && c.watch_resource_id) {
+      await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch(() => {});
+      watchesStopped++;
+    }
+  }
+
+  // Clear the watch columns in one write so a re-run/reconcile sees no live watch
+  // and doesn't try to stop them again. Skip the write when nothing is set.
+  if (cals.some((c) => c.watch_channel_id || c.watch_resource_id || c.watch_expiration)) {
+    await db
+      .from("agent_calendars")
+      .update({ watch_channel_id: null, watch_resource_id: null, watch_expiration: null })
+      .eq("user_id", userId);
+  }
+
+  // Prune cached busy time. A delete is not a capped read, so this removes every
+  // matching row regardless of PostgREST's page cap.
+  const { count } = await db
+    .from("busy_blocks")
+    .delete({ count: "exact" })
+    .eq("user_id", userId);
+
+  return { watchesStopped, blocksDeleted: count ?? 0 };
+}
+
+/**
+ * Periodic backstop for the pool-exit cleanup (#239/#248). The synchronous hook
+ * on the bookable toggle handles the normal path, but an agent can also leave the
+ * pool WITHOUT going through it (Salesforce deactivation sets `deactivated_at`
+ * directly), and the #238 flip benchmark left ~100 orphaned watches from before
+ * the hook existed. This sweep, run on the self-heal lane, mops those up:
+ *   1. Agents no longer routable (bookable=false OR deactivated) that still hold a
+ *      LIVE push-watch get the full teardown, bounded to `limit` agents per tick
+ *      so a large historical backlog can't blow the Worker subrequest ceiling
+ *      (rotation catches the rest on later ticks).
+ *   2. All non-routable agents' cached busy_blocks are pruned in one bulk delete
+ *      (harmless to correctness, but they otherwise accumulate unbounded).
+ * Fail-loud on the roster reads (unwrap): a broken read must not read as "nothing
+ * to reconcile". Per-agent teardown is best-effort so one bad agent can't stall
+ * the sweep.
+ */
+export async function reconcileOrphanedPoolExits(
+  limit: number,
+): Promise<{ scanned: number; cleaned: number; blocksDeleted: number }> {
+  const db = supabaseAdmin();
+  // Everyone who has left the bookable pool on either axis. `users` is
+  // roster-bounded (a fixed 100-200 agent target), so this can't fill a page.
+  const leftRows = (unwrap(
+    await db
+      .from("users")
+      .select("id")
+      .or("bookable.eq.false,deactivated_at.not.is.null"),
+    "pool-exit-reconcile",
+  ) ?? []) as { id: string }[];
+  const ids = leftRows.map((r) => r.id);
+  if (ids.length === 0) return { scanned: 0, cleaned: 0, blocksDeleted: 0 };
+
+  // Of those, which still hold a live push-watch (the #239 load symptom).
+  // agent_calendars is roster-bounded too.
+  const watchRows = (unwrap(
+    await db
+      .from("agent_calendars")
+      .select("user_id")
+      .in("user_id", ids)
+      .not("watch_channel_id", "is", null),
+    "pool-exit-reconcile-watches",
+  ) ?? []) as { user_id: string }[];
+  const withWatch = [...new Set(watchRows.map((r) => r.user_id))].slice(0, limit);
+
+  let blocksDeleted = 0;
+  for (const id of withWatch) {
+    const res = await cleanupOnPoolExit(id).catch((err) => {
+      log.error("pool-exit-reconcile", { msg: "watch teardown failed", user_id: id }, err);
+      return null;
+    });
+    blocksDeleted += res?.blocksDeleted ?? 0;
+  }
+
+  // #248 backstop: prune cached busy time for everyone who left the pool (a bulk
+  // delete, so already-cleaned agents from the loop above simply match nothing).
+  const { count } = await db
+    .from("busy_blocks")
+    .delete({ count: "exact" })
+    .in("user_id", ids);
+  blocksDeleted += count ?? 0;
+
+  return { scanned: ids.length, cleaned: withWatch.length, blocksDeleted };
+}

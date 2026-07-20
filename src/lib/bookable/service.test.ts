@@ -37,6 +37,7 @@ function deps(...outcomes: Reachability[]) {
   return {
     checkReachable: vi.fn(async (_email: string) => seq.shift() ?? outcomes[outcomes.length - 1]),
     notify: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+    cleanupOnPoolExit: vi.fn(async (_userId: string) => {}),
   };
 }
 
@@ -149,5 +150,38 @@ describe("applyBookableByUserId", () => {
     const res = await applyBookableByUserId("u9", true, d);
     expect(res).toMatchObject({ status: "blocked", userId: "u9", reason: "google_unreachable" });
     expect(updates).toEqual([]);
+  });
+});
+
+// #239/#248: leaving the pool (true->false applied) must trigger the pool-exit
+// cleanup (stop Google watches + prune busy_blocks) so we stop being POSTed for an
+// agent we no longer book. Entering the pool, a no-op, and a blocked flip must NOT.
+describe("pool-exit cleanup on deactivation", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    currentUser = null;
+  });
+
+  it("runs cleanup for the agent when a true->false flip is applied", async () => {
+    currentUser = { id: "u9", bookable: true, email: "leaving@trypennie.com" };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u9", false, d);
+    expect(res).toMatchObject({ status: "applied", bookable: false });
+    expect(d.cleanupOnPoolExit).toHaveBeenCalledWith("u9");
+  });
+
+  it("does not run cleanup when an agent enters the pool", async () => {
+    currentUser = { id: "u9", bookable: false, email: "joining@trypennie.com" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u9", true, d);
+    expect(d.cleanupOnPoolExit).not.toHaveBeenCalled();
+  });
+
+  it("does not run cleanup on a no-op (already non-bookable)", async () => {
+    currentUser = { id: "u9", bookable: false, email: "already@trypennie.com" };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u9", false, d);
+    expect(res.status).toBe("noop");
+    expect(d.cleanupOnPoolExit).not.toHaveBeenCalled();
   });
 });
