@@ -10,6 +10,7 @@ const locks = vi.hoisted(() => ({
 }));
 const service = vi.hoisted(() => ({
   processPendingEventDeletions: vi.fn(async () => ({})),
+  checkCreationOrphans: vi.fn(async () => ({ scanned: 0, confirmed: [] as { id: string }[] })),
   reconcileCancelledBusyBlocks: vi.fn(async () => ({ freed: 0, scanned: 0 })),
   reconcileMissingBusyBlocks: vi.fn(async () => ({ recreated: 0, scanned: 0 })),
 }));
@@ -86,5 +87,27 @@ describe("GET /api/cron/selfheal", () => {
     const body = await res.json();
     expect(body.poolExitCleaned).toBe("error");
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
+  });
+
+  // #830: the creation-orphan check runs on this lane and its confirmed count
+  // surfaces in the response.
+  it("runs the creation-orphan check and surfaces its confirmed count", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.checkCreationOrphans.mockResolvedValueOnce({ scanned: 3, confirmed: [{ id: "a" }, { id: "b" }] });
+    const res = await GET(req());
+    expect(service.checkCreationOrphans).toHaveBeenCalledWith(20);
+    const body = await res.json();
+    expect(body.creationOrphans).toBe(2);
+  });
+
+  // Failure path: a throwing creation-orphan check is caught; the tick still
+  // returns 200 and the count reads "error".
+  it("still returns 200 when the creation-orphan check throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.checkCreationOrphans.mockRejectedValueOnce(new Error("google down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.creationOrphans).toBe("error");
   });
 });
