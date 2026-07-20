@@ -16,6 +16,7 @@ export type MonitorAlertKey =
   | "low_booking_volume"
   | "thin_tier_staffing"
   | "agents_without_schedule"
+  | "agents_without_routing"
   | "migration_version_lag"
   | "sync_staleness";
 
@@ -26,6 +27,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "low_booking_volume",
   "thin_tier_staffing",
   "agents_without_schedule",
+  "agents_without_routing",
   "migration_version_lag",
   "sync_staleness",
 ];
@@ -68,6 +70,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Whisper when a bookable agent's working-hours schedule could not be auto-created.",
   },
   {
+    key: "agents_without_routing",
+    label: "Unroutable agent cooldown",
+    help: "Whisper when a bookable agent has no routing attributes and no manual bucket membership, so they match no bucket.",
+  },
+  {
     key: "migration_version_lag",
     label: "Migration-lag page cooldown",
     help: "Urgent page when the live database is missing a migration the deployed code ships.",
@@ -93,6 +100,10 @@ export const MONITOR_DEFAULTS = {
     // the fill is broken and persists until a human acts. Once-a-day whisper, like
     // the thin-tier nudge; the settings screen can tighten it.
     agents_without_schedule: 24 * 60 * 60_000,
+    // Routing-attribute gap (#226): a staffing/config gap that persists until a
+    // human sets attributes or adds a manual member. Once-a-day whisper, like the
+    // schedule-coverage and thin-tier nudges; the settings screen can tighten it.
+    agents_without_routing: 24 * 60 * 60_000,
     // Schema behind the deployed code (#516). Repeats hourly while it persists:
     // it stays broken until a human runs db push, and a dormant schema gap has
     // twice gone unnoticed for a whole session, so it should keep asking.
