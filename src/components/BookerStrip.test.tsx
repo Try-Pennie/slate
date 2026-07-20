@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DateTime } from "luxon";
-import { BookerStrip } from "@/components/BookerStrip";
+import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 
 // #261: when the whole rolling week has no bookable day, the strip used to show a
 // "No times available in the next few days" message AND all seven greyed/disabled
@@ -43,5 +43,29 @@ describe("BookerStrip empty-window state (#261)", () => {
     // The bookable day's chip is enabled; a non-available day's chip is disabled.
     const enabled = chips.filter((b) => !(b as HTMLButtonElement).disabled);
     expect(enabled).toHaveLength(1);
+  });
+});
+
+// #252: the cold-case loading treatment. The strip area shows a branded skeleton
+// (not a blank gap, not a bare spinner) while availability is in flight, and the
+// pulse stops under prefers-reduced-motion.
+describe("BookerStripSkeleton (#252)", () => {
+  it("renders a full week of placeholder chips, hidden from assistive tech", () => {
+    const { container } = render(<BookerStripSkeleton skeletonClass="bg-fg/10" />);
+    const chips = container.querySelectorAll("[data-skeleton-chip]");
+    expect(chips).toHaveLength(7);
+    // Decorative: the polite region announces "Loading available times", so the
+    // skeleton itself is aria-hidden.
+    expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("honors prefers-reduced-motion (pulse disabled) on every placeholder", () => {
+    const { container } = render(<BookerStripSkeleton skeletonClass="bg-fg/10" />);
+    const chips = container.querySelectorAll("[data-skeleton-chip]");
+    chips.forEach((chip) => {
+      expect(chip.className).toContain("animate-pulse");
+      expect(chip.className).toContain("motion-reduce:animate-none");
+    });
   });
 });
