@@ -6,6 +6,7 @@
 import {
   classifyGoogleStatus,
   reachabilityFromError,
+  parseGoogleErrorReason,
 } from "../src/lib/google/reachability-classify.ts";
 import { GoogleHttpError } from "../src/lib/google/http-error.ts";
 import { eq, finish } from "./lib/harness.ts";
@@ -22,10 +23,33 @@ eq(classifyGoogleStatus(503), "transient", "503 = transient");
 eq(classifyGoogleStatus(429), "transient", "429 rate limit = transient");
 eq(classifyGoogleStatus(undefined), "transient", "no status (network/abort) = transient");
 
+// #917: a 403 caused by a rate limit is transient, not "gone". The reason
+// disambiguates the same 403 status.
+eq(classifyGoogleStatus(403, "rateLimitExceeded"), "transient", "403 rateLimitExceeded = transient");
+eq(classifyGoogleStatus(403, "userRateLimitExceeded"), "transient", "403 userRateLimitExceeded = transient");
+eq(classifyGoogleStatus(403, "quotaExceeded"), "transient", "403 quotaExceeded = transient");
+eq(classifyGoogleStatus(403, "forbidden"), "gone", "403 with a non-rate-limit reason = gone");
+eq(classifyGoogleStatus(403, undefined), "gone", "403 with no reason = gone (default)");
+
+// parseGoogleErrorReason pulls the reason out of a Google error body.
+eq(
+  parseGoogleErrorReason('{"error":{"errors":[{"reason":"rateLimitExceeded"}],"code":403}}'),
+  "rateLimitExceeded",
+  "parses calendar error body reason",
+);
+eq(parseGoogleErrorReason('{"error":"invalid_grant"}'), "invalid_grant", "parses token error string");
+eq(parseGoogleErrorReason("not json"), undefined, "non-JSON body = no reason");
+eq(parseGoogleErrorReason("{}"), undefined, "no error field = no reason");
+
 // reachabilityFromError maps a caught probe error to gone/transient.
 eq(reachabilityFromError(new GoogleHttpError("forbidden", 403)), "gone", "GoogleHttpError 403 = gone");
 eq(reachabilityFromError(new GoogleHttpError("not found", 404)), "gone", "GoogleHttpError 404 = gone");
 eq(reachabilityFromError(new GoogleHttpError("server error", 503)), "transient", "GoogleHttpError 503 = transient");
+eq(
+  reachabilityFromError(new GoogleHttpError("rate limited", 403, "rateLimitExceeded")),
+  "transient",
+  "GoogleHttpError 403 rate-limit = transient",
+);
 eq(reachabilityFromError(new Error("network down")), "transient", "plain Error (network) = transient");
 
 finish();
