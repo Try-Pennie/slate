@@ -1,0 +1,49 @@
+name: Merge-gap guard
+
+# Server-side backstop for the local pre-push merge-gap guard (.githooks/pre-push,
+# #109/#113). The local hook fails OPEN: it no-ops when gh is missing or
+# unauthenticated, only runs for local interactive pushes, and depends on each
+# clone having run the prepare script that sets core.hooksPath. This workflow
+# fires on every push to a non-main branch and fails when that branch's PR is
+# already merged or closed, so a stranded follow-up commit (one that would never
+# reach main) is caught even in the contexts the local hook cannot cover.
+#
+# It is a single few-second `gh` API call, NOT the full pipeline, so it does not
+# reintroduce the #602 double-run (ci.yml still restricts its push trigger to
+# main and covers PR branches via pull_request).
+on:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  merge-gap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag a push onto an already-merged/closed PR branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Every PR whose head is this branch, with its state.
+          states="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json state --jq '.[].state' || echo '')"
+
+          # A still-open PR on the branch is legitimate (active work, or a reopened
+          # PR under the same name), so merged/closed history does not strand.
+          if grep -q '^OPEN$' <<<"$states"; then
+            echo "An open PR exists for '$BRANCH'; push is fine."
+            exit 0
+          fi
+
+          if grep -qE '^(MERGED|CLOSED)$' <<<"$states"; then
+            echo "::error::Branch '$BRANCH' has a merged/closed PR and no open one. Commits pushed here strand and never reach main. Branch fresh off main and cherry-pick instead (ALLOW_MERGED_PUSH bypasses only the local hook, not this)."
+            exit 1
+          fi
+
+          echo "No merged/closed PR blocking '$BRANCH'."
