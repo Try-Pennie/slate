@@ -18,6 +18,7 @@ import {
   setWorkingHours,
   useDefaultHours,
   setAgentAttributes,
+  setUserLifecycle,
 } from "@/app/admin/actions";
 import { AppHeader } from "@/components/AppHeader";
 import { DayToggles } from "@/components/ui/DayToggles";
@@ -74,6 +75,8 @@ export default async function AgentProfilePage({
     .maybeSingle();
   const agent = agentData as User | null;
   if (!agent) notFound();
+  const active = isActive(agent);
+  const isSelf = agent.id === me.id;
 
   const [schedRes, usersRes, orgRes] = await Promise.all([
     db
@@ -168,6 +171,7 @@ export default async function AgentProfilePage({
           </div>
           <div className="ml-auto flex items-center gap-2">
             <Pill variant={`role-${agent.role}`}>{roleLabel(agent.role)}</Pill>
+            {!active && <Pill variant="outline">Deactivated</Pill>}
             <Pill variant={agent.bookable ? "status-ok" : "outline"}>
               {agent.bookable ? "Bookable" : "Not bookable"}
             </Pill>
@@ -373,6 +377,40 @@ export default async function AgentProfilePage({
             </div>
             <button className={btnCls}>Save attributes</button>
           </form>
+        </section>
+
+        {/* Account status: deactivate / reactivate (#278) */}
+        <section className={cardCls}>
+          <p className="pn-eyebrow text-fg-muted">Account status</p>
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <Pill variant={active ? "status-ok" : "outline"}>
+              {active ? "Active" : "Deactivated"}
+            </Pill>
+            {active ? (
+              isSelf ? (
+                <span className="text-xs text-fg-muted">
+                  You can&apos;t deactivate your own account.
+                </span>
+              ) : (
+                <form action={setUserLifecycle} className="flex items-end">
+                  <input type="hidden" name="user_id" value={agent.id} />
+                  <input type="hidden" name="action" value="deactivate" />
+                  <button className={btnSecondaryCls}>Deactivate account</button>
+                </form>
+              )
+            ) : (
+              <form action={setUserLifecycle} className="flex items-end">
+                <input type="hidden" name="user_id" value={agent.id} />
+                <input type="hidden" name="action" value="reactivate" />
+                <button className={btnSecondaryCls}>Reactivate account</button>
+              </form>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-fg-muted">
+            Deactivating removes the agent from the booking pool and hides them
+            from pickers, but keeps their history (bookings, time off). Fully
+            reversible by reactivating.
+          </p>
         </section>
       </main>
     </>
