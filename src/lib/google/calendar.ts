@@ -1,4 +1,5 @@
 import { getDelegatedToken } from "@/lib/google/dwd";
+import { GoogleHttpError } from "@/lib/google/http-error";
 import {
   busyByCalendarFromResponse,
   hasBlockingBusy,
@@ -80,10 +81,12 @@ async function gfetch(
 
 async function ok(res: Response, label: string): Promise<Response> {
   // #617: no 410 exemption. syncEvents handles its own expired-token 410 BEFORE
-  // calling ok(), so this stays strict for every other caller — a 410 (e.g. a
+  // calling ok(), so this stays strict for every other caller: a 410 (e.g. a
   // PATCH on a deleted event) is a failure, never a silent success.
   if (!res.ok) {
-    throw new Error(`${label} failed: ${res.status} ${await res.text()}`);
+    // Carry the status (#913) so callers like the reachability probe can tell a
+    // definitive account/permission failure apart from a transient one.
+    throw new GoogleHttpError(`${label} failed: ${res.status} ${await res.text()}`, res.status);
   }
   return res;
 }

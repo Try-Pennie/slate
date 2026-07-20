@@ -1,7 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { planBookableChange } from "@/lib/bookable/plan";
-import { isCalendarReachable } from "@/lib/google/reachability";
+import { classifyCalendarReachability } from "@/lib/google/reachability";
+import type { Reachability } from "@/lib/google/reachability-classify";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 
@@ -13,25 +14,57 @@ import { log } from "@/lib/log";
  */
 export const BOOKABLE_BLOCKED_COOLDOWN_MS = 30 * 60 * 1000;
 
+/** google_unreachable = a definitive "account gone" failure; google_unverified
+ *  = a transient failure that persisted through one retry (couldn't confirm). */
+export type BlockedReason = "google_unreachable" | "google_unverified";
+
 export type BookableResult =
   | { status: "not_found" }
   | { status: "noop"; userId: string; bookable: boolean }
   | { status: "applied"; userId: string; bookable: boolean }
-  | { status: "blocked"; userId: string; reason: "google_unreachable" };
+  | { status: "blocked"; userId: string; reason: BlockedReason };
 
 export interface BookableDeps {
   /** Live Google reachability probe (injected in tests). */
-  checkReachable: (email: string) => Promise<boolean>;
+  checkReachable: (email: string) => Promise<Reachability>;
   /** Throttled named alert (injected in tests). */
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
 }
 
 const defaultDeps: BookableDeps = {
-  checkReachable: isCalendarReachable,
+  checkReachable: classifyCalendarReachability,
   // Best-effort: a flaky Slack must never fail the flip (the write already
   // didn't happen on a block; the alert is the only side effect left).
   notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text).catch(() => {}),
 };
+
+/**
+ * The activation reachability gate (#281, #913). Probes the calendar; a
+ * definitive "gone" blocks at once, a "transient" is retried once (to ride out a
+ * Google blip) and only then blocks. Returns null when the agent may go into the
+ * pool (reachable), or a {reason, key, message} block otherwise.
+ */
+async function checkActivationGate(
+  email: string,
+  userId: string,
+  deps: BookableDeps,
+): Promise<{ reason: BlockedReason; key: string; message: string } | null> {
+  let kind = await deps.checkReachable(email);
+  if (kind === "transient") kind = await deps.checkReachable(email); // one retry
+  if (kind === "reachable") return null;
+  if (kind === "gone") {
+    return {
+      reason: "google_unreachable",
+      key: `bookable_blocked:${userId}`,
+      message: `Slate: blocked making ${email} bookable because their Google calendar is unreachable (account gone from the Workspace, or delegation broken). The agent was NOT added to the booking pool; fix the calendar and retry.`,
+    };
+  }
+  return {
+    reason: "google_unverified",
+    key: `bookable_unverified:${userId}`,
+    message: `Slate: could NOT verify ${email}'s Google calendar (a transient error persisted through one retry). The agent was NOT added to the booking pool; this is likely a temporary Google issue, so retry shortly.`,
+  };
+}
 
 /** The one write that flips a user's bookable flag (shared with the admin
  *  action, #281). Orthogonal to `deactivated_at` (this never touches it). */
@@ -66,15 +99,11 @@ export async function applyBookableByEmail(
   if (plan.status === "noop") return { status: "noop", userId: user!.id, bookable };
 
   if (plan.bookable === true) {
-    const reachable = await deps.checkReachable(trimmed);
-    if (!reachable) {
-      await deps.notify(
-        `bookable_blocked:${user!.id}`,
-        BOOKABLE_BLOCKED_COOLDOWN_MS,
-        `Slate: blocked making ${trimmed} bookable because their Google calendar is unreachable (account gone from the Workspace, or delegation broken). The agent was NOT added to the booking pool; fix the calendar and retry.`,
-      );
-      log.warn("bookable-api", { msg: "activation blocked, google unreachable", user_id: user!.id });
-      return { status: "blocked", userId: user!.id, reason: "google_unreachable" };
+    const block = await checkActivationGate(trimmed, user!.id, deps);
+    if (block) {
+      await deps.notify(block.key, BOOKABLE_BLOCKED_COOLDOWN_MS, block.message);
+      log.warn("bookable-api", { msg: "activation blocked", user_id: user!.id, reason: block.reason });
+      return { status: "blocked", userId: user!.id, reason: block.reason };
     }
   }
 
