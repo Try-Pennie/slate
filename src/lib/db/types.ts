@@ -293,6 +293,9 @@ export interface AgentCalendar {
   consecutive_failures: number;
   /** Diagnostics (#273): last time this calendar synced/renewed cleanly. */
   last_success_at: string | null;
+  /** Diagnostics (#916): classification of the last failure ('gone' |
+   *  'transient'), or null when the last attempt succeeded / predates #916. */
+  last_failure_kind: "gone" | "transient" | null;
   created_at: string;
 }
 

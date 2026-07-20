@@ -17,6 +17,12 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => admin.current }));
 // CalendarListTruncated) and syncCalendar sees a page-capped events pass
 // (syncEvents returns truncated with no sync token). Every other calendar export
 // stays real, including CalendarListTruncated so the sync.ts instanceof matches.
+// syncEvents is a vi.fn so a test can override its behavior per case (default:
+// a page-capped pass with no token). #916 drives it to THROW a GoogleHttpError to
+// exercise the failure-classification wiring in syncCalendar's catch.
+const calMock = vi.hoisted(() => ({
+  syncEvents: vi.fn(async () => ({ events: [], nextSyncToken: null, truncated: true })),
+}));
 vi.mock("@/lib/google/calendar", async (importActual) => {
   const actual = await importActual<typeof import("./calendar")>();
   return {
@@ -24,7 +30,7 @@ vi.mock("@/lib/google/calendar", async (importActual) => {
     listCalendars: async () => {
       throw new actual.CalendarListTruncated();
     },
-    syncEvents: async () => ({ events: [], nextSyncToken: null, truncated: true }),
+    syncEvents: calMock.syncEvents,
   };
 });
 
@@ -47,7 +53,9 @@ import {
   ensureWatches,
   runIncrementalSync,
   loadSyncAgents,
+  loadFailingAgents,
 } from "./sync";
+import { GoogleHttpError } from "@/lib/google/http-error";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -171,6 +179,12 @@ beforeEach(() => {
   logSpy.info.mockClear();
   logSpy.warn.mockClear();
   logSpy.error.mockClear();
+  calMock.syncEvents.mockReset();
+  calMock.syncEvents.mockImplementation(async () => ({
+    events: [],
+    nextSyncToken: null,
+    truncated: true,
+  }));
 });
 
 describe("loadSyncAgents fail-loud (#865)", () => {
@@ -308,5 +322,113 @@ describe("syncCalendar on a page-capped events pass (#171)", () => {
       "google-sync",
       expect.objectContaining({ calendar_id: "primary" }),
     );
+  });
+});
+
+describe("failure classification wiring (#916)", () => {
+  it("records last_failure_kind='gone' when a sync fails with a definitive 4xx", async () => {
+    // A 403 from the calendar API (delegation revoked / permission gone) must be
+    // classified 'gone' and persisted, so the alert can page it promptly.
+    calMock.syncEvents.mockImplementationOnce(async () => {
+      throw new GoogleHttpError("calendarList.list failed: 403 forbidden", 403);
+    });
+    const { db, updates } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [
+        {
+          id: "cal-1",
+          user_id: "agent-1",
+          calendar_id: "primary",
+          sync_token: "stored-token",
+          consecutive_failures: 1,
+          last_success_at: null,
+          last_sync_error: null,
+        },
+      ],
+    });
+    admin.current = db;
+
+    // syncCalendar records health then rethrows, so the tick surfaces the error.
+    await expect(runIncrementalSync("agent-1")).rejects.toThrow(/403/);
+    const health = updates.find(
+      (u) => u.table === "agent_calendars" && "last_failure_kind" in u.payload,
+    );
+    expect(health?.payload.last_failure_kind).toBe("gone");
+    expect(health?.payload.consecutive_failures).toBe(2);
+  });
+
+  it("classifies a 5xx as transient", async () => {
+    calMock.syncEvents.mockImplementationOnce(async () => {
+      throw new GoogleHttpError("events.list failed: 503 unavailable", 503);
+    });
+    const { db, updates } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [
+        {
+          id: "cal-1",
+          user_id: "agent-1",
+          calendar_id: "primary",
+          sync_token: "stored-token",
+          consecutive_failures: 0,
+          last_success_at: null,
+          last_sync_error: null,
+        },
+      ],
+    });
+    admin.current = db;
+
+    await expect(runIncrementalSync("agent-1")).rejects.toThrow(/503/);
+    const health = updates.find(
+      (u) => u.table === "agent_calendars" && "last_failure_kind" in u.payload,
+    );
+    expect(health?.payload.last_failure_kind).toBe("transient");
+  });
+});
+
+describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
+  // A fake DB serving loadFailingAgents' two reads: the failing agent_calendars
+  // rows, then the users they belong to.
+  function failingDb(
+    cals: Record<string, unknown>[],
+    users: Record<string, unknown>[],
+  ) {
+    return {
+      from(table: string) {
+        const data = table === "agent_calendars" ? cals : users;
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          gte: () => Promise.resolve({ data, error: null }),
+          in: () => Promise.resolve({ data, error: null }),
+        };
+        return builder;
+      },
+    } as unknown as ReturnType<typeof supabaseAdmin>;
+  }
+
+  it("pages a gone account at streak 2 but backs a transient one off until streak 4", async () => {
+    admin.current = failingDb(
+      [
+        // gone @ 2 -> pages
+        { user_id: "u1", consecutive_failures: 2, last_success_at: null, last_sync_error: "unauthorized_client", last_failure_kind: "gone" },
+        // transient @ 3 -> backs off (below TRANSIENT_PAGE_AT=4), must NOT page
+        { user_id: "u2", consecutive_failures: 3, last_success_at: null, last_sync_error: "503", last_failure_kind: "transient" },
+        // transient @ 4 -> pages
+        { user_id: "u3", consecutive_failures: 4, last_success_at: null, last_sync_error: "timeout", last_failure_kind: "transient" },
+        // legacy null kind @ 2 -> treated as gone, pages (never goes silent)
+        { user_id: "u4", consecutive_failures: 2, last_success_at: null, last_sync_error: "old", last_failure_kind: null },
+      ],
+      [
+        { id: "u1", email: "gone@x.com", bookable: true, deactivated_at: null },
+        { id: "u2", email: "flaky@x.com", bookable: true, deactivated_at: null },
+        { id: "u3", email: "persistent@x.com", bookable: true, deactivated_at: null },
+        { id: "u4", email: "legacy@x.com", bookable: true, deactivated_at: null },
+      ],
+    );
+
+    const failing = await loadFailingAgents();
+    const emails = failing.map((f) => f.email).sort();
+    expect(emails).toEqual(["gone@x.com", "legacy@x.com", "persistent@x.com"]);
+    expect(failing.find((f) => f.email === "gone@x.com")?.failureKind).toBe("gone");
+    expect(failing.find((f) => f.email === "persistent@x.com")?.failureKind).toBe("transient");
   });
 });
