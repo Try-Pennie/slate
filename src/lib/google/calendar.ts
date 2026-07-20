@@ -374,6 +374,24 @@ export async function updateEventTime(
   await ok(res, "events.patch");
 }
 
+/**
+ * Whether an event still exists on the agent's primary calendar (#830). A GET
+ * returns 200 when present, 404/410 when gone (deleted by the agent, or already
+ * removed by the deletion drain). Any other status throws, so a caller can tell
+ * "confirmed gone" from "couldn't verify" and avoid a false alert on a blip.
+ */
+export async function eventExists(email: string, eventId: string): Promise<boolean> {
+  const res = await gfetch(
+    email,
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}`,
+    {},
+    CALENDAR_WRITE_TIMEOUT_MS,
+  );
+  if (res.status === 404 || res.status === 410) return false;
+  await ok(res, "events.get (exists)");
+  return true;
+}
+
 export async function deleteEvent(email: string, eventId: string): Promise<void> {
   const res = await gfetch(
     email,

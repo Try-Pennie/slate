@@ -9,6 +9,7 @@ import {
 import { rotateSelfhealScan } from "@/lib/booking/selfheal-cursor";
 import {
   processPendingEventDeletions,
+  checkCreationOrphans,
   reconcileCancelledBusyBlocks,
   reconcileMissingBusyBlocks,
 } from "@/lib/booking/service";
@@ -29,6 +30,10 @@ const SELFHEAL_LOCK_TTL_MS = 2 * 60_000;
 // the reconcile sweeps scan only upcoming rows so these caps are generous.
 const DELETION_DRAIN_LIMIT = 20;
 const RECONCILE_LIMIT = 200;
+// #830: creation-orphan check probes Google once per orphan (events.get), so cap
+// it under the Worker subrequest ceiling; the deletion drain still retries the
+// removal of any not reached this tick.
+const CREATION_ORPHAN_CHECK_LIMIT = 20;
 // #239/#248: how many orphaned-watch agents to tear down per tick. Each teardown
 // makes Google calls (one stopChannel per calendar), so cap it under the Worker
 // subrequest ceiling; rotation catches any larger historical backlog next tick.
@@ -69,6 +74,14 @@ export async function GET(req: NextRequest) {
     const deletions = await processPendingEventDeletions(DELETION_DRAIN_LIMIT).catch(
       (err) => {
         log.error("selfheal", { msg: "deletion drain failed" }, err);
+        return null;
+      },
+    );
+    // #830: surface creation orphans (event created, booking never persisted)
+    // early and distinctly, gated on the event still existing on Google.
+    const creationOrphans = await checkCreationOrphans(CREATION_ORPHAN_CHECK_LIMIT).catch(
+      (err) => {
+        log.error("selfheal", { msg: "creation-orphan check failed" }, err);
         return null;
       },
     );
@@ -139,6 +152,8 @@ export async function GET(req: NextRequest) {
       // #239/#248: pool-exit cleanup this tick (agents cleaned + blocks pruned).
       poolExitCleaned: poolExit?.cleaned ?? "error",
       poolExitBlocksDeleted: poolExit?.blocksDeleted ?? "error",
+      // #830: creation orphans confirmed present on Google this tick.
+      creationOrphans: creationOrphans ? creationOrphans.confirmed.length : "error",
     });
   } finally {
     await releaseLock("cron_selfheal", lock);

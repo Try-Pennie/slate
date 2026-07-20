@@ -11,6 +11,7 @@ import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
   createEvent,
   deleteEvent,
+  eventExists,
   freeBusy,
   freeBusyMany,
   isFree,
@@ -613,6 +614,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
     createEvent,
     deleteEvent,
+    eventExists,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       await supabaseAdmin()
         .from("pending_event_deletions")
@@ -628,6 +630,17 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .select("*")
         .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
         .order("attempts", { ascending: true })
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      return (data ?? []) as orchestration.PendingEventDeletion[];
+    },
+    loadCreationOrphans: async (limit) => {
+      // error-ok: best-effort creation-orphan alert worklist; a read error skips
+      // this tick and the deletion lane retries next tick.
+      const { data } = await supabaseAdmin()
+        .from("pending_event_deletions")
+        .select("*")
+        .is("booking_id", null)
         .order("created_at", { ascending: true })
         .limit(limit);
       return (data ?? []) as orchestration.PendingEventDeletion[];
@@ -1882,6 +1895,30 @@ export async function processPendingEventDeletions(limit: number) {
       PENDING_DELETION_ALERT_KEY,
       PENDING_DELETION_ALERT_COOLDOWN_MS,
       `Slate: ${res.stuck.length} calendar event deletion(s) have failed ${orchestration.PENDING_DELETION_ALERT_AFTER}+ times and may be firing orphaned reminders. Check Google Calendar API health. Event ids: ${res.stuck.slice(0, 5).map((r) => r.gcal_event_id).join(", ")}`,
+    ).catch(() => {});
+  }
+  return res;
+}
+
+const CREATION_ORPHAN_ALERT_KEY = "creation_orphan_events";
+const CREATION_ORPHAN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * #830: alert EARLY (and distinctly from the deletion-retry alert) when a create
+ * succeeded on Google but its booking never persisted, and the event STILL
+ * exists, so it may be firing reminders to the customer for a booking Slate has
+ * no record of. Verified-existing only, so an agent-deleted stray stays quiet.
+ */
+export async function checkCreationOrphans(limit: number) {
+  const res = await orchestration.checkCreationOrphans(realDeps(), limit);
+  if (res.confirmed.length > 0) {
+    await sendThrottledAlert(
+      CREATION_ORPHAN_ALERT_KEY,
+      CREATION_ORPHAN_ALERT_COOLDOWN_MS,
+      `Slate: ${res.confirmed.length} calendar event(s) were created but their booking never persisted (the insert and its rollback both failed), and the event still exists on Google, so it may be sending the customer reminders for a booking Slate has no record of. The deletion drain is retrying removal; diagnose via pending_event_deletions where booking_id is null. Event ids: ${res.confirmed
+        .slice(0, 5)
+        .map((r) => r.gcal_event_id)
+        .join(", ")}`,
     ).catch(() => {});
   }
   return res;

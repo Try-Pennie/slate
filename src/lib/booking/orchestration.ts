@@ -465,10 +465,15 @@ export interface BookingDeps {
   ): Promise<VerifyResult>;
   createEvent(email: string, args: CreateEventArgs, clientId?: string): Promise<string>;
   deleteEvent(email: string, eventId: string): Promise<void>;
+  /** #830: whether an event still exists on Google (true), is gone (false), or
+   *  cannot be verified (throws), used to avoid alerting on a false orphan. */
+  eventExists(email: string, eventId: string): Promise<boolean>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
   loadPendingEventDeletions(limit: number): Promise<PendingEventDeletion[]>;
+  /** #830: load creation-orphan rows (booking_id IS NULL) for the early alert. */
+  loadCreationOrphans(limit: number): Promise<PendingEventDeletion[]>;
   /** #401: remove a successfully-deleted pending event deletion row. */
   removePendingEventDeletion(id: string): Promise<void>;
   /** #401: bump the attempt count and record the error for a failed deletion. */
@@ -806,6 +811,40 @@ export async function processPendingEventDeletions(
     }
   }
   return { deleted, failed, stuck };
+}
+
+/**
+ * Creation-orphan check (#830): a create that succeeded on Google but whose
+ * booking never persisted (the DB insert failed AND its rollback delete also
+ * failed) is enqueued with a NULL booking_id. The deletion drain retries the
+ * removal, but only alerts after it gives up (5+ attempts), so a stray event can
+ * sit on the customer's calendar firing reminders for a booking Slate has no
+ * record of, unnoticed until then.
+ *
+ * This surfaces it EARLIER and distinctly. Before alerting, it verifies each
+ * orphan's event STILL EXISTS on Google, so an event the agent manually deleted
+ * (a false orphan) or one the drain already removed does not cry wolf. An
+ * existence check that THROWS (a Google blip) is treated as unverified and
+ * skipped this tick; the next tick re-checks and the drain's give-up alert is the
+ * ultimate backstop. Pure: the caller sends the throttled alert for `confirmed`.
+ */
+export async function checkCreationOrphans(
+  deps: BookingDeps,
+  limit: number,
+): Promise<{ scanned: number; confirmed: PendingEventDeletion[] }> {
+  const rows = await deps.loadCreationOrphans(limit);
+  const confirmed: PendingEventDeletion[] = [];
+  for (const row of rows) {
+    let exists: boolean;
+    try {
+      exists = await deps.eventExists(row.calendar_email, row.gcal_event_id);
+    } catch {
+      // Couldn't confirm the event this tick; don't risk a false alert.
+      continue;
+    }
+    if (exists) confirmed.push(row);
+  }
+  return { scanned: rows.length, confirmed };
 }
 
 /** Booking statuses that keep a slot legitimately busy (must NOT be freed).
