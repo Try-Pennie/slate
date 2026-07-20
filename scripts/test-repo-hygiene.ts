@@ -7,12 +7,15 @@
 // Run: node --experimental-strip-types scripts/test-repo-hygiene.ts
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
+import { scrubbedGitEnv } from "./lib/git-env.ts";
 import { assert, finish } from "./lib/harness.ts";
 
-/** True if git would ignore `path` (check-ignore exits 0 on a match). */
+/** True if git would ignore `path` (check-ignore exits 0 on a match). Runs with
+ *  the pre-push hook's GIT_* vars stripped (#853): an inherited GIT_DIR would
+ *  make check-ignore resolve against the wrong tree, not this repo. */
 function isIgnored(path: string): boolean {
   try {
-    execFileSync("git", ["check-ignore", "-q", path]);
+    execFileSync("git", ["check-ignore", "-q", path], { env: scrubbedGitEnv() });
     return true;
   } catch {
     return false;
