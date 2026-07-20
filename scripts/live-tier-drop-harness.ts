@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import * as orchestration from "@/lib/booking/orchestration";
 import { roundRobinCandidates } from "@/lib/availability/service";
+import { recordRoutingDecision } from "@/lib/routing/record";
 import type { BookingDeps } from "@/lib/booking/orchestration";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type {
@@ -318,6 +319,9 @@ function buildDeps(
     newIdempotencyKey: () => `anon_${randomUUID().replace(/-/g, "")}`,
     appBaseUrl: () => "https://harness.test.local",
     invalidateSlots: async () => {},
+    // Real decision log (#504): the harness exercises real tier-drop routing, so
+    // it logs decisions as production would.
+    recordRoutingDecision,
 
     // --- DB-backed deps ---
     getUser: async (userId) => {

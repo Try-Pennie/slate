@@ -86,6 +86,15 @@ async function run() {
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "create: invalidates cached slots for the booked bucket exactly once",
     );
+    // #504: the routing decision log is now injected through deps, so a test can
+    // assert it directly instead of inferring it from a swallowed-error log line.
+    assert(
+      calls.recordRoutingDecision.length === 1 &&
+        calls.recordRoutingDecision[0].outcome === "booked" &&
+        calls.recordRoutingDecision[0].chosenUserId === "a" &&
+        calls.recordRoutingDecision[0].bookingId === res.booking.id,
+      "create: records one 'booked' routing decision for the chosen agent",
+    );
   }
 
   // --- #884: the create confirm DEFERS the booking.created send ---
