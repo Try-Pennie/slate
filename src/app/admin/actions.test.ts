@@ -41,6 +41,15 @@ const bookable = vi.hoisted(() => ({
   applyBookableByEmail: vi.fn(),
   writeBookable: vi.fn(async () => {}),
 }));
+const salesforce = vi.hoisted(() => ({
+  syncSalesforceAgents: vi.fn(),
+  AGENTS_SYNC_STREAK_KEY: "cron_agents_failures",
+}));
+const streak = vi.hoisted(() => ({
+  clearFailureStreak: vi.fn(async () => {}),
+  recordFailureStreak: vi.fn(async () => 1),
+  recordConsecutiveStreak: vi.fn(async () => 1),
+}));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "claim" as string | null),
   releaseLock: vi.fn(async () => {}),
@@ -81,6 +90,8 @@ vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/offboarding/service", () => offboarding);
 vi.mock("@/lib/bookable/service", () => bookable);
+vi.mock("@/lib/salesforce/sync", () => salesforce);
+vi.mock("@/lib/notify/streak", () => streak);
 
 import {
   setUserRole,
@@ -93,6 +104,7 @@ import {
   setMonitorSettings,
   setUserLifecycle,
   setBookable,
+  syncSalesforceNow,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
@@ -524,5 +536,33 @@ describe("setBookable Google guard (#912)", () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
     await setBookable(form({ user_id: "u2", bookable: "false" }));
     expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", false);
+  });
+});
+
+// #491: a manual admin "Sync from Salesforce" that succeeds must clear the
+// hourly cron's consecutive-failure streak, so a human fixing a failing sync
+// fully quiets the alarm instead of the cron re-alerting on its next hiccup.
+describe("syncSalesforceNow streak reset (#491)", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+  });
+
+  it("clears the failure streak on a successful sync", async () => {
+    salesforce.syncSalesforceAgents.mockResolvedValueOnce({
+      updated: 2,
+      inserted: 0,
+      managersLinked: 0,
+      managersCreated: 0,
+      managersPromoted: 0,
+      deactivated: 0,
+    });
+    await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\?synced/);
+    expect(streak.clearFailureStreak).toHaveBeenCalledWith("cron_agents_failures");
+  });
+
+  it("does NOT clear the streak when the sync fails", async () => {
+    salesforce.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF down"));
+    await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\?sync_error/);
+    expect(streak.clearFailureStreak).not.toHaveBeenCalled();
   });
 });

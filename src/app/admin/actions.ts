@@ -31,7 +31,8 @@ import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { upsertUserSchedule } from "@/lib/schedule";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
-import { syncSalesforceAgents } from "@/lib/salesforce/sync";
+import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
+import { clearFailureStreak } from "@/lib/notify/streak";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
@@ -167,6 +168,10 @@ export async function syncSalesforceNow(): Promise<void> {
     ].filter(Boolean);
     summary =
       parts.length > 1 ? parts.join(" · ") : `${parts[0]} (already up to date)`;
+    // A successful hand remediation fully quiets the hourly cron's alarm (#491):
+    // clear its consecutive-failure streak so the next automatic hiccup starts
+    // from zero instead of re-alerting on a problem the admin just fixed.
+    await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     revalidatePath("/admin");
