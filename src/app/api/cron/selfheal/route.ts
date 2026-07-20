@@ -12,6 +12,7 @@ import {
   reconcileCancelledBusyBlocks,
   reconcileMissingBusyBlocks,
 } from "@/lib/booking/service";
+import { reconcileOrphanedPoolExits } from "@/lib/google/sync";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +29,10 @@ const SELFHEAL_LOCK_TTL_MS = 2 * 60_000;
 // the reconcile sweeps scan only upcoming rows so these caps are generous.
 const DELETION_DRAIN_LIMIT = 20;
 const RECONCILE_LIMIT = 200;
+// #239/#248: how many orphaned-watch agents to tear down per tick. Each teardown
+// makes Google calls (one stopChannel per calendar), so cap it under the Worker
+// subrequest ceiling; rotation catches any larger historical backlog next tick.
+const POOL_EXIT_RECONCILE_LIMIT = 25;
 
 // #726 saturation streak keys (rate_limits + alert_state rows).
 const RECONCILE_CANCELLED_SATURATED_KEY = "reconcile_cancelled_saturated";
@@ -108,6 +113,16 @@ export async function GET(req: NextRequest) {
       DELETION_DRAIN_LIMIT,
     ).catch(() => {});
 
+    // #239/#248: mop up agents that left the bookable pool without going through
+    // the toggle (SF deactivation) or before the synchronous hook existed. Stops
+    // their orphaned Google watches and prunes their cached busy_blocks.
+    const poolExit = await reconcileOrphanedPoolExits(POOL_EXIT_RECONCILE_LIMIT).catch(
+      (err) => {
+        log.error("selfheal", { msg: "pool-exit reconcile failed" }, err);
+        return null;
+      },
+    );
+
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
     // Stamped even when a sub-sweep returned its "error" marker (those are
     // logged/alerted separately); the heartbeat only proves the lane executed.
@@ -121,6 +136,9 @@ export async function GET(req: NextRequest) {
       // backlog is being paged through, not fully drained in one tick).
       cancelledScanned: freed?.scanned ?? "error",
       missingScanned: recreated?.scanned ?? "error",
+      // #239/#248: pool-exit cleanup this tick (agents cleaned + blocks pruned).
+      poolExitCleaned: poolExit?.cleaned ?? "error",
+      poolExitBlocksDeleted: poolExit?.blocksDeleted ?? "error",
     });
   } finally {
     await releaseLock("cron_selfheal", lock);

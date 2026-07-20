@@ -21,12 +21,18 @@ const cursor = vi.hoisted(() => ({
     run(0),
   ),
 }));
+// #239/#248 pool-exit reconcile backstop. Its own logic is covered by the
+// pool-exit suite; here it's mocked so the lane wiring can be asserted.
+const google = vi.hoisted(() => ({
+  reconcileOrphanedPoolExits: vi.fn(async () => ({ scanned: 3, cleaned: 2, blocksDeleted: 40 })),
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/selfheal-cursor", () => cursor);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+vi.mock("@/lib/google/sync", () => google);
 
 import { GET } from "./route";
 
@@ -57,5 +63,28 @@ describe("GET /api/cron/selfheal", () => {
     heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
     const res = await GET(req());
     expect(res.status).toBe(200);
+  });
+
+  // #239/#248: the pool-exit reconcile runs on this lane and its counts surface
+  // in the response so the sweep is observable.
+  it("runs the pool-exit reconcile backstop and surfaces its counts", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    const res = await GET(req());
+    expect(google.reconcileOrphanedPoolExits).toHaveBeenCalledWith(25);
+    const body = await res.json();
+    expect(body.poolExitCleaned).toBe(2);
+    expect(body.poolExitBlocksDeleted).toBe(40);
+  });
+
+  // Failure path: a throwing reconcile is caught, the tick still stamps its
+  // heartbeat and returns 200, and the counts read "error".
+  it("still returns 200 and stamps the heartbeat when the pool-exit reconcile throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    google.reconcileOrphanedPoolExits.mockRejectedValueOnce(new Error("google down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.poolExitCleaned).toBe("error");
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
   });
 });
