@@ -59,18 +59,31 @@ export async function GET(req: NextRequest) {
     slots = slots.filter((s) => Date.parse(s) <= toMs);
   }
 
+  // Observability headers (#257/#234): freshness of the served slots and which
+  // tier of the read path answered (L1 cache hit / L2 precomputed row / cold live
+  // compute). Diagnostic only, never routing internals (#259). A stuck refresher
+  // shows as an old x-slots-computed-at; a persistent x-slot-cache=nostore means
+  // rows aren't being precomputed.
+  const headers: Record<string, string> = {
+    "x-slot-cache": { hit: "hit", row: "miss", compute: "nostore" }[result.source],
+  };
+  if (result.computedAt) headers["x-slots-computed-at"] = result.computedAt;
+
   // Rule #259: leads must never see routing internals, even in the network
   // payload. Tier-drop is intentionally invisible: we report the REQUESTED
   // bucket code (what the lead asked for) and serve the EFFECTIVE tier's slots,
   // but the `routing` meta stays server-side only — never sent to the client.
-  return NextResponse.json({
-    bucket: { code: result.routing.requested_code },
-    orgName: result.orgName,
-    eventType: {
-      name: result.eventType.name,
-      description: result.eventType.description,
-      durationMin: result.eventType.duration_min,
+  return NextResponse.json(
+    {
+      bucket: { code: result.routing.requested_code },
+      orgName: result.orgName,
+      eventType: {
+        name: result.eventType.name,
+        description: result.eventType.description,
+        durationMin: result.eventType.duration_min,
+      },
+      slots,
     },
-    slots,
-  });
+    { headers },
+  );
 }

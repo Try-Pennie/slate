@@ -39,6 +39,8 @@ function slotsFor(isTest: boolean) {
     eventType: { name: "Smoke", description: null, duration_min: 30, min_notice_min: 0 },
     orgName: "Pennie",
     slots: ["2099-01-01T15:00:00.000Z"],
+    source: "hit" as const,
+    computedAt: "2026-07-20T12:00:00.000Z",
     routing: {
       requested_code: "SMOKE",
       effective_code: "SMOKE",
@@ -98,12 +100,42 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     expect(body).not.toHaveProperty("routing");
   });
 
+  // #257/#234: observability headers. source maps hit->hit, row->miss,
+  // compute->nostore, and the row's computed_at is echoed for freshness.
+  it("sets x-slot-cache=hit and x-slots-computed-at from a cache hit", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const res = await get("411");
+    expect(res.headers.get("x-slot-cache")).toBe("hit");
+    expect(res.headers.get("x-slots-computed-at")).toBe("2026-07-20T12:00:00.000Z");
+  });
+
+  it("maps a cold compute to x-slot-cache=nostore", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), source: "compute" });
+    const res = await get("411");
+    expect(res.headers.get("x-slot-cache")).toBe("nostore");
+  });
+
+  it("maps an L2 row read to x-slot-cache=miss", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), source: "row" });
+    const res = await get("411");
+    expect(res.headers.get("x-slot-cache")).toBe("miss");
+  });
+
+  it("omits x-slots-computed-at when the freshness stamp is unknown", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), computedAt: null });
+    const res = await get("411");
+    expect(res.headers.get("x-slots-computed-at")).toBeNull();
+    expect(res.headers.get("x-slot-cache")).toBe("hit");
+  });
+
   it("reports the requested bucket code even when a tier fallback fired (#259)", async () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue({
       bucket: { code: "LOW411", is_test: false },
       eventType: { name: "Smoke", description: null, duration_min: 30, min_notice_min: 0 },
       orgName: "Pennie",
       slots: ["2099-01-01T15:00:00.000Z"],
+      source: "hit" as const,
+      computedAt: "2026-07-20T12:00:00.000Z",
       routing: {
         requested_code: "SMOKE",
         effective_code: "LOW411",

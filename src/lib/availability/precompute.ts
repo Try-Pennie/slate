@@ -13,19 +13,19 @@ import { log } from "@/lib/log";
  * (Supabase isn't reachable under `node`), matching slot-cache.ts's convention.
  */
 
-/** Single indexed PK read of the precomputed blob. */
+/** Single indexed PK read of the precomputed blob + its freshness stamp (#257). */
 export async function readBucketSlotsRow(
   code: string,
-): Promise<{ payload: unknown } | null> {
+): Promise<{ payload: unknown; computed_at: string } | null> {
   const data = unwrap(
     await supabaseAdmin()
       .from("bucket_slots")
-      .select("payload")
+      .select("payload, computed_at")
       .eq("bucket_code", code)
       .maybeSingle(),
     "readBucketSlotsRow",
   );
-  return (data as { payload: unknown } | null) ?? null;
+  return (data as { payload: unknown; computed_at: string } | null) ?? null;
 }
 
 /** All bucket codes (for the cron backstop's rotation). */
@@ -57,13 +57,15 @@ export async function listKnownBucketSlotRows(): Promise<
 export async function writeBucketSlotsRow(
   code: string,
   val: BucketSlots,
-): Promise<void> {
+): Promise<string> {
+  const computedAt = new Date().toISOString();
   await supabaseAdmin()
     .from("bucket_slots")
     .upsert(
-      { bucket_code: code, payload: val as unknown, computed_at: new Date().toISOString() },
+      { bucket_code: code, payload: val as unknown, computed_at: computedAt },
       { onConflict: "bucket_code" },
     );
+  return computedAt;
 }
 
 /**
