@@ -396,12 +396,20 @@ Idempotent: setting the state the agent already has is a `200` no-op. Success:
 `200 { "status": "applied", "userId", "bookable" }`.
 
 **Activation guard.** When `bookable` is `true`, the endpoint first probes the
-agent's Google calendar (live, via domain-wide delegation). If it is unreachable
-(account gone from the Workspace, delegation broken), the flip is REFUSED with
-`409 { "status": "blocked", "reason": "google_unreachable" }` and a throttled
-Slack alert fires (keyed per agent). The agent stays out of the pool until the
-calendar is fixed and the caller retries. Deactivation (`bookable: false`) is
-never blocked.
+agent's Google calendar (live, via domain-wide delegation) and classifies the
+result (#913):
+
+- **reachable** &rarr; the flip proceeds.
+- **gone** (a definitive account/permission failure: removed from the Workspace,
+  delegation revoked) &rarr; refused with
+  `409 { "status": "blocked", "reason": "google_unreachable" }`.
+- **transient** (a timeout or 5xx) &rarr; retried once; if it still fails,
+  refused with `409 { "status": "blocked", "reason": "google_unverified" }`.
+
+Either block fires a throttled Slack alert (keyed per agent, and distinct per
+reason so they don't throttle each other). The agent stays out of the pool until
+the calendar is fixed (or the transient issue clears) and the caller retries.
+Deactivation (`bookable: false`) is never blocked.
 
 ---
 
