@@ -18,6 +18,7 @@ status and error codes, and idempotency, for the whole surface.
 - [POST /api/routing (public routing resolve)](#post-apirouting)
 - [POST /api/bookings/reassign (key-authed contact-owner reassign)](#post-apibookingsreassign)
 - [Offboarding lifecycle (key-authed)](#offboarding-lifecycle-key-authed)
+- [Bookable toggle (key-authed)](#bookable-toggle-key-authed)
 - [Webhooks emitted to Regal and Cadence](#webhooks-emitted-to-regal-and-cadence)
 - [Customer self-serve manage routes (token-authed)](#customer-self-serve-manage-routes-token-authed)
 - [Admin routes (session-authed, internal)](#admin-routes-session-authed-internal)
@@ -36,6 +37,7 @@ names which one it requires.
 | Booking API key | `Authorization: Bearer <key>` | `BOOKING_API_KEY`, `BOOKING_API_KEY_2` | `POST/GET/DELETE /api/bookings`, and (for hidden test buckets only) `GET /api/availability` |
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
+| Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
 | Cron secret | `Authorization: Bearer <secret>` | `CRON_SECRET` | every `GET /api/cron/*` lane |
 | Google channel token | `X-Goog-Channel-Token` header | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` |
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
@@ -376,6 +378,33 @@ Deactivating an unknown email is an idempotent `200`; activating one is `404`.
 
 ---
 
+## Bookable toggle (key-authed)
+
+Source: `src/app/api/users/bookable/route.ts` (#281), over
+`src/lib/bookable/service.ts`. The roster/onboarding automation POSTs here to
+move an agent in or out of the booking pool. `bookable` is orthogonal to the
+offboarding state above: this never touches `deactivated_at`. Agents synced from
+Salesforce land `bookable=false` and are promoted through this endpoint.
+
+**Auth:** `Authorization: Bearer <BOOKABLE_API_KEY>`. Wrong key: `401`. No key
+configured: `503`.
+
+- `POST /api/users/bookable` body `{ "email": "…", "bookable": true | false }`
+
+Missing email or a non-boolean `bookable`: `400`. Unknown email: `404`.
+Idempotent: setting the state the agent already has is a `200` no-op. Success:
+`200 { "status": "applied", "userId", "bookable" }`.
+
+**Activation guard.** When `bookable` is `true`, the endpoint first probes the
+agent's Google calendar (live, via domain-wide delegation). If it is unreachable
+(account gone from the Workspace, delegation broken), the flip is REFUSED with
+`409 { "status": "blocked", "reason": "google_unreachable" }` and a throttled
+Slack alert fires (keyed per agent). The agent stays out of the pool until the
+calendar is fixed and the caller retries. Deactivation (`bookable: false`) is
+never blocked.
+
+---
+
 ## Webhooks emitted to Regal and Cadence
 
 Slate is the sender for these. Every booking lifecycle change funnels through one
@@ -520,6 +549,7 @@ accounted for.
 | `BOOKING_API_KEY_2` | Booking API (secondary, for zero-downtime rotation) | Ignored; primary still works |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |
+| `BOOKABLE_API_KEY` | `POST /api/users/bookable` | `503` |
 | `CRON_SECRET` | every `/api/cron/*` lane | required env; lane returns `401` without a matching Bearer |
 | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` | required env; `403` on token mismatch |
 

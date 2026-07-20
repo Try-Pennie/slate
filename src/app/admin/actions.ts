@@ -29,6 +29,7 @@ import {
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { upsertUserSchedule } from "@/lib/schedule";
+import { writeBookable } from "@/lib/bookable/service";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { acquireLock } from "@/lib/locks";
@@ -405,10 +406,10 @@ export async function setBookable(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
   await requireManageAgent(userId, "agent.bookable");
-  await supabaseAdmin()
-    .from("users")
-    .update({ bookable: form.get("bookable") === "true" })
-    .eq("id", userId);
+  // Shared with the bookable-toggle API (#281). The admin toggle intentionally
+  // skips the API's Google-reachability guard: a human is making a deliberate
+  // call here, and the read-only pill on the page already shows calendar health.
+  await writeBookable(userId, form.get("bookable") === "true");
   revalidatePath("/admin");
 }
 
