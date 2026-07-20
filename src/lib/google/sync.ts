@@ -38,9 +38,11 @@ import {
 } from "@/lib/google/sync-health";
 import {
   dedupeFailingAgents,
+  isPageableFailure,
   type FailingAgent,
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
+import { reachabilityFromError } from "@/lib/google/reachability-classify";
 import { googlePushUrl } from "@/lib/env";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
@@ -235,14 +237,20 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
   // this tick and the every-minute lane retries.
   const { data: cals } = await db
     .from("agent_calendars")
-    .select("user_id, consecutive_failures, last_success_at, last_sync_error")
+    .select("user_id, consecutive_failures, last_success_at, last_sync_error, last_failure_kind")
     .gte("consecutive_failures", minFailures);
-  const calRows = (cals ?? []) as {
+  const calRows = ((cals ?? []) as {
     user_id: string;
     consecutive_failures: number;
     last_success_at: string | null;
     last_sync_error: string | null;
-  }[];
+    last_failure_kind: string | null;
+  }[])
+    // #916: apply the per-kind paging threshold BEFORE joining/dedup so a gone
+    // calendar at streak 2 is never hidden behind a same-agent transient calendar
+    // with a longer streak. `minFailures` (the query floor) is the gone/legacy
+    // threshold; a transient calendar must persist to TRANSIENT_PAGE_AT to page.
+    .filter((c) => isPageableFailure(c.last_failure_kind, c.consecutive_failures));
   if (calRows.length === 0) return [];
 
   // error-ok: best-effort alert enrichment; a read error drops agent names this
@@ -266,6 +274,7 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
       consecutive_failures: c.consecutive_failures,
       last_success_at: c.last_success_at,
       last_sync_error: c.last_sync_error,
+      last_failure_kind: c.last_failure_kind,
       email: u?.email ?? null,
       bookable: u?.bookable ?? false,
       deactivated_at: u?.deactivated_at ?? null,
@@ -400,6 +409,7 @@ function healthOf(cal: AgentCalendar): CalSyncHealth {
     consecutive_failures: cal.consecutive_failures,
     last_success_at: cal.last_success_at,
     last_sync_error: cal.last_sync_error,
+    last_failure_kind: cal.last_failure_kind,
   };
 }
 
@@ -493,11 +503,14 @@ async function syncCalendar(
     await recordCalHealth(cal.id, prev, { ok: true });
     return result.events.length;
   } catch (err) {
-    // Record the failure (streak + message) before rethrowing so the per-agent
-    // error handling + alert still fire and the cache never drifts silently.
+    // Record the failure (streak + message + classification) before rethrowing so
+    // the per-agent error handling + alert still fire and the cache never drifts
+    // silently. The kind (#916) lets the alert page a genuinely-gone account and
+    // back off on a transient blip.
     await recordCalHealth(cal.id, prev, {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
+      kind: reachabilityFromError(err),
     });
     throw err;
   }
@@ -713,7 +726,7 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         if (firstError === null) firstError = error;
-        await recordCalHealth(cal.id, prev, { ok: false, error });
+        await recordCalHealth(cal.id, prev, { ok: false, error, kind: reachabilityFromError(err) });
         // keep going - the agent's other calendars still need their watches.
       }
     }

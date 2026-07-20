@@ -6,6 +6,7 @@ import {
   formatSyncFailureAlert,
   isConsecutiveFailure,
   dedupeFailingAgents,
+  isPageableFailure,
 } from "../src/lib/notify/alerts.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -71,6 +72,29 @@ assert(deduped[0].error === "worst", "carries the worst calendar's error");
 assert(deduped[1].email === "amy@pennie.com", "second agent follows in failure order");
 assert(!deduped.some((a) => a.email === "left@pennie.com"), "a deactivated agent is excluded");
 assert(!deduped.some((a) => a.email === "off@pennie.com"), "a non-bookable agent is excluded");
+
+// --- #916: per-kind paging thresholds (gone pages at 2, transient at 4) ---
+assert(isPageableFailure("gone", 2), "gone pages at streak 2");
+assert(!isPageableFailure("gone", 1), "gone does not page at streak 1");
+assert(!isPageableFailure("transient", 2), "transient backs off: does NOT page at streak 2");
+assert(!isPageableFailure("transient", 3), "transient still quiet at streak 3");
+assert(isPageableFailure("transient", 4), "transient pages once it persists to streak 4");
+// A null/unclassified kind is treated conservatively as gone so a pre-#916
+// streak that used to page never goes silent.
+assert(isPageableFailure(null, 2), "an unclassified failure pages at 2 (treated as gone)");
+assert(isPageableFailure(undefined, 2), "a missing kind pages at 2 (treated as gone)");
+
+// dedupeFailingAgents carries the worst calendar's classification through, and
+// the named alert lines label it so ops knows which need a human.
+const kinded = dedupeFailingAgents([
+  { consecutive_failures: 5, last_success_at: null, last_sync_error: "unauthorized_client", email: "gone@pennie.com", bookable: true, deactivated_at: null, last_failure_kind: "gone" },
+  { consecutive_failures: 6, last_success_at: null, last_sync_error: "503", email: "flaky@pennie.com", bookable: true, deactivated_at: null, last_failure_kind: "transient" },
+]);
+assert(kinded.find((a) => a.email === "gone@pennie.com")?.failureKind === "gone", "carries a 'gone' classification");
+assert(kinded.find((a) => a.email === "flaky@pennie.com")?.failureKind === "transient", "carries a 'transient' classification");
+const kindMsg = formatWatchLapseAlert(kinded, 110);
+assert(/account gone: re-?auth or deactivate/i.test(kindMsg), "labels a gone account with its remediation");
+assert(/transient: likely self-healing/i.test(kindMsg), "labels a transient failure as likely self-healing");
 
 // --- sync-failure alerting (#43) ---
 assert(!isConsecutiveFailure(0), "no failures -> no alert");

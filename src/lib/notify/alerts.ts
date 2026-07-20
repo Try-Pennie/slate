@@ -22,6 +22,9 @@ export interface FailingAgent {
   lastSuccessAt: string | null;
   /** Last error message, or null. */
   error: string | null;
+  /** #916: classification of the worst calendar's last failure, or null when
+   *  unclassified (a failure recorded before the classification shipped). */
+  failureKind?: "gone" | "transient" | null;
 }
 
 /** A joined agent_calendars + users row, as loaded for the failing-agent alert. */
@@ -32,6 +35,31 @@ export interface FailingCalendarRow {
   email: string | null;
   bookable: boolean;
   deactivated_at: string | null;
+  /** #916: last failure's classification ('gone' | 'transient'), or null. */
+  last_failure_kind?: string | null;
+}
+
+/**
+ * Consecutive-failure thresholds at which a failing calendar PAGES, by
+ * classification (#916). A definitively-GONE account (a 4xx: delegation revoked
+ * / account removed) needs a human, so it pages at the same streak as before; a
+ * TRANSIENT failure (5xx / timeout / rate limit) usually self-heals, so it must
+ * persist LONGER before paging, cutting alert noise. A null kind (a failure
+ * recorded before #916, or an odd shape) is treated as gone so no streak that
+ * used to page ever goes silent.
+ */
+export const GONE_PAGE_AT = 2;
+export const TRANSIENT_PAGE_AT = 4;
+
+/** Whether a failing calendar has crossed its per-kind paging threshold (#916).
+ *  Applied per row BEFORE dedup so a genuinely-gone calendar at its threshold is
+ *  never hidden behind a same-agent transient calendar with a longer streak. */
+export function isPageableFailure(
+  kind: string | null | undefined,
+  consecutiveFailures: number,
+): boolean {
+  const threshold = kind === "transient" ? TRANSIENT_PAGE_AT : GONE_PAGE_AT;
+  return consecutiveFailures >= threshold;
 }
 
 /**
@@ -51,6 +79,10 @@ export function dedupeFailingAgents(rows: FailingCalendarRow[]): FailingAgent[] 
         consecutiveFailures: r.consecutive_failures,
         lastSuccessAt: r.last_success_at,
         error: r.last_sync_error,
+        failureKind:
+          r.last_failure_kind === "gone" || r.last_failure_kind === "transient"
+            ? r.last_failure_kind
+            : null,
       });
     }
   }
@@ -68,7 +100,15 @@ function failingAgentLines(failing: FailingAgent[]): string {
     const lastOk = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
     const err = a.error ? ` (${a.error.slice(0, 120)})` : "";
     const n = a.consecutiveFailures;
-    return `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, last ok ${lastOk}${err}`;
+    // #916: name the classification so ops knows which need a human now vs which
+    // are likely self-healing.
+    const kind =
+      a.failureKind === "gone"
+        ? " [account gone: re-auth or deactivate]"
+        : a.failureKind === "transient"
+          ? " [transient: likely self-healing]"
+          : "";
+    return `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, last ok ${lastOk}${kind}${err}`;
   });
   const extra = failing.length - MAX_NAMED_AGENTS;
   return lines.join("\n") + (extra > 0 ? `\n…and ${extra} more` : "");
