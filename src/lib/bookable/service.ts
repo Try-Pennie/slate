@@ -80,26 +80,54 @@ export async function writeBookable(userId: string, bookable: boolean): Promise<
  * pool) and a named alert fires, never a silent admit. Deactivation is never
  * blocked.
  */
+type BookableRow = { id: string; bookable: boolean; email: string };
+
 export async function applyBookableByEmail(
   email: string,
   bookable: boolean,
   deps: BookableDeps = defaultDeps,
 ): Promise<BookableResult> {
-  const trimmed = email.trim();
   const db = supabaseAdmin();
   // Exact match, consistent with the offboarding lookup (NOT ilike: `_`/`%` in
   // the address would act as wildcards and could resolve the WRONG user).
   const user = unwrap(
-    await db.from("users").select("id, bookable").eq("email", trimmed).maybeSingle(),
+    await db.from("users").select("id, bookable, email").eq("email", email.trim()).maybeSingle(),
     "bookable.lookup",
-  ) as { id: string; bookable: boolean } | null;
+  ) as BookableRow | null;
+  return applyBookableToRow(user, bookable, deps);
+}
 
+/**
+ * Same flip keyed by user id, for the admin toggle (#912) where the caller
+ * already has the RBAC-checked id. Shares the activation gate and write with the
+ * by-email path so the admin UI can't put a calendar-less agent into the pool
+ * either.
+ */
+export async function applyBookableByUserId(
+  userId: string,
+  bookable: boolean,
+  deps: BookableDeps = defaultDeps,
+): Promise<BookableResult> {
+  const user = unwrap(
+    await supabaseAdmin().from("users").select("id, bookable, email").eq("id", userId).maybeSingle(),
+    "bookable.lookup",
+  ) as BookableRow | null;
+  return applyBookableToRow(user, bookable, deps);
+}
+
+/** Shared: plan (idempotent) from the row, run the activation gate on the way
+ *  into the pool, then write. The gate probes the row's canonical email. */
+async function applyBookableToRow(
+  user: BookableRow | null,
+  bookable: boolean,
+  deps: BookableDeps,
+): Promise<BookableResult> {
   const plan = planBookableChange(user, bookable);
   if (plan.status === "not_found") return { status: "not_found" };
   if (plan.status === "noop") return { status: "noop", userId: user!.id, bookable };
 
   if (plan.bookable === true) {
-    const block = await checkActivationGate(trimmed, user!.id, deps);
+    const block = await checkActivationGate(user!.email, user!.id, deps);
     if (block) {
       await deps.notify(block.key, BOOKABLE_BLOCKED_COOLDOWN_MS, block.message);
       log.warn("bookable-api", { msg: "activation blocked", user_id: user!.id, reason: block.reason });

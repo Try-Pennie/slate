@@ -29,7 +29,7 @@ import {
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { upsertUserSchedule } from "@/lib/schedule";
-import { writeBookable } from "@/lib/bookable/service";
+import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
@@ -407,10 +407,18 @@ export async function setBookable(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
   await requireManageAgent(userId, "agent.bookable");
-  // Shared with the bookable-toggle API (#281). The admin toggle intentionally
-  // skips the API's Google-reachability guard: a human is making a deliberate
-  // call here, and the read-only pill on the page already shows calendar health.
-  await writeBookable(userId, form.get("bookable") === "true");
+  // Same guarded path as the bookable-toggle API (#281/#912): making an agent
+  // bookable when Slate can't reach their Google calendar is refused here too,
+  // so the UI can't put a calendar-less agent into the pool. Deactivation
+  // (bookable=false) is never gated.
+  const result = await applyBookableByUserId(userId, form.get("bookable") === "true");
+  if (result.status === "blocked") {
+    throw new Error(
+      result.reason === "google_unreachable"
+        ? "Can't make this agent bookable: their Google calendar is unreachable (account gone from the Workspace, or delegation broken). Fix the calendar and try again."
+        : "Couldn't verify this agent's Google calendar (a temporary Google issue). Please try again shortly.",
+    );
+  }
   revalidatePath("/admin");
 }
 

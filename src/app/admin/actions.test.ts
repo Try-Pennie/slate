@@ -30,6 +30,17 @@ const offboarding = vi.hoisted(() => ({
   applyLifecycleByUserId: vi.fn(async () => ({ status: "applied", userId: "u2", deactivate: true })),
   applyLifecycleByEmail: vi.fn(),
 }));
+const bookable = vi.hoisted(() => ({
+  applyBookableByUserId: vi.fn(
+    async (): Promise<{ status: string; userId?: string; bookable?: boolean; reason?: string }> => ({
+      status: "applied",
+      userId: "u2",
+      bookable: true,
+    }),
+  ),
+  applyBookableByEmail: vi.fn(),
+  writeBookable: vi.fn(async () => {}),
+}));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "claim" as string | null),
   releaseLock: vi.fn(async () => {}),
@@ -69,6 +80,7 @@ vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/offboarding/service", () => offboarding);
+vi.mock("@/lib/bookable/service", () => bookable);
 
 import {
   setUserRole,
@@ -80,6 +92,7 @@ import {
   setWebhookEndpoint,
   setMonitorSettings,
   setUserLifecycle,
+  setBookable,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
@@ -468,5 +481,48 @@ describe("setUserLifecycle (#278)", () => {
     expect(recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "agent.reactivate", targetId: "u2" }),
     );
+  });
+});
+
+// #912: the admin bookable toggle now runs the same Google-reachability gate as
+// the API (via applyBookableByUserId). A blocked result must HARD-BLOCK: throw a
+// clear error and NOT revalidate (nothing changed), so a manager can't put a
+// calendar-less agent into the pool from the UI.
+describe("setBookable Google guard (#912)", () => {
+  beforeEach(() => {
+    auth.requireManager.mockResolvedValue(admin);
+    dbState.single = { role: "agent" };
+  });
+
+  it("routes the flip through the guarded service and revalidates on success", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: true });
+    await setBookable(form({ user_id: "u2", bookable: "true" }));
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", true);
+    expect(revalidatePath).toHaveBeenCalled();
+  });
+
+  it("throws a clear error and does not revalidate when the calendar is unreachable", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({
+      status: "blocked",
+      userId: "u2",
+      reason: "google_unreachable",
+    });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/calendar/i);
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("throws a distinct 'could not verify' error on a transient block", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({
+      status: "blocked",
+      userId: "u2",
+      reason: "google_unverified",
+    });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/verify/i);
+  });
+
+  it("passes bookable=false straight through (deactivation is never gated)", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
+    await setBookable(form({ user_id: "u2", bookable: "false" }));
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", false);
   });
 });
