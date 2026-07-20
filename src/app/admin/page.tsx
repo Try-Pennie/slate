@@ -7,6 +7,7 @@ import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
+import { paginateRows } from "@/lib/paginate-rows";
 import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
 import { isActive } from "@/lib/active-user";
 import { dedupeFailingAgents, type FailingCalendarRow } from "@/lib/notify/alerts";
@@ -280,6 +281,7 @@ export default async function AdminPage({
     team?: string;
     manager?: string;
     bookable?: string;
+    page?: string;
     imp_error?: string;
     synced?: string;
     sync_error?: string;
@@ -291,6 +293,7 @@ export default async function AdminPage({
   const teamFilter = sp.team ?? "";
   const managerFilter = sp.manager ?? "";
   const bookableFilter = sp.bookable ?? ""; // "" all · "yes" · "no"
+  const requestedPage = Number.parseInt(sp.page ?? "1", 10);
   const hasFilter =
     !!query || !!roleFilter || !!teamFilter || !!managerFilter || !!bookableFilter;
   const me = await currentUser();
@@ -495,6 +498,25 @@ export default async function AdminPage({
         (a.name ?? a.email).localeCompare(b.name ?? b.email),
     );
 
+  // Render the roster a page at a time so the DOM stays bounded as the roster
+  // grows (#94). The full `users` load stays whole (the bucket/depth/filter
+  // editors above need it); only the table's rendered rows are paged.
+  const AGENTS_PER_PAGE = 50;
+  const agentsPage = paginateRows(visibleAgents, requestedPage, AGENTS_PER_PAGE);
+  // A link to another agents page that preserves the active filters and jumps to
+  // the table anchor so the viewport doesn't reset to the top of the page.
+  const agentsPageHref = (page: number) => {
+    const params = new URLSearchParams();
+    if (sp.q) params.set("q", sp.q);
+    if (roleFilter) params.set("role", roleFilter);
+    if (teamFilter) params.set("team", teamFilter);
+    if (managerFilter) params.set("manager", managerFilter);
+    if (bookableFilter) params.set("bookable", bookableFilter);
+    if (page > 1) params.set("page", String(page));
+    const qs = params.toString();
+    return `/admin${qs ? `?${qs}` : ""}#agents`;
+  };
+
   return (
     <>
     <AppHeader
@@ -678,7 +700,7 @@ export default async function AdminPage({
       )}
 
       {/* Agents + working hours */}
-      <section className={cardCls}>
+      <section id="agents" className={cardCls}>
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold">
@@ -790,7 +812,11 @@ export default async function AdminPage({
             </a>
           )}
           <span className="ml-auto text-xs text-fg-muted tabular-nums">
-            showing {visibleAgents.length} of {users.length}
+            {agentsPage.total === 0
+              ? `showing 0 of ${users.length}`
+              : `showing ${agentsPage.start}-${agentsPage.end} of ${agentsPage.total}${
+                  agentsPage.total !== users.length ? ` (of ${users.length})` : ""
+                }`}
           </span>
         </form>
         <div className="overflow-x-auto rounded-md border border-border">
@@ -806,7 +832,7 @@ export default async function AdminPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {visibleAgents.map((u) => {
+              {agentsPage.items.map((u) => {
                 const mgr = u.manager_id
                   ? users.find((x) => x.id === u.manager_id)
                   : null;
@@ -867,7 +893,7 @@ export default async function AdminPage({
                   </tr>
                 );
               })}
-              {visibleAgents.length === 0 && (
+              {agentsPage.items.length === 0 && (
                 <tr>
                   <td
                     colSpan={6}
@@ -882,6 +908,34 @@ export default async function AdminPage({
             </tbody>
           </table>
         </div>
+        {agentsPage.pageCount > 1 && (
+          <nav
+            aria-label="Agent roster pages"
+            className="mt-3 flex items-center justify-between text-sm"
+          >
+            {agentsPage.page > 1 ? (
+              <a href={agentsPageHref(agentsPage.page - 1)} className={btnSecondaryCls}>
+                Previous
+              </a>
+            ) : (
+              <span className={`${btnSecondaryCls} pointer-events-none opacity-40`} aria-disabled="true">
+                Previous
+              </span>
+            )}
+            <span className="text-xs text-fg-muted tabular-nums">
+              Page {agentsPage.page} of {agentsPage.pageCount}
+            </span>
+            {agentsPage.page < agentsPage.pageCount ? (
+              <a href={agentsPageHref(agentsPage.page + 1)} className={btnSecondaryCls}>
+                Next
+              </a>
+            ) : (
+              <span className={`${btnSecondaryCls} pointer-events-none opacity-40`} aria-disabled="true">
+                Next
+              </span>
+            )}
+          </nav>
+        )}
       </section>
 
       {/* Event types (admin only) */}
