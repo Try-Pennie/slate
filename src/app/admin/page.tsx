@@ -283,6 +283,7 @@ export default async function AdminPage({
     bookable?: string;
     page?: string;
     imp_error?: string;
+    imp_email?: string;
     synced?: string;
     sync_error?: string;
   }>;
@@ -581,6 +582,9 @@ export default async function AdminPage({
               name="email"
               type="email"
               required
+              // #141: repopulate the typed email when a "view as" attempt failed,
+              // so the admin doesn't have to retype it.
+              defaultValue={sp.imp_email ?? ""}
               aria-label="Email of the user to view as"
               placeholder="agent@trypennie.com"
               className={`${inputCls} w-72`}

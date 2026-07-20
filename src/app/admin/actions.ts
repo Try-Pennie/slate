@@ -36,6 +36,7 @@ import { clearFailureStreak } from "@/lib/notify/streak";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
+import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
 import {
   parseMonitorSettingsForm,
   ALERT_KEYS as MONITOR_ALERT_KEYS,
@@ -461,7 +462,9 @@ export async function startImpersonation(form: FormData): Promise<void> {
   if (!admin || !atLeast(admin.role, "admin")) throw new Error("Not authorized");
 
   const email = String(form.get("email") ?? "").trim().toLowerCase();
-  if (!email) redirect(`/admin?imp_error=${encodeURIComponent("Enter an email.")}`);
+  // #141: echo the typed email back on every failure so the form repopulates it
+  // instead of wiping it (the field is uncontrolled and the redirect re-renders).
+  if (!email) redirect(impersonationErrorUrl("Enter an email."));
 
   const { data } = await supabaseAdmin()
     .from("users")
@@ -471,16 +474,14 @@ export async function startImpersonation(form: FormData): Promise<void> {
     .maybeSingle();
   const target = data as { id: string; role: Role } | null;
   if (!target) {
-    redirect(`/admin?imp_error=${encodeURIComponent(`No user with email ${email}.`)}`);
+    redirect(impersonationErrorUrl(`No user with email ${email}.`, email));
   }
   if (target.id === admin.id) {
-    redirect(`/admin?imp_error=${encodeURIComponent("That is already you.")}`);
+    redirect(impersonationErrorUrl("That is already you.", email));
   }
   // Role ceiling (#588): can't view-as someone who outranks or equals you.
   if (!canImpersonate(admin.role, target.role)) {
-    redirect(
-      `/admin?imp_error=${encodeURIComponent(`You can't impersonate a ${roleLabel(target.role)}.`)}`,
-    );
+    redirect(impersonationErrorUrl(`You can't impersonate a ${roleLabel(target.role)}.`, email));
   }
 
   const store = await cookies();
