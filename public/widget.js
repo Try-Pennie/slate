@@ -438,6 +438,77 @@
     );
   });
 
+  // --- availability prefetch (#251) -----------------------------------------
+  // Warm GET <origin>/api/availability?bucket=<xbc> as soon as a trigger is on
+  // the page (and again on first intent), so the cache-first booker opens with
+  // slots already computed instead of paying the ~3.8s cold-compute on open.
+  // Fire-and-forget and best-effort: it never blocks or throws into the host
+  // page, and each bucket is warmed at most once per page load.
+  var warmed = {};
+  function bucketCodeFor(link) {
+    var params = new URLSearchParams();
+    var q = link.indexOf("?");
+    if (q >= 0) {
+      new URLSearchParams(link.slice(q + 1)).forEach(function (v, k) {
+        params.set(k, v);
+      });
+    }
+    // Mirror bookingUrl: a forwarded window query can override the link's xbc.
+    if (realCal.config && realCal.config.forwardQueryParams) {
+      new URLSearchParams(window.location.search).forEach(function (v, k) {
+        params.set(k, v);
+      });
+    }
+    return params.get("xbc") || "";
+  }
+  function warmAvailability(link, ns) {
+    var xbc = bucketCodeFor(link);
+    if (!xbc) return;
+    var url = originFor(ns) + "/api/availability?bucket=" + encodeURIComponent(xbc);
+    if (warmed[url]) return;
+    warmed[url] = 1;
+    // no-cors: the host page is cross-origin to the Slate app, so we can't (and
+    // don't need to) read the response. The request still runs server-side and
+    // warms the precomputed row + edge cache. Result is discarded.
+    try {
+      if (typeof fetch === "function") {
+        fetch(url, { mode: "no-cors", credentials: "omit", cache: "no-store" }).catch(
+          function () {},
+        );
+      }
+    } catch (_e) {
+      /* never throw into the host page */
+    }
+  }
+  function warmTrigger(el) {
+    if (!el || !el.getAttribute) return;
+    warmAvailability(
+      el.getAttribute("data-cal-link") || "",
+      el.getAttribute("data-cal-namespace") || "",
+    );
+  }
+  function warmAllTriggers() {
+    var els = document.querySelectorAll("[data-cal-link]");
+    for (var i = 0; i < els.length; i++) warmTrigger(els[i]);
+  }
+  // Intent: warm on the first hover/focus/touch of a trigger (delegated, so
+  // dynamically-added triggers are covered). All three events bubble.
+  ["pointerover", "focusin", "touchstart"].forEach(function (type) {
+    document.addEventListener(
+      type,
+      function (e) {
+        var el = e.target && e.target.closest && e.target.closest("[data-cal-link]");
+        if (el) warmTrigger(el);
+      },
+      true,
+    );
+  });
+  // Render: warm any triggers already on the page (the common single-button case).
+  warmAllTriggers();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", warmAllTriggers);
+  }
+
   window.addEventListener("message", function (e) {
     var d = e.data || {};
     if (

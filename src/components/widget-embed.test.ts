@@ -145,3 +145,46 @@ describe("widget.js loader timeout + retry (#628)", () => {
     }
   });
 });
+
+// #251: prefetch availability so the picker feels instant on open. widget.js
+// warms GET <origin>/api/availability?bucket=<xbc> on trigger intent (and on
+// render), fire-and-forget, before the modal opens. It must never throw into the
+// host page and must warm each bucket at most once.
+describe("widget.js availability prefetch (#251)", () => {
+  it("warms /api/availability on trigger intent (pointerover), once per bucket", () => {
+    const fetchSpy = vi.fn((..._args: unknown[]) => Promise.resolve({} as Response));
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchSpy as unknown as typeof fetch;
+
+    const trigger = document.createElement("button");
+    trigger.setAttribute("data-cal-link", "router?xbc=771");
+    document.body.appendChild(trigger);
+
+    trigger.dispatchEvent(new Event("pointerover", { bubbles: true }));
+
+    const calls = fetchSpy.mock.calls.filter((c) =>
+      /\/api\/availability\?bucket=771$/.test(String(c[0])),
+    );
+    expect(calls).toHaveLength(1);
+
+    // A second intent event must NOT re-warm the same bucket.
+    trigger.dispatchEvent(new Event("focusin", { bubbles: true }));
+    const after = fetchSpy.mock.calls.filter((c) =>
+      /\/api\/availability\?bucket=771$/.test(String(c[0])),
+    );
+    expect(after).toHaveLength(1);
+  });
+
+  it("does not warm when the trigger carries no bucket (xbc)", () => {
+    const fetchSpy = vi.fn((..._args: unknown[]) => Promise.resolve({} as Response));
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchSpy as unknown as typeof fetch;
+
+    const trigger = document.createElement("button");
+    trigger.setAttribute("data-cal-link", "router?form=abc"); // no xbc
+    document.body.appendChild(trigger);
+
+    trigger.dispatchEvent(new Event("pointerover", { bubbles: true }));
+
+    const calls = fetchSpy.mock.calls.filter((c) => /\/api\/availability/.test(String(c[0])));
+    expect(calls).toHaveLength(0);
+  });
+});
