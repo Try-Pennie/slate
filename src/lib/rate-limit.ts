@@ -6,6 +6,12 @@ import { log } from "@/lib/log";
 
 export { clientIp, BOOKING_RATE_RULES, ROUTING_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
+import {
+  friendlyRateArea,
+  limiterFailOpenAlert,
+  limiterBlockedAlert,
+  refundFailedAlert,
+} from "@/lib/rate-limit-core";
 
 /**
  * Availability throttle (#56) via the AVAIL_RATE_LIMITER Workers binding —
@@ -50,10 +56,12 @@ async function alertAvailabilityLimiterDown(reason: string): Promise<void> {
   const now = Date.now();
   if (now - lastAvailAlertAttemptMs < LIMITER_BROKEN_COOLDOWN_MS) return;
   lastAvailAlertAttemptMs = now;
+  // The raw reason (a missing binding, or String(err) that in dev is a Next.js
+  // config stack trace) goes to the LOGS, never to the human-facing Slack line.
   log.error("rate-limit", { msg: "limiter failing open", reason });
   await alertBestEffort(
     "rate_limit_broken:availability",
-    `Slate: the availability rate limiter is FAILING OPEN, so ${reason}. Every /api/availability request is being served unthrottled until this is fixed.`,
+    limiterFailOpenAlert("booking availability"),
     "availability",
   );
 }
@@ -94,7 +102,7 @@ export async function allowRequest(
       log.error("rate-limit", { msg: "rate_limit_hit failed", rule: rule.prefix }, error);
       await alertBestEffort(
         `rate_limit_broken:${rule.prefix}`,
-        `Slate: the rate limiter is FAILING OPEN. rate_limit_hit errored on '${rule.prefix}': ${error.message}. Requests are being allowed through unthrottled until this is fixed.`,
+        limiterFailOpenAlert(friendlyRateArea(rule.prefix)),
         rule.prefix,
       );
       continue; // fail open
@@ -107,7 +115,7 @@ export async function allowRequest(
       if (rule.alertOnBlock) {
         await alertBestEffort(
           `rate_limit_blocked:${rule.prefix}`,
-          `Slate: the booking API rate limit BLOCKED a request from ${ip} (rule '${rule.prefix}', ${rule.max} per ${rule.windowSeconds}s). If that is our own auto-booker, the ceiling is too tight and real bookings are being rejected. If it is not, a key may have leaked.`,
+          limiterBlockedAlert(friendlyRateArea(rule.prefix), ip, rule.max, rule.windowSeconds),
           rule.prefix,
         );
       }
@@ -149,7 +157,7 @@ export async function refundRequest(
       log.error("rate-limit", { msg: "rate_limit_refund failed", rule: rule.prefix }, error);
       await alertBestEffort(
         `rate_limit_refund_broken:${rule.prefix}`,
-        `Slate: a rate-limit REFUND failed on '${rule.prefix}': ${error.message}. Customers whose booking failed through no fault of their own are losing budget from their limit.`,
+        refundFailedAlert(friendlyRateArea(rule.prefix)),
         rule.prefix,
       );
     }

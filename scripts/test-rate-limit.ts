@@ -8,8 +8,12 @@ import {
   DIRECT_BOOKING_API_IP_RATE_RULES,
   DIRECT_BOOKING_API_READ_RATE_RULES,
   ROUTING_RATE_RULES,
+  friendlyRateArea,
+  limiterFailOpenAlert,
+  limiterBlockedAlert,
+  refundFailedAlert,
 } from "../src/lib/rate-limit-core.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const READ_PREFIXES = DIRECT_BOOKING_API_READ_RATE_RULES.map((r) => r.prefix);
 
@@ -149,6 +153,58 @@ assert(
     ipPrefixes.every((p) => !READ_PREFIXES.includes(p)),
     "per-IP counters do not collide with the read counters (#597)",
   );
+}
+
+// Human-readable alert copy: a limiter alert lands in Slack in front of a
+// non-technical on-call. It must describe the impact in plain language and must
+// NEVER dump a code identifier or a raw Error (that detail belongs in the logs).
+// This regression exists because the availability fail-open alert used to
+// interpolate String(err), which in dev is a Next.js config stack trace nobody
+// on-call can read.
+{
+  // Internal key prefixes map to a plain area name.
+  eq(friendlyRateArea("book:m"), "public booking", "book prefix -> public booking");
+  eq(friendlyRateArea("bookapi:ip:m"), "booking API", "bookapi prefix -> booking API");
+  eq(friendlyRateArea("routing:h"), "routing lookup", "routing prefix -> routing lookup");
+  eq(friendlyRateArea("mystery:x"), "a Slate endpoint", "unknown prefix -> a safe generic");
+
+  // Tokens that must never appear in any human-facing alert.
+  const CODE_TOKENS = [
+    "getCloudflareContext",
+    "initOpenNext",
+    "rate_limit_hit",
+    "rate_limit_refund",
+    "AVAIL_RATE_LIMITER",
+    "Error:",
+    "undefined",
+    "book:m",
+    "bookapi",
+    "routing:",
+    "::",
+    "{",
+    "}",
+    String.fromCharCode(0x2014), // em dash
+    String.fromCharCode(0x2013), // en dash
+  ];
+  const clean = (label: string, text: string) => {
+    for (const t of CODE_TOKENS) {
+      assert(!text.includes(t), `${label} alert is free of the code token ${JSON.stringify(t)}`);
+    }
+    assert(text.startsWith("Slate:"), `${label} alert is a Slate-branded line`);
+    assert(text.length > 40, `${label} alert actually explains something`);
+  };
+
+  const failOpen = limiterFailOpenAlert("booking availability");
+  clean("fail-open", failOpen);
+  assert(/availab/i.test(failOpen), "fail-open alert names the affected area in plain words");
+
+  const blocked = limiterBlockedAlert("booking API", "203.0.113.7", 60, 60);
+  clean("blocked", blocked);
+  assert(blocked.includes("203.0.113.7"), "blocked alert keeps the human-meaningful IP");
+  assert(blocked.includes("per minute"), "blocked alert states the window in plain words");
+
+  const refund = refundFailedAlert("booking API");
+  clean("refund", refund);
 }
 
 finish();
