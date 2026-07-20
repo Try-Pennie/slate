@@ -95,3 +95,65 @@ export function clientIp(headers: Headers): string {
   if (xff) return xff.split(",")[0]!.trim();
   return "unknown";
 }
+
+/**
+ * Human-readable alert copy for the rate-limit alerts. A limiter alert lands in
+ * Slack in front of a non-technical on-call, so it must describe the impact in
+ * plain language and NEVER carry a code identifier or a raw Error object; that
+ * detail stays in the server logs (`log.error` with `tag=rate-limit`). The
+ * availability fail-open alert used to interpolate `String(err)`, which in dev is
+ * a Next.js config stack trace that nobody on-call can read. These builders keep
+ * the wording testable and code-free.
+ */
+
+/** A plain-language area name for an internal key prefix. */
+export function friendlyRateArea(prefix: string): string {
+  if (prefix.startsWith("bookapi")) return "booking API";
+  if (prefix.startsWith("book")) return "public booking";
+  if (prefix.startsWith("routing")) return "routing lookup";
+  return "a Slate endpoint";
+}
+
+/** A rate window in words ("minute", "hour", "N minutes"). */
+export function humanWindow(seconds: number): string {
+  if (seconds === 60) return "minute";
+  if (seconds === 3600) return "hour";
+  if (seconds % 3600 === 0) return `${seconds / 3600} hours`;
+  if (seconds % 60 === 0) return `${seconds / 60} minutes`;
+  return `${seconds} seconds`;
+}
+
+/** The limiter stopped working and is allowing requests through uncapped. */
+export function limiterFailOpenAlert(area: string): string {
+  return (
+    `Slate: the rate limit for ${area} has stopped working, so those requests are ` +
+    `being allowed through with no cap right now. Requests still succeed; this is a ` +
+    `safeguard, not an outage. An engineer should check the rate limiter (the cause ` +
+    `is in the logs).`
+  );
+}
+
+/** A machine-to-machine ceiling turned a request away (itself worth hearing). */
+export function limiterBlockedAlert(
+  area: string,
+  ip: string,
+  max: number,
+  windowSeconds: number,
+): string {
+  return (
+    `Slate: the ${area} rate limit turned away a request from ${ip} for going over ` +
+    `${max} requests per ${humanWindow(windowSeconds)}. If that is our own automated ` +
+    `booker, its limit is set too low and real bookings are being rejected. If it is ` +
+    `not, an access key may have leaked.`
+  );
+}
+
+/** A rate-limit refund failed, so a customer may keep losing allowance unfairly. */
+export function refundFailedAlert(area: string): string {
+  return (
+    `Slate: could not restore the ${area} booking allowance for a customer whose ` +
+    `booking failed through no fault of their own, so they may be left with less ` +
+    `allowance than they should have. An engineer should check the rate-limit refund ` +
+    `(the cause is in the logs).`
+  );
+}

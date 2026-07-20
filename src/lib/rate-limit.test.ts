@@ -46,8 +46,9 @@ describe("allowRequest (#597)", () => {
 
   // The failure path. Before this, a broken limiter was indistinguishable from a
   // working one.
-  it("ALERTS when the limiter itself fails, instead of silently switching off", async () => {
+  it("ALERTS in plain language, keeping the raw error to the logs, when the limiter fails", async () => {
     rpc.mockResolvedValue({ data: null, error: { message: "relation does not exist" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const allowed = await allowRequest("1.2.3.4", RULES);
 
@@ -57,8 +58,12 @@ describe("allowRequest (#597)", () => {
     expect(sendThrottledAlert).toHaveBeenCalled();
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
     expect(text).toMatch(/rate limit/i);
-    // The message has to name the failure or nobody can act on it.
-    expect(text).toMatch(/relation does not exist/);
+    // The customer-facing Slack line must NOT leak the raw DB error to a
+    // non-technical on-call (the readability defect the user reported)...
+    expect(text).not.toMatch(/relation does not exist/);
+    // ...but the cause is still recoverable, from the server logs.
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/relation does not exist/);
+    consoleErr.mockRestore();
   });
 
   // The alert is best effort. It writes to alert_state, so the very outage that broke
@@ -121,13 +126,18 @@ describe("alert on block (#796)", () => {
 describe("refundRequest (#796)", () => {
   const RULES2: RateLimitRule[] = [{ prefix: "book:m", windowSeconds: 60, max: 3 }];
 
-  it("ALERTS when a refund fails instead of only logging", async () => {
+  it("ALERTS in plain language, keeping the raw error to the logs, when a refund fails", async () => {
     rpc.mockResolvedValue({ data: null, error: { message: "refund fn missing" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await refundRequest("1.2.3.4", RULES2);
 
     expect(sendThrottledAlert).toHaveBeenCalled();
-    expect(String(sendThrottledAlert.mock.calls[0]?.[2] ?? "")).toMatch(/refund fn missing/);
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    expect(text).toMatch(/allowance|refund/i);
+    expect(text).not.toMatch(/refund fn missing/);
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/refund fn missing/);
+    consoleErr.mockRestore();
   });
 
   it("never throws, even when the alert itself fails (a refund must not break the response)", async () => {
@@ -187,17 +197,25 @@ describe("availabilityWithinLimit (#796)", () => {
     expect(sendThrottledAlert).toHaveBeenCalled();
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
     expect(text).toMatch(/availability/i);
-    // Name the failure, or nobody can act on it.
-    expect(text).toMatch(/limiter unavailable/);
+    // The Slack line stays plain: the raw Error (in dev, a Next.js config stack
+    // trace) must never reach a non-technical on-call. The cause is in the logs.
+    expect(text).not.toMatch(/limiter unavailable/);
   });
 
   it("ALERTS when the binding is missing entirely (the throttle is simply OFF)", async () => {
     cf.env = {};
 
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
 
     expect(sendThrottledAlert).toHaveBeenCalled();
-    expect(String(sendThrottledAlert.mock.calls[0]?.[2] ?? "")).toMatch(/AVAIL_RATE_LIMITER/);
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    // Plain-language impact, no internal binding name in the customer-facing line.
+    expect(text).toMatch(/availability/i);
+    expect(text).not.toMatch(/AVAIL_RATE_LIMITER/);
+    // The specific cause (the missing binding) is still recoverable from the logs.
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/AVAIL_RATE_LIMITER/);
+    consoleErr.mockRestore();
   });
 
   // The alert's throttle lives in Postgres (alert_state), so attempting it means a DB
