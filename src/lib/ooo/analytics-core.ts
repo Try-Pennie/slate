@@ -19,7 +19,14 @@ export interface ApprovalStats {
   rejected: number;
   pending: number;
   total: number;
-  /** Whole-percent approval rate over approved+rejected+pending. */
+  /** Decided requests = approved + rejected (a pending request is not a decision). */
+  decided: number;
+  /**
+   * Whole-percent approval rate over DECIDED requests only (#201). Pending
+   * requests are not-yet-decisions, so counting them in the denominator would
+   * understate the rate. 0 when nothing is decided (callers should show the rate
+   * as undefined, e.g. "no decisions yet", when `decided` is 0).
+   */
   rate: number;
 }
 
@@ -33,12 +40,14 @@ export function approvalStats(requests: OooRequest[]): ApprovalStats {
     else if (r.status === "pending") pending++;
   }
   const total = approved + rejected + pending;
+  const decided = approved + rejected;
   return {
     approved,
     rejected,
     pending,
     total,
-    rate: total > 0 ? Math.round((approved / total) * 100) : 0,
+    decided,
+    rate: decided > 0 ? Math.round((approved / decided) * 100) : 0,
   };
 }
 
@@ -73,7 +82,9 @@ export function companyApprovalStats(
   }
   const rates = [...perManager.values()]
     .map((rs) => approvalStats(rs))
-    .filter((s) => s.total > 0)
+    // #201: only managers who have actually decided something have a meaningful
+    // approval rate; an all-pending manager must not drag the median to 0.
+    .filter((s) => s.decided > 0)
     .map((s) => s.rate)
     .sort((a, b) => a - b);
   return { rate: median(rates), managerCount: rates.length };
