@@ -52,7 +52,6 @@ const SINGLETON_INVARIANTS: {
   issue: string;
   why: string;
 }[] = [
-  { table: "google_credentials", cols: "user_id", issue: "0001", why: "one Google connection per agent" },
   { table: "agent_calendars", cols: "user_id,calendar_id", issue: "0012", why: "one sync/push state row per (agent, calendar)" },
   { table: "availability_schedules", cols: "user_id", issue: "#532/0074", why: "one working-hours schedule per agent" },
   { table: "busy_blocks", cols: "booking_id", issue: "#513/0067", why: "one slate busy block per booking" },

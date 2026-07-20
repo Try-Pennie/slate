@@ -154,7 +154,7 @@ config, singleton, and lock tables are capped by the design target (100 to 200
 agents, ~60 buckets) or a fixed key space, so they can never fill a page and are
 never flagged. The allowlist (`SAFE_TABLES` in `scan-src-capped-reads.ts`) holds
 `organizations`, `users`, `buckets`, `bucket_members`, `availability_schedules`,
-`agent_calendars`, `event_types`, `google_credentials`, `webhook_endpoints`,
+`agent_calendars`, `event_types`, `webhook_endpoints`,
 `monitor_settings`, `monitor_alert_config`, `alert_state`, `bucket_slots`,
 `sync_locks`, `rate_limits`, `reschedule_locks`, `lane_heartbeats`, and
 `selfheal_scan_cursor`. **Every other table defaults to a growth table (flagged):

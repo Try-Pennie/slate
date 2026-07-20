@@ -114,5 +114,17 @@ eq(normCols(' "user_id" , calendar_id '), "user_id,calendar_id", "normCols norma
   );
   assert(tables.has("t") && !tables.has("other"), "alter table is not a declaration");
 }
+{
+  // A table created in one migration and dropped in a later one is NOT declared
+  // (net): it no longer exists, so it must not be required to carry RLS (#875) or
+  // a singleton classification (#874). Dropped by #290 for google_credentials.
+  const tables = parseDeclaredTables(
+    "create table legacy (\n  id uuid primary key\n);\n" +
+      "create table keep (\n  id uuid primary key\n);\n" +
+      "drop table if exists legacy;",
+  );
+  assert(!tables.has("legacy"), "a dropped table is not a net declaration");
+  assert(tables.has("keep"), "a table that is never dropped stays declared");
+}
 
 finish();

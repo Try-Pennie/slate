@@ -45,7 +45,6 @@ const SAFE_TABLES = new Set([
   "availability_schedules",
   "agent_calendars",
   "event_types",
-  "google_credentials",
   "webhook_endpoints",
   "monitor_settings",
   "monitor_alert_config",
