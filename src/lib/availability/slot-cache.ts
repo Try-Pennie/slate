@@ -1,6 +1,11 @@
-import { getBucketSlots, type BucketSlots } from "./service";
+import { getBucketSlots } from "./service";
 import { slotCacheKey } from "./cache-key";
-import { resolveBucketSlots, type ReadDeps } from "./precompute-core";
+import {
+  resolveBucketSlots,
+  type ReadDeps,
+  type CachedBucketSlots,
+  type ResolvedBucketSlots,
+} from "./precompute-core";
 import {
   readBucketSlotsRow,
   writeBucketSlotsRow,
@@ -45,14 +50,14 @@ export async function getCachedBucketSlots(
   code: string,
   fromIso: string,
   horizonDays = HORIZON_DAYS,
-): Promise<BucketSlots | null> {
+): Promise<ResolvedBucketSlots | null> {
   const cache = slotCache();
   const deps: ReadDeps = {
     cacheGet: async (key) => {
       if (!cache) return null;
       try {
         const hit = await cache.match(keyRequest(key));
-        if (hit) return JSON.parse(await hit.text()) as BucketSlots;
+        if (hit) return JSON.parse(await hit.text()) as CachedBucketSlots;
       } catch { /* fall through */ }
       return null;
     },
@@ -148,15 +153,15 @@ export async function getBucketSlotsWithFallback(
   code: string,
   from: string,
   authorizedForTest = false,
-): Promise<(BucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
+): Promise<(ResolvedBucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
   const requested = await getCachedBucketSlots(code, from);
   if (!requested) return null;
   if (requested.bucket.is_test && !authorizedForTest) return null;
 
   const withRouting = (
-    slotsFor: BucketSlots,
+    slotsFor: ResolvedBucketSlots,
     rungs: number,
-  ): BucketSlots & { routing: AvailabilityRoutingMeta } => ({
+  ): ResolvedBucketSlots & { routing: AvailabilityRoutingMeta } => ({
     ...slotsFor,
     routing: {
       requested_code: code,
@@ -173,7 +178,7 @@ export async function getBucketSlotsWithFallback(
   // Horizon window is empty: cascade down the tier ladder.
   // Pre-seed the seen map with the already-fetched requested bucket so the
   // callback never fetches it again.
-  const seen = new Map<string, BucketSlots | null>([[code, requested]]);
+  const seen = new Map<string, ResolvedBucketSlots | null>([[code, requested]]);
   const winner = await selectWithTierFallback(code, async (c) => {
     if (!seen.has(c)) seen.set(c, await getCachedBucketSlots(c, from));
     const row = seen.get(c);
