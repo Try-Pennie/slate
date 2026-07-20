@@ -112,21 +112,6 @@ export interface OooRequest {
   updated_at: string;
 }
 
-export interface GoogleCredentials {
-  id: string;
-  user_id: string;
-  access_token: string | null;
-  refresh_token: string | null;
-  token_expiry: string | null;
-  calendar_id: string;
-  watch_channel_id: string | null;
-  watch_resource_id: string | null;
-  watch_expiration: string | null;
-  sync_token: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface EventType {
   id: string;
   org_id: string;

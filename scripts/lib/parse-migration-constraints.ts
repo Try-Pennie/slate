@@ -45,6 +45,13 @@ export function parseDeclaredTables(sql: string): Set<string> {
   for (const m of sql.matchAll(/create table (?:if not exists )?(?:public\.)?(\w+)/gi)) {
     tables.add(m[1]);
   }
+  // Subtract tables a later migration drops: the NET declared set is what still
+  // exists, so a dropped table is not required to carry RLS (#875) or a singleton
+  // classification (#874). Migrations are append-only, so the concatenated SQL is
+  // in apply order and a create-then-drop nets to gone (#290).
+  for (const m of sql.matchAll(/drop table (?:if exists )?(?:public\.)?(\w+)/gi)) {
+    tables.delete(m[1]);
+  }
   return tables;
 }
 

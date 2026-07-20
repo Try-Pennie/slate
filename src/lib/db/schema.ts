@@ -19,7 +19,6 @@ import type {
   BucketSlotsRow,
   BusyBlock,
   EventType,
-  GoogleCredentials,
   LaneHeartbeat,
   SelfhealScanCursor,
   MonitorAlertConfig,
@@ -65,7 +64,6 @@ export interface Database {
     Tables: {
       organizations: Table<Organization>;
       users: Table<User>;
-      google_credentials: Table<GoogleCredentials>;
       event_types: Table<EventType>;
       buckets: Table<
         Bucket,
