@@ -8,9 +8,9 @@ export { buildRoutingTraceExtras } from "./explain.ts";
 
 export const MISROUTE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
-/** Persist one routing decision and fire a misroute alert if the chosen agent
- *  fails criteria with no intentional fallback. Best-effort; never throws. */
-export async function recordRoutingDecision(input: {
+/** Input to `recordRoutingDecision`. Exported so it can type the injected
+ *  `deps.recordRoutingDecision` seam (#504) without re-declaring the shape. */
+export interface RecordRoutingDecisionInput {
   orgId: string;
   bookingId: string | null;
   bucketCode: string;
@@ -26,7 +26,11 @@ export async function recordRoutingDecision(input: {
   requestedTier: string | null;
   bookedTier: string | null;
   outcome: RoutingDecision["outcome"];
-}): Promise<void> {
+}
+
+/** Persist one routing decision and fire a misroute alert if the chosen agent
+ *  fails criteria with no intentional fallback. Best-effort; never throws. */
+export async function recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void> {
   try {
     await supabaseAdmin().from("routing_decisions").insert({
       org_id: input.orgId,

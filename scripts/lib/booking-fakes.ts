@@ -15,6 +15,7 @@ import {
   type PendingEventDeletion,
 } from "../../src/lib/booking/orchestration.ts";
 import type { WorkingRule } from "../../src/lib/availability/compute.ts";
+import type { RecordRoutingDecisionInput } from "../../src/lib/routing/record.ts";
 import type {
   Booking,
   Bucket,
@@ -236,6 +237,9 @@ export function makeDeps(opts: FakeOpts) {
     releaseReschedule: 0,
     releaseRescheduleIfTarget: 0,
     invalidateSlots: [] as string[],
+    // #504: every routing decision the orchestration recorded, so a suite can
+    // assert the outcome + payload directly instead of via a log line.
+    recordRoutingDecision: [] as RecordRoutingDecisionInput[],
     roundRobinPreview: [] as (boolean | undefined)[],
     queryBookings: [] as unknown[],
     removePendingEventDeletion: [] as string[],
@@ -662,6 +666,9 @@ export function makeDeps(opts: FakeOpts) {
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: async (bucketCode) => {
       calls.invalidateSlots.push(bucketCode);
+    },
+    recordRoutingDecision: async (input) => {
+      calls.recordRoutingDecision.push(input);
     },
     loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
     removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },

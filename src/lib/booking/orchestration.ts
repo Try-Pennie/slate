@@ -42,7 +42,7 @@ import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
 import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
 import { resolveBucketPool } from "../availability/service.ts";
-import { recordRoutingDecision } from "../routing/record.ts";
+import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { tierKeyOf } from "../routing/tiers.ts";
 import { walkTierLadder } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
@@ -761,6 +761,15 @@ export interface BookingDeps {
   appBaseUrl(): string;
   /** Best-effort clear of a bucket's cached availability after a booking changes it. */
   invalidateSlots(bucketCode: string): Promise<void>;
+  /**
+   * Persist one routing decision to the decision log and fire a misroute alert if
+   * warranted (#504). Injected (rather than called as a module function) so tests
+   * can assert the orchestration records the expected outcome + payload directly,
+   * instead of inferring it from a swallowed-error log line. Best-effort in the
+   * live impl; every call site already wraps it in its own try/catch so a decision
+   * -log failure never affects the booking.
+   */
+  recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void>;
 }
 
 /** Alert once a queued deletion has failed this many times. */
@@ -1507,7 +1516,7 @@ export async function createBooking(
         err instanceof NoEligibleAgentsError ? "no_eligible_agents" : "no_availability";
       try {
         const pool = await resolveBucketPool(bucket);
-        await recordRoutingDecision({
+        await deps.recordRoutingDecision({
           orgId: bucket.org_id,
           bookingId: null,
           bucketCode: bucket.code,
@@ -1746,7 +1755,7 @@ async function completeReservation(
         ? await deps.getUser(booking.assigned_user_id)
         : null;
       const rt = booking.routing_trace;
-      await recordRoutingDecision({
+      await deps.recordRoutingDecision({
         orgId: booking.org_id,
         bookingId: booking.id,
         bucketCode: resolved.bucket.code,

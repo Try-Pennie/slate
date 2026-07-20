@@ -6,6 +6,7 @@ import {
   roundRobinCandidates,
 } from "@/lib/availability/service";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { recordRoutingDecision } from "@/lib/routing/record";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
   createEvent,
@@ -656,6 +657,10 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       void recomputeBucketSlotsForToday(bucketCode).catch(() => {});
       return Promise.resolve();
     },
+    // #504: the routing decision log, injected so the orchestration's calls are
+    // test-observable. Best-effort in the impl (never throws), matching the prior
+    // module-function behavior.
+    recordRoutingDecision,
 
     getUser: async (userId) => {
       // error-ok: agent lookup inside the crash-safe create/drain step; a read error is recovered by the outbox retry, not silently lost.

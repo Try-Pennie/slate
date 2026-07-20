@@ -415,9 +415,9 @@ async function run() {
   // --- routing_trace explainability stamping: excluded + tier fields on a criteria bucket ---
   // Asserts the core wiring added in feat/routing-explainability: a successful booking
   // stamps all explainability fields on the persisted booking's routing_trace.
-  // Note: recordRoutingDecision is NOT injectable through BookingDeps, it calls
-  // supabaseAdmin() directly and is wrapped in best-effort try/catch. Its invocation
-  // is therefore observed only indirectly through the routing_trace fields it reads.
+  // recordRoutingDecision is injected through BookingDeps (#504), so its
+  // invocation is asserted directly below (payload derived from the same
+  // routing_trace fields checked here), not only inferred from the trace.
   {
     const criteriasBucket = {
       ...bucket,
@@ -454,6 +454,19 @@ async function run() {
     assert(
       res.booking.id === "bk-new" && calls.webhooks.some((w) => w.event === "booking.created"),
       "routing_trace: booking succeeds and booking.created fires (recordRoutingDecision is best-effort, does not block)",
+    );
+    // #504: the decision-log call is now observable directly. Its payload mirrors
+    // the routing_trace fields asserted above (requested_tier, tier_fallback, etc.).
+    const dec = calls.recordRoutingDecision.at(-1);
+    assert(
+      dec != null &&
+        dec.outcome === "booked" &&
+        dec.bookingId === res.booking.id &&
+        dec.chosenUserId === "a" &&
+        dec.requestedTier === "very_high" &&
+        dec.tierFallback === false &&
+        dec.rungsDropped === 0,
+      "routing_trace: records a 'booked' decision whose payload matches the stamped trace",
     );
   }
 

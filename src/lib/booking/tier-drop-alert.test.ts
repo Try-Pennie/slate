@@ -183,6 +183,7 @@ function makeTierDropDeps(): BookingDeps {
     newIdempotencyKey: () => "anon-fixed",
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: noop,
+    recordRoutingDecision: noop,
   };
 }
 
