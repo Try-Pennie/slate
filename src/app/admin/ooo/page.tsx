@@ -212,7 +212,8 @@ export default async function OooQueuePage({
   const stats: { label: string; value: string; sub?: string }[] = [
     {
       label: "Approval rate",
-      value: `${insights.stats.rate}%`,
+      // #201: over decided requests only; "N/A" when nothing has been decided yet.
+      value: insights.stats.decided > 0 ? `${insights.stats.rate}%` : "N/A",
       sub: `${insights.stats.total} ${insights.stats.total === 1 ? "request" : "requests"}`,
     },
     {
@@ -228,7 +229,7 @@ export default async function OooQueuePage({
       ? [
           {
             label: "Median manager rate",
-            value: `${company.rate}%`,
+            value: company.managerCount > 0 ? `${company.rate}%` : "N/A",
             sub: `${company.managerCount} ${company.managerCount === 1 ? "manager" : "managers"}`,
           },
         ]
@@ -463,7 +464,9 @@ export default async function OooQueuePage({
                       <td className="py-1.5 tabular-nums">{row.approved}</td>
                       <td className="py-1.5 tabular-nums">{row.rejected}</td>
                       <td className="py-1.5 tabular-nums">{row.pending}</td>
-                      <td className="py-1.5 tabular-nums">{row.rate}%</td>
+                      <td className="py-1.5 tabular-nums">
+                        {row.decided > 0 ? `${row.rate}%` : "N/A"}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

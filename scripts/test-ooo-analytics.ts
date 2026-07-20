@@ -63,9 +63,21 @@ function req(p: {
     req({ user: "b", status: "cancelled", start: "2026-06-24T12:00:00Z" }),
   ]);
   assert(s.total === 4, "cancelled excluded from totals");
-  assert(s.rate === 50, "rate = approved / (approved+rejected+pending)");
+  assert(s.decided === 3, "#201: decided = approved + rejected (pending excluded)");
+  // #201: pending is a not-yet-decision, so it must NOT dilute the rate. Over
+  // decided requests only, 2 approved of 3 decided = 67%, not 2 of 4 = 50%.
+  assert(s.rate === 67, "#201: rate = approved / decided (pending excluded)");
 }
 assert(approvalStats([]).rate === 0, "empty stats rate 0");
+{
+  // All-pending: nothing decided, so the rate is not 0% approval. It is simply
+  // undefined. decided must be 0 so the UI can render "no decisions yet".
+  const s = approvalStats([
+    req({ user: "a", status: "pending", start: "2026-06-20T12:00:00Z" }),
+    req({ user: "b", status: "pending", start: "2026-06-21T12:00:00Z" }),
+  ]);
+  assert(s.total === 2 && s.decided === 0 && s.rate === 0, "#201: all-pending has decided 0, rate 0");
+}
 
 // --- company stats: median of per-manager rates ---
 {
@@ -83,6 +95,16 @@ assert(approvalStats([]).rate === 0, "empty stats rate 0");
     req({ user: "b", manager: "m2", status: "rejected", start: "2026-06-20T12:00:00Z" }),
   ]);
   assert(e.rate === 50, "even median averages the middle pair");
+  // #201: a manager with only pending requests has made no decisions, so they
+  // must not contribute a spurious 0% to the company median.
+  const withPendingMgr = companyApprovalStats([
+    req({ user: "a", manager: "m1", status: "approved", start: "2026-06-20T12:00:00Z" }),
+    req({ user: "b", manager: "m2", status: "pending", start: "2026-06-20T12:00:00Z" }),
+  ]);
+  assert(
+    withPendingMgr.rate === 100 && withPendingMgr.managerCount === 1,
+    "#201: an all-pending manager drops out of the company median",
+  );
 }
 
 // --- manager breakdown sorted by rate ---
