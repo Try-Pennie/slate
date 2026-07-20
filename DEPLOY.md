@@ -59,6 +59,7 @@ wrangler secret put SLACK_SIGNING_SECRET    # optional; verifies inbound Slack A
 wrangler secret put CALCOM_API_KEY          # optional; cal.com dual-write during cutover (needs OOO_CALCOM_DUAL_WRITE). Empty = dual-write no-op.
 wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
 wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
+wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-toggle API. Empty = POST /api/users/bookable returns 503.
 wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct booking API. Empty (both) = POST /api/bookings returns 503.
 # wrangler secret put BOOKING_API_KEY_2     # optional 2nd booking key; set only when rotating (both accepted at once).
 ```
@@ -99,6 +100,16 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
   `/api/users/reactivate` (body `{ "email": … }`) still work for callers not yet
   migrated. Deactivate-not-delete (history is kept); idempotent. Unset key ⇒ the
   endpoints return 503 (disabled). Same pattern as `REASSIGN_API_KEY`.
+- **Bookable-toggle API (optional):** to let the roster/onboarding automation
+  promote an agent into the booking pool (agents synced from Salesforce land
+  un-bookable), set `BOOKABLE_API_KEY` (above), then point the automation at
+  `POST https://slate.trypennie.app/api/users/bookable` with header
+  `Authorization: Bearer <key>` and JSON body
+  `{ "email": "person@trypennie.com", "bookable": true | false }`. Idempotent;
+  orthogonal to deactivate (this never touches the offboarding state). Activation
+  is guarded: if the agent's Google calendar is unreachable, the flip is refused
+  with a `409` and a Slack alert fires (the agent stays out of the pool until the
+  calendar is fixed). Unset key ⇒ the endpoint returns 503 (disabled).
 - **Direct booking API (optional):** to let the programmatic/AI auto-booker book
   without the embed, set `BOOKING_API_KEY` (above) and share it with the
   integrator. Unset ⇒ `POST /api/bookings` returns 503. Set a second
