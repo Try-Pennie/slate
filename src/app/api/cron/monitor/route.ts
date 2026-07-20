@@ -42,13 +42,18 @@ import {
   runScheduleCoverageCheck,
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
+import {
+  runAttributeCoverageCheck,
+  findUnroutableAgents,
+  type UnroutableAgent,
+} from "@/lib/monitor/attribute-coverage";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import {
   runSyncStalenessCheck,
   type SyncAgentStaleness,
 } from "@/lib/monitor/sync-staleness";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import type { Bucket } from "@/lib/db/types";
+import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -359,6 +364,44 @@ export async function GET(req: NextRequest) {
       log: (m) => log.info("schedule-coverage", { msg: m }),
     });
 
+    // --- Routing-attribute coverage (#226): a bookable agent with no routing
+    // attributes matches no bucket criteria, so unless someone added them as a
+    // manual member they are never routed a booking. There is no self-heal
+    // (attributes can't be invented), so this only whispers the list. Both reads
+    // page past the 1,000-row cap. ---
+    const loadUnroutableAgents = async (): Promise<UnroutableAgent[]> => {
+      const [agents, members] = await Promise.all([
+        selectAllPages<{
+          id: string;
+          name: string | null;
+          email: string | null;
+          attributes: Attributes | null;
+        }>(
+          "monitor attribute-coverage bookable agents",
+          (from, to) =>
+            db
+              .from("users")
+              .select("id, name, email, attributes")
+              .eq("bookable", true)
+              .is("deactivated_at", null)
+              .eq("is_test", false)
+              .range(from, to),
+        ),
+        selectAllPages<{ user_id: string }>(
+          "monitor attribute-coverage manual members",
+          (from, to) =>
+            db.from("bucket_members").select("user_id").eq("active", true).range(from, to),
+        ),
+      ]);
+      return findUnroutableAgents(agents, new Set(members.map((m) => m.user_id)));
+    };
+    const attributeCoverage = await runAttributeCoverageCheck({
+      loadUnroutableAgents,
+      notify: sendThrottledInfo,
+      cooldownMs: settings.cooldownMs.agents_without_routing,
+      log: (m) => log.info("attribute-coverage", { msg: m }),
+    });
+
     // --- Sync-staleness gauge (#241): after #238 the backstop sync rotates
     // least-recently-synced first, so nothing surfaced an agent silently dropping
     // out of the rotation (roster too large for a tick, or a stuck agent). Load the
@@ -441,6 +484,7 @@ export async function GET(req: NextRequest) {
       fallbackCovered: covered,
       thinTiers: thinTierCount,
       scheduleCoverage,
+      attributeCoverage,
       syncStaleness: {
         stale: syncStaleness.staleCount,
         worstNeverSynced: syncStaleness.worstNeverSynced,
