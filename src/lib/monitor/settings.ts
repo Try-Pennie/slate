@@ -16,7 +16,8 @@ export type MonitorAlertKey =
   | "low_booking_volume"
   | "thin_tier_staffing"
   | "agents_without_schedule"
-  | "migration_version_lag";
+  | "migration_version_lag"
+  | "sync_staleness";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -26,6 +27,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "thin_tier_staffing",
   "agents_without_schedule",
   "migration_version_lag",
+  "sync_staleness",
 ];
 
 /**
@@ -70,6 +72,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     label: "Migration-lag page cooldown",
     help: "Urgent page when the live database is missing a migration the deployed code ships.",
   },
+  {
+    key: "sync_staleness",
+    label: "Sync-staleness alert cooldown",
+    help: "Alert when a bookable agent has not been calendar-synced for too long (the rotation is falling behind).",
+  },
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -90,6 +97,10 @@ export const MONITOR_DEFAULTS = {
     // it stays broken until a human runs db push, and a dormant schema gap has
     // twice gone unnoticed for a whole session, so it should keep asking.
     migration_version_lag: 60 * 60_000,
+    // Sync-staleness (#241): the rotation being behind persists until the roster
+    // shrinks or a stuck agent is fixed, so repeat while it lasts. Hourly, like the
+    // migration-lag page; the settings screen can tighten it.
+    sync_staleness: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

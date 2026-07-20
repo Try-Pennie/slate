@@ -43,6 +43,10 @@ import {
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
 import { ensureDefaultSchedules } from "@/lib/schedule";
+import {
+  runSyncStalenessCheck,
+  type SyncAgentStaleness,
+} from "@/lib/monitor/sync-staleness";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -355,6 +359,50 @@ export async function GET(req: NextRequest) {
       log: (m) => log.info("schedule-coverage", { msg: m }),
     });
 
+    // --- Sync-staleness gauge (#241): after #238 the backstop sync rotates
+    // least-recently-synced first, so nothing surfaced an agent silently dropping
+    // out of the rotation (roster too large for a tick, or a stuck agent). Load the
+    // bookable agents that ARE in the rotation (a calendar row exists; a bookable
+    // agent with none is the schedule/watch-onboarding lane's concern) and alert if
+    // any is stale. markAgentsSynced stamps even errored agents, so a stale
+    // last_synced_at means "not picked up", the residual gap the health probe /
+    // heartbeat / anomaly checks don't cover. Both reads page past the 1,000 cap. ---
+    const loadStaleCandidates = async (): Promise<SyncAgentStaleness[]> => {
+      const [agents, cals] = await Promise.all([
+        selectAllPages<{ id: string; name: string | null; email: string | null; last_synced_at: string | null }>(
+          "monitor sync-staleness agents",
+          (from, to) =>
+            db
+              .from("users")
+              .select("id, name, email, last_synced_at")
+              .eq("bookable", true)
+              .is("deactivated_at", null)
+              .eq("is_test", false)
+              .range(from, to),
+        ),
+        selectAllPages<{ user_id: string }>(
+          "monitor sync-staleness calendars",
+          (from, to) => db.from("agent_calendars").select("user_id").range(from, to),
+        ),
+      ]);
+      const haveCals = new Set(cals.map((c) => c.user_id));
+      return agents
+        .filter((a) => haveCals.has(a.id))
+        .map((a) => ({
+          id: a.id,
+          name: a.name,
+          email: a.email,
+          lastSyncedMs: a.last_synced_at ? Date.parse(a.last_synced_at) : null,
+        }));
+    };
+    const syncStaleness = await runSyncStalenessCheck({
+      loadAgents: loadStaleCandidates,
+      nowMs: now,
+      notify: sendThrottledAlert,
+      cooldownMs: settings.cooldownMs.sync_staleness,
+      log: (m) => log.info("sync-staleness", { msg: m }),
+    });
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -393,6 +441,11 @@ export async function GET(req: NextRequest) {
       fallbackCovered: covered,
       thinTiers: thinTierCount,
       scheduleCoverage,
+      syncStaleness: {
+        stale: syncStaleness.staleCount,
+        worstNeverSynced: syncStaleness.worstNeverSynced,
+        worstAgeMs: syncStaleness.worstAgeMs,
+      },
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       truncated,
       volume,
