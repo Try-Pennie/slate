@@ -188,7 +188,11 @@ describe("AdminBookingActions", () => {
     expect(inPool.compareDocumentPosition(outOfPool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("still POSTs the reassign when an out-of-rotation agent is picked", async () => {
+  // #565: handing a booking to an out-of-rotation agent is the more unusual
+  // action, so it gets the same two-step confirm as the at-cap case (was a
+  // single unguarded click). Picking a flagged agent surfaces a warning and does
+  // NOT post until 'Reassign anyway'.
+  it("confirms before reassigning to an out-of-rotation agent, then POSTs on 'Reassign anyway'", async () => {
     const fn = mockFetchMixed();
     render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
 
@@ -196,10 +200,44 @@ describe("AdminBookingActions", () => {
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
     await userEvent.click(await screen.findByRole("button", { name: /ada agent/i }));
 
+    // Warning names the agent + explains; nothing posted yet.
+    const warn = await screen.findByText(/not in the bookable rotation/i);
+    expect(warn.textContent).toContain("Ada Agent");
+    expect(reassignPicks(fn)).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /reassign anyway/i }));
     const body = bodyFor(fn, "/api/admin/bookings/bk1/reassign");
     expect(body.agentEmail).toBe("ada@x.com");
     expect(body.overrideCap).toBe(false);
     expect(body.reason).toBe("owner_reassignment");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("dismissing the out-of-rotation warning returns to the picker without posting", async () => {
+    const fn = mockFetchMixed();
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /ada agent/i }));
+    await screen.findByText(/not in the bookable rotation/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    expect(screen.queryByText(/not in the bookable rotation/i)).toBeNull();
+    expect(screen.getByLabelText(/search agents/i)).toBeTruthy();
+    expect(reassignPicks(fn)).toHaveLength(0);
+  });
+
+  it("still posts immediately (no extra confirm) for an in-rotation agent", async () => {
+    const fn = mockFetch();
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" currentAgentId="ag-9" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /bea agent/i }));
+
+    const body = bodyFor(fn, "/api/admin/bookings/bk1/reassign");
+    expect(body.agentEmail).toBe("bea@x.com");
     expect(refresh).toHaveBeenCalled();
   });
 

@@ -74,6 +74,9 @@ export default function AdminBookingActions({
   const [agentQuery, setAgentQuery] = useState("");
   // Set when the chosen target is at their daily cap: drives the two-step override.
   const [capWarn, setCapWarn] = useState<{ email: string; day: string } | null>(null);
+  // #565: a chosen target who is out of the bookable rotation gets the same
+  // two-step confirm as the at-cap case (was a single unguarded click).
+  const [rotationWarn, setRotationWarn] = useState<{ email: string; name: string } | null>(null);
 
   // Only confirmed/rescheduled bookings can be changed.
   if (status === "cancelled" || status === "completed") {
@@ -91,6 +94,7 @@ export default function AdminBookingActions({
     setReasonDetail("");
     setAgentQuery("");
     setCapWarn(null);
+    setRotationWarn(null);
   }
 
   // Opening a panel just switches mode; the two useFetchList hooks fetch the
@@ -108,6 +112,7 @@ export default function AdminBookingActions({
     setReasonCode("");
     setReasonDetail("");
     setCapWarn(null);
+    setRotationWarn(null);
     setAgentQuery("");
   }
 
@@ -171,6 +176,8 @@ export default function AdminBookingActions({
         router.refresh();
       } else if (data.code === "DAILY_CAP_EXCEEDED") {
         // First attempt declined: surface the warning + offer the two-step override.
+        // The cap warning supersedes any rotation warning for the same target.
+        setRotationWarn(null);
         setCapWarn({ email: agentEmail, day: data.day ?? "" });
       } else {
         setError(data.error ?? "Could not reassign. Please try again.");
@@ -312,6 +319,25 @@ export default function AdminBookingActions({
                 </button>
               </div>
             </div>
+          ) : rotationWarn ? (
+            <div className="rounded-md border border-[var(--error)] bg-[rgba(196,61,61,0.06)] p-2">
+              <p className="text-xs text-fg">
+                {rotationWarn.name} is not in the bookable rotation (e.g. on leave,
+                ramping, or in training). Reassign anyway?
+              </p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={() => doReassign(rotationWarn.email, false)}
+                  disabled={busy}
+                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                >
+                  {busy ? "Reassigning…" : "Reassign anyway"}
+                </button>
+                <button onClick={() => setRotationWarn(null)} disabled={busy} className="min-h-9 rounded-md border border-border px-3 py-1 text-xs text-fg">
+                  Back
+                </button>
+              </div>
+            </div>
           ) : (
             <>
               <p className="mb-2 text-xs font-semibold text-fg">
@@ -342,7 +368,11 @@ export default function AdminBookingActions({
                     <button
                       key={a.id}
                       disabled={busy || !reasonValid}
-                      onClick={() => doReassign(a.email, false)}
+                      onClick={() =>
+                        a.bookable
+                          ? doReassign(a.email, false)
+                          : setRotationWarn({ email: a.email, name: a.name ?? a.email })
+                      }
                       className={`flex min-h-9 w-full items-center justify-between px-2 py-1 text-left text-xs text-fg hover:bg-fg/[0.06] disabled:opacity-60 ${
                         a.bookable ? "bg-surface" : "bg-fg/[0.04]"
                       }`}
