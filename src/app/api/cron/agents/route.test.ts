@@ -9,7 +9,10 @@ const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "lease"),
   releaseLock: vi.fn(async () => {}),
 }));
-const sync = vi.hoisted(() => ({ syncSalesforceAgents: vi.fn() }));
+const sync = vi.hoisted(() => ({
+  syncSalesforceAgents: vi.fn(),
+  AGENTS_SYNC_STREAK_KEY: "cron_agents_failures",
+}));
 const provision = vi.hoisted(() => ({
   ensureDefaultOrg: vi.fn(async () => ({ id: "org1" })),
 }));

@@ -10,6 +10,14 @@ import { reapableUserIds } from "@/lib/salesforce/reap";
 import { fetchSfWithRetry } from "@/lib/salesforce/retry";
 import type { Attributes, Role, User } from "@/lib/db/types";
 
+/**
+ * Failure-streak key for the hourly SF roster sync (#486). Shared so the cron
+ * lane (which records/clears it) and the admin manual-sync action (#491, which
+ * clears it on a successful hand remediation) agree on one key instead of
+ * duplicating the literal.
+ */
+export const AGENTS_SYNC_STREAK_KEY = "cron_agents_failures";
+
 // SF User custom booleans -> Slate attribute values.
 const DEBT: [keyof SfUser, string][] = [
   ["UltraHighDebt__c", "ultra_high"],

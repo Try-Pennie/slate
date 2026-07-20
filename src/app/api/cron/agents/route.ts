@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { ensureDefaultOrg } from "@/lib/provision";
-import { syncSalesforceAgents } from "@/lib/salesforce/sync";
+import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { alertOnEmptyBuckets } from "@/lib/availability/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
@@ -15,8 +15,8 @@ const AGENTS_LOCK_TTL_MS = 10 * 60 * 1000;
 const SYNC_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 // Streak so a single failing pass stays quiet (transient SF blips self-heal next
 // hour) and only CONSECUTIVE failures alert (#486). The window comfortably spans
-// two hourly passes so the second genuinely-consecutive failure lands in it.
-const AGENTS_STREAK_KEY = "cron_agents_failures";
+// two hourly passes so the second genuinely-consecutive failure lands in it. The
+// key is shared with the admin manual-sync action (#491) via salesforce/sync.
 const AGENTS_STREAK_WINDOW_S = 3 * 60 * 60;
 
 /**
@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
     // Best-effort: a monitoring miss must never fail the roster reconcile.
     const coverage = await alertOnEmptyBuckets().catch(() => ({ empty: [] }));
     // Clean pass: reset the streak so a later isolated failure starts from zero.
-    await clearFailureStreak(AGENTS_STREAK_KEY);
+    await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
     return NextResponse.json({ ...sync, hoursApplied, emptyBuckets: coverage.empty });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
     // Only alert on CONSECUTIVE failures (#486): a single transient blip (e.g. a
     // Cloudflare 522 to Salesforce) self-heals on the next hourly run.
     const consecutive = await recordFailureStreak(
-      AGENTS_STREAK_KEY,
+      AGENTS_SYNC_STREAK_KEY,
       AGENTS_STREAK_WINDOW_S,
     );
     if (consecutive) {
