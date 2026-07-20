@@ -17,7 +17,7 @@ export function BookerStripSkeleton({ skeletonClass }: { skeletonClass: string }
         <div
           key={i}
           data-skeleton-chip
-          className={`h-[58px] flex-1 animate-pulse rounded-lg motion-reduce:animate-none ${skeletonClass}`}
+          className={`h-[58px] min-w-16 flex-1 animate-pulse rounded-lg motion-reduce:animate-none ${skeletonClass}`}
         />
       ))}
     </div>
@@ -55,7 +55,7 @@ export function BookerStrip({
             disabled={!enabled}
             aria-pressed={enabled ? selected : undefined}
             onClick={enabled ? () => onSelect(iso) : undefined}
-            className={`flex min-h-11 flex-1 flex-col items-center rounded-lg border px-3 py-2 tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky motion-reduce:transition-none ${
+            className={`flex min-h-11 min-w-16 flex-1 flex-col items-center rounded-lg border px-3 py-2 tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky motion-reduce:transition-none ${
               !enabled
                 ? "cursor-not-allowed border-border opacity-40"
                 : selected
