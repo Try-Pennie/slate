@@ -99,10 +99,9 @@ const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
 };
 // Expected-minimum booking counts per window are UI-tunable (#571), resolved by
 // loadMonitorSettings() with precedence store > env (BOOKING_VOLUME_FLOOR_*) >
-// coded default. Disarmed by default: count and log, but never alert, until Slate
-// owns roughly full traffic. Set BOOKING_VOLUME_ALERT_ARMED=1 at cutover to enable
-// alerting (arming stays deploy-gated, a cutover decision, not a routine tune).
-const volumeAlertArmed = (): boolean => process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
+// coded default. Arming is now UI-tunable too (#575): loadMonitorSettings resolves
+// `lowVolumeArmed` with precedence store > env (BOOKING_VOLUME_ALERT_ARMED) >
+// disarmed default, so the cutover flip no longer needs a redeploy.
 const VOLUME_ALERT_KEY = "low_booking_volume";
 
 /** Count bookings created at or after `sinceIso` (head-only, no rows). */
@@ -311,7 +310,7 @@ export async function GET(req: NextRequest) {
         { label: "120 min", count: count120, floor: settings.floors.floor120 },
       ];
       const breaches = lowVolumeBreaches(windows);
-      const armed = volumeAlertArmed();
+      const armed = settings.lowVolumeArmed;
       if (breaches.length && armed) {
         await sendThrottledAlert(
           VOLUME_ALERT_KEY,
