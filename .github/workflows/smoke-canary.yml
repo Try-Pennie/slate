@@ -1,0 +1,116 @@
+name: Smoke canary
+
+# Scheduled production canary for the booking path (#525). Runs the existing smoke
+# scripts against live prod on the dedicated SMOKE test agents/buckets (#396):
+#   - every 30 min: the side-effect-free dry-run health tick (SMOKE_DRY_RUN_ONLY)
+#   - every 6h:     the full strict pass (SMOKE_STRICT) plus the reschedule smoke
+# On success it stamps the smoke-canary heartbeat, so a schedule that silently
+# stops firing goes stale and the lane-watchdog pages (CANARY_STALE_BOUNDS_MS). Any
+# failure (a real regression, or a bad key / missing fixture) posts a Slack alert.
+# workflow_dispatch runs either pass on demand.
+#
+# Needs repo secrets BOOKING_API_KEY and REASSIGN_API_KEY (the Worker's keys, added
+# to Actions), and the existing SLACK_BOT_TOKEN secret + SLACK_ALERTS_CHANNEL var.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which pass to run
+        type: choice
+        options: [dry, full]
+        default: dry
+
+# Never cancel a canary run in flight: a half-run full pass leaves real bookings
+# mid-teardown, so let each run complete.
+concurrency:
+  group: smoke-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Skip quietly until BOOKING_API_KEY is configured as a repo secret, so
+      # merging this doesn't spam Slack every 30 min before setup. An absent key is
+      # "not configured yet"; a present-but-wrong key still runs and alerts.
+      - name: Preflight (is the canary configured?)
+        id: pre
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+        run: |
+          if [ -n "$BOOKING_API_KEY" ]; then
+            echo "configured=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::BOOKING_API_KEY is not set as a repo secret, so the smoke canary is skipping. Add it (and REASSIGN_API_KEY) in Settings > Secrets and variables > Actions."
+          fi
+
+      - name: Select pass (full on the 6h cron or a manual full dispatch, else dry)
+        id: mode
+        if: steps.pre.outputs.configured == '1'
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          DISPATCH_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          if [ "$SCHEDULE" = "0 */6 * * *" ] || [ "$DISPATCH_MODE" = "full" ]; then
+            echo "full=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Booking smoke (dry-run health tick)
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '0'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SMOKE_DRY_RUN_ONLY: "1"
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
+
+      - name: Booking smoke (full strict pass)
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          REASSIGN_API_KEY: ${{ secrets.REASSIGN_API_KEY }}
+          SMOKE_STRICT: "1"
+          # No Google service-account creds on the runner, so skip the orphan-event
+          # sweep; the API-driven cancels still tear down every booking server-side.
+          SMOKE_SKIP_EVENT_CLEANUP: "1"
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
+
+      - name: Reschedule smoke (full pass only)
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-reschedule.ts
+
+      - name: Stamp canary heartbeat (success only)
+        if: success() && steps.pre.outputs.configured == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat" \
+            -H "authorization: Bearer $BOOKING_API_KEY"
+
+      - name: Slack alert on failure
+        if: failure() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          SMOKE_MODE: ${{ steps.mode.outputs.full == '1' && 'full' || 'dry' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/notify-smoke-failure.ts

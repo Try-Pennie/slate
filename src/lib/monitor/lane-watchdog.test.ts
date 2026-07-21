@@ -109,4 +109,68 @@ describe("alertOnStaleLanes (#803)", () => {
     expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "recompute"]);
     expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
   });
+
+  // #525: the booking-smoke canary is a scheduled GitHub Actions workflow that
+  // stamps `smoke-canary` on every successful run. If the schedule silently stops
+  // (or starts failing before it can stamp), the safety net is gone and nobody
+  // knows. The watchdog detects that by absence too, but with canary-specific copy
+  // (it is NOT a cron lane and NOT a CPU kill), and it must never touch the
+  // external /api/health signal (covered by the health tests: the canary is not in
+  // LANE_STALE_BOUNDS_MS).
+  describe("canary staleness (#525)", () => {
+    it("alerts when the smoke canary has not stamped within its bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": ago(120 * MIN), // bound is 90m
+      });
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).toContain("smoke-canary");
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+      const [key, , text] = dispatch.sendThrottledAlert.mock.calls[0] as unknown as [
+        string,
+        number,
+        string,
+      ];
+      expect(key).toContain("smoke-canary");
+      // Canary-specific copy: names the canary and points at the workflow, not a
+      // cron CPU kill.
+      expect(text).toMatch(/canary/i);
+      expect(text).toMatch(/workflow|Actions|schedule/i);
+    });
+
+    it("stays silent when the canary stamped recently", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": ago(20 * MIN),
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("smoke-canary");
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    it("does not alert when the canary has never stamped (not yet configured)", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": null,
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("smoke-canary");
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    it("reports both a stale cron lane and a stale canary in one tick", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        outbox: ago(25 * MIN),
+        "smoke-canary": ago(120 * MIN),
+      });
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "smoke-canary"]);
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
+    });
+  });
 });
