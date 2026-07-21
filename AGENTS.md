@@ -38,10 +38,16 @@ scare in the first wave), so they live here now.
   of parallelism. If two issues touch the same file, run them in sequence, not in
   the same wave.
 - **Each worktree starts with no `node_modules`.** A fresh worktree does not
-  inherit the main checkout's install, so every agent must run `pnpm install`
-  (with the sandbox network override) **before** the pre-push gate
-  (`tsc` / `lint` / `pnpm test` / `cf:build`) can run. Until #852 pre-seeds them,
-  budget for one full install per agent.
+  inherit the main checkout's install, so nothing (`tsc` / `lint` / `pnpm test` /
+  `cf:build`, or the pre-push gate) can run until it has one. Seed it fast with
+  **`bash scripts/seed-worktree-node-modules.sh`** (run from inside the worktree,
+  #852): on APFS it clones the main checkout's `node_modules` copy-on-write in a
+  few seconds instead of a multi-minute sandboxed `pnpm install`. It is idempotent
+  (skips an already-seeded worktree) and refuses (non-zero, telling you to run
+  `pnpm install`) when it can't seed safely, e.g. the branch changed `pnpm-lock.yaml`
+  so the clone would be stale. Fall back to `pnpm install` (with the sandbox network
+  override) only when the helper exits non-zero. A symlinked `node_modules` is NOT
+  an option: Turbopack's `next build` rejects one (see `.githooks/pre-push`).
 - **Verify each branch against its own merge-base, not `origin/main`.** Under a
   live fleet `origin/main` advances while the wave runs, so diffing a branch
   against current `origin/main` shows other agents' merged work as if it were
@@ -52,8 +58,8 @@ scare in the first wave), so they live here now.
   branch green that never had `node_modules` and so never ran the gate. Confirm
   each branch yourself (gate ran, diff is scoped, tests pass) before merging.
 
-Refs: `.githooks/pre-push`, #852 (pre-seed node_modules), #853 (audit tests for
-real git/fs writes under the hook).
+Refs: `.githooks/pre-push`, `scripts/seed-worktree-node-modules.sh` (#852, pre-seed
+node_modules), #853 (audit tests for real git/fs writes under the hook).
 
 # Applying a database migration
 
