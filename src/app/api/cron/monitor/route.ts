@@ -7,7 +7,8 @@ import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
-import { HORIZON_DAYS } from "@/lib/availability/slot-cache";
+import { HORIZON_DAYS, recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { selfHealDataAnomalies } from "@/lib/monitor/anomaly-selfheal";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
@@ -72,6 +73,11 @@ const FRESH_WINDOW_MS = 6 * 60_000;
 // not a storm; the cooldown throttles repeats. Cooldowns are UI-tunable (#571) via
 // loadMonitorSettings(); these keys stay in code (they are alert_state row keys).
 const DATA_ANOMALY_ALERT_KEY = "availability_data_anomaly";
+// #573: on a data anomaly the monitor rewrites the fresh row so the booker recovers
+// at once, but only ONCE per bucket per this window (a DB lock we deliberately do
+// NOT release), so a persistent fault keeps paging instead of being silently
+// re-masked every minute.
+const ANOMALY_SELFHEAL_WINDOW_MS = 15 * 60_000;
 // Quiet info: a dead-end because agents are booked solid. Full calendars are a
 // good outcome, not an incident, so this whispers on a long cooldown.
 const BOOKED_SOLID_INFO_KEY = "availability_booked_solid";
@@ -229,11 +235,25 @@ export async function GET(req: NextRequest) {
       for (const r of recomputes) if (r) recomputeCounts.set(r.code, r.count);
     }
     const cause = classifyDeadEndCause(page, recomputeCounts);
+    // #573: self-heal each data-anomaly bucket (cache empty but a live recompute
+    // found times) by rewriting its fresh row so the booker recovers immediately,
+    // capped at once per bucket per window via a non-released lock. We STILL page
+    // below so the root-cause sync/precompute bug is fixed, not just papered over.
+    let selfHeal = { healed: [] as string[], skipped: [] as string[], failed: [] as string[] };
+    if (cause.dataAnomaly.length) {
+      selfHeal = await selfHealDataAnomalies(cause.dataAnomaly, {
+        claim: async (code) =>
+          (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
+        heal: (code) => recomputeBucketSlotsForToday(code, true),
+        onError: (code, err) =>
+          log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
+      });
+    }
     if (cause.dataAnomaly.length || cause.unverified.length) {
       await sendThrottledAlert(
         DATA_ANOMALY_ALERT_KEY,
         settings.cooldownMs.availability_data_anomaly,
-        formatDataAnomalyAlert(cause),
+        formatDataAnomalyAlert(cause, selfHeal.healed),
       ).catch(() => {});
     }
     if (cause.bookedSolid.length) {
@@ -267,6 +287,8 @@ export async function GET(req: NextRequest) {
       msg: "availability scan",
       dead_end: page.length,
       anomaly: cause.dataAnomaly.length,
+      self_healed: selfHeal.healed.length ? selfHeal.healed.join(",") : null,
+      self_heal_failed: selfHeal.failed.length ? selfHeal.failed.join(",") : null,
       booked_solid: cause.bookedSolid.length,
       unverified: cause.unverified.length,
       fallback_covered: covered.length,

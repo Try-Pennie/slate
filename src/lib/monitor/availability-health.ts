@@ -239,7 +239,7 @@ export function isBroadRecomputeFailure(cause: DeadEndCause): boolean {
 /** Urgent page body for real dead-ends whose cause is a data/sync fault (or could
  *  not be verified). Booked-solid buckets are NOT included here (they are a quiet
  *  info signal). No em/en dashes (copy lint). */
-export function formatDataAnomalyAlert(cause: DeadEndCause): string {
+export function formatDataAnomalyAlert(cause: DeadEndCause, healed: string[] = []): string {
   const parts: string[] = [];
   if (cause.dataAnomaly.length) {
     parts.push(
@@ -247,6 +247,15 @@ export function formatDataAnomalyAlert(cause: DeadEndCause): string {
         `calendars are OPEN (${capList(cause.dataAnomaly)}): the cached availability ` +
         `disagrees with reality. Check the precompute and calendar sync pipeline.`,
     );
+    if (healed.length) {
+      // #573: the customer impact was auto-recovered this run, but the root cause
+      // still needs a fix, so the page stays urgent, not resolved.
+      parts.push(
+        `Auto-recompute rewrote the fresh availability for ${healed.length} of these ` +
+          `(${capList(healed)}) so the booker recovered now, but this masks a real fault: ` +
+          `find why the cache went stale.`,
+      );
+    }
   }
   if (cause.unverified.length) {
     if (isBroadRecomputeFailure(cause)) {
