@@ -1,5 +1,9 @@
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
-import { findStaleLanes, type StaleLane } from "@/lib/monitor/health";
+import {
+  findStaleLanes,
+  CANARY_STALE_BOUNDS_MS,
+  type StaleLane,
+} from "@/lib/monitor/health";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 
@@ -38,9 +42,9 @@ const minutes = (ms: number) => Math.round(ms / 60_000);
  * sync tick would be worse than the silence it replaces.
  */
 export async function alertOnStaleLanes(): Promise<StaleLane[]> {
-  let stale: StaleLane[];
+  let heartbeats: Record<string, number | null>;
   try {
-    stale = findStaleLanes(await readAllHeartbeatMs(), Date.now());
+    heartbeats = await readAllHeartbeatMs();
   } catch (err) {
     // A failed read is NOT evidence that every lane is fine, and it is not
     // evidence they are all dead either. Say so, and alarm on nothing.
@@ -51,27 +55,52 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     );
     return [];
   }
+  const now = Date.now();
+  const stale = findStaleLanes(heartbeats, now);
+  // The external booking-smoke canary (#525) is judged against its OWN bound and
+  // alerts with its OWN copy: it is a scheduled GitHub Actions workflow, not a
+  // Worker cron lane, so a CPU-kill message would be wrong and it must never touch
+  // the external /api/health signal.
+  const canaryStale = findStaleLanes(heartbeats, now, CANARY_STALE_BOUNDS_MS);
 
-  if (stale.length === 0) return [];
+  if (stale.length === 0 && canaryStale.length === 0) return [];
 
-  log.warn("lane-watchdog", {
-    msg: "stale lanes",
-    count: stale.length,
-    lanes: stale.map((l) => `${l.lane}=${minutes(l.ageMs)}m`).join(","),
-  });
+  if (stale.length > 0) {
+    log.warn("lane-watchdog", {
+      msg: "stale lanes",
+      count: stale.length,
+      lanes: stale.map((l) => `${l.lane}=${minutes(l.ageMs)}m`).join(","),
+    });
+    for (const lane of stale) {
+      await sendThrottledAlert(
+        staleLaneAlertKey(lane.lane),
+        STALE_LANE_COOLDOWN_MS,
+        `Slate: the ${lane.lane} cron lane has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
+          lane.maxStaleMs,
+        )}m). Its work is not happening. A mid-run CPU kill on the shared cron invocation is the usual cause (#760): check the Worker's outcome for exceededCpu, and the cron_${lane.lane} lock.`,
+      ).catch((err) => {
+        // One lane's failed Slack post must not skip the remaining lanes.
+        log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
+      });
+    }
+  }
 
-  for (const lane of stale) {
+  for (const lane of canaryStale) {
+    log.warn("lane-watchdog", {
+      msg: "canary stale",
+      lane: lane.lane,
+      age_min: minutes(lane.ageMs),
+    });
     await sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
-      `Slate: the ${lane.lane} cron lane has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
+      `Slate: the booking smoke canary has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
         lane.maxStaleMs,
-      )}m). Its work is not happening. A mid-run CPU kill on the shared cron invocation is the usual cause (#760): check the Worker's outcome for exceededCpu, and the cron_${lane.lane} lock.`,
+      )}m), so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`,
     ).catch((err) => {
-      // One lane's failed Slack post must not skip the remaining lanes.
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
   }
 
-  return stale;
+  return [...stale, ...canaryStale];
 }

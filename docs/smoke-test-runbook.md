@@ -1,10 +1,13 @@
 # Smoke-test setup runbook
 
-The hand-run production smoke test (`scripts/smoke-booking-api.ts`) exercises the
-live direct booking API end to end. It never books a real round-robin agent
-because it routes only to a dedicated, isolated test agent and its buckets (#396,
-PR #452). That isolation has a manual side that has to be set up once and is easy
-to forget. This runbook captures it.
+The production smoke test (`scripts/smoke-booking-api.ts`) exercises the live
+direct booking API end to end. It never books a real round-robin agent because it
+routes only to a dedicated, isolated test agent and its buckets (#396, PR #452).
+That isolation has a manual side that has to be set up once and is easy to forget.
+This runbook captures it.
+
+It runs both by hand (below) and automatically as a scheduled canary (#525): see
+[Automated canary](#automated-canary) at the end.
 
 The moving parts:
 
@@ -91,3 +94,34 @@ The moving parts:
   `SLATE_BASE_URL` let you point at a different bucket or deployment. Leave them at
   their defaults (`SMOKE`, `SMOKE2`, prod) so a run stays isolated to the test
   agents.
+
+## Automated canary
+
+`.github/workflows/smoke-canary.yml` runs the same scripts on a schedule (#525),
+so a booking regression is caught without anyone remembering to run it:
+
+- **Every ~30 min**: the side-effect-free dry-run tick (`SMOKE_DRY_RUN_ONLY=1`) as
+  a fast health check against the live fleet.
+- **Every 6h**: the full strict pass (`SMOKE_STRICT=1`, plus
+  `scripts/smoke-reschedule.ts`). It sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
+  runner has no Google service-account creds; the API-driven cancels still tear
+  down every booking server-side, only the belt-and-suspenders orphan-event sweep
+  is skipped.
+- **On demand**: `workflow_dispatch` runs either pass (pick `dry` or `full`).
+
+Two ways it stays honest:
+
+- **Alert on failure.** Any failed step (a real regression, a bad key, a missing
+  fixture) posts a Slack alert via `scripts/notify-smoke-failure.ts`.
+- **Alert on not-having-run.** Each successful run stamps the `smoke-canary`
+  heartbeat (`POST /api/smoke/heartbeat`, Bearer `BOOKING_API_KEY`). The
+  lane-watchdog pages if that heartbeat goes stale past `CANARY_STALE_BOUNDS_MS`
+  (90 min), so a schedule that silently stops firing is noticed. This is kept out
+  of `LANE_STALE_BOUNDS_MS` on purpose: a dead canary must not flip the external
+  `/api/health` 503 as if the app itself were down.
+
+**Required repo settings (Actions):** the workflow needs `BOOKING_API_KEY` and
+`REASSIGN_API_KEY` as repo **secrets** (the Worker's keys, added to Actions), plus
+the existing `SLACK_BOT_TOKEN` secret and `SLACK_ALERTS_CHANNEL` variable. Until
+`BOOKING_API_KEY` is set, the scheduled runs fail (and alert). Trigger a first run
+manually from the Actions tab once the secrets are in.

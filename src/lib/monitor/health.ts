@@ -39,6 +39,24 @@ export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
   monitor: 20 * MIN,
 };
 
+/**
+ * Staleness bound for the external booking-smoke canary (#525), kept SEPARATE
+ * from LANE_STALE_BOUNDS_MS on purpose. The canary is a scheduled GitHub Actions
+ * workflow, not a Worker cron lane: a stopped canary means the safety net went
+ * quiet, NOT that the app is down, so it must never flip the external /api/health
+ * 503 (that pages external uptime as if the site were broken). Only the internal
+ * lane-watchdog consults this, alerting to Slack.
+ *
+ * The canary stamps `smoke-canary` on every successful run (the ~30-min
+ * side-effect-free dry tick and the 6h full pass both stamp). The bound is 3x the
+ * frequent cadence so ordinary GitHub scheduling jitter (scheduled runs are often
+ * delayed several minutes) can't trip a false alert; only a schedule that has
+ * genuinely stopped, or is failing before it can stamp, does.
+ */
+export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
+  "smoke-canary": 90 * MIN,
+};
+
 export interface StaleLane {
   lane: string;
   /** How long this lane has been quiet (ms). */
