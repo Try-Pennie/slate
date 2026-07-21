@@ -9,6 +9,9 @@ import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { paginateRows } from "@/lib/paginate-rows";
 import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
+import { CronLaneHealth } from "@/components/CronLaneHealth";
+import { loadLaneHealth } from "@/lib/monitor/lane-health-view";
+import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { isActive } from "@/lib/active-user";
 import { dedupeFailingAgents, type FailingCalendarRow } from "@/lib/notify/alerts";
 import {
@@ -87,6 +90,14 @@ const AUDIT_LABEL: Record<string, string> = {
 
 
 export const dynamic = "force-dynamic";
+
+// Load + classify cron-lane heartbeats against "now". At module scope so the
+// Date.now() call doesn't trip react-hooks/purity in render (#288), matching
+// liveWatchedUserIds. The read-error -> unavailable logic lives in loadLaneHealth
+// (unit-tested); this only supplies the clock.
+function loadLaneHealthNow(read: () => Promise<Record<string, number | null>>) {
+  return loadLaneHealth(read, Date.now());
+}
 
 // User ids with at least one live (non-expired) calendar watch. At module
 // scope so the Date.now() call doesn't trip react-hooks/purity in render.
@@ -416,6 +427,13 @@ export default async function AdminPage({
   const pushHealthy =
     bookableAgents.length > 0 && watchedCount === bookableAgents.length;
 
+  // Per-lane cron health strip (#288): reuse the dead-man's-switch heartbeats so a
+  // silently-wedged lane is visible in-app. readAllHeartbeatMs THROWS on a read
+  // error by design (an empty map would read as "all lanes dead"); catch it and
+  // show an explicit "unavailable" strip rather than a misleading all-fine one.
+  const { rows: laneHealth, unavailable: laneHealthUnavailable } =
+    await loadLaneHealthNow(readAllHeartbeatMs);
+
   // Per-agent sync health (#273 Phase 1.3): which agents have a calendar in a
   // failure streak, deduped to one entry per agent (worst calendar kept) so the
   // operator can act without hand-querying the DB. Same logic as the named alert.
@@ -734,6 +752,10 @@ export default async function AdminPage({
               <SyncButton />
             </form>
           )}
+        </div>
+        {/* Per-lane cron liveness (#288), beside the push-health pill above. */}
+        <div className="mb-4">
+          <CronLaneHealth rows={laneHealth} unavailable={laneHealthUnavailable} />
         </div>
         {syncHealthRows.length > 0 && (
           <div className="mb-4">

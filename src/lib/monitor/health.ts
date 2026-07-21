@@ -80,6 +80,43 @@ export function findStaleLanes(
   return stale.sort((a, b) => b.ageMs - b.maxStaleMs - (a.ageMs - a.maxStaleMs));
 }
 
+export type LaneHealthState = "ok" | "stale" | "never";
+
+export interface LaneHealthRow {
+  lane: string;
+  /** Age (ms) since this lane last stamped, or null if it has never stamped. */
+  ageMs: number | null;
+  /** ok = stamped within its bound; stale = overdue; never = no heartbeat yet. */
+  state: LaneHealthState;
+  /** The lane's own staleness bound (ms). */
+  maxStaleMs: number;
+}
+
+/**
+ * Per-lane health rows for the in-app admin strip (#288), in a fixed canonical
+ * order (bounds order) so the operator learns each lane's position. Reuses the
+ * SAME bounds as the dead-man's switch (findStaleLanes / computeHealthStatus), so
+ * the admin view and the pager can never disagree about what "stale" means. A
+ * heartbeat is stamped only on a SUCCESSFUL tick, so `state` is the in-app
+ * outcome: ok = ran fine recently, stale = wedged/erroring/not firing, never = no
+ * tick since deploy (benign, matches the watchdog's "don't alarm on uninitialized").
+ * PURE, so it is node-testable.
+ */
+export function classifyLaneHealth(
+  lastRanAtMsByLane: Record<string, number | null | undefined>,
+  nowMs: number,
+  bounds: Record<string, number> = LANE_STALE_BOUNDS_MS,
+): LaneHealthRow[] {
+  return Object.entries(bounds).map(([lane, maxStaleMs]) => {
+    const lastRanAtMs = lastRanAtMsByLane[lane];
+    if (lastRanAtMs === null || lastRanAtMs === undefined) {
+      return { lane, ageMs: null, state: "never", maxStaleMs };
+    }
+    const ageMs = nowMs - lastRanAtMs;
+    return { lane, ageMs, state: ageMs > maxStaleMs ? "stale" : "ok", maxStaleMs };
+  });
+}
+
 export interface LaneObservation {
   lane: string;
   /** Age (ms) since this lane last stamped, or null if it has never stamped. */
