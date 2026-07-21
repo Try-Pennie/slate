@@ -15,12 +15,18 @@ import {
   UnknownBucketError,
   BookingNotFoundError,
 } from "@/lib/booking/service";
-import { allowRequest, clientIp } from "@/lib/rate-limit";
+import {
+  allowRequest,
+  clientIp,
+  bookingApiWriteWithinLimit,
+  bookingApiReadWithinLimit,
+  bookingApiIpWithinLimit,
+} from "@/lib/rate-limit";
 import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
 import {
-  DIRECT_BOOKING_API_RATE_RULES,
-  DIRECT_BOOKING_API_READ_RATE_RULES,
-  DIRECT_BOOKING_API_IP_RATE_RULES,
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
@@ -32,39 +38,48 @@ type AuthOutcome =
   | { ok: true; keyId: "primary" | "secondary" }
   | { ok: false; response: NextResponse };
 
-/** Shared auth + per-key rate-limit gate for every method on this route (#386).
- *  `rules` selects the ceiling: writes use the default; reads (GET) pass the
- *  separate read ceiling so status polling can't starve the booking path (#393). */
+/** Shared auth + rate-limit gate for every method on this route (#386). The
+ *  per-minute burst windows run at the Cloudflare edge (#961, no DB round-trip);
+ *  the strict hourly ceilings stay in the DB. `hourlyKeyRules` selects the ceiling:
+ *  writes use the default, reads (GET) pass the separate read ceiling so status
+ *  polling can't starve the booking path (#393). `readPath` picks the matching edge
+ *  binding, and a null `hourlyIpRules` opts reads out of the per-IP backstop. */
 async function authorize(
   req: NextRequest,
-  rules: RateLimitRule[] = DIRECT_BOOKING_API_RATE_RULES,
-  ipRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_RATE_RULES,
+  hourlyKeyRules: RateLimitRule[] = DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  hourlyIpRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  readPath = false,
 ): Promise<AuthOutcome> {
   const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
     return { ok: false, response: NextResponse.json({ error: auth.error }, { status: auth.status }) };
   }
-  if (!(await allowRequest(`key:${auth.keyId}`, rules))) {
+  const keyBudget = "Rate limit exceeded for this API key.";
+  // Per-key: edge per-minute burst window first (no DB round-trip), then the hourly cap.
+  const keyEdgeOk = readPath
+    ? await bookingApiReadWithinLimit(auth.keyId)
+    : await bookingApiWriteWithinLimit(auth.keyId);
+  if (!keyEdgeOk || !(await allowRequest(`key:${auth.keyId}`, hourlyKeyRules))) {
     return {
       ok: false,
-      response: NextResponse.json(
-        { error: "Rate limit exceeded for this API key." },
-        { status: 429 },
-      ),
+      response: NextResponse.json({ error: keyBudget }, { status: 429 }),
     };
   }
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
   // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
-  // cannot spend the whole budget from a single host.
-  if (ipRules && !(await allowRequest(`ip:${clientIp(req.headers)}`, ipRules))) {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        { error: "Rate limit exceeded for this client." },
-        { status: 429 },
-      ),
-    };
+  // cannot spend the whole budget from a single host. Per-minute at the edge, hourly in DB.
+  if (hourlyIpRules) {
+    const ip = clientIp(req.headers);
+    if (!(await bookingApiIpWithinLimit(ip)) || !(await allowRequest(`ip:${ip}`, hourlyIpRules))) {
+      return {
+        ok: false,
+        response: NextResponse.json(
+          { error: "Rate limit exceeded for this client." },
+          { status: 429 },
+        ),
+      };
+    }
   }
   return { ok: true, keyId: auth.keyId };
 }
@@ -190,7 +205,7 @@ export async function GET(req: NextRequest) {
   // ~10x larger per-key budget (#393). Inheriting the write ceiling here would throttle
   // legitimate polling from the integrator's single host. Reads stay bounded by their own
   // per-key ceiling; the threat in #597 is booking FLOODING, which is a write.
-  const authd = await authorize(req, DIRECT_BOOKING_API_READ_RATE_RULES, null);
+  const authd = await authorize(req, DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES, null, true);
   if (!authd.ok) return authd.response;
 
   const sp = new URL(req.url).searchParams;

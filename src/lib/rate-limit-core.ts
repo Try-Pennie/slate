@@ -31,13 +31,17 @@ export const BOOKING_HOURLY_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
- * Direct booking API (#355) ceiling, keyed per API KEY rather than per IP — one
- * bot behind one IP legitimately does ~2000/day, which would instantly blow the
- * per-IP public-booking limits. Sized well above expected volume so it only ever
- * trips on a runaway loop or a leaked key; fails open like the per-IP rules.
+ * Direct booking API (#355) hourly ceiling, keyed per API KEY rather than per IP
+ * (one bot behind one IP legitimately does ~2000/day, which would instantly blow
+ * the per-IP public-booking limits). Sized well above expected volume so it only
+ * ever trips on a runaway loop or a leaked key; fails open like the per-IP rules.
+ *
+ * The per-minute burst window (120/min) moved to the Cloudflare edge limiter
+ * (BOOKINGAPI_RATE_LIMITER, #961) so it no longer costs a DB round-trip on each
+ * call; only the strict hourly cap stays here (the native binding can't express a
+ * 1-hour window).
  */
-export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
-  { prefix: "bookapi:m", windowSeconds: 60, max: 120 },
+export const DIRECT_BOOKING_API_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:h", windowSeconds: 3600, max: 6000 },
 ];
 
@@ -51,34 +55,38 @@ export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
  * real auto-booker (~2000/day, roughly 83/hr) about 5x headroom for bursts. Too tight
  * here and a legitimate backlog run starts 429ing real bookings, which is worse than
  * the abuse it prevents. Fails open like the rest, but no longer silently (rate-limit.ts).
+ *
+ * The per-minute backstop (60/min) moved to the edge limiter (BOOKINGAPI_IP_RATE_LIMITER,
+ * #961), which keeps the alert-on-block signal (a block means the ceiling is too tight
+ * or a key leaked); only the hourly backstop stays here.
  */
-export const DIRECT_BOOKING_API_IP_RATE_RULES: RateLimitRule[] = [
-  { prefix: "bookapi:ip:m", windowSeconds: 60, max: 60, alertOnBlock: true },
+export const DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:ip:h", windowSeconds: 3600, max: 1200, alertOnBlock: true },
 ];
 
 /**
- * Read endpoints (lookup/list, #386/#392) get their OWN ceiling, with distinct
- * key prefixes so they draw from a separate bucket than writes (#393). Status
- * polling is cheap and bursty — frequent reads must never eat into the write
- * budget and throttle the booking path they exist to support. Sized ~5x the
- * write ceiling; fails open like the rest.
+ * Read endpoints (lookup/list, #386/#392) get their OWN hourly ceiling, with
+ * distinct key prefixes so they draw from a separate bucket than writes (#393).
+ * Status polling is cheap and bursty, so frequent reads must never eat into the
+ * write budget and throttle the booking path they exist to support. Sized ~5x the
+ * write ceiling; fails open like the rest. The per-minute window (600/min) moved
+ * to the edge limiter (BOOKINGAPI_READ_RATE_LIMITER, #961).
  */
-export const DIRECT_BOOKING_API_READ_RATE_RULES: RateLimitRule[] = [
-  { prefix: "bookapi:read:m", windowSeconds: 60, max: 600 },
+export const DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:read:h", windowSeconds: 3600, max: 30000 },
 ];
 
 /**
- * Routing preview API (#596) ceiling, keyed per IP. The standalone /api/routing
- * endpoint is unauthenticated and does a DB-backed resolve per call, so it needs
- * its own throttle to bound anonymous enumeration and DB load. It has no
- * frontend caller (a diagnostic/preview surface), so it's sized modestly — well
+ * Routing preview API (#596) hourly ceiling, keyed per IP. The standalone
+ * /api/routing endpoint is unauthenticated and does a DB-backed resolve per call,
+ * so it needs its own throttle to bound anonymous enumeration and DB load. It has
+ * no frontend caller (a diagnostic/preview surface), so it's sized modestly, well
  * above real debugging use but far below abuse. Distinct prefixes so it never
- * shares a counter with the booking paths; fails open like the rest.
+ * shares a counter with the booking paths; fails open like the rest. The
+ * per-minute burst window (20/min) moved to the edge limiter (ROUTING_RATE_LIMITER,
+ * #961).
  */
-export const ROUTING_RATE_RULES: RateLimitRule[] = [
-  { prefix: "routing:m", windowSeconds: 60, max: 20 },
+export const ROUTING_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "routing:h", windowSeconds: 3600, max: 200 },
 ];
 

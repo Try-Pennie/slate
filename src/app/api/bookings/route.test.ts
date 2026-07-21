@@ -12,6 +12,11 @@ const env = vi.hoisted(() => ({
 }));
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_key: string, _rules: unknown) => true),
+  // Per-minute burst windows run at the edge (#961); default to allow so the auth /
+  // outcome glue under test isn't throttled, and flip them per-test to exercise 429s.
+  bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
+  bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
+  bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
   // Real derivation, not a stub: the per-IP ceiling (#597) is only as good as the IP it
   // keys on, and a faked clientIp would let a broken header order pass unnoticed.
   clientIp: (headers: Headers) =>
@@ -41,9 +46,9 @@ vi.mock("@/lib/booking/service", () => service);
 
 import { POST, GET } from "./route";
 import {
-  DIRECT_BOOKING_API_RATE_RULES,
-  DIRECT_BOOKING_API_READ_RATE_RULES,
-  DIRECT_BOOKING_API_IP_RATE_RULES,
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 
 function result(outcome: string) {
@@ -89,7 +94,14 @@ describe("POST /api/bookings (auth skeleton)", () => {
   beforeEach(() => {
     env.bookingApiKeyPrimary.mockReturnValue("");
     env.bookingApiKeySecondary.mockReturnValue("");
+    rateLimit.allowRequest.mockClear();
     rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockClear();
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockClear();
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockClear();
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
     service.bookViaApi.mockReset();
     service.bookViaApi.mockResolvedValue(result("created"));
     service.previewBooking.mockReset();
@@ -139,8 +151,24 @@ describe("POST /api/bookings (auth skeleton)", () => {
     await post("Bearer real-secret");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
       "key:primary",
-      DIRECT_BOOKING_API_RATE_RULES,
+      DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
+    // The per-minute burst window runs at the edge (#961), keyed on the key id.
+    expect(rateLimit.bookingApiWriteWithinLimit).toHaveBeenCalledWith("primary");
+  });
+
+  // #961: the per-minute window is the edge limiter now. A block there must 429
+  // BEFORE the DB hourly cap is consulted (no wasted round-trip on a throttled call).
+  it("trips 429 on the per-key EDGE limiter, without touching the DB hourly cap", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(429);
+    expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
+      "key:primary",
+      DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+    );
+    expect(service.bookViaApi).not.toHaveBeenCalled();
   });
 
   // #597: per-key alone meant a leaked integrator key had a 6000/hr ceiling and no
@@ -150,8 +178,18 @@ describe("POST /api/bookings (auth skeleton)", () => {
     await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
       "ip:203.0.113.9",
-      DIRECT_BOOKING_API_IP_RATE_RULES,
+      DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
     );
+    // The per-minute backstop runs at the edge (#961), keyed on the client IP.
+    expect(rateLimit.bookingApiIpWithinLimit).toHaveBeenCalledWith("203.0.113.9");
+  });
+
+  it("trips 429 on the per-IP EDGE backstop even when the key is within budget", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(false);
+    const res = await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
+    expect(res.status).toBe(429);
+    expect(service.bookViaApi).not.toHaveBeenCalled();
   });
 
   it("trips 429 on the per-IP ceiling even when the key is well within its budget", async () => {
@@ -334,6 +372,12 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
     env.bookingApiKeySecondary.mockReturnValue("");
     rateLimit.allowRequest.mockClear();
     rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockClear();
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockClear();
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockClear();
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
     service.listBookings.mockReset();
     service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
   });
@@ -367,8 +411,11 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
 
   it("GET (read) draws from the separate read rate ceiling, not the write one", async () => {
     await authedGet("http://localhost/api/bookings?status=confirmed");
-    expect(rateLimit.allowRequest).toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_READ_RATE_RULES);
-    expect(rateLimit.allowRequest).not.toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_RATE_RULES);
+    expect(rateLimit.allowRequest).toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES);
+    expect(rateLimit.allowRequest).not.toHaveBeenCalledWith("key:primary", DIRECT_BOOKING_API_HOURLY_RATE_RULES);
+    // And its edge per-minute window is the READ binding, not the write one (#961).
+    expect(rateLimit.bookingApiReadWithinLimit).toHaveBeenCalledWith("primary");
+    expect(rateLimit.bookingApiWriteWithinLimit).not.toHaveBeenCalled();
   });
 });
 
@@ -382,6 +429,12 @@ describe("GET rate limiting (#597)", () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.allowRequest.mockClear();
+    rateLimit.bookingApiWriteWithinLimit.mockClear();
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockClear();
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockClear();
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
     service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
   });
 
@@ -397,9 +450,11 @@ describe("GET rate limiting (#597)", () => {
 
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
       "key:primary",
-      DIRECT_BOOKING_API_READ_RATE_RULES,
+      DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
     const keys = rateLimit.allowRequest.mock.calls.map(([k]) => k);
     expect(keys.every((k) => !String(k).startsWith("ip:"))).toBe(true);
+    // Reads opt out of the per-IP edge backstop too, not just the DB one (#597/#961).
+    expect(rateLimit.bookingApiIpWithinLimit).not.toHaveBeenCalled();
   });
 });
