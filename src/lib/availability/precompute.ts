@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
-import { getBucketSlots, type BucketSlots } from "./service";
+import { getBucketSlots, type BucketSlots, type EligibleResolver } from "./service";
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import type { Attributes, Criteria } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -78,10 +78,11 @@ export async function recomputeBucketSlots(
   code: string,
   fromIso: string,
   toIso: string,
+  resolveEligible?: EligibleResolver,
 ): Promise<BucketSlots | null> {
   let fresh: BucketSlots | null = null;
   try {
-    fresh = await getBucketSlots(code, fromIso, toIso);
+    fresh = await getBucketSlots(code, fromIso, toIso, resolveEligible);
   } catch (err) {
     // A failed availability read (#277) must NOT write an empty slot row — that
     // is the silent "no availability" degrade. Skip the write so the prior row

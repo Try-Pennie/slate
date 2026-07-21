@@ -91,6 +91,16 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
  * (manual ∪ attribute), or — when that's empty and the bucket has a
  * `fallback_user_id` — just the fallback agent. `fallbackApplied` flags which.
  */
+/**
+ * Resolves a bucket's eligible agent ids. The live `eligibleAgentIds` is the
+ * default everywhere; the recompute lane injects the 60s cached resolver
+ * (`eligibleAgentIdsCached`) so all cron lanes in a tick share one eligibility
+ * read per bucket, while the booker read + booking verify stay live (#421/#508).
+ */
+export type EligibleResolver = (
+  bucket: Bucket,
+) => Promise<{ ids: string[]; fallbackApplied: boolean }>;
+
 export async function eligibleAgentIds(
   bucket: Bucket,
 ): Promise<{ ids: string[]; fallbackApplied: boolean }> {
@@ -204,10 +214,11 @@ export async function loadMembersAvailability(
   bucket: Bucket,
   from: string,
   to: string,
+  resolveEligible: EligibleResolver = eligibleAgentIds,
 ): Promise<MemberAvailability[]> {
   const db = supabaseAdmin();
 
-  const { ids: userIds } = await eligibleAgentIds(bucket);
+  const { ids: userIds } = await resolveEligible(bucket);
   if (userIds.length === 0) return [];
 
   // The daily-cap count is per agent per LOCAL day, so the bookings read must cover
@@ -310,6 +321,7 @@ export async function getBucketSlots(
   code: string,
   from: string,
   to: string,
+  resolveEligible: EligibleResolver = eligibleAgentIds,
 ): Promise<BucketSlots | null> {
   const resolved = await resolveBucketByCode(code);
   if (!resolved) return null;
@@ -323,7 +335,7 @@ export async function getBucketSlots(
       .select("name")
       .eq("id", bucket.org_id)
       .maybeSingle(),
-    loadMembersAvailability(bucket, from, to),
+    loadMembersAvailability(bucket, from, to, resolveEligible),
   ]);
   const org = orgRes.data;
   const slots = computeBucketSlots({

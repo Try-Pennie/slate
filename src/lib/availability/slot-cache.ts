@@ -1,4 +1,4 @@
-import { getBucketSlots } from "./service";
+import { getBucketSlots, type EligibleResolver } from "./service";
 import { slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
@@ -97,13 +97,14 @@ const lastRecomputeAt = new Map<string, number>();
 export async function recomputeBucketSlotsForToday(
   code: string,
   force = false,
+  resolveEligible?: EligibleResolver,
 ): Promise<void> {
   const now = Date.now();
   if (!force && now - (lastRecomputeAt.get(code) ?? 0) < RECOMPUTE_SKIP_MS) return;
   lastRecomputeAt.set(code, now);
 
   const { fromIso, toIso, key } = slotCacheKey(code, new Date().toISOString(), HORIZON_DAYS);
-  await recomputeBucketSlots(code, fromIso, toIso);
+  await recomputeBucketSlots(code, fromIso, toIso, resolveEligible);
   const cache = slotCache();
   if (cache) {
     try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
