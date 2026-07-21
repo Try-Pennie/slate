@@ -29,7 +29,15 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // (cron_watch): watch TTL is ~7 days, so renewals never needed the 1-min tick,
   // and the availability-health probe (cron_monitor, #371): a DB-only check that
   // a should-be-bookable bucket isn't silently serving empty availability.
-  "*/5 * * * *": ["/api/cron/complete", "/api/cron/watch", "/api/cron/monitor"],
+  // Plus the bulk coverage-reassign drain (cron_bulk_reassign, #973): its own
+  // lock + independent request so a heavy tick (each item does a live verify +
+  // a Google reassign) can't starve completion or the health probe.
+  "*/5 * * * *": [
+    "/api/cron/complete",
+    "/api/cron/watch",
+    "/api/cron/monitor",
+    "/api/cron/bulk-reassign",
+  ],
   // Hourly roster reconcile: Salesforce agent/team sync (deactivate-not-delete
   // reaper) + default hours, through the SINGLE locked path (#267). New agents
   // arrive bookable=false; the sync never re-activates anyone. Runs hourly (was

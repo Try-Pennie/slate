@@ -113,6 +113,8 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "webhook_deliveries", category: "growth/append-only", why: "append-only webhook delivery attempts" },
   { table: "booking_outbox", category: "queue", why: "crash-safe mutation queue; one booking gets many rows" },
   { table: "booking_api_outcome_daily", category: "growth/append-only", why: "#418: daily outcome tally, one row per (day, outcome, bucket, error code); grows with time" },
+  { table: "bulk_reassign_jobs", category: "queue", why: "#973: one coverage sweep per admin start; grows with sweeps, not a singleton" },
+  { table: "bulk_reassign_items", category: "queue", why: "#973: one row per booking to move (UNIQUE(job_id, booking_id)); a job has many" },
 ];
 
 {

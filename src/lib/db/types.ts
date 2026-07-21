@@ -642,3 +642,46 @@ export interface SelfhealScanCursor {
   next_offset: number;
   updated_at: string;
 }
+
+export type BulkReassignJobStatus = "active" | "done";
+
+/** One bulk coverage-reassign sweep (#973, #562): move every active upcoming
+ *  booking assigned to `out_user_id` in [range_start, range_end) onto a
+ *  live-verified covering agent. `range_end` null = open-ended (now onward).
+ *  Server-only (RLS default-deny). */
+export interface BulkReassignJob {
+  id: string;
+  org_id: string;
+  out_user_id: string;
+  range_start: string;
+  range_end: string | null;
+  reason_code: string;
+  reason_detail: string | null;
+  status: BulkReassignJobStatus;
+  created_by: string | null;
+  acting_as_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BulkReassignItemStatus =
+  | "pending"
+  | "moved"
+  | "unplaceable"
+  | "skipped"
+  | "failed";
+
+/** One booking to move within a bulk-reassign job (#973). `target_user_id` is the
+ *  covering agent once moved; `detail` explains an unplaceable/skipped/failed
+ *  outcome. UNIQUE(job_id, booking_id) makes item creation idempotent. */
+export interface BulkReassignItem {
+  id: string;
+  job_id: string;
+  booking_id: string;
+  status: BulkReassignItemStatus;
+  target_user_id: string | null;
+  detail: string | null;
+  attempts: number;
+  created_at: string;
+  updated_at: string;
+}

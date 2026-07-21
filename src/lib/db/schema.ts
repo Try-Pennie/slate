@@ -17,6 +17,8 @@ import type {
   Bucket,
   BucketMember,
   BucketSlotsRow,
+  BulkReassignItem,
+  BulkReassignJob,
   BusyBlock,
   EventType,
   LaneHeartbeat,
@@ -112,6 +114,19 @@ export interface Database {
       routing_decisions: Table<RoutingDecision>;
       lane_heartbeats: Table<LaneHeartbeat>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
+      bulk_reassign_jobs: Table<BulkReassignJob>;
+      bulk_reassign_items: Table<
+        BulkReassignItem,
+        [
+          {
+            foreignKeyName: "bulk_reassign_items_job_id_fkey";
+            columns: ["job_id"];
+            isOneToOne: false;
+            referencedRelation: "bulk_reassign_jobs";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       monitor_settings: Table<MonitorSettings>;
       monitor_alert_config: Table<MonitorAlertConfig>;
     };
