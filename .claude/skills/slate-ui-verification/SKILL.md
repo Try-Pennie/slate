@@ -197,8 +197,8 @@ npx lighthouse "http://localhost:3000/book?xbc=411&theme=light" \
 **Threshold:** accessibility **≥ 0.95** (target 1.0). Lighthouse a11y is a coarse subset, so a 1.0
 here PLUS a clean axe run is the real bar — treat any score < 1.0 as "explain each deduction."
 Don't gate on perf from `pnpm dev`. Lighthouse can't reach auth-gated `/me`/`/admin` without a
-session (same constraint as §1/§8). LHCI in CI is deferred — too heavy; the contrast script is the
-lightweight CI a11y guard instead.
+session; use `/dev/preview?email=` (§8 option a) to establish one first. LHCI in CI is deferred (too
+heavy); the contrast script is the lightweight CI a11y guard instead.
 
 ---
 
@@ -343,15 +343,30 @@ motion" ON, reload, `peekaboo image` the confirmation.
 `/me` and `/admin` redirect (307) to `/login`, which is **Google-OAuth-only**
 (`signInWithOAuth`, no email/password). A headless Playwright/Peekaboo agent CANNOT self-authenticate.
 **Resolve the session strategy BEFORE the internal-pages verification sweep** or those two surfaces
-stall. Three options, in priority order:
+stall. Options, in priority order:
 
-- **(a) Reuse a logged-in browser profile** — point Playwright at a Chrome profile already signed
-  into Slate; the user logs in once, the agent then navigates `/me` and `/admin` directly. Cleanest
-  path; keeps full axe/Lighthouse fidelity.
-- **(b) Inject a Supabase session cookie** captured from a logged-in browser (DevTools →
+- **(a) `/dev/preview?email=` (the built-in dev helper, #79).** The cleanest, repeatable path against
+  `pnpm dev`. Navigate the verification browser to `/dev/preview?email=<user>` first: the app sets a
+  dev-only cookie (`slate_dev_user`) and the whole auth stack (`realCurrentUser` and every role gate)
+  then resolves as that user, so `/me` and `/admin` load directly with full axe/Lighthouse fidelity.
+  Use an agent email to verify `/me`, an admin email for `/admin` (roles are read from the previewed
+  user). Clear it with `/dev/preview?email=clear`. Hard-gated to non-production
+  (`devPreviewEnabled()` is `NODE_ENV !== "production"`), so it returns 404 and is inert in the
+  deployed Worker, and it involves NO tokens. Example Playwright step:
+
+  ```js
+  await page.goto("http://localhost:3000/dev/preview?email=agent@trypennie.com"); // redirects to /me
+  await page.goto("http://localhost:3000/admin"); // now loads as that user
+  ```
+
+  Do NOT build a separate session-minting script for this; consolidate on `/dev/preview`.
+- **(b) Reuse a logged-in browser profile**: point Playwright at a Chrome profile already signed
+  into Slate; the user logs in once, the agent then navigates `/me` and `/admin` directly. Use when
+  a real Supabase session (not the dev-preview shim) is genuinely needed.
+- **(c) Inject a Supabase session cookie** captured from a logged-in browser (DevTools →
   Application → Cookies → `sb-<ref>-auth-token`) via `page.context().addCookies(...)`. Fragile
-  across token refresh; use only if (a) is unavailable.
-- **(c) User-supplied screenshots** — verify `/login` (public) fully in both themes; the user logs
+  across token refresh; use only if (a) and (b) are unavailable.
+- **(d) User-supplied screenshots**: verify `/login` (public) fully in both themes; the user logs
   in and captures `/me` + `/admin` manually, pasted into `reports/`, agent verifies visually.
   Lowest fidelity (no live axe), but unblocks the visual review.
 

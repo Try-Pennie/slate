@@ -23,8 +23,9 @@ const service = vi.hoisted(() => {
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async () => true),
   refundRequest: vi.fn(async () => {}),
+  bookingWithinLimit: vi.fn(async () => true),
   clientIp: () => "203.0.113.1",
-  BOOKING_RATE_RULES: [],
+  BOOKING_HOURLY_RATE_RULES: [],
 }));
 
 vi.mock("@/lib/booking/service", () => service);
@@ -52,9 +53,35 @@ function post(body: unknown) {
 describe("POST /booking (embed) error mapping", () => {
   beforeEach(() => {
     rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingWithinLimit.mockResolvedValue(true);
+    rateLimit.refundRequest.mockClear();
     service.createBooking.mockReset();
     service.findDuplicateBookingWarning.mockReset();
     service.findDuplicateBookingWarning.mockResolvedValue(null);
+  });
+
+  it("returns 429 (without touching the DB or createBooking) when the per-minute edge limiter blocks", async () => {
+    rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(429);
+    // Edge block short-circuits before the hourly DB cap and the booking itself.
+    expect(rateLimit.allowRequest).not.toHaveBeenCalled();
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  it("returns 429 when the hourly DB cap blocks (checked after the edge limiter)", async () => {
+    rateLimit.allowRequest.mockResolvedValueOnce(false);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(429);
+    expect(rateLimit.bookingWithinLimit).toHaveBeenCalled();
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  it("refunds only the hourly cap on a verify outage (the edge burst window can't be refunded)", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.VerifyUnavailableError("outage"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(1);
   });
 
   it("maps an empty/misconfigured pool to 409 (not 500)", async () => {

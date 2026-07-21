@@ -11,8 +11,9 @@ import { validateAttendee } from "@/lib/attendee";
 import {
   allowRequest,
   refundRequest,
+  bookingWithinLimit,
   clientIp,
-  BOOKING_RATE_RULES,
+  BOOKING_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit";
 import { internalErrorResponse } from "@/lib/api/errors";
 
@@ -34,12 +35,18 @@ const schema = z.object({
 
 export async function POST(req: NextRequest) {
   const ip = clientIp(req.headers);
-  if (!(await allowRequest(ip, BOOKING_RATE_RULES))) {
-    return NextResponse.json(
+  const tooMany = () =>
+    NextResponse.json(
       { error: "Too many booking attempts from your network. Please try again in a few minutes." },
       { status: 429 },
     );
-  }
+  // Per-minute burst window at the edge (#237): in-datacenter, no DB round-trip,
+  // so it doesn't add latency to the Confirm tap. Checked first so a flood is
+  // shed before we touch Postgres.
+  if (!(await bookingWithinLimit(ip))) return tooMany();
+  // Strict hourly anti-spam cap stays in the DB (a 1-hour window the native
+  // binding can't express).
+  if (!(await allowRequest(ip, BOOKING_HOURLY_RATE_RULES))) return tooMany();
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
@@ -94,7 +101,10 @@ export async function POST(req: NextRequest) {
     // slot — tell the lead it's temporary and let them retry (#319). Refund the
     // rate-limit hit: a server-side outage must not burn their booking budget.
     if (err instanceof VerifyUnavailableError) {
-      await refundRequest(ip, BOOKING_RATE_RULES);
+      // Refund only the hourly DB cap; the edge per-minute window can't be
+      // refunded, but it's a short burst window, so a retry after the outage
+      // clears within a minute.
+      await refundRequest(ip, BOOKING_HOURLY_RATE_RULES);
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // A genuinely-full slot OR an empty/misconfigured pool both surface to the
