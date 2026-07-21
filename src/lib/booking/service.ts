@@ -1933,6 +1933,14 @@ function realBulkReassignDeps(): BulkReassignDeps {
       if (!reason.ok) throw new Error(`invalid bulk-reassign reason: ${reason.error}`);
       if (!job.created_by) throw new Error("bulk-reassign job has no accountable actor (created_by)");
       const actor: BookingActor = { userId: job.created_by, actingAsUserId: job.acting_as_user_id };
+      // Downstream signal (#975): a coverage move reuses adminReassignBooking, so
+      // it emits the SAME booking.rescheduled webhook every reassign already does
+      // (the deliberate Regal contract, see the regal.test.ts lock). That event
+      // carries reasonCode (here "coverage"), fromAgentUserId (the out agent), and
+      // fromStartsIso === the unchanged start (so Regal sees an agent change, not a
+      // time change), plus the tier-fallback props. is_test bookings are suppressed
+      // at the fire() chokepoint. No coverage-specific webhook is warranted.
+      //
       // Cap is NOT overridden: the covering agent was selected under their daily
       // cap. The manual force-override (#974) is the only path that overrides.
       await adminReassignBooking(bookingId, targetEmail, reason.reason, actor, false);
