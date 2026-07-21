@@ -49,6 +49,7 @@ import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/componen
 import { Pill } from "@/components/ui/Pill";
 import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
 import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
+import { FilterForm } from "@/components/ui/FilterForm";
 import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
@@ -762,7 +763,7 @@ export default async function AdminPage({
             <SyncHealthPanel agents={syncHealthRows} />
           </div>
         )}
-        <form method="get" className="mb-4 flex flex-wrap items-center gap-2">
+        <FilterForm action="/admin" className="mb-4 flex flex-wrap items-center gap-2">
           <input
             name="q"
             defaultValue={sp.q ?? ""}
@@ -844,7 +845,7 @@ export default async function AdminPage({
                   agentsPage.total !== users.length ? ` (of ${users.length})` : ""
                 }`}
           </span>
-        </form>
+        </FilterForm>
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full min-w-[640px] text-sm">
             <thead>
