@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { postJson } from "@/lib/http";
+import { getJson, postJson } from "@/lib/http";
 
 // #625: the shared client POST helper must ALWAYS resolve with { ok, status,
 // data } — a network rejection or an unparseable body can never throw, so the
@@ -92,5 +92,38 @@ describe("postJson", () => {
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>)["content-type"]).toBe("application/json");
     expect(init.body).toBe(JSON.stringify({ hello: "world" }));
+  });
+});
+
+// #974: getJson shares postJson's always-resolve contract for imperative /
+// polled GET reads (bulk-reassign preview + progress), so a poll never throws
+// mid-loop and the caller can show a distinct failed state.
+describe("getJson", () => {
+  it("returns ok + parsed body on a 2xx response, using GET", async () => {
+    const fn = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ count: 3 }) }) as Response);
+    global.fetch = fn as unknown as typeof fetch;
+
+    const r = await getJson<{ count?: number }>("/api/x?from=y");
+    expect(r).toEqual({ ok: true, status: 200, data: { count: 3 } });
+    const [, init] = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.method).toBe("GET");
+  });
+
+  it("returns the status and body on a non-2xx response (does not throw)", async () => {
+    global.fetch = vi.fn(async () =>
+      ({ ok: false, status: 404, json: async () => ({ error: "Not found" }) }) as Response,
+    ) as unknown as typeof fetch;
+
+    const r = await getJson<{ error?: string }>("/api/x?jobId=nope");
+    expect(r).toEqual({ ok: false, status: 404, data: { error: "Not found" } });
+  });
+
+  it("normalizes a network rejection to { ok:false, status:0, data:{} }", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+
+    const r = await getJson("/api/x");
+    expect(r).toEqual({ ok: false, status: 0, data: {} });
   });
 });

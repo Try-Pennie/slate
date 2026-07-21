@@ -22,6 +22,7 @@ import {
   setUserLifecycle,
 } from "@/app/admin/actions";
 import { AppHeader } from "@/components/AppHeader";
+import BulkReassignCoverage from "@/components/BulkReassignCoverage";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
 import { labelCls, inputCls, btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
@@ -449,6 +450,11 @@ export default async function AgentProfilePage({
             reversible by reactivating.
           </p>
         </section>
+
+        {/* Coverage: bulk-reassign this agent's upcoming bookings (#974) */}
+        {canManageThisAgent && (
+          <BulkReassignCoverage agentId={agent.id} agentName={agent.name ?? agent.email} />
+        )}
       </main>
     </>
   );

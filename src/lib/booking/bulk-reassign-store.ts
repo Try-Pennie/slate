@@ -2,7 +2,7 @@ import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import type { BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
+import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import type { BookingStatus, BulkReassignItem, BulkReassignJob } from "@/lib/db/types";
 
 /** The active-upcoming statuses a coverage sweep moves. */
@@ -159,6 +159,63 @@ export async function commitBulkReassignItemOutcome(
     })
     .eq("id", itemId);
   if (error) throw new Error(`bulk-reassign item commit failed: ${error.message}`);
+}
+
+/** The org a user belongs to, or null if the user does not exist (#974). Used to
+ *  stamp a coverage job with the out agent's org. */
+export async function loadUserOrgId(userId: string): Promise<string | null> {
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("users")
+      // cap-safe: single-row primary-key lookup.
+      .select("org_id")
+      .eq("id", userId)
+      .maybeSingle(),
+    "load-user-org-bulk-reassign",
+  ) as { org_id: string } | null;
+  return data?.org_id ?? null;
+}
+
+/** One job by id, or null if it does not exist (the #974 progress read). */
+export async function loadBulkReassignJob(jobId: string): Promise<BulkReassignJob | null> {
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("bulk_reassign_jobs")
+      // cap-safe: single-row primary-key lookup.
+      .select("*")
+      .eq("id", jobId)
+      .maybeSingle(),
+    "load-bulk-reassign-job",
+  ) as BulkReassignJob | null;
+  return data ?? null;
+}
+
+/** Every item of a job, paginated so a large job is fully summarized (#974). */
+export async function loadBulkReassignItems(jobId: string): Promise<BulkReassignItem[]> {
+  return selectAllPages<BulkReassignItem>("bulk-reassign-job-items", (from, to) =>
+    supabaseAdmin()
+      .from("bulk_reassign_items")
+      .select("*")
+      .eq("job_id", jobId)
+      .order("created_at", { ascending: true })
+      .range(from, to),
+  );
+}
+
+/** Booking display context for the (small) set of actionable item booking ids. */
+export async function loadActionableBookingContext(
+  bookingIds: string[],
+): Promise<Map<string, ActionableBookingContext>> {
+  if (bookingIds.length === 0) return new Map();
+  const rows = unwrap(
+    await supabaseAdmin()
+      .from("bookings")
+      // cap-safe: primary-key lookup of the actionable items' bookings.
+      .select("id, starts_at, attendee_name")
+      .in("id", bookingIds),
+    "load-actionable-booking-context",
+  ) as { id: string; starts_at: string; attendee_name: string | null }[] | null;
+  return new Map((rows ?? []).map((r) => [r.id, { startsAt: r.starts_at, attendeeName: r.attendee_name }]));
 }
 
 /** Flip the job to 'done' once it has no pending items left. Best-effort: a

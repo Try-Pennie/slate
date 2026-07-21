@@ -59,3 +59,31 @@ export async function postJson<T = Record<string, unknown>>(
     if (timer) clearTimeout(timer);
   }
 }
+
+/**
+ * GET JSON from a client component with the SAME always-resolve contract as
+ * `postJson` (#974): a network rejection, an unparseable body, or a `timeoutMs`
+ * abort all become `{ ok:false, status:0, data:{} }` rather than a throw, so an
+ * imperative preview/poll caller can branch on the result and show a distinct
+ * failed state instead of hanging. `useFetchList` is the declarative list hook;
+ * this is for one-off / polled reads.
+ */
+export async function getJson<T = Record<string, unknown>>(
+  url: string,
+  options: PostJsonOptions = {},
+): Promise<PostJsonResult<T>> {
+  const controller = options.timeoutMs != null ? new AbortController() : null;
+  const timer =
+    controller && options.timeoutMs != null
+      ? setTimeout(() => controller.abort(), options.timeoutMs)
+      : null;
+  try {
+    const res = await fetch(url, { method: "GET", signal: controller?.signal });
+    const data = (await res.json().catch(() => ({}))) as T;
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: {} as T };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
