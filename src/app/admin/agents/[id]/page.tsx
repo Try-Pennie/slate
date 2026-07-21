@@ -2,6 +2,7 @@ import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import {
   canManageAgents,
+  canManageUser,
   canEditOrgSettings,
   canSetRole,
   roleLabel,
@@ -77,6 +78,13 @@ export default async function AgentProfilePage({
   if (!agent) notFound();
   const active = isActive(agent);
   const isSelf = agent.id === me.id;
+  // Control visibility must match what the mutating actions permit (#550/#544).
+  // requireManageAgent enforces the strict-outrank rule (canManageUser), so a
+  // manager viewing a peer or higher-ranked user (or an admin viewing a
+  // super_admin) would otherwise see manager+ controls that 403 on click. Gate
+  // those controls on the SAME predicate. Admin-only controls (role, OOO calendar)
+  // keep their own isAdmin gates, which are already correct.
+  const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
 
   const [schedRes, usersRes, orgRes] = await Promise.all([
     db
@@ -181,6 +189,12 @@ export default async function AgentProfilePage({
         {/* Access: role + bookable + manager */}
         <section className={cardCls}>
           <p className="pn-eyebrow text-fg-muted">Access</p>
+          {!canManageThisAgent && (
+            <p className="mt-2 text-xs text-fg-muted">
+              You can view {agent.name ?? agent.email} but cannot change their
+              settings: managing an agent needs a role above theirs.
+            </p>
+          )}
           <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-4">
             {isAdmin && roleOptions(agent.role).length > 0 && (
               <form action={setUserRole} className="flex items-end gap-2">
@@ -203,37 +217,41 @@ export default async function AgentProfilePage({
                 <button className={btnSecondaryCls}>Set role</button>
               </form>
             )}
-            <form action={setBookable} className="flex items-end">
-              <input type="hidden" name="user_id" value={agent.id} />
-              <input
-                type="hidden"
-                name="bookable"
-                value={agent.bookable ? "false" : "true"}
-              />
-              <button className={btnSecondaryCls}>
-                {agent.bookable ? "Make not bookable" : "Make bookable"}
-              </button>
-            </form>
-            <form action={setAgentManager} className="flex items-end gap-2">
-              <input type="hidden" name="user_id" value={agent.id} />
-              <div>
-                <label className={labelCls}>Manager (time off approvals)</label>
-                <select
-                  name="manager_id"
-                  aria-label="Manager"
-                  defaultValue={agent.manager_id ?? ""}
-                  className={`${inputCls} w-56`}
-                >
-                  <option value="">No manager</option>
-                  {managerOptions.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name ?? m.email}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button className={btnSecondaryCls}>Set manager</button>
-            </form>
+            {canManageThisAgent && (
+              <form action={setBookable} className="flex items-end">
+                <input type="hidden" name="user_id" value={agent.id} />
+                <input
+                  type="hidden"
+                  name="bookable"
+                  value={agent.bookable ? "false" : "true"}
+                />
+                <button className={btnSecondaryCls}>
+                  {agent.bookable ? "Make not bookable" : "Make bookable"}
+                </button>
+              </form>
+            )}
+            {canManageThisAgent && (
+              <form action={setAgentManager} className="flex items-end gap-2">
+                <input type="hidden" name="user_id" value={agent.id} />
+                <div>
+                  <label className={labelCls}>Manager (time off approvals)</label>
+                  <select
+                    name="manager_id"
+                    aria-label="Manager"
+                    defaultValue={agent.manager_id ?? ""}
+                    className={`${inputCls} w-56`}
+                  >
+                    <option value="">No manager</option>
+                    {managerOptions.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name ?? m.email}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button className={btnSecondaryCls}>Set manager</button>
+              </form>
+            )}
           </div>
           {isAdmin && agent.role !== "agent" && (
             <form
@@ -266,56 +284,64 @@ export default async function AgentProfilePage({
               </span>
             )}
           </div>
-          <form
-            action={setWorkingHours}
-            className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3"
-          >
-            <input type="hidden" name="user_id" value={agent.id} />
-            <div>
-              <label className={labelCls}>Timezone (agent home tz)</label>
-              <input
-                name="timezone"
-                aria-label="Timezone"
-                defaultValue={sched?.timezone ?? org.default_timezone}
-                className={`${inputCls} w-44`}
-              />
-            </div>
-            <div>
-              <span className={labelCls}>Days</span>
-              <div className="mt-1">
-                <DayToggles
-                  namePrefix="day_"
-                  isOn={(d) => (hasHours ? days.has(d) : d <= 5)}
-                />
-              </div>
-            </div>
-            <div>
-              <label className={labelCls}>Start</label>
-              <TimeField
-                name="start"
-                ariaLabel="Start"
-                defaultValue={minutesToTime(start)}
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <label className={labelCls}>End</label>
-              <TimeField
-                name="end"
-                ariaLabel="End"
-                round="up"
-                defaultValue={minutesToTime(end)}
-                className="mt-1"
-              />
-            </div>
-            <button className={btnCls}>Save hours</button>
-          </form>
-          <form action={useDefaultHours} className="mt-3">
-            <input type="hidden" name="user_id" value={agent.id} />
-            <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
-              Apply company default hours
-            </button>
-          </form>
+          {canManageThisAgent ? (
+            <>
+              <form
+                action={setWorkingHours}
+                className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3"
+              >
+                <input type="hidden" name="user_id" value={agent.id} />
+                <div>
+                  <label className={labelCls}>Timezone (agent home tz)</label>
+                  <input
+                    name="timezone"
+                    aria-label="Timezone"
+                    defaultValue={sched?.timezone ?? org.default_timezone}
+                    className={`${inputCls} w-44`}
+                  />
+                </div>
+                <div>
+                  <span className={labelCls}>Days</span>
+                  <div className="mt-1">
+                    <DayToggles
+                      namePrefix="day_"
+                      isOn={(d) => (hasHours ? days.has(d) : d <= 5)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className={labelCls}>Start</label>
+                  <TimeField
+                    name="start"
+                    ariaLabel="Start"
+                    defaultValue={minutesToTime(start)}
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>End</label>
+                  <TimeField
+                    name="end"
+                    ariaLabel="End"
+                    round="up"
+                    defaultValue={minutesToTime(end)}
+                    className="mt-1"
+                  />
+                </div>
+                <button className={btnCls}>Save hours</button>
+              </form>
+              <form action={useDefaultHours} className="mt-3">
+                <input type="hidden" name="user_id" value={agent.id} />
+                <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
+                  Apply company default hours
+                </button>
+              </form>
+            </>
+          ) : (
+            <p className="mt-4 text-xs text-fg-muted">
+              Only someone who outranks this agent can change their hours.
+            </p>
+          )}
         </section>
 
         {/* Routing attributes */}
@@ -324,6 +350,12 @@ export default async function AgentProfilePage({
           <p className="mt-1 text-xs text-fg-muted">
             What this agent can be routed for. Normally synced from Salesforce.
           </p>
+          {!canManageThisAgent && (
+            <p className="mt-4 text-xs text-fg-muted">
+              Only someone who outranks this agent can change their attributes.
+            </p>
+          )}
+          {canManageThisAgent && (
           <form
             action={setAgentAttributes}
             className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3"
@@ -377,6 +409,7 @@ export default async function AgentProfilePage({
             </div>
             <button className={btnCls}>Save attributes</button>
           </form>
+          )}
         </section>
 
         {/* Account status: deactivate / reactivate (#278) */}
@@ -386,7 +419,11 @@ export default async function AgentProfilePage({
             <Pill variant={active ? "status-ok" : "outline"}>
               {active ? "Active" : "Deactivated"}
             </Pill>
-            {active ? (
+            {!canManageThisAgent ? (
+              <span className="text-xs text-fg-muted">
+                Only someone who outranks this agent can change this.
+              </span>
+            ) : active ? (
               isSelf ? (
                 <span className="text-xs text-fg-muted">
                   You can&apos;t deactivate your own account.

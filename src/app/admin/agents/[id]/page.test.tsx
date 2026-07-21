@@ -4,7 +4,10 @@ import { render, screen } from "@testing-library/react";
 
 // Access guard for the agent-profile page (#676): unauthenticated to /login, a
 // below-manager caller gets the deny notice, the OOO-only flag diverts managers
-// to /admin/ooo, and an unknown agent id resolves to notFound(). Real role
+// to /admin/ooo, and an unknown agent id resolves to notFound(). Plus the #550
+// control-visibility rule: the manager+ mutate controls only render when the
+// viewer may actually manage this target (canManageUser strict-outrank), so a
+// manager never sees buttons that 403 on a peer/higher-ranked profile. Real role
 // helpers are exercised; auth, navigation, the launch flag and the DB are mocked.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
@@ -18,13 +21,47 @@ const notFound = vi.hoisted(() =>
     throw new Error("NEXT_NOT_FOUND");
   }),
 );
-const dbState = vi.hoisted(() => ({ single: null as unknown }));
+// Table-aware fake: users.maybeSingle -> the target agent; the awaited users
+// builder -> the roster list; availability_schedules -> sched; organizations ->
+// org; availability_rules -> rules. A thenable `then` covers the awaited-builder
+// reads; maybeSingle/single cover the terminal reads.
+const dbState = vi.hoisted(() => ({
+  agent: null as unknown,
+  sched: null as unknown,
+  org: {
+    default_timezone: "America/New_York",
+    default_start_minute: 540,
+    default_end_minute: 1020,
+    default_weekdays: [1, 2, 3, 4, 5],
+  } as unknown,
+  usersList: [] as unknown[],
+  rules: [] as unknown[],
+}));
 const from = vi.hoisted(() =>
-  vi.fn(() => {
+  vi.fn((table: string) => {
     const q: Record<string, unknown> = {
-      select: vi.fn(() => q),
-      eq: vi.fn(() => q),
-      maybeSingle: vi.fn(async () => ({ data: dbState.single })),
+      select: () => q,
+      eq: () => q,
+      order: () => q,
+      limit: () => q,
+      maybeSingle: async () => ({
+        data:
+          table === "users"
+            ? dbState.agent
+            : table === "availability_schedules"
+              ? dbState.sched
+              : null,
+      }),
+      single: async () => ({ data: dbState.org }),
+      then: (res: (v: { data: unknown }) => void) =>
+        res({
+          data:
+            table === "users"
+              ? dbState.usersList
+              : table === "availability_rules"
+                ? dbState.rules
+                : [],
+        }),
     };
     return q;
   }),
@@ -37,15 +74,45 @@ vi.mock("@/lib/env", async (importOriginal) => ({
   oooOnlyFor: env.oooOnlyFor,
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 
 import AgentProfilePage from "./page";
 
 const props = { params: Promise.resolve({ id: "x1" }) };
 
+// A renderable target agent of a given role.
+function agentOf(role: string, id = "x1"): Record<string, unknown> {
+  return {
+    id,
+    org_id: "o1",
+    email: `${id}@ex.com`,
+    name: id,
+    role,
+    bookable: false,
+    manager_id: null,
+    ooo_calendar_id: null,
+    attributes: {},
+    avatar_url: null,
+    deactivated_at: null,
+  };
+}
+
+// The manager+ mutate controls that must track canManageUser (#550).
+const MANAGE_BUTTONS = [
+  /make bookable/i,
+  /set manager/i,
+  /save hours/i,
+  /save attributes/i,
+  /deactivate account/i,
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   env.oooOnlyFor.mockReturnValue(false);
-  dbState.single = null;
+  dbState.agent = null;
+  dbState.sched = null;
+  dbState.usersList = [];
+  dbState.rules = [];
 });
 
 describe("AgentProfilePage guard", () => {
@@ -68,8 +135,40 @@ describe("AgentProfilePage guard", () => {
 
   it("returns notFound for an unknown agent id", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
-    dbState.single = null;
+    dbState.agent = null;
     await expect(AgentProfilePage(props)).rejects.toThrow(/NEXT_NOT_FOUND/);
     expect(notFound).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AgentProfilePage control visibility (#550)", () => {
+  it("shows the manager+ mutate controls when the viewer outranks the target", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    render(await AgentProfilePage(props));
+    for (const label of MANAGE_BUTTONS) {
+      expect(screen.queryByRole("button", { name: label })).toBeTruthy();
+    }
+    expect(screen.queryByText(/cannot change their settings/i)).toBeNull();
+  });
+
+  it("hides the mutate controls (and explains why) when a manager views an admin", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agentOf("admin");
+    render(await AgentProfilePage(props));
+    for (const label of MANAGE_BUTTONS) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+    expect(screen.queryByText(/cannot change their settings/i)).toBeTruthy();
+    // Read-only account status stays visible (it never 403s).
+    expect(screen.queryByText(/^Active$|^Deactivated$/)).toBeTruthy();
+  });
+
+  it("hides the mutate controls when a manager views a peer manager (equal rank never manages)", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agentOf("manager", "m2");
+    render(await AgentProfilePage(props));
+    expect(screen.queryByRole("button", { name: /save hours/i })).toBeNull();
+    expect(screen.queryByText(/cannot change their settings/i)).toBeTruthy();
   });
 });
