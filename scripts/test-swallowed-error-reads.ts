@@ -6,11 +6,12 @@
 // collapses to empty, and the booker silently shows NO times. #277 routed the
 // availability-critical reads through `unwrap` (which throws on a real error);
 // nothing stopped a NEW ignore-the-error read from creeping back in. This scans
-// src/lib/availability/*, src/lib/booking/*, src/lib/google/* and
-// src/lib/routing/* (#865 widened it to the sync + routing paths, where #315 and
-// #834 both found risky reads) and fails if any awaited select is destructured
-// for `data` without also consulting `error` (and without the documented
-// `// error-ok:` opt-out for a deliberately null-tolerant read).
+// src/lib/availability/*, src/lib/booking/*, src/lib/google/*, src/lib/routing/*
+// and src/lib/salesforce/* (#865 widened it to the sync + routing paths where
+// #315 and #834 found risky reads; #963 added salesforce, where the roster sync
+// treated a read error as an empty roster) and fails if any awaited select is
+// destructured for `data` without also consulting `error` (and without the
+// documented `// error-ok:` opt-out for a deliberately null-tolerant read).
 //
 // The scan logic lives in scripts/lib/scan-swallowed-error-reads.ts so it is
 // unit-testable. This file exercises it against fixtures (a positive control that
@@ -148,6 +149,7 @@ const surface = [
   ...tsFiles(join(ROOT, "src", "lib", "booking")),
   ...tsFiles(join(ROOT, "src", "lib", "google")),
   ...tsFiles(join(ROOT, "src", "lib", "routing")),
+  ...tsFiles(join(ROOT, "src", "lib", "salesforce")),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -207,6 +209,24 @@ assert(
   "positive control: a reintroduced swallowed-error availability read is caught",
 );
 
+// A control on the newly-scanned salesforce path (#963): salesforce/sync.ts
+// routes its roster reads through `unwrap` (no `// error-ok:` opt-outs to strip),
+// so append the exact #277 regression shape and confirm the guard flags it,
+// proving the scan actually reaches src/lib/salesforce and isn't a no-op there.
+const sfSyncPath = join(ROOT, "src", "lib", "salesforce", "sync.ts");
+const sfSyncSrc = readFileSync(sfSyncPath, "utf8");
+assert(
+  scanSwallowedErrorReads(sfSyncSrc, sfSyncPath).length === 0,
+  "the real salesforce/sync.ts is clean",
+);
+const sfReintroduced =
+  sfSyncSrc +
+  `\nasync function _regression() {\n  const { data } = await supabaseAdmin().from("users").select("id, email").eq("org_id", o);\n  return data;\n}\n`;
+assert(
+  scanSwallowedErrorReads(sfReintroduced, sfSyncPath).length > 0,
+  "positive control: a reintroduced swallowed-error salesforce read is caught",
+);
+
 // --- repo invariant: the whole scan surface is clean --------------------------
 
 let siteCount = 0;
@@ -225,7 +245,7 @@ for (const file of surface) {
 }
 if (siteCount === 0) {
   console.log(
-    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, and routing source files`,
+    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, routing, and salesforce source files`,
   );
 }
 

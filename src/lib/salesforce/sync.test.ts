@@ -174,4 +174,14 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
     store.config.errorOn = "update";
     await expect(syncSalesforceAgents()).rejects.toThrow(/manager link batch failed/);
   });
+
+  // #963: the initial roster reads used to destructure `const { data } = ...`
+  // and ignore `error`. On a real query error `existing` was null, the by-email
+  // map was empty, and every Salesforce agent was treated as brand new (the #277
+  // silent-failure class). Routing the reads through `unwrap` makes a read error
+  // throw instead of silently corrupting the roster.
+  it("throws when a roster read errors (fail loud, no phantom brand-new agents)", async () => {
+    store.config.errorOn = "select";
+    await expect(syncSalesforceAgents()).rejects.toThrow(/read failed/);
+  });
 });

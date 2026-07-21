@@ -1,12 +1,13 @@
 /**
  * Fail-loud unwrap for a Supabase/PostgREST result (#277).
  *
- * Availability reads used to destructure `const { data } = await db...` and
- * ignore `error`: when a query failed (e.g. a missing column on a half-applied
- * migration) `data` came back null, the pool collapsed to empty, and the booker
- * silently showed NO availability — a broken deploy that looked like a quiet
- * day. Routing availability-critical reads through `unwrap` turns that into a
- * thrown error the caller (and our cron alerting) surfaces, instead of a
+ * Reads used to destructure `const { data } = await db...` and ignore `error`:
+ * when a query failed (e.g. a missing column on a half-applied migration) `data`
+ * came back null, the availability pool collapsed to empty and the booker
+ * silently showed NO availability, or the SF roster sync (#963) treated the read
+ * as an empty roster and re-inserted every agent. Either way a broken deploy
+ * looked like a quiet day. Routing the critical reads through `unwrap` turns that
+ * into a thrown error the caller (and our cron alerting) surfaces, instead of a
  * degrade.
  *
  * A null `data` with a null `error` is NOT a failure — it's "not found"
@@ -22,7 +23,7 @@ export interface DbResult<T> {
 
 export function unwrap<T>(res: DbResult<T>, context: string): T {
   if (res.error) {
-    throw new Error(`availability read failed [${context}]: ${res.error.message}`);
+    throw new Error(`read failed [${context}]: ${res.error.message}`);
   }
   return res.data;
 }
