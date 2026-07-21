@@ -321,7 +321,7 @@ export async function loadSlateBookingEventIds(userId: string): Promise<Set<stri
 }
 
 /** Upsert/delete gcal-sourced busy blocks for a batch of events on one calendar. */
-async function applyEvents(
+export async function applyEvents(
   userId: string,
   calendarId: string,
   events: GoogleEvent[],
@@ -339,19 +339,26 @@ async function applyEvents(
   // Throw on any failure so syncCalendar never advances the sync token past an
   // event it failed to record - a swallowed error loses the event for good (the
   // delta is consumed) and the cache silently drifts from Google.
+  //
+  // Keyed on (user_id, calendar_id, gcal_event_id) so the same event id invited
+  // to two of an agent's watched calendars keeps a distinct block per calendar,
+  // instead of one calendar's sync overwriting the other's row (#619).
   for (let i = 0; i < upserts.length; i += WRITE_CHUNK) {
     const { error } = await db
       .from("busy_blocks")
       .upsert(upserts.slice(i, i + WRITE_CHUNK), {
-        onConflict: "user_id,gcal_event_id",
+        onConflict: "user_id,calendar_id,gcal_event_id",
       });
     if (error) throw new Error(`busy_blocks bulk upsert failed: ${error.message}`);
   }
+  // Scope deletes to THIS calendar (#619): a cancellation delta from one calendar
+  // must not remove the block for the same event still present on another.
   for (let i = 0; i < deletes.length; i += WRITE_CHUNK) {
     const { error } = await db
       .from("busy_blocks")
       .delete()
       .eq("user_id", userId)
+      .eq("calendar_id", calendarId)
       .in("gcal_event_id", deletes.slice(i, i + WRITE_CHUNK));
     if (error) throw new Error(`busy_blocks bulk delete failed: ${error.message}`);
   }
