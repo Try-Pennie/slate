@@ -1,6 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { resolveRouting } from "@/lib/availability/service";
-import { allowRequest, clientIp, ROUTING_RATE_RULES } from "@/lib/rate-limit";
+import {
+  allowRequest,
+  clientIp,
+  routingWithinLimit,
+  ROUTING_HOURLY_RATE_RULES,
+} from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +23,14 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   // Per-IP throttle (#596): this endpoint is unauthenticated and does a
   // DB-backed resolve per call, so bound anonymous enumeration + DB load.
-  // Fails open — a limiter hiccup must never break a legitimate lookup.
-  if (!(await allowRequest(clientIp(req.headers), ROUTING_RATE_RULES))) {
+  // Fails open: a limiter hiccup must never break a legitimate lookup. The
+  // per-minute burst window runs at the edge (#961, no DB round-trip); the
+  // hourly cap stays in the DB.
+  const ip = clientIp(req.headers);
+  if (
+    !(await routingWithinLimit(ip)) ||
+    !(await allowRequest(ip, ROUTING_HOURLY_RATE_RULES))
+  ) {
     return NextResponse.json(
       { error: "Too many requests. Please try again in a moment." },
       { status: 429 },

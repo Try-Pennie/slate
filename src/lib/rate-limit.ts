@@ -4,7 +4,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 
-export { clientIp, BOOKING_HOURLY_RATE_RULES, ROUTING_RATE_RULES } from "@/lib/rate-limit-core";
+export { clientIp, BOOKING_HOURLY_RATE_RULES, ROUTING_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 import {
   friendlyRateArea,
@@ -48,21 +48,93 @@ export async function bookingWithinLimit(ip: string): Promise<boolean> {
   });
 }
 
+/**
+ * Routing preview per-minute burst throttle (#961) via ROUTING_RATE_LIMITER,
+ * keyed per IP. Replaces the old DB per-minute rule (routing:m); the hourly cap
+ * (ROUTING_HOURLY_RATE_RULES) stays in the DB. Fails OPEN + LOUD like the rest.
+ */
+export async function routingWithinLimit(ip: string): Promise<boolean> {
+  return edgeWithinLimit(ip, {
+    binding: "ROUTING_RATE_LIMITER",
+    area: "routing",
+    friendly: "routing lookup",
+  });
+}
+
+/**
+ * Direct booking API per-minute burst windows at the edge (#961), replacing the
+ * old DB per-minute rules; the hourly ceilings stay in the DB. Three separate
+ * bindings because the native limiter fixes one limit per binding and these are
+ * intentionally different sizes and keys:
+ *   - write path, keyed per API key (120/min): bookingApiWriteWithinLimit
+ *   - per-IP write backstop, keyed per IP (60/min): bookingApiIpWithinLimit,
+ *     which alerts on block (a block means the ceiling is too tight or a key
+ *     leaked, #597/#796)
+ *   - read path, keyed per API key (600/min): bookingApiReadWithinLimit
+ */
+export async function bookingApiWriteWithinLimit(keyId: string): Promise<boolean> {
+  return edgeWithinLimit(keyId, {
+    binding: "BOOKINGAPI_RATE_LIMITER",
+    area: "booking-api",
+    friendly: "booking API",
+  });
+}
+
+export async function bookingApiIpWithinLimit(ip: string): Promise<boolean> {
+  return edgeWithinLimit(ip, {
+    binding: "BOOKINGAPI_IP_RATE_LIMITER",
+    area: "booking-api-ip",
+    friendly: "booking API",
+    alertOnBlock: { max: 60, windowSeconds: 60 },
+  });
+}
+
+export async function bookingApiReadWithinLimit(keyId: string): Promise<boolean> {
+  return edgeWithinLimit(keyId, {
+    binding: "BOOKINGAPI_READ_RATE_LIMITER",
+    area: "booking-api-read",
+    friendly: "booking API",
+  });
+}
+
 /** The Cloudflare edge rate-limit binding shape (`.limit({ key }) -> { success }`). */
 interface EdgeLimiter {
   limit(opts: { key: string }): Promise<{ success: boolean }>;
 }
 
+type EdgeLimiterBinding =
+  | "AVAIL_RATE_LIMITER"
+  | "BOOKING_RATE_LIMITER"
+  | "ROUTING_RATE_LIMITER"
+  | "BOOKINGAPI_RATE_LIMITER"
+  | "BOOKINGAPI_IP_RATE_LIMITER"
+  | "BOOKINGAPI_READ_RATE_LIMITER";
+
+interface EdgeLimiterConfig {
+  binding: EdgeLimiterBinding;
+  /** Token-safe area name; used to key the fail-open / block alert throttle. */
+  area: string;
+  /** Plain-language area name for the human-facing Slack alert. */
+  friendly: string;
+  /**
+   * When set, a BLOCK (not just an outage) is itself news, mirroring the DB
+   * path's `alertOnBlock` rule (#796): the caller is meant to be our own bot well
+   * inside budget, so a rejection means the ceiling is too tight or a key leaked.
+   * The window is passed through only so the alert copy names the real limit.
+   */
+  alertOnBlock?: { max: number; windowSeconds: number };
+}
+
 /**
- * Shared edge-limiter check for the two hot paths that use one (#237): resolve
- * the named Workers rate-limit binding, count this IP, and fail OPEN + LOUD if
- * the binding is missing or throws. Kept as one implementation so the fail-open
- * and alerting contract can't drift between availability and booking.
+ * Shared edge-limiter check for every hot path that uses one (#237, #961):
+ * resolve the named Workers rate-limit binding, count this key (an IP, or an API
+ * key id for the per-key ceilings), and fail OPEN + LOUD if the binding is missing
+ * or throws. Kept as one implementation so the fail-open and alerting contract
+ * can't drift between endpoints. `alertOnBlock` also fires a best-effort alert
+ * when the limiter turns a request away, for the machine-to-machine backstops
+ * where a block is itself a signal.
  */
-async function edgeWithinLimit(
-  ip: string,
-  cfg: { binding: "AVAIL_RATE_LIMITER" | "BOOKING_RATE_LIMITER"; area: string; friendly: string },
-): Promise<boolean> {
+async function edgeWithinLimit(key: string, cfg: EdgeLimiterConfig): Promise<boolean> {
   try {
     const env = getCloudflareContext().env as unknown as Record<
       string,
@@ -76,7 +148,16 @@ async function edgeWithinLimit(
       );
       return true;
     }
-    const { success } = await limiter.limit({ key: ip });
+    const { success } = await limiter.limit({ key });
+    if (!success && cfg.alertOnBlock) {
+      // Best-effort, like the DB path: the alert writes to alert_state, so a
+      // failed alert must never turn a block into a thrown error for the caller.
+      await alertBestEffort(
+        `rate_limit_blocked:${cfg.area}`,
+        limiterBlockedAlert(cfg.friendly, key, cfg.alertOnBlock.max, cfg.alertOnBlock.windowSeconds),
+        cfg.area,
+      );
+    }
     return success;
   } catch (err) {
     await alertEdgeLimiterDown(cfg, `the limiter threw: ${String(err)}`);

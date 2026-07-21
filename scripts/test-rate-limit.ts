@@ -4,10 +4,10 @@
 import {
   clientIp,
   BOOKING_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_RATE_RULES,
-  DIRECT_BOOKING_API_IP_RATE_RULES,
-  DIRECT_BOOKING_API_READ_RATE_RULES,
-  ROUTING_RATE_RULES,
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+  ROUTING_HOURLY_RATE_RULES,
   friendlyRateArea,
   limiterFailOpenAlert,
   limiterBlockedAlert,
@@ -15,7 +15,7 @@ import {
 } from "../src/lib/rate-limit-core.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
-const READ_PREFIXES = DIRECT_BOOKING_API_READ_RATE_RULES.map((r) => r.prefix);
+const READ_PREFIXES = DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES.map((r) => r.prefix);
 
 const h = (entries: Record<string, string>) => new Headers(entries);
 
@@ -65,19 +65,25 @@ assert(
 // Direct booking API (#355): a per-KEY ceiling, generously sized above the
 // ~2000/day bot volume so it only trips on a runaway/leaked key, and keyed on
 // distinct prefixes from the per-IP booking rules so the two counters never mix.
+// The per-minute burst window moved to the edge (BOOKINGAPI_RATE_LIMITER, #961);
+// only the hourly cap remains a DB rule here.
 assert(
-  DIRECT_BOOKING_API_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
   "direct-booking-api rules are positive",
 );
+assert(
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES.every((r) => r.windowSeconds === 3600),
+  "only the hourly window remains in the DB; the per-minute burst moved to the edge (#961)",
+);
 {
-  const hourly = DIRECT_BOOKING_API_RATE_RULES.find((r) => r.windowSeconds === 3600);
+  const hourly = DIRECT_BOOKING_API_HOURLY_RATE_RULES.find((r) => r.windowSeconds === 3600);
   assert(
     !!hourly && hourly.max >= 2000,
     "hourly ceiling sits well above the ~2000/day expected bot volume",
   );
 }
 {
-  const apiPrefixes = new Set(DIRECT_BOOKING_API_RATE_RULES.map((r) => r.prefix));
+  const apiPrefixes = new Set(DIRECT_BOOKING_API_HOURLY_RATE_RULES.map((r) => r.prefix));
   assert(
     BOOKING_HOURLY_RATE_RULES.every((r) => !apiPrefixes.has(r.prefix)),
     "per-key API counters use different prefixes than the per-IP booking counters",
@@ -85,33 +91,26 @@ assert(
 }
 
 // Routing API (#596): the standalone routing preview is unauthenticated and
-// DB-backed, so it gets its own per-IP ceiling with distinct prefixes. Tight
-// enough to bound anonymous enumeration + DB load; a burst window plus an
-// hourly cap, same shape as the booking rules.
+// DB-backed, so it gets its own per-IP throttle with distinct prefixes. The
+// per-minute burst window moved to the edge (ROUTING_RATE_LIMITER, #961); only the
+// hourly cap remains a DB rule here.
 assert(
-  ROUTING_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
+  ROUTING_HOURLY_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
   "routing rules are positive",
 );
+assert(
+  ROUTING_HOURLY_RATE_RULES.every((r) => r.windowSeconds === 3600),
+  "only the hourly routing window remains in the DB; the per-minute burst moved to the edge (#961)",
+);
 {
-  const [rBurst, rSustained] = [...ROUTING_RATE_RULES].sort(
-    (a, b) => a.windowSeconds - b.windowSeconds,
-  );
+  const routingPrefixes = new Set(ROUTING_HOURLY_RATE_RULES.map((r) => r.prefix));
   assert(
-    ROUTING_RATE_RULES.length >= 2 &&
-      rBurst.windowSeconds < rSustained.windowSeconds &&
-      rBurst.max < rSustained.max,
-    "routing burst window is shorter and tighter than its sustained window",
-  );
-}
-{
-  const routingPrefixes = new Set(ROUTING_RATE_RULES.map((r) => r.prefix));
-  assert(
-    routingPrefixes.size === ROUTING_RATE_RULES.length,
+    routingPrefixes.size === ROUTING_HOURLY_RATE_RULES.length,
     "routing rule prefixes are distinct (separate counters)",
   );
   assert(
     BOOKING_HOURLY_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)) &&
-      DIRECT_BOOKING_API_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)),
+      DIRECT_BOOKING_API_HOURLY_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)),
     "routing counters use different prefixes than the booking counters",
   );
 }
@@ -119,12 +118,16 @@ assert(
 // #597: the direct booking API was capped PER KEY only, so a leaked integrator key
 // had a 6000/hr ceiling and no secondary bound. The per-IP ceiling is the backstop:
 // it only buys anything if it is genuinely LOWER than the per-key ceiling, otherwise
-// the key limit trips first and the IP rule is decoration.
+// the key limit trips first and the IP rule is decoration. The per-minute backstop
+// moved to the edge (BOOKINGAPI_IP_RATE_LIMITER, #961); the hourly backstop stays here.
 {
-  const keyHourly = DIRECT_BOOKING_API_RATE_RULES.find((r) => r.windowSeconds === 3600)!;
-  const ipHourly = DIRECT_BOOKING_API_IP_RATE_RULES.find((r) => r.windowSeconds === 3600)!;
-  const ipMinute = DIRECT_BOOKING_API_IP_RATE_RULES.find((r) => r.windowSeconds === 60)!;
+  const keyHourly = DIRECT_BOOKING_API_HOURLY_RATE_RULES.find((r) => r.windowSeconds === 3600)!;
+  const ipHourly = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES.find((r) => r.windowSeconds === 3600)!;
 
+  assert(
+    DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES.every((r) => r.windowSeconds === 3600),
+    "only the hourly per-IP backstop remains in the DB; the per-minute backstop moved to the edge (#961)",
+  );
   assert(
     ipHourly.max < keyHourly.max,
     "per-IP hourly ceiling is BELOW the per-key ceiling, so it actually bounds a leaked key (#597)",
@@ -137,13 +140,19 @@ assert(
     ipHourly.max >= 1000,
     "per-IP hourly ceiling leaves headroom over the auto-booker's real volume (~83/hr) (#597)",
   );
-  assert(ipMinute.max === 60, "per-IP burst ceiling is 60/min (#597)");
   assert(ipHourly.max === 1200, "per-IP hourly ceiling is 1200/hr (#597)");
+  // The hourly backstop keeps alerting on block: a block still means the ceiling is
+  // too tight or a key leaked, the same signal the moved per-minute backstop carries
+  // at the edge.
+  assert(
+    ipHourly.alertOnBlock === true,
+    "per-IP hourly backstop alerts on block (a block is itself a signal, #796)",
+  );
 
   // Separate buckets: an IP counter must never draw down the key's budget or vice
   // versa, or one flood would trip both and the two ceilings collapse into one.
-  const keyPrefixes = DIRECT_BOOKING_API_RATE_RULES.map((r) => r.prefix);
-  const ipPrefixes = DIRECT_BOOKING_API_IP_RATE_RULES.map((r) => r.prefix);
+  const keyPrefixes = DIRECT_BOOKING_API_HOURLY_RATE_RULES.map((r) => r.prefix);
+  const ipPrefixes = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES.map((r) => r.prefix);
   assert(
     ipPrefixes.every((p) => !keyPrefixes.includes(p)),
     "per-IP counters use distinct prefixes from the per-key counters (#597)",

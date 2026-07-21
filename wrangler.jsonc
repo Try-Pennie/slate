@@ -85,6 +85,36 @@
 			"name": "BOOKING_RATE_LIMITER",
 			"namespace_id": "1002",
 			"simple": { "limit": 3, "period": 60 }
+		},
+		// Edge per-minute burst window for the routing-preview lookup (#961): 20
+		// requests/min per IP. The hourly cap (200/hour) stays in the DB.
+		{
+			"name": "ROUTING_RATE_LIMITER",
+			"namespace_id": "1003",
+			"simple": { "limit": 20, "period": 60 }
+		},
+		// Edge per-minute windows for the direct booking API (#961). Three separate
+		// bindings because the native limiter fixes one limit per binding and these
+		// are intentionally different sizes and keys; every hourly ceiling stays in
+		// the DB. Write path, keyed per API key: 120/min.
+		{
+			"name": "BOOKINGAPI_RATE_LIMITER",
+			"namespace_id": "1004",
+			"simple": { "limit": 120, "period": 60 }
+		},
+		// Per-IP write backstop (#597), keyed per IP: 60/min. A block here is itself
+		// a signal (the ceiling is too tight or a key leaked), alerted in code.
+		{
+			"name": "BOOKINGAPI_IP_RATE_LIMITER",
+			"namespace_id": "1005",
+			"simple": { "limit": 60, "period": 60 }
+		},
+		// Read path (lookup/list, #393), keyed per API key: 600/min, ~5x the write
+		// window so status polling never starves the booking path.
+		{
+			"name": "BOOKINGAPI_READ_RATE_LIMITER",
+			"namespace_id": "1006",
+			"simple": { "limit": 600, "period": 60 }
 		}
 	]
 }

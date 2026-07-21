@@ -26,6 +26,10 @@ import {
   refundRequest,
   availabilityWithinLimit,
   bookingWithinLimit,
+  routingWithinLimit,
+  bookingApiWriteWithinLimit,
+  bookingApiIpWithinLimit,
+  bookingApiReadWithinLimit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
@@ -314,5 +318,88 @@ describe("bookingWithinLimit (#237)", () => {
       await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
     }
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #961: the routing-preview and direct booking API per-minute burst windows moved
+// off the DB onto their own Workers rate-limit bindings, mirroring the availability
+// and public-booking edge limiters. Same fail-open + fail-loud contract; the two
+// per-KEY booking-API windows key on the API key id rather than the IP, and the
+// per-IP backstop additionally ALERTS when it blocks (a block there is a signal
+// that the ceiling is too tight or a key leaked, #597/#796).
+describe("edge per-minute limiters (#961)", () => {
+  let clock = Date.UTC(2026, 6, 21);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("routingWithinLimit allows, blocks silently, and fails open + alerts when it throws", async () => {
+    cf.env = { ROUTING_RATE_LIMITER: { limit } };
+    await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+
+    limit.mockResolvedValueOnce({ success: false });
+    await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(false);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+
+    limit.mockRejectedValueOnce(new Error("limiter unavailable"));
+    await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(true); // fail open
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    expect(text).toMatch(/routing/i);
+    expect(text).not.toMatch(/limiter unavailable/);
+  });
+
+  it("bookingApiWriteWithinLimit keys on the API key id and blocks SILENTLY (a per-key throttle is not an incident)", async () => {
+    cf.env = { BOOKINGAPI_RATE_LIMITER: { limit } };
+    await expect(bookingApiWriteWithinLimit("primary")).resolves.toBe(true);
+    expect(limit).toHaveBeenCalledWith({ key: "primary" });
+
+    limit.mockResolvedValueOnce({ success: false });
+    await expect(bookingApiWriteWithinLimit("primary")).resolves.toBe(false);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("bookingApiReadWithinLimit keys on the API key id (its own binding, separate from writes)", async () => {
+    cf.env = { BOOKINGAPI_READ_RATE_LIMITER: { limit } };
+    await expect(bookingApiReadWithinLimit("secondary")).resolves.toBe(true);
+    expect(limit).toHaveBeenCalledWith({ key: "secondary" });
+  });
+
+  it("bookingApiIpWithinLimit ALERTS in plain language when it blocks, naming the IP (#796)", async () => {
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit } };
+    limit.mockResolvedValue({ success: false });
+
+    await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(false);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    // Names the IP so nobody can't tell our own bot from an attacker, states the
+    // window in plain words, and never leaks the internal binding name.
+    expect(text).toMatch(/203\.0\.113\.9/);
+    expect(text).toMatch(/per minute/);
+    expect(text).not.toMatch(/BOOKINGAPI_IP_RATE_LIMITER/);
+  });
+
+  it("bookingApiIpWithinLimit stays silent when the limiter permits the request", async () => {
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit } };
+    await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(true);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("bookingApiIpWithinLimit still BLOCKS even when the block alert itself throws", async () => {
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit } };
+    limit.mockResolvedValue({ success: false });
+    sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
+
+    await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(false);
   });
 });
