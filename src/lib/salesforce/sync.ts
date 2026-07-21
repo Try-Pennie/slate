@@ -9,6 +9,7 @@ import {
 import { reapableUserIds } from "@/lib/salesforce/reap";
 import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
 import { fetchSfWithRetry } from "@/lib/salesforce/retry";
+import { unwrap } from "@/lib/db/result";
 import type { Attributes, Role, User } from "@/lib/db/types";
 
 /**
@@ -161,11 +162,14 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const org = await ensureDefaultOrg();
 
   // Existing Slate agents by email (attributes too: Slate-managed keys like
-  // legal_eligible must survive the sync - see mergeSfAttributes).
-  const { data: existing } = await db
-    .from("users")
-    .select("id, email, attributes")
-    .eq("org_id", org.id);
+  // legal_eligible must survive the sync - see mergeSfAttributes). Fail loud
+  // (unwrap, #963): a swallowed read error left this null, so every SF agent
+  // looked brand new and was re-inserted (the #277 class). An empty roster is a
+  // null-safe pass; only a real query error throws.
+  const existing = unwrap(
+    await db.from("users").select("id, email, attributes").eq("org_id", org.id),
+    "sf-existing-agents",
+  );
   const byEmail = new Map(
     (existing ?? []).map((u) => {
       const row = u as { id: string; email: string; attributes: Attributes };
@@ -306,10 +310,16 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   if (managerInserts.length) await db.from("users").insert(managerInserts);
 
   // Re-read so freshly inserted agents AND managers are resolvable by email.
-  const { data: afterInsert } = await db
-    .from("users")
-    .select("id, email, manager_id, role")
-    .eq("org_id", org.id);
+  // Fail loud (unwrap, #963): a swallowed error here left the id/manager maps
+  // empty, so no links resolved and the sync reported a clean run over a broken
+  // read.
+  const afterInsert = unwrap(
+    await db
+      .from("users")
+      .select("id, email, manager_id, role")
+      .eq("org_id", org.id),
+    "sf-after-insert",
+  );
   const idByEmail = new Map(
     (afterInsert ?? []).map((u) => {
       const row = u as { id: string; email: string };
@@ -370,13 +380,18 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   // staff), so we only act on a positive IsActive=false from Salesforce.
   // Admins/super admins and anyone who has logged in (auth_user_id set) are
   // never touched; already-deactivated users are skipped.
-  const { data: reapable } = await db
-    .from("users")
-    .select("id, email")
-    .eq("org_id", org.id)
-    .in("role", ["agent", "manager"])
-    .is("auth_user_id", null)
-    .is("deactivated_at", null);
+  // Fail loud (unwrap, #963): a swallowed error here left reapableRows empty and
+  // silently skipped deactivation, so a broken read read as "nothing to reap".
+  const reapable = unwrap(
+    await db
+      .from("users")
+      .select("id, email")
+      .eq("org_id", org.id)
+      .in("role", ["agent", "manager"])
+      .is("auth_user_id", null)
+      .is("deactivated_at", null),
+    "sf-reapable",
+  );
   const reapableRows = (reapable ?? []) as { id: string; email: string }[];
   let toDeactivate: string[] = [];
   if (reapableRows.length) {
