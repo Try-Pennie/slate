@@ -8,6 +8,7 @@ import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import {
   listAllBucketCodes,
   listKnownBucketSlotRows,
@@ -110,9 +111,15 @@ export async function GET(req: NextRequest) {
     const due = bucketsDueForRecompute(known, allCodes, Date.now(), RECOMPUTE_FRESH_MS);
     const startedMs = Date.now();
     const deadlineMs = startedMs + RECOMPUTE_BUDGET_MS;
+    // Extend the 60s shared eligible-agent cache (#421) to this lane (#508): pass
+    // the cached resolver so every bucket recompute in the tick (and the monitor +
+    // empty-bucket lanes sharing the same Worker invocation) reuse one eligibility
+    // read per bucket instead of each re-querying the DB. The booker read + booking
+    // verify keep the live resolver, so a stale cache can never mis-route a real
+    // booking; the recompute row is display-only and re-verified live at book time.
     const recomputed = await recomputeDueBuckets(
       due,
-      (code) => recomputeBucketSlotsForToday(code, true),
+      (code) => recomputeBucketSlotsForToday(code, true, (b) => eligibleAgentIdsCached(b)),
       () => withinBudget(Date.now(), deadlineMs),
       RECOMPUTE_CONCURRENCY,
     );

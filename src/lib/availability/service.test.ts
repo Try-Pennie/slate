@@ -18,7 +18,7 @@ import type { Bucket } from "@/lib/db/types";
 const dbHolder = vi.hoisted(() => ({ db: null as unknown as ReturnType<typeof supabaseAdmin> }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => dbHolder.db }));
 
-import { loadMembersAvailability } from "./service";
+import { loadMembersAvailability, getBucketSlots } from "./service";
 
 type Rows = Record<string, unknown[]>;
 interface RpcResult {
@@ -134,5 +134,67 @@ describe("loadMembersAvailability", () => {
     });
 
     await expect(loadMembersAvailability(BUCKET, FROM, TO)).rejects.toThrow(/boom|daily-cap/i);
+  });
+});
+
+// #508: the recompute lane threads a cached eligibility resolver down the shared
+// getBucketSlots -> loadMembersAvailability path, while the booker read + booking
+// verify keep the live default. The seam is one injectable resolver param whose
+// ids are what actually drive the pool (proving the resolver, not the live DB
+// read, decides eligibility on the recompute path).
+describe("eligible-resolver threading (#508)", () => {
+  it("loadMembersAvailability uses the INJECTED resolver's ids, not the live DB pool", async () => {
+    // The DB pool has a live agent (u1), but the injected resolver returns NONE,
+    // so an empty result proves the injected resolver decided eligibility.
+    dbHolder.db = fakeDb(POOL_TABLES());
+    const resolver = vi.fn((_b: Bucket) =>
+      Promise.resolve({ ids: [] as string[], fallbackApplied: false }),
+    );
+
+    const members = await loadMembersAvailability(BUCKET, FROM, TO, resolver);
+
+    expect(members).toHaveLength(0);
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver.mock.calls[0][0]).toBe(BUCKET);
+  });
+
+  it("getBucketSlots forwards the resolver down to loadMembersAvailability", async () => {
+    dbHolder.db = fakeDb({
+      buckets: [
+        {
+          id: "b1",
+          org_id: "org1",
+          code: "311",
+          name: "High",
+          criteria: {},
+          fallback_user_id: null,
+          is_test: false,
+          event_type_id: "e1",
+          event_types: {
+            id: "e1",
+            duration_min: 30,
+            buffer_before_min: 0,
+            buffer_after_min: 0,
+            min_notice_min: 0,
+            daily_cap: null,
+            slot_interval_min: 15,
+          },
+        },
+      ],
+      organizations: [{ name: "Org" }],
+      ...POOL_TABLES(),
+    });
+    const resolver = vi.fn((_b: Bucket) =>
+      Promise.resolve({ ids: [] as string[], fallbackApplied: false }),
+    );
+
+    const result = await getBucketSlots("311", FROM, TO, resolver);
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    // The resolver is handed the resolved bucket (by code), proving getBucketSlots
+    // threaded it into loadMembersAvailability rather than calling the live default.
+    expect(resolver.mock.calls[0][0].code).toBe("311");
+    // Empty pool -> no members -> no slots (the resolver's [] drove it).
+    expect(result?.slots).toEqual([]);
   });
 });
