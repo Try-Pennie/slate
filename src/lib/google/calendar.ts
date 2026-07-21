@@ -392,10 +392,19 @@ export async function eventExists(email: string, eventId: string): Promise<boole
   return true;
 }
 
-export async function deleteEvent(email: string, eventId: string): Promise<void> {
+export async function deleteEvent(
+  email: string,
+  eventId: string,
+  opts?: { notifyAttendee?: boolean },
+): Promise<void> {
+  // A reassign (#969) removes the OLD agent's event SILENTLY so the customer gets
+  // no cancellation email: the swap is invisible to them (their time is unchanged)
+  // and the ONE notification they get is the new agent's invite. Every other
+  // delete (a real cancellation) keeps sendUpdates=all so the customer is told.
+  const sendUpdates = opts?.notifyAttendee === false ? "none" : "all";
   const res = await gfetch(
     email,
-    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates}`,
     { method: "DELETE" },
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
