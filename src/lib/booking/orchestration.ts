@@ -292,9 +292,10 @@ async function deleteEventBestEffort(
   email: string,
   eventId: string,
   bookingId: string | null,
+  opts?: { notifyAttendee?: boolean },
 ): Promise<void> {
   try {
-    await deps.deleteEvent(email, eventId);
+    await deps.deleteEvent(email, eventId, opts);
   } catch {
     await deps.enqueueEventDeletion(email, eventId, bookingId).catch(() => {});
   }
@@ -464,7 +465,7 @@ export interface BookingDeps {
     endIso: string,
   ): Promise<VerifyResult>;
   createEvent(email: string, args: CreateEventArgs, clientId?: string): Promise<string>;
-  deleteEvent(email: string, eventId: string): Promise<void>;
+  deleteEvent(email: string, eventId: string, opts?: { notifyAttendee?: boolean }): Promise<void>;
   /** #830: whether an event still exists on Google (true), is gone (false), or
    *  cannot be verified (throws), used to avoid alerting on a false orphan. */
   eventExists(email: string, eventId: string): Promise<boolean>;
@@ -2697,6 +2698,15 @@ async function applyReschedule(
  * `allow_double_book` so the active-slot unique index lets it stack. Throws
  * "Booking not found" / "Agent not found or not bookable" for the caller to map.
  */
+/**
+ * The explanation shown on the new agent's invite when a booking is reassigned
+ * (#969). The customer keeps the same time, so a fresh invite could look like a
+ * mistake; this reassures them in plain, warm language. Kept notification-count
+ * to ONE (this invite) by removing the old event silently.
+ */
+export const REASSIGN_INVITE_DESCRIPTION =
+  "Your appointment time has not changed. You have been matched with a different Pennie advisor who will be with you at this time. There is nothing you need to do.";
+
 export interface ReassignOptions {
   /** Push through even when the target agent is at their daily cap (the machine
    *  contact-owner path passes true; the manager UI passes it on the 2nd step). */
@@ -2790,6 +2800,10 @@ export async function reassignBooking(
       summary: `${eventType.name}${
         booking.attendee_name ? ` with ${booking.attendee_name}` : ""
       }`,
+      // #969: this invite is the ONE notification the customer gets on a reassign
+      // (the old event is removed silently below). Explain the swap so a fresh
+      // invite for an appointment they already have does not read as a mistake.
+      description: REASSIGN_INVITE_DESCRIPTION,
       start: booking.starts_at,
       end: booking.ends_at,
       timezone: booking.timezone,
@@ -2865,7 +2879,13 @@ export async function reassignBooking(
     swap.prevGcalEventId &&
     swap.prevGcalEventId !== newEventId
   ) {
-    await deleteEventBestEffort(deps, swap.prevAgentEmail, swap.prevGcalEventId, booking.id);
+    // #969: remove the old agent's event SILENTLY so the customer gets no
+    // cancellation email. The one notification they get is the new agent's invite
+    // (created above with an explanatory description); a bare cancel + reinvite is
+    // confusing for an internal swap where their time never changed.
+    await deleteEventBestEffort(deps, swap.prevAgentEmail, swap.prevGcalEventId, booking.id, {
+      notifyAttendee: false,
+    });
   }
 
   // #518: create + swap + delete-old are done; the intent's crash-safety window
