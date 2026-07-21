@@ -192,6 +192,9 @@ export interface MonitorAlertConfig {
   floor_120: number | null;
   alerts_channel: string | null;
   info_channel: string | null;
+  /** #575: UI arm/disarm for the low-booking-volume alert. Null = unset (fall
+   *  through to env then the disarmed default). */
+  low_volume_armed: boolean | null;
   updated_at: string;
   updated_by: string | null;
 }

@@ -4,7 +4,12 @@ import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMonitorSettings } from "@/app/admin/actions";
-import { ALERT_FIELDS as COOLDOWN_FIELDS, MONITOR_DEFAULTS } from "@/lib/monitor/settings";
+import {
+  ALERT_FIELDS as COOLDOWN_FIELDS,
+  MONITOR_DEFAULTS,
+  resolveLowVolumeArmed,
+  envLowVolumeArmed,
+} from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "./SettingsSaveNotice";
@@ -59,6 +64,11 @@ export default async function MonitorSettingsPage({
   } catch {
     // Fall through to empty (defaults shown as placeholders).
   }
+
+  // #575: default the arm toggle to the EFFECTIVE state (store > env > disarmed),
+  // not just the stored column, so an admin on an env-armed deploy who saves other
+  // changes can't silently disarm the alert by leaving a falsely-unchecked box.
+  const lowVolumeArmed = resolveLowVolumeArmed(config, envLowVolumeArmed());
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
 
@@ -182,6 +192,20 @@ export default async function MonitorSettingsPage({
                 />
               </div>
             </div>
+            <label className="mt-4 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="low_volume_armed"
+                value="on"
+                defaultChecked={lowVolumeArmed}
+                className="h-4 w-4"
+              />
+              Arm the low-volume alert (page Slack when bookings fall below a floor)
+            </label>
+            <p className="mt-1 text-xs text-fg-muted">
+              Leave off during the ramp; turn on once Slate owns roughly full booking
+              traffic. Saving applies immediately, no deploy needed.
+            </p>
           </section>
 
           <section className={cardCls}>

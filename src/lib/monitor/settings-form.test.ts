@@ -17,6 +17,7 @@ const blank = {
   floor120: "",
   alertsChannel: "",
   infoChannel: "",
+  lowVolumeArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -29,6 +30,8 @@ describe("parseMonitorSettingsForm", () => {
       floor_120: null,
       alerts_channel: null,
       info_channel: null,
+      // A blank/absent toggle is an explicit disarm (the checkbox is on/off, not tri-state).
+      low_volume_armed: false,
     });
   });
 

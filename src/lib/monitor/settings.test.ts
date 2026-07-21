@@ -5,6 +5,9 @@ import {
   MONITOR_DEFAULTS,
   resolveCooldownMs,
   resolveFloors,
+  resolveLowVolumeArmed,
+  parseMonitorSettingsForm,
+  type MonitorSettingsFormInput,
 } from "./settings";
 
 // #571: the monitor's cooldowns and low-volume floors become UI-tunable via a
@@ -101,5 +104,47 @@ describe("resolveFloors", () => {
   it("ignores invalid stored floors (negative, non-integer) and falls through to env/default", () => {
     const out = resolveFloors({ floor_30: -1, floor_120: 2.5 }, { floor30: 7 });
     expect(out).toEqual({ floor30: 7, floor120: MONITOR_DEFAULTS.floor120 });
+  });
+});
+
+// #575: the low-volume ARMED switch moves into the store, precedence store > env >
+// coded default (disarmed), so it can be flipped from the settings UI without a deploy.
+describe("resolveLowVolumeArmed", () => {
+  it("is DISARMED by default when neither store nor env is set", () => {
+    expect(resolveLowVolumeArmed(null, undefined)).toBe(false);
+    expect(resolveLowVolumeArmed({ low_volume_armed: null }, undefined)).toBe(false);
+  });
+
+  it("uses the env arm flag when the store is unset", () => {
+    expect(resolveLowVolumeArmed({ low_volume_armed: null }, true)).toBe(true);
+    expect(resolveLowVolumeArmed({ low_volume_armed: null }, false)).toBe(false);
+  });
+
+  it("lets the store win over env in BOTH directions (the UI is authoritative once set)", () => {
+    expect(resolveLowVolumeArmed({ low_volume_armed: true }, false)).toBe(true);
+    expect(resolveLowVolumeArmed({ low_volume_armed: false }, true)).toBe(false);
+  });
+});
+
+describe("parseMonitorSettingsForm low_volume_armed", () => {
+  const base: MonitorSettingsFormInput = {
+    cooldownMin: Object.fromEntries(ALERT_KEYS.map((k) => [k, ""])) as Record<
+      (typeof ALERT_KEYS)[number],
+      string
+    >,
+    floor30: "",
+    floor120: "",
+    alertsChannel: "",
+    infoChannel: "",
+    lowVolumeArmed: "",
+  };
+
+  it("parses a checked toggle as armed=true", () => {
+    expect(parseMonitorSettingsForm({ ...base, lowVolumeArmed: "on" }).config.low_volume_armed).toBe(true);
+    expect(parseMonitorSettingsForm({ ...base, lowVolumeArmed: "true" }).config.low_volume_armed).toBe(true);
+  });
+
+  it("parses an absent/blank toggle as an explicit armed=false (saving disarms)", () => {
+    expect(parseMonitorSettingsForm({ ...base, lowVolumeArmed: "" }).config.low_volume_armed).toBe(false);
   });
 });

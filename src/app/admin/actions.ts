@@ -313,6 +313,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     floor120: String(form.get("floor_120") ?? ""),
     alertsChannel: String(form.get("alerts_channel") ?? ""),
     infoChannel: String(form.get("info_channel") ?? ""),
+    lowVolumeArmed: String(form.get("low_volume_armed") ?? ""),
   });
 
   if (parsed.errors.length) {

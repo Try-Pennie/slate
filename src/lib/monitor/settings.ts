@@ -148,6 +148,22 @@ export function resolveFloors(
   };
 }
 
+/**
+ * Low-volume ARMED switch (#575): store (an explicit boolean) > env > coded
+ * default (disarmed). A null store column is "unset" and falls through, exactly
+ * like the floors; once the admin saves the settings form an explicit true/false
+ * is written and the UI wins over the env in both directions.
+ */
+export function resolveLowVolumeArmed(
+  config: Pick<MonitorAlertConfig, "low_volume_armed"> | null,
+  envArmed: boolean | undefined,
+): boolean {
+  const stored = config?.low_volume_armed;
+  if (typeof stored === "boolean") return stored;
+  if (typeof envArmed === "boolean") return envArmed;
+  return false;
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -160,6 +176,8 @@ export interface MonitorSettingsFormInput {
   floor120: string;
   alertsChannel: string;
   infoChannel: string;
+  /** Raw value of the arm-low-volume checkbox ("on"/"true" when checked, else blank). */
+  lowVolumeArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -169,6 +187,7 @@ export interface MonitorSettingsPayload {
     floor_120: number | null;
     alerts_channel: string | null;
     info_channel: string | null;
+    low_volume_armed: boolean;
   };
   errors: string[];
 }
@@ -207,6 +226,11 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
     return t === "" ? null : t;
   };
 
+  // The checkbox is a definite on/off decision: checked -> armed, absent/blank ->
+  // disarmed. Saving therefore always writes an explicit boolean, so the UI wins.
+  const armedRaw = (input.lowVolumeArmed ?? "").trim().toLowerCase();
+  const lowVolumeArmed = armedRaw === "on" || armedRaw === "true";
+
   return {
     cooldowns,
     config: {
@@ -214,6 +238,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       floor_120: parseBounded(input.floor120, "120-min floor", FLOOR_MIN, FLOOR_MAX),
       alerts_channel: channel(input.alertsChannel),
       info_channel: channel(input.infoChannel),
+      low_volume_armed: lowVolumeArmed,
     },
     errors,
   };
@@ -228,6 +253,8 @@ const parseEnvInt = (raw: string | undefined): number | undefined => {
 export interface ResolvedMonitorSettings {
   cooldownMs: Record<MonitorAlertKey, number>;
   floors: { floor30: number; floor120: number };
+  /** #575: is the low-booking-volume alert armed (store > env > disarmed)? */
+  lowVolumeArmed: boolean;
 }
 
 /**
@@ -237,18 +264,22 @@ export interface ResolvedMonitorSettings {
  */
 export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
   let rows: Pick<MonitorSettings, "key" | "cooldown_min">[] = [];
-  let config: Pick<MonitorAlertConfig, "floor_30" | "floor_120"> | null = null;
+  let config: Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "low_volume_armed"> | null = null;
   try {
     const db = supabaseAdmin();
     const [cooldowns, cfg] = await Promise.all([
       db.from("monitor_settings").select("key, cooldown_min"),
-      db.from("monitor_alert_config").select("floor_30, floor_120").eq("id", 1).maybeSingle(),
+      db
+        .from("monitor_alert_config")
+        .select("floor_30, floor_120, low_volume_armed")
+        .eq("id", 1)
+        .maybeSingle(),
     ]);
     if (!cooldowns.error && cooldowns.data) {
       rows = cooldowns.data as Pick<MonitorSettings, "key" | "cooldown_min">[];
     }
     if (!cfg.error && cfg.data) {
-      config = cfg.data as Pick<MonitorAlertConfig, "floor_30" | "floor_120">;
+      config = cfg.data as Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "low_volume_armed">;
     }
   } catch {
     // Fall through to env/defaults (config must never take down alerting).
@@ -259,5 +290,14 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       floor30: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_30),
       floor120: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_120),
     }),
+    lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
   };
 }
+
+/** The deploy-gated arm flag (#370), now only the fallback when the store is unset
+ *  (#575). Undefined when the env var is absent, so the store/default can decide. */
+export const envLowVolumeArmed = (): boolean | undefined => {
+  const raw = process.env.BOOKING_VOLUME_ALERT_ARMED;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return raw === "1";
+};
