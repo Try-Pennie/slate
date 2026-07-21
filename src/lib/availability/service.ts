@@ -184,7 +184,14 @@ export interface ResolvedBucket {
   eventType: EventType;
 }
 
-/** Look up a bucket by its public code (the `xbc` query param) + its event type. */
+/**
+ * Look up a bucket by its public code (the `xbc` query param) + its event type.
+ *
+ * Deliberately org-less: Slate is single-org and a global unique index on
+ * `buckets(code)` (#624, migration 0082) enforces that codes never collide
+ * across orgs, so `.maybeSingle()` can match at most one row. A future second
+ * org must thread org context into the embed contract rather than reusing codes.
+ */
 export async function resolveBucketByCode(
   code: string,
 ): Promise<ResolvedBucket | null> {
