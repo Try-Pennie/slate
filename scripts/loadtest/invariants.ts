@@ -37,6 +37,8 @@ export interface FreshnessResult {
   stale6m: number;
   /** Seconds between the oldest and newest computed_at across the set. */
   spreadSec: number;
+  /** Age of the OLDEST bucket: now - min(computed_at), in seconds. The soak headline. */
+  maxAgeSec: number;
 }
 
 /**
@@ -57,7 +59,70 @@ export async function computeFreshness(
     total: ts.length,
     stale6m: ts.filter((t) => now - t > staleMs).length,
     spreadSec: ts.length ? Math.round((ts[ts.length - 1] - ts[0]) / 1000) : 0,
+    maxAgeSec: ts.length ? Math.round((now - ts[0]) / 1000) : 0,
   };
+}
+
+export interface SoakSample {
+  /** 1-based minute of the window this sample was taken in. */
+  minute: number;
+  /** Age of the oldest bucket at this sample (now - min(computed_at), seconds). */
+  maxAgeSec: number;
+  /** How many bucket_slots rows this sample saw. */
+  total: number;
+}
+
+export interface SoakResult {
+  samples: SoakSample[];
+  /** The worst (largest) oldest-bucket age observed across the whole window. */
+  maxAgeSec: number;
+  /** True when no sample's oldest bucket ever aged past staleSec (measured, not extrapolated). */
+  pass: boolean;
+  /** The stale bar the window was judged against, in seconds. */
+  staleSec: number;
+}
+
+export interface SoakDeps {
+  /** Drive one `/api/cron/recompute` tick. */
+  driveRecompute: () => Promise<Record<string, unknown>>;
+  /** Read current bucket freshness (fetches bucket_slots at the moment it's called). */
+  freshness: () => Promise<FreshnessResult>;
+  /** Wait between minutes. Injected so tests never actually sleep. */
+  sleep: (ms: number) => Promise<void>;
+  log?: (msg: string) => void;
+}
+
+/**
+ * Soak mode (#303). The sequential run measured freshness ONCE at the end, after the
+ * sync + watch phases had let the buckets age, so it always read "all stale > 6m" even
+ * when recompute was healthy (a false alarm, not a system failure).
+ *
+ * This instead interleaves: drive `/api/cron/recompute`, then immediately sample the
+ * oldest-bucket age, once per interval for `minutes` minutes, and reports the MAX age
+ * seen across the window. That turns the extrapolated verdict into a measured one: if
+ * recompute drains its due set each minute the oldest bucket never crosses the stale
+ * bar, and a lane that falls behind is caught by a real over-threshold sample.
+ */
+export async function runRecomputeSoak(
+  deps: SoakDeps,
+  opts: { minutes?: number; intervalMs?: number; staleSec?: number } = {},
+): Promise<SoakResult> {
+  const minutes = opts.minutes ?? 10;
+  const intervalMs = opts.intervalMs ?? 60_000;
+  const staleSec = opts.staleSec ?? 6 * 60;
+  const log = deps.log ?? (() => {});
+  const samples: SoakSample[] = [];
+
+  for (let minute = 1; minute <= minutes; minute++) {
+    await deps.driveRecompute();
+    const f = await deps.freshness();
+    samples.push({ minute, maxAgeSec: f.maxAgeSec, total: f.total });
+    log(`  soak minute ${minute}/${minutes}: ${f.total} buckets, oldest ${f.maxAgeSec}s`);
+    if (minute < minutes) await deps.sleep(intervalMs);
+  }
+
+  const maxAgeSec = samples.reduce((mx, s) => Math.max(mx, s.maxAgeSec), 0);
+  return { samples, maxAgeSec, pass: maxAgeSec <= staleSec, staleSec };
 }
 
 /**

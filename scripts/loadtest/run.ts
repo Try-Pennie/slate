@@ -17,7 +17,7 @@
 //   node --experimental-strip-types scripts/loadtest/run.ts
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { checkSoakInvariants, computeFreshness } from "./invariants.ts";
+import { checkSoakInvariants, computeFreshness, runRecomputeSoak } from "./invariants.ts";
 
 function env(name: string, fallbackKey?: string): string {
   if (process.env[name]) return process.env[name] as string;
@@ -36,8 +36,12 @@ const SUPA = `${env("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL")}/rest/v1`;
 const SUPA_KEY = env("SUPABASE_SECRET_KEY", "SUPABASE_SECRET_KEY");
 const TICKS = Number(process.env.TICKS ?? 10);
 const MAX_DRAIN_TICKS = Number(process.env.MAX_DRAIN_TICKS ?? 60);
+// Soak mode (#303): >0 turns on the measured recompute-freshness window (minutes).
+const SOAK_MINUTES = Number(process.env.SOAK_MINUTES ?? 0);
+const SOAK_INTERVAL_MS = Number(process.env.SOAK_INTERVAL_MS ?? 60_000);
 
 const auth = { Authorization: `Bearer ${CRON_SECRET}` };
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const supaHeaders = { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` };
 const stats = (xs: number[]) => {
   if (!xs.length) return { p50: 0, max: 0 };
@@ -156,10 +160,41 @@ async function main() {
     });
     console.log(`  selfheal converged in ${inv.selfhealTicks} ticks; ${inv.deliveries} deliveries checked`);
 
+    // A point-in-time snapshot AFTER the sync + watch phases have let the buckets age.
+    // Staleness here is expected and is NOT a pass/fail signal: recompute ran only in its
+    // own earlier phase, so the set has aged since. The measured verdict is the soak
+    // window below (#303). In prod recompute runs every minute, so this gap never opens.
     const f = await computeFreshness(listAll, Date.now());
     console.log(
-      `\nFreshness: ${f.total} buckets, ${f.stale6m} stale >6m, ${f.spreadSec}s spread across the set.`,
+      `\nFreshness snapshot (post-lane, extrapolated): ${f.total} buckets, oldest ${f.maxAgeSec}s,` +
+        ` ${f.stale6m} stale >6m, ${f.spreadSec}s spread. Staleness here is expected` +
+        ` (recompute last ran in its own phase); run with SOAK_MINUTES>0 for the measured verdict.`,
     );
+
+    // Soak mode (#303): interleave recompute + a freshness sample once per minute and
+    // report the MEASURED max oldest-bucket age over the window, replacing the misleading
+    // one-shot "all stale" readout above.
+    let soakPass = true;
+    if (SOAK_MINUTES > 0) {
+      console.log(
+        `\nSOAK (#303): driving recompute once per ${Math.round(SOAK_INTERVAL_MS / 1000)}s for` +
+          ` ${SOAK_MINUTES} min, sampling oldest-bucket age each tick ...`,
+      );
+      const soak = await runRecomputeSoak(
+        {
+          driveRecompute: async () => (await hit("/api/cron/recompute")).body,
+          freshness: () => computeFreshness(listAll, Date.now()),
+          sleep,
+          log: (m) => console.log(m),
+        },
+        { minutes: SOAK_MINUTES, intervalMs: SOAK_INTERVAL_MS },
+      );
+      soakPass = soak.pass;
+      console.log(
+        `\nSoak verdict (measured): max oldest-bucket age ${soak.maxAgeSec}s over` +
+          ` ${soak.samples.length} samples (bar ${soak.staleSec}s) -> ${soak.pass ? "ok" : "FAIL"}`,
+      );
+    }
 
     console.log("\nINVARIANTS (post-soak):");
     if (inv.pass) console.log("  ok: every invariant held (outbox delivered, no stuck slots, exactly-once webhooks)");
@@ -168,10 +203,12 @@ async function main() {
     console.log(
       "\nPASS if: recompute p50 well under 50000ms and drains its due set; the outbox\n" +
         "backlog drained to 0 while the interleaved sync lane stayed well under 25000ms;\n" +
-        "stale>6m is 0; and every invariant above is ok. See RUNBOOK.md.",
+        "the SOAK_MINUTES window's measured max oldest-bucket age stays under 6m (run it to\n" +
+        "get that verdict); and every invariant above is ok. See RUNBOOK.md.",
     );
     if (!drain.drained) console.log("WARN: outbox did not drain to empty within MAX_DRAIN_TICKS.");
-    process.exit(inv.pass && drain.drained ? 0 : 1);
+    if (SOAK_MINUTES === 0) console.log("NOTE: soak skipped (SOAK_MINUTES=0); freshness is extrapolated, not measured.");
+    process.exit(inv.pass && drain.drained && soakPass ? 0 : 1);
   }
   console.log("\n(No SUPABASE_SECRET_KEY set: skipped freshness + invariant checks.)");
 }

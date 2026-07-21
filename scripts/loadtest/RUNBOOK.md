@@ -14,7 +14,12 @@ Real bookings/calendar changes refresh in seconds via the live push/booking path
 recompute lane only owns the day-window slide + missed-push backstop. So the bar is:
 
 1. **Recompute holds up** — per-tick time well under the 50s budget, it drains its due
-   set each tick, and no bucket stays stale > 6 min (`stale6m` = 0).
+   set each tick, and no bucket stays stale > 6 min. Read this from a **soak** run
+   (`SOAK_MINUTES=10`, below), not the default one-shot snapshot: the sequential run
+   measures freshness once at the very end, after the sync + watch phases have let the
+   buckets age, so it always reports "all stale > 6m" even when recompute is healthy
+   (a false alarm, #303). The soak interleaves recompute with a freshness sample once a
+   minute and reports the **measured** max oldest-bucket age over the window.
 2. **No lane errors** and the sync/watch lanes finish comfortably within their budgets.
 3. **No subrequest-ceiling risk** — see step 6.
 
@@ -88,6 +93,22 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    and false-pass the stuck-slot check (the trap the first #440 soak hit). Exit code 0 =
    backlog drained and all invariants ok. Paste the output back for the go/no-go read. Bump
    `TICKS` for a longer read, `OUTBOX_BACKLOG` for a bigger drain.
+
+5b. **Measure recompute freshness with a soak (#303).** The default run's freshness line is
+   a post-lane snapshot and will read "all stale" (expected, not a failure). To get the
+   real verdict, add `SOAK_MINUTES` (and optionally `SOAK_INTERVAL_MS`, default 60000) to
+   the step-5 command:
+   ```
+   SLATE_BASE=http://localhost:3000 CRON_SECRET=<same value> \
+   SUPABASE_URL=https://<branch-ref>.supabase.co SUPABASE_SECRET_KEY=<key> \
+   SOAK_MINUTES=10 \
+   node --experimental-strip-types scripts/loadtest/run.ts
+   ```
+   It drives `/api/cron/recompute` once per minute for the window, sampling the oldest
+   bucket's age after each tick, and reports the **max** age observed. Pass = that measured
+   max stays under 6 min (a healthy lane drains its due set each minute, so the oldest
+   bucket never crosses the bar). The soak verdict is factored into the exit code; when
+   `SOAK_MINUTES=0` the run notes freshness is extrapolated, not measured.
 
 6. **Resource ceilings on a deployed Worker (CPU is the real one; subrequests are not).**
    The platform facts behind this (why `limits.cpu_ms` works on a sub-hourly cron, the

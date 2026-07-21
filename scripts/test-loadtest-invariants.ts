@@ -13,7 +13,9 @@ import {
   driveSelfhealToConvergence,
   checkSoakInvariants,
   computeFreshness,
+  runRecomputeSoak,
   type InvariantDeps,
+  type FreshnessResult,
 } from "./loadtest/invariants.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -157,6 +159,70 @@ async function main() {
   {
     const f = await computeFreshness(async () => [], Date.parse("2026-07-09T12:00:00.000Z"));
     assert(f.total === 0 && f.spreadSec === 0, "freshness: empty set yields zero total and spread");
+    assert(f.maxAgeSec === 0, "freshness: empty set yields zero max age");
+  }
+
+  // 10. MAX AGE (#303): the headline soak signal is now - oldest computed_at, measured,
+  //     not extrapolated. A 10m-old oldest bucket reads as 600s regardless of spread.
+  {
+    const now = Date.parse("2026-07-09T12:00:00.000Z");
+    const rows = [
+      { computed_at: new Date(now - 10 * 60_000).toISOString() }, // oldest: 10m
+      { computed_at: new Date(now - 60_000).toISOString() },
+      { computed_at: new Date(now).toISOString() },
+    ];
+    const f = await computeFreshness(async () => rows, now);
+    assert(f.maxAgeSec === 600, `max age: now minus oldest computed_at (got ${f.maxAgeSec})`);
+  }
+
+  // 11. SOAK (#303): drives recompute once per interval for N minutes, samples freshness
+  //     after each tick, and reports the MAX bucket age over the window as a MEASURED
+  //     verdict. A healthy run (every sample under the stale bar) passes.
+  {
+    let recomputes = 0;
+    let samples = 0;
+    let sleeps = 0;
+    const ages = [30, 55, 40]; // seconds per minute; recompute keeps buckets fresh
+    const fresh = (): Promise<FreshnessResult> => {
+      const maxAgeSec = ages[samples++];
+      return Promise.resolve({ total: 200, stale6m: 0, spreadSec: 0, maxAgeSec });
+    };
+    const r = await runRecomputeSoak(
+      {
+        driveRecompute: async () => {
+          recomputes++;
+          return {};
+        },
+        freshness: fresh,
+        sleep: async () => {
+          sleeps++;
+        },
+      },
+      { minutes: 3, intervalMs: 60_000, staleSec: 360 },
+    );
+    assert(recomputes === 3, `soak: drives recompute once per minute (got ${recomputes})`);
+    assert(r.samples.length === 3, `soak: one freshness sample per minute (got ${r.samples.length})`);
+    assert(sleeps === 2, `soak: waits between minutes, not after the last (got ${sleeps})`);
+    assert(r.maxAgeSec === 55, `soak: reports the MAX age across the window (got ${r.maxAgeSec})`);
+    assert(r.pass, "soak: passes when every sample stays under the stale bar");
+  }
+
+  // 12. SOAK failure (#303): one sample exceeding the stale bar fails the measured
+  //     verdict, so a recompute lane that can't keep up is caught, not extrapolated away.
+  {
+    let samples = 0;
+    const ages = [40, 420, 50]; // minute 2 blew past 6m -> recompute fell behind
+    const r = await runRecomputeSoak(
+      {
+        driveRecompute: async () => ({}),
+        freshness: async () =>
+          ({ total: 200, stale6m: 0, spreadSec: 0, maxAgeSec: ages[samples++] }) as FreshnessResult,
+        sleep: async () => {},
+      },
+      { minutes: 3, intervalMs: 60_000, staleSec: 360 },
+    );
+    assert(r.maxAgeSec === 420, `soak fail: surfaces the worst sample (got ${r.maxAgeSec})`);
+    assert(!r.pass, "soak fail: FAILS when any sample exceeds the stale bar");
   }
 
   finish();
