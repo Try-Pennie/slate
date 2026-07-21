@@ -7,6 +7,7 @@ import {
   resolveManagerSync,
 } from "@/lib/salesforce/manager-sync";
 import { reapableUserIds } from "@/lib/salesforce/reap";
+import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
 import { fetchSfWithRetry } from "@/lib/salesforce/retry";
 import type { Attributes, Role, User } from "@/lib/db/types";
 
@@ -173,7 +174,13 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   );
 
   const inserts: Partial<User>[] = [];
-  let updated = 0;
+  // Existing-agent field refreshes as upsert rows keyed on the id PK. `org_id`
+  // and `email` are the only NOT NULL columns on `users` without a default, so
+  // echoing them (unchanged) keeps the phantom insert tuple valid; on conflict
+  // only the listed columns are written, so role/bookable/manager_id/etc. are
+  // left untouched. Batched (#91) so ~101 agents cost a couple of writes, not a
+  // per-row round-trip chain that risks the Workers CPU/time ceiling.
+  const updates: Partial<User>[] = [];
 
   for (const u of sfUsers) {
     const email = (u.Email ?? "").toLowerCase();
@@ -181,14 +188,13 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     const attributes = toAttributes(u);
     const current = byEmail.get(email);
     if (current) {
-      await db
-        .from("users")
-        .update({
-          name: u.Name,
-          attributes: mergeSfAttributes(current.attributes, attributes),
-        })
-        .eq("id", current.id);
-      updated++;
+      updates.push({
+        id: current.id,
+        org_id: org.id,
+        email: current.email,
+        name: u.Name,
+        attributes: mergeSfAttributes(current.attributes, attributes),
+      });
     } else {
       inserts.push({
         org_id: org.id,
@@ -201,7 +207,18 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     }
   }
 
-  if (inserts.length) await db.from("users").insert(inserts);
+  const updated = updates.length;
+  for (const batch of chunkRows(updates, 200)) {
+    const { error } = await db.from("users").upsert(batch, { onConflict: "id" });
+    if (error) throw new Error(`SF agent update batch failed: ${error.message}`);
+  }
+
+  if (inserts.length) {
+    for (const batch of chunkRows(inserts, 200)) {
+      const { error } = await db.from("users").insert(batch);
+      if (error) throw new Error(`SF agent insert batch failed: ${error.message}`);
+    }
+  }
 
   // Manager edge (#76): the approver lives in the custom Agent_Manager__c
   // picklist as a NAME ("Jason Campbell"). Resolve every distinct name to an
@@ -308,15 +325,25 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
 
   // Apply links; only write when the value actually changes (and never null
   // out an existing assignment just because SF didn't resolve - admins can
-  // override). Self-links are already filtered by resolveManagerSync.
-  let managersLinked = 0;
+  // override). Self-links are already filtered by resolveManagerSync. Grouped
+  // by manager (#91) so every agent gaining the same manager is one write, not
+  // one round-trip per agent.
+  const pendingLinks: { agentId: string; managerId: string }[] = [];
   for (const link of plan.links) {
     const agentId = idByEmail.get(link.agentEmail);
     const managerId = idByEmail.get(link.managerEmail);
     if (!agentId || !managerId || agentId === managerId) continue;
     if (managerIdByUser.get(agentId) === managerId) continue;
-    await db.from("users").update({ manager_id: managerId }).eq("id", agentId);
-    managersLinked++;
+    pendingLinks.push({ agentId, managerId });
+  }
+  let managersLinked = 0;
+  for (const [managerId, agentIds] of groupManagerLinks(pendingLinks)) {
+    const { error } = await db
+      .from("users")
+      .update({ manager_id: managerId })
+      .in("id", agentIds);
+    if (error) throw new Error(`SF manager link batch failed: ${error.message}`);
+    managersLinked += agentIds.length;
   }
 
   // Anyone SF lists as an Agent_Manager (a real approver) becomes a Slate

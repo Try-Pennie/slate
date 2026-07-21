@@ -50,6 +50,7 @@ import { Pill } from "@/components/ui/Pill";
 import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
 import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { FilterForm } from "@/components/ui/FilterForm";
+import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { TimeField } from "@/components/ui/TimeField";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
@@ -831,12 +832,13 @@ export default async function AdminPage({
           </AutoSubmitSelect>
 
           {hasFilter && (
-            <a
+            <InPlaceLink
               href="/admin"
+              replace
               className="text-xs text-pennie-blue underline dark:text-pennie-sky"
             >
               clear
-            </a>
+            </InPlaceLink>
           )}
           <span className="ml-auto text-xs text-fg-muted tabular-nums">
             {agentsPage.total === 0
@@ -941,9 +943,9 @@ export default async function AdminPage({
             className="mt-3 flex items-center justify-between text-sm"
           >
             {agentsPage.page > 1 ? (
-              <a href={agentsPageHref(agentsPage.page - 1)} className={btnSecondaryCls}>
+              <InPlaceLink href={agentsPageHref(agentsPage.page - 1)} className={btnSecondaryCls}>
                 Previous
-              </a>
+              </InPlaceLink>
             ) : (
               <span className={`${btnSecondaryCls} pointer-events-none opacity-40`} aria-disabled="true">
                 Previous
@@ -953,9 +955,9 @@ export default async function AdminPage({
               Page {agentsPage.page} of {agentsPage.pageCount}
             </span>
             {agentsPage.page < agentsPage.pageCount ? (
-              <a href={agentsPageHref(agentsPage.page + 1)} className={btnSecondaryCls}>
+              <InPlaceLink href={agentsPageHref(agentsPage.page + 1)} className={btnSecondaryCls}>
                 Next
-              </a>
+              </InPlaceLink>
             ) : (
               <span className={`${btnSecondaryCls} pointer-events-none opacity-40`} aria-disabled="true">
                 Next
