@@ -221,6 +221,18 @@ assert(
   "#816: the orphaned single-value applied_migration_version() is dropped (dead since #814)",
 );
 
+// #624: resolveBucketByCode looks a bucket up by code alone (no org filter), so
+// the single-org assumption that codes are globally unique must be ENFORCED in
+// the schema, not just assumed. A global unique index on buckets(code) makes a
+// second org reusing a code fail loud at config time instead of hard-failing
+// every embed for that code on the hot path. This guard fails if that index is
+// ever dropped. The composite `unique (org_id, code)` does NOT satisfy it (that
+// is a table constraint, not a `create unique index ... on buckets(code)`).
+assert(
+  /create\s+unique\s+index\s+\w+\s+on\s+buckets\s*\(\s*code\s*\)/i.test(sql),
+  "#624: a global unique index on buckets(code) enforces single-org code uniqueness",
+);
+
 // The deployed build has no filesystem, so the prod lag alert (#516) compares the
 // live DB against a constant baked into the bundle. That constant is only as good
 // as this guard: adding a migration without bumping it would make prod look in

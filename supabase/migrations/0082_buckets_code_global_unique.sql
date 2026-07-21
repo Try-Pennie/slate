@@ -1,0 +1,15 @@
+-- #624: resolveBucketByCode (src/lib/availability/service.ts) looks a bucket up
+-- by its public code (the ?xbc= param) with NO org filter, and schema uniqueness
+-- is only (org_id, code). Slate is a single-org deployment, so codes are globally
+-- unique today, but nothing ENFORCED that. A second org reusing an XBC code would
+-- make the code-only .maybeSingle() match two rows and error, hard-failing every
+-- embed and booking for that code (a hidden single-tenant assumption on the hot
+-- path).
+--
+-- Make the assumption explicit and fail loud at CONFIG time instead of on the hot
+-- path: a global unique index on code. A second org that ever needs its own code
+-- space must then thread org context into the embed contract (#624) as a
+-- deliberate, visible change, rather than silently colliding in production. This
+-- is strictly stricter than the existing (org_id, code) constraint, so it cannot
+-- fail to create on the current single-org data.
+create unique index buckets_code_global_unique on buckets(code);
