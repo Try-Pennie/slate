@@ -48,6 +48,7 @@ const logSpy = vi.hoisted(() => ({
 vi.mock("@/lib/log", () => ({ log: logSpy }));
 
 import {
+  applyEvents,
   loadSlateBookingEventIds,
   purgeVanished,
   ensureWatches,
@@ -185,6 +186,72 @@ beforeEach(() => {
     nextSyncToken: null,
     truncated: true,
   }));
+});
+
+describe("applyEvents keys + deletes per calendar (#619)", () => {
+  // Records the upsert conflict key and the filters on each delete, so we can
+  // prove a busy block is keyed and removed per calendar rather than globally by
+  // (user_id, gcal_event_id).
+  function busyWriteDb() {
+    const upserts: { rows: Record<string, unknown>[]; onConflict?: string }[] = [];
+    const deletes: { filters: Record<string, unknown> }[] = [];
+    const from = () => {
+      let del: { filters: Record<string, unknown> } | null = null;
+      const b: Record<string, unknown> = {
+        upsert: (rows: Record<string, unknown>[], opts: { onConflict?: string }) => {
+          upserts.push({ rows, onConflict: opts?.onConflict });
+          return Promise.resolve({ error: null });
+        },
+        delete: () => {
+          del = { filters: {} };
+          return b;
+        },
+        eq: (col: string, val: unknown) => {
+          if (del) del.filters[col] = val;
+          return b;
+        },
+        in: (col: string, ids: unknown[]) => {
+          del!.filters[col] = ids;
+          deletes.push(del!);
+          return Promise.resolve({ error: null });
+        },
+      };
+      return b;
+    };
+    return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, upserts, deletes };
+  }
+
+  it("upserts with the 3-part conflict key and scopes the delete to the calendar", async () => {
+    const { db, upserts, deletes } = busyWriteDb();
+    admin.current = db;
+    const events = [
+      {
+        id: "shared-evt",
+        status: "confirmed",
+        start: { dateTime: "2026-01-01T10:00:00Z" },
+        end: { dateTime: "2026-01-01T11:00:00Z" },
+      },
+      { id: "gone-evt", status: "cancelled" },
+    ];
+
+    await applyEvents("u1", "cal-A", events, new Set(), "UTC");
+
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].onConflict).toBe("user_id,calendar_id,gcal_event_id");
+    expect(upserts[0].rows[0]).toMatchObject({
+      gcal_event_id: "shared-evt",
+      calendar_id: "cal-A",
+    });
+
+    // The cancelled event's delete must carry calendar_id=cal-A, so the SAME
+    // event id cached on another watched calendar is left intact (#619).
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].filters).toMatchObject({
+      user_id: "u1",
+      calendar_id: "cal-A",
+      gcal_event_id: ["gone-evt"],
+    });
+  });
 });
 
 describe("loadSyncAgents fail-loud (#865)", () => {
