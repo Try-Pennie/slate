@@ -202,6 +202,19 @@ const ladder = (code: string) => {
   assert(msg.includes("ANOM") && msg.includes("NULL"), "anomaly alert names both groups");
   assert(/sync|precompute/i.test(msg), "anomaly alert points at the sync/precompute pipeline");
   assert(!DASHES.test(msg), "anomaly alert has no dashes");
+  // No auto-heal note when nothing was healed (default arg).
+  assert(!/auto-recompute/i.test(msg), "no self-heal note when nothing healed");
+}
+
+// --- #573: when buckets were auto-healed, the page says the impact was recovered
+// but the root cause still needs a fix (so it stays urgent, not resolved). ---
+{
+  const cause = { bookedSolid: [], dataAnomaly: ["ANOM", "ANOM2"], unverified: [] };
+  const msg = formatDataAnomalyAlert(cause, ["ANOM"]);
+  assert(/auto-recompute/i.test(msg), "healed anomaly alert notes the auto-recompute");
+  assert(msg.includes("ANOM"), "healed anomaly alert names the healed bucket");
+  assert(/mask|root cause|find why|stale/i.test(msg), "healed alert still flags the unresolved root cause");
+  assert(!DASHES.test(msg), "healed anomaly alert has no dashes");
 }
 
 // --- #572: a mostly-unverified run is ONE upstream outage, not N bucket faults ---
