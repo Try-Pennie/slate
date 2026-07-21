@@ -8,12 +8,16 @@
 import {
   BULK_REASSIGN_ITEMS_PER_TICK,
   MAX_ITEM_ATTEMPTS,
+  buildBulkReassignProgress,
   drainBulkReassign,
+  parseBulkReassignRange,
   processBulkReassignItem,
+  summarizeBulkReassignItems,
+  type ActionableBookingContext,
   type BulkReassignDeps,
   type ItemOutcome,
 } from "../src/lib/booking/bulk-reassign.ts";
-import type { BulkReassignItem, BulkReassignJob } from "../src/lib/db/types.ts";
+import type { BulkReassignItem, BulkReassignItemStatus, BulkReassignJob } from "../src/lib/db/types.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const job: BulkReassignJob = {
@@ -169,6 +173,66 @@ async function run() {
   ({ deps, log } = fakeDeps({ loadPendingItems: async () => [{ item: item(), job }] }));
   await drainBulkReassign(deps);
   assert(log.includes("done?:job1"), "a touched job is checked for completion after the tick");
+
+  // --- summarizeBulkReassignItems: the progress read's counts (#974) ---
+  const mk = (status: BulkReassignItemStatus) => ({ status });
+  const s = summarizeBulkReassignItems([
+    mk("moved"), mk("moved"), mk("unplaceable"), mk("skipped"), mk("failed"), mk("pending"),
+  ]);
+  assert(s.total === 6, "summary totals every item");
+  assert(
+    s.counts.moved === 2 && s.counts.unplaceable === 1 && s.counts.skipped === 1 &&
+      s.counts.failed === 1 && s.counts.pending === 1,
+    "summary counts each status",
+  );
+  assert(s.done === false, "a job with a pending item is not done");
+  assert(summarizeBulkReassignItems([mk("moved"), mk("skipped")]).done === true, "a job with no pending items is done");
+  const empty = summarizeBulkReassignItems([]);
+  assert(empty.total === 0 && empty.done === true && empty.counts.moved === 0, "an empty job summarizes to zero and done");
+
+  // --- parseBulkReassignRange: endpoint input validation (#974) ---
+  const now = "2026-07-21T12:00:00.000Z";
+  let pr = parseBulkReassignRange(undefined, undefined, now);
+  assert(pr.ok && pr.rangeStart === now && pr.rangeEnd === null, "no range defaults to now onward (open-ended)");
+  pr = parseBulkReassignRange("2026-07-25T00:00:00.000Z", null, now);
+  assert(pr.ok && pr.rangeEnd === null, "an explicit start with no end is open-ended");
+  pr = parseBulkReassignRange("2026-07-25T00:00:00.000Z", "2026-07-28T00:00:00.000Z", now);
+  assert(pr.ok && pr.rangeStart === "2026-07-25T00:00:00.000Z" && pr.rangeEnd === "2026-07-28T00:00:00.000Z", "a valid closed range is accepted");
+  pr = parseBulkReassignRange("2026-07-28T00:00:00.000Z", "2026-07-25T00:00:00.000Z", now);
+  assert(!pr.ok, "an end on/before the start is rejected");
+  pr = parseBulkReassignRange("not-a-date", null, now);
+  assert(!pr.ok, "an unparseable start is rejected");
+  pr = parseBulkReassignRange("2026-07-25T00:00:00.000Z", "also-bad", now);
+  assert(!pr.ok, "an unparseable end is rejected");
+
+  // --- buildBulkReassignProgress: the progress composition (#974) ---
+  const itemRow = (over: Partial<BulkReassignItem>): BulkReassignItem => item(over);
+  const progItems = [
+    itemRow({ id: "i1", booking_id: "bkA", status: "moved" }),
+    itemRow({ id: "i2", booking_id: "bkB", status: "unplaceable", detail: "no agent free" }),
+    itemRow({ id: "i3", booking_id: "bkC", status: "failed", detail: "cap raced" }),
+    itemRow({ id: "i4", booking_id: "bkD", status: "skipped" }),
+    itemRow({ id: "i5", booking_id: "bkE", status: "pending" }),
+  ];
+  const ctx = new Map<string, ActionableBookingContext>([
+    ["bkB", { startsAt: "2026-07-25T13:00:00.000Z", attendeeName: "Kris" }],
+    // bkC intentionally missing → nulls, proving the map is optional per booking.
+  ]);
+  const prog = buildBulkReassignProgress(job, progItems, ctx);
+  assert(prog.job.id === "job1" && prog.summary.total === 5 && prog.summary.done === false, "progress carries the job and full summary");
+  assert(
+    prog.actionable.length === 2 && prog.actionable.every((a) => a.status === "unplaceable" || a.status === "failed"),
+    "only unplaceable + failed items are actionable (the ones still on the out agent)",
+  );
+  const byId = Object.fromEntries(prog.actionable.map((a) => [a.bookingId, a]));
+  assert(
+    byId.bkB.startsAt === "2026-07-25T13:00:00.000Z" && byId.bkB.attendeeName === "Kris" && byId.bkB.detail === "no agent free",
+    "an actionable item is enriched with its booking context + detail",
+  );
+  assert(
+    byId.bkC.startsAt === null && byId.bkC.attendeeName === null,
+    "an actionable item with no context row degrades to null display fields, not a crash",
+  );
 }
 
 await run();

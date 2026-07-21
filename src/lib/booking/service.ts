@@ -30,15 +30,24 @@ import {
   type BusyBlockInsert,
 } from "@/lib/booking/core";
 import {
+  ACTIONABLE_ITEM_STATUSES,
+  buildBulkReassignProgress,
   drainBulkReassign,
   type BulkReassignDeps,
   type BulkReassignDrainSummary,
+  type BulkReassignProgress,
 } from "@/lib/booking/bulk-reassign";
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
 import {
   commitBulkReassignItemOutcome,
+  coverageBookingIds,
+  createBulkReassignJob,
+  loadActionableBookingContext,
   loadBookingSnapshot,
+  loadBulkReassignItems,
+  loadBulkReassignJob,
   loadPendingBulkReassignItems,
+  loadUserOrgId,
   markBulkReassignJobDoneIfDrained,
 } from "@/lib/booking/bulk-reassign-store";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
@@ -1936,6 +1945,59 @@ function realBulkReassignDeps(): BulkReassignDeps {
 /** Drain one bounded tick of the bulk-reassign engine (the cron lane). */
 export function drainBulkReassignJobs(): Promise<BulkReassignDrainSummary> {
   return drainBulkReassign(realBulkReassignDeps());
+}
+
+/** How many of the out agent's active upcoming bookings a coverage sweep over
+ *  [rangeStart, rangeEnd) would move (the #974 preview count). */
+export function previewBulkReassign(
+  outUserId: string,
+  rangeStartIso: string,
+  rangeEndIso: string | null,
+): Promise<number> {
+  return coverageBookingIds(outUserId, rangeStartIso, rangeEndIso).then((ids) => ids.length);
+}
+
+export interface StartBulkReassignInput {
+  outUserId: string;
+  rangeStartIso: string;
+  rangeEndIso: string | null;
+  reason: ValidatedReason;
+  actor: BookingActor;
+}
+
+/**
+ * Start a coverage sweep for one out agent (#974). Resolves the job's org from
+ * the out agent (verifying it exists), then snapshots its work. The accountable
+ * actor maps onto created_by / acting_as_user_id.
+ */
+export async function startBulkReassign(
+  input: StartBulkReassignInput,
+): Promise<{ jobId: string; itemCount: number }> {
+  const orgId = await loadUserOrgId(input.outUserId);
+  if (!orgId) throw new orchestration.AgentNotAvailableError();
+  return createBulkReassignJob({
+    orgId,
+    outUserId: input.outUserId,
+    rangeStartIso: input.rangeStartIso,
+    rangeEndIso: input.rangeEndIso,
+    reasonCode: input.reason.code,
+    reasonDetail: input.reason.detail,
+    createdBy: input.actor.userId,
+    actingAsUserId: input.actor.actingAsUserId ?? null,
+  });
+}
+
+/** The job's status + per-status counts + the actionable list (#974), or null if
+ *  the job id is unknown. Composition is the pure `buildBulkReassignProgress`. */
+export async function getBulkReassignProgress(jobId: string): Promise<BulkReassignProgress | null> {
+  const job = await loadBulkReassignJob(jobId);
+  if (!job) return null;
+  const items = await loadBulkReassignItems(jobId);
+  const actionableIds = items
+    .filter((it) => ACTIONABLE_ITEM_STATUSES.includes(it.status))
+    .map((it) => it.booking_id);
+  const ctx = await loadActionableBookingContext(actionableIds);
+  return buildBulkReassignProgress(job, items, ctx);
 }
 
 export function completePastBookings(): Promise<{

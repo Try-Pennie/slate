@@ -1,6 +1,10 @@
 import type { SelectionOutcome } from "@/lib/booking/core";
 import type { Booking, BulkReassignItem, BulkReassignItemStatus, BulkReassignJob } from "@/lib/db/types";
 
+/** The item statuses that stay on the out agent and need a manual force-override
+ *  (#974): no covering agent could be placed, or the move exhausted its retries. */
+export const ACTIONABLE_ITEM_STATUSES: BulkReassignItemStatus[] = ["unplaceable", "failed"];
+
 /**
  * How many items the bulk-reassign drain processes per tick. Each item does a
  * live verify wave plus a reassign (a Google create + delete), so this is kept
@@ -161,4 +165,105 @@ export async function drainBulkReassign(
     await deps.markJobDoneIfDrained(jobId);
   }
   return summary;
+}
+
+/** A job's per-status item counts for the progress read (#974). */
+export interface BulkReassignSummary {
+  total: number;
+  counts: Record<BulkReassignItemStatus, number>;
+  /** True when no item is still pending (mirrors the job-done rule). */
+  done: boolean;
+}
+
+/** Count a job's items by status for the admin progress view. Pure. */
+export function summarizeBulkReassignItems(
+  items: { status: BulkReassignItemStatus }[],
+): BulkReassignSummary {
+  const counts: Record<BulkReassignItemStatus, number> = {
+    pending: 0,
+    moved: 0,
+    unplaceable: 0,
+    skipped: 0,
+    failed: 0,
+  };
+  for (const it of items) counts[it.status]++;
+  return { total: items.length, counts, done: counts.pending === 0 };
+}
+
+/** Minimal booking display context for an actionable item row (#974). */
+export interface ActionableBookingContext {
+  startsAt: string;
+  attendeeName: string | null;
+}
+
+/** One actionable ("couldn't place") item for the progress view (#974). */
+export interface BulkReassignActionableItem {
+  bookingId: string;
+  status: BulkReassignItemStatus;
+  detail: string | null;
+  startsAt: string | null;
+  attendeeName: string | null;
+}
+
+export interface BulkReassignProgress {
+  job: BulkReassignJob;
+  summary: BulkReassignSummary;
+  /** Unplaceable + failed items, each linkable to the single-reassign force-override. */
+  actionable: BulkReassignActionableItem[];
+}
+
+/**
+ * Assemble the admin progress view from a job, its items, and display context for
+ * the actionable bookings (#974). Pure: the summary counts every item, and the
+ * actionable list is the unplaceable + failed items (the ones still on the out
+ * agent) enriched with booking context for display. The DB reads live in the
+ * service; this is the composition, so it is node-tested.
+ */
+export function buildBulkReassignProgress(
+  job: BulkReassignJob,
+  items: BulkReassignItem[],
+  bookingCtx: Map<string, ActionableBookingContext>,
+): BulkReassignProgress {
+  const summary = summarizeBulkReassignItems(items);
+  const actionable = items
+    .filter((it) => ACTIONABLE_ITEM_STATUSES.includes(it.status))
+    .map((it) => ({
+      bookingId: it.booking_id,
+      status: it.status,
+      detail: it.detail,
+      startsAt: bookingCtx.get(it.booking_id)?.startsAt ?? null,
+      attendeeName: bookingCtx.get(it.booking_id)?.attendeeName ?? null,
+    }));
+  return { job, summary, actionable };
+}
+
+export type ParsedRange =
+  | { ok: true; rangeStart: string; rangeEnd: string | null }
+  | { ok: false; error: string };
+
+/**
+ * Validate + normalize a coverage range for the start endpoint (#974). A missing
+ * start defaults to `nowIso` (now onward); a missing end is open-ended (null). A
+ * given end must be strictly after the start. Both, when present, must be
+ * parseable timestamps. Pure so the route and the UI share one rule.
+ */
+export function parseBulkReassignRange(
+  fromIso: string | null | undefined,
+  toIso: string | null | undefined,
+  nowIso: string,
+): ParsedRange {
+  let rangeStart = nowIso;
+  if (fromIso != null && fromIso !== "") {
+    if (Number.isNaN(Date.parse(fromIso))) return { ok: false, error: "Invalid start date." };
+    rangeStart = new Date(fromIso).toISOString();
+  }
+  let rangeEnd: string | null = null;
+  if (toIso != null && toIso !== "") {
+    if (Number.isNaN(Date.parse(toIso))) return { ok: false, error: "Invalid end date." };
+    rangeEnd = new Date(toIso).toISOString();
+    if (Date.parse(rangeEnd) <= Date.parse(rangeStart)) {
+      return { ok: false, error: "The end must be after the start." };
+    }
+  }
+  return { ok: true, rangeStart, rangeEnd };
 }
