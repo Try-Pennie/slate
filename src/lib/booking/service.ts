@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
+  resolveRouting,
   roundRobinCandidates,
 } from "@/lib/availability/service";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
@@ -22,11 +23,24 @@ import {
   PAST_COMPLETION_BATCH_LIMIT,
   calendarIdsFromResult,
   freeAgentsFromBusy,
+  validateReason,
   type CalendarBusy,
   type ValidatedReason,
   type BookingActor,
   type BusyBlockInsert,
 } from "@/lib/booking/core";
+import {
+  drainBulkReassign,
+  type BulkReassignDeps,
+  type BulkReassignDrainSummary,
+} from "@/lib/booking/bulk-reassign";
+import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
+import {
+  commitBulkReassignItemOutcome,
+  loadBookingSnapshot,
+  loadPendingBulkReassignItems,
+  markBulkReassignJobDoneIfDrained,
+} from "@/lib/booking/bulk-reassign-store";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
@@ -1871,6 +1885,57 @@ export function adminReassignBooking(
     initiator: "admin",
     allowNonBookable: true,
   });
+}
+
+/**
+ * The live coverage-target deps (#972): the ordered eligible list from
+ * `resolveRouting`, and the batched email / live verify-on-book / working-hours /
+ * per-day booking-count reads reused verbatim from the booking path's `realDeps`
+ * so the two can't drift. Freeness is verified live, never from the cache.
+ */
+function realCoverageTargetDeps(): CoverageTargetDeps {
+  const base = realDeps();
+  return {
+    orderedEligibleIds: async (bucket) => (await resolveRouting(bucket.code))?.eligibleIds ?? [],
+    loadEmails: base.loadEmails,
+    verifyFree: base.verifyFree,
+    agentWorkingHours: base.agentWorkingHours,
+    agentActiveBookingStartsMs: base.agentActiveBookingStartsMs,
+  };
+}
+
+/** The live bulk-reassign engine deps (#973): the store reads/writes plus the
+ *  per-item target selection (live-verified) and the reassign (adminReassignBooking,
+ *  cap honored: the covering agent was picked under cap). */
+function realBulkReassignDeps(): BulkReassignDeps {
+  return {
+    loadPendingItems: loadPendingBulkReassignItems,
+    loadBooking: loadBookingSnapshot,
+    selectTarget: async (snapshot) => {
+      const ctx = await realDeps().loadBookingById(snapshot.id);
+      if (!ctx) return { assignment: null, anyUnverified: false };
+      return selectCoverageReassignTarget(
+        { booking: ctx.booking, bucket: ctx.bucket, eventType: ctx.eventType },
+        realCoverageTargetDeps(),
+      );
+    },
+    reassign: async (bookingId, targetEmail, job) => {
+      const reason = validateReason("reassign", { code: job.reason_code, detail: job.reason_detail });
+      if (!reason.ok) throw new Error(`invalid bulk-reassign reason: ${reason.error}`);
+      if (!job.created_by) throw new Error("bulk-reassign job has no accountable actor (created_by)");
+      const actor: BookingActor = { userId: job.created_by, actingAsUserId: job.acting_as_user_id };
+      // Cap is NOT overridden: the covering agent was selected under their daily
+      // cap. The manual force-override (#974) is the only path that overrides.
+      await adminReassignBooking(bookingId, targetEmail, reason.reason, actor, false);
+    },
+    commitItemOutcome: commitBulkReassignItemOutcome,
+    markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,
+  };
+}
+
+/** Drain one bounded tick of the bulk-reassign engine (the cron lane). */
+export function drainBulkReassignJobs(): Promise<BulkReassignDrainSummary> {
+  return drainBulkReassign(realBulkReassignDeps());
 }
 
 export function completePastBookings(): Promise<{
