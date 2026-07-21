@@ -174,6 +174,59 @@ async function run() {
   await drainBulkReassign(deps);
   assert(log.includes("done?:job1"), "a touched job is checked for completion after the tick");
 
+  // Partial batch (#975): one tick produces moved + unplaceable + skipped + failed
+  // together, and the summary reflects every outcome.
+  const mixed = [
+    { item: item({ id: "A", booking_id: "bkA" }), job }, // on out, placeable -> moved
+    { item: item({ id: "B", booking_id: "bkB" }), job }, // no target, not outage -> unplaceable
+    { item: item({ id: "C", booking_id: "bkC" }), job }, // cancelled -> skipped
+    { item: item({ id: "D", booking_id: "bkD", attempts: MAX_ITEM_ATTEMPTS - 1 }), job }, // reassign errors, last try -> failed
+  ];
+  ({ deps } = fakeDeps({
+    loadPendingItems: async () => mixed,
+    loadBooking: async (id) =>
+      id === "bkC"
+        ? { id, status: "cancelled", assigned_user_id: "out" }
+        : { id, status: "confirmed", assigned_user_id: "out" },
+    selectTarget: async (booking) =>
+      booking.id === "bkB"
+        ? { assignment: null, anyUnverified: false }
+        : { assignment: { userId: "cov", email: "cov@x.com" }, anyUnverified: false },
+    reassign: async (bookingId) => {
+      if (bookingId === "bkD") throw new Error("cap raced");
+    },
+  }));
+  const mixedSummary = await drainBulkReassign(deps);
+  assert(
+    mixedSummary.processed === 4 &&
+      mixedSummary.moved === 1 &&
+      mixedSummary.unplaceable === 1 &&
+      mixedSummary.skipped === 1 &&
+      mixedSummary.failed === 1,
+    "a mixed batch yields one of each outcome and the summary counts them all (#975)",
+  );
+
+  // Idempotent re-run (#975): a booking moved on the first tick, then re-processed
+  // on a later tick (the item was left pending by a crash before commit), is
+  // recorded moved from its assignment and NEVER reassigned a second time.
+  let assignedTo = "out";
+  const reassignCalls: string[] = [];
+  const rerunDeps: BulkReassignDeps = {
+    loadPendingItems: async () => [{ item: item({ id: "R", booking_id: "bkR" }), job }],
+    loadBooking: async (id) => ({ id, status: "confirmed", assigned_user_id: assignedTo }),
+    selectTarget: async () => ({ assignment: { userId: "cov", email: "cov@x.com" }, anyUnverified: false }),
+    reassign: async (bookingId) => {
+      reassignCalls.push(bookingId);
+      assignedTo = "cov"; // the swap committed: the booking is now off the out agent
+    },
+    commitItemOutcome: async () => {},
+    markJobDoneIfDrained: async () => {},
+  };
+  const first = await drainBulkReassign(rerunDeps);
+  const second = await drainBulkReassign(rerunDeps);
+  assert(first.moved === 1 && second.moved === 1, "both the first move and the re-run record the item moved");
+  assert(reassignCalls.length === 1, "a re-run never reassigns an already-moved booking a second time (idempotent)");
+
   // --- summarizeBulkReassignItems: the progress read's counts (#974) ---
   const mk = (status: BulkReassignItemStatus) => ({ status });
   const s = summarizeBulkReassignItems([
