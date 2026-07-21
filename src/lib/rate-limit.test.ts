@@ -21,7 +21,12 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
 vi.mock("@opennextjs/cloudflare", () => ({ getCloudflareContext }));
 
-import { allowRequest, refundRequest, availabilityWithinLimit } from "./rate-limit";
+import {
+  allowRequest,
+  refundRequest,
+  availabilityWithinLimit,
+  bookingWithinLimit,
+} from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
 const RULES: RateLimitRule[] = [
@@ -247,5 +252,67 @@ describe("availabilityWithinLimit (#796)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+  });
+});
+
+describe("bookingWithinLimit (#237)", () => {
+  // Same edge-limiter contract as availability: the public booking per-minute
+  // burst window (#237) moved off the DB onto the BOOKING_RATE_LIMITER binding.
+  let clock = Date.UTC(2026, 6, 20);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    cf.env = { BOOKING_RATE_LIMITER: { limit } };
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("allows a request the limiter permits", async () => {
+    await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("blocks when the limiter says the IP is over, and stays silent", async () => {
+    limit.mockResolvedValue({ success: false });
+    await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(false);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("fails OPEN and ALERTS in plain language when the limiter throws", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+
+    await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    expect(text).toMatch(/booking/i);
+    expect(text).not.toMatch(/limiter unavailable/);
+  });
+
+  it("fails OPEN and ALERTS when the binding is missing, keeping the binding name out of the alert", async () => {
+    cf.env = {};
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    expect(text).not.toMatch(/BOOKING_RATE_LIMITER/);
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/BOOKING_RATE_LIMITER/);
+    consoleErr.mockRestore();
+  });
+
+  it("does not re-attempt the alert on every request during a sustained outage", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+    for (let i = 0; i < 25; i++) {
+      await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    }
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
   });
 });

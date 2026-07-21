@@ -3,7 +3,7 @@
 // Run: node --experimental-strip-types scripts/test-rate-limit.ts
 import {
   clientIp,
-  BOOKING_RATE_RULES,
+  BOOKING_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_RATE_RULES,
   DIRECT_BOOKING_API_IP_RATE_RULES,
   DIRECT_BOOKING_API_READ_RATE_RULES,
@@ -40,23 +40,22 @@ assert(
 );
 assert(clientIp(h({})) === "unknown", "no headers -> a stable fallback key");
 
-// Policy shape: a burst window plus a longer cap, burst strictly tighter.
-assert(BOOKING_RATE_RULES.length >= 2, "at least two windows");
-const [burst, sustained] = [...BOOKING_RATE_RULES].sort(
-  (a, b) => a.windowSeconds - b.windowSeconds,
+// Policy shape (#237): the per-minute burst window moved to the edge limiter
+// (BOOKING_RATE_LIMITER, wrangler.jsonc); only the strict hourly anti-spam cap
+// remains a DB rule here.
+assert(BOOKING_HOURLY_RATE_RULES.length === 1, "one DB rule remains: the hourly cap");
+const hourlyCap = BOOKING_HOURLY_RATE_RULES[0];
+assert(
+  hourlyCap.windowSeconds === 3600 && hourlyCap.max === 10,
+  "the DB rule is the 10/hour cap",
 );
 assert(
-  burst.windowSeconds < sustained.windowSeconds &&
-    burst.max < sustained.max,
-  "burst window is shorter and tighter than the sustained window",
-);
-assert(
-  BOOKING_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
+  BOOKING_HOURLY_RATE_RULES.every((r) => r.max > 0 && r.windowSeconds > 0),
   "all rules are positive",
 );
 assert(
-  new Set(BOOKING_RATE_RULES.map((r) => r.prefix)).size ===
-    BOOKING_RATE_RULES.length,
+  new Set(BOOKING_HOURLY_RATE_RULES.map((r) => r.prefix)).size ===
+    BOOKING_HOURLY_RATE_RULES.length,
   "rule prefixes are distinct (separate counters)",
 );
 
@@ -80,7 +79,7 @@ assert(
 {
   const apiPrefixes = new Set(DIRECT_BOOKING_API_RATE_RULES.map((r) => r.prefix));
   assert(
-    BOOKING_RATE_RULES.every((r) => !apiPrefixes.has(r.prefix)),
+    BOOKING_HOURLY_RATE_RULES.every((r) => !apiPrefixes.has(r.prefix)),
     "per-key API counters use different prefixes than the per-IP booking counters",
   );
 }
@@ -111,7 +110,7 @@ assert(
     "routing rule prefixes are distinct (separate counters)",
   );
   assert(
-    BOOKING_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)) &&
+    BOOKING_HOURLY_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)) &&
       DIRECT_BOOKING_API_RATE_RULES.every((r) => !routingPrefixes.has(r.prefix)),
     "routing counters use different prefixes than the booking counters",
   );
@@ -163,7 +162,7 @@ assert(
 // on-call can read.
 {
   // Internal key prefixes map to a plain area name.
-  eq(friendlyRateArea("book:m"), "public booking", "book prefix -> public booking");
+  eq(friendlyRateArea("book:h"), "public booking", "book prefix -> public booking");
   eq(friendlyRateArea("bookapi:ip:m"), "booking API", "bookapi prefix -> booking API");
   eq(friendlyRateArea("routing:h"), "routing lookup", "routing prefix -> routing lookup");
   eq(friendlyRateArea("mystery:x"), "a Slate endpoint", "unknown prefix -> a safe generic");
@@ -175,9 +174,10 @@ assert(
     "rate_limit_hit",
     "rate_limit_refund",
     "AVAIL_RATE_LIMITER",
+    "BOOKING_RATE_LIMITER",
     "Error:",
     "undefined",
-    "book:m",
+    "book:h",
     "bookapi",
     "routing:",
     "::",

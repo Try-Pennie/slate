@@ -76,6 +76,15 @@
 			"name": "AVAIL_RATE_LIMITER",
 			"namespace_id": "1001",
 			"simple": { "limit": 30, "period": 60 }
+		},
+		// Edge per-minute throttle for the public /booking confirm (#237): 3
+		// requests/min per IP, per datacenter, no DB round-trip, so it no longer
+		// adds latency to the lead's Confirm tap. The strict hourly cap (10/hour)
+		// stays in the DB (the native binding can't express a 1-hour window).
+		{
+			"name": "BOOKING_RATE_LIMITER",
+			"namespace_id": "1002",
+			"simple": { "limit": 3, "period": 60 }
 		}
 	]
 }

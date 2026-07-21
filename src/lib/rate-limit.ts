@@ -4,7 +4,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 
-export { clientIp, BOOKING_RATE_RULES, ROUTING_RATE_RULES } from "@/lib/rate-limit-core";
+export { clientIp, BOOKING_HOURLY_RATE_RULES, ROUTING_RATE_RULES } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 import {
   friendlyRateArea,
@@ -25,44 +25,89 @@ import {
  * it, so absent means broken.
  */
 export async function availabilityWithinLimit(ip: string): Promise<boolean> {
+  return edgeWithinLimit(ip, {
+    binding: "AVAIL_RATE_LIMITER",
+    area: "availability",
+    friendly: "booking availability",
+  });
+}
+
+/**
+ * Public booking per-minute burst throttle (#237) via the BOOKING_RATE_LIMITER
+ * Workers binding, enforced in-datacenter with no DB round-trip, so it no longer
+ * adds ~75-150ms to the lead's Confirm tap. The strict hourly cap stays in the DB
+ * (allowRequest + BOOKING_HOURLY_RATE_RULES). Fails OPEN like availability: a
+ * limiter hiccup must never block a real booking (verify-on-book and the
+ * unique-slot index still bound the damage), but it fails LOUD (#796).
+ */
+export async function bookingWithinLimit(ip: string): Promise<boolean> {
+  return edgeWithinLimit(ip, {
+    binding: "BOOKING_RATE_LIMITER",
+    area: "booking",
+    friendly: "public booking",
+  });
+}
+
+/** The Cloudflare edge rate-limit binding shape (`.limit({ key }) -> { success }`). */
+interface EdgeLimiter {
+  limit(opts: { key: string }): Promise<{ success: boolean }>;
+}
+
+/**
+ * Shared edge-limiter check for the two hot paths that use one (#237): resolve
+ * the named Workers rate-limit binding, count this IP, and fail OPEN + LOUD if
+ * the binding is missing or throws. Kept as one implementation so the fail-open
+ * and alerting contract can't drift between availability and booking.
+ */
+async function edgeWithinLimit(
+  ip: string,
+  cfg: { binding: "AVAIL_RATE_LIMITER" | "BOOKING_RATE_LIMITER"; area: string; friendly: string },
+): Promise<boolean> {
   try {
-    const limiter = getCloudflareContext().env.AVAIL_RATE_LIMITER;
+    const env = getCloudflareContext().env as unknown as Record<
+      string,
+      EdgeLimiter | undefined
+    >;
+    const limiter = env[cfg.binding];
     if (!limiter) {
-      await alertAvailabilityLimiterDown(
-        "the AVAIL_RATE_LIMITER binding is missing, so /api/availability has no throttle at all",
+      await alertEdgeLimiterDown(
+        cfg,
+        `the ${cfg.binding} binding is missing, so the ${cfg.area} throttle is OFF`,
       );
       return true;
     }
     const { success } = await limiter.limit({ key: ip });
     return success;
   } catch (err) {
-    await alertAvailabilityLimiterDown(`the limiter threw: ${String(err)}`);
+    await alertEdgeLimiterDown(cfg, `the limiter threw: ${String(err)}`);
     return true; // fail open
   }
 }
 
-/** Last time THIS isolate tried to alert about the availability limiter.
+/** Last time THIS isolate tried to alert about a given edge limiter, keyed by area.
  *
  *  The alert's real throttle is alert_state, in Postgres, which means attempting it costs a
- *  DB round-trip. Everywhere else that is fine; here it is not. This is the Booker's slot hot
- *  path, and the limiter is likeliest to fail under exactly the traffic flood it exists to
- *  absorb, so alerting per request would answer a dead limiter by adding a database query to
- *  every one of those requests. This gate keeps that bounded. It is per-isolate and
- *  best-effort by design (a few duplicate attempts across isolates are harmless); alert_state
- *  is still what makes the alert itself correct. */
-let lastAvailAlertAttemptMs = 0;
+ *  DB round-trip. Everywhere else that is fine; here it is not. These are hot paths, and the
+ *  limiter is likeliest to fail under exactly the traffic flood it exists to absorb, so alerting
+ *  per request would answer a dead limiter by adding a database query to every one of those
+ *  requests. This gate keeps that bounded. It is per-isolate and best-effort by design (a few
+ *  duplicate attempts across isolates are harmless); alert_state still makes the alert correct. */
+const lastEdgeAlertAttemptMs = new Map<string, number>();
 
-async function alertAvailabilityLimiterDown(reason: string): Promise<void> {
+async function alertEdgeLimiterDown(
+  cfg: { area: string; friendly: string },
+  reason: string,
+): Promise<void> {
   const now = Date.now();
-  if (now - lastAvailAlertAttemptMs < LIMITER_BROKEN_COOLDOWN_MS) return;
-  lastAvailAlertAttemptMs = now;
+  if (now - (lastEdgeAlertAttemptMs.get(cfg.area) ?? 0) < LIMITER_BROKEN_COOLDOWN_MS) return;
+  lastEdgeAlertAttemptMs.set(cfg.area, now);
   // The raw reason (a missing binding, or String(err) that in dev is a Next.js
   // config stack trace) goes to the LOGS, never to the human-facing Slack line.
-  log.error("rate-limit", { msg: "limiter failing open", reason });
+  log.error("rate-limit", { msg: "limiter failing open", area: cfg.area, reason });
   await alertBestEffort(
-    "rate_limit_broken:availability",
-    limiterFailOpenAlert("booking availability"),
-    "availability",
+    `rate_limit_broken:${cfg.area}`,
+    limiterFailOpenAlert(cfg.friendly),
+    cfg.area,
   );
 }
 

@@ -20,16 +20,20 @@ export interface RateLimitRule {
   alertOnBlock?: boolean;
 }
 
-/** Booking endpoint policy: a short burst window plus an hourly cap. */
-export const BOOKING_RATE_RULES: RateLimitRule[] = [
-  { prefix: "book:m", windowSeconds: 60, max: 3 },
+/**
+ * Public booking hourly cap. The short per-minute burst window (3/min) moved to
+ * the Cloudflare edge rate limiter (BOOKING_RATE_LIMITER, #237) so it no longer
+ * costs a DB round-trip on the lead's Confirm tap; the strict hourly anti-spam
+ * cap stays in Postgres because the native binding can't express a 1-hour window.
+ */
+export const BOOKING_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "book:h", windowSeconds: 3600, max: 10 },
 ];
 
 /**
  * Direct booking API (#355) ceiling, keyed per API KEY rather than per IP — one
  * bot behind one IP legitimately does ~2000/day, which would instantly blow the
- * per-IP BOOKING_RATE_RULES. Sized well above expected volume so it only ever
+ * per-IP public-booking limits. Sized well above expected volume so it only ever
  * trips on a runaway loop or a leaked key; fails open like the per-IP rules.
  */
 export const DIRECT_BOOKING_API_RATE_RULES: RateLimitRule[] = [
