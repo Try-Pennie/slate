@@ -350,6 +350,61 @@ export async function selectAgent(
   return { assignment: null, anyUnverified };
 }
 
+/**
+ * Coverage-reassign target selection (#972): pick the first candidate who is
+ * GENUINELY free at the booking's original time AND under their daily cap,
+ * walking `candidates` in round-robin order and excluding `excludeUserId` (the
+ * out agent). Shares the wave-batched verify shape of `selectAgent`, with two
+ * deliberate differences:
+ *
+ *  - Freeness is the LIVE verify-on-book path (`verifyFree`), never the
+ *    `busy_blocks` cache. The reassign swap rides `allow_double_book`, so a
+ *    stale-cache "free" would silently double-book the covering agent, exactly
+ *    when calendars are churning (the red-team's critical catch).
+ *  - `isUnderCap` is consulted ONLY for a candidate already confirmed free, in
+ *    round-robin order, so a busy agent never costs a cap read and a
+ *    free-but-over-cap agent is passed over for the next free+under-cap one.
+ *
+ * A null assignment means unplaceable at this time. `anyUnverified` is true only
+ * when nobody was placeable AND at least one candidate could not be verified (a
+ * read error / outage), so the bulk engine can tell a genuine no-coverage miss
+ * (report it) from an outage (retry the item next tick), mirroring `selectAgent`.
+ * Over-cap is a definite exclusion, never an outage, so it never sets the flag.
+ * Injected deps keep this pure and testable without DB/Google.
+ */
+export async function selectReassignTarget(
+  candidates: string[],
+  excludeUserId: string | null,
+  loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
+  verifyFree: (emails: string[]) => Promise<VerifyResult>,
+  isUnderCap: (userId: string) => Promise<boolean>,
+  batchSize: number,
+): Promise<SelectionOutcome> {
+  const eligible = candidates.filter((id) => id !== excludeUserId);
+  let anyUnverified = false;
+  for (let i = 0; i < eligible.length; i += batchSize) {
+    const waveIds = eligible.slice(i, i + batchSize);
+    const emailById = await loadEmails(waveIds);
+    // Preserve round-robin order; drop candidates with no resolvable email.
+    const wave: AssignResult[] = [];
+    for (const userId of waveIds) {
+      const email = emailById.get(userId);
+      if (email) wave.push({ userId, email });
+    }
+    if (wave.length === 0) continue;
+    const { free, unverified } = await verifyFree(wave.map((c) => c.email));
+    if (unverified.size > 0) anyUnverified = true;
+    for (const candidate of wave) {
+      // Cap is checked only for a confirmed-free candidate, in order, so the
+      // first free+under-cap agent wins and a busy agent costs no cap read.
+      if (free.has(candidate.email) && (await isUnderCap(candidate.userId))) {
+        return { assignment: candidate, anyUnverified };
+      }
+    }
+  }
+  return { assignment: null, anyUnverified };
+}
+
 /** Busy interval as returned by Google freeBusy (ISO start/end). */
 export interface BusyInterval {
   start: string;
