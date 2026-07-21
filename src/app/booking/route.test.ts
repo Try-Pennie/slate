@@ -77,6 +77,36 @@ describe("POST /booking (embed) error mapping", () => {
     expect(service.createBooking).not.toHaveBeenCalled();
   });
 
+  // #962: the edge per-minute window has no refund path, so a transient server
+  // outage (503) still consumes one of the lead's 3/min. A block is normally a
+  // spammy visitor (not an incident, so no alert), but every booking 429 is logged
+  // with its scope + ip at a queryable tag/level so a too-tight limit surfaces: a
+  // cluster of edge-minute 429s from many distinct IPs is the signal.
+  it("logs a queryable throttle line naming the edge-minute scope + ip (#962)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+
+    const res = await post(VALID_BODY);
+
+    expect(res.status).toBe(429);
+    const line = info.mock.calls.map(String).find((l) => l.includes("tag=booking-rate-limit"));
+    expect(line).toBeDefined();
+    expect(line).toContain('scope="edge-minute"');
+    expect(line).toContain('ip="203.0.113.1"');
+    info.mockRestore();
+  });
+
+  it("logs the throttle line with the hourly scope when the DB cap blocks (#962)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    rateLimit.allowRequest.mockResolvedValueOnce(false);
+
+    await post(VALID_BODY);
+
+    const line = info.mock.calls.map(String).find((l) => l.includes("tag=booking-rate-limit"));
+    expect(line).toContain('scope="hourly"');
+    info.mockRestore();
+  });
+
   it("refunds only the hourly cap on a verify outage (the edge burst window can't be refunded)", async () => {
     service.createBooking.mockRejectedValueOnce(new service.VerifyUnavailableError("outage"));
     const res = await post(VALID_BODY);
