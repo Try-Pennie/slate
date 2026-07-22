@@ -2,10 +2,12 @@
 // and the when-line formatter (format parity with the Apps Script).
 // Run: node --experimental-strip-types scripts/test-ooo-core.ts
 import {
+  agentDisplayName,
   canCancel,
   canModerate,
   canModify,
   canTransition,
+  formatRequestWhenAndReason,
   formatWhenLine,
   normalizeTzLabel,
   overlaps,
@@ -122,6 +124,39 @@ assert(
     "America/New_York",
   ).includes("–"),
   "no unicode dashes in the when line",
+);
+
+// --- shared pending-request description (#1002) ---
+// The digest line and the manager notification both describe one request; the
+// agent-name resolution and the "when + reason" body are now defined once here.
+assert(
+  agentDisplayName({ name: "Jane Smith", email: "jane@x.com" }) === "Jane Smith",
+  "agentDisplayName prefers the name",
+);
+assert(
+  agentDisplayName({ name: null, email: "jane@x.com" }) === "jane@x.com",
+  "agentDisplayName falls back to email when name is null",
+);
+assert(
+  agentDisplayName(null) === "An agent",
+  "agentDisplayName falls back to a neutral label when the agent is unknown",
+);
+
+const reqDesc = {
+  starts_at: "2025-10-07T20:00:00Z",
+  ends_at: "2025-10-07T22:00:00Z",
+  display_tz_id: "America/New_York",
+  display_tz_label: "ET",
+  reason: "vacation",
+};
+assert(
+  formatRequestWhenAndReason(reqDesc) ===
+    `${formatWhenLine(reqDesc.starts_at, reqDesc.ends_at, reqDesc.display_tz_id, reqDesc.display_tz_label)}\nReason: vacation`,
+  "formatRequestWhenAndReason is the when line then the reason line",
+);
+assert(
+  !formatRequestWhenAndReason(reqDesc).includes("Notes:"),
+  "the shared description carries no notes (notes stay with the notification)",
 );
 
 finish();

@@ -1,11 +1,13 @@
 // Relative value import so this module runs under `node --experimental-strip-types`
 // in tests (type-only "@/" imports are erased anyway).
 import {
+  agentDisplayName,
   canCancel,
   canModerate,
   canModify,
   DEFAULT_REJECTION_NOTE,
   DUPLICATE_REQUEST_MESSAGE,
+  formatRequestWhenAndReason,
   formatWhenLine,
   NO_MANAGER_MESSAGE,
   overlaps,
@@ -298,10 +300,9 @@ function managerNotice(
   status: keyof typeof STATUS_LINE,
 ): string {
   return (
-    `*${heading}* from ${agent.name ?? agent.email}\n` +
+    `*${heading}* from ${agentDisplayName(agent)}\n` +
     `${STATUS_LINE[status]}\n` +
-    `${whenLineFor(request)}\n` +
-    `Reason: ${request.reason}` +
+    `${formatRequestWhenAndReason(request)}` +
     (request.notes ? `\nNotes: ${request.notes}` : "") +
     `\n<${reviewUrl(deps, request.id)}|Review it here>`
   );

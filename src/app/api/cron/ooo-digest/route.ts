@@ -9,7 +9,7 @@ import {
   type DigestManager,
   type DigestPendingRequest,
 } from "@/lib/ooo/digest";
-import { formatWhenLine } from "@/lib/ooo/core";
+import { agentDisplayName, formatRequestWhenAndReason } from "@/lib/ooo/core";
 import type { OooRequest } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
@@ -115,12 +115,12 @@ export async function GET(req: NextRequest) {
   // digest builder turns them into per-request Approve/Decline rows (#194).
   const pending: DigestPendingRequest[] = pendingReqs.map((r) => {
     const agent = r.user_id ? usersById.get(r.user_id) : null;
-    const who = agent?.name ?? agent?.email ?? "An agent";
-    const when = formatWhenLine(r.starts_at, r.ends_at, r.display_tz_id, r.display_tz_label);
+    // Agent label + when/reason body come from the shared builders (#1002) so this
+    // line can never drift from the per-request manager notification.
     return {
       id: r.id,
       manager_id: r.manager_id,
-      line: `*${who}* wants time off\n${when}\nReason: ${r.reason}`,
+      line: `*${agentDisplayName(agent)}* wants time off\n${formatRequestWhenAndReason(r)}`,
     };
   });
 
