@@ -189,10 +189,15 @@ uses. (Cloudflare's native Health Checks were considered but need a paid plan; t
    if it stops serving, every landing page that embeds Slate loses its booker.
 4. `GET /` expects `200`. Cheap catch for a broken deploy.
 
-Alert threshold: page after 2 consecutive failed checks (about 10 min) so a single
-transient blip does not alarm. Verify each check actually fails when it should:
-point it at a deliberately bad path once, confirm the Slack alert fires, then point
-it back. A check that can only ever pass is worse than no check.
+Alerting: noodge's alert-on-failure default is fine here. These endpoints are
+built to return `503` only on a sustained, real condition (a cron lane well past
+its bound, a genuinely empty well-staffed tier), not on momentary flicker, so a
+first-failure alert will not be noisy, and a server-side debounce could not smooth
+a network blip between noodge and Slate anyway (it never reaches the endpoint). If
+noodge offers a "retry once before alerting" option, turn it on to trim those
+transport blips. Verify each check actually fails when it should: point it at a
+deliberately bad path once, confirm the Slack alert fires, then point it back. A
+check that can only ever pass is worse than no check.
 
 The availability canary's paging rule (tunable constants in
 `src/lib/monitor/availability-canary.ts`): a single broken tier with at least 3
