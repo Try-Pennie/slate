@@ -5,8 +5,12 @@ name: Smoke canary
 #   - every 30 min: the side-effect-free dry-run health tick (SMOKE_DRY_RUN_ONLY)
 #   - every 6h:     the full strict pass (SMOKE_STRICT) plus the reschedule smoke
 # On success it stamps the smoke-canary heartbeat, so a schedule that silently
-# stops firing goes stale and the lane-watchdog pages (CANARY_STALE_BOUNDS_MS). Any
-# failure (a real regression, or a bad key / missing fixture) posts a Slack alert.
+# stops firing goes stale and the lane-watchdog pages (CANARY_STALE_BOUNDS_MS). The
+# full pass ALSO stamps a separate smoke-canary-full heartbeat (#982): the dry tick
+# keeps smoke-canary fresh every 30 min, so without its own heartbeat a
+# silently-dropped 6h full run (the only automated proof a booking can be made,
+# rescheduled, and cancelled) would never go stale and never page. Any failure (a
+# real regression, or a bad key / missing fixture) posts a Slack alert.
 # workflow_dispatch runs either pass on demand.
 #
 # GitHub's schedule below is best-effort and DROPS runs under load (observed 2-3h
@@ -112,6 +116,20 @@ jobs:
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat" \
+            -H "authorization: Bearer $BOOKING_API_KEY"
+
+      # #982: stamp the SEPARATE smoke-canary-full heartbeat, but only after a
+      # successful FULL pass. The dry tick keeps smoke-canary fresh every 30 min,
+      # so this is the only signal that the full book/reschedule/cancel proof is
+      # still running; a dropped 6h run leaves this heartbeat to go stale and page.
+      - name: Stamp full-pass canary heartbeat (full pass success only)
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=smoke-canary-full" \
             -H "authorization: Bearer $BOOKING_API_KEY"
 
       - name: Slack alert on failure

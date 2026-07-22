@@ -29,9 +29,26 @@ export const CANARY_TRIGGER_STALE_MS = 40 * 60_000;
  *  invocations so the lane can safely run twice. */
 export const CANARY_DISPATCH_COOLDOWN_MS = 15 * 60_000;
 
+/** Full-pass parity (#982). The 6h full book/reschedule/cancel pass stamps its
+ *  OWN `smoke-canary-full` heartbeat, so a dropped full run no longer hides
+ *  behind the 30m dry tick's stamp. GitHub's cadence for it is 6h; step in only
+ *  after a 30m grace so a merely-late (not dropped) scheduled run is not
+ *  double-fired. This sits well under the 8h watchdog backstop
+ *  (CANARY_STALE_BOUNDS_MS["smoke-canary-full"]), so the gap-fill normally
+ *  recovers the pass before the watchdog pages. */
+export const CANARY_FULL_TRIGGER_STALE_MS = 390 * 60_000;
+
+/** A full gap-fill fires a real booking pass, so hold off longer than the dry
+ *  cooldown before re-firing. Realised as a NOT-released DB lock in the wiring. */
+export const CANARY_FULL_DISPATCH_COOLDOWN_MS = 30 * 60_000;
+
 export interface CanaryTriggerDeps {
   /** Current time (ms). */
   now: number;
+  /** How long the heartbeat may age before the gap-filler steps in. Defaults to
+   *  CANARY_TRIGGER_STALE_MS (the 40m dry threshold); the full pass injects
+   *  CANARY_FULL_TRIGGER_STALE_MS. Lets one orchestration serve both passes. */
+  staleMs?: number;
   /** GITHUB_CANARY_TOKEN; "" means not configured yet (quiet no-op). */
   token: string;
   /** Last `smoke-canary` heartbeat (ms), or null if it has never stamped. */
@@ -71,6 +88,7 @@ const CANARY_WORKFLOW_FILE = "smoke-canary.yml";
  */
 export async function postCanaryWorkflowDispatch(
   token: string,
+  mode: "dry" | "full" = "dry",
 ): Promise<{ ok: boolean; status: number }> {
   const res = await fetch(
     `https://api.github.com/repos/${CANARY_REPO}/actions/workflows/${CANARY_WORKFLOW_FILE}/dispatches`,
@@ -83,16 +101,78 @@ export async function postCanaryWorkflowDispatch(
         // GitHub rejects API calls with no User-Agent.
         "user-agent": "slate-canary-gapfill",
       },
-      body: JSON.stringify({ ref: "main", inputs: { mode: "dry" } }),
+      body: JSON.stringify({ ref: "main", inputs: { mode } }),
     },
   );
   return { ok: res.ok, status: res.status };
+}
+
+/** Everything the two gap-fills (dry + full) share, injected once. `dispatch` and
+ *  `acquireLock` take the pass/lock so the wiring below picks the right one. */
+export interface CanaryGapFillWiring {
+  now: number;
+  token: string;
+  /** Read a heartbeat lane's last-stamp (ms) or null. */
+  readHeartbeatMs: (lane: string) => Promise<number | null>;
+  /** Reserve a NOT-released cooldown lock by name+ttl; true = won it. */
+  acquireLock: (name: string, ttlMs: number) => Promise<boolean>;
+  /** POST a workflow_dispatch for the given pass. */
+  dispatch: (mode: "dry" | "full") => Promise<{ ok: boolean; status: number }>;
+  onInfo?: (msg: string) => void;
+  onError?: (msg: string, err?: unknown) => void;
+}
+
+/**
+ * Run BOTH canary gap-fills with their correct lane, lock, threshold, and pass
+ * (#982). The dry tick (`smoke-canary`, 40m threshold, `canary_dispatch` lock,
+ * mode=dry) and the full pass (`smoke-canary-full`, 6h30m threshold,
+ * `canary_dispatch_full` lock, mode=full) are near-identical wiring that is easy
+ * to get subtly wrong: a swapped lane or lock would silently leave one pass
+ * ungap-filled while looking correct. Keeping it here (one tested place) rather
+ * than inline in the cron lane makes that wiring assertable.
+ *
+ * Each call is isolated: a throw in one (a heartbeat/lock read error) is reported
+ * and returns null for that pass, so it can never skip the other. Never throws.
+ */
+export async function runCanaryGapFills(
+  w: CanaryGapFillWiring,
+): Promise<{ dry: CanaryTriggerResult | null; full: CanaryTriggerResult | null }> {
+  const one = async (
+    extra: Pick<CanaryTriggerDeps, "staleMs" | "readHeartbeatMs" | "acquireDispatchLock" | "dispatch">,
+  ): Promise<CanaryTriggerResult | null> => {
+    try {
+      return await triggerCanaryGapFill({
+        now: w.now,
+        token: w.token,
+        onInfo: w.onInfo,
+        onError: w.onError,
+        ...extra,
+      });
+    } catch (err) {
+      (w.onError ?? (() => {}))("canary gap-fill: wiring threw", err);
+      return null;
+    }
+  };
+
+  const dry = await one({
+    readHeartbeatMs: () => w.readHeartbeatMs("smoke-canary"),
+    acquireDispatchLock: () => w.acquireLock("canary_dispatch", CANARY_DISPATCH_COOLDOWN_MS),
+    dispatch: () => w.dispatch("dry"),
+  });
+  const full = await one({
+    staleMs: CANARY_FULL_TRIGGER_STALE_MS,
+    readHeartbeatMs: () => w.readHeartbeatMs("smoke-canary-full"),
+    acquireDispatchLock: () => w.acquireLock("canary_dispatch_full", CANARY_FULL_DISPATCH_COOLDOWN_MS),
+    dispatch: () => w.dispatch("full"),
+  });
+  return { dry, full };
 }
 
 export async function triggerCanaryGapFill(
   deps: CanaryTriggerDeps,
 ): Promise<CanaryTriggerResult> {
   const { now, token, readHeartbeatMs, acquireDispatchLock, dispatch } = deps;
+  const staleMs = deps.staleMs ?? CANARY_TRIGGER_STALE_MS;
   const info = deps.onInfo ?? (() => {});
   const error = deps.onError ?? (() => {});
 
@@ -101,7 +181,7 @@ export async function triggerCanaryGapFill(
   // null would also fire forever when the canary is not configured.
   if (heartbeatMs === null) return { dispatched: false, reason: "never-stamped" };
   // GitHub's schedule is keeping the heartbeat fresh: nothing to do.
-  if (now - heartbeatMs <= CANARY_TRIGGER_STALE_MS) return { dispatched: false, reason: "fresh" };
+  if (now - heartbeatMs <= staleMs) return { dispatched: false, reason: "fresh" };
 
   // Stale: GitHub dropped a run. Fill the gap if we can.
   if (!token) {

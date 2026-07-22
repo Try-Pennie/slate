@@ -32,9 +32,8 @@ import {
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
-  triggerCanaryGapFill,
+  runCanaryGapFills,
   postCanaryWorkflowDispatch,
-  CANARY_DISPATCH_COOLDOWN_MS,
 } from "@/lib/monitor/canary-trigger";
 import { githubCanaryToken } from "@/lib/env";
 import {
@@ -509,14 +508,20 @@ export async function GET(req: NextRequest) {
     // double-fire. GitHub's own schedule stays on as a backup (the smoke-canary
     // concurrency group dedupes overlap). Quiet no-op until GITHUB_CANARY_TOKEN is
     // set. Never throws.
+    // Both canary gap-fills (#525 dry + #982 full) in one tested helper: each fires
+    // its workflow pass only when its OWN heartbeat is stale (GitHub dropped that
+    // run), throttled by its own NOT-released dispatch lock so it can't double-fire.
+    // The full pass creates real bookings on the SMOKE test agents (webhooks are
+    // suppressed for is_test), the same side effect as the scheduled 6h run; the
+    // lane-watchdog backstop still pages if both GitHub AND the gap-fill fail it.
+    // Quiet no-op until GITHUB_CANARY_TOKEN is set. Never throws.
     const canaryToken = githubCanaryToken();
-    await triggerCanaryGapFill({
+    await runCanaryGapFills({
       now,
       token: canaryToken,
-      readHeartbeatMs: () => readHeartbeatMs("smoke-canary"),
-      acquireDispatchLock: async () =>
-        (await acquireLock("canary_dispatch", CANARY_DISPATCH_COOLDOWN_MS)) !== null,
-      dispatch: () => postCanaryWorkflowDispatch(canaryToken),
+      readHeartbeatMs,
+      acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
+      dispatch: (mode) => postCanaryWorkflowDispatch(canaryToken, mode),
       onInfo: (msg) => log.info("canary-trigger", { msg }),
       onError: (msg, err) => log.error("canary-trigger", { msg }, err),
     }).catch((err) => log.error("canary-trigger", { msg: "gap-fill threw" }, err));
