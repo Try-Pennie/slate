@@ -109,6 +109,42 @@ holds one entry (`widget-embed.test.ts`, which drives the real `widget.js` in a
 browser environment). That guard fails the build if the boundary erodes again.
 Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
 
+# What CI covers, and the deliberate no-browser-layer decision
+
+CI green here means **unit logic + a full production build**, not a browser or
+end to end pass. The pyramid is intentionally bottom heavy: ~120 node script
+suites (`pnpm test`) plus the vitest suites (`pnpm test:components`, glue and a
+handful of component tests) all run in the pre-push gate and in CI, and
+`pnpm cf:build` proves the Worker actually builds. There is **no Playwright config
+in the repo** and **no automated browser test in CI**, on purpose (#611, audit
+AUD-037). Visual and DOM checks are done with the Playwright MCP against a running
+dev server during development, not wired into CI.
+
+**Why not CI Playwright (yet):** `next dev` screenshots are unstable to automate
+(the `.pn-*` entrance/pulse keyframes never settle and font loading stalls a
+full page shot, see the screenshotting section below), so a headless browser job
+would be flaky for the payoff. The risky mock seams that a browser layer would
+guard, the Supabase query chains and the Google Calendar shapes, and the embed
+(`widget.js`) contract and full booking funnel, are covered a different way:
+
+- **The scheduled production canary** (`.github/workflows/smoke-canary.yml`, the
+  #455 / #483 / #525 cluster) runs the real smoke scripts against **live prod** on
+  the isolated SMOKE test agents and buckets (#396, so they can never touch a real
+  agent): a side effect free dry run health tick every 30 min, and every 6h a full
+  `SMOKE_STRICT` pass plus the reschedule smoke, which is the only automated proof
+  that a booking can be made, rescheduled, and cancelled end to end. Any failure
+  posts a Slack alert.
+- **A dead man's switch**: each pass stamps a heartbeat, and the lane watchdog
+  pages if the schedule silently stops firing (GitHub drops scheduled runs under
+  load), with a separate `smoke-canary-full` heartbeat so a dropped 6h run also
+  goes stale and pages (#982). The Worker monitor lane refires the workflow via
+  the GitHub API when the heartbeat goes stale (`src/lib/monitor/canary-trigger.ts`).
+
+So the safety net for the funnel lives **post deploy** (canary + alert), not
+pre merge (browser CI). If you are tempted to add a Playwright CI job, read this
+section and #611 first: the decision is deliberate, and the compensating canary is
+the thing to keep healthy instead.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
