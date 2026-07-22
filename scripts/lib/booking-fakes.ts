@@ -670,6 +670,9 @@ export function makeDeps(opts: FakeOpts) {
     recordRoutingDecision: async (input) => {
       calls.recordRoutingDecision.push(input);
     },
+    // #827: no divergence measure in the fake by default; a test that exercises
+    // it can override deps.displayedTier after building the deps.
+    displayedTier: async () => null,
     loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
     removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
     bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },

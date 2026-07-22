@@ -776,6 +776,14 @@ export interface BookingDeps {
    * -log failure never affects the booking.
    */
   recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void>;
+  /**
+   * The tier the availability cache CURRENTLY displays for a bucket code, or null
+   * (#827). Read once on a fresh confirm, before write-through mutates the cache,
+   * so createBooking can measure when verify-on-book dropped a further rung
+   * between what the booker showed and what it actually booked. Best-effort: a
+   * read error or a hidden test bucket returns null and simply skips the measure.
+   */
+  displayedTier(bucketCode: string): Promise<string | null>;
 }
 
 /** Alert once a queued deletion has failed this many times. */
@@ -1538,6 +1546,12 @@ export async function createBooking(
     if (inFlight) return completeReservation(deps, inFlight);
   }
 
+  // The tier the availability cache shows for the requested bucket RIGHT NOW,
+  // read before assign (and before the confirm's write-through mutates the
+  // cache) so we can measure runtime divergence once the booking lands (#827).
+  // Best-effort: a null (read failed, or a hidden test bucket) skips the measure.
+  const displayedTier = await deps.displayedTier(input.bucketCode).catch(() => null);
+
   // Fresh create: cascade down the tier ladder if the requested bucket has no
   // agent free for the slot. A crash before the reservation strands nothing.
   let tier: TierAssignResult;
@@ -1658,7 +1672,29 @@ export async function createBooking(
     payload: { booking: bookingInsert, event, bucketCode: input.bucketCode },
   });
 
-  return completeReservation(deps, reservation);
+  const result = await completeReservation(deps, reservation);
+
+  // Runtime half of AUD-061 (#827): the booker showed a slot from `displayedTier`
+  // but live verify-on-book may have dropped a further rung to `bookedTier`. Log
+  // (do not alert) each divergence; a spike flags cache staleness or a routing
+  // problem. Best-effort: never affect the booking result.
+  try {
+    const bookedTier = tierKeyOf(bookedBucket.code);
+    if (displayedTier && bookedTier && displayedTier !== bookedTier) {
+      log.info("tier-divergence", {
+        msg: "displayed tier differs from booked tier at confirm",
+        bucket: input.bucketCode,
+        requested_tier: tierKeyOf(input.bucketCode),
+        displayed_tier: displayedTier,
+        booked_tier: bookedTier,
+        rungs_dropped: tier.rungsDropped,
+        booking_id: result.booking.id,
+      });
+    }
+  } catch {
+    // never let the measure affect a successful booking
+  }
+  return result;
 }
 
 /**
