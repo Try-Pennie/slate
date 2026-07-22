@@ -1,10 +1,15 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import { DateTimeField } from "@/components/ui/DateTimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { useStalledAfter } from "@/lib/useStalledAfter";
+import { allTimeZones, humanizeZone, isKnownTimeZone } from "@/lib/booking/timezones";
 import type { OooFormState } from "@/app/me/actions";
+
+// Sentinel <option> value that reveals the searchable full-IANA fallback (#1007,
+// mirroring the booker's #219 picker); a real zone id can never collide with it.
+const MORE_ZONES = "__more_zones__";
 
 /**
  * The agent's request/edit time-off form. Client-side so it can use
@@ -69,6 +74,20 @@ export function OooForm({
   const [notes, setNotes] = useState(editing?.notes ?? "");
   const [allDay, setAllDay] = useState(editing?.allDay ?? false);
   const [timezone, setTimezone] = useState(defaultTz);
+  // The searchable "more zones" fallback (#1007): the full IANA set, revealed only
+  // when the agent's correct zone is neither the default nor curated. Empty on a
+  // runtime without Intl.supportedValuesOf, in which case the fallback stays hidden.
+  const [showAllZones, setShowAllZones] = useState(false);
+  const allZones = useMemo(() => allTimeZones(), []);
+  // Curated list plus, if the agent picked a zone from the full-list fallback that
+  // isn't curated, that zone too, so the <select value> never blanks.
+  const selectOptions = useMemo(
+    () =>
+      tzOptions.some((o) => o.value === timezone)
+        ? tzOptions
+        : [{ value: timezone, label: humanizeZone(timezone) }, ...tzOptions],
+    [tzOptions, timezone],
+  );
   // Watchdog: a submit should take ~1s. If it's still in flight after this, a
   // request somewhere wedged (cold server, dropped connection), so stop looking
   // successful and tell the agent how to recover instead of spinning forever.
@@ -276,16 +295,53 @@ export function OooForm({
               name="timezone"
               aria-label="Timezone"
               value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
+              onChange={(e) => {
+                if (e.target.value === MORE_ZONES) {
+                  setShowAllZones(true);
+                  return;
+                }
+                setTimezone(e.target.value);
+                setShowAllZones(false);
+              }}
               className={tzInputCls}
             >
-              {tzOptions.map((tz) => (
+              {selectOptions.map((tz) => (
                 <option key={tz.value} value={tz.value}>
                   {tz.label}
                 </option>
               ))}
+              {allZones.length > 0 && <option value={MORE_ZONES}>More zones...</option>}
             </select>
           </label>
+          {showAllZones && allZones.length > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              {/* Native datalist: free keyboard + screen-reader support, no custom
+                  ARIA. isKnownTimeZone gates the free text so a typo can't apply a
+                  bad zone; a valid pick applies it and collapses the search (#1007). */}
+              <input
+                list="ooo-all-tz"
+                aria-label="Search all timezones"
+                autoFocus
+                placeholder="Type a city or region"
+                defaultValue=""
+                onChange={(e) => {
+                  const picked = e.target.value;
+                  if (isKnownTimeZone(picked)) {
+                    setTimezone(picked);
+                    setShowAllZones(false);
+                  }
+                }}
+                className={tzInputCls}
+              />
+              <datalist id="ooo-all-tz">
+                {allZones.map((z) => (
+                  <option key={z} value={z}>
+                    {humanizeZone(z)}
+                  </option>
+                ))}
+              </datalist>
+            </div>
+          )}
         </div>
 
         <div className="mt-4">

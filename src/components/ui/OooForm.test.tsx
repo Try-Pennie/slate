@@ -89,6 +89,37 @@ describe("OooForm", () => {
       expect(screen.queryByText("Request sent!")).toBeNull(),
     );
   });
+
+  // #1007: an agent whose correct zone isn't in the curated list can still pick it
+  // through the searchable full-IANA fallback, matching the booker (#219) and the
+  // manage/reschedule screen (#1000).
+  it("applies a non-curated zone picked from the 'more zones' search and collapses it", async () => {
+    renderForm(vi.fn(async (): Promise<OooFormState> => ({ error: null })));
+    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
+    expect(screen.getByRole("option", { name: /more zones/i })).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: "__more_zones__" } });
+    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "Australia/Sydney" } });
+
+    // The zone is applied (the timezone field now submits it) and the search collapses.
+    expect(select.value).toBe("Australia/Sydney");
+    expect(screen.queryByLabelText("Search all timezones")).toBeNull();
+  });
+
+  it("ignores an invalid zone typed into the fallback search (no bad zone applied)", async () => {
+    renderForm(vi.fn(async (): Promise<OooFormState> => ({ error: null })));
+    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
+    const before = select.value;
+
+    fireEvent.change(select, { target: { value: "__more_zones__" } });
+    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "Not/AZone" } });
+
+    // Junk is rejected: the applied zone is unchanged and the search stays open.
+    expect(select.value).toBe(before);
+    expect(screen.getByLabelText("Search all timezones")).toBeTruthy();
+  });
 });
 
 beforeEach(() => {
