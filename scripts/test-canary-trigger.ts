@@ -29,7 +29,11 @@ import {
   type CanaryGapFillWiring,
   type CanaryTriggerDeps,
 } from "@/lib/monitor/canary-trigger";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+
+const ROOT = join(import.meta.dirname, "..");
 
 const NOW = 1_800_000_000_000;
 const FRESH_AGE = 30 * 60_000; // < 40m threshold
@@ -210,26 +214,64 @@ async function main() {
     eq(r.reason, "fresh", "no staleMs override keeps the 40m dry threshold (35m is fresh)");
   }
 
-  // 13. postCanaryWorkflowDispatch puts the requested pass into the dispatch body,
-  //     so the gap-fill can trigger a FULL run, not only the dry one. Drives the
-  //     real fetch glue against a fake global fetch.
+  // 13. postCanaryWorkflowDispatch: pin the FULL GitHub API payload and LOCK it to
+  //     the real workflow file (#983). The orchestration tests inject a fake
+  //     dispatch, so without this the real URL, headers, and body are unverified: a
+  //     rename of the workflow file, a changed API endpoint, or a dropped `mode`
+  //     input option would silently break the Worker trigger, and the only symptom
+  //     would be the same stale-heartbeat page the gap-filler exists to prevent.
   {
     const realFetch = globalThis.fetch;
-    const bodies: string[] = [];
-    globalThis.fetch = (async (_url: string, init: { body?: string }) => {
-      bodies.push(String(init?.body ?? ""));
+    const captured: { url: string; init: { method?: string; headers?: HeadersInit; body?: string } }[] = [];
+    globalThis.fetch = (async (url: string, init: { method?: string; headers?: HeadersInit; body?: string }) => {
+      captured.push({ url: String(url), init: init ?? {} });
       return { ok: true, status: 204 } as Response;
     }) as typeof fetch;
     try {
-      await postCanaryWorkflowDispatch("tok", "full");
-      await postCanaryWorkflowDispatch("tok", "dry");
-      await postCanaryWorkflowDispatch("tok"); // default
+      await postCanaryWorkflowDispatch("ghp_tok", "full");
+      await postCanaryWorkflowDispatch("ghp_tok", "dry");
+      await postCanaryWorkflowDispatch("ghp_tok"); // default pass
     } finally {
       globalThis.fetch = realFetch;
     }
-    assert(/"mode":"full"/.test(bodies[0]), `full dispatch body carries mode=full (got ${bodies[0]})`);
-    assert(/"mode":"dry"/.test(bodies[1]), `dry dispatch body carries mode=dry (got ${bodies[1]})`);
-    assert(/"mode":"dry"/.test(bodies[2]), `default dispatch body is mode=dry (got ${bodies[2]})`);
+
+    // Contract with the workflow file: the endpoint must target the REAL workflow
+    // by basename, so renaming smoke-canary.yml (or moving the repo) breaks this.
+    const wfName = "smoke-canary.yml";
+    assert(
+      existsSync(join(ROOT, ".github", "workflows", wfName)),
+      "the workflow file the dispatch URL names actually exists",
+    );
+    eq(
+      captured[0].url,
+      `https://api.github.com/repos/Try-Pennie/slate/actions/workflows/${wfName}/dispatches`,
+      "POSTs the workflow_dispatch endpoint for the real workflow file",
+    );
+
+    // Method + headers GitHub requires (a missing User-Agent is rejected outright).
+    const h = new Headers(captured[0].init.headers);
+    eq(captured[0].init.method, "POST", "uses POST");
+    eq(h.get("authorization"), "Bearer ghp_tok", "sends the caller's token as a Bearer credential");
+    assert((h.get("user-agent") ?? "").length > 0, "sends a User-Agent (GitHub rejects calls without one)");
+    eq(h.get("x-github-api-version"), "2022-11-28", "pins the GitHub REST API version");
+    assert(/vnd\.github/.test(h.get("accept") ?? ""), "asks for the GitHub JSON media type");
+
+    // Body: ref main + the requested mode, and that mode MUST be one the workflow
+    // actually accepts, so dropping `dry` or `full` from the YAML breaks this test.
+    const wf = readFileSync(join(ROOT, ".github", "workflows", wfName), "utf8");
+    const modeOptions = (wf.match(/options:\s*\[([^\]]+)\]/)?.[1] ?? "")
+      .split(",")
+      .map((s) => s.trim());
+    assert(
+      modeOptions.includes("dry") && modeOptions.includes("full"),
+      `the workflow's mode input still offers dry and full (got ${JSON.stringify(modeOptions)})`,
+    );
+    const body0 = JSON.parse(String(captured[0].init.body));
+    eq(body0.ref, "main", "dispatches against the main branch");
+    assert(modeOptions.includes(body0.inputs.mode), "the dispatched mode is a valid workflow input option");
+    eq(body0.inputs.mode, "full", "the first call requested the full pass");
+    eq(JSON.parse(String(captured[1].init.body)).inputs.mode, "dry", "the second call requested the dry pass");
+    eq(JSON.parse(String(captured[2].init.body)).inputs.mode, "dry", "the default pass is dry");
   }
 
   // --- runCanaryGapFills wiring (#982): the two near-identical gap-fills are easy
