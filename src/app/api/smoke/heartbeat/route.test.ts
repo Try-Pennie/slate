@@ -17,10 +17,12 @@ vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import { POST } from "./route";
 
-function post(authorization?: string) {
+function post(authorization?: string, lane?: string) {
   const headers = new Headers();
   if (authorization) headers.set("authorization", authorization);
-  return POST(new Request("http://localhost/api/smoke/heartbeat", { method: "POST", headers }) as never);
+  const url =
+    "http://localhost/api/smoke/heartbeat" + (lane !== undefined ? `?lane=${encodeURIComponent(lane)}` : "");
+  return POST(new Request(url, { method: "POST", headers }) as never);
 }
 
 beforeEach(() => {
@@ -64,5 +66,48 @@ describe("POST /api/smoke/heartbeat (#525)", () => {
     const res = await post("Bearer new-secret");
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary");
+  });
+
+  // #982: the full book/reschedule/cancel pass stamps its OWN heartbeat so a
+  // silently-dropped full run is no longer masked by the 30-min dry tick.
+  it("stamps smoke-canary-full when lane=smoke-canary-full", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", "smoke-canary-full");
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary-full");
+  });
+
+  it("defaults to the smoke-canary lane when no lane is given", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret");
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary");
+  });
+
+  // Security scoping: the endpoint must only stamp canary lanes. A bearer-key
+  // holder stamping a real cron lane (e.g. `sync`) would keep the dead-man's
+  // switch looking alive while that lane is actually dead, so an unknown lane is
+  // rejected and stamps NOTHING.
+  it("rejects a real cron lane with 400 and stamps nothing", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", "sync");
+    expect(res.status).toBe(400);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown lane with 400 and stamps nothing", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", "bogus");
+    expect(res.status).toBe(400);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  // Auth is checked BEFORE the lane, so a bad key on a bogus lane is still a 401
+  // (do not leak which lanes are valid to an unauthenticated caller).
+  it("checks auth before the lane (wrong key on a bogus lane is 401)", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    const res = await post("Bearer wrong", "bogus");
+    expect(res.status).toBe(401);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 });

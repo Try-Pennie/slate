@@ -160,6 +160,51 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     });
 
+    // #982: the 6h full book/reschedule/cancel pass stamps its OWN
+    // `smoke-canary-full` heartbeat. When it goes stale, the copy must be
+    // full-pass-specific and point at re-running the FULL pass, not the generic
+    // dry-canary message.
+    it("alerts with full-pass-specific copy when smoke-canary-full is stale", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": ago(20 * MIN), // dry tick fine
+        "smoke-canary-full": ago(9 * 60 * MIN), // bound is 8h
+      });
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).toContain("smoke-canary-full");
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+      const [key, , text] = dispatch.sendThrottledAlert.mock.calls[0] as unknown as [
+        string,
+        number,
+        string,
+      ];
+      expect(key).toContain("smoke-canary-full");
+      // Names the full end-to-end pass and how to recover it (mode=full), so the
+      // page is actionable and distinct from the dry-tick alert.
+      expect(text).toMatch(/full/i);
+      expect(text).toMatch(/reschedule|cancel|end to end/i);
+      expect(text).toMatch(/mode.*full|Run workflow|Actions/i);
+    });
+
+    it("keys the dry and full canary alerts separately (one can't throttle the other)", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": ago(120 * MIN),
+        "smoke-canary-full": ago(9 * 60 * MIN),
+      });
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane).sort()).toEqual(["smoke-canary", "smoke-canary-full"]);
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
+      const keys = (dispatch.sendThrottledAlert.mock.calls as unknown as [string, number, string][]).map(
+        (c) => c[0],
+      );
+      expect(new Set(keys).size).toBe(2);
+    });
+
     it("reports both a stale cron lane and a stale canary in one tick", async () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue({
         ...healthy(),

@@ -52,9 +52,19 @@ export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
  * frequent cadence so ordinary GitHub scheduling jitter (scheduled runs are often
  * delayed several minutes) can't trip a false alert; only a schedule that has
  * genuinely stopped, or is failing before it can stamp, does.
+ *
+ * `smoke-canary-full` is tracked SEPARATELY (#982). The dry tick and the full pass
+ * used to share the one `smoke-canary` stamp, so the 30-min dry tick kept it fresh
+ * and a silently-dropped 6h full run (the only automated proof a booking can
+ * actually be created, rescheduled, and cancelled) never went stale and never
+ * paged. The full pass now stamps its own heartbeat, judged against an 8h bound:
+ * above the 6h cadence and the 6h30m gap-fill trigger, so the Worker gap-filler
+ * normally re-runs the full pass before this backstop pages, and only a full pass
+ * that both GitHub AND the gap-filler have failed to complete trips it.
  */
 export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   "smoke-canary": 90 * MIN,
+  "smoke-canary-full": 8 * 60 * MIN,
 };
 
 export interface StaleLane {

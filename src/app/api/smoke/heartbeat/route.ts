@@ -16,15 +16,29 @@ export const dynamic = "force-dynamic";
  *
  * Auth reuses the booking-API Bearer key: the caller is the same trusted smoke
  * run that already holds it, so no new secret. Fails CLOSED (503) when no key is
- * configured; 401 for a wrong or missing key. The only side effect is upserting
- * the single `smoke-canary` heartbeat row.
+ * configured; 401 for a wrong or missing key.
+ *
+ * The optional `?lane=` selects which canary heartbeat to stamp, restricted to an
+ * allowlist (#982): the 30-min dry tick stamps `smoke-canary`, the 6h full pass
+ * additionally stamps `smoke-canary-full`, so a silently-dropped full run no
+ * longer hides behind the dry tick's fresh stamp. The allowlist is a security
+ * scope, not just validation: without it a booking-key holder could stamp a real
+ * cron lane (e.g. `sync`) and keep the dead-man's switch looking alive while that
+ * lane is actually dead. An unknown lane is rejected (400) and stamps nothing; the
+ * default (no param) stays `smoke-canary` for the existing caller.
  */
+const CANARY_HEARTBEAT_LANES = new Set(["smoke-canary", "smoke-canary-full"]);
+
 export async function POST(req: NextRequest) {
   const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
-  await recordHeartbeat("smoke-canary");
+  const lane = new URL(req.url).searchParams.get("lane") ?? "smoke-canary";
+  if (!CANARY_HEARTBEAT_LANES.has(lane)) {
+    return NextResponse.json({ error: "unknown lane" }, { status: 400 });
+  }
+  await recordHeartbeat(lane);
   return NextResponse.json({ ok: true });
 }

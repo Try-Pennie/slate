@@ -94,13 +94,25 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     await sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
-      `Slate: the booking smoke canary has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
-        lane.maxStaleMs,
-      )}m), so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`,
+      canaryAlertText(lane.lane, minutes(lane.ageMs), minutes(lane.maxStaleMs)),
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
   }
 
   return [...stale, ...canaryStale];
+}
+
+/**
+ * Canary alert copy, keyed by which pass went quiet (#525, #982). The 30-min dry
+ * tick and the 6h full pass are separate heartbeats: a stale dry tick means the
+ * whole canary stopped, while a stale `smoke-canary-full` means only the full
+ * end-to-end booking proof stopped (the dry tick may still be fine), and recovery
+ * is a full-pass re-run, so the two need distinct, actionable messages.
+ */
+function canaryAlertText(lane: string, ageMin: number, boundMin: number): string {
+  if (lane === "smoke-canary-full") {
+    return `Slate: the booking smoke canary's full end to end pass (create, reschedule, cancel) has not run for ${ageMin} minutes (bound ${boundMin}m), so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
+  }
+  return `Slate: the booking smoke canary has not run for ${ageMin} minutes (bound ${boundMin}m), so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
 }

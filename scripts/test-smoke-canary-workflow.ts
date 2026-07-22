@@ -42,6 +42,26 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   );
 }
 
+// --- #982: the FULL pass stamps its OWN heartbeat, so a silently-dropped 6h
+// full run is not masked by the 30-min dry tick keeping smoke-canary fresh. ---
+{
+  const fullStamp = wf.slice(wf.indexOf("full-pass canary heartbeat"), wf.indexOf("Slack alert on failure"));
+  assert(
+    /full-pass canary heartbeat/.test(wf),
+    "has a dedicated full-pass heartbeat stamp step (#982)",
+  );
+  assert(
+    /lane=smoke-canary-full/.test(fullStamp),
+    "the full-pass step stamps the smoke-canary-full lane",
+  );
+  // Gated on the full pass AND success, so only a passing full run stamps it and
+  // the dry tick never does.
+  assert(
+    /steps\.mode\.outputs\.full == '1'/.test(fullStamp) && /if:\s*success\(\)/.test(fullStamp),
+    "the full-pass stamp is gated on success() and the full pass only",
+  );
+}
+
 // --- alerting: any failure pages via Slack ---
 {
   const alertStep = wf.slice(wf.indexOf("Slack alert on failure"));

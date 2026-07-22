@@ -6,7 +6,11 @@
 // into "which lanes have gone quiet", which is what the alert fires on.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-stale-lanes.ts
-import { findStaleLanes, LANE_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
+import {
+  findStaleLanes,
+  LANE_STALE_BOUNDS_MS,
+  CANARY_STALE_BOUNDS_MS,
+} from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
@@ -99,5 +103,39 @@ assert(
   ordered[0].lane === "recompute",
   "the most-overdue lane is reported first",
 );
+
+// --- Canary bounds (#525, #982). The booking-smoke canary is judged against its
+// OWN bounds, never the cron-lane bounds, so it can NEVER flip /api/health (a dead
+// safety net is not the site being down). The full pass has its own, much longer
+// bound than the 30-min dry tick, and both are kept OUT of LANE_STALE_BOUNDS_MS.
+assert(
+  typeof CANARY_STALE_BOUNDS_MS["smoke-canary"] === "number",
+  "the dry canary tick has its own staleness bound",
+);
+assert(
+  typeof CANARY_STALE_BOUNDS_MS["smoke-canary-full"] === "number",
+  "the full canary pass has its OWN staleness bound (#982), so a dropped full run is not hidden by the dry tick",
+);
+assert(
+  CANARY_STALE_BOUNDS_MS["smoke-canary-full"] > CANARY_STALE_BOUNDS_MS["smoke-canary"],
+  "the full-pass bound is longer than the dry-tick bound (6h vs 30m cadence)",
+);
+assert(
+  !("smoke-canary" in LANE_STALE_BOUNDS_MS) && !("smoke-canary-full" in LANE_STALE_BOUNDS_MS),
+  "neither canary lane is in LANE_STALE_BOUNDS_MS, so neither can flip the external /api/health 503",
+);
+// The full-pass gap-fill trigger (6h30m) must fire before the watchdog bound (8h),
+// so the pass is normally recovered before anyone is paged.
+{
+  const full = findStaleLanes(
+    { "smoke-canary-full": ago(CANARY_STALE_BOUNDS_MS["smoke-canary-full"] + 1) },
+    NOW,
+    CANARY_STALE_BOUNDS_MS,
+  );
+  assert(
+    full.length === 1 && full[0].lane === "smoke-canary-full",
+    "a full-pass heartbeat past its bound is reported stale under the canary bounds",
+  );
+}
 
 finish();
