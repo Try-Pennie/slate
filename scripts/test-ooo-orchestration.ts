@@ -13,6 +13,7 @@ import {
   type OooDeps,
 } from "../src/lib/ooo/orchestration.ts";
 import {
+  agentDisplayName,
   DEFAULT_REJECTION_NOTE,
   NO_MANAGER_MESSAGE,
 } from "../src/lib/ooo/core.ts";
@@ -33,6 +34,16 @@ const agent: User = {
   id: "u-agent",
   email: "agent@trypennie.com",
   name: "Aria Agent",
+  role: "agent",
+  manager_id: "u-mgr",
+};
+// A name-less agent so the two consolidated display sites (calendar summary,
+// withdrawal notice) exercise the shared agentDisplayName email fallback (#1008).
+const namelessAgent: User = {
+  ...baseUser,
+  id: "u-nameless",
+  email: "noname@trypennie.com",
+  name: null,
   role: "agent",
   manager_id: "u-mgr",
 };
@@ -96,7 +107,7 @@ function makeWorld(): World {
     deps: null as unknown as OooDeps,
   };
   const users = new Map(
-    [agent, manager, admin, stranger].map((u) => [u.id, u]),
+    [agent, namelessAgent, manager, admin, stranger].map((u) => [u.id, u]),
   );
   const isDuplicate = (
     userId: string,
@@ -508,6 +519,35 @@ const input = {
   assert(
     w.edits.some((e) => e.text.includes("Cancelled")),
     "manager notification edited to Cancelled",
+  );
+}
+
+// --- name-less agent: both consolidated display sites use the shared helper (#1008) ---
+{
+  const shown = agentDisplayName(namelessAgent);
+  assert(shown === namelessAgent.email, "helper falls back to email for a name-less agent");
+
+  // Calendar summary (approve path) resolves the name via agentDisplayName.
+  const wApprove = makeWorld();
+  const subA = await submitOoo(namelessAgent, input, wApprove.deps);
+  const idA = subA.ok ? subA.request.id : "";
+  await approveOoo(idA, manager, wApprove.deps);
+  assert(
+    wApprove.createdEvents.every((e) => e.summary === `${shown} - OOO`),
+    "calendar summary uses the shared display name for a name-less agent",
+  );
+
+  // Withdrawal notice (cancel-of-pending path) resolves the name the same way.
+  const wCancel = makeWorld();
+  const subC = await submitOoo(namelessAgent, input, wCancel.deps);
+  const idC = subC.ok ? subC.request.id : "";
+  wCancel.dms.length = 0;
+  await cancelOoo(idC, namelessAgent, wCancel.deps);
+  assert(
+    wCancel.dms.some(
+      (d) => d.email === manager.email && d.text.startsWith(`${shown} withdrew`),
+    ),
+    "withdrawal notice uses the shared display name for a name-less agent",
   );
 }
 

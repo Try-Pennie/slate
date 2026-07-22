@@ -376,7 +376,7 @@ async function runPostApproval(
   const effects: Record<string, string> = { ...request.side_effects };
   const patch: Partial<OooRequest> = {};
   const eventArgs: OooEventArgs = {
-    summary: `${agent.name ?? agent.email} - OOO`,
+    summary: `${agentDisplayName(agent)} - OOO`,
     description: `Request ID: ${request.id}`,
     start: request.starts_at,
     end: request.ends_at,
@@ -721,7 +721,7 @@ export async function cancelOoo(
     if (manager) {
       await deps.dmUserByEmail(
         manager.email,
-        `${agent.name ?? agent.email} withdrew their time off request for ${whenLineFor(request)}.`,
+        `${agentDisplayName(agent)} withdrew their time off request for ${whenLineFor(request)}.`,
       );
     }
   }
