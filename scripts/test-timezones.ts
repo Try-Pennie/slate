@@ -5,6 +5,9 @@ import {
   deviceTimeZone,
   humanizeZone,
   timezoneOptions,
+  allTimeZones,
+  isKnownTimeZone,
+  ensureZonePresent,
 } from "../src/lib/booking/timezones.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -85,6 +88,49 @@ assert(fallback.length === CURATED_ZONES.length, "undefined detected falls back 
 assert(
   timezoneOptions("").some((o) => o.id === "America/New_York"),
   "empty detected falls back to a real default zone",
+);
+
+// --- full-IANA fallback for the "more zones" combobox (#219) ---
+
+// allTimeZones returns the full deduped IANA set, and never throws.
+const all = allTimeZones();
+assert(Array.isArray(all) && all.length > 100, "allTimeZones returns the full IANA set");
+assert(
+  all.includes("America/New_York") && all.includes("Australia/Sydney"),
+  "allTimeZones includes both common and uncommon zones",
+);
+assert(new Set(all).size === all.length, "allTimeZones has no duplicates");
+
+// Guarded when Intl.supportedValuesOf is unavailable (older runtime): returns []
+// rather than throwing, so the booker degrades to the curated list.
+{
+  const saved = (Intl as { supportedValuesOf?: unknown }).supportedValuesOf;
+  // @ts-expect-error deliberately removing to exercise the guard
+  delete (Intl as { supportedValuesOf?: unknown }).supportedValuesOf;
+  try {
+    assert(allTimeZones().length === 0, "allTimeZones degrades to [] when supportedValuesOf is missing");
+  } finally {
+    (Intl as { supportedValuesOf?: unknown }).supportedValuesOf = saved;
+  }
+}
+
+// isKnownTimeZone gates free-text combobox input so a typo can't apply a bad zone.
+assert(isKnownTimeZone("Australia/Sydney"), "isKnownTimeZone accepts a real zone");
+assert(!isKnownTimeZone("Not/AZone"), "isKnownTimeZone rejects an unknown zone");
+assert(!isKnownTimeZone(""), "isKnownTimeZone rejects empty input");
+
+// ensureZonePresent keeps the <select value> from blanking when the applied zone
+// (picked from the full list) is not in the curated options.
+const curatedOnly = timezoneOptions("America/New_York");
+assert(!curatedOnly.some((o) => o.id === "Australia/Sydney"), "precondition: sydney not curated");
+const withSydney = ensureZonePresent(curatedOnly, "Australia/Sydney");
+assert(
+  withSydney[0].id === "Australia/Sydney" && withSydney[0].label === "Sydney",
+  "ensureZonePresent prepends an out-of-list zone with a humanized label",
+);
+assert(
+  ensureZonePresent(curatedOnly, "America/New_York").length === curatedOnly.length,
+  "ensureZonePresent adds nothing when the zone is already present",
 );
 
 finish();

@@ -54,3 +54,48 @@ export function timezoneOptions(detected: string | undefined): TimezoneOption[] 
   if (CURATED_ZONES.some((z) => z.id === zone)) return [...CURATED_ZONES];
   return [{ id: zone, label: humanizeZone(zone) }, ...CURATED_ZONES];
 }
+
+/**
+ * The full IANA zone list for the "more zones" fallback combobox (#219), deduped.
+ * Guarded: `Intl.supportedValuesOf` is widely but not universally available, so a
+ * runtime without it degrades to [] and the booker keeps only the curated list.
+ */
+export function allTimeZones(): string[] {
+  try {
+    const supported = (Intl as { supportedValuesOf?: (key: string) => string[] })
+      .supportedValuesOf;
+    if (typeof supported !== "function") return [];
+    return [...new Set(supported("timeZone"))];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether `id` is a real IANA zone. Gates free-text combobox input so a typo or a
+ * partial match can never apply a zone the runtime would reject (which would skew
+ * the displayed local times). Uses Intl directly rather than the supportedValuesOf
+ * list so it still validates on a runtime where that list is unavailable.
+ */
+export function isKnownTimeZone(id: string): boolean {
+  if (!id) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: id });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `options` guaranteed to contain `zone`, prepending it (humanized) when absent.
+ * Lets the curated <select> display a zone the lead picked from the full-list
+ * combobox without the control blanking, since that zone isn't a curated option.
+ */
+export function ensureZonePresent(
+  options: TimezoneOption[],
+  zone: string,
+): TimezoneOption[] {
+  if (!zone || options.some((o) => o.id === zone)) return options;
+  return [{ id: zone, label: humanizeZone(zone) }, ...options];
+}
