@@ -167,6 +167,13 @@ export interface Database {
         Args: { p_since: string };
         Returns: { by_outcome?: Record<string, number>; by_error?: Record<string, number> } | null;
       };
+      /** #990/#989: how often each reason has been picked since p_since. Returns a
+       *  jsonb map "<action>|<reason_code>" -> count (a single row, so it never hits
+       *  PostgREST's 1000-row SETOF cap). Shared by the retire-guard hint and report. */
+      reason_usage_counts: {
+        Args: { p_since: string };
+        Returns: Record<string, number> | null;
+      };
       rate_limit_hit: {
         Args: { p_key: string; p_window_seconds: number; p_max: number };
         Returns: boolean;

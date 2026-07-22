@@ -7,6 +7,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { REASON_LABEL_MAX, type ReasonOptionRow } from "@/lib/booking/reason-options";
 import type { ReasonAction } from "@/lib/booking/core";
+import { REASON_USAGE_WINDOW_DAYS, type ReasonUsageCounts } from "@/lib/booking/reason-usage";
 
 /** The editor's per-row working state (a superset of what it submits). */
 interface EditRow {
@@ -23,8 +24,16 @@ const ACTION_TITLES: Record<ReasonAction, string> = {
 };
 const ACTION_ORDER: ReasonAction[] = ["reschedule", "cancel", "reassign"];
 
+const EMPTY_USAGE: ReasonUsageCounts = { reschedule: {}, cancel: {}, reassign: {} };
+
 function toEditRow(r: ReasonOptionRow): EditRow {
   return { code: r.code, label: r.label, active: r.active, locked: r.locked };
+}
+
+/** The per-row "used N times in the last 90 days" hint copy (#990). */
+function usageHint(n: number): string {
+  if (n <= 0) return `Not used in the last ${REASON_USAGE_WINDOW_DAYS} days`;
+  return `Used ${n} time${n === 1 ? "" : "s"} in the last ${REASON_USAGE_WINDOW_DAYS} days`;
 }
 
 /**
@@ -37,14 +46,22 @@ function toEditRow(r: ReasonOptionRow): EditRow {
  */
 export default function ReasonOptionsEditor({
   initial,
+  usage = EMPTY_USAGE,
 }: {
   initial: Record<ReasonAction, ReasonOptionRow[]>;
+  /** Recent per-reason usage from booking_events (#990); drives the hint and the
+   *  confirm before retiring a still-used reason. Absent -> no counts (safe degrade). */
+  usage?: ReasonUsageCounts;
 }) {
   const [rows, setRows] = useState<Record<ReasonAction, EditRow[]>>({
     reschedule: initial.reschedule.map(toEditRow),
     cancel: initial.cancel.map(toEditRow),
     reassign: initial.reassign.map(toEditRow),
   });
+  // The row awaiting a "retire a still-used reason" confirm, keyed `${action}:${i}`.
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const usesFor = (action: ReasonAction, code: string) => (code ? (usage[action]?.[code] ?? 0) : 0);
 
   const update = (action: ReasonAction, next: EditRow[]) =>
     setRows((prev) => ({ ...prev, [action]: next }));
@@ -54,10 +71,21 @@ export default function ReasonOptionsEditor({
     next[i] = { ...next[i], label };
     update(action, next);
   };
-  const toggleActive = (action: ReasonAction, i: number) => {
+  const applyToggle = (action: ReasonAction, i: number) => {
     const next = rows[action].slice();
     next[i] = { ...next[i], active: !next[i].active };
     update(action, next);
+    setConfirming(null);
+  };
+  const toggleActive = (action: ReasonAction, i: number) => {
+    const r = rows[action][i];
+    // Retiring (active -> inactive) a reason still in recent use holds the toggle
+    // behind an inline confirm (#990); everything else applies immediately.
+    if (r.active && usesFor(action, r.code) > 0) {
+      setConfirming(`${action}:${i}`);
+      return;
+    }
+    applyToggle(action, i);
   };
   const move = (action: ReasonAction, i: number, delta: -1 | 1) => {
     const next = rows[action].slice();
@@ -109,6 +137,11 @@ export default function ReasonOptionsEditor({
                       {r.locked && " (system)"}
                     </span>
                   )}
+                  {r.code && (
+                    <span className="text-xs text-fg-muted tabular-nums">
+                      {usageHint(usesFor(action, r.code))}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1">
@@ -153,6 +186,35 @@ export default function ReasonOptionsEditor({
                   >
                     Remove
                   </button>
+                )}
+
+                {confirming === `${action}:${i}` && (
+                  <div
+                    role="group"
+                    aria-label={`Confirm retiring ${r.label || "reason"}`}
+                    className="mt-1 basis-full rounded-lg border border-border bg-fg/5 p-3"
+                  >
+                    <p className="text-sm text-fg">
+                      {usageHint(usesFor(action, r.code))}. Retire it anyway? Retiring hides it from
+                      new bookings but keeps it readable in history.
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className={btnSecondaryCls}
+                        onClick={() => applyToggle(action, i)}
+                      >
+                        Retire it anyway
+                      </button>
+                      <button
+                        type="button"
+                        className={btnCls}
+                        onClick={() => setConfirming(null)}
+                      >
+                        Keep it active
+                      </button>
+                    </div>
+                  </div>
                 )}
               </li>
             ))}
