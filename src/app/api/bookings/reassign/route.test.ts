@@ -49,10 +49,16 @@ const service = vi.hoisted(() => {
 // The reason store read is mocked so the test controls the active/retired set;
 // validateReason (pure, from core) is exercised for real, not mocked (#988).
 const reasonOpts = vi.hoisted(() => ({ loadReasonOptions: vi.fn() }));
+// The unknown-code visibility alert (#993) is mocked so the test can assert it
+// fires (or doesn't) without a real Slack/DB.
+// sendThrottledAlert is also stubbed: the internal-error reporter (errors.ts) on the
+// 5xx path posts through it, so leaving it out would throw in the outage test.
+const dispatch = vi.hoisted(() => ({ sendThrottledInfo: vi.fn(), sendThrottledAlert: vi.fn() }));
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/reason-options", () => reasonOpts);
+vi.mock("@/lib/notify/dispatch", () => dispatch);
 
 import { POST } from "./route";
 
@@ -66,6 +72,8 @@ function req(opts: { auth?: string; body?: unknown }) {
 beforeEach(() => {
   vi.clearAllMocks();
   env.reassignApiKey.mockReturnValue("k3y");
+  dispatch.sendThrottledInfo.mockResolvedValue(undefined);
+  dispatch.sendThrottledAlert.mockResolvedValue(undefined);
   reasonOpts.loadReasonOptions.mockResolvedValue({
     reassign: {
       all: [
@@ -157,6 +165,27 @@ describe("POST /api/bookings/reassign", () => {
     // ...but the bogus code never reaches booking_events.
     expect(reasonArg().code).toBe("owner_reassignment");
     expect(reasonArg().code).not.toBe("typpo_coverage");
+    // ...and it raises a visibility alert naming the bad code (#993), not just a log.
+    expect(dispatch.sendThrottledInfo).toHaveBeenCalledTimes(1);
+    expect(dispatch.sendThrottledInfo.mock.calls[0]).toEqual(
+      expect.arrayContaining([expect.stringContaining("typpo_coverage")]),
+    );
+  });
+
+  it("does not alert when the reason code is valid or absent (#993)", async () => {
+    await POST(req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com", reasonCode: "escalation" } }));
+    await POST(req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com" } }));
+    expect(dispatch.sendThrottledInfo).not.toHaveBeenCalled();
+  });
+
+  it("still reassigns even if the unknown-code alert send fails (#993)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    dispatch.sendThrottledInfo.mockRejectedValueOnce(new Error("slack down"));
+    const res = await POST(
+      req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com", reasonCode: "typpo_coverage" } }),
+    );
+    expect(res.status).toBe(200);
+    expect(service.reassignBooking).toHaveBeenCalledTimes(1);
   });
 
   // Error-contract mapping (#621): typed errors decide the status so the machine

@@ -5,7 +5,12 @@ import { reassignBooking } from "@/lib/booking/service";
 import { mapReassignError } from "@/lib/booking/reassign-http";
 import { validateReason, type ValidatedReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { sendThrottledInfo } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
+
+/** Throttle window for the unknown-reason-code visibility alert (#993): a
+ *  persistent misconfiguration nudges once an hour, never per call. */
+const UNKNOWN_REASON_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +69,16 @@ export async function POST(req: NextRequest) {
       received: rawCode,
     });
     reason = { code: "owner_reassignment", detail: null };
+    // Surface a persistent integration bug beyond the 7-day logs (#993): a
+    // visibility-only, throttled Slack nudge. Best-effort: a failed send must
+    // never fail the reassign, which is the critical operation here.
+    await sendThrottledInfo(
+      "reassign-unknown-reason-code",
+      UNKNOWN_REASON_ALERT_COOLDOWN_MS,
+      `Automated reassign API received an unknown reason code (\`${rawCode}\`); recorded owner_reassignment instead. Check the caller's reason mapping.`,
+    ).catch((err) => {
+      log.error("reassign", { msg: "unknown-reason alert send failed" }, err instanceof Error ? err : err);
+    });
   }
 
   try {
