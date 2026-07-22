@@ -98,6 +98,12 @@ export const bookableApiKey = (): string => process.env.BOOKABLE_API_KEY ?? "";
 export const bookingApiKeyPrimary = (): string => process.env.BOOKING_API_KEY ?? "";
 export const bookingApiKeySecondary = (): string => process.env.BOOKING_API_KEY_2 ?? "";
 
+// Fine-grained GitHub token (Actions: read/write on Try-Pennie/slate) so the
+// monitor lane can trigger the smoke-canary workflow when GitHub's own schedule
+// drops a run (#525 follow-up). Empty = gap-filler is a quiet no-op (GitHub's
+// schedule alone still runs it), so this is safe to deploy before the secret.
+export const githubCanaryToken = (): string => process.env.GITHUB_CANARY_TOKEN ?? "";
+
 // Slack notifier (optional). Empty = notifications are no-ops.
 export const slackBotToken = (): string => process.env.SLACK_BOT_TOKEN ?? "";
 export const slackAlertsChannel = (): string =>

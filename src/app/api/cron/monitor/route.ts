@@ -29,8 +29,14 @@ import {
   type BusinessHoursConfig,
   type VolumeWindow,
 } from "@/lib/monitor/booking-volume";
-import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
+import {
+  triggerCanaryGapFill,
+  postCanaryWorkflowDispatch,
+  CANARY_DISPATCH_COOLDOWN_MS,
+} from "@/lib/monitor/canary-trigger";
+import { githubCanaryToken } from "@/lib/env";
 import {
   runMigrationDriftCheck,
   readAppliedMigrationVersions,
@@ -493,6 +499,27 @@ export async function GET(req: NextRequest) {
     // so whichever survives a killed invocation reports the one that didn't. The
     // per-lane alert cooldown dedupes the overlap. Never throws.
     await alertOnStaleLanes();
+
+    // Reliable trigger for the booking smoke canary (#525 follow-up). GitHub
+    // scheduled runs are best-effort and get dropped under load (2-3h gaps against
+    // the 30-min cadence), so the canary heartbeat aged past its 90m bound and the
+    // watchdog above paged even though the booking path was healthy. This reliable
+    // lane fills the gap: only when the heartbeat is stale does it fire the workflow
+    // via GitHub's API, throttled by a NOT-released dispatch lock so it can't
+    // double-fire. GitHub's own schedule stays on as a backup (the smoke-canary
+    // concurrency group dedupes overlap). Quiet no-op until GITHUB_CANARY_TOKEN is
+    // set. Never throws.
+    const canaryToken = githubCanaryToken();
+    await triggerCanaryGapFill({
+      now,
+      token: canaryToken,
+      readHeartbeatMs: () => readHeartbeatMs("smoke-canary"),
+      acquireDispatchLock: async () =>
+        (await acquireLock("canary_dispatch", CANARY_DISPATCH_COOLDOWN_MS)) !== null,
+      dispatch: () => postCanaryWorkflowDispatch(canaryToken),
+      onInfo: (msg) => log.info("canary-trigger", { msg }),
+      onError: (msg, err) => log.error("canary-trigger", { msg }, err),
+    }).catch((err) => log.error("canary-trigger", { msg: "gap-fill threw" }, err));
 
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort — must never affect the monitor's own response.
