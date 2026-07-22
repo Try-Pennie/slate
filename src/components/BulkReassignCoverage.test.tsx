@@ -65,6 +65,26 @@ describe("BulkReassignCoverage", () => {
     expect(link.getAttribute("href")).toBe("/admin/bookings/bk-stuck");
   });
 
+  it("defaults the reason to the first available option, not a retired hardcoded code (#987)", async () => {
+    // Admin retired "coverage" via #346, so it is absent from the passed list.
+    const reasons = [
+      { code: "escalation", label: "Escalation" },
+      { code: "other", label: "Other" },
+    ];
+    http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 2 } });
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={reasons} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /start coverage reassign/i }));
+
+    // The reason sent is the first option in the list, never the retired "coverage".
+    await waitFor(() =>
+      expect(http.postJson).toHaveBeenCalledWith(
+        "/api/admin/agents/out1/bulk-reassign",
+        expect.objectContaining({ reason: "escalation" }),
+      ),
+    );
+  });
+
   it("surfaces a start failure instead of silently doing nothing", async () => {
     http.postJson.mockResolvedValueOnce({ ok: false, status: 500, data: { error: "Something broke" } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);

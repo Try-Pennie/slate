@@ -53,7 +53,10 @@ export default function BulkReassignCoverage({
 
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState("");
-  const [reasonCode, setReasonCode] = useState("coverage");
+  // Default to the first available reason, never a hardcoded code that an admin
+  // may have retired (#346/#987). A stale value would leave the select opened
+  // on an option that is not in the list.
+  const [reasonCode, setReasonCode] = useState(() => reassignReasons[0]?.code ?? "");
   const [reasonDetail, setReasonDetail] = useState("");
 
   const [preview, setPreview] = useState<number | null>(null);
