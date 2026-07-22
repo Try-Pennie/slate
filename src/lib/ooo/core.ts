@@ -2,7 +2,7 @@ import { DateTime } from "luxon";
 // Relative value import so this module still runs under `node --experimental-
 // strip-types` in tests (roles.ts only type-imports "@/…", which is erased).
 import { atLeast, canModerateAllOoo } from "../auth/roles.ts";
-import type { OooRequest, OooStatus, Role } from "@/lib/db/types";
+import type { OooRequest, OooStatus, Role, User } from "@/lib/db/types";
 
 /**
  * Pure, side-effect-free cores of the OOO workflow (authz, transitions, the
@@ -151,6 +151,33 @@ export function formatWhenLine(
     return `${dayPart(s)} from ${timePart(s)} - ${timePart(e)} ${label}`;
   }
   return `${dayPart(s)} ${timePart(s)} - ${dayPart(e)} ${timePart(e)} ${label}`;
+}
+
+/**
+ * The name shown for an agent across OOO notifications: their name, else their
+ * email, else a neutral fallback. Defined once (#1002) so the per-request manager
+ * notification and the daily digest can never drift on how an agent is labeled.
+ */
+export function agentDisplayName(
+  agent: Pick<User, "name" | "email"> | null | undefined,
+): string {
+  return agent?.name ?? agent?.email ?? "An agent";
+}
+
+/**
+ * The shared "when + reason" body describing one time-off request: the human when
+ * line in the agent's zone, then the reason. Defined once (#1002) and reused by
+ * both the per-request manager notification and the daily digest, so a copy change
+ * (the "Reason:" label, the layout) tracks in both places. Notes and the agent
+ * framing legitimately differ per message, so they stay with each caller.
+ */
+export function formatRequestWhenAndReason(
+  r: Pick<
+    OooRequest,
+    "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label" | "reason"
+  >,
+): string {
+  return `${formatWhenLine(r.starts_at, r.ends_at, r.display_tz_id, r.display_tz_label)}\nReason: ${r.reason}`;
 }
 
 export const DUPLICATE_REQUEST_MESSAGE =
