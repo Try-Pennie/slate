@@ -169,6 +169,38 @@ working once verification is done.
 3. Configure event type + working hours + bucket `411` + webhook URL.
 4. Load `/booking/SF_TEST?xbc=411&...` → book → check calendar invite + webhook.
 
+## External uptime monitoring (noodge, #749)
+Slate's internal cron monitor only alerts while the Worker is alive. An external
+monitor is what catches a dead Worker, a broken deploy, or a DNS failure. Register
+these checks in noodge (https://noodge.trypennie.dev/), all against
+`https://slate.trypennie.app`, alerting to the same Slack channel the cron monitor
+uses. (Cloudflare's native Health Checks were considered but need a paid plan; the
+`trypennie.app` zone is on Free, so noodge is the free choice.)
+
+1. `GET /api/health` expects `200`. Covers liveness, DB reachability, and cron lane
+   freshness (a stalled recompute lane surfaces here). Interval: 5 min.
+2. `GET /api/health/availability` expects `200`. The availability canary (#749):
+   `200` when the booker is genuinely offering times, `503` when a well-staffed tier
+   or the whole fleet is silently empty (which check 1 cannot see, the DB is up and
+   the crons tick while the booker offers nothing). It is PTO-aware, so a tier that
+   is empty only because its agents are all off does not page. Interval: 5 min.
+   Because the verdict rides on the status code, noodge needs no body assertion.
+3. `GET /widget.js` expects `200` with a JavaScript content type. The embed script;
+   if it stops serving, every landing page that embeds Slate loses its booker.
+4. `GET /` expects `200`. Cheap catch for a broken deploy.
+
+Alert threshold: page after 2 consecutive failed checks (about 10 min) so a single
+transient blip does not alarm. Verify each check actually fails when it should:
+point it at a deliberately bad path once, confirm the Slack alert fires, then point
+it back. A check that can only ever pass is worse than no check.
+
+The availability canary's paging rule (tunable constants in
+`src/lib/monitor/availability-canary.ts`): a single broken tier with at least 3
+present agents pages on its own; otherwise it pages only when at least 3 staffed
+tiers, and at least half of them, are empty at once, or the slot cache is entirely
+absent. The horizon is the 4 days of Slate's precomputed slot cache; a stalled
+recompute (a stale cache) is caught by check 1, not check 2.
+
 ## Rollback
 Both the app and its crons run on the single **main** Worker, so a rollback is one
 command. Redeploys are versioned by Cloudflare; roll back to the previous good
