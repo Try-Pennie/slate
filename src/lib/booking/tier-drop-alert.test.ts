@@ -186,6 +186,7 @@ function makeTierDropDeps(): BookingDeps {
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: noop,
     recordRoutingDecision: noop,
+    displayedTier: async () => null,
   };
 }
 

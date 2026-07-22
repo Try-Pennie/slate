@@ -6,7 +6,10 @@ import {
   resolveRouting,
   roundRobinCandidates,
 } from "@/lib/availability/service";
-import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import {
+  recomputeBucketSlotsForToday,
+  getBucketSlotsWithFallback,
+} from "@/lib/availability/slot-cache";
 import { recordRoutingDecision } from "@/lib/routing/record";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
@@ -696,6 +699,22 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // test-observable. Best-effort in the impl (never throws), matching the prior
     // module-function behavior.
     recordRoutingDecision,
+    // #827: the tier the availability cache currently displays for a bucket, so a
+    // fresh confirm can measure display-vs-booked tier divergence. `from` matches
+    // the availability route's default (now). A hidden test bucket resolves to
+    // null here (authorizedForTest defaults false), keeping smoke bookings out of
+    // the measure. Best-effort: any failure returns null and skips the measure.
+    displayedTier: async (bucketCode) => {
+      try {
+        const res = await getBucketSlotsWithFallback(
+          bucketCode,
+          new Date().toISOString(),
+        );
+        return res?.routing.booked_tier ?? null;
+      } catch {
+        return null;
+      }
+    },
 
     getUser: async (userId) => {
       // error-ok: agent lookup inside the crash-safe create/drain step; a read error is recovered by the outbox retry, not silently lost.
