@@ -3,6 +3,8 @@ import { reassignApiKey } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { reassignBooking } from "@/lib/booking/service";
 import { mapReassignError } from "@/lib/booking/reassign-http";
+import { validateReason, type ValidatedReason } from "@/lib/booking/core";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -38,18 +40,34 @@ export async function POST(req: NextRequest) {
   }
 
   // Machine-to-machine path: the reason isn't picked from the customer lists, so
-  // it's built directly (default = the contact-owner override) and recorded as a
-  // 'reassigned' history event (#326), not validated against the picker options.
-  const reasonCode = String(body.reasonCode ?? "").trim() || "owner_reassignment";
-  const reasonDetail = String(body.reasonDetail ?? "").trim().slice(0, 500) || null;
+  // it's validated against the SAME live store the six interactive sites use
+  // (#346/#988). An empty code is the normal "use the default" case (the
+  // contact-owner override). A supplied code is validated so a typo'd or retired
+  // code can't quietly enter booking_events; validation also discards stray detail
+  // on non-"other" codes and enforces the detail cap. Because the reassign itself
+  // is the critical operation (the one place an owner override forces a
+  // double-book), an unknown code must NOT fail the move: it normalizes to the
+  // default and logs the anomaly (fail-loud in logs), rather than returning 400.
+  const rawCode = String(body.reasonCode ?? "").trim();
+  const rawDetail = String(body.reasonDetail ?? "").trim().slice(0, 500) || null;
+  const reasonOptions = await loadReasonOptions();
+  const validated = validateReason(
+    { code: rawCode || "owner_reassignment", detail: rawDetail },
+    reasonOptions.reassign.all,
+  );
+  let reason: ValidatedReason;
+  if (validated.ok) {
+    reason = validated.reason;
+  } else {
+    log.warn("reassign", {
+      msg: "unknown reassign reason code; recorded owner_reassignment instead",
+      received: rawCode,
+    });
+    reason = { code: "owner_reassignment", detail: null };
+  }
 
   try {
-    const result = await reassignBooking(
-      bookingId,
-      agentEmail,
-      { code: reasonCode, detail: reasonDetail },
-      true,
-    );
+    const result = await reassignBooking(bookingId, agentEmail, reason, true);
     if (result.overCap) {
       log.warn("reassign", {
         msg: "forced agent over their daily cap",

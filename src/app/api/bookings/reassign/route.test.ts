@@ -46,8 +46,13 @@ const service = vi.hoisted(() => {
   };
 });
 
+// The reason store read is mocked so the test controls the active/retired set;
+// validateReason (pure, from core) is exercised for real, not mocked (#988).
+const reasonOpts = vi.hoisted(() => ({ loadReasonOptions: vi.fn() }));
+
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/booking/service", () => service);
+vi.mock("@/lib/booking/reason-options", () => reasonOpts);
 
 import { POST } from "./route";
 
@@ -61,6 +66,17 @@ function req(opts: { auth?: string; body?: unknown }) {
 beforeEach(() => {
   vi.clearAllMocks();
   env.reassignApiKey.mockReturnValue("k3y");
+  reasonOpts.loadReasonOptions.mockResolvedValue({
+    reassign: {
+      all: [
+        { code: "owner_reassignment", label: "Owner reassignment" },
+        { code: "coverage", label: "Coverage (agent unavailable)" },
+        { code: "escalation", label: "Escalation" },
+        { code: "other", label: "Other" },
+      ],
+      active: [],
+    },
+  });
   service.reassignBooking.mockResolvedValue({
     booking: {
       id: "b1",
@@ -109,6 +125,38 @@ describe("POST /api/bookings/reassign", () => {
     const res = await POST(req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com" } }));
     expect(res.status).toBe(200);
     expect(service.reassignBooking).toHaveBeenCalledTimes(1);
+  });
+
+  // Reason validation against the live store (#988). Same source of truth as the
+  // six interactive sites (#346), but this is a machine path: an unknown code must
+  // NOT fail the reassign, it normalizes to the default so booking_events stays clean.
+  const reasonArg = () => service.reassignBooking.mock.calls[0][2];
+
+  it("records the default owner_reassignment when no reason code is supplied", async () => {
+    const res = await POST(req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com" } }));
+    expect(res.status).toBe(200);
+    expect(reasonArg()).toEqual({ code: "owner_reassignment", detail: null });
+  });
+
+  it("passes a valid store reason code through to the history event", async () => {
+    const res = await POST(
+      req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com", reasonCode: "escalation" } }),
+    );
+    expect(res.status).toBe(200);
+    expect(reasonArg()).toEqual({ code: "escalation", detail: null });
+  });
+
+  it("normalizes an unknown/typo'd reason code to owner_reassignment instead of recording it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await POST(
+      req({ auth: "Bearer k3y", body: { bookingId: "b1", agentEmail: "a@x.com", reasonCode: "typpo_coverage" } }),
+    );
+    // The reassign still succeeds (the move is the critical operation)...
+    expect(res.status).toBe(200);
+    expect(service.reassignBooking).toHaveBeenCalledTimes(1);
+    // ...but the bogus code never reaches booking_events.
+    expect(reasonArg().code).toBe("owner_reassignment");
+    expect(reasonArg().code).not.toBe("typpo_coverage");
   });
 
   // Error-contract mapping (#621): typed errors decide the status so the machine
