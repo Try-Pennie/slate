@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 import {
   bookViaApi,
   previewBooking,
@@ -263,7 +264,8 @@ export async function DELETE(req: NextRequest) {
   const authd = await authorize(req);
   if (!authd.ok) return authd.response;
 
-  const parsed = parseCancelQuery(req.nextUrl.searchParams);
+  const reasonOptions = await loadReasonOptions();
+  const parsed = parseCancelQuery(req.nextUrl.searchParams, reasonOptions.cancel.all);
   if (!parsed.ok) {
     return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
   }

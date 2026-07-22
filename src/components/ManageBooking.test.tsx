@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ManageBooking from "@/components/ManageBooking";
+import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 
 // Regression coverage for the booker hardening (#168): cancel must use an
 // in-DOM confirm (not native confirm()) and surface a failed POST instead of
@@ -14,6 +15,10 @@ const baseProps = {
   startsAt: "2026-06-20T15:00:00.000Z",
   status: "confirmed",
   eventName: "Senior Loan Advisor Call",
+  // #346: reason options are now props (server-resolved); coded defaults keep the
+  // reason-label assertions below valid.
+  rescheduleReasons: RESCHEDULE_REASONS,
+  cancelReasons: CANCEL_REASONS,
   theme: "light" as const,
 };
 

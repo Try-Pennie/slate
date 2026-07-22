@@ -94,22 +94,24 @@ export type ReasonValidation =
   | { ok: false; error: string };
 
 /**
- * Validates a reschedule/cancel reason. MANDATORY (#326): a missing code is
- * rejected; the code must be one of the action's options; the "other" code
- * requires non-empty, length-capped free text. Detail on any non-"other" code
- * is discarded (only "other" carries free text). Pure — both the API (server
- * enforcement) and the UI use it, so they can't drift.
+ * Validates a reschedule/cancel/reassign reason against a supplied option set.
+ * MANDATORY (#326): a missing code is rejected; the code must be one of `allowed`;
+ * the "other" code requires non-empty, length-capped free text. Detail on any
+ * non-"other" code is discarded.
+ *
+ * `allowed` is the resolved option set the caller already has for the action, and
+ * carries all the information validation needs, so `validateReason` no longer takes
+ * the action itself (#346). The server passes active+retired (so an in-flight
+ * submission for a just-retired code still confirms); the client passes the active
+ * set it rendered. There is deliberately NO coded-default fallback: the caller must
+ * supply the live set, or a silent default would reject an admin-added code. Pure:
+ * server enforcement and the UI share it so they can't drift.
  */
 export function validateReason(
-  action: ReasonAction,
   input: ReasonInput,
+  allowed: ReasonOption[],
 ): ReasonValidation {
-  const optionsByAction: Record<ReasonAction, ReasonOption[]> = {
-    reschedule: RESCHEDULE_REASONS,
-    cancel: CANCEL_REASONS,
-    reassign: REASSIGN_REASONS,
-  };
-  const options = optionsByAction[action];
+  const options = allowed;
   const code = (input.code ?? "").trim();
   if (!code) return { ok: false, error: "Please choose a reason." };
   if (!options.some((o) => o.code === code)) {

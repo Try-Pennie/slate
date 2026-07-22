@@ -1,0 +1,108 @@
+import { redirect } from "next/navigation";
+import { currentUser } from "@/lib/auth";
+import { canEditOrgSettings } from "@/lib/auth/roles";
+import { oooOnlyFor } from "@/lib/env";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { AppHeader } from "@/components/AppHeader";
+import ReasonOptionsEditor from "@/components/ReasonOptionsEditor";
+import { SettingsSaveNotice } from "../SettingsSaveNotice";
+import { resolveEditorRows, type ReasonOptionRow as PureReasonRow } from "@/lib/booking/reason-options";
+import type { ReasonOptionRow, User } from "@/lib/db/types";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * Admin editor for the reschedule/cancel/reassign reason options (#346). Reads the
+ * full store (active + retired), seeds the coded defaults when the store is empty,
+ * and hands the ordered set to the client editor. Admin-only (canEditOrgSettings);
+ * the save action (setReasonOptions) guards independently with requireAdmin.
+ */
+export default async function ReasonOptionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ ok?: string; error?: string }>;
+}) {
+  const sp = await searchParams;
+  const me = await currentUser();
+  if (!me) redirect("/login");
+  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (!canEditOrgSettings(me.role)) {
+    return (
+      <main className="p-8 text-sm text-fg-muted">
+        You need an admin account to edit reason options.
+      </main>
+    );
+  }
+
+  // Read the full store (incl. retired). Guarded: the table may not exist during a
+  // migrate-before-deploy window, and a missing table must not 500 the page.
+  let stored: ReasonOptionRow[] = [];
+  let lastChanged = "Never changed; using built-in defaults.";
+  try {
+    const { data, error } = await supabaseAdmin()
+      .from("reason_options")
+      .select("action,code,label,sort_order,active,locked,updated_at,updated_by");
+    if (!error && data) {
+      stored = data as ReasonOptionRow[];
+      const stamps = [...stored].sort(
+        (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at),
+      );
+      const latest = stamps[0];
+      if (latest) {
+        const editorIds = [...new Set(stored.map((r) => r.updated_by).filter(Boolean))] as string[];
+        const nameById = new Map<string, string>();
+        if (editorIds.length) {
+          const { data: users } = await supabaseAdmin()
+            .from("users")
+            .select("id,name,email")
+            .in("id", editorIds);
+          for (const u of (users ?? []) as Pick<User, "id" | "name" | "email">[]) {
+            nameById.set(u.id, u.name ?? u.email);
+          }
+        }
+        const who = latest.updated_by ? (nameById.get(latest.updated_by) ?? "someone") : "someone";
+        const when = new Date(latest.updated_at).toLocaleString("en-US", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+        lastChanged = `Last changed by ${who} at ${when}.`;
+      }
+    }
+  } catch {
+    // Fall through to the coded-default seed below.
+  }
+
+  const initial = resolveEditorRows(stored as PureReasonRow[]);
+
+  return (
+    <>
+      <AppHeader
+        email={me.email}
+        role={me.role}
+        active="admin"
+        themePreference={me.theme_preference}
+        userId={me.id}
+        orgId={me.org_id}
+        bookable={me.bookable}
+        avatarUrl={me.avatar_url}
+      />
+      <main className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
+        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
+          <p className="pn-eyebrow text-pennie-sky">Admin</p>
+          <h1 className="text-2xl font-semibold text-white dark:text-fg">Reason options</h1>
+          <p className="mt-2 max-w-prose text-sm text-white/80 dark:text-fg-muted">
+            The reasons staff and customers pick when rescheduling, cancelling, or
+            reassigning a booking. Add, rename, reorder, or retire them without a
+            deploy. Retiring a reason hides it from new bookings but keeps it readable
+            in history. &ldquo;Other&rdquo; is always available.
+          </p>
+          <p className="mt-3 text-xs text-white/70 dark:text-fg-muted">{lastChanged}</p>
+        </section>
+
+        <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
+
+        <ReasonOptionsEditor initial={initial} />
+      </main>
+    </>
+  );
+}

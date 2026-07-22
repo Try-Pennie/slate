@@ -8,6 +8,7 @@ import { cardCls } from "@/components/ui/styles";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import BookingHistory from "@/components/BookingHistory";
 import { loadBookingDetail } from "@/lib/booking/detail";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 import type { HistoryRosterUser } from "@/lib/booking/event-display";
 import type { Booking } from "@/lib/db/types";
 
@@ -61,6 +62,13 @@ export default async function BookingDetailPage({
   if (result.kind === "notfound") notFound();
   const { booking, view } = result;
 
+  const opts = await loadReasonOptions();
+  const actionReasons = {
+    reschedule: opts.reschedule.active,
+    cancel: opts.cancel.active,
+    reassign: opts.reassign.active,
+  };
+
   return (
     <>
       <AppHeader
@@ -104,6 +112,7 @@ export default async function BookingDetailPage({
             bucketCode={view.bucketCode}
             status={booking.status}
             currentAgentId={booking.assigned_user_id}
+            reasonOptions={actionReasons}
           />
         </section>
 

@@ -3,6 +3,7 @@ import {
   collectUserIds,
   type BookingHistoryDeps,
 } from "../src/lib/booking/history.ts";
+import { CODED_DEFAULTS } from "../src/lib/booking/reason-options.ts";
 import type { BookingEvent } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -44,6 +45,7 @@ function deps(over: Partial<BookingHistoryDeps>): BookingHistoryDeps {
     bookingOrg: async () => "org1",
     events: async () => [],
     users: async () => [],
+    reasonOptions: async () => CODED_DEFAULTS,
     timeZone: "America/New_York",
     ...over,
   };

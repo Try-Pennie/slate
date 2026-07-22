@@ -5,7 +5,9 @@ import {
   buildHistoryViews,
   type BookingEventView,
   type HistoryRosterUser,
+  type ReasonOptionsByAction,
 } from "./event-display.ts";
+import { loadReasonOptions } from "./reason-options.ts";
 import type { BookingEvent } from "../db/types.ts";
 
 /** The whole roster is Eastern (see the timezone convention); history renders in it. */
@@ -33,6 +35,9 @@ export interface BookingHistoryDeps {
   bookingOrg: (bookingId: string) => Promise<string | null>;
   events: (bookingId: string) => Promise<BookingEvent[]>;
   users: (ids: string[]) => Promise<HistoryRosterUser[]>;
+  /** The live reason options (incl. retired) so a renamed/custom code renders its
+   *  exact current label (#346). Never throws (loader degrades to coded defaults). */
+  reasonOptions: () => Promise<ReasonOptionsByAction>;
   timeZone?: string;
 }
 
@@ -64,6 +69,14 @@ const defaultDeps: BookingHistoryDeps = {
       "booking-history roster",
     ) as HistoryRosterUser[];
   },
+  async reasonOptions() {
+    const opts = await loadReasonOptions();
+    return {
+      reschedule: opts.reschedule.all,
+      cancel: opts.cancel.all,
+      reassign: opts.reassign.all,
+    };
+  },
 };
 
 /**
@@ -83,5 +96,6 @@ export async function listBookingHistory(
   const events = await deps.events(bookingId);
   const ids = collectUserIds(events);
   const roster = ids.length ? await deps.users(ids) : [];
-  return buildHistoryViews(events, roster, deps.timeZone ?? ROSTER_ZONE);
+  const reasonOptions = await deps.reasonOptions();
+  return buildHistoryViews(events, roster, deps.timeZone ?? ROSTER_ZONE, reasonOptions);
 }

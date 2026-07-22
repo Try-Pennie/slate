@@ -42,6 +42,10 @@ import {
   ALERT_KEYS as MONITOR_ALERT_KEYS,
   type MonitorAlertKey,
 } from "@/lib/monitor/settings";
+import {
+  coerceReasonOptionsForm,
+  parseReasonOptionsForm,
+} from "@/lib/booking/reason-options";
 import { __clearChannelCache } from "@/lib/notify/channels";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
@@ -345,6 +349,47 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   __clearChannelCache();
   revalidatePath("/admin/settings");
   redirect("/admin/settings?ok=1");
+}
+
+/**
+ * Save the reschedule/cancel/reassign reason options (#346). Admin-only (guards
+ * independently of the page gate). The editor posts the COMPLETE ordered set as a
+ * JSON `payload`; parseReasonOptionsForm derives codes for new rows, forces locked
+ * rows active, and re-injects any missing locked code. The write is a single keyed
+ * upsert on (action, code), never a diff and never retire-by-absence, so it is
+ * idempotent under retries and last-writer-wins per row (assume-it-runs-twice).
+ */
+export async function setReasonOptions(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+
+  let raw: unknown = {};
+  try {
+    raw = JSON.parse(String(form.get("payload") ?? "{}"));
+  } catch {
+    redirect(`/admin/settings/reasons?error=${encodeURIComponent("Could not read the submitted form.")}`);
+  }
+
+  const { rows, errors } = parseReasonOptionsForm(coerceReasonOptionsForm(raw));
+  if (errors.length) {
+    redirect(`/admin/settings/reasons?error=${encodeURIComponent([...new Set(errors)].join(" "))}`);
+  }
+
+  const now = new Date().toISOString();
+  await supabaseAdmin()
+    .from("reason_options")
+    .upsert(
+      rows.map((r) => ({ ...r, updated_at: now, updated_by: admin.id })),
+      { onConflict: "action,code" },
+    );
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "reason.options",
+    details: { rows: rows.map((r) => ({ action: r.action, code: r.code, active: r.active })) },
+  });
+  revalidatePath("/admin/settings/reasons");
+  redirect("/admin/settings/reasons?ok=1");
 }
 
 export async function setOrgDefaultHours(form: FormData): Promise<void> {

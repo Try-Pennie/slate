@@ -1,10 +1,4 @@
-import {
-  RESCHEDULE_REASONS,
-  CANCEL_REASONS,
-  REASSIGN_REASONS,
-  type ReasonAction,
-  type ReasonOption,
-} from "./core.ts";
+import { type ReasonAction, type ReasonOption } from "./core.ts";
 import { formatSlotDay, formatSlotTime } from "./slot-label.ts";
 import type { BookingEvent, BookingEventAction } from "../db/types.ts";
 
@@ -24,11 +18,10 @@ const ACTION_LABEL: Record<BookingEventAction, string> = {
   reassigned: "Reassigned",
 };
 
-const REASONS_BY_ACTION: Record<ReasonAction, ReasonOption[]> = {
-  reschedule: RESCHEDULE_REASONS,
-  cancel: CANCEL_REASONS,
-  reassign: REASSIGN_REASONS,
-};
+/** The resolved reason options per action (incl. retired) the history views need
+ *  to label a code (#346): passed in so a renamed/custom code shows its exact
+ *  current stored label, not a stale coded default or a humanized guess. */
+export type ReasonOptionsByAction = Record<ReasonAction, ReasonOption[]>;
 
 /** "api_cancellation" -> "Api cancellation" (fallback for system/historical codes). */
 function humanizeCode(code: string): string {
@@ -58,20 +51,23 @@ export function formatLeadTime(minutes: number | null): string | null {
 }
 
 /**
- * Human label for a reason code. Known codes resolve to their option label;
- * "other" shows the free-text detail (or "Other" if blank); an unknown/system
- * code (e.g. api_cancellation) falls back to a humanized form of the code.
+ * Human label for a reason code, resolved against the live option set (#346).
+ * "other" shows the free-text detail (or "Other" if blank); a code present in
+ * `reasonOptions[action]` (active OR retired) resolves to its exact current label;
+ * a code with no matching row (a legacy/system code like api_cancellation, or a
+ * store the loader couldn't read) falls back to a humanized form of the code.
  */
 export function reasonLabel(
   action: ReasonAction,
   code: string,
   detail: string | null,
+  reasonOptions: ReasonOptionsByAction,
 ): string {
   if (code === "other") {
     const d = (detail ?? "").trim();
     return d || "Other";
   }
-  const match = REASONS_BY_ACTION[action].find((o) => o.code === code);
+  const match = reasonOptions[action].find((o) => o.code === code);
   return match ? match.label : humanizeCode(code);
 }
 
@@ -137,11 +133,12 @@ export function buildHistoryViews(
   events: BookingEvent[],
   roster: HistoryRosterUser[],
   timeZone: string,
+  reasonOptions: ReasonOptionsByAction,
 ): BookingEventView[] {
   const nameOf = rosterNameResolver(roster);
   return [...events]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .map((e) => toBookingEventView(e, nameOf, timeZone));
+    .map((e) => toBookingEventView(e, nameOf, timeZone, reasonOptions));
 }
 
 function formatAppt(iso: string, timeZone: string): string {
@@ -156,6 +153,7 @@ export function toBookingEventView(
   e: BookingEvent,
   nameOf: NameResolver,
   timeZone: string,
+  reasonOptions: ReasonOptionsByAction,
 ): BookingEventView {
   const timeChange =
     e.from_starts_at && e.to_starts_at
@@ -173,7 +171,7 @@ export function toBookingEventView(
     action: e.action,
     actionLabel: ACTION_LABEL[e.action],
     who: attributionLine(e, nameOf),
-    reason: reasonLabel(REASON_ACTION[e.action], e.reason_code, e.reason_detail),
+    reason: reasonLabel(REASON_ACTION[e.action], e.reason_code, e.reason_detail, reasonOptions),
     timeChange,
     agentChange,
     lead: formatLeadTime(e.lead_time_minutes),

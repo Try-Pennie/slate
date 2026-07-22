@@ -6,10 +6,25 @@ import {
   buildHistoryViews,
 } from "../src/lib/booking/event-display.ts";
 import { formatSlotDay, formatSlotTime } from "../src/lib/booking/slot-label.ts";
+import {
+  RESCHEDULE_REASONS,
+  CANCEL_REASONS,
+  REASSIGN_REASONS,
+  type ReasonAction,
+  type ReasonOption,
+} from "../src/lib/booking/core.ts";
 import type { BookingEvent } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const TZ = "America/New_York";
+
+// #346: history label rendering resolves a code against the live option set
+// (passed in), so a renamed/custom code shows the admin's exact current label.
+const OPTS: Record<ReasonAction, ReasonOption[]> = {
+  reschedule: RESCHEDULE_REASONS,
+  cancel: CANCEL_REASONS,
+  reassign: REASSIGN_REASONS,
+};
 
 // --- formatLeadTime: signed minutes -> human "before"/"after" the appointment ---
 eq(formatLeadTime(2880), "2 days before", "2880 min -> 2 days before");
@@ -24,26 +39,48 @@ eq(formatLeadTime(null), null, "null lead -> null");
 
 // --- reasonLabel: code -> human label, with "other" free text + unknown-code fallback ---
 eq(
-  reasonLabel("cancel", "no_longer_interested", null),
+  reasonLabel("cancel", "no_longer_interested", null, OPTS),
   "No longer interested",
   "known cancel code -> its label",
 );
 eq(
-  reasonLabel("reschedule", "other", "Kid got sick"),
+  reasonLabel("reschedule", "other", "Kid got sick", OPTS),
   "Kid got sick",
   "'other' -> the free-text detail",
 );
-eq(reasonLabel("cancel", "other", null), "Other", "'other' with no detail -> 'Other'");
+eq(reasonLabel("cancel", "other", null, OPTS), "Other", "'other' with no detail -> 'Other'");
 eq(
-  reasonLabel("reassign", "owner_reassignment", null),
+  reasonLabel("reassign", "owner_reassignment", null, OPTS),
   "Owner reassignment",
   "known reassign code -> its label",
 );
 eq(
-  reasonLabel("cancel", "api_cancellation", null),
+  reasonLabel("cancel", "api_cancellation", null, OPTS),
   "Api cancellation",
-  "unknown/system code -> humanized fallback",
+  "unknown/system code (absent from options) -> humanized fallback",
 );
+// #346: a RENAMED or custom code resolves to its exact stored label, not a guess.
+{
+  const renamed: Record<ReasonAction, ReasonOption[]> = {
+    reschedule: RESCHEDULE_REASONS,
+    cancel: [
+      { code: "no_longer_interested", label: "Not interested anymore" },
+      { code: "cost_concerns", label: "Cost concerns" },
+      { code: "other", label: "Other" },
+    ],
+    reassign: REASSIGN_REASONS,
+  };
+  eq(
+    reasonLabel("cancel", "no_longer_interested", null, renamed),
+    "Not interested anymore",
+    "a renamed code renders its current stored label, not the old one",
+  );
+  eq(
+    reasonLabel("cancel", "cost_concerns", null, renamed),
+    "Cost concerns",
+    "a custom admin-added code renders its exact stored label",
+  );
+}
 
 // --- attributionLine: who drove the event, incl. impersonation ---
 const names: Record<string, string> = { u1: "Dan Wright", u2: "Jo Lee" };
@@ -108,7 +145,7 @@ const reschedule: BookingEvent = {
   to_starts_at: "2026-07-05T18:00:00Z",
   lead_time_minutes: 2880,
 };
-const rv = toBookingEventView(reschedule, nameOf, TZ);
+const rv = toBookingEventView(reschedule, nameOf, TZ, OPTS);
 eq(rv.actionLabel, "Rescheduled", "reschedule -> actionLabel Rescheduled");
 eq(rv.who, "Dan Wright (admin)", "reschedule who");
 eq(rv.reason, "Schedule conflict", "reschedule reason label");
@@ -127,7 +164,7 @@ const reassign: BookingEvent = {
   from_agent_user_id: "u2",
   to_agent_user_id: "u1",
 };
-const av = toBookingEventView(reassign, nameOf, TZ);
+const av = toBookingEventView(reassign, nameOf, TZ, OPTS);
 eq(av.actionLabel, "Reassigned", "reassign -> actionLabel Reassigned");
 eq(av.agentChange, "Jo Lee → Dan Wright", "reassign agentChange from -> to (names)");
 eq(av.timeChange, null, "reassign with no time change -> null");
@@ -141,7 +178,7 @@ const cancel: BookingEvent = {
   reason_code: "no_longer_interested",
   lead_time_minutes: -240,
 };
-const cv = toBookingEventView(cancel, nameOf, TZ);
+const cv = toBookingEventView(cancel, nameOf, TZ, OPTS);
 eq(cv.actionLabel, "Cancelled", "cancel -> actionLabel Cancelled");
 eq(cv.who, "Customer", "cancel who = Customer");
 eq(cv.lead, "4 hours after", "cancel lead after the appt");
@@ -171,7 +208,7 @@ const newer: BookingEvent = {
   reason_code: "no_longer_interested",
   created_at: "2026-07-04T09:00:00Z",
 };
-const views = buildHistoryViews([older, newer], roster, TZ);
+const views = buildHistoryViews([older, newer], roster, TZ, OPTS);
 eq(views.length, 2, "buildHistoryViews returns one view per event");
 eq(views[0].id, "new", "newest event first");
 eq(views[1].id, "old", "older event last");
@@ -188,9 +225,9 @@ const unknown: BookingEvent = {
   to_agent_user_id: "u1",
   created_at: "2026-07-05T09:00:00Z",
 };
-const uv = buildHistoryViews([unknown], roster, TZ);
+const uv = buildHistoryViews([unknown], roster, TZ, OPTS);
 eq(uv[0].agentChange, "Unknown user → Dan Wright", "id absent from roster -> 'Unknown user'");
 
-eq(buildHistoryViews([], roster, TZ).length, 0, "no events -> empty list");
+eq(buildHistoryViews([], roster, TZ, OPTS).length, 0, "no events -> empty list");
 
 finish();

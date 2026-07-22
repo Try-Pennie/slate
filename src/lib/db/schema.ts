@@ -25,6 +25,7 @@ import type {
   SelfhealScanCursor,
   MonitorAlertConfig,
   MonitorSettings,
+  ReasonOptionRow,
   OooRequest,
   Organization,
   PendingEventDeletion,
@@ -129,6 +130,7 @@ export interface Database {
       >;
       monitor_settings: Table<MonitorSettings>;
       monitor_alert_config: Table<MonitorAlertConfig>;
+      reason_options: Table<ReasonOptionRow>;
     };
     Views: Record<string, never>;
     Functions: {

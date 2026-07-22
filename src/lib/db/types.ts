@@ -176,6 +176,20 @@ export interface AlertState {
   last_sent_at: string;
 }
 
+/** A configurable reschedule/cancel/reassign reason option (#346). Codes are the
+ *  stable analytics taxonomy; `active=false` is a soft-retire; `locked` marks a
+ *  system row an admin may not rename/retire ('other', 'owner_reassignment'). */
+export interface ReasonOptionRow {
+  action: "reschedule" | "cancel" | "reassign";
+  code: string;
+  label: string;
+  sort_order: number;
+  active: boolean;
+  locked: boolean;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 /** Per-alert cooldown override (#571); a missing row = use the coded default. */
 export interface MonitorSettings {
   key: string;

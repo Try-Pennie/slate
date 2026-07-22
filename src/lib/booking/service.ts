@@ -23,7 +23,6 @@ import {
   PAST_COMPLETION_BATCH_LIMIT,
   calendarIdsFromResult,
   freeAgentsFromBusy,
-  validateReason,
   type CalendarBusy,
   type ValidatedReason,
   type BookingActor,
@@ -1929,9 +1928,15 @@ function realBulkReassignDeps(): BulkReassignDeps {
       );
     },
     reassign: async (bookingId, targetEmail, job) => {
-      const reason = validateReason("reassign", { code: job.reason_code, detail: job.reason_detail });
-      if (!reason.ok) throw new Error(`invalid bulk-reassign reason: ${reason.error}`);
       if (!job.created_by) throw new Error("bulk-reassign job has no accountable actor (created_by)");
+      // The reason was validated when the job was enqueued (the bulk-reassign route).
+      // Do NOT re-validate membership here (#346): a re-check against the live option
+      // set, which loadReasonOptions degrades to coded defaults on a transient read
+      // error, would fail a legitimate, already-approved reassign and burn its retries
+      // (dropping a coverage move). Trust the stored code; structural guard only.
+      const code = (job.reason_code ?? "").trim();
+      if (!code) throw new Error("bulk-reassign job has no reason code");
+      const reason: ValidatedReason = { code, detail: job.reason_detail ?? null };
       const actor: BookingActor = { userId: job.created_by, actingAsUserId: job.acting_as_user_id };
       // Downstream signal (#975): a coverage move reuses adminReassignBooking, so
       // it emits the SAME booking.rescheduled webhook every reassign already does
@@ -1943,7 +1948,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
       //
       // Cap is NOT overridden: the covering agent was selected under their daily
       // cap. The manual force-override (#974) is the only path that overrides.
-      await adminReassignBooking(bookingId, targetEmail, reason.reason, actor, false);
+      await adminReassignBooking(bookingId, targetEmail, reason, actor, false);
     },
     commitItemOutcome: commitBulkReassignItemOutcome,
     markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,

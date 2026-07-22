@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { cancelBooking, BookingNotCancellableError } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
@@ -21,11 +22,13 @@ export async function POST(
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
-  // Reason is mandatory (#326) — server-enforced, not just in the UI.
-  const reason = validateReason("cancel", {
-    code: parsed.data.reason,
-    detail: parsed.data.reasonDetail,
-  });
+  // Reason is mandatory (#326), server-enforced, not just in the UI. Validate
+  // against the live option set (active + retired, #346).
+  const reasonOptions = await loadReasonOptions();
+  const reason = validateReason(
+    { code: parsed.data.reason, detail: parsed.data.reasonDetail },
+    reasonOptions.cancel.all,
+  );
   if (!reason.ok) {
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }

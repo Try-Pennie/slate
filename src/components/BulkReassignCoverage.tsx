@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { REASSIGN_REASONS } from "@/lib/booking/core";
+import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { getJson, postJson } from "@/lib/http";
@@ -41,9 +41,12 @@ const STATUS_LABEL: Record<string, string> = {
 export default function BulkReassignCoverage({
   agentId,
   agentName,
+  reassignReasons,
 }: {
   agentId: string;
   agentName: string;
+  /** Active reassign reason options, resolved from the store server-side (#346). */
+  reassignReasons: ReasonOption[];
 }) {
   const base = `/api/admin/agents/${agentId}/bulk-reassign`;
   const today = new Date().toISOString().slice(0, 10);
@@ -197,7 +200,7 @@ export default function BulkReassignCoverage({
               value={reasonCode}
               onChange={(e) => setReasonCode(e.target.value)}
             >
-              {REASSIGN_REASONS.map((r) => (
+              {reassignReasons.map((r) => (
                 <option key={r.code} value={r.code}>
                   {r.label}
                 </option>

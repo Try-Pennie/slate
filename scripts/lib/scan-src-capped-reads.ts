@@ -57,6 +57,9 @@ const SAFE_TABLES = new Set([
   "reschedule_locks",
   "lane_heartbeats",
   "selfheal_scan_cursor",
+  // #346: reason options are roster/config-bounded (a few dozen rows across 3
+  // actions), so a single page always holds the whole set.
+  "reason_options",
 ]);
 
 const FROM_SITE = /\.from\(\s*(["'`])([a-z_]+)\1/g;
