@@ -9,6 +9,14 @@ name: Smoke canary
 # failure (a real regression, or a bad key / missing fixture) posts a Slack alert.
 # workflow_dispatch runs either pass on demand.
 #
+# GitHub's schedule below is best-effort and DROPS runs under load (observed 2-3h
+# gaps against the 30-min cadence), which aged the heartbeat past its 90m bound and
+# false-paged. So it is now a BACKUP: the Worker's monitor cron lane reliably fills
+# the gap by firing this workflow (workflow_dispatch, dry pass) via GitHub's API
+# when the heartbeat goes stale (src/lib/monitor/canary-trigger.ts, needs the
+# GITHUB_CANARY_TOKEN Worker secret). The concurrency group below dedupes any
+# overlap between the two triggers.
+#
 # Needs repo secrets BOOKING_API_KEY and REASSIGN_API_KEY (the Worker's keys, added
 # to Actions), and the existing SLACK_BOT_TOKEN secret + SLACK_ALERTS_CHANNEL var.
 on:
