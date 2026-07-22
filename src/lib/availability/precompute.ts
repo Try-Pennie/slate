@@ -53,6 +53,24 @@ export async function listKnownBucketSlotRows(): Promise<
   });
 }
 
+/**
+ * Per-bucket cached slot COUNT over the precomputed (4-day) horizon, for the
+ * availability canary (#749). One row per bucket (`bucket_slots` is roster-bounded
+ * and on SAFE_TABLES), so a single page. A row whose payload has no slots array
+ * counts as zero.
+ */
+export async function listBucketSlotCounts(): Promise<{ code: string; slots: number }[]> {
+  const data = unwrap(
+    await supabaseAdmin().from("bucket_slots").select("bucket_code, payload"),
+    "listBucketSlotCounts",
+  );
+  return (data ?? []).map((r) => {
+    const row = r as { bucket_code: string; payload: { slots?: unknown[] } | null };
+    const slots = Array.isArray(row.payload?.slots) ? row.payload.slots.length : 0;
+    return { code: row.bucket_code, slots };
+  });
+}
+
 /** Upsert a freshly computed blob for a bucket. */
 export async function writeBucketSlotsRow(
   code: string,
