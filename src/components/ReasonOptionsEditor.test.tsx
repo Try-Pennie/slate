@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 
 // The editor imports the server action only to wire the form's `action`; mock it
 // so jsdom doesn't pull in server-only deps (supabase, next/headers).
@@ -66,6 +66,69 @@ describe("ReasonOptionsEditor", () => {
     fireEvent.click(checkbox);
     const nli = payload(container).cancel.find((r) => r.code === "no_longer_interested")!;
     expect(nli.active).toBe(false);
+  });
+
+  // #990: the usage hint + confirm-before-retiring-a-used-reason guardrail.
+  const emptyUsage = { reschedule: {}, cancel: {}, reassign: {} };
+  const liFor = (label: string) => (screen.getByDisplayValue(label) as HTMLElement).closest("li")!;
+
+  it("shows a per-row usage hint from the usage prop (#990)", () => {
+    render(
+      <ReasonOptionsEditor
+        initial={initial}
+        usage={{ ...emptyUsage, cancel: { no_longer_interested: 5 } }}
+      />,
+    );
+    expect(within(liFor("No longer interested")).getByText(/used 5 times in the last 90 days/i)).toBeTruthy();
+    // A reason with no recent use reads as such, not a blank.
+    expect(within(liFor("Schedule conflict")).getByText(/not used in the last 90 days/i)).toBeTruthy();
+  });
+
+  it("asks to confirm before retiring a still-used reason, and does not flip until confirmed (#990)", () => {
+    const { container } = render(
+      <ReasonOptionsEditor
+        initial={initial}
+        usage={{ ...emptyUsage, cancel: { no_longer_interested: 12 } }}
+      />,
+    );
+    const li = liFor("No longer interested");
+    fireEvent.click(li.querySelector('input[type="checkbox"]') as HTMLInputElement);
+
+    // The toggle is held: the payload still has the reason active...
+    expect(payload(container).cancel.find((r) => r.code === "no_longer_interested")!.active).toBe(true);
+    // ...and an inline confirm group appears with the retire action.
+    const confirm = within(li).getByRole("group", { name: /confirm retiring/i });
+    expect(within(confirm).getByText(/used 12 times/i)).toBeTruthy();
+    expect(within(confirm).getByRole("button", { name: /retire it anyway/i })).toBeTruthy();
+  });
+
+  it("confirming the retire flips active; keeping it active cancels (#990)", () => {
+    const { container } = render(
+      <ReasonOptionsEditor
+        initial={initial}
+        usage={{ ...emptyUsage, cancel: { no_longer_interested: 12 } }}
+      />,
+    );
+    const cb = () => liFor("No longer interested").querySelector('input[type="checkbox"]') as HTMLInputElement;
+
+    // Keep active: the confirm dismisses and the reason stays active.
+    fireEvent.click(cb());
+    fireEvent.click(within(liFor("No longer interested")).getByRole("button", { name: /keep it active/i }));
+    expect(payload(container).cancel.find((r) => r.code === "no_longer_interested")!.active).toBe(true);
+    expect(within(liFor("No longer interested")).queryByRole("button", { name: /retire it anyway/i })).toBeNull();
+
+    // Retire anyway: now it flips.
+    fireEvent.click(cb());
+    fireEvent.click(within(liFor("No longer interested")).getByRole("button", { name: /retire it anyway/i }));
+    expect(payload(container).cancel.find((r) => r.code === "no_longer_interested")!.active).toBe(false);
+  });
+
+  it("retires an UNUSED reason immediately with no confirm (#990)", () => {
+    const { container } = render(<ReasonOptionsEditor initial={initial} usage={emptyUsage} />);
+    const li = liFor("No longer interested");
+    fireEvent.click(li.querySelector('input[type="checkbox"]') as HTMLInputElement);
+    expect(within(li).queryByRole("button", { name: /retire it anyway/i })).toBeNull();
+    expect(payload(container).cancel.find((r) => r.code === "no_longer_interested")!.active).toBe(false);
   });
 
   it("reorders a reason with the down button, changing payload order", () => {

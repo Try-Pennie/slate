@@ -7,6 +7,12 @@ import { AppHeader } from "@/components/AppHeader";
 import ReasonOptionsEditor from "@/components/ReasonOptionsEditor";
 import { SettingsSaveNotice } from "../SettingsSaveNotice";
 import { resolveEditorRows, type ReasonOptionRow as PureReasonRow } from "@/lib/booking/reason-options";
+import {
+  loadReasonUsageCounts,
+  emptyReasonUsage,
+  type ReasonUsageCounts,
+} from "@/lib/booking/reason-usage";
+import { log } from "@/lib/log";
 import type { ReasonOptionRow, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -74,6 +80,16 @@ export default async function ReasonOptionsPage({
 
   const initial = resolveEditorRows(stored as PureReasonRow[]);
 
+  // Recent usage per reason (#990), so an admin sees how often a reason is picked
+  // before retiring it. Best-effort: a read failure (or the RPC missing during a
+  // migrate-before-deploy window) degrades to no hint rather than 500ing the page.
+  let usage: ReasonUsageCounts = emptyReasonUsage();
+  try {
+    usage = await loadReasonUsageCounts();
+  } catch {
+    log.warn("reason-options", { msg: "usage counts unavailable; hiding the hint" });
+  }
+
   return (
     <>
       <AppHeader
@@ -101,7 +117,7 @@ export default async function ReasonOptionsPage({
 
         <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
 
-        <ReasonOptionsEditor initial={initial} />
+        <ReasonOptionsEditor initial={initial} usage={usage} />
       </main>
     </>
   );
