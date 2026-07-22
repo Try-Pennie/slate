@@ -11,10 +11,26 @@ const slack = vi.hoisted(() => ({
     async (_email: string, _text: string, _blocks?: unknown[]): Promise<boolean> => true,
   ),
 }));
+// #1001: a repeatedly-undelivered digest must escalate, not stay swallowed. The
+// route folds each manager's delivery result into the shared consecutive-failure
+// streak and fires a throttled alert once it trips.
+const streak = vi.hoisted(() => ({
+  recordConsecutiveStreak: vi.fn(
+    async (_key: string, _windowSeconds: number, _alertAt: number): Promise<boolean> => false,
+  ),
+  clearFailureStreak: vi.fn(async (_key: string): Promise<void> => {}),
+}));
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(
+    async (_key: string, _cooldownMs: number, _text: string, _channel?: string): Promise<void> => {},
+  ),
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/notify/slack", () => slack);
+vi.mock("@/lib/notify/streak", () => streak);
+vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/env", () => ({ appUrl: () => "https://slate.test" }));
 // Keep log noise out of the failure-path test (it logs the DM failure).
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -82,7 +98,15 @@ function wireDb() {
   );
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // clearAllMocks wipes call history but keeps implementations, so re-establish
+  // the defaults a prior test may have overridden.
+  slack.dmSlackUserByEmail.mockImplementation(async () => true);
+  streak.recordConsecutiveStreak.mockResolvedValue(false);
+  streak.clearFailureStreak.mockResolvedValue(undefined);
+  dispatch.sendThrottledAlert.mockResolvedValue(undefined);
+});
 
 describe("GET /api/cron/ooo-digest", () => {
   it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
@@ -130,5 +154,74 @@ describe("GET /api/cron/ooo-digest", () => {
     expect(slack.dmSlackUserByEmail).toHaveBeenCalledTimes(2); // m2 still attempted
     expect(body.sent).toBe(1);
     expect(body.failed).toBe(1); // the failure is surfaced, not swallowed
+  });
+
+  it("clears each reachable manager's failure streak and never alerts on a clean run (#1001)", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+
+    await GET(forcedReq());
+
+    // Both managers delivered, so both streaks are cleared and nothing escalates.
+    const cleared = streak.clearFailureStreak.mock.calls.map((c) => c[0]);
+    expect(cleared).toContain("ooo-digest-send-fail:m1");
+    expect(cleared).toContain("ooo-digest-send-fail:m2");
+    expect(streak.recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("records a send-failure streak but stays quiet on a lone failure (#1001)", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    // m1 unreachable (a null/false send), m2 fine. The streak has not tripped yet.
+    slack.dmSlackUserByEmail.mockImplementation(async (email: string) => email !== "m1@x.com");
+    streak.recordConsecutiveStreak.mockResolvedValue(false);
+
+    await GET(forcedReq());
+
+    // m1's failure is tracked under its own key; m2's success clears its streak.
+    const recorded = streak.recordConsecutiveStreak.mock.calls.map((c) => c[0]);
+    expect(recorded).toContain("ooo-digest-send-fail:m1");
+    expect(streak.clearFailureStreak.mock.calls.map((c) => c[0])).toContain(
+      "ooo-digest-send-fail:m2",
+    );
+    // One bad day may be a transient Slack blip, so no alert fires.
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("fires a throttled, manager-named alert once the streak trips (#1001)", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    slack.dmSlackUserByEmail.mockImplementation(async (email: string) => email !== "m1@x.com");
+    streak.recordConsecutiveStreak.mockResolvedValue(true); // Nth consecutive failure
+
+    await GET(forcedReq());
+
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [alertKey, cooldownMs, text] = dispatch.sendThrottledAlert.mock.calls[0];
+    expect(alertKey).toBe("ooo-digest-unreachable:m1");
+    expect(typeof cooldownMs).toBe("number");
+    expect(cooldownMs).toBeGreaterThan(0);
+    expect(text).toContain("Manager One"); // names the unreachable manager, not a raw error
+  });
+
+  it("keeps processing the rest of the run when the delivery alert itself throws (#1001)", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    // m1 unreachable and its streak trips, but the alert dispatch blows up.
+    slack.dmSlackUserByEmail.mockImplementation(async (email: string) => email !== "m1@x.com");
+    streak.recordConsecutiveStreak.mockResolvedValue(true);
+    dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+
+    const res = await GET(forcedReq());
+    const body = await res.json();
+
+    expect(res.status).toBe(200); // a failed alert must not 500 the tick
+    expect(body.failed).toBe(1);
+    // m2 was still delivered and its streak cleared despite m1's alert throwing.
+    expect(slack.dmSlackUserByEmail).toHaveBeenCalledTimes(2);
+    expect(streak.clearFailureStreak.mock.calls.map((c) => c[0])).toContain(
+      "ooo-digest-send-fail:m2",
+    );
   });
 });

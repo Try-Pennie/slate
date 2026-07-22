@@ -12,8 +12,52 @@ import {
 import { formatWhenLine } from "@/lib/ooo/core";
 import type { OooRequest } from "@/lib/db/types";
 import { log } from "@/lib/log";
+import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
 
 export const dynamic = "force-dynamic";
+
+// #1001: a manager's digest can silently fail to deliver (a broken Slack
+// email-to-user mapping, or a Slack API error), and pending time off requests
+// then pile up unseen. Fold each delivery result into the shared
+// consecutive-failure streak so a lone transient blip stays quiet but a mapping
+// that stays broken escalates to a throttled alert.
+const FAIL_STREAK_WINDOW_SECONDS = 3 * 24 * 60 * 60; // > the ~24h digest cadence, so consecutive daily failures accumulate in one window
+const ALERT_AFTER_RUNS = 2; // day one may be a transient Slack blip; the second consecutive miss alerts
+const ALERT_COOLDOWN_MS = 22 * 60 * 60 * 1000; // remind about once a day while a mapping stays broken, no more
+
+/**
+ * Record one manager's digest delivery outcome. A clean send clears the streak;
+ * a failure bumps it and, once it reaches ALERT_AFTER_RUNS consecutive misses,
+ * fires a throttled Slack alert naming the unreachable manager. Best-effort: the
+ * streak helpers swallow their own errors, and the alert is wrapped, so tracking
+ * or alerting trouble can never abort the rest of the digest run.
+ */
+async function noteDigestDelivery(managerId: string, managerLabel: string, ok: boolean) {
+  const streakKey = `ooo-digest-send-fail:${managerId}`;
+  if (ok) {
+    await clearFailureStreak(streakKey);
+    return;
+  }
+  const tripped = await recordConsecutiveStreak(
+    streakKey,
+    FAIL_STREAK_WINDOW_SECONDS,
+    ALERT_AFTER_RUNS,
+  );
+  if (!tripped) return;
+  try {
+    await sendThrottledAlert(
+      `ooo-digest-unreachable:${managerId}`,
+      ALERT_COOLDOWN_MS,
+      `A manager is not receiving their daily pending time off digest on Slack. ` +
+        `${managerLabel} has been unreachable for at least ${ALERT_AFTER_RUNS} days running, ` +
+        `so time off requests waiting on their approval may be piling up unseen. ` +
+        `Check that their Slack account uses their Slate email address.`,
+    );
+  } catch (err) {
+    log.error("ooo-digest", { msg: "delivery alert failed", manager: managerId }, err);
+  }
+}
 
 /**
  * Daily 9am ET nudge (port of the Pipedream flow): DM each manager the count
@@ -88,13 +132,17 @@ export async function GET(req: NextRequest) {
     // Per-manager isolation: one manager's Slack failure must not abort the rest
     // of the digest run (fail-loud, not fail-silent: the error is logged and the
     // failed count surfaced, rather than 500ing the whole cron tick).
+    const label = usersById.get(d.managerId)?.name ?? d.email;
+    let ok = false;
     try {
-      if (await dmSlackUserByEmail(d.email, d.text, d.blocks)) sent++;
-      else failed++;
+      ok = !!(await dmSlackUserByEmail(d.email, d.text, d.blocks));
     } catch (err) {
-      failed++;
       log.error("ooo-digest", { msg: "digest DM failed", manager: d.managerId }, err);
     }
+    if (ok) sent++;
+    else failed++;
+    // Escalate a mapping that stays broken across runs, instead of swallowing it.
+    await noteDigestDelivery(d.managerId, label, ok);
   }
   return NextResponse.json({
     sent,
