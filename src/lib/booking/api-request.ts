@@ -13,7 +13,7 @@
 import { z } from "zod";
 import { IANAZone, DateTime } from "luxon";
 import { validateAttendee, type AttendeeErrors } from "../attendee.ts";
-import { validateReason, type ValidatedReason } from "./core.ts";
+import { validateReason, type ReasonOption, type ValidatedReason } from "./core.ts";
 import type { BookingStatus } from "../db/types.ts";
 
 export interface DirectBookingRequest {
@@ -173,10 +173,15 @@ export type CancelParseResult =
  * Parse a DELETE /api/bookings cancel query (#386). Requires an explicit
  * `bookingId` AND a strong id (`externalId` or `salesforceId`) so the caller
  * targets exactly one ownership-checked booking. Optional `reason` (+
- * `reasonDetail` for the "other" code) is validated against CANCEL_REASONS;
- * absent → null (the service substitutes the default api_cancellation reason).
+ * `reasonDetail` for the "other" code) is validated against the live cancel option
+ * set `allowedCancel` (active + retired, #346), which the route loads and passes in
+ * (this parser stays sync/pure); absent → null (the service substitutes the default
+ * api_cancellation reason).
  */
-export function parseCancelQuery(params: URLSearchParams): CancelParseResult {
+export function parseCancelQuery(
+  params: URLSearchParams,
+  allowedCancel: ReasonOption[],
+): CancelParseResult {
   const bookingId = (params.get("bookingId") ?? "").trim();
   if (!bookingId) {
     return { ok: false, status: 400, error: "bookingId is required" };
@@ -190,7 +195,7 @@ export function parseCancelQuery(params: URLSearchParams): CancelParseResult {
   let reason: ValidatedReason | null = null;
   const reasonCode = (params.get("reason") ?? "").trim();
   if (reasonCode) {
-    const v = validateReason("cancel", { code: reasonCode, detail: params.get("reasonDetail") });
+    const v = validateReason({ code: reasonCode, detail: params.get("reasonDetail") }, allowedCancel);
     if (!v.ok) return { ok: false, status: 400, error: v.error };
     reason = v.reason;
   }

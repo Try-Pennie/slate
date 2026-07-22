@@ -9,6 +9,7 @@ import {
   NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
@@ -32,11 +33,14 @@ export async function POST(
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
-  // Reason is mandatory (#326) — server-enforced, not just in the UI.
-  const reason = validateReason("reschedule", {
-    code: parsed.data.reason,
-    detail: parsed.data.reasonDetail,
-  });
+  // Reason is mandatory (#326), server-enforced, not just in the UI. Validate
+  // against the live option set (active + retired, #346) so an admin-added code
+  // is accepted and an in-flight submission for a just-retired code still confirms.
+  const reasonOptions = await loadReasonOptions();
+  const reason = validateReason(
+    { code: parsed.data.reason, detail: parsed.data.reasonDetail },
+    reasonOptions.reschedule.all,
+  );
   if (!reason.ok) {
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }

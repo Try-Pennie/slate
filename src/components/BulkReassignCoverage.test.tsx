@@ -14,6 +14,7 @@ const http = vi.hoisted(() => ({
 vi.mock("@/lib/http", () => http);
 
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
+import { REASSIGN_REASONS } from "@/lib/booking/core";
 
 const progressFixture = {
   job: { id: "job1", out_user_id: "out1", status: "done" },
@@ -45,13 +46,13 @@ beforeEach(() => {
 
 describe("BulkReassignCoverage", () => {
   it("shows a live preview count for the range", async () => {
-    render(<BulkReassignCoverage agentId="out1" agentName="Adam" />);
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
     expect(await screen.findByText(/5 bookings would be reassigned/)).toBeTruthy();
   });
 
   it("starts a sweep and renders progress with the actionable override link", async () => {
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 2 } });
-    render(<BulkReassignCoverage agentId="out1" agentName="Adam" />);
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /start coverage reassign/i }));
 
@@ -66,7 +67,7 @@ describe("BulkReassignCoverage", () => {
 
   it("surfaces a start failure instead of silently doing nothing", async () => {
     http.postJson.mockResolvedValueOnce({ ok: false, status: 500, data: { error: "Something broke" } });
-    render(<BulkReassignCoverage agentId="out1" agentName="Adam" />);
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /start coverage reassign/i }));
 

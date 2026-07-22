@@ -6,6 +6,7 @@
 // prefill) so the booking layer gets clean input.
 // Run: node --experimental-strip-types scripts/test-booking-api-request.ts
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, encodeCursor, decodeCursor } from "../src/lib/booking/api-request.ts";
+import { CANCEL_REASONS } from "../src/lib/booking/core.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const valid = {
@@ -176,17 +177,17 @@ const lqBadStatus = parseLookupQuery(new URLSearchParams("externalId=ext-1&statu
 assert(!lqBadStatus.ok && lqBadStatus.status === 400, "lookup: unknown status = 400");
 
 // --- parseCancelQuery (#386) ---
-const cqOk = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1"));
+const cqOk = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1"), CANCEL_REASONS);
 assert(cqOk.ok && cqOk.value.bookingId === "bk-7" && cqOk.value.externalId === "ext-1" && cqOk.value.reason === null,
   "cancel: bookingId + externalId valid, reason defaults null");
-const cqNoBooking = parseCancelQuery(new URLSearchParams("externalId=ext-1"));
+const cqNoBooking = parseCancelQuery(new URLSearchParams("externalId=ext-1"), CANCEL_REASONS);
 assert(!cqNoBooking.ok && cqNoBooking.status === 400, "cancel: missing bookingId = 400");
-const cqNoId = parseCancelQuery(new URLSearchParams("bookingId=bk-7"));
+const cqNoId = parseCancelQuery(new URLSearchParams("bookingId=bk-7"), CANCEL_REASONS);
 assert(!cqNoId.ok && cqNoId.status === 400, "cancel: missing both ids = 400");
-const cqReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&salesforceId=sf-9&reason=no_longer_interested"));
+const cqReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&salesforceId=sf-9&reason=no_longer_interested"), CANCEL_REASONS);
 assert(cqReason.ok && cqReason.value.reason?.code === "no_longer_interested",
   "cancel: valid reason code accepted");
-const cqBadReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1&reason=not_a_reason"));
+const cqBadReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1&reason=not_a_reason"), CANCEL_REASONS);
 assert(!cqBadReason.ok && cqBadReason.status === 400, "cancel: invalid reason = 400");
 
 // --- list query parser (#392) ---

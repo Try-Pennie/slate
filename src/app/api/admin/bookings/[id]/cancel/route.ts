@@ -4,6 +4,7 @@ import { requireBookingActor } from "@/lib/auth";
 import { forbiddenResponse } from "@/lib/auth/http";
 import { adminCancelBooking } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
@@ -30,10 +31,11 @@ export async function POST(
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
-  const reason = validateReason("cancel", {
-    code: parsed.data.reason,
-    detail: parsed.data.reasonDetail,
-  });
+  const reasonOptions = await loadReasonOptions();
+  const reason = validateReason(
+    { code: parsed.data.reason, detail: parsed.data.reasonDetail },
+    reasonOptions.cancel.all,
+  );
   if (!reason.ok) {
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }

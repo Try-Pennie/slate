@@ -19,7 +19,8 @@ export type AuditAction =
   | "impersonate.start"
   | "impersonate.stop"
   | "impersonate.ended"
-  | "monitor.settings";
+  | "monitor.settings"
+  | "reason.options";
 
 /**
  * Appends a privileged action to the audit trail. Best-effort: never throws, so

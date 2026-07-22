@@ -256,6 +256,20 @@ export default async function MonitorSettingsPage({
         </form>
 
         <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Booking reasons</h2>
+          <p className="mb-3 text-xs text-fg-muted">
+            The reasons staff and customers pick when rescheduling, cancelling, or
+            reassigning a booking. Add, rename, reorder, or retire them without a deploy.
+          </p>
+          <a
+            href="/admin/settings/reasons"
+            className="text-sm font-semibold text-pennie-blue underline dark:text-pennie-sky"
+          >
+            Edit reason options
+          </a>
+        </section>
+
+        <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Diagnostics</h2>
           <p className="mb-3 text-xs text-fg-muted">
             When a booking&apos;s side effects (calendar, webhook) or a

@@ -4,11 +4,9 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-  RESCHEDULE_REASONS,
-  CANCEL_REASONS,
-  REASSIGN_REASONS,
   validateReason,
   type ReasonAction,
+  type ReasonOption,
 } from "@/lib/booking/core";
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
@@ -35,12 +33,16 @@ export default function AdminBookingActions({
   bucketCode,
   status,
   currentAgentId,
+  reasonOptions: options,
 }: {
   bookingId: string;
   bucketCode: string | null;
   status: string;
   /** The booking's current agent, excluded from the reassign picker (#546). */
   currentAgentId?: string | null;
+  /** Active reason options per action, resolved from the store server-side (#346);
+   *  drives both the picker and the client validate gate so the UI and server agree. */
+  reasonOptions: Record<ReasonAction, ReasonOption[]>;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>(null);
@@ -85,7 +87,7 @@ export default function AdminBookingActions({
 
   const action: ReasonAction =
     mode === "reschedule" ? "reschedule" : mode === "reassign" ? "reassign" : "cancel";
-  const reasonValid = validateReason(action, { code: reasonCode, detail: reasonDetail }).ok;
+  const reasonValid = validateReason({ code: reasonCode, detail: reasonDetail }, options[action]).ok;
 
   function reset() {
     setMode(null);
@@ -212,8 +214,7 @@ export default function AdminBookingActions({
     );
   }
 
-  const reasonOptions =
-    mode === "cancel" ? CANCEL_REASONS : mode === "reassign" ? REASSIGN_REASONS : RESCHEDULE_REASONS;
+  const currentOptions = options[action];
   const reasonLegend =
     mode === "cancel"
       ? "Why are you cancelling?"
@@ -227,7 +228,7 @@ export default function AdminBookingActions({
     <div className="rounded-md border border-border bg-surface p-3">
       <ReasonPicker
         legend={reasonLegend}
-        options={reasonOptions}
+        options={currentOptions}
         code={reasonCode}
         detail={reasonDetail}
         onCode={setReasonCode}

@@ -3,11 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { deviceTimeZone, timezoneOptions } from "@/lib/booking/timezones";
-import {
-  RESCHEDULE_REASONS,
-  CANCEL_REASONS,
-  validateReason,
-} from "@/lib/booking/core";
+import { validateReason, type ReasonOption } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { AlertIcon } from "@/components/icons";
@@ -24,6 +20,11 @@ interface ManageBookingProps {
   startsAt: string;
   status: string;
   eventName: string;
+  /** Active reschedule/cancel reason options, resolved from the store server-side
+   *  (#346). Used for both the pickers and the client-side validate gate, so the
+   *  UI and server share the same live set. */
+  rescheduleReasons: ReasonOption[];
+  cancelReasons: ReasonOption[];
   /** Presentational only; scopes the Pennie tokens via data-theme. */
   theme?: "light" | "dark";
 }
@@ -53,6 +54,8 @@ export default function ManageBooking({
   startsAt,
   status: initialStatus,
   eventName,
+  rescheduleReasons,
+  cancelReasons,
   theme = "light",
 }: ManageBookingProps) {
   const detectedZone = useMemo(() => deviceTimeZone(), []);
@@ -84,14 +87,14 @@ export default function ManageBooking({
   const [reschedDetail, setReschedDetail] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelDetail, setCancelDetail] = useState("");
-  const reschedReasonValid = validateReason("reschedule", {
-    code: reschedReason,
-    detail: reschedDetail,
-  }).ok;
-  const cancelReasonValid = validateReason("cancel", {
-    code: cancelReason,
-    detail: cancelDetail,
-  }).ok;
+  const reschedReasonValid = validateReason(
+    { code: reschedReason, detail: reschedDetail },
+    rescheduleReasons,
+  ).ok;
+  const cancelReasonValid = validateReason(
+    { code: cancelReason, detail: cancelDetail },
+    cancelReasons,
+  ).ok;
 
   const done = status === "cancelled" || status === "completed";
 
@@ -230,7 +233,7 @@ export default function ManageBooking({
             <div className="mt-4">
               <ReasonPicker
                 legend="Why are you cancelling?"
-                options={CANCEL_REASONS}
+                options={cancelReasons}
                 code={cancelReason}
                 detail={cancelDetail}
                 onCode={setCancelReason}
@@ -285,7 +288,7 @@ export default function ManageBooking({
             <div className="mb-4">
               <ReasonPicker
                 legend="Why are you rescheduling?"
-                options={RESCHEDULE_REASONS}
+                options={rescheduleReasons}
                 code={reschedReason}
                 detail={reschedDetail}
                 onCode={setReschedReason}
