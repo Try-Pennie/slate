@@ -187,7 +187,10 @@ uses. (Cloudflare's native Health Checks were considered but need a paid plan; t
    Because the verdict rides on the status code, noodge needs no body assertion.
 3. `GET /widget.js` expects `200` with a JavaScript content type. The embed script;
    if it stops serving, every landing page that embeds Slate loses its booker.
-4. `GET /` expects `200`. Cheap catch for a broken deploy.
+4. `GET /login` expects `200`. Cheap catch for a broken deploy: it proves the
+   Next.js page-rendering path serves (not just the API routes). The root `/`
+   redirects to `/login` (a `307`), so point the check at `/login` directly rather
+   than `/`, or a strict expect-`200` check fails on the redirect.
 
 Alerting: noodge's alert-on-failure default is fine here. These endpoints are
 built to return `503` only on a sustained, real condition (a cron lane well past
