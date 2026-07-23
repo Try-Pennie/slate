@@ -151,7 +151,7 @@ not a subset; `scripts/test-cron-routes.ts` fails CI if any lane below drifts):
 - `0 * * * *`   → `/api/cron/agents` (hourly Salesforce roster reconcile + default hours, single locked path)
 - `0 13 * * 1-5` **and** `0 14 * * 1-5` → `/api/cron/ooo-digest` (pending-OOO morning digest; the two UTC slots straddle DST and the route's time gate lets exactly one fire at 9am ET)
 - `0 11 * * *` **and** `0 12 * * *` → `/api/cron/ooo-approvals` (7am ET email of yesterday's OOO approvals; two DST slots, one fires)
-- `0 3 * * *`   → `/api/cron/prune-routing` (daily prune of routing_decisions rows older than 12 months) **+** `/api/cron/prune-webhook-payloads` (blank webhook_deliveries payload PII on terminal deliveries older than 90 days, #1073)
+- `0 3 * * *`   → `/api/cron/prune-routing` (daily prune of routing_decisions rows older than 12 months) **+** `/api/cron/prune-webhook-payloads` (blank webhook_deliveries payload PII on terminal deliveries older than 90 days, #1073) **+** `/api/cron/prune-bookings-pii` (redact consumer PII on bookings whose appointment is past the 24-month window, enqueue gcal-event deletion, prune delivered outbox rows, #1071)
 
 No secret beyond `CRON_SECRET` (already set on the app) is needed — the crons
 deploy with the app via `pnpm cf:deploy`. Until the domain is Google-verified,
