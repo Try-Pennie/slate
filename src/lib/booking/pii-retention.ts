@@ -23,26 +23,27 @@ export function bookingPiiCutoffIso(
 }
 
 /**
- * The redaction applied to an aged booking. Clears the three direct PII fields,
- * blanks the prefill blob (which can carry PII), AND both strong identity keys
- * (salesforce_id/external_id) so the row is no longer re-identifiable, not merely
- * pseudonymized. Redaction in place (not hard-delete) preserves aggregate rows
- * and foreign-key integrity. The reschedule/cancel reason text lives in the
- * append-only booking_events table and is redacted separately once the #1040
+ * The redaction applied to an aged booking. Clears ONLY the direct contact data
+ * Slate collected on the public booker: name, email, phone, and the prefill blob
+ * (which can carry PII). Redaction in place (not hard-delete) preserves aggregate
+ * rows and foreign-key integrity.
+ *
+ * It deliberately does NOT clear salesforce_id/external_id: those are the same
+ * external Salesforce reference, and Slate is not the system of record for that
+ * identity, so retention there is Salesforce's job (Dan, 2026-07-23). Nor does
+ * retention touch the agent's Google Calendar; a completed meeting's event stays,
+ * and only a real cancellation deletes it. The reschedule/cancel reason text in
+ * the append-only booking_events table is redacted separately once the #1040
  * tamper-evidence lock and its erasure escape hatch land (#1070).
  */
 export const REDACTED_BOOKING_UPDATE: {
   attendee_name: null;
   attendee_email: null;
   attendee_phone: null;
-  salesforce_id: null;
-  external_id: null;
   prefill: Record<string, never>;
 } = {
   attendee_name: null,
   attendee_email: null,
   attendee_phone: null,
-  salesforce_id: null,
-  external_id: null,
   prefill: {},
 };

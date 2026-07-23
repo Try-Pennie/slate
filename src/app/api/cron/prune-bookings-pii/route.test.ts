@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// #1071: the prune-bookings-pii cron redacts consumer PII on bookings whose
-// appointment is past the 24-month window: clears attendee fields + identity keys
-// + prefill, enqueues deletion of the external Google Calendar event (via the
-// crash-safe pending_event_deletions queue, #401), and prunes delivered
-// booking_outbox rows. This covers the route glue: auth + lock guards, the
-// redaction UPDATE shape, the gcal enqueue, the outbox delete, fail-loud, and
-// lock release.
+// #1071: the prune-bookings-pii cron redacts the direct consumer contact data on
+// bookings whose appointment is past the 24-month window (attendee name/email/
+// phone + prefill), and prunes delivered booking_outbox rows. It deliberately
+// does NOT clear salesforce_id/external_id (the external Salesforce reference) and
+// does NOT touch the agent's Google Calendar (a completed meeting's event stays;
+// only a real cancellation deletes it). This covers the route glue: auth + lock
+// guards, the redaction UPDATE shape, the outbox delete, fail-loud, lock release.
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
@@ -15,19 +15,21 @@ const locks = vi.hoisted(() => ({
 
 const rec = vi.hoisted(() => ({
   agedBookings: [] as Record<string, unknown>[],
-  users: [] as Record<string, unknown>[],
   bookingUpdate: null as Record<string, unknown> | null,
   bookingUpdateIds: null as unknown,
-  enqueued: [] as Record<string, unknown>[],
   outboxDeleted: false,
   bookingSelectError: null as { message: string } | null,
+  touchedTables: [] as string[],
 }));
 
-// A tiny table-aware builder. Only the shapes this route uses are modeled.
+// A tiny table-aware builder. The route must only touch bookings + booking_outbox;
+// any other table (users, pending_event_deletions) throws, proving retention
+// never resolves an agent email or enqueues a calendar deletion.
 const from = vi.hoisted(() =>
   vi.fn((table: string) => {
+    rec.touchedTables.push(table);
     if (table === "bookings") {
-      const b: Record<string, unknown> = { _upd: null as Record<string, unknown> | null };
+      const b: Record<string, unknown> = {};
       b.select = () => b;
       b.lt = () => b;
       b.not = () => b;
@@ -42,20 +44,6 @@ const from = vi.hoisted(() =>
         return Promise.resolve({ error: null, count: (ids as unknown[]).length });
       };
       return b;
-    }
-    if (table === "users") {
-      const b: Record<string, unknown> = {};
-      b.select = () => b;
-      b.in = () => Promise.resolve({ data: rec.users, error: null });
-      return b;
-    }
-    if (table === "pending_event_deletions") {
-      return {
-        upsert: (row: Record<string, unknown>) => {
-          rec.enqueued.push(row);
-          return Promise.resolve({ error: null });
-        },
-      };
     }
     if (table === "booking_outbox") {
       const b: Record<string, unknown> = {};
@@ -83,12 +71,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   locks.acquireLock.mockResolvedValue("lease");
   rec.agedBookings = [];
-  rec.users = [];
   rec.bookingUpdate = null;
   rec.bookingUpdateIds = null;
-  rec.enqueued = [];
   rec.outboxDeleted = false;
   rec.bookingSelectError = null;
+  rec.touchedTables = [];
 });
 
 describe("GET /api/cron/prune-bookings-pii", () => {
@@ -107,36 +94,27 @@ describe("GET /api/cron/prune-bookings-pii", () => {
     expect(from).not.toHaveBeenCalled();
   });
 
-  it("redacts aged bookings, enqueues the gcal deletion, prunes the outbox, releases the lock", async () => {
-    rec.agedBookings = [
-      { id: "bk1", assigned_user_id: "u1", gcal_event_id: "ev1" },
-      { id: "bk2", assigned_user_id: "u2", gcal_event_id: null },
-    ];
-    rec.users = [
-      { id: "u1", email: "agent1@x.com" },
-      { id: "u2", email: "agent2@x.com" },
-    ];
+  it("redacts only the contact fields, keeps the external IDs, prunes the outbox, releases the lock", async () => {
+    rec.agedBookings = [{ id: "bk1" }, { id: "bk2" }];
 
     const res = await GET(req());
     const body = await res.json();
 
-    // Both aged rows are redacted with the full PII+identity-key clear.
+    // Clears the direct contact data...
     expect(rec.bookingUpdate).toMatchObject({
       attendee_name: null,
       attendee_email: null,
       attendee_phone: null,
-      salesforce_id: null,
-      external_id: null,
+      prefill: {},
     });
+    // ...but NEVER the external Salesforce reference.
+    expect(rec.bookingUpdate).not.toHaveProperty("salesforce_id");
+    expect(rec.bookingUpdate).not.toHaveProperty("external_id");
     expect(rec.bookingUpdateIds).toEqual(["bk1", "bk2"]);
 
-    // Only the row with a calendar event is enqueued for external deletion.
-    expect(rec.enqueued).toHaveLength(1);
-    expect(rec.enqueued[0]).toMatchObject({
-      calendar_email: "agent1@x.com",
-      gcal_event_id: "ev1",
-      booking_id: "bk1",
-    });
+    // Retention never resolves an agent or enqueues a calendar-event deletion.
+    expect(rec.touchedTables).not.toContain("users");
+    expect(rec.touchedTables).not.toContain("pending_event_deletions");
 
     expect(rec.outboxDeleted).toBe(true);
     expect(body.redacted).toBe(2);
@@ -149,7 +127,7 @@ describe("GET /api/cron/prune-bookings-pii", () => {
     const body = await res.json();
     expect(body.redacted).toBe(0);
     expect(rec.bookingUpdate).toBeNull();
-    expect(rec.enqueued).toHaveLength(0);
+    expect(rec.outboxDeleted).toBe(true);
   });
 
   it("500s and releases the lock when the booking read errors (fail loud)", async () => {
