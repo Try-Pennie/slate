@@ -14,6 +14,7 @@ import type {
   BookingOutbox,
   BookingReservation,
   BookingApiOutcomeDaily,
+  BookingSettings,
   Bucket,
   BucketMember,
   BucketSlotsRow,
@@ -131,6 +132,7 @@ export interface Database {
       monitor_settings: Table<MonitorSettings>;
       monitor_alert_config: Table<MonitorAlertConfig>;
       reason_options: Table<ReasonOptionRow>;
+      booking_settings: Table<BookingSettings>;
     };
     Views: Record<string, never>;
     Functions: {

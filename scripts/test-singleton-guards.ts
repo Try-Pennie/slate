@@ -66,6 +66,7 @@ const SINGLETON_INVARIANTS: {
   { table: "pending_event_deletions", cols: "calendar_email,gcal_event_id", issue: "0044", why: "one pending deletion per (calendar, event)" },
   { table: "ooo_requests", cols: "user_id,starts_at,ends_at", issue: "0025", why: "one active OOO request per (agent, exact window) [partial]" },
   { table: "monitor_alert_config", cols: "id", issue: "0060", why: "single global config row (id pinned to 1)" },
+  { table: "booking_settings", cols: "id", issue: "#1015/0086", why: "single direct-booking config row (id pinned to 1)" },
 ];
 
 for (const inv of SINGLETON_INVARIANTS) {

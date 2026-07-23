@@ -46,6 +46,7 @@ import {
   coerceReasonOptionsForm,
   parseReasonOptionsForm,
 } from "@/lib/booking/reason-options";
+import { parseDefaultBucketForm } from "@/lib/booking/settings";
 import { __clearChannelCache } from "@/lib/notify/channels";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
@@ -347,6 +348,50 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   });
   // Channels are cached in-process; clear so the new destination takes effect now.
   __clearChannelCache();
+  revalidatePath("/admin/settings");
+  redirect("/admin/settings?ok=1");
+}
+
+/**
+ * Save the direct-booking default bucket (#1016, phase 2 of #541). Admin-only.
+ * The selection is validated against the current non-test bucket codes so we
+ * never persist a code that points at no bucket; blank clears the default. The
+ * write is a single keyed upsert on id=1 (assume-it-runs-twice: idempotent,
+ * last-writer-wins).
+ */
+export async function setDefaultBucket(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const db = supabaseAdmin();
+
+  // The valid set = current non-test bucket codes (a test bucket must never be
+  // the public default). Roster-bounded (~60 buckets), so a single page holds all.
+  const { data: buckets } = await db
+    .from("buckets")
+    .select("code, is_test")
+    .eq("is_test", false);
+  const validCodes = new Set(((buckets ?? []) as { code: string }[]).map((b) => b.code));
+
+  const parsed = parseDefaultBucketForm(String(form.get("default_bucket_code") ?? ""), validCodes);
+  if (parsed.errors.length) {
+    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+  }
+
+  await db.from("booking_settings").upsert(
+    {
+      id: 1,
+      default_bucket_code: parsed.default_bucket_code,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { default_bucket_code: parsed.default_bucket_code },
+  });
   revalidatePath("/admin/settings");
   redirect("/admin/settings?ok=1");
 }

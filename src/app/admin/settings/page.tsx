@@ -3,7 +3,7 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setMonitorSettings } from "@/app/admin/actions";
+import { setMonitorSettings, setDefaultBucket } from "@/app/admin/actions";
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
   MONITOR_DEFAULTS,
@@ -85,6 +85,27 @@ export default async function MonitorSettingsPage({
     .map((r) => ({ updated_at: r.updated_at, updated_by: r.updated_by }))
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
   const lastChanged = lastChangedLine(stamps[0] ?? null, nameById);
+
+  // Direct-booking default bucket (#1016). Read the current default + the list of
+  // non-test bucket codes to offer. Guarded so a missing table (migrate-before-
+  // deploy window) shows an empty picker instead of 500ing the whole page.
+  let defaultBucketCode: string | null = null;
+  let bucketOptions: { code: string; name: string }[] = [];
+  try {
+    const db = supabaseAdmin();
+    const [settings, buckets] = await Promise.all([
+      db.from("booking_settings").select("default_bucket_code").eq("id", 1).maybeSingle(),
+      db.from("buckets").select("code, name").eq("is_test", false).order("code"),
+    ]);
+    if (!settings.error && settings.data) {
+      defaultBucketCode = (settings.data as { default_bucket_code: string | null }).default_bucket_code;
+    }
+    if (!buckets.error && buckets.data) {
+      bucketOptions = buckets.data as { code: string; name: string }[];
+    }
+  } catch {
+    // Fall through to no default / empty options.
+  }
 
   const armed = process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
   const envAlerts = process.env.SLACK_ALERTS_CHANNEL ?? "";
@@ -254,6 +275,43 @@ export default async function MonitorSettingsPage({
             </a>
           </div>
         </form>
+
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Direct-booking default bucket</h2>
+          <p className="mb-4 text-xs text-fg-muted">
+            When a direct-booking API caller does not pass a bucket code (XBC), Slate
+            routes to this bucket. Leave it as &ldquo;No default&rdquo; to make a missing
+            code an explicit error instead of a silent guess.
+          </p>
+          <form action={setDefaultBucket} className="space-y-4">
+            <div>
+              <label className={labelCls} htmlFor="default_bucket_code">
+                Default bucket
+              </label>
+              <select
+                id="default_bucket_code"
+                name="default_bucket_code"
+                defaultValue={defaultBucketCode ?? ""}
+                className={`${inputCls} w-72`}
+              >
+                <option value="">No default (require a bucket code)</option>
+                {bucketOptions.map((b) => (
+                  <option key={b.code} value={b.code}>
+                    {b.code} ({b.name})
+                  </option>
+                ))}
+              </select>
+              {bucketOptions.length === 0 && (
+                <p className="mt-1 text-xs text-fg-muted">
+                  No bookable buckets found to choose from.
+                </p>
+              )}
+            </div>
+            <SubmitButton className={btnCls} pendingLabel="Saving…">
+              Save default bucket
+            </SubmitButton>
+          </form>
+        </section>
 
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Booking reasons</h2>

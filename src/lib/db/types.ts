@@ -213,6 +213,16 @@ export interface MonitorAlertConfig {
   updated_by: string | null;
 }
 
+/** Single-row direct-booking config (#1015, migration 0086): the default bucket a
+ *  keyed direct-booking caller falls back to when it passes no XBC. A null
+ *  default_bucket_code = unset (the caller fails loud rather than guessing). */
+export interface BookingSettings {
+  id: number;
+  default_bucket_code: string | null;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 /** Cross-request lock row (#30); a claim is stale after its TTL. */
 export interface SyncLock {
   key: string;
