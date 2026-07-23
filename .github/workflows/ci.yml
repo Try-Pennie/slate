@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: supabase/setup-cli@v1
+      - uses: supabase/setup-cli@v3
         with:
           # Pinned (not `latest`) so the step is deterministic — `latest`
           # resolves over the network and intermittently 502s, red-flagging CI.
