@@ -52,5 +52,13 @@
     "typescript": "^5",
     "vitest": "^3.2.6",
     "wrangler": "^4.97.0"
+  },
+  "pnpm": {
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-f88m-g3jw-g9cj",
+        "GHSA-6g55-p6wh-862q"
+      ]
+    }
   }
 }

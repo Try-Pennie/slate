@@ -1,0 +1,26 @@
+# Dependency update automation (#1026). Complements the CI `pnpm audit` gate:
+# audit fails a build on a KNOWN advisory in the current tree, while Dependabot
+# opens PRs that raise the fix. Repo-level "Dependabot alerts" (Settings >
+# Advanced Security) must also be on for security-update PRs; this file drives
+# the scheduled version-update PRs and Action pinning.
+version: 2
+updates:
+  # App dependencies (pnpm uses the npm ecosystem). Grouped so a routine week is
+  # one PR to review, not a dozen. Security fixes still come through regardless.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Keep pinned GitHub Actions current (and patched) rather than drifting.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
