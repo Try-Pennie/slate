@@ -60,6 +60,9 @@ const SAFE_TABLES = new Set([
   // #346: reason options are roster/config-bounded (a few dozen rows across 3
   // actions), so a single page always holds the whole set.
   "reason_options",
+  // #1015: single-row direct-booking config (id pinned to 1), like
+  // monitor_alert_config. Exactly one row, never a page.
+  "booking_settings",
 ]);
 
 const FROM_SITE = /\.from\(\s*(["'`])([a-z_]+)\1/g;
