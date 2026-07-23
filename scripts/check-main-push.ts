@@ -1,0 +1,95 @@
+// Runner for the main-push backstop (#1027), invoked by
+// .github/workflows/main-push-guard.yml on every push to main. Reads the GitHub
+// context the workflow gathered, classifies it (scripts/lib/main-push-guard.ts),
+// and on a violation posts a Slack alert AND exits non-zero so the run goes red.
+//
+// Fails loud: a violation always exits 1, even if the Slack post itself fails, so
+// the Action never goes green while a bypassed push sits unreviewed. Reuses the
+// app's Slack notifier rather than a second implementation, exactly like
+// scripts/notify-deploy-failure.ts.
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+import { postSlack } from "@/lib/notify/slack";
+import {
+  classifyPush,
+  buildViolationMessage,
+  type AssociatedPr,
+  type PushContext,
+} from "./lib/main-push-guard.ts";
+
+/** Injectable poster so the core is testable with a hand-written fake. */
+export type PostFn = (msg: {
+  text: string;
+  channel?: string;
+}) => Promise<{ ok: boolean; error?: string }>;
+
+function parsePrs(raw: string | undefined): AssociatedPr[] {
+  if (!raw || !raw.trim()) return [];
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("PRS_JSON is not a JSON array");
+  }
+  return parsed.map((p) => {
+    const o = p as Record<string, unknown>;
+    return {
+      number: Number(o.number ?? 0),
+      merged: Boolean(o.merged),
+      ciConclusion:
+        typeof o.ciConclusion === "string" ? o.ciConclusion : null,
+    };
+  });
+}
+
+export function readContextFromEnv(
+  env: Record<string, string | undefined>,
+): PushContext {
+  return {
+    headSha: env.HEAD_SHA ?? "",
+    commitMessage: env.COMMIT_MESSAGE ?? "",
+    actor: env.ACTOR ?? "",
+    runUrl: env.RUN_URL ?? "",
+    prs: parsePrs(env.PRS_JSON),
+  };
+}
+
+export async function run(
+  post: PostFn,
+  env: Record<string, string | undefined>,
+): Promise<{ ok: boolean; alerted: boolean; reason: string }> {
+  const ctx = readContextFromEnv(env);
+  const verdict = classifyPush(ctx);
+  if (verdict.ok) {
+    return { ok: true, alerted: false, reason: verdict.reason };
+  }
+
+  const text = buildViolationMessage(ctx, verdict);
+  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
+  const res = await post({ text, ...(channel ? { channel } : {}) });
+  return {
+    ok: false,
+    alerted: res.ok,
+    reason: res.ok ? verdict.reason : `${verdict.reason} (slack: ${res.error})`,
+  };
+}
+
+const isMain =
+  !!process.argv[1] &&
+  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  run(postSlack, process.env).then((res) => {
+    if (res.ok) {
+      console.log(`main-push-guard: ${res.reason}`);
+      process.exit(0);
+    }
+    if (!res.alerted) {
+      console.error(
+        `::error title=Slack alert not sent::main-push-guard could not post the violation alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL.`,
+      );
+    }
+    console.error(
+      `::error title=Illegitimate push to main::${res.reason}. See the job log; revert if unintended.`,
+    );
+    process.exit(1);
+  });
+}

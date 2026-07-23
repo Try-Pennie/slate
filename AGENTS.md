@@ -25,6 +25,20 @@ build, #412) — so a CI-only failure (including a build-only break) is caught
 locally instead of breaking main after merge. It's ~20s on a warm cache; skip it
 in a pinch with `SKIP_PREPUSH_CHECKS=1`.
 
+# Main is guarded by detection, not prevention (free-plan constraint)
+
+Native GitHub branch protection (require a PR, require passing checks before a
+push reaches main) needs a **paid org plan**; Try-Pennie is on the free plan, so
+nothing server-side *prevents* a direct push to main or the merge of a red PR.
+The compensating control is **detective**: `.github/workflows/main-push-guard.yml`
+(#1027) fires on every push to main, resolves whether the commit came from a
+merged PR whose CI passed (`scripts/check-main-push.ts` +
+`scripts/lib/main-push-guard.ts`), and on a violation **fails the run and posts a
+Slack alert** so a human can revert. Because it runs *after* the push (and the
+deploy), it is a safety net, not prevention: that is the accepted residual risk
+until the org upgrades. A **deliberate** direct push (an admin hotfix) must carry
+`[allow-direct-push]` in its commit message to stay silent; otherwise it pages.
+
 # Parallel-agent dispatch playbook (worktree fan-out)
 
 This repo is often worked in fan-out mode: dispatch several subagents at once,
