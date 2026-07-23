@@ -132,6 +132,28 @@ describe("POST /booking (embed) error mapping", () => {
     expect(keysRefunded).toContain("phone:2155550100");
   });
 
+  it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    // Same refund set as the 503 verify-outage path: a slot grabbed by someone
+    // else a moment earlier must not burn a real lead's IP or contact budget.
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
+    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => c[0]);
+    expect(keysRefunded).toContain("203.0.113.1");
+    expect(keysRefunded).toContain("email:dana@example.com");
+    expect(keysRefunded).toContain("phone:2155550100");
+  });
+
+  it("does NOT refund on an empty/misconfigured-pool 409 (NoEligibleAgents), which is not a retryable slot race (#1089)", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.NoEligibleAgentsError("no advisors"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    // An empty pool is a config problem, not a slot someone else just took, so a
+    // retry won't help and we don't hand the budget back.
+    expect(rateLimit.refundRequest).not.toHaveBeenCalled();
+  });
+
   it("rejects a filled honeypot with a generic 400 and never creates a booking (#1033)", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const res = await post({ ...VALID_BODY, website: "https://spam.example" });
