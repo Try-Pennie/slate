@@ -42,6 +42,24 @@ assert(
   "bare 10-digit US phone passes",
 );
 
+// length caps (#1034): name/email/phone <= 200 chars so a caller can't store a
+// multi-MB blob that flows into Postgres / gcal event bodies / webhook payloads.
+assert(
+  Object.keys(validateAttendee({ ...valid, name: "a".repeat(200) })).length === 0,
+  "200-char name accepted (at the cap)",
+);
+assert(!!validateAttendee({ ...valid, name: "a".repeat(201) }).name, "over-200-char name rejected");
+assert(
+  !!validateAttendee({ ...valid, email: "a".repeat(200) + "@example.com" }).email,
+  "over-200-char email rejected (even with a valid shape)",
+);
+// A phone with <=15 digits but a huge raw string (padding) passes the digit
+// check yet must be rejected by the length cap.
+assert(
+  !!validateAttendee({ ...valid, phone: "1234567890" + "-".repeat(200) }).phone,
+  "over-200-char phone rejected (10 digits but huge raw string)",
+);
+
 // multiple errors at once
 const all = validateAttendee({ name: "", email: "nope", phone: "1" });
 assert(

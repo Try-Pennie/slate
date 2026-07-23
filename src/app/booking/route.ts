@@ -9,6 +9,13 @@ import {
 } from "@/lib/booking/service";
 import { validateAttendee } from "@/lib/attendee";
 import {
+  bucketCodeSchema,
+  startSchema,
+  timezoneSchema,
+  salesforceIdSchema,
+  prefillSchema,
+} from "@/lib/booking/input-schema";
+import {
   allowRequest,
   refundRequest,
   bookingWithinLimit,
@@ -21,17 +28,19 @@ import { log } from "@/lib/log";
 export const dynamic = "force-dynamic";
 
 const schema = z.object({
-  bucketCode: z.string().min(1),
-  start: z.string().min(1), // ISO instant of the chosen slot
-  timezone: z.string().min(1),
-  salesforceId: z.string().nullish(),
-  // Field-level rules live in validateAttendee (shared with the Booker form).
+  // Bounded, shared with the API parser so the size caps can't drift (#1034).
+  bucketCode: bucketCodeSchema,
+  start: startSchema, // ISO instant of the chosen slot
+  timezone: timezoneSchema,
+  salesforceId: salesforceIdSchema.nullish(),
+  // Field-level rules live in validateAttendee (shared with the Booker form),
+  // which also enforces the contact length cap.
   attendee: z.object({
     name: z.string().optional(),
     email: z.string().optional(),
     phone: z.string().optional(),
   }),
-  prefill: z.record(z.string(), z.string()).default({}),
+  prefill: prefillSchema,
 });
 
 export async function POST(req: NextRequest) {

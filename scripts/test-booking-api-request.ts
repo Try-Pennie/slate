@@ -129,6 +129,34 @@ for (const start of ["2026-07-01T15:00:00Z", "2026-07-01T15:00:00-04:00", "2026-
   assert(badPrefill.ok === false, "non-string prefill value -> rejected");
 }
 
+// --- size caps (#1034): reject oversized fields before insert ---
+{
+  const longBucket = parseDirectBookingRequest({ ...valid, bucketCode: "a".repeat(65) });
+  assert(longBucket.ok === false && longBucket.status === 400, "over-64-char bucketCode -> 400");
+
+  const longTz = parseDirectBookingRequest({ ...valid, timezone: "a".repeat(65) });
+  assert(longTz.ok === false && longTz.status === 400, "over-64-char timezone -> 400");
+
+  const longSf = parseDirectBookingRequest({ ...valid, salesforceId: "a".repeat(129) });
+  assert(longSf.ok === false && longSf.status === 400, "over-128-char salesforceId -> 400");
+
+  const longExt = parseDirectBookingRequest({ ...valid, externalId: "a".repeat(129) });
+  assert(longExt.ok === false && longExt.status === 400, "over-128-char externalId -> 400");
+
+  const bigValue = parseDirectBookingRequest({ ...valid, prefill: { k: "v".repeat(501) } });
+  assert(bigValue.ok === false && bigValue.status === 400, "prefill value over 500 chars -> 400");
+
+  const manyKeys = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "v"]));
+  const bigPrefill = parseDirectBookingRequest({ ...valid, prefill: manyKeys });
+  assert(bigPrefill.ok === false && bigPrefill.status === 400, "prefill with more than 20 keys -> 400");
+
+  const longName = parseDirectBookingRequest({
+    ...valid,
+    attendee: { ...valid.attendee, name: "a".repeat(201) },
+  });
+  assert(longName.ok === false && longName.status === 400, "over-200-char attendee name -> 400");
+}
+
 // --- garbage bodies ---
 for (const body of [null, undefined, "string", 42, []]) {
   const r = parseDirectBookingRequest(body);
