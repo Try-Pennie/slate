@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { signOut } from "@/app/auth-actions";
 import type { ThemePreference } from "@/lib/db/types";
 import type { CalendarMenuStatus } from "@/lib/calendar/header-status";
 
@@ -156,6 +157,31 @@ export function AccountMenu({
             <p className="mb-1.5 text-xs font-semibold text-fg-muted">Theme</p>
             <ThemeToggle preference={themePreference} />
           </div>
+
+          <form action={signOut} className="mt-3 border-t border-border pt-3">
+            <button
+              type="submit"
+              role="menuitem"
+              className="flex min-h-11 w-full items-center gap-2 rounded-md px-1.5 text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg"
+            >
+              <svg
+                aria-hidden
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-9A1.5 1.5 0 0 1 3.5 2H6" />
+                <path d="M10.5 11 13.5 8l-3-3" />
+                <path d="M13.5 8H6" />
+              </svg>
+              Sign out
+            </button>
+          </form>
         </div>
       )}
     </div>
