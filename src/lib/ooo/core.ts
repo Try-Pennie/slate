@@ -154,14 +154,30 @@ export function formatWhenLine(
 }
 
 /**
- * The name shown for an agent across OOO notifications: their name, else their
- * email, else a neutral fallback. Defined once (#1002) so the per-request manager
- * notification and the daily digest can never drift on how an agent is labeled.
+ * How a person is labeled across OOO notifications: their name, else their email,
+ * else a caller-supplied neutral fallback. Defined once (#1002/#1014) so every
+ * name display (agent or manager) resolves identically; only the fallback wording
+ * differs by role, so it's a parameter rather than a copied function.
  */
+export function displayName(
+  person: Pick<User, "name" | "email"> | null | undefined,
+  fallback: string,
+): string {
+  return person?.name ?? person?.email ?? fallback;
+}
+
+/** An agent's display name (fallback "An agent"). */
 export function agentDisplayName(
   agent: Pick<User, "name" | "email"> | null | undefined,
 ): string {
-  return agent?.name ?? agent?.email ?? "An agent";
+  return displayName(agent, "An agent");
+}
+
+/** A manager's display name (fallback "the manager", not "An agent") (#1014). */
+export function managerDisplayName(
+  manager: Pick<User, "name" | "email"> | null | undefined,
+): string {
+  return displayName(manager, "the manager");
 }
 
 /**

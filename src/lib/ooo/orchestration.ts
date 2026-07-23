@@ -2,6 +2,7 @@
 // in tests (type-only "@/" imports are erased anyway).
 import {
   agentDisplayName,
+  managerDisplayName,
   canCancel,
   canModerate,
   canModify,
@@ -327,7 +328,7 @@ async function notifyManagerOfPending(
     // when a manager was expected, flag it so someone checks why the DM failed
     // (usually the bot is missing users:read.email / im:write).
     const fallbackText = manager
-      ? `:warning: *Couldn't DM ${manager.name ?? manager.email}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`
+      ? `:warning: *Couldn't DM ${managerDisplayName(manager)}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`
       : text;
     ref = await deps.postFallbackChannel(fallbackText, request.id);
   }

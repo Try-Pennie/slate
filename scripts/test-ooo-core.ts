@@ -3,6 +3,8 @@
 // Run: node --experimental-strip-types scripts/test-ooo-core.ts
 import {
   agentDisplayName,
+  managerDisplayName,
+  displayName,
   canCancel,
   canModerate,
   canModify,
@@ -140,6 +142,25 @@ assert(
 assert(
   agentDisplayName(null) === "An agent",
   "agentDisplayName falls back to a neutral label when the agent is unknown",
+);
+
+// #1014: the same name resolution, but the neutral fallback fits the role.
+assert(
+  managerDisplayName({ name: "Pat Boss", email: "pat@x.com" }) === "Pat Boss",
+  "managerDisplayName prefers the name",
+);
+assert(
+  managerDisplayName({ name: null, email: "pat@x.com" }) === "pat@x.com",
+  "managerDisplayName falls back to email when name is null",
+);
+assert(
+  managerDisplayName(null) === "the manager",
+  "managerDisplayName uses a manager-appropriate fallback, not 'An agent'",
+);
+// The shared resolver both delegate to, with a caller-supplied fallback.
+assert(
+  displayName(null, "somebody") === "somebody",
+  "displayName uses the caller-supplied fallback for an unknown person",
 );
 
 const reqDesc = {
