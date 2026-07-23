@@ -4,7 +4,13 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 
-export { clientIp, BOOKING_HOURLY_RATE_RULES, ROUTING_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
+export {
+  clientIp,
+  BOOKING_HOURLY_RATE_RULES,
+  BOOKING_CONTACT_HOURLY_RATE_RULES,
+  contactRateKeys,
+  ROUTING_HOURLY_RATE_RULES,
+} from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 import {
   friendlyRateArea,

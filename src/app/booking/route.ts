@@ -8,6 +8,7 @@ import {
   NoEligibleAgentsError,
 } from "@/lib/booking/service";
 import { validateAttendee } from "@/lib/attendee";
+import { HONEYPOT_FIELD, honeypotTripped } from "@/lib/booking/honeypot";
 import {
   bucketCodeSchema,
   startSchema,
@@ -20,7 +21,9 @@ import {
   refundRequest,
   bookingWithinLimit,
   clientIp,
+  contactRateKeys,
   BOOKING_HOURLY_RATE_RULES,
+  BOOKING_CONTACT_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { log } from "@/lib/log";
@@ -54,7 +57,7 @@ export async function POST(req: NextRequest) {
   // many distinct IPs (rather than one flooding host) is the signal to revisit
   // 3/min. The hourly 10/hr cap already bounds sustained abuse, so the per-minute
   // window only shapes bursts.
-  const tooMany = (scope: "edge-minute" | "hourly") => {
+  const tooMany = (scope: "edge-minute" | "hourly" | "contact") => {
     log.info("booking-rate-limit", { msg: "throttled", scope, ip });
     return NextResponse.json(
       { error: "Too many booking attempts from your network. Please try again in a few minutes." },
@@ -69,7 +72,19 @@ export async function POST(req: NextRequest) {
   // binding can't express).
   if (!(await allowRequest(ip, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
 
-  const parsed = schema.safeParse(await req.json().catch(() => null));
+  const raw = await req.json().catch(() => null);
+
+  // Honeypot (#1033): a hidden decoy field a real user never sees or fills, so a
+  // value here means a scripted bot filling every field. Reject with the SAME
+  // generic 400 a schema failure returns (revealing nothing bot-specific), before
+  // touching the booking path. Logged at a queryable tag so trips are observable;
+  // a honeypot hit is expected background noise, so it does NOT alert.
+  if (raw && typeof raw === "object" && honeypotTripped((raw as Record<string, unknown>)[HONEYPOT_FIELD])) {
+    log.info("booking-honeypot", { msg: "tripped", ip });
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
+
+  const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request", details: parsed.error.flatten() },
@@ -83,6 +98,20 @@ export async function POST(req: NextRequest) {
       { error: "Please check your contact details.", fieldErrors: attendeeErrors },
       { status: 400 },
     );
+  }
+
+  // Per-contact hourly cap (#1033), keyed on the attendee identity rather than the
+  // IP: a distributed bot spreading fake bookings across many IPs is bounded by
+  // the fake identity it reuses. Checked AFTER attendee validation (so email/phone
+  // are present and valid) and after the per-IP caps. Refunded on a verify outage
+  // below, exactly like the IP hourly cap, so a server fault never burns a real
+  // lead's contact budget.
+  const contactKeys = contactRateKeys({
+    email: parsed.data.attendee.email,
+    phone: parsed.data.attendee.phone,
+  });
+  for (const key of contactKeys) {
+    if (!(await allowRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES))) return tooMany("contact");
   }
 
   try {
@@ -122,10 +151,14 @@ export async function POST(req: NextRequest) {
     // slot — tell the lead it's temporary and let them retry (#319). Refund the
     // rate-limit hit: a server-side outage must not burn their booking budget.
     if (err instanceof VerifyUnavailableError) {
-      // Refund only the hourly DB cap; the edge per-minute window can't be
-      // refunded, but it's a short burst window, so a retry after the outage
-      // clears within a minute.
+      // Refund the hourly DB cap AND the per-contact caps; the edge per-minute
+      // window can't be refunded, but it's a short burst window, so a retry after
+      // the outage clears within a minute. A server-side outage must not consume
+      // the lead's IP budget OR their contact budget.
       await refundRequest(ip, BOOKING_HOURLY_RATE_RULES);
+      for (const key of contactKeys) {
+        await refundRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES);
+      }
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // A genuinely-full slot OR an empty/misconfigured pool both surface to the

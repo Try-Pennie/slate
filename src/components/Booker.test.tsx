@@ -60,6 +60,28 @@ describe("Booker confirm", () => {
     expect(screen.queryByText("You're all set")).toBeNull();
   });
 
+  it("sends the honeypot field empty on a real submission, and never surfaces it to the user (#1033)", async () => {
+    let postedBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      postedBody = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    // The decoy is hidden from the accessibility tree, so it never appears as a
+    // labelled field a real user could find and fill.
+    expect(screen.queryByLabelText("Website")).toBeNull();
+    await fillAndConfirm();
+
+    expect(await screen.findByText("You're all set")).toBeTruthy();
+    expect(postedBody).not.toBeNull();
+    // A real submission carries the honeypot key, left blank.
+    expect(postedBody!.website).toBe("");
+  });
+
   it("enters the confirmed state on a successful booking", async () => {
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
       if (String(url).includes("/api/availability")) {

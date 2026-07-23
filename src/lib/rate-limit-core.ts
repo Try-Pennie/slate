@@ -31,6 +31,42 @@ export const BOOKING_HOURLY_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * Per-contact public-booking hourly cap (#1033). A second bound alongside the
+ * per-IP cap above, keyed on the attendee's contact (email, phone) instead of
+ * their IP. The per-IP cap alone can't stop a distributed bot that spreads fake
+ * bookings across many IPs; keying on the identity it REUSES catches that, and a
+ * genuine lead books once (the odd retry after a taken-slot 409 is rare), so 5/hr
+ * leaves comfortable headroom while blocking identity reuse. A block here is an
+ * expected event (a spammy visitor), so it does NOT alert, exactly like the
+ * per-IP cap. Distinct prefix so it never shares a counter with the per-IP rule.
+ */
+export const BOOKING_CONTACT_HOURLY_RATE_RULES: RateLimitRule[] = [
+  { prefix: "book:contact:h", windowSeconds: 3600, max: 5 },
+];
+
+/**
+ * Normalize an attendee into stable, discriminated rate-limit keys so the SAME
+ * person maps to one counter regardless of formatting: email lowercased+trimmed,
+ * phone reduced to digits (mirroring how numbers are normalized for webhooks, so
+ * "(203) 561-5295" and "+1 203 561 5295" don't count as two identities (a
+ * leading country code is kept, never dropped). Blank/missing fields are skipped
+ * so a bot submitting an empty field can't share one global blank-keyed counter.
+ * The "email:"/"phone:" discriminator keeps an email from ever colliding with a
+ * phone under the shared rule prefix.
+ */
+export function contactRateKeys(attendee: {
+  email?: string | null;
+  phone?: string | null;
+}): string[] {
+  const keys: string[] = [];
+  const email = (attendee.email ?? "").trim().toLowerCase();
+  if (email) keys.push(`email:${email}`);
+  const phoneDigits = (attendee.phone ?? "").replace(/\D/g, "");
+  if (phoneDigits) keys.push(`phone:${phoneDigits}`);
+  return keys;
+}
+
+/**
  * Direct booking API (#355) hourly ceiling, keyed per API KEY rather than per IP
  * (one bot behind one IP legitimately does ~2000/day, which would instantly blow
  * the per-IP public-booking limits). Sized well above expected volume so it only
