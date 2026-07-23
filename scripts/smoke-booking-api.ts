@@ -60,7 +60,7 @@ import { loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
-import { httpProbeUrl, isHttpsRedirect } from "./lib/https-redirect.ts";
+import { httpProbeUrl, isHttpsRedirect, redirectVerdict } from "./lib/https-redirect.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -247,9 +247,14 @@ function laterSlot(slots: string[], from: string, minGapMs = 60 * 60 * 1000): st
 // --- Transport health: the public booker must force http->https (#1024) ---
 // A lead following an http:// link submits name/email/phone in plaintext unless
 // the edge redirects to https first. That redirect is a Cloudflare "Always Use
-// HTTPS" zone setting (config, not code), so assert it LIVE here. Nothing in the
-// repo can prevent it regressing. Skips on a localhost/http dev base (see
-// httpProbeUrl). Side-effect-free, so it runs on the every-30-min dry tick too.
+// HTTPS" zone toggle (config, not code), so assert it LIVE here. Skips on a
+// localhost/http dev base (see httpProbeUrl). Side-effect-free, so it runs on the
+// every-30-min dry tick too.
+//
+// It only PAGES once we EXPECT the redirect (EXPECT_HTTPS_REDIRECT=1, set when the
+// toggle is turned on); until then a missing redirect is a visible WARN, so
+// shipping the guard before the toggle doesn't page every 30 min (see
+// redirectVerdict).
 async function checkHttpsRedirect() {
   const probe = httpProbeUrl(BASE);
   if (!probe) {
@@ -260,10 +265,22 @@ async function checkHttpsRedirect() {
     (r) => ({ status: r.status, location: r.headers.get("location") }),
     (e: unknown) => ({ status: 0, location: null, error: e }),
   );
-  check(
-    isHttpsRedirect(res.status, res.location),
-    `http:// redirects to https:// (#1024): got ${res.status} -> ${res.location ?? "(no Location)"}`,
-  );
+  const isRedirect = isHttpsRedirect(res.status, res.location);
+  const expected = process.env.EXPECT_HTTPS_REDIRECT === "1";
+  const detail = `got ${res.status} -> ${res.location ?? "(no Location)"}`;
+  const verdict = redirectVerdict(isRedirect, expected);
+  if (verdict === "warn") {
+    // Toggle not enabled yet: visible, but does not fail the run or page.
+    console.warn(`WARN: http:// does not yet redirect to https:// (#1024, Always Use HTTPS toggle pending): ${detail}`);
+    return;
+  }
+  check(verdict === "ok", `http:// redirects to https:// (#1024): ${detail}`);
+  // Redirect is live but the guard isn't armed: nudge us to set the flag so a
+  // later regression pages instead of silently warning (avoids a guard that
+  // verifies nothing).
+  if (isRedirect && !expected) {
+    console.warn("WARN: http->https redirect is LIVE but EXPECT_HTTPS_REDIRECT is unset; set it to 1 (repo Actions var) to arm the regression guard (#1024).");
+  }
 }
 
 // --- Scenario 0: dry run — validate routing with ZERO side effects ---
