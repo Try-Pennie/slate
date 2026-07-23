@@ -1074,6 +1074,10 @@ async function assignAgentWithTierFallback(
   requested: { bucket: Bucket; eventType: EventType },
   startInstantIso: string,
   allowTestBuckets: boolean,
+  // Read-only paths (dry-run preview, the validate-only bookable check #541) pass
+  // true so the cascade routes WITHOUT the #321 shadow-study log / unfair-ordering
+  // alert. The real book leaves it false.
+  preview = false,
 ): Promise<TierAssignResult> {
   // Shares walkTierLadder with the availability display cascade (#499), so the two
   // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
@@ -1088,7 +1092,7 @@ async function assignAgentWithTierFallback(
       const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
       try {
         const { userId, email, candidates } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso,
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview,
         );
         return {
           hit: true,
@@ -2098,13 +2102,19 @@ export async function previewBooking(
   if (decision.action === "create") {
     const resolved = await deps.resolveBucketByCode(input.bucketCode);
     if (!resolved) throw new UnknownBucketError();
-    const { startIso, endIso } = bookingWindow(
+    if (resolved.bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+    // Route through the SAME per-slot tier cascade the real book uses
+    // (assignAgentWithTierFallback), not a plain single-bucket assign. Otherwise
+    // the dry run answers "no eligible" for a busy-but-not-empty top tier that the
+    // real book would serve from a lower rung, so preview and book disagree (#541).
+    const tier = await assignAgentWithTierFallback(
+      deps,
+      { bucket: resolved.bucket, eventType: resolved.eventType },
       input.startIso,
-      resolved.eventType.duration_min,
+      input.allowTestBuckets ?? false,
+      true, // preview: read-only, no shadow-study log / unfair-ordering alert
     );
-    // preview=true: route read-only, no shadow-study log / unfair-ordering alert.
-    const { userId } = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso, true);
-    const agent = await deps.getUser(userId);
+    const agent = await deps.getUser(tier.userId);
     return {
       dryRun: true,
       outcome: "created",
@@ -2115,6 +2125,125 @@ export async function previewBooking(
   const outcome: ApiBookingOutcome =
     decision.action === "dedupe" ? "deduped" : decision.action === "reschedule" ? "rescheduled" : "confirm_required";
   return { dryRun: true, outcome, wouldAssign: null, existingBookingId: decision.booking.id };
+}
+
+/** Identity-free input for the validate-only bookable check (#541/#1017). No
+ *  lead, no person-dedupe: only "could SOMEONE book this bucket at this time?". */
+export interface BookableInput {
+  bucketCode: string;
+  startIso: string;
+  allowTestBuckets?: boolean;
+}
+
+/** Why a slot is / is not bookable. `available` = an agent would take it;
+ *  `slot_taken` = the whole tier ladder is busy at T; `no_eligible_agents` = the
+ *  pool is empty/misconfigured all the way down. A transient verify outage is NOT
+ *  a reason here: it throws VerifyUnavailableError so the caller never gets a
+ *  false "no". */
+export type BookableReason = "available" | "slot_taken" | "no_eligible_agents";
+
+export interface BookableResult {
+  bookable: boolean;
+  reason: BookableReason;
+  /** The bucket that would actually serve after the per-slot tier cascade, or null
+   *  when nothing could (bookable:false). */
+  effectiveBucketCode: string | null;
+  /** True when the requested tier was busy and a lower rung would serve instead. */
+  tierFallback: boolean;
+  rungsDropped: number;
+  wouldAssign: { id: string; name: string | null; email: string | null } | null;
+}
+
+/**
+ * Answer "is this exact time bookable in this bucket?" WITHOUT writing anything
+ * and WITHOUT any lead identity (#541/#1017). It runs the SAME per-slot routing
+ * the real book runs (round-robin candidates + verify-on-book, cascading down the
+ * debt-tier ladder), so the answer can never disagree with an actual book: a
+ * cache-membership check was rejected in planning because the availability
+ * cascade drops a tier only when the WHOLE horizon is empty, while the booking
+ * cascade drops PER-SLOT at T.
+ *
+ * Routes in preview mode (no shadow-study log / unfair-ordering alert). A busy
+ * ladder is a normal `bookable:false` answer, NOT an error; only an unknown
+ * bucket (UnknownBucketError) and a transient verify outage (VerifyUnavailableError)
+ * throw, so the caller can map them to 422 / 503 respectively.
+ */
+export async function checkBookable(
+  input: BookableInput,
+  deps: BookingDeps,
+): Promise<BookableResult> {
+  const resolved = await deps.resolveBucketByCode(input.bucketCode);
+  if (!resolved) throw new UnknownBucketError();
+  // A hidden smoke-test bucket is invisible unless the caller opts in, exactly as
+  // the real book treats it (createBooking), so it can never be probed here.
+  if (resolved.bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+
+  try {
+    const tier = await assignAgentWithTierFallback(
+      deps,
+      { bucket: resolved.bucket, eventType: resolved.eventType },
+      input.startIso,
+      input.allowTestBuckets ?? false,
+      true, // preview: read-only
+    );
+    const agent = await deps.getUser(tier.userId);
+    return {
+      bookable: true,
+      reason: "available",
+      effectiveBucketCode: tier.bucket.code,
+      tierFallback: tier.bucket.code !== resolved.bucket.code,
+      rungsDropped: tier.rungsDropped,
+      wouldAssign: { id: agent.id, name: agent.name, email: agent.email },
+    };
+  } catch (err) {
+    // The ladder is genuinely exhausted at T: a normal "no", never an error.
+    if (err instanceof SlotUnavailableError) {
+      return notBookable("slot_taken");
+    }
+    if (err instanceof NoEligibleAgentsError) {
+      return notBookable("no_eligible_agents");
+    }
+    // VerifyUnavailableError (a transient outage) and anything unexpected propagate,
+    // so a hiccup never masquerades as a confident "not bookable".
+    throw err;
+  }
+}
+
+/**
+ * From a bucket's offered slot instants, the nearest one strictly before and the
+ * nearest strictly after `aroundIso` (#1017 `alternatives` hints). Pure so it is
+ * node-testable; the caller supplies the cached slots. Tolerates an unsorted list
+ * and skips unparseable / exactly-equal instants. These are HINTS from the
+ * availability cache, not a guarantee the slot is still free at book time.
+ */
+export function nearestSlots(
+  slots: string[],
+  aroundIso: string,
+): { before: string | null; after: string | null } {
+  const around = Date.parse(aroundIso);
+  let before: string | null = null;
+  let after: string | null = null;
+  for (const s of slots) {
+    const t = Date.parse(s);
+    if (!Number.isFinite(t) || t === around) continue;
+    if (t < around) {
+      if (before === null || t > Date.parse(before)) before = s;
+    } else if (after === null || t < Date.parse(after)) {
+      after = s;
+    }
+  }
+  return { before, after };
+}
+
+function notBookable(reason: BookableReason): BookableResult {
+  return {
+    bookable: false,
+    reason,
+    effectiveBucketCode: null,
+    tierFallback: false,
+    rungsDropped: 0,
+    wouldAssign: null,
+  };
 }
 
 export async function bookViaApi(

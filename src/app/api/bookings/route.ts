@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
-import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
+import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import {
@@ -16,74 +15,12 @@ import {
   UnknownBucketError,
   BookingNotFoundError,
 } from "@/lib/booking/service";
-import {
-  allowRequest,
-  clientIp,
-  bookingApiWriteWithinLimit,
-  bookingApiReadWithinLimit,
-  bookingApiIpWithinLimit,
-} from "@/lib/rate-limit";
 import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
-import {
-  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
-} from "@/lib/rate-limit-core";
-import type { RateLimitRule } from "@/lib/rate-limit-core";
+import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 
 export const dynamic = "force-dynamic";
-
-type AuthOutcome =
-  | { ok: true; keyId: "primary" | "secondary" }
-  | { ok: false; response: NextResponse };
-
-/** Shared auth + rate-limit gate for every method on this route (#386). The
- *  per-minute burst windows run at the Cloudflare edge (#961, no DB round-trip);
- *  the strict hourly ceilings stay in the DB. `hourlyKeyRules` selects the ceiling:
- *  writes use the default, reads (GET) pass the separate read ceiling so status
- *  polling can't starve the booking path (#393). `readPath` picks the matching edge
- *  binding, and a null `hourlyIpRules` opts reads out of the per-IP backstop. */
-async function authorize(
-  req: NextRequest,
-  hourlyKeyRules: RateLimitRule[] = DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  hourlyIpRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
-  readPath = false,
-): Promise<AuthOutcome> {
-  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
-  const auth = authenticateBearer(req.headers.get("authorization"), keys);
-  if (!auth.ok) {
-    return { ok: false, response: NextResponse.json({ error: auth.error }, { status: auth.status }) };
-  }
-  const keyBudget = "Rate limit exceeded for this API key.";
-  // Per-key: edge per-minute burst window first (no DB round-trip), then the hourly cap.
-  const keyEdgeOk = readPath
-    ? await bookingApiReadWithinLimit(auth.keyId)
-    : await bookingApiWriteWithinLimit(auth.keyId);
-  if (!keyEdgeOk || !(await allowRequest(`key:${auth.keyId}`, hourlyKeyRules))) {
-    return {
-      ok: false,
-      response: NextResponse.json({ error: keyBudget }, { status: 429 }),
-    };
-  }
-  // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
-  // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
-  // cannot spend the whole budget from a single host. Per-minute at the edge, hourly in DB.
-  if (hourlyIpRules) {
-    const ip = clientIp(req.headers);
-    if (!(await bookingApiIpWithinLimit(ip)) || !(await allowRequest(`ip:${ip}`, hourlyIpRules))) {
-      return {
-        ok: false,
-        response: NextResponse.json(
-          { error: "Rate limit exceeded for this client." },
-          { status: 429 },
-        ),
-      };
-    }
-  }
-  return { ok: true, keyId: auth.keyId };
-}
 
 /**
  * Direct booking API (#253/#250, milestone #2). A key-authed endpoint the
@@ -99,7 +36,7 @@ async function authorize(
  *   POST (Bearer BOOKING_API_KEY[_2]) -> 501 | 401 | 429 | 503
  */
 export async function POST(req: NextRequest) {
-  const authd = await authorize(req);
+  const authd = await authorizeBookingApi(req);
   if (!authd.ok) return authd.response;
   log.info("booking-api", { msg: "authenticated request", key: authd.keyId });
 
@@ -206,7 +143,7 @@ export async function GET(req: NextRequest) {
   // ~10x larger per-key budget (#393). Inheriting the write ceiling here would throttle
   // legitimate polling from the integrator's single host. Reads stay bounded by their own
   // per-key ceiling; the threat in #597 is booking FLOODING, which is a write.
-  const authd = await authorize(req, DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES, null, true);
+  const authd = await authorizeBookingApi(req, DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES, null, true);
   if (!authd.ok) return authd.response;
 
   const sp = new URL(req.url).searchParams;
@@ -261,7 +198,7 @@ export async function GET(req: NextRequest) {
  * only if the booking is owned and active, else 404 NOT_FOUND.
  */
 export async function DELETE(req: NextRequest) {
-  const authd = await authorize(req);
+  const authd = await authorizeBookingApi(req);
   if (!authd.ok) return authd.response;
 
   const reasonOptions = await loadReasonOptions();
