@@ -52,8 +52,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // straddle DST; the route's isApprovalsDigestTime gate lets one fire.
   "0 11 * * *": "/api/cron/ooo-approvals",
   "0 12 * * *": "/api/cron/ooo-approvals",
-  // Daily 3am UTC: prune routing_decisions rows older than 12 months.
-  "0 3 * * *": "/api/cron/prune-routing",
+  // Daily 3am UTC retention lanes (each under its own lock): prune
+  // routing_decisions older than 12 months, and blank webhook_deliveries payload
+  // PII on terminal deliveries older than the 90-day window (#1073).
+  "0 3 * * *": ["/api/cron/prune-routing", "/api/cron/prune-webhook-payloads"],
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */
