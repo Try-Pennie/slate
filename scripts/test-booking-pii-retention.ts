@@ -22,17 +22,27 @@ eq(
   "cutoff is 24 months before now",
 );
 
-// Every re-identifying field is cleared: the three direct PII fields, the prefill
-// blob (may carry PII), AND both strong identity keys. Redaction in place (not
-// hard-delete) keeps aggregate rows + FK integrity.
+// Clears ONLY the direct contact data Slate collected: name, email, phone, and
+// the prefill blob (may carry PII). Redaction in place (not hard-delete) keeps
+// aggregate rows + FK integrity.
 eq(REDACTED_BOOKING_UPDATE.attendee_name, null, "clears attendee_name");
 eq(REDACTED_BOOKING_UPDATE.attendee_email, null, "clears attendee_email");
 eq(REDACTED_BOOKING_UPDATE.attendee_phone, null, "clears attendee_phone");
-eq(REDACTED_BOOKING_UPDATE.salesforce_id, null, "clears salesforce_id (identity key)");
-eq(REDACTED_BOOKING_UPDATE.external_id, null, "clears external_id (identity key)");
 assert(
   JSON.stringify(REDACTED_BOOKING_UPDATE.prefill) === "{}",
   "blanks the prefill blob to an empty object",
+);
+
+// salesforce_id and external_id are the SAME external Salesforce reference, and
+// Slate is not the system of record for that identity, so retention must NOT
+// clear them (Dan, 2026-07-23). Only the contact copy Slate collected is scrubbed.
+assert(
+  !("salesforce_id" in REDACTED_BOOKING_UPDATE),
+  "does NOT clear salesforce_id (external reference, kept)",
+);
+assert(
+  !("external_id" in REDACTED_BOOKING_UPDATE),
+  "does NOT clear external_id (same external reference, kept)",
 );
 
 finish();
