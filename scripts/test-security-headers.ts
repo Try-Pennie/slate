@@ -16,20 +16,21 @@ assert(
   "X-Frame-Options DENY (legacy browsers)",
 );
 
-// Baseline hardening.
+// Baseline hardening (nosniff, Referrer-Policy) and HSTS are NOT in this
+// staff-only bundle: they don't restrict framing, so they are served on EVERY
+// response via next.config `headers()` (HSTS #1024; nosniff + Referrer-Policy
+// #1030, so the PII-bearing booker / manage-by-token / /api responses carry them
+// too). All three are covered by test-global-headers.ts. Locking their absence
+// here keeps this bundle to the framing-only headers and prevents a duplicate
+// header creeping back onto /admin, /me, /login.
 assert(
-  SECURITY_HEADERS["X-Content-Type-Options"] === "nosniff",
-  "nosniff (no MIME sniffing)",
+  SECURITY_HEADERS["X-Content-Type-Options"] === undefined,
+  "nosniff is not in the staff bundle (served globally via next.config, no duplicate)",
 );
 assert(
-  SECURITY_HEADERS["Referrer-Policy"] === "strict-origin-when-cross-origin",
-  "a privacy-preserving Referrer-Policy",
+  SECURITY_HEADERS["Referrer-Policy"] === undefined,
+  "Referrer-Policy is not in the staff bundle (served globally via next.config)",
 );
-
-// HSTS is deliberately NOT in this staff-only bundle: it is transport-only, so
-// it is served on EVERY response via next.config `headers()` (#1024, covered by
-// test-hsts-global.ts). Locking its absence here prevents a duplicate
-// `Strict-Transport-Security` header creeping back onto /admin, /me, /login.
 assert(
   SECURITY_HEADERS["Strict-Transport-Security"] === undefined,
   "HSTS is not in the staff bundle (served globally via next.config, no duplicate)",
