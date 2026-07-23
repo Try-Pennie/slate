@@ -1,0 +1,77 @@
+name: Main-push guard
+
+# Server-side compensating control for direct pushes to main (#1027). Native
+# GitHub branch protection needs a paid org plan, which Try-Pennie is not on, so
+# nothing PREVENTS a direct push to main or the merge of a red PR. This workflow
+# is the free DETECTIVE backstop: on every push to main it works out whether the
+# commit arrived through a merged PR whose CI passed, and if not it fails the run
+# and posts a Slack alert so a human can review/revert. It fires AFTER the push
+# (and the deploy), so it is a safety net, not prevention; that residual risk is
+# documented in AGENTS.md. A deliberate direct push must carry the
+# `[allow-direct-push]` marker in its commit message to stay silent.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+jobs:
+  main-push-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Classify the push and alert on a violation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+        run: |
+          set -euo pipefail
+
+          # PRs associated with this commit. For a squash merge the merge commit
+          # on main resolves to the PR it came from (merged_at set); a direct push
+          # resolves to none.
+          pulls="$(gh api "/repos/$REPO/commits/$HEAD_SHA/pulls" 2>/dev/null || echo '[]')"
+          enriched="$(echo "$pulls" | jq -c '[.[] | {number, merged: (.merged_at != null), head: .head.sha, ciConclusion: null}]')"
+
+          # For each merged PR, read the CI conclusion on its own head commit (the
+          # pre-merge checks), so a merged-red PR is caught. Unknown stays null and
+          # is tolerated by the classifier (the hard signal is "no merged PR").
+          count="$(echo "$enriched" | jq 'length')"
+          prs="$enriched"
+          for i in $(seq 0 "$((count - 1))"); do
+            [ "$count" -gt 0 ] || break
+            merged="$(echo "$enriched" | jq -r ".[$i].merged")"
+            [ "$merged" = "true" ] || continue
+            head="$(echo "$enriched" | jq -r ".[$i].head")"
+            concls="$(gh api "/repos/$REPO/commits/$head/check-runs" \
+              --jq '[.check_runs[] | select(.name == "ci") | .conclusion]' 2>/dev/null || echo '[]')"
+            ci="$(echo "$concls" | jq -r 'if any(.[]; . == "failure") then "failure" elif (length > 0 and all(.[]; . == "success")) then "success" else "null" end')"
+            if [ "$ci" != "null" ]; then
+              prs="$(echo "$prs" | jq -c --argjson i "$i" --arg c "$ci" '.[$i].ciConclusion = $c')"
+            fi
+          done
+
+          export PRS_JSON="$(echo "$prs" | jq -c '[.[] | {number, merged, ciConclusion}]')"
+          export COMMIT_MESSAGE="$(git log -1 --pretty=%B "$HEAD_SHA")"
+
+          node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-main-push.ts
