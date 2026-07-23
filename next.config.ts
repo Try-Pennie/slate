@@ -24,13 +24,17 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: import.meta.dirname,
   },
-  // HSTS on EVERY response (#1024). The public booker collects name / email /
-  // phone, so a returning visitor's browser must auto-upgrade http->https before
-  // it sends anything. HSTS is transport-only and does not restrict framing, so
-  // serving it site-wide is safe for the embeddable booker (unlike the framing
-  // headers, which stay middleware-only on /admin, /me, /login). The first-visit
-  // http->https redirect is a Cloudflare "Always Use HTTPS" zone setting, out of
-  // code. No `preload`, so this stays reversible.
+  // Baseline hardening on EVERY response. None of these restrict framing, so
+  // serving them site-wide is safe for the embeddable booker (unlike the framing
+  // headers, which stay middleware-only on /admin, /me, /login):
+  //   - HSTS (#1024): the public booker collects name / email / phone, so a
+  //     returning visitor's browser must auto-upgrade http->https before it sends
+  //     anything. No `preload`, so this stays reversible. The first-visit
+  //     http->https redirect is a Cloudflare "Always Use HTTPS" zone setting.
+  //   - nosniff + Referrer-Policy (#1030): the booker, the manage-by-token pages,
+  //     and every /api response used to carry none of the standard hardening
+  //     headers (they were middleware-only on the staff surfaces). Serving them
+  //     globally covers the PII-bearing public surfaces too.
   async headers() {
     return [
       {
@@ -40,6 +44,8 @@ const nextConfig: NextConfig = {
             key: "Strict-Transport-Security",
             value: "max-age=31536000; includeSubDomains",
           },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         ],
       },
     ];
