@@ -18,6 +18,7 @@ import {
 } from "@/lib/google/sync-pace";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -150,8 +151,10 @@ export async function GET(req: NextRequest) {
       // yields nothing rather than failing the tick; the recompute lane's freshness
       // sweep is the backstop.
       const touched = await touchedBucketCodes(changed, MAX_TOUCHED_BUCKETS, "touched-bucket");
+      // #216: one horizon read for the batch, not per bucket.
+      const horizonDays = await loadBookingHorizonDays();
       for (const code of touched) {
-        await recomputeBucketSlotsForToday(code, true).catch(() => {});
+        await recomputeBucketSlotsForToday(code, true, undefined, horizonDays).catch(() => {});
       }
     }
 

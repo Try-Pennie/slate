@@ -26,6 +26,8 @@ const baseProps = {
   salesforceId: null,
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
+  // The suite's fixtures assume a 4-day window (see the horizon comments below).
+  horizonDays: 4,
 };
 
 async function fillAndConfirm() {

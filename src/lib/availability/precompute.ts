@@ -71,6 +71,32 @@ export async function listBucketSlotCounts(): Promise<{ code: string; slots: num
   });
 }
 
+/** Epoch stamp used to force a row "due" for recompute (older than any freshness
+ *  window). */
+const STALE_STAMP = "1970-01-01T00:00:00.000Z";
+
+/**
+ * Mark every precomputed row stale (#216): back-date `computed_at` so
+ * `bucketsDueForRecompute` treats all buckets as due and the recompute lane
+ * rebuilds them over the CURRENT horizon on its next tick(s). Used by the admin
+ * horizon-save so a change converges promptly instead of trickling out only as
+ * rows naturally age past the freshness window. A bulk write (never a capped read);
+ * roster-bounded, so a single statement covers every bucket. Returns the number of
+ * rows re-stamped. Idempotent: a second run matches nothing (rows are already at the
+ * epoch stamp, so `gt` excludes them).
+ */
+export async function markAllBucketSlotsStale(): Promise<number> {
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("bucket_slots")
+      .update({ computed_at: STALE_STAMP })
+      .gt("computed_at", STALE_STAMP)
+      .select("bucket_code"),
+    "markAllBucketSlotsStale",
+  );
+  return (data ?? []).length;
+}
+
 /** Upsert a freshly computed blob for a bucket. */
 export async function writeBucketSlotsRow(
   code: string,

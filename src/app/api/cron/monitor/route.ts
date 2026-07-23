@@ -7,7 +7,8 @@ import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
-import { HORIZON_DAYS, recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { selfHealDataAnomalies } from "@/lib/monitor/anomaly-selfheal";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { tierLadder } from "@/lib/routing/tiers";
@@ -221,12 +222,16 @@ export async function GET(req: NextRequest) {
     // compare to the cached zero: recompute 0 = booked solid; > 0 = the cache
     // disagrees with the calendars (data anomaly); a failed recompute = unverified.
     const recomputeCounts = new Map<string, number | null>();
+    // Probe the SAME window the rows are computed over (#216): comparing a 4-day
+    // probe against a 7-day row would flag a false data anomaly. Loaded once and
+    // reused by the self-heal below.
+    const horizonDays = await loadBookingHorizonDays();
     if (page.length) {
       const { results: recomputes } = await mapWithConcurrency<string, { code: string; count: number | null }>(
         page,
         PROBE_CONCURRENCY,
         async (code) => {
-          const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), HORIZON_DAYS);
+          const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
           try {
             const res = await getBucketSlots(code, fromIso, toIso);
             return { code, count: res ? res.slots.length : null };
@@ -248,7 +253,7 @@ export async function GET(req: NextRequest) {
       selfHeal = await selfHealDataAnomalies(cause.dataAnomaly, {
         claim: async (code) =>
           (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
-        heal: (code) => recomputeBucketSlotsForToday(code, true),
+        heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
         onError: (code, err) =>
           log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
       });

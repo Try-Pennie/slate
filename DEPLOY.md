@@ -85,6 +85,10 @@ Change one by editing `wrangler.jsonc` and redeploying.
 - `BOOKING_VOLUME_ALERT_ARMED` / `BOOKING_VOLUME_FLOOR_30` / `BOOKING_VOLUME_FLOOR_120`:
   low-volume booking alert arming + floors (see Post-deploy config below). Unset =
   disarmed (counts still logged; floors default 5 / 20).
+- `SLATE_BOOKING_HORIZON_DAYS`: fallback for the org-wide booking horizon (how far
+  ahead leads can book) when the admin settings screen has not set one. Optional; a
+  whole number 1 to 7. Unset = the coded default (4). The admin UI value (stored in
+  `booking_settings`) always wins over this.
 
 ## 3. Build + deploy
 ```bash

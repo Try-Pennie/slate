@@ -2,6 +2,7 @@ import Booker from "@/components/Booker";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -67,6 +68,7 @@ export default async function BookEntry({
         .maybeSingle()
     : { data: null };
   const layout = normalizeBookerLayout(orgRow?.booker_layout);
+  const horizonDays = await loadBookingHorizonDays();
 
   const phone =
     first(sp, "phone") ||
@@ -100,6 +102,7 @@ export default async function BookEntry({
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
         layout={layout}
         parentOrigin={first(sp, "parentOrigin") || undefined}
+        horizonDays={horizonDays}
       />
     </main>
   );

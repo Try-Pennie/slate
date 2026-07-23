@@ -219,6 +219,9 @@ export interface MonitorAlertConfig {
 export interface BookingSettings {
   id: number;
   default_bucket_code: string | null;
+  /** #216: org-wide booking horizon in days (how far ahead leads can book).
+   *  Null = unset; the resolver falls back to env then the coded default. */
+  horizon_days: number | null;
   updated_at: string;
   updated_by: string | null;
 }
