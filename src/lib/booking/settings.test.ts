@@ -19,7 +19,31 @@ const admin = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/supabase/admin", () => admin);
 
-import { getDefaultBucketCode } from "./settings";
+import { getDefaultBucketCode, parseDefaultBucketForm } from "./settings";
+
+describe("parseDefaultBucketForm", () => {
+  const valid = new Set(["100", "200", "300"]);
+
+  it("accepts a code that is a real (non-test) bucket", () => {
+    expect(parseDefaultBucketForm("200", valid)).toEqual({ default_bucket_code: "200", errors: [] });
+  });
+
+  it("treats blank as clearing the default (null, no error)", () => {
+    expect(parseDefaultBucketForm("", valid)).toEqual({ default_bucket_code: null, errors: [] });
+    expect(parseDefaultBucketForm("   ", valid)).toEqual({ default_bucket_code: null, errors: [] });
+  });
+
+  it("refuses a code that is not a known bucket (fail loud, no write)", () => {
+    const r = parseDefaultBucketForm("999", valid);
+    expect(r.default_bucket_code).toBeNull();
+    expect(r.errors.length).toBe(1);
+    expect(r.errors[0]).toMatch(/999/);
+  });
+
+  it("trims surrounding whitespace before validating", () => {
+    expect(parseDefaultBucketForm(" 100 ", valid)).toEqual({ default_bucket_code: "100", errors: [] });
+  });
+});
 
 describe("getDefaultBucketCode", () => {
   beforeEach(() => {

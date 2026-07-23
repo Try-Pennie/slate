@@ -13,6 +13,31 @@ import type { BookingSettings } from "@/lib/db/types";
  * error (e.g. a missing column mid-migration) would otherwise masquerade as an
  * intentional "no default", so it flows through `unwrap` and throws instead.
  */
+export interface DefaultBucketPayload {
+  default_bucket_code: string | null;
+  errors: string[];
+}
+
+/**
+ * Parse + validate the admin settings form's default-bucket selection (#1016).
+ * Blank clears the default (explicit null). A non-blank value must be one of
+ * `validCodes` (the current non-test bucket codes); anything else is refused with
+ * an error so the action never persists a code that points at no bucket (which
+ * would surface later as a confusing NO_DEFAULT-adjacent failure at book time).
+ * Pure so it is node/vitest-testable without a DB.
+ */
+export function parseDefaultBucketForm(raw: string, validCodes: Set<string>): DefaultBucketPayload {
+  const code = (raw ?? "").trim();
+  if (code === "") return { default_bucket_code: null, errors: [] };
+  if (!validCodes.has(code)) {
+    return {
+      default_bucket_code: null,
+      errors: [`"${code}" is not a current bucket code. Pick one from the list.`],
+    };
+  }
+  return { default_bucket_code: code, errors: [] };
+}
+
 export async function getDefaultBucketCode(): Promise<string | null> {
   const db = supabaseAdmin();
   const row = unwrap(

@@ -20,7 +20,8 @@ export type AuditAction =
   | "impersonate.stop"
   | "impersonate.ended"
   | "monitor.settings"
-  | "reason.options";
+  | "reason.options"
+  | "booking.settings";
 
 /**
  * Appends a privileged action to the audit trail. Best-effort: never throws, so
