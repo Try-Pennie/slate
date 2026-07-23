@@ -17,12 +17,14 @@ const state = vi.hoisted(() => ({
   // delivery insert returns, and the status writes send() makes.
   filters: [] as { table: string; col: string; val: unknown }[],
   insertError: null as null | { code?: string; message: string },
+  endpointsError: null as null | { code?: string; message: string },
   updates: [] as Record<string, unknown>[],
 }));
 
 function resolve(b: Record<string, unknown>, table: string) {
   if (table === "webhook_endpoints") {
-    return { data: b._single ? state.endpoints[0] : state.endpoints };
+    if (state.endpointsError) return { data: null, error: state.endpointsError };
+    return { data: b._single ? state.endpoints[0] : state.endpoints, error: null };
   }
   if (table === "webhook_deliveries") {
     if (b._updated) {
@@ -135,6 +137,7 @@ beforeEach(() => {
   state.inserted = [];
   state.filters = [];
   state.insertError = null;
+  state.endpointsError = null;
   state.updates = [];
   from.mockImplementation((table: string) => makeBuilder(table));
   fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => "ok" });
@@ -230,12 +233,27 @@ describe("emitWebhook", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("leaves no delivery half-sent when the insert fails for any other reason", async () => {
+  // #1036: a non-dedupe insert error leaves NO durable row, so the outbox step
+  // must NOT be marked done. Throw so the step fails and the drain retries,
+  // instead of silently dropping the event (a 23505 is the only "skip" case).
+  it("throws (so the outbox step retries) when the insert fails for any non-dedupe reason", async () => {
     state.insertError = { code: "08006", message: "connection failure" };
 
-    await emitWebhook("o1", "booking.created", payload, "bk1");
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow();
 
     // No row means nothing owns a retry, so posting here would be an unrecorded send.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #1036: a swallowed endpoints-read error used to yield null -> zero endpoints
+  // -> the outbox step marked done with nothing queued -> the event permanently
+  // lost to Regal/Cadence. Throw so the step fails and retries.
+  it("throws (so the outbox step retries) when the endpoints read errors, instead of dropping the event", async () => {
+    state.endpointsError = { code: "08006", message: "connection failure" };
+
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow();
+
+    expect(state.inserted).toHaveLength(0); // never reached the delivery insert
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

@@ -150,6 +150,9 @@ const surface = [
   ...tsFiles(join(ROOT, "src", "lib", "google")),
   ...tsFiles(join(ROOT, "src", "lib", "routing")),
   ...tsFiles(join(ROOT, "src", "lib", "salesforce")),
+  // #1036: the webhook emit path silently dropped a booking event on a swallowed
+  // endpoints-read / insert error because it sat outside this scanner's scope.
+  ...tsFiles(join(ROOT, "src", "lib", "webhooks")),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -225,6 +228,25 @@ const sfReintroduced =
 assert(
   scanSwallowedErrorReads(sfReintroduced, sfSyncPath).length > 0,
   "positive control: a reintroduced swallowed-error salesforce read is caught",
+);
+
+// A control on the newly-scanned webhook path (#1036): webhooks/emit.ts routes
+// its critical endpoints read through a checked `error` (throw) and carries
+// `// error-ok:` opt-outs on its best-effort sweep/resend/replay reads. Append
+// the exact #277 regression shape and confirm the guard flags it, proving the
+// scan actually reaches src/lib/webhooks and isn't a no-op there.
+const emitPath = join(ROOT, "src", "lib", "webhooks", "emit.ts");
+const emitSrc = readFileSync(emitPath, "utf8");
+assert(
+  scanSwallowedErrorReads(emitSrc, emitPath).length === 0,
+  "the real webhooks/emit.ts is clean",
+);
+const emitReintroduced =
+  emitSrc +
+  `\nasync function _regression() {\n  const { data } = await supabaseAdmin().from("webhook_deliveries").select("id, status").eq("endpoint_id", e);\n  return data;\n}\n`;
+assert(
+  scanSwallowedErrorReads(emitReintroduced, emitPath).length > 0,
+  "positive control: a reintroduced swallowed-error webhook read is caught",
 );
 
 // --- repo invariant: the whole scan surface is clean --------------------------
