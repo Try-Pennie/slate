@@ -96,7 +96,12 @@ const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn(async () => {}) }));
 
-import { emitWebhook, retryFailedDeliveries, resendDelivery } from "./emit";
+import {
+  emitWebhook,
+  retryFailedDeliveries,
+  resendDelivery,
+  replayDeadLetteredDeliveries,
+} from "./emit";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 
 const endpoint = {
@@ -403,5 +408,62 @@ describe("misconfigured Regal endpoint (#600)", () => {
     expect(failed).toBeTruthy();
     // The log has to say WHY, or the admin cannot act on it.
     expect(String(failed?.last_response)).toMatch(/api key/i);
+  });
+});
+
+// #1073: a delivery whose payload was blanked for PII retention (payload_erased)
+// must never be re-sent, or the admin resend / dead-letter replay would POST an
+// empty {} body (a fake success on a generic endpoint, a throw on Regal). Mirrors
+// the `suppressed` guard: refusal is structural, on every send path.
+describe("payload_erased guard (#1073)", () => {
+  function erased(id: string): Record<string, unknown> {
+    return {
+      id,
+      endpoint_id: "ep1",
+      event: "booking.created",
+      payload: {},
+      attempts: 5,
+      status: "failed",
+      suppressed: false,
+      payload_erased: true,
+      updated_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      created_at: new Date(Date.now() - 100 * 24 * 60 * 60_000).toISOString(),
+    };
+  }
+
+  it("resendDelivery refuses an erased row: no POST, returns 'payload-erased'", async () => {
+    state.deliveries = [erased("d1")];
+    const res = await resendDelivery("d1", "o1");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(res).toBe("payload-erased");
+  });
+
+  it("resendDelivery sends a normal row and returns 'sent'", async () => {
+    state.deliveries = [
+      { ...delivery("d2"), status: "failed", suppressed: false, payload_erased: false },
+    ];
+    const res = await resendDelivery("d2", "o1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(res).toBe("sent");
+  });
+
+  it("retryFailedDeliveries excludes erased rows via a payload_erased=false filter", async () => {
+    state.deliveries = [];
+    await retryFailedDeliveries();
+    expect(
+      state.filters.some(
+        (f) => f.table === "webhook_deliveries" && f.col === "payload_erased" && f.val === false,
+      ),
+    ).toBe(true);
+  });
+
+  it("replayDeadLetteredDeliveries excludes erased rows via a payload_erased=false filter", async () => {
+    state.deliveries = [];
+    await replayDeadLetteredDeliveries("o1", new Date(Date.now() - 3_600_000).toISOString());
+    expect(
+      state.filters.some(
+        (f) => f.table === "webhook_deliveries" && f.col === "payload_erased" && f.val === false,
+      ),
+    ).toBe(true);
   });
 });

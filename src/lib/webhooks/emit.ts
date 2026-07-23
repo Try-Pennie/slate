@@ -211,6 +211,7 @@ export async function retryFailedDeliveries(): Promise<number> {
     // Belt and braces (#459): a suppressed row is already terminal ('success'), so
     // it can't match the status filter, but never sweep one into a POST.
     .eq("suppressed", false)
+    .eq("payload_erased", false) // #1073: never sweep a blanked ({}) payload
     .lt("attempts", WEBHOOK_MAX_ATTEMPTS)
     .limit(100);
 
@@ -249,18 +250,32 @@ export async function retryFailedDeliveries(): Promise<number> {
 }
 
 /**
+ * Outcome of a manual resend, so the caller can tell a real send from a
+ * deliberate refusal instead of a silent no-op (#1073).
+ */
+export type ResendResult =
+  | "sent"
+  | "not-found"
+  | "suppressed"
+  | "payload-erased"
+  | "deduped";
+
+/**
  * Manual resend of one delivery from the admin log: re-fires it immediately
  * (ignoring the retry cap). Scoped to `orgId` so an admin can only resend their
  * own org's deliveries.
  */
-export async function resendDelivery(deliveryId: string, orgId: string): Promise<void> {
+export async function resendDelivery(
+  deliveryId: string,
+  orgId: string,
+): Promise<ResendResult> {
   const db = supabaseAdmin();
   const { data: d } = await db
     .from("webhook_deliveries")
-    .select("id, endpoint_id, event, payload, attempts, suppressed")
+    .select("id, endpoint_id, event, payload, attempts, suppressed, payload_erased")
     .eq("id", deliveryId)
     .maybeSingle();
-  if (!d) return;
+  if (!d) return "not-found";
   const row = d as unknown as {
     id: string;
     endpoint_id: string;
@@ -268,10 +283,14 @@ export async function resendDelivery(deliveryId: string, orgId: string): Promise
     payload: BookingEventPayload;
     attempts: number;
     suppressed: boolean;
+    payload_erased: boolean;
   };
   // #459: a suppressed delivery (an is_test bucket's booking) must never leave the
   // building, so the admin resend button can't leak a smoke booking into Regal.
-  if (row.suppressed) return;
+  if (row.suppressed) return "suppressed";
+  // #1073: the payload was blanked for PII retention. Refuse rather than POST an
+  // empty {} body (a fake success on a generic endpoint, a throw on Regal).
+  if (row.payload_erased) return "payload-erased";
 
   const { data: endpoint } = await db
     .from("webhook_endpoints")
@@ -279,12 +298,13 @@ export async function resendDelivery(deliveryId: string, orgId: string): Promise
     .eq("id", row.endpoint_id)
     .eq("org_id", orgId)
     .maybeSingle();
-  if (!endpoint) return;
+  if (!endpoint) return "not-found";
 
   // Claim the attempt (#623) so a resend that races the cron retry sweep (or a
   // duplicate resend) can't double-POST the same attempt.
-  if (!(await claimDeliveryAttempt(db, row.id, row.attempts))) return;
+  if (!(await claimDeliveryAttempt(db, row.id, row.attempts))) return "deduped";
   await send(endpoint as WebhookEndpoint, row.id, row.event, row.payload, row.attempts + 1);
+  return "sent";
 }
 
 /**
@@ -319,6 +339,7 @@ export async function replayDeadLetteredDeliveries(
     .in("endpoint_id", [...byId.keys()])
     .eq("status", "failed")
     .eq("suppressed", false) // #459: never replay a suppressed (is_test) delivery
+    .eq("payload_erased", false) // #1073: never replay an erased ({}) payload
     .gte("attempts", WEBHOOK_MAX_ATTEMPTS)
     .gte("created_at", sinceIso)
     .order("created_at", { ascending: true })

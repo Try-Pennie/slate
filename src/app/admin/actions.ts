@@ -806,7 +806,13 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
     WEBHOOK_RESEND_DEDUPE_TTL_MS,
   );
   if (!claim) return; // a duplicate/racing request already re-fired this delivery
-  await resendDelivery(deliveryId, admin.org_id);
+  const result = await resendDelivery(deliveryId, admin.org_id);
+  // #1073: a refused resend (payload erased for PII retention, suppressed, etc.)
+  // must not look like a silent success. The delivery row is unchanged on the
+  // re-rendered log; surface the reason to the server logs so it is observable.
+  if (result !== "sent") {
+    log.warn("webhook-resend", { msg: "resend not sent", delivery_id: deliveryId, result });
+  }
   revalidatePath("/admin");
 }
 
