@@ -60,6 +60,7 @@ import { loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
+import { httpProbeUrl, isHttpsRedirect } from "./lib/https-redirect.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -241,6 +242,28 @@ function uniq(tag: string) {
 function laterSlot(slots: string[], from: string, minGapMs = 60 * 60 * 1000): string | undefined {
   const fromMs = new Date(from).getTime();
   return slots.find((s) => new Date(s).getTime() - fromMs >= minGapMs);
+}
+
+// --- Transport health: the public booker must force http->https (#1024) ---
+// A lead following an http:// link submits name/email/phone in plaintext unless
+// the edge redirects to https first. That redirect is a Cloudflare "Always Use
+// HTTPS" zone setting (config, not code), so assert it LIVE here. Nothing in the
+// repo can prevent it regressing. Skips on a localhost/http dev base (see
+// httpProbeUrl). Side-effect-free, so it runs on the every-30-min dry tick too.
+async function checkHttpsRedirect() {
+  const probe = httpProbeUrl(BASE);
+  if (!probe) {
+    console.log(`SKIP-INFO: http->https redirect check (base ${BASE} is not a public https host)`);
+    return;
+  }
+  const res = await fetch(probe, { redirect: "manual" }).then(
+    (r) => ({ status: r.status, location: r.headers.get("location") }),
+    (e: unknown) => ({ status: 0, location: null, error: e }),
+  );
+  check(
+    isHttpsRedirect(res.status, res.location),
+    `http:// redirects to https:// (#1024): got ${res.status} -> ${res.location ?? "(no Location)"}`,
+  );
 }
 
 // --- Scenario 0: dry run — validate routing with ZERO side effects ---
@@ -521,6 +544,10 @@ async function main() {
     process.exit(2);
   }
   console.log(`Smoke test against ${BASE} (bucket ${BUCKET_A}${BUCKET_B ? `, cross-bucket ${BUCKET_B}` : ""})`);
+
+  // Transport health (#1024) runs before the availability gate so it reports even
+  // when the fleet is misconfigured; both are side-effect-free.
+  await checkHttpsRedirect();
 
   // Gate on real availability before booking anything. Zero slots means the
   // isolated test agent is misconfigured, so the run would exercise NOTHING;
