@@ -53,9 +53,14 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   "0 11 * * *": "/api/cron/ooo-approvals",
   "0 12 * * *": "/api/cron/ooo-approvals",
   // Daily 3am UTC retention lanes (each under its own lock): prune
-  // routing_decisions older than 12 months, and blank webhook_deliveries payload
-  // PII on terminal deliveries older than the 90-day window (#1073).
-  "0 3 * * *": ["/api/cron/prune-routing", "/api/cron/prune-webhook-payloads"],
+  // routing_decisions older than 12 months, blank webhook_deliveries payload PII
+  // on terminal deliveries older than the 90-day window (#1073), and redact
+  // consumer PII on bookings whose appointment is past the 24-month window (#1071).
+  "0 3 * * *": [
+    "/api/cron/prune-routing",
+    "/api/cron/prune-webhook-payloads",
+    "/api/cron/prune-bookings-pii",
+  ],
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */
