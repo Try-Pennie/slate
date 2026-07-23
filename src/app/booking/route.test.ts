@@ -21,11 +21,22 @@ const service = vi.hoisted(() => {
   };
 });
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async () => true),
-  refundRequest: vi.fn(async () => {}),
+  allowRequest: vi.fn(async (_key: string, _rules?: unknown) => true),
+  refundRequest: vi.fn(async (_key: string, _rules?: unknown) => {}),
   bookingWithinLimit: vi.fn(async () => true),
   clientIp: () => "203.0.113.1",
-  BOOKING_HOURLY_RATE_RULES: [],
+  BOOKING_HOURLY_RATE_RULES: [{ prefix: "book:h", windowSeconds: 3600, max: 10 }],
+  BOOKING_CONTACT_HOURLY_RATE_RULES: [{ prefix: "book:contact:h", windowSeconds: 3600, max: 5 }],
+  // Real normalizer (pure): the route relies on its exact key shape, so mocking
+  // it would let a key-shape regression pass. Two discriminated keys per contact.
+  contactRateKeys: (a: { email?: string | null; phone?: string | null }) => {
+    const keys: string[] = [];
+    const email = (a.email ?? "").trim().toLowerCase();
+    if (email) keys.push(`email:${email}`);
+    const phone = (a.phone ?? "").replace(/\D/g, "");
+    if (phone) keys.push(`phone:${phone}`);
+    return keys;
+  },
 }));
 
 vi.mock("@/lib/booking/service", () => service);
@@ -52,6 +63,7 @@ function post(body: unknown) {
 
 describe("POST /booking (embed) error mapping", () => {
   beforeEach(() => {
+    rateLimit.allowRequest.mockReset();
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingWithinLimit.mockResolvedValue(true);
     rateLimit.refundRequest.mockClear();
@@ -107,11 +119,65 @@ describe("POST /booking (embed) error mapping", () => {
     info.mockRestore();
   });
 
-  it("refunds only the hourly cap on a verify outage (the edge burst window can't be refunded)", async () => {
+  it("refunds the hourly IP cap AND both per-contact caps on a verify outage, never the edge burst window (#1033)", async () => {
     service.createBooking.mockRejectedValueOnce(new service.VerifyUnavailableError("outage"));
     const res = await post(VALID_BODY);
     expect(res.status).toBe(503);
-    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(1);
+    // 1 IP-cap refund + 1 per email + 1 per phone: a server outage must not burn
+    // the lead's contact budget any more than it burns their IP budget.
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
+    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => c[0]);
+    expect(keysRefunded).toContain("203.0.113.1");
+    expect(keysRefunded).toContain("email:dana@example.com");
+    expect(keysRefunded).toContain("phone:2155550100");
+  });
+
+  it("rejects a filled honeypot with a generic 400 and never creates a booking (#1033)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const res = await post({ ...VALID_BODY, website: "https://spam.example" });
+    expect(res.status).toBe(400);
+    expect(service.createBooking).not.toHaveBeenCalled();
+    // The rejection reveals nothing honeypot-specific (indistinguishable from a
+    // schema failure) but IS logged at a queryable tag for observability.
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toMatch(/honeypot|website|bot/i);
+    const line = info.mock.calls.map(String).find((l) => l.includes("tag=booking-honeypot"));
+    expect(line).toBeDefined();
+    info.mockRestore();
+  });
+
+  it("an empty honeypot books normally (a real submission never trips it) (#1033)", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-hp", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const res = await post({ ...VALID_BODY, website: "" });
+    expect(res.status).toBe(200);
+    expect(service.createBooking).toHaveBeenCalled();
+  });
+
+  it("returns 429 when the per-contact cap blocks, after the IP cap and without creating a booking (#1033)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    // IP key (a bare ip) passes; the per-contact email key is over its cap.
+    rateLimit.allowRequest.mockImplementation(async (key: string) => !key.startsWith("email:"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(429);
+    expect(service.createBooking).not.toHaveBeenCalled();
+    const line = info.mock.calls.map(String).find((l) => l.includes("tag=booking-rate-limit"));
+    expect(line).toContain('scope="contact"');
+    info.mockRestore();
+  });
+
+  it("checks BOTH the IP cap and the per-contact caps on a normal booking (#1033)", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-c", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post(VALID_BODY);
+    const keysChecked = rateLimit.allowRequest.mock.calls.map((c) => c[0]);
+    expect(keysChecked).toContain("203.0.113.1"); // per-IP
+    expect(keysChecked).toContain("email:dana@example.com"); // per-contact email
+    expect(keysChecked).toContain("phone:2155550100"); // per-contact phone
   });
 
   it("maps an empty/misconfigured pool to 409 (not 500)", async () => {

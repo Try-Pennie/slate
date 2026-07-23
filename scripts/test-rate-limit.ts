@@ -4,6 +4,8 @@
 import {
   clientIp,
   BOOKING_HOURLY_RATE_RULES,
+  BOOKING_CONTACT_HOURLY_RATE_RULES,
+  contactRateKeys,
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
@@ -58,6 +60,66 @@ assert(
     BOOKING_HOURLY_RATE_RULES.length,
   "rule prefixes are distinct (separate counters)",
 );
+
+// Per-contact hourly cap (#1033): a second bound on the public booker keyed on
+// the attendee's contact rather than their IP, so a distributed bot reusing one
+// fake identity across many IPs is capped by the identity it reuses. It rides the
+// same rate_limit_hit machinery as the IP cap, just with a contact-derived key.
+assert(
+  BOOKING_CONTACT_HOURLY_RATE_RULES.length === 1,
+  "one per-contact rule: the hourly cap",
+);
+{
+  const contactCap = BOOKING_CONTACT_HOURLY_RATE_RULES[0];
+  assert(contactCap.windowSeconds === 3600, "the per-contact rule is an hourly window");
+  assert(
+    contactCap.max > 0 && contactCap.max <= 10,
+    "per-contact cap is generous enough for a retrying lead but well below abuse (<=10/hr)",
+  );
+  // Distinct prefix from the per-IP cap so the two counters never draw on each
+  // other: a lead near their IP cap must not also spend contact budget, and a
+  // shared-IP office must not collapse both caps into one.
+  const ipPrefixes = new Set(BOOKING_HOURLY_RATE_RULES.map((r) => r.prefix));
+  assert(
+    BOOKING_CONTACT_HOURLY_RATE_RULES.every((r) => !ipPrefixes.has(r.prefix)),
+    "per-contact counters use a distinct prefix from the per-IP booking counters",
+  );
+  // A block here is expected day-to-day (a spammy visitor), so it must NOT page,
+  // exactly like the per-IP public-booking cap.
+  assert(
+    BOOKING_CONTACT_HOURLY_RATE_RULES.every((r) => !r.alertOnBlock),
+    "a per-contact block does not alert (an expected event, like the per-IP cap)",
+  );
+}
+
+// contactRateKeys normalizes the attendee into stable, discriminated keys so the
+// SAME person is one counter regardless of formatting: email lowercased+trimmed,
+// phone reduced to digits (matching how numbers are normalized for webhooks).
+{
+  const keys = contactRateKeys({ email: "  Dana@Example.COM ", phone: "(203) 561-5295" });
+  assert(keys.includes("email:dana@example.com"), "email key is lowercased and trimmed");
+  assert(keys.includes("phone:2035615295"), "phone key is digits only");
+  assert(keys.length === 2, "a full contact yields exactly two keys (email + phone)");
+
+  // The two keys are discriminated so an email can never collide with a phone.
+  assert(
+    keys.every((k) => k.startsWith("email:") || k.startsWith("phone:")),
+    "keys are discriminated by kind",
+  );
+
+  // Same person, different formatting -> the same keys (one counter).
+  const keys2 = contactRateKeys({ email: "dana@example.com", phone: "+1 203 561 5295" });
+  assert(
+    keys2.includes("email:dana@example.com") && keys2.includes("phone:12035615295"),
+    "a leading country code is kept as digits (never silently dropped)",
+  );
+
+  // Missing / blank fields are skipped rather than producing an empty-keyed counter
+  // that every blank-field bot would share.
+  eq(contactRateKeys({ email: "a@b.co", phone: "  " }).length, 1, "blank phone is skipped");
+  eq(contactRateKeys({ email: "", phone: "" }).length, 0, "all-blank contact yields no keys");
+  eq(contactRateKeys({}).length, 0, "empty attendee yields no keys");
+}
 
 // Availability (#56) is now throttled at the edge by the AVAIL_RATE_LIMITER
 // Workers binding (wrangler.jsonc), not a DB rule — nothing pure to assert here.

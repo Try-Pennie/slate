@@ -7,6 +7,7 @@ import { ArrowRightIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
+import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import type { BookerLayout } from "@/lib/booking/layout";
@@ -207,6 +208,9 @@ export default function Booker({
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [hour12, setHour12] = useState(true);
   const [attendee, setAttendee] = useState<Attendee>(initialAttendee);
+  // Honeypot (#1033): a real user never sees or fills the hidden decoy below, so
+  // it stays empty; a bot that fills every field trips the server-side check.
+  const [honeypot, setHoneypot] = useState("");
   const [fieldErrors, setFieldErrors] = useState<AttendeeErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -412,6 +416,9 @@ export default function Booker({
             phone: attendee.phone.trim(),
           },
           prefill,
+          // Empty for every real lead; a bot filling all fields sends a value the
+          // server rejects (#1033).
+          [HONEYPOT_FIELD]: honeypot,
         },
         // Convert a wedged confirm (server accepted, never responds) into the
         // retryable error below instead of an endless "Booking your call…" (#626).
@@ -634,6 +641,27 @@ export default function Booker({
               )}
             </div>
           ))}
+          {/* Honeypot (#1033): off-screen and removed from the a11y tree + tab
+              order, so a sighted, keyboard, or screen-reader user never reaches
+              it and it stays blank. A form-scraping bot still sees it in the DOM
+              and fills it; the server rejects any submission that carries a value.
+              Positioned off-screen (not display:none) because some bots skip
+              display:none fields. */}
+          <div
+            aria-hidden="true"
+            style={{ position: "absolute", left: "-9999px", width: 1, height: 1, overflow: "hidden" }}
+          >
+            <label htmlFor={`booker-${HONEYPOT_FIELD}`}>Leave this field empty</label>
+            <input
+              id={`booker-${HONEYPOT_FIELD}`}
+              name={HONEYPOT_FIELD}
+              type="text"
+              tabIndex={-1}
+              autoComplete="off"
+              value={honeypot}
+              onChange={(e) => setHoneypot(e.target.value)}
+            />
+          </div>
           {errorAlert}
           <button
             onClick={submit}
