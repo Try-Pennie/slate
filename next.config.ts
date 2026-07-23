@@ -24,6 +24,26 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: import.meta.dirname,
   },
+  // HSTS on EVERY response (#1024). The public booker collects name / email /
+  // phone, so a returning visitor's browser must auto-upgrade http->https before
+  // it sends anything. HSTS is transport-only and does not restrict framing, so
+  // serving it site-wide is safe for the embeddable booker (unlike the framing
+  // headers, which stay middleware-only on /admin, /me, /login). The first-visit
+  // http->https redirect is a Cloudflare "Always Use HTTPS" zone setting, out of
+  // code. No `preload`, so this stays reversible.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          {
+            key: "Strict-Transport-Security",
+            value: "max-age=31536000; includeSubDomains",
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

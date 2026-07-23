@@ -12,13 +12,14 @@
  * need nonces for Next's inline runtime and could silently break the app). A full
  * content CSP is a separate effort.
  *
- * HSTS uses a long max-age (the origin is HTTPS-only on Cloudflare) but no
- * `preload`, so it stays reversible.
+ * HSTS is intentionally NOT here: it is transport-only (does not restrict framing)
+ * so it is served on EVERY response via next.config `headers()` (#1024), including
+ * the embeddable booker. Keeping it out of this staff-only bundle avoids a
+ * duplicate `Strict-Transport-Security` header on /admin, /me, /login.
  */
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "X-Frame-Options": "DENY",
   "Content-Security-Policy": "frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 };
