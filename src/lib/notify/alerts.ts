@@ -14,6 +14,29 @@ export function shouldSendAlert(
   return nowMs - lastSentAtMs >= cooldownMs;
 }
 
+/**
+ * How long a FAILED Slack send holds the cooldown before a retry is allowed
+ * (#1035). Short, so a transient Slack failure doesn't silence the alert for the
+ * full 15-60+ min cooldown: the every-minute cron re-attempts within this window.
+ */
+export const FAILED_SEND_RETRY_MS = 2 * 60 * 1000;
+
+/**
+ * The `last_sent_at` to stamp after a send attempt (#1035). Eligibility is
+ * `now2 - stamp >= cooldown` (see `shouldSendAlert`), so stamping
+ * `now - cooldown + delay` makes the next send eligible at `now + delay`:
+ *   - ok:    delay = cooldown  -> stamps `now`, next send waits the full cooldown.
+ *   - failed: delay = min(retry, cooldown) -> frees the key after the short retry
+ *     window instead of burning the whole cooldown, and never waits LONGER than
+ *     the cooldown a successful send would have used.
+ * Stamping regardless of result still prevents a hard-failing Slack from being
+ * spammed every minute; it just shortens the mute on failure.
+ */
+export function alertStampMs(ok: boolean, nowMs: number, cooldownMs: number): number {
+  const delay = ok ? cooldownMs : Math.min(FAILED_SEND_RETRY_MS, cooldownMs);
+  return nowMs - cooldownMs + delay;
+}
+
 /** A persistently-failing agent calendar, for the named alert (#273). */
 export interface FailingAgent {
   email: string;

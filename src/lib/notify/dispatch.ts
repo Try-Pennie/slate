@@ -1,7 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
-import { shouldSendAlert } from "@/lib/notify/alerts";
+import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
 import { defaultInfoChannel } from "@/lib/notify/channels";
+import { log } from "@/lib/log";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -25,13 +26,24 @@ export async function sendThrottledAlert(
   const lastSentAtMs = data
     ? Date.parse((data as { last_sent_at: string }).last_sent_at)
     : null;
-  if (!shouldSendAlert(lastSentAtMs, Date.now(), cooldownMs)) return;
+  const nowMs = Date.now();
+  if (!shouldSendAlert(lastSentAtMs, nowMs, cooldownMs)) return;
 
-  await postSlack({ text, ...(channel ? { channel } : {}) });
-  // Stamp regardless of delivery result so a flaky Slack can't be spammed.
+  const result = await postSlack({ text, ...(channel ? { channel } : {}) });
+  // Fail loud (#1035): a not-ok send used to be invisible AND burned the full
+  // cooldown, silently muting this alert for 15-60+ min. Surface it in the logs
+  // (the paging channel can't page about itself) and stamp only a short retry
+  // window so the every-minute cron re-attempts soon. A stamp still goes down on
+  // failure so a hard-down Slack can't be spammed; it's just a shorter mute.
+  if (!result.ok) {
+    log.warn("slack-alert", { msg: "send failed", key, error: result.error ?? null });
+  }
   await db
     .from("alert_state")
-    .upsert({ key, last_sent_at: new Date().toISOString() }, { onConflict: "key" });
+    .upsert(
+      { key, last_sent_at: new Date(alertStampMs(result.ok, nowMs, cooldownMs)).toISOString() },
+      { onConflict: "key" },
+    );
 }
 
 /**

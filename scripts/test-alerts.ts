@@ -7,6 +7,8 @@ import {
   isConsecutiveFailure,
   dedupeFailingAgents,
   isPageableFailure,
+  alertStampMs,
+  FAILED_SEND_RETRY_MS,
 } from "../src/lib/notify/alerts.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -125,6 +127,41 @@ assert(
     110,
   ).length < 600,
   "sync alert truncates per-agent error detail",
+);
+
+// alertStampMs (#1035): a FAILED Slack send must not burn the full cooldown, so
+// the key frees up ~2 min later instead of being silenced for 15-60+ min. The
+// stamp is chosen so next-eligible = stamp + cooldown lands at now + delay.
+const T = 5_000_000; // an arbitrary "now"
+
+// A successful send stamps `now`, so the next send waits the full cooldown.
+assert(alertStampMs(true, T, COOLDOWN) === T, "ok send stamps now (full cooldown)");
+assert(
+  T - alertStampMs(true, T, COOLDOWN) === 0,
+  "ok send: elapsed-at-stamp is zero (a full cooldown must pass)",
+);
+
+// A failed send with a long cooldown frees the key after the short retry window.
+const failedStamp = alertStampMs(false, T, COOLDOWN);
+assert(
+  failedStamp + COOLDOWN === T + FAILED_SEND_RETRY_MS,
+  "failed send: next-eligible is now + ~2min retry window, not now + full cooldown",
+);
+assert(
+  failedStamp < T,
+  "failed send: stamp is backdated so the next tick can retry soon",
+);
+
+// A failed send must NEVER wait longer than the cooldown would have: with a
+// cooldown shorter than the retry window, it collapses to a normal `now` stamp.
+const SHORT = 60 * 1000; // 1 min < 2 min retry window
+assert(
+  alertStampMs(false, T, SHORT) === T,
+  "failed send with a sub-retry-window cooldown stamps now (never extends the wait)",
+);
+assert(
+  alertStampMs(false, T, SHORT) + SHORT === T + SHORT,
+  "failed send never pushes next-eligible past the cooldown it would have used",
 );
 
 finish();
