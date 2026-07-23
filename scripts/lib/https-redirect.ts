@@ -39,3 +39,21 @@ export function isHttpsRedirect(status: number, location: string | null | undefi
   if (!location) return false;
   return /^https:\/\//i.test(location);
 }
+
+/** What the live smoke check should do about an observed redirect state. */
+export type RedirectVerdict = "ok" | "warn" | "page";
+
+/**
+ * Decide whether a missing http->https redirect should PAGE or merely WARN.
+ *
+ * The redirect is a Cloudflare "Always Use HTTPS" zone toggle enabled out of
+ * band. Paging BEFORE it is enabled is self-inflicted alert noise, so the guard
+ * only pages once we EXPECT the redirect (`expectRedirect`, wired from the
+ * EXPECT_HTTPS_REDIRECT repo var, set when the toggle is turned on). Until then a
+ * missing redirect is a visible WARN, not a failure. Once expected, a missing
+ * redirect is a real regression and pages.
+ */
+export function redirectVerdict(isRedirect: boolean, expectRedirect: boolean): RedirectVerdict {
+  if (isRedirect) return "ok";
+  return expectRedirect ? "page" : "warn";
+}

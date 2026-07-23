@@ -2,7 +2,7 @@
 // in the smoke canary (scripts/smoke-booking-api.ts); the pure logic it depends
 // on lives in scripts/lib/https-redirect.ts and is tested here.
 import { assert, finish } from "./lib/harness.ts";
-import { httpProbeUrl, isHttpsRedirect } from "./lib/https-redirect.ts";
+import { httpProbeUrl, isHttpsRedirect, redirectVerdict } from "./lib/https-redirect.ts";
 
 // --- httpProbeUrl: derive the http:// URL to probe, or null to skip ---
 assert(httpProbeUrl("https://slate.trypennie.app") === "http://slate.trypennie.app/", "https prod base -> http probe url");
@@ -23,5 +23,14 @@ assert(isHttpsRedirect(200, null) === false, "200 with no Location (the audited 
 assert(isHttpsRedirect(301, "http://slate.trypennie.app/") === false, "301 that lands on http:// is NOT compliant");
 assert(isHttpsRedirect(301, null) === false, "301 with no Location is NOT compliant");
 assert(isHttpsRedirect(200, "https://x/") === false, "200 is NOT a redirect even with an https Location");
+
+// --- redirectVerdict: warn until the redirect is expected, then page ---
+// A page-able failure BEFORE the Cloudflare "Always Use HTTPS" toggle is enabled
+// is self-inflicted alert noise, so the guard only pages once we EXPECT the
+// redirect (EXPECT_HTTPS_REDIRECT=1, set when the toggle is turned on).
+assert(redirectVerdict(true, true) === "ok", "redirect present + expected -> ok");
+assert(redirectVerdict(true, false) === "ok", "redirect present + not yet expected -> ok (already live)");
+assert(redirectVerdict(false, true) === "page", "redirect absent + expected -> page (regression)");
+assert(redirectVerdict(false, false) === "warn", "redirect absent + not yet expected -> warn (toggle pending, no page)");
 
 finish();
