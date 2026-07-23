@@ -114,6 +114,17 @@ export async function POST(req: NextRequest) {
     if (!(await allowRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES))) return tooMany("contact");
   }
 
+  // Give back the IP cap AND the per-contact caps for a failure that ISN'T the
+  // lead's doing, so a server outage or a lost slot race can't consume their
+  // booking budget. The edge per-minute window has no refund path, but it's a
+  // short burst that clears within a minute.
+  const refundAll = async () => {
+    await refundRequest(ip, BOOKING_HOURLY_RATE_RULES);
+    for (const key of contactKeys) {
+      await refundRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES);
+    }
+  };
+
   try {
     const { booking, manageUrl } = await createBooking({
       bucketCode: parsed.data.bucketCode,
@@ -151,19 +162,21 @@ export async function POST(req: NextRequest) {
     // slot — tell the lead it's temporary and let them retry (#319). Refund the
     // rate-limit hit: a server-side outage must not burn their booking budget.
     if (err instanceof VerifyUnavailableError) {
-      // Refund the hourly DB cap AND the per-contact caps; the edge per-minute
-      // window can't be refunded, but it's a short burst window, so a retry after
-      // the outage clears within a minute. A server-side outage must not consume
-      // the lead's IP budget OR their contact budget.
-      await refundRequest(ip, BOOKING_HOURLY_RATE_RULES);
-      for (const key of contactKeys) {
-        await refundRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES);
-      }
+      // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
+      await refundAll();
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
-    // A genuinely-full slot OR an empty/misconfigured pool both surface to the
-    // consumer as "no times" (409); the API route (#358) distinguishes them.
-    if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
+    // A genuinely-full slot: someone else took it a moment earlier. Not the lead's
+    // fault, and a retry against another slot may well succeed, so hand the budget
+    // back (#1089) before surfacing "no times" (409).
+    if (err instanceof SlotUnavailableError) {
+      await refundAll();
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    // An empty/misconfigured pool ALSO surfaces as "no times" (409) to the consumer
+    // (the API route #358 distinguishes them), but it is a config problem, not a
+    // slot race: a retry won't help, so we deliberately do NOT refund here.
+    if (err instanceof NoEligibleAgentsError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     return internalErrorResponse(err, "booking");
