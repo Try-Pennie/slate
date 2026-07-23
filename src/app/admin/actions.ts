@@ -34,6 +34,7 @@ import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
 import { clearFailureStreak } from "@/lib/notify/streak";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
+import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
@@ -867,6 +868,13 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   const db = supabaseAdmin();
   const url = String(form.get("url") ?? "").trim();
   if (!url) return;
+  // #1032: reject a non-https endpoint before storing it. Every booking event
+  // (lead PII) and the Regal API key header would otherwise be POSTed in
+  // plaintext on the first delivery. redirect() throws, so no write happens.
+  const urlError = webhookUrlError(url);
+  if (urlError) {
+    redirect(`/admin?webhook_error=${encodeURIComponent(urlError)}`);
+  }
 
   const format = form.get("format") === "regal" ? "regal" : "generic";
   // For Regal this is the API key sent as the Authorization header.

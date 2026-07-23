@@ -341,6 +341,35 @@ describe("setWebhookEndpoint key handling (#600)", () => {
   });
 });
 
+// #1032: the endpoint URL receives every booking event (lead name, email, phone)
+// plus the Regal API key Authorization header, so an http:// URL would send all
+// of it in plaintext. Reject a non-https scheme before any write.
+describe("setWebhookEndpoint URL scheme guard (#1032)", () => {
+  it("rejects an http:// URL with an error redirect and writes nothing", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = null; // would be the insert path if it got that far
+
+    await expect(
+      setWebhookEndpoint(form({ url: "http://events.regalvoice.com/events", format: "regal" })),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
+
+    const call = redirect.mock.calls.find(([u]) => String(u).includes("webhook_error"));
+    expect(call).toBeTruthy();
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("accepts an https:// URL and inserts the endpoint", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = null;
+
+    await setWebhookEndpoint(form({ url: "https://events.regalvoice.com/events", format: "regal" }));
+
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(redirect).not.toHaveBeenCalled();
+  });
+});
+
 // #582: the monitor alert-settings save path (#571). The pure parser
 // (parseMonitorSettingsForm) is unit-tested on its own; this pins that the action
 // WIRES it correctly end to end (form parsing to full-row upsert to audit) so the
