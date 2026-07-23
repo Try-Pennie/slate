@@ -46,7 +46,9 @@ import {
   coerceReasonOptionsForm,
   parseReasonOptionsForm,
 } from "@/lib/booking/reason-options";
-import { parseDefaultBucketForm } from "@/lib/booking/settings";
+import { parseDefaultBucketForm, parseHorizonForm } from "@/lib/booking/settings";
+import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
+import { log } from "@/lib/log";
 import { __clearChannelCache } from "@/lib/notify/channels";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
@@ -391,6 +393,52 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
     actorId: admin.id,
     action: "booking.settings",
     details: { default_bucket_code: parsed.default_bucket_code },
+  });
+  revalidatePath("/admin/settings");
+  redirect("/admin/settings?ok=1");
+}
+
+/**
+ * Save the org-wide booking horizon (#216). Admin-only. The value is validated to
+ * the 1..7 range (blank clears the override, falling back to env/coded default);
+ * an out-of-range value redirects with an error and NEVER writes. The write is a
+ * column-scoped upsert on id=1 (so it can't clobber default_bucket_code) and is
+ * idempotent (assume-it-runs-twice). On a successful save every precomputed row is
+ * marked stale so the recompute lane rebuilds rows over the NEW window promptly
+ * (refresh-on-save); a failure there only logs, because the freshness window still
+ * backstops convergence and must not fail the save.
+ */
+export async function setBookingHorizon(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const db = supabaseAdmin();
+
+  const parsed = parseHorizonForm(String(form.get("horizon_days") ?? ""));
+  if (parsed.errors.length) {
+    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+  }
+
+  await db.from("booking_settings").upsert(
+    {
+      id: 1,
+      horizon_days: parsed.horizon_days,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+
+  // Refresh-on-save: converge rows onto the new window now, not only as they age.
+  try {
+    await markAllBucketSlotsStale();
+  } catch (err) {
+    log.error("admin", { msg: "horizon save: row invalidation failed" }, err);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { horizon_days: parsed.horizon_days },
   });
   revalidatePath("/admin/settings");
   redirect("/admin/settings?ok=1");

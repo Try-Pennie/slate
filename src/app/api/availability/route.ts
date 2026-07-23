@@ -7,8 +7,6 @@ import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_RANGE_DAYS = 4;
-
 /**
  * GET /api/availability?bucket=411&from=ISO&to=ISO
  * Reads precomputed slots from the cache — no live Google calls.
@@ -32,8 +30,6 @@ export async function GET(req: NextRequest) {
   const now = Date.now();
   const from = params.get("from") ?? new Date(now).toISOString();
   const toParam = params.get("to");
-  const to =
-    toParam ?? new Date(now + DEFAULT_RANGE_DAYS * 86_400_000).toISOString();
 
   // A synthetic test bucket (#396) is invisible to the public: only the
   // key-authed smoke test may read its slots. Resolve auth up front (DB-free:
@@ -55,7 +51,7 @@ export async function GET(req: NextRequest) {
 
   let slots = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
   if (toParam) {
-    const toMs = Date.parse(to);
+    const toMs = Date.parse(toParam);
     slots = slots.filter((s) => Date.parse(s) <= toMs);
   }
 

@@ -1,6 +1,86 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
+import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
+
+/**
+ * Org-wide booking horizon (#216, folds in audit AUD-076): how many days ahead a
+ * lead may book. Precedence store > env > coded default, mirroring
+ * loadMonitorSettings. The cap is 7 for now; 14 is deferred pending a 200-agent
+ * load-soak, because per-bucket recompute cost is ~super-linear in the horizon and
+ * the recompute lane is tuned for a 4-day window.
+ */
+export const HORIZON_DEFAULT = 4;
+export const HORIZON_MIN = 1;
+export const HORIZON_MAX = 7;
+
+const validHorizon = (n: number | null | undefined): n is number =>
+  typeof n === "number" && Number.isInteger(n) && n >= HORIZON_MIN && n <= HORIZON_MAX;
+
+/** Pure precedence resolver: a valid stored value wins, else a valid env value,
+ *  else the coded default. "Valid" = whole number within [HORIZON_MIN, HORIZON_MAX]. */
+export function resolveHorizonDays(
+  stored: number | null | undefined,
+  env: number | undefined,
+  def: number,
+): number {
+  if (validHorizon(stored)) return stored;
+  if (validHorizon(env)) return env;
+  return def;
+}
+
+export interface HorizonFormPayload {
+  horizon_days: number | null;
+  errors: string[];
+}
+
+/**
+ * Parse + validate the admin settings form's horizon field. Blank clears the
+ * override (explicit null → fall back to env/default). A non-blank value must be a
+ * whole number within range; anything else is refused with an error so the action
+ * never persists a nonsense horizon. Pure so it is node/vitest-testable without a DB.
+ */
+export function parseHorizonForm(raw: string): HorizonFormPayload {
+  const t = (raw ?? "").trim();
+  if (t === "") return { horizon_days: null, errors: [] };
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < HORIZON_MIN || n > HORIZON_MAX) {
+    return {
+      horizon_days: null,
+      errors: [`Booking horizon must be a whole number of days between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
+    };
+  }
+  return { horizon_days: n, errors: [] };
+}
+
+const envHorizon = (): number | undefined => {
+  const raw = process.env.SLATE_BOOKING_HORIZON_DAYS;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/**
+ * The resolved org-wide horizon for the server to use. Unlike getDefaultBucketCode
+ * (which throws on a read error, because a false "no default" is dangerous), a
+ * config read error here degrades to the coded default: booking must keep working
+ * with the standard window rather than collapse. The catch logs so a persistently
+ * broken column is visible in Cloudflare forensics rather than silently pinning the
+ * whole org to the default forever (fail-loud).
+ */
+export async function loadBookingHorizonDays(): Promise<number> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db.from("booking_settings").select("horizon_days").eq("id", 1).maybeSingle(),
+      "booking_settings.horizon_days",
+    ) as Pick<BookingSettings, "horizon_days"> | null;
+    return resolveHorizonDays(row?.horizon_days ?? null, envHorizon(), HORIZON_DEFAULT);
+  } catch (err) {
+    log.error("booking-settings", { msg: "horizon read failed; using default" }, err);
+    return resolveHorizonDays(null, envHorizon(), HORIZON_DEFAULT);
+  }
+}
 
 /**
  * Direct-booking settings (#1015, migration 0086). A single-row config table

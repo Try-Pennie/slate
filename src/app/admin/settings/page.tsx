@@ -3,7 +3,8 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setMonitorSettings, setDefaultBucket } from "@/app/admin/actions";
+import { setMonitorSettings, setDefaultBucket, setBookingHorizon } from "@/app/admin/actions";
+import { HORIZON_DEFAULT, HORIZON_MIN, HORIZON_MAX } from "@/lib/booking/settings";
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
   MONITOR_DEFAULTS,
@@ -90,15 +91,18 @@ export default async function MonitorSettingsPage({
   // non-test bucket codes to offer. Guarded so a missing table (migrate-before-
   // deploy window) shows an empty picker instead of 500ing the whole page.
   let defaultBucketCode: string | null = null;
+  let horizonDays: number | null = null;
   let bucketOptions: { code: string; name: string }[] = [];
   try {
     const db = supabaseAdmin();
     const [settings, buckets] = await Promise.all([
-      db.from("booking_settings").select("default_bucket_code").eq("id", 1).maybeSingle(),
+      db.from("booking_settings").select("default_bucket_code, horizon_days").eq("id", 1).maybeSingle(),
       db.from("buckets").select("code, name").eq("is_test", false).order("code"),
     ]);
     if (!settings.error && settings.data) {
-      defaultBucketCode = (settings.data as { default_bucket_code: string | null }).default_bucket_code;
+      const row = settings.data as { default_bucket_code: string | null; horizon_days: number | null };
+      defaultBucketCode = row.default_bucket_code;
+      horizonDays = row.horizon_days;
     }
     if (!buckets.error && buckets.data) {
       bucketOptions = buckets.data as { code: string; name: string }[];
@@ -309,6 +313,37 @@ export default async function MonitorSettingsPage({
             </div>
             <SubmitButton className={btnCls} pendingLabel="Saving…">
               Save default bucket
+            </SubmitButton>
+          </form>
+        </section>
+
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Booking horizon</h2>
+          <p className="mb-4 text-xs text-fg-muted">
+            How many days ahead a lead can book. Applies to every bucket. Leave blank
+            to use the default ({HORIZON_DEFAULT} days). A change refreshes availability
+            across all buckets within a minute or two.
+          </p>
+          <form action={setBookingHorizon} className="space-y-4">
+            <div>
+              <label className={labelCls} htmlFor="horizon_days">
+                Days ahead ({HORIZON_MIN} to {HORIZON_MAX})
+              </label>
+              <input
+                type="number"
+                inputMode="numeric"
+                id="horizon_days"
+                name="horizon_days"
+                min={HORIZON_MIN}
+                max={HORIZON_MAX}
+                step={1}
+                defaultValue={horizonDays ?? ""}
+                placeholder={String(HORIZON_DEFAULT)}
+                className={`${inputCls} w-40 tabular-nums`}
+              />
+            </div>
+            <SubmitButton className={btnCls} pendingLabel="Saving…">
+              Save booking horizon
             </SubmitButton>
           </form>
         </section>

@@ -1,5 +1,6 @@
 import Booker from "@/components/Booker";
 import StandaloneTheme from "@/components/StandaloneTheme";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -54,6 +55,7 @@ export default async function BookingPage({
 
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
+  const horizonDays = await loadBookingHorizonDays();
 
   return (
     <main>
@@ -72,6 +74,7 @@ export default async function BookingPage({
         embedded={embedded}
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
+        horizonDays={horizonDays}
       />
     </main>
   );

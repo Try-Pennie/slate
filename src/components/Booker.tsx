@@ -50,6 +50,11 @@ interface BookerProps {
   /** Host page origin (from widget.js), used as the postMessage target so the
    *  booking-success payload is never broadcast to "*" (#593). */
   parentOrigin?: string;
+  /** Org-wide booking horizon in days (#216), resolved server-side and passed in.
+   *  REQUIRED on purpose: a required prop makes tsc flag any construction site that
+   *  forgets it, so the old hardcoded HORIZON_DAYS=4 divergence (AUD-076) can't come
+   *  back through a silent default. */
+  horizonDays: number;
 }
 
 interface AvailabilityResponse {
@@ -168,6 +173,7 @@ export default function Booker({
   brandColor,
   layout = "strip",
   parentOrigin,
+  horizonDays,
 }: BookerProps) {
   // Options derive from the *detected* zone (fixed) so a traveling lead's own
   // zone stays in the list even after they switch the selection to a curated one.
@@ -244,12 +250,13 @@ export default function Booker({
     // swaps the stale slot list for skeletons instead of leaving it tappable.
     setLoading(true);
     setLoadError(false);
-    // Only request the precomputed window [today, today+HORIZON_DAYS] (mirrors the
-    // server constant in src/lib/availability/slot-cache.ts). A month entirely
-    // beyond the horizon has no bookable slots — render it unavailable WITHOUT a
-    // fetch that would otherwise anchor a cold compute outside the warmed window.
-    const HORIZON_DAYS = 4;
-    const horizonEnd = today.plus({ days: HORIZON_DAYS });
+    // Only request the precomputed window [today, today+horizonDays]. The horizon
+    // is the org-wide setting (#216), resolved server-side and passed in as a prop
+    // (single source of truth, AUD-076) rather than duplicated as a client constant.
+    // A month entirely beyond the horizon has no bookable slots, so render it
+    // unavailable WITHOUT a fetch that would otherwise anchor a cold compute
+    // outside the warmed window.
+    const horizonEnd = today.plus({ days: horizonDays });
     const monthStart = month.startOf("month");
     const fromDt = DateTime.max(monthStart, today);
     if (fromDt > horizonEnd) {
@@ -283,7 +290,7 @@ export default function Booker({
       setLoadError(true);
     }
     setLoading(false);
-  }, [bucketCode, month, today]);
+  }, [bucketCode, month, today, horizonDays]);
 
   useEffect(() => {
     // IIFE defers loadSlots' synchronous setState out of the effect body.

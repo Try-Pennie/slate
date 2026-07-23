@@ -8,6 +8,7 @@ import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import {
   listAllBucketCodes,
@@ -109,6 +110,8 @@ export async function GET(req: NextRequest) {
     ]);
     // Only the buckets aging past the freshness window, oldest-first.
     const due = bucketsDueForRecompute(known, allCodes, Date.now(), RECOMPUTE_FRESH_MS);
+    // #216: load the org-wide horizon once for the whole tick, not per bucket.
+    const horizonDays = await loadBookingHorizonDays();
     const startedMs = Date.now();
     const deadlineMs = startedMs + RECOMPUTE_BUDGET_MS;
     // Extend the 60s shared eligible-agent cache (#421) to this lane (#508): pass
@@ -119,7 +122,7 @@ export async function GET(req: NextRequest) {
     // booking; the recompute row is display-only and re-verified live at book time.
     const recomputed = await recomputeDueBuckets(
       due,
-      (code) => recomputeBucketSlotsForToday(code, true, (b) => eligibleAgentIdsCached(b)),
+      (code) => recomputeBucketSlotsForToday(code, true, (b) => eligibleAgentIdsCached(b), horizonDays),
       () => withinBudget(Date.now(), deadlineMs),
       RECOMPUTE_CONCURRENCY,
     );

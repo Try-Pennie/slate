@@ -13,6 +13,7 @@ import {
   bucketsForAgent,
 } from "./precompute";
 import { appUrl } from "@/lib/env";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
 import { tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
@@ -89,21 +90,34 @@ const RECOMPUTE_SKIP_MS = 2000;
 const lastRecomputeAt = new Map<string, number>();
 
 /**
- * Refresh a bucket's precomputed row over the current horizon, then clear its L1
+ * Refresh a bucket's precomputed row over the org-wide horizon, then clear its L1
  * cache key so the next read serves the fresh row. Called by the refresh-on-change
- * writers (booking / Google sync / OOO) and the cron backstop. Debounced per
- * bucket; pass force=true (the cron) to bypass the skip.
+ * writers (booking / Google sync / OOO), the cron backstop, and the admin
+ * horizon-save (#216). Debounced per bucket; pass force=true (the cron) to bypass.
+ *
+ * The COMPUTE WINDOW tracks the runtime horizon (#216) so raising the horizon makes
+ * rows actually span more days and lowering it bounds them. The L1 cache KEY stays
+ * on the fixed `HORIZON_DAYS` namespace so it always matches what the read path
+ * (which never reads the setting, keeping the hot path DB-free) looks up and
+ * invalidates. Pass `horizonDays` to avoid a per-call settings read when a caller
+ * loops over many buckets and has already loaded it once; omitted, it self-loads
+ * (a missed thread is a harmless extra read, never a wrong window).
  */
 export async function recomputeBucketSlotsForToday(
   code: string,
   force = false,
   resolveEligible?: EligibleResolver,
+  horizonDays?: number,
 ): Promise<void> {
   const now = Date.now();
   if (!force && now - (lastRecomputeAt.get(code) ?? 0) < RECOMPUTE_SKIP_MS) return;
   lastRecomputeAt.set(code, now);
 
-  const { fromIso, toIso, key } = slotCacheKey(code, new Date().toISOString(), HORIZON_DAYS);
+  const nowIso = new Date().toISOString();
+  const horizon = horizonDays ?? (await loadBookingHorizonDays());
+  const { fromIso, toIso } = slotCacheKey(code, nowIso, horizon);
+  // L1 key on the fixed namespace so read/invalidate always agree.
+  const { key } = slotCacheKey(code, nowIso, HORIZON_DAYS);
   await recomputeBucketSlots(code, fromIso, toIso, resolveEligible);
   const cache = slotCache();
   if (cache) {
@@ -118,7 +132,9 @@ export async function recomputeBucketSlotsForToday(
 export async function recomputeBucketsForAgent(userId: string): Promise<void> {
   try {
     const codes = await bucketsForAgent(userId);
-    for (const code of codes) await recomputeBucketSlotsForToday(code);
+    // Load the horizon once for the whole fan-out, not once per bucket.
+    const horizon = await loadBookingHorizonDays();
+    for (const code of codes) await recomputeBucketSlotsForToday(code, false, undefined, horizon);
   } catch (err) {
     // Best-effort: the recompute lane's freshness sweep still backstops. Log the
     // cause (#313) so a failed fan-out isn't wholly silent.

@@ -19,7 +19,16 @@ const admin = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/supabase/admin", () => admin);
 
-import { getDefaultBucketCode, parseDefaultBucketForm } from "./settings";
+import {
+  getDefaultBucketCode,
+  parseDefaultBucketForm,
+  resolveHorizonDays,
+  loadBookingHorizonDays,
+  parseHorizonForm,
+  HORIZON_DEFAULT,
+  HORIZON_MIN,
+  HORIZON_MAX,
+} from "./settings";
 
 describe("parseDefaultBucketForm", () => {
   const valid = new Set(["100", "200", "300"]);
@@ -69,5 +78,79 @@ describe("getDefaultBucketCode", () => {
   it("throws (fail-loud) on a real read error rather than returning null", async () => {
     maybeSingle.mockResolvedValue({ data: null, error: { message: "relation does not exist" } });
     await expect(getDefaultBucketCode()).rejects.toThrow(/relation does not exist/);
+  });
+});
+
+describe("resolveHorizonDays (store > env > coded default)", () => {
+  it("uses a valid stored value in range", () => {
+    expect(resolveHorizonDays(6, undefined, HORIZON_DEFAULT)).toBe(6);
+    expect(resolveHorizonDays(HORIZON_MIN, undefined, HORIZON_DEFAULT)).toBe(HORIZON_MIN);
+    expect(resolveHorizonDays(HORIZON_MAX, undefined, HORIZON_DEFAULT)).toBe(HORIZON_MAX);
+  });
+
+  it("falls through to env when stored is null/unset", () => {
+    expect(resolveHorizonDays(null, 5, HORIZON_DEFAULT)).toBe(5);
+  });
+
+  it("falls through to the coded default when neither store nor env is valid", () => {
+    expect(resolveHorizonDays(null, undefined, HORIZON_DEFAULT)).toBe(HORIZON_DEFAULT);
+  });
+
+  it("rejects an out-of-range stored value and falls through", () => {
+    expect(resolveHorizonDays(HORIZON_MAX + 1, undefined, HORIZON_DEFAULT)).toBe(HORIZON_DEFAULT);
+    expect(resolveHorizonDays(0, 3, HORIZON_DEFAULT)).toBe(3);
+  });
+
+  it("rejects a non-integer stored value (e.g. 4.5) and falls through", () => {
+    expect(resolveHorizonDays(4.5, undefined, HORIZON_DEFAULT)).toBe(HORIZON_DEFAULT);
+  });
+
+  it("rejects an out-of-range env value and falls through to the default", () => {
+    expect(resolveHorizonDays(null, HORIZON_MAX + 1, HORIZON_DEFAULT)).toBe(HORIZON_DEFAULT);
+  });
+});
+
+describe("parseHorizonForm", () => {
+  it("accepts a whole number in range", () => {
+    expect(parseHorizonForm("5")).toEqual({ horizon_days: 5, errors: [] });
+  });
+
+  it("treats blank as clearing the override (null, no error)", () => {
+    expect(parseHorizonForm("")).toEqual({ horizon_days: null, errors: [] });
+    expect(parseHorizonForm("   ")).toEqual({ horizon_days: null, errors: [] });
+  });
+
+  it("refuses an out-of-range value (fail loud, no write)", () => {
+    const r = parseHorizonForm(String(HORIZON_MAX + 1));
+    expect(r.horizon_days).toBeNull();
+    expect(r.errors.length).toBe(1);
+  });
+
+  it("refuses a non-integer value", () => {
+    expect(parseHorizonForm("4.5").errors.length).toBe(1);
+    expect(parseHorizonForm("abc").errors.length).toBe(1);
+  });
+});
+
+describe("loadBookingHorizonDays", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    delete process.env.SLATE_BOOKING_HORIZON_DAYS;
+  });
+
+  it("returns the stored horizon when set", async () => {
+    maybeSingle.mockResolvedValue({ data: { horizon_days: 6 }, error: null });
+    expect(await loadBookingHorizonDays()).toBe(6);
+  });
+
+  it("returns the coded default when no config row exists", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    expect(await loadBookingHorizonDays()).toBe(HORIZON_DEFAULT);
+  });
+
+  it("degrades to the default (never throws) on a read error, unlike getDefaultBucketCode", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column horizon_days does not exist" } });
+    await expect(loadBookingHorizonDays()).resolves.toBe(HORIZON_DEFAULT);
   });
 });
