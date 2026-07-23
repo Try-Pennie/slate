@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { buildRequest } from "@/lib/webhooks/wire";
 import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webhooks/retry";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { log } from "@/lib/log";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 
@@ -133,12 +134,21 @@ export async function emitWebhook(
   deferSend?: WebhookSendScheduler,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { data: endpoints } = await db
+  const { data: endpoints, error: endpointsError } = await db
     .from("webhook_endpoints")
     .select("*")
     .eq("org_id", orgId)
     .eq("active", true)
     .contains("events", [event]);
+  // Fail loud (#1036). A swallowed read error here yielded null -> zero endpoints
+  // -> the outbox step (booking notify) marked done with nothing queued -> the
+  // booking event permanently lost to Regal/Cadence with no signal. Throw so the
+  // outbox/drain step is marked failed and retries (and alerts once stuck),
+  // instead of silently dropping the emission.
+  if (endpointsError) {
+    log.error("webhook-emit", { msg: "endpoints read failed", org_id: orgId, event }, endpointsError);
+    throw new Error(`webhook endpoints read failed: ${endpointsError.message}`);
+  }
 
   await Promise.all(
     ((endpoints ?? []) as WebhookEndpoint[]).map(async (endpoint) => {
@@ -157,10 +167,17 @@ export async function emitWebhook(
         })
         .select("id")
         .single();
-      // 23505 = this (endpoint, event, dedupe_key) was already enqueued by a
-      // prior call: the original delivery owns the send/retry, so skip — never
-      // double-fire. Any other insert error leaves no row, same as before.
-      if (error) return;
+      if (error) {
+        // 23505 = this (endpoint, event, dedupe_key) was already enqueued by a
+        // prior call: the original delivery owns the send/retry, so skip (never
+        // double-fire).
+        if (error.code === "23505") return;
+        // Any OTHER insert error left no durable row (#1036): marking the outbox
+        // step done here would drop the event silently. Fail loud so the step
+        // retries instead.
+        log.error("webhook-emit", { msg: "delivery insert failed", endpoint_id: endpoint.id, event }, error);
+        throw new Error(`webhook delivery insert failed: ${error.message}`);
+      }
       if (!delivery) return;
       // #459: the row is recorded (so the exactly-once dedupe stays observable on
       // the smoke bucket) but nothing goes out the door.
@@ -204,6 +221,8 @@ async function claimDeliveryAttempt(
 
 export async function retryFailedDeliveries(): Promise<number> {
   const db = supabaseAdmin();
+  // error-ok: best-effort retry sweep; a read error yields no due rows this tick
+  // and the cron re-runs next minute (the durable rows are untouched).
   const { data: rows } = await db
     .from("webhook_deliveries")
     .select("id, endpoint_id, event, payload, attempts, updated_at")
@@ -229,6 +248,8 @@ export async function retryFailedDeliveries(): Promise<number> {
   // One endpoints query per sweep (#623): batch-load the distinct endpoints the
   // due rows reference instead of a lookup per row.
   const endpointIds = [...new Set(due.map((r) => r.endpoint_id))];
+  // error-ok: best-effort retry sweep; a read error leaves byId empty so every
+  // due row is skipped (no endpoint) and the cron re-runs next minute.
   const { data: endpoints } = await db
     .from("webhook_endpoints")
     .select("*")
@@ -270,6 +291,8 @@ export async function resendDelivery(
   orgId: string,
 ): Promise<ResendResult> {
   const db = supabaseAdmin();
+  // error-ok: a manual admin resend; a read error surfaces as "not-found" so the
+  // admin retries, and nothing is sent or lost (no automatic side effect).
   const { data: d } = await db
     .from("webhook_deliveries")
     .select("id, endpoint_id, event, payload, attempts, suppressed, payload_erased")
@@ -292,6 +315,8 @@ export async function resendDelivery(
   // empty {} body (a fake success on a generic endpoint, a throw on Regal).
   if (row.payload_erased) return "payload-erased";
 
+  // error-ok: a manual admin resend; a read error surfaces as "not-found" so the
+  // admin retries, and nothing is sent or lost (no automatic side effect).
   const { data: endpoint } = await db
     .from("webhook_endpoints")
     .select("*")
@@ -333,6 +358,8 @@ export async function replayDeadLetteredDeliveries(
   );
   if (byId.size === 0) return 0;
 
+  // error-ok: an operator-triggered incident replay; a read error yields zero
+  // rows (returns 0 replayed) so the operator re-runs, and nothing is lost.
   const { data: rows } = await db
     .from("webhook_deliveries")
     .select("id, endpoint_id, event, payload, attempts, status")
