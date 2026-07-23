@@ -40,6 +40,15 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Fail the build on a NEW high (or critical) advisory in a production
+      # dependency (#1026). Known, unremediated advisories are allow-listed in
+      # package.json pnpm.auditConfig.ignoreGhsas and tracked in #1057, so this
+      # gate stays green today but fires the moment something new lands, instead
+      # of a Next.js-style lag where nothing was watching. --prod scopes it to
+      # what actually ships to the Worker (dev-only advisories don't gate merges).
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
+
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 
