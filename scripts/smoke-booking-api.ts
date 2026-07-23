@@ -59,6 +59,7 @@
 import { loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
+import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -356,7 +357,15 @@ async function scenarioLookupAndCancel(slotsA: string[]) {
   // for test use; the run timestamp keeps each run's number distinct.
   const phone = `+1215555${String(Date.now()).slice(-4)}`;
 
-  const created = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone });
+  // Book onto a FRESH slot, skipping past a transient conflict (SLOT_TAKEN /
+  // NO_ELIGIBLE_AGENTS) left by a prior scenario's just-cancelled event that the
+  // live verify-on-book read still sees busy. The orphan sweep that would clean
+  // that residue is off in CI (no SA creds), so re-using slotsA[0] here flaked
+  // this create with a 409 and paged (run 30010672602). Start past scenarios
+  // 1/2/3 (slots 0/2/3); the helper advances if this slot also has residue.
+  const created = await bookFirstFreeSlot(slotsA, 1, (slot) =>
+    book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+  );
   check(created.status === 200 && created.body.outcome === "created", `seed booking -> created (got ${created.status}/${created.body.outcome})`);
   const bookingId = created.body.booking?.id;
   if (!bookingId) {
@@ -421,7 +430,12 @@ async function scenarioReassign(slotsA: string[]) {
   const id = uniq("reassign");
   const phone = "+12155550120";
 
-  const created = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone });
+  // Fresh slot, past scenarios 1/2/3 and scenario 4 (start 1): re-using slotsA[0]
+  // here also 409'd on residue from a just-cancelled event (run 30010672602). The
+  // helper advances past a transient slot conflict onto a clean slot.
+  const created = await bookFirstFreeSlot(slotsA, 4, (slot) =>
+    book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+  );
   trackForCleanup(created.body);
   check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`);
   const bookingId = created.body.booking?.id;
