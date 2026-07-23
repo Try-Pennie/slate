@@ -14,6 +14,8 @@ import { z } from "zod";
 import { IANAZone, DateTime } from "luxon";
 import { validateAttendee, type AttendeeErrors } from "../attendee.ts";
 import { validateReason, type ReasonOption, type ValidatedReason } from "./core.ts";
+import { INPUT_LIMITS } from "./input-limits.ts";
+import { bucketCodeSchema, startSchema, timezoneSchema, salesforceIdSchema, prefillSchema } from "./input-schema.ts";
 import type { BookingStatus } from "../db/types.ts";
 
 export interface DirectBookingRequest {
@@ -37,9 +39,10 @@ export type ParseResult =
   | { ok: false; status: 400; error: string; fieldErrors?: AttendeeErrors };
 
 const schema = z.object({
-  bucketCode: z.string().trim().min(1),
-  start: z.string().min(1),
-  timezone: z.string().min(1),
+  // Bounded, shared with the embed route so the size caps can't drift (#1034).
+  bucketCode: bucketCodeSchema,
+  start: startSchema,
+  timezone: timezoneSchema,
   // Field-level attendee rules run through validateAttendee below (shared with
   // the embed), so accept loose shapes here and validate after.
   attendee: z.object({
@@ -47,11 +50,11 @@ const schema = z.object({
     email: z.string().optional(),
     phone: z.string().optional(),
   }),
-  salesforceId: z.string().nullish(),
-  prefill: z.record(z.string(), z.string()).default({}),
+  salesforceId: salesforceIdSchema.nullish(),
+  prefill: prefillSchema,
   // Required for the API (the bot's stable per-person id); blank/whitespace is
   // not an id. `.trim()` collapses "  " to "" so .min(1) rejects it.
-  externalId: z.string().trim().min(1),
+  externalId: z.string().trim().min(1).max(INPUT_LIMITS.externalId),
   confirmReschedule: z.boolean().default(false),
   dryRun: z.boolean().default(false),
 });
