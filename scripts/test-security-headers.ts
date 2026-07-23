@@ -26,11 +26,14 @@ assert(
   "a privacy-preserving Referrer-Policy",
 );
 
-// HSTS: HTTPS-only origin (Cloudflare). Long max-age, no preload (reversible).
-const hsts = SECURITY_HEADERS["Strict-Transport-Security"] ?? "";
-assert(/max-age=\d{7,}/.test(hsts), "HSTS has a long max-age");
-assert(/includeSubDomains/.test(hsts), "HSTS includes subdomains");
-assert(!/preload/.test(hsts), "HSTS does NOT preload (kept reversible)");
+// HSTS is deliberately NOT in this staff-only bundle: it is transport-only, so
+// it is served on EVERY response via next.config `headers()` (#1024, covered by
+// test-hsts-global.ts). Locking its absence here prevents a duplicate
+// `Strict-Transport-Security` header creeping back onto /admin, /me, /login.
+assert(
+  SECURITY_HEADERS["Strict-Transport-Security"] === undefined,
+  "HSTS is not in the staff bundle (served globally via next.config, no duplicate)",
+);
 
 // The policy must NOT itself carry a content CSP that could break app scripts;
 // only frame-ancestors is set (a full content-CSP is a separate effort).
