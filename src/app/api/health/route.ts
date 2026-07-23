@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { computeHealthStatus, LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { slackConfigured } from "@/lib/notify/slack";
 
 export const dynamic = "force-dynamic";
 
@@ -50,11 +51,20 @@ export async function GET() {
 
   const result = computeHealthStatus({ dbOk, lanes });
 
+  // #1035: surface whether the Slack paging layer is even configured. Every
+  // safety net pages through Slack, and an unconfigured token makes every alert
+  // a silent no-op. This is a CONFIG signal, not a liveness one: the booking app
+  // is still up, and /api/health drives the uptime dead-man's switch, so it must
+  // NOT flip httpStatus (that would conflate "app down" with "paging off"). It
+  // rides the body so an uptime check or a human reading the endpoint can see it.
+  const alerting = slackConfigured() ? "ok" : "unconfigured";
+
   return NextResponse.json(
     {
       status: result.healthy ? "ok" : "degraded",
       reason: result.reason,
       db: dbOk ? "ok" : "unreachable",
+      alerting,
       staleLane: result.staleLane,
       staleAgeMs: result.staleAgeMs,
     },
