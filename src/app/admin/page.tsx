@@ -299,6 +299,7 @@ export default async function AdminPage({
     imp_email?: string;
     synced?: string;
     sync_error?: string;
+    webhook_error?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -578,6 +579,14 @@ export default async function AdminPage({
           className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
         >
           Salesforce sync failed: {sp.sync_error}
+        </div>
+      )}
+      {sp.webhook_error && (
+        <div
+          role="alert"
+          className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+        >
+          Webhook not saved: {sp.webhook_error}
         </div>
       )}
 
