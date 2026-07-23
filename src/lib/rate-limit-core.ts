@@ -77,6 +77,18 @@ export const DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * The validate-only bookable check (#541/#1017) gets its OWN modest hourly
+ * ceiling, deliberately NOT the ~30k/hr status-poll read budget: each call runs
+ * the real per-slot routing (round-robin + verify-on-book), so it is far heavier
+ * than a status poll and must not be able to hammer that path at poll rates.
+ * Sized like /api/routing (~200/hr), with its own prefix so it shares no counter
+ * with the write/read/lookup budgets; the per-IP backstop still applies on top.
+ */
+export const BOOKABLE_CHECK_HOURLY_RATE_RULES: RateLimitRule[] = [
+  { prefix: "bookapi:bookable:h", windowSeconds: 3600, max: 200 },
+];
+
+/**
  * Routing preview API (#596) hourly ceiling, keyed per IP. The standalone
  * /api/routing endpoint is unauthenticated and does a DB-backed resolve per call,
  * so it needs its own throttle to bound anonymous enumeration and DB load. It has

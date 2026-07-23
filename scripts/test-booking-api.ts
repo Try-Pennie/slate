@@ -8,6 +8,8 @@ import {
   cancelBooking,
   bookViaApi,
   previewBooking,
+  checkBookable,
+  nearestSlots,
   lookupPersonBookings,
   getPersonBookingById,
   cancelDirectBooking,
@@ -17,6 +19,7 @@ import {
   BookingNotFoundError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
+  UnknownBucketError,
   type ApiBookingInput,
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
@@ -193,6 +196,141 @@ async function run() {
       err = e;
     }
     assert(err instanceof NoEligibleAgentsError, "previewBooking: surfaces NoEligibleAgentsError for a dead bucket");
+  }
+
+  // --- checkBookable (#1017): identity-free validate-only "is this time bookable?" ---
+  {
+    // A bucket with a free agent -> bookable:true, names who WOULD be assigned, writes nothing.
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    assert(r.bookable === true && r.reason === "available", "checkBookable: free slot -> bookable");
+    assert(r.wouldAssign?.email === "a@x.com", "checkBookable: returns the agent who WOULD be assigned");
+    assert(
+      r.effectiveBucketCode === "411" && r.tierFallback === false && r.rungsDropped === 0,
+      "checkBookable: effective bucket = requested when the top tier serves",
+    );
+    assert(
+      calls.createEvent.length === 0 && calls.webhooks.length === 0,
+      "checkBookable: creates NO calendar event and fires NO webhook",
+    );
+  }
+  {
+    // Candidates exist but none free -> bookable:false slot_taken (a normal 200 answer, not an error).
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set() });
+    const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    assert(r.bookable === false && r.reason === "slot_taken", "checkBookable: no free agent -> not bookable (slot_taken)");
+    assert(r.wouldAssign === null, "checkBookable: no agent named on a not-bookable answer");
+  }
+  {
+    // Empty pool -> bookable:false no_eligible_agents.
+    const { deps } = makeDeps({ candidates: [] });
+    const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    assert(
+      r.bookable === false && r.reason === "no_eligible_agents",
+      "checkBookable: empty pool -> not bookable (no_eligible_agents)",
+    );
+  }
+  {
+    // Unknown bucket -> UnknownBucketError (the route maps this to 422).
+    const { deps } = makeDeps({ unknownBucket: true });
+    let err: unknown;
+    try {
+      await checkBookable({ bucketCode: "999", startIso: input.startIso }, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err instanceof UnknownBucketError, "checkBookable: an unknown bucket throws UnknownBucketError");
+  }
+  {
+    // A hidden smoke-test bucket is invisible when test buckets are disallowed.
+    const { deps } = makeDeps({ testBucket: true });
+    let err: unknown;
+    try {
+      await checkBookable({ bucketCode: "411", startIso: input.startIso, allowTestBuckets: false }, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err instanceof UnknownBucketError, "checkBookable: a test bucket is invisible when test buckets are disallowed");
+  }
+  {
+    // A verify outage must surface transiently, NEVER as a false "not bookable".
+    const { deps } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(),
+      unverifiedEmails: new Set(["a@x.com"]),
+    });
+    let err: unknown;
+    try {
+      await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof VerifyUnavailableError,
+      "checkBookable: a verify outage surfaces transiently (never a false not-bookable)",
+    );
+  }
+
+  {
+    // #1017 regression: a dry-run preview must cascade the SAME way the real book
+    // does. Requested tier "411" is empty; a lower rung "311" has a free agent.
+    // Before the fix previewBooking used a plain single-bucket assign and wrongly
+    // reported the bucket dead; now it routes through the tier cascade.
+    const bucket311 = { ...bucket, id: "bkt311", code: "311" } as unknown as Bucket;
+    const dry: ApiBookingInput = { ...input, externalId: "ext-cascade", confirmReschedule: false };
+    const { deps, calls } = makeDeps({ personBookings: [], freeEmails: new Set(["a@x.com"]) });
+    let rr = 0;
+    deps.roundRobinCandidates = async () => (++rr === 1 ? [] : ["a"]);
+    deps.resolveBucketByCode = async (code: string) =>
+      code === "411" ? { bucket, eventType } : code === "311" ? { bucket: bucket311, eventType } : null;
+    const preview = await previewBooking(dry, deps);
+    assert(
+      preview.outcome === "created" && preview.wouldAssign?.email === "a@x.com",
+      "previewBooking: cascades to a lower tier (matches the real book) instead of reporting the bucket dead",
+    );
+    assert(
+      calls.createEvent.length === 0 && calls.webhooks.length === 0,
+      "previewBooking cascade: still writes nothing",
+    );
+  }
+  {
+    // checkBookable cascades too: requested tier busy -> served by a lower rung,
+    // with tier_fallback + rungsDropped reported and the effective bucket named.
+    const bucket311 = { ...bucket, id: "bkt311", code: "311" } as unknown as Bucket;
+    const { deps } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    let rr = 0;
+    deps.roundRobinCandidates = async () => (++rr === 1 ? [] : ["a"]);
+    deps.resolveBucketByCode = async (code: string) =>
+      code === "411" ? { bucket, eventType } : code === "311" ? { bucket: bucket311, eventType } : null;
+    const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    assert(
+      r.bookable === true && r.effectiveBucketCode === "311" && r.tierFallback === true && r.rungsDropped === 1,
+      "checkBookable: cascades to the lower tier and reports the fallback",
+    );
+  }
+
+  // --- nearestSlots (#1017): before/after hints from the cached slot list ---
+  {
+    const slots = [
+      "2026-06-10T13:00:00.000Z",
+      "2026-06-10T15:00:00.000Z",
+      "2026-06-10T17:00:00.000Z",
+    ];
+    const around = "2026-06-10T15:00:00.000Z"; // exact match is skipped, not returned
+    const r = nearestSlots(slots, around);
+    assert(r.before === "2026-06-10T13:00:00.000Z", "nearestSlots: nearest slot strictly before");
+    assert(r.after === "2026-06-10T17:00:00.000Z", "nearestSlots: nearest slot strictly after");
+  }
+  {
+    // Unsorted input + an unparseable entry; nothing after the requested time.
+    const slots = ["2026-06-10T17:00:00.000Z", "not-a-date", "2026-06-10T09:00:00.000Z", "2026-06-10T13:00:00.000Z"];
+    const r = nearestSlots(slots, "2026-06-10T18:00:00.000Z");
+    assert(r.before === "2026-06-10T17:00:00.000Z", "nearestSlots: picks the closest earlier slot from an unsorted list");
+    assert(r.after === null, "nearestSlots: null when no slot is after the requested time");
+  }
+  {
+    const r = nearestSlots([], "2026-06-10T18:00:00.000Z");
+    assert(r.before === null && r.after === null, "nearestSlots: empty slot list -> no hints");
   }
 
   // --- bookViaApi: WEAK match but bot confirmed -> reschedule ---

@@ -9,6 +9,7 @@ import {
 import {
   recomputeBucketSlotsForToday,
   getBucketSlotsWithFallback,
+  getCachedBucketSlots,
 } from "@/lib/availability/slot-cache";
 import { recordRoutingDecision } from "@/lib/routing/record";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
@@ -1761,6 +1762,36 @@ export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
  */
 export function previewBooking(input: ApiBookingInput): Promise<ApiBookingPreview> {
   return orchestration.previewBooking(input, realDeps());
+}
+
+/** The bookable-check result plus best-effort nearest-time hints (#541/#1017). */
+export interface BookableCheckResult extends orchestration.BookableResult {
+  alternatives: { before: string | null; after: string | null };
+}
+
+/**
+ * Validate-only bookable check (#541/#1017). Runs the real routing (no writes,
+ * no lead identity) via orchestration.checkBookable, then attaches nearest
+ * before/after slot HINTS from the availability cache. The hints are best-effort:
+ * a cache miss or read error yields null hints and never fails the check itself.
+ */
+export async function checkBookable(input: {
+  bucketCode: string;
+  startIso: string;
+  allowTestBuckets?: boolean;
+}): Promise<BookableCheckResult> {
+  const core = await orchestration.checkBookable(input, realDeps());
+  // Hint from whichever bucket would actually serve (or the requested one when
+  // nothing could). A disallowed test bucket already threw above, so no leak here.
+  const codeForHints = core.effectiveBucketCode ?? input.bucketCode;
+  let alternatives = { before: null as string | null, after: null as string | null };
+  try {
+    const resolved = await getCachedBucketSlots(codeForHints, new Date().toISOString());
+    if (resolved) alternatives = orchestration.nearestSlots(resolved.slots, input.startIso);
+  } catch {
+    // Hints are best-effort; a cache read failure must not fail the check.
+  }
+  return { ...core, alternatives };
 }
 
 /** Default reason stamped on an API cancel when the bot supplies none (#386). */
