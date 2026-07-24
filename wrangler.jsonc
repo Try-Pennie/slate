@@ -55,7 +55,19 @@
 		// = the digest no-ops. Sent from ooo@trypennie.com; replies go to systems.
 		"OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
 		"OOO_APPROVALS_BCC": "dwright@trypennie.com",
-		"OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com"
+		"OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com",
+		// Snowflake archival mirror (milestone #15). Non-secret connection config;
+		// the paired secret is SNOWFLAKE_PRIVATE_KEY (wrangler secret put). The
+		// export lane is a safe no-op until the private key is set, so an empty
+		// account here ships harmlessly. Set SNOWFLAKE_ACCOUNT to the account URL
+		// prefix (locator plus region, e.g. ab12345.us-east-1) per
+		// docs/snowflake-setup.md. The rest match docs/snowflake-setup.sql.
+		"SNOWFLAKE_ACCOUNT": "",
+		"SNOWFLAKE_USER": "SLATE_SERVICE",
+		"SNOWFLAKE_DATABASE": "SLATE",
+		"SNOWFLAKE_SCHEMA": "PUBLIC",
+		"SNOWFLAKE_WAREHOUSE": "SLATE_WH",
+		"SNOWFLAKE_ROLE": "SLATE_ROLE"
 	},
 	"assets": {
 		"binding": "ASSETS",

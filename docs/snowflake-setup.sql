@@ -1,0 +1,224 @@
+-- ============================================================================
+-- Snowflake Setup: Slate archival mirror (milestone #15, discussion #1095)
+-- ============================================================================
+-- Run this ONCE in a Snowsight worksheet under ACCOUNTADMIN before the export
+-- lane fires. It provisions the warehouse, database, schema, the steady-state
+-- append-only role, the service user (key-pair auth), the six mirrored tables,
+-- and the grants. Idempotent: safe to re-run (CREATE ... IF NOT EXISTS / CREATE
+-- OR REPLACE where a re-run must not drop data).
+--
+-- Companion runbook (the human, copy-paste-once steps incl. the RSA key-pair and
+-- the Worker secrets): docs/snowflake-setup.md. Read that first.
+--
+-- Design (from the converged plan):
+--   * Steady-state role SLATE_ROLE gets USAGE + SELECT + INSERT + UPDATE on the
+--     mirror tables, and deliberately NO DELETE / NO TRUNCATE. The export lane
+--     uses MERGE-by-id, which needs UPDATE to refresh the current snapshot of a
+--     mutable row (bookings, webhook_deliveries, booking_outbox) but never needs
+--     to destroy a row. Withholding DELETE is what makes a compromised Slate
+--     Worker unable to rewrite or erase warehouse history: tamper-evidence moves
+--     here from the Supabase append-only triggers (migration 0089, #1040).
+--   * DSR erasure (Phase 7, #1103) is the ONLY path that removes warehouse rows.
+--     It runs as a separate privileged operator step, NOT with a standing Worker
+--     credential, so no always-on DELETE key exists. Its provisioning lives in
+--     the Phase 7 runbook, not here.
+--   * Tables are created here by ACCOUNTADMIN, never by Slate at runtime, so the
+--     runtime role also cannot CREATE or DROP tables.
+-- ============================================================================
+
+USE ROLE ACCOUNTADMIN;
+
+-- ----------------------------------------------------------------------------
+-- Warehouse: extra-small, auto-suspend fast (the export lane runs in short
+-- bursts on a cron; an idle warehouse should cost nothing).
+-- ----------------------------------------------------------------------------
+CREATE WAREHOUSE IF NOT EXISTS SLATE_WH
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60            -- seconds idle before suspend
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Slate archival mirror export lane (milestone #15).';
+
+-- ----------------------------------------------------------------------------
+-- Database + schema.
+-- ----------------------------------------------------------------------------
+CREATE DATABASE IF NOT EXISTS SLATE
+  COMMENT = 'Slate operational-data mirror for cross-system analytics.';
+CREATE SCHEMA IF NOT EXISTS SLATE.PUBLIC;
+
+USE DATABASE SLATE;
+USE SCHEMA PUBLIC;
+
+-- ----------------------------------------------------------------------------
+-- Steady-state role: append-only mirror writer (no DELETE, no TRUNCATE).
+-- ----------------------------------------------------------------------------
+CREATE ROLE IF NOT EXISTS SLATE_ROLE
+  COMMENT = 'Slate export lane: SELECT/INSERT/UPDATE on the mirror, no DELETE.';
+
+GRANT USAGE ON WAREHOUSE SLATE_WH TO ROLE SLATE_ROLE;
+GRANT USAGE ON DATABASE SLATE TO ROLE SLATE_ROLE;
+GRANT USAGE ON SCHEMA SLATE.PUBLIC TO ROLE SLATE_ROLE;
+
+-- ============================================================================
+-- Mirror tables. One per mirrored Supabase table. Every table carries a
+-- warehouse load stamp `exported_at` (set by the MERGE, not sourced from
+-- Supabase). JSONB columns map to VARIANT and are written via PARSE_JSON.
+-- Column order and names mirror src/lib/db/types.ts.
+-- ============================================================================
+
+-- bookings (MUTABLE: MERGE-by-id, watermark = updated_at). Full fidelity here;
+-- Supabase keeps only a skinny-redacted row after any future prune (Phase 6).
+CREATE TABLE IF NOT EXISTS bookings (
+  id                  VARCHAR PRIMARY KEY,
+  org_id              VARCHAR,
+  bucket_id           VARCHAR,
+  event_type_id       VARCHAR,
+  assigned_user_id    VARCHAR,
+  agent_name          VARCHAR,
+  agent_email         VARCHAR,
+  starts_at           TIMESTAMP_TZ,
+  ends_at             TIMESTAMP_TZ,
+  original_starts_at  TIMESTAMP_TZ,
+  original_ends_at    TIMESTAMP_TZ,
+  timezone            VARCHAR,
+  status              VARCHAR,
+  salesforce_id       VARCHAR,
+  attendee_name       VARCHAR,
+  attendee_email      VARCHAR,
+  attendee_phone      VARCHAR,
+  prefill             VARIANT,
+  gcal_event_id       VARCHAR,
+  manage_token        VARCHAR,
+  idempotency_key     VARCHAR,
+  external_id         VARCHAR,
+  routing_trace       VARIANT,
+  allow_double_book   BOOLEAN,
+  reschedule_seq      NUMBER,
+  created_at          TIMESTAMP_TZ,
+  updated_at          TIMESTAMP_TZ,
+  exported_at         TIMESTAMP_NTZ
+)
+CLUSTER BY (created_at);
+
+-- webhook_deliveries (MUTABLE: watermark = updated_at).
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id                  VARCHAR PRIMARY KEY,
+  endpoint_id         VARCHAR,
+  event               VARCHAR,
+  payload             VARIANT,
+  status              VARCHAR,
+  attempts            NUMBER,
+  last_response       VARCHAR,
+  suppressed          BOOLEAN,
+  created_at          TIMESTAMP_TZ,
+  updated_at          TIMESTAMP_TZ,
+  exported_at         TIMESTAMP_NTZ
+)
+CLUSTER BY (created_at);
+
+-- booking_outbox (MUTABLE: watermark = updated_at).
+CREATE TABLE IF NOT EXISTS booking_outbox (
+  id                  VARCHAR PRIMARY KEY,
+  booking_id          VARCHAR,
+  action              VARCHAR,
+  status              VARCHAR,
+  steps               VARIANT,
+  payload             VARIANT,
+  lease_until         TIMESTAMP_TZ,
+  attempts            NUMBER,
+  last_error          VARCHAR,
+  next_attempt_at     TIMESTAMP_TZ,
+  created_at          TIMESTAMP_TZ,
+  updated_at          TIMESTAMP_TZ,
+  exported_at         TIMESTAMP_NTZ
+)
+CLUSTER BY (created_at);
+
+-- booking_events (APPEND-ONLY: cursor = created_at). Immutable history in
+-- Supabase (0089 triggers), so no updated_at exists to drive a watermark.
+CREATE TABLE IF NOT EXISTS booking_events (
+  id                  VARCHAR PRIMARY KEY,
+  booking_id          VARCHAR,
+  action              VARCHAR,
+  initiator           VARCHAR,
+  reason_code         VARCHAR,
+  reason_detail       VARCHAR,
+  from_starts_at      TIMESTAMP_TZ,
+  to_starts_at        TIMESTAMP_TZ,
+  from_agent_user_id  VARCHAR,
+  to_agent_user_id    VARCHAR,
+  actor_user_id       VARCHAR,
+  acting_as_user_id   VARCHAR,
+  lead_time_minutes   NUMBER,
+  reschedule_seq      NUMBER,
+  created_at          TIMESTAMP_TZ,
+  exported_at         TIMESTAMP_NTZ
+)
+CLUSTER BY (created_at);
+
+-- audit_log (APPEND-ONLY: cursor = created_at).
+CREATE TABLE IF NOT EXISTS audit_log (
+  id                  VARCHAR PRIMARY KEY,
+  org_id              VARCHAR,
+  actor_id            VARCHAR,
+  action              VARCHAR,
+  target_id           VARCHAR,
+  details             VARIANT,
+  created_at          TIMESTAMP_TZ,
+  exported_at         TIMESTAMP_NTZ
+)
+CLUSTER BY (created_at);
+
+-- routing_decisions (APPEND-ONLY: cursor = created_at).
+CREATE TABLE IF NOT EXISTS routing_decisions (
+  id                  VARCHAR PRIMARY KEY,
+  org_id              VARCHAR,
+  booking_id          VARCHAR,
+  bucket_code         VARCHAR,
+  bucket_id           VARCHAR,
+  requested_tier      VARCHAR,
+  booked_tier         VARCHAR,
+  chosen_user_id      VARCHAR,
+  considered          VARIANT,
+  excluded            VARIANT,
+  empty_pool_fallback BOOLEAN,
+  tier_fallback       BOOLEAN,
+  rungs_dropped       NUMBER,
+  outcome             VARCHAR,
+  created_at          TIMESTAMP_TZ,
+  exported_at         TIMESTAMP_NTZ
+)
+CLUSTER BY (created_at);
+
+-- ----------------------------------------------------------------------------
+-- Grants on the mirror tables: SELECT + INSERT + UPDATE only. No DELETE.
+-- FUTURE grants cover any table added to this schema later under the same rule.
+-- ----------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA SLATE.PUBLIC TO ROLE SLATE_ROLE;
+GRANT SELECT, INSERT, UPDATE ON FUTURE TABLES IN SCHEMA SLATE.PUBLIC TO ROLE SLATE_ROLE;
+
+-- ----------------------------------------------------------------------------
+-- Service user (key-pair JWT auth). The RSA PUBLIC key goes here; the matching
+-- PRIVATE key is held ONLY as the SNOWFLAKE_PRIVATE_KEY Worker secret and never
+-- stored in Snowflake. Generate the pair per docs/snowflake-setup.md, then paste
+-- the public key body (no header/footer lines, no line breaks) below.
+--
+-- TYPE = SERVICE means no password and no MFA: key-pair is the only credential.
+-- ----------------------------------------------------------------------------
+CREATE USER IF NOT EXISTS SLATE_SERVICE
+  TYPE = SERVICE
+  DEFAULT_ROLE = SLATE_ROLE
+  DEFAULT_WAREHOUSE = SLATE_WH
+  COMMENT = 'Slate export lane service user (key-pair auth, append-only role).';
+
+-- Set the public key (run after generating the pair; re-run to rotate):
+--   ALTER USER SLATE_SERVICE SET RSA_PUBLIC_KEY = 'MIIBIjANBg...paste-public-key-body...';
+
+GRANT ROLE SLATE_ROLE TO USER SLATE_SERVICE;
+
+-- ----------------------------------------------------------------------------
+-- Sanity: confirm the role can read but NOT delete. Run as SLATE_ROLE.
+--   USE ROLE SLATE_ROLE; USE WAREHOUSE SLATE_WH; USE DATABASE SLATE; USE SCHEMA PUBLIC;
+--   SELECT COUNT(*) FROM bookings;                    -- should succeed (0 rows)
+--   DELETE FROM bookings WHERE id = 'nope';           -- should FAIL: no DELETE privilege
+-- ----------------------------------------------------------------------------
