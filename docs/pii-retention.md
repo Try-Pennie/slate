@@ -67,22 +67,33 @@ aggressive erasure the #1029 red-team proposed:
 
 ## 5. Tamper-evidence and erasure must coexist (#1040 reconciliation)
 
-Issue #1040 will make `booking_events` (and `audit_log`) **append-only** by a
-`BEFORE UPDATE OR DELETE` trigger that raises an exception. A trigger fires
-**regardless of the calling role**, so a `SECURITY DEFINER` erasure function does
-**not** bypass it on its own. The two must be designed together:
+Migration `0089` (#1040, **shipped**) makes `booking_events` and `audit_log`
+**append-only** with triggers that raise on `UPDATE`, `DELETE`, and `TRUNCATE`
+(the last is a separate statement-level guard, since row triggers do not fire on
+a bulk wipe). A trigger fires **regardless of the calling role**, so even the
+RLS-bypassing secret-key client cannot rewrite the trail, and a `SECURITY
+DEFINER` erasure function does **not** bypass it on its own. The two triggers
+differ by design:
 
-- The append-only trigger carries a **bypass sentinel** on a session GUC, e.g.
+- **`audit_log` is strictly immutable** (no bypass): its trail is never redacted
+  or deleted; erasure only *appends* an audit entry (§4, §7).
+- **`booking_events` carries one sanctioned bypass** on a session GUC:
   `IF current_setting('slate.allow_erasure', true) IS DISTINCT FROM 'on' THEN
-  RAISE EXCEPTION 'booking_events is append-only';`.
-- The erasure function (`erase_booking_pii`, #1072) sets that GUC inside its own
+  RAISE EXCEPTION 'booking_events is append-only ...';`. The erasure function
+  (`erase_booking_pii`, #1072, **still owed**) sets that GUC inside its own
   transaction (`perform set_config('slate.allow_erasure','on', true)`) before
   redacting `reason_detail`, and only for that transaction.
 
-**Ordering contract:** #1040's trigger and #1072's erasure function (plus the
-#1071 deferred `reason_detail` redaction) must ship **together**, or one breaks
-the other. No plain `UPDATE`/`DELETE` on `booking_events` is permitted outside
-this sanctioned path.
+**Ordering contract:** 0089 shipped the trigger *with* the sentinel first, so
+#1072's erasure function (plus the #1071 deferred `reason_detail` redaction) can
+land later without breaking it. No plain `UPDATE`/`DELETE` on `booking_events`
+is permitted outside the sentinel path; none is ever permitted on `audit_log`.
+
+Because of existing FKs (`bookings`→`booking_events` cascade, `users`/
+`organizations` set-null/cascade), the triggers also block the write
+side-effects of hard-deleting a booking, user, or org. That is safe (the roster
+is deactivate-not-delete; orgs/bookings are never hard-deleted) and intended:
+the audit trail must outlive what it references.
 
 ## 6. Backups resurrect erased data
 
