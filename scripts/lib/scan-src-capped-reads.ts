@@ -57,6 +57,9 @@ const SAFE_TABLES = new Set([
   "reschedule_locks",
   "lane_heartbeats",
   "selfheal_scan_cursor",
+  // Snowflake export watermark (#1098): one row per (lane, mirrored table), so
+  // roughly a dozen rows total. Bounded by the table count, never by volume.
+  "export_cursor",
   // #346: reason options are roster/config-bounded (a few dozen rows across 3
   // actions), so a single page always holds the whole set.
   "reason_options",

@@ -24,6 +24,7 @@ import type {
   EventType,
   LaneHeartbeat,
   SelfhealScanCursor,
+  ExportCursor,
   MonitorAlertConfig,
   MonitorSettings,
   ReasonOptionRow,
@@ -116,6 +117,7 @@ export interface Database {
       routing_decisions: Table<RoutingDecision>;
       lane_heartbeats: Table<LaneHeartbeat>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
+      export_cursor: Table<ExportCursor>;
       bulk_reassign_jobs: Table<BulkReassignJob>;
       bulk_reassign_items: Table<
         BulkReassignItem,
