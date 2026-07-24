@@ -62,4 +62,28 @@ assert(
   "#602: cancellation is explicitly disabled on main, so a merge's deploy is never interrupted",
 );
 
+// --- migration-drift skips Dependabot PRs, but stays fail-loud elsewhere -----
+// Dependabot PRs never touch supabase/migrations and never receive the repo
+// secrets migration-drift needs, so the job can only false-fail there. It is
+// skipped on dependabot/* PR branches so routine bumps go green and merge
+// without the manual recreate-on-a-normal-branch dance. This must be scoped to
+// dependabot ONLY: a blanket skip (or reintroducing the #766 `exit 0` on missing
+// secrets) would let real drift merge unchecked on normal branches.
+const migBlock =
+  ci.match(/^  migration-drift:\n((?:[ \t]+.*\n|\n)*?)^  deploy:/m)?.[1] ?? "";
+assert(migBlock.trim().length > 0, "the migration-drift job exists in ci.yml");
+assert(
+  /if:.*startsWith\(github\.head_ref,\s*'dependabot\//.test(migBlock),
+  "migration-drift is skipped only on dependabot/* PR branches (head_ref is empty on push-to-main, so main still runs the real check)",
+);
+// #766 regression guard: the skip must not have weakened the fail-loud path.
+// On any non-dependabot branch with missing secrets, the job must still exit 1
+// rather than pass green having checked nothing.
+assert(
+  /-z "\$SUPABASE_ACCESS_TOKEN"/.test(migBlock) &&
+    /::error::migration-drift cannot run/.test(migBlock) &&
+    /exit 1/.test(migBlock),
+  "#766: migration-drift still fails loud (exit 1) when its secrets are absent, so a non-dependabot branch can't pass green while verifying nothing",
+);
+
 finish();
