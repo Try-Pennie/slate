@@ -99,6 +99,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "lane_heartbeats", category: "lock/counter", why: "one heartbeat row per text lane name (PK)" },
   { table: "monitor_settings", category: "lock/counter", why: "single pinned settings row keyed by PK" },
   { table: "selfheal_scan_cursor", category: "lock/counter", why: "single scan-cursor row keyed by PK" },
+  { table: "export_cursor", category: "lock/counter", why: "one Snowflake-export watermark row per (lane, table) keyed by text PK; ~a dozen rows, #1098" },
   { table: "bucket_slots", category: "lock/counter", why: "one precomputed cache row per bucket_code (PK), ~60 rows" },
   { table: "reason_options", category: "roster/config", why: "a few dozen reason rows keyed by (action, code) PK; config-bounded, #346" },
   // Roster / config-bounded: row count is capped by the roster or org, not by

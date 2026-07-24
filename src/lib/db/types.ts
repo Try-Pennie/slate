@@ -670,6 +670,19 @@ export interface SelfhealScanCursor {
   updated_at: string;
 }
 
+/** Resumable watermark for the Snowflake export lane (#1098, migration 0090).
+ *  `key` is the scope (bare table name for the incremental lane, a
+ *  'backfill:<table>' prefix for the backfill lane). `last_ts` is the last
+ *  exported created_at (append-only tables) or updated_at (mutable tables), with
+ *  `last_id` as the tie-break at that timestamp. Both null before the first
+ *  export. */
+export interface ExportCursor {
+  key: string;
+  last_ts: string | null;
+  last_id: string | null;
+  updated_at: string;
+}
+
 export type BulkReassignJobStatus = "active" | "done";
 
 /** One bulk coverage-reassign sweep (#973, #562): move every active upcoming
