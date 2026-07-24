@@ -200,7 +200,10 @@ export default function Booker({
     ? { backgroundColor: brandColor, color: labelColorFor(brandColor) }
     : undefined;
 
-  const [month, setMonth] = useState(() => today.startOf("month"));
+  // Bare `DateTime` (= DateTime<boolean>) matches BookerCalendar's prop contract;
+  // @types/luxon's generic validity would otherwise infer a narrower type that
+  // onMonthChange (DateTime<boolean>) can't set.
+  const [month, setMonth] = useState<DateTime>(() => today.startOf("month"));
   const [meta, setMeta] = useState<AvailabilityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);

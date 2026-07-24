@@ -50,7 +50,7 @@ function Harness({
   Component: CalendarComponent;
   onSelectSpy: (iso: string) => void;
 }) {
-  const [month, setMonth] = useState(INITIAL_MONTH);
+  const [month, setMonth] = useState<DateTime>(INITIAL_MONTH);
   const [selectedIso, setSelectedIso] = useState<string | null>(null);
   return (
     <Component
