@@ -97,7 +97,18 @@ jobs:
   # code can't merge expecting schema that isn't pushed. REQUIRES the
   # SUPABASE_ACCESS_TOKEN + SUPABASE_DB_PASSWORD repo secrets: without them the job
   # fails loudly rather than passing green while checking nothing (#766).
+  #
+  # SKIPPED on dependabot/* PR branches. Dependabot runs never receive the repo
+  # secrets (GitHub withholds them from the dependabot context), so this job can
+  # only false-fail there, forcing a manual recreate-on-a-normal-branch dance to
+  # merge a routine bump. Dependabot only edits package.json / lockfiles / Actions
+  # pins, never supabase/migrations, so skipping is safe. head_ref is set only on
+  # pull_request events and is empty on push-to-main, so main still runs the real
+  # check; and the #766 fail-loud path below still guards every non-dependabot
+  # branch. main-push-guard reads only the `ci` check (not this one), so a skip
+  # here never affects the merge-to-main backstop.
   migration-drift:
+    if: ${{ ! startsWith(github.head_ref, 'dependabot/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
