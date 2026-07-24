@@ -157,6 +157,7 @@ src/lib/salesforce     hourly roster sync (agents, teams, attributes)
 src/lib/ooo            out-of-office requests, approvals, digests
 src/lib/slack          ops alerts + OOO DMs + Approve/Decline interactions
 src/lib/notify         throttled alert dispatch (shared by monitor/booking/routing)
+src/lib/snowflake      archival mirror exporter (key-pair JWT client + MERGE builder)
 src/lib/offboarding    deactivate / reactivate departed agents
 src/lib/bookable       move an agent in/out of the booking pool (bookable flag) + activation guard
 src/lib/auth           login provisioning + role/RBAC + admin impersonation
