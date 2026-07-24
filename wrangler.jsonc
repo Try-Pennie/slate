@@ -62,7 +62,7 @@
 		// account here ships harmlessly. Set SNOWFLAKE_ACCOUNT to the account URL
 		// prefix (locator plus region, e.g. ab12345.us-east-1) per
 		// docs/snowflake-setup.md. The rest match docs/snowflake-setup.sql.
-		"SNOWFLAKE_ACCOUNT": "",
+		"SNOWFLAKE_ACCOUNT": "vrkfjso-rwc54963",
 		"SNOWFLAKE_USER": "SLATE_SERVICE",
 		"SNOWFLAKE_DATABASE": "SLATE",
 		"SNOWFLAKE_SCHEMA": "PUBLIC",

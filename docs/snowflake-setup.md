@@ -103,7 +103,7 @@ These are committed config, not secrets. Claude will open a PR that adds them to
 `wrangler.jsonc` with placeholder values; you confirm the values are:
 
 ```
-SNOWFLAKE_ACCOUNT   = <the account identifier from Step 4, e.g. ab12345.us-east-1>
+SNOWFLAKE_ACCOUNT   = <account identifier: the host prefix from SYSTEM$ALLOWLIST(), e.g. the regionless orgname-accountname>
 SNOWFLAKE_USER      = SLATE_SERVICE
 SNOWFLAKE_DATABASE  = SLATE
 SNOWFLAKE_SCHEMA    = PUBLIC
@@ -113,23 +113,19 @@ SNOWFLAKE_ROLE      = SLATE_ROLE
 
 ## Step 6: Set the private-key secret on the Worker
 
-From the Slate repo, with your wrangler login active, run this and paste the FULL
-private key (the whole file including the BEGIN/END lines) at the prompt:
+From the Slate repo, with your wrangler login active, feed the key file straight
+into the secret. Do NOT paste the key at the interactive prompt: the key has
+multiple lines, and an interactive paste stops at the first line break, storing a
+broken key and spilling the rest into your shell.
 
 ```bash
-cat ~/snowflake-slate-keys/slate_snowflake_key.p8 | pbcopy
+cd ~/Documents/Slate && wrangler secret put SNOWFLAKE_PRIVATE_KEY < ~/snowflake-slate-keys/slate_snowflake_key.p8
 ```
 
-That copies the key to your clipboard. Then run:
-
-```bash
-wrangler secret put SNOWFLAKE_PRIVATE_KEY
-```
-
-Paste at the prompt and press Enter. (For local development, put the same key in
-`.env.local` as `SNOWFLAKE_PRIVATE_KEY`, with the newlines written as literal `\n`
-on one line, matching how `GOOGLE_SA_PRIVATE_KEY` is stored. The Worker un-escapes
-`\n` back to real newlines when it reads the key.)
+That uploads the entire multi-line key as one value. (For local development, put
+the same key in `.env.local` as `SNOWFLAKE_PRIVATE_KEY`, with the newlines written
+as literal `\n` on one line, matching how `GOOGLE_SA_PRIVATE_KEY` is stored. The
+Worker reads either real newlines or literal `\n`.)
 
 ## Step 7: Delete the local key files
 
