@@ -203,13 +203,20 @@ GRANT SELECT, INSERT, UPDATE ON FUTURE TABLES IN SCHEMA SLATE.PUBLIC TO ROLE SLA
 -- stored in Snowflake. Generate the pair per docs/snowflake-setup.md, then paste
 -- the public key body (no header/footer lines, no line breaks) below.
 --
--- TYPE = SERVICE means no password and no MFA: key-pair is the only credential.
+-- Portable CREATE (works on every Snowflake edition): the user has only a
+-- key-pair credential (no password is ever set). RECOMMENDED HARDENING on
+-- editions that support service users: after creating it, run the optional
+-- ALTER below to make it TYPE = SERVICE (no password, no MFA, key-pair only). If
+-- that ALTER errors on an older edition, skip it: the key-pair login already
+-- works without it.
 -- ----------------------------------------------------------------------------
 CREATE USER IF NOT EXISTS SLATE_SERVICE
-  TYPE = SERVICE
   DEFAULT_ROLE = SLATE_ROLE
   DEFAULT_WAREHOUSE = SLATE_WH
   COMMENT = 'Slate export lane service user (key-pair auth, append-only role).';
+
+-- Optional hardening (run on editions that support it; safe to skip if it errors):
+--   ALTER USER SLATE_SERVICE SET TYPE = SERVICE;
 
 -- Set the public key (run after generating the pair; re-run to rotate):
 --   ALTER USER SLATE_SERVICE SET RSA_PUBLIC_KEY = 'MIIBIjANBg...paste-public-key-body...';
