@@ -63,6 +63,7 @@ wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-
 wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct booking API. Empty (both) = POST /api/bookings returns 503.
 # wrangler secret put BOOKING_API_KEY_2     # optional 2nd booking key; set only when rotating (both accepted at once).
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
+wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
 
 ### 2c. Runtime vars (`wrangler.jsonc` under `vars`, committed and redeployed)
@@ -89,6 +90,14 @@ Change one by editing `wrangler.jsonc` and redeploying.
   ahead leads can book) when the admin settings screen has not set one. Optional; a
   whole number 1 to 7. Unset = the coded default (4). The admin UI value (stored in
   `booking_settings`) always wins over this.
+- `SNOWFLAKE_ACCOUNT` / `SNOWFLAKE_USER` / `SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA`
+  / `SNOWFLAKE_WAREHOUSE` / `SNOWFLAKE_ROLE`: non-secret connection config for the
+  archival mirror export lane (milestone #15). `SNOWFLAKE_ACCOUNT` is the URL prefix
+  (locator plus region, e.g. `ab12345.us-east-1`); the rest default to
+  `SLATE_SERVICE` / `SLATE` / `PUBLIC` / `SLATE_WH` / `SLATE_ROLE` as provisioned by
+  `docs/snowflake-setup.sql`. The paired secret is `SNOWFLAKE_PRIVATE_KEY` (2b).
+  With the private key unset the export lane is a safe no-op. Full setup:
+  `docs/snowflake-setup.md`.
 
 ## 3. Build + deploy
 ```bash
