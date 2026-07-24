@@ -80,7 +80,7 @@ differ by design:
 - **`booking_events` carries one sanctioned bypass** on a session GUC:
   `IF current_setting('slate.allow_erasure', true) IS DISTINCT FROM 'on' THEN
   RAISE EXCEPTION 'booking_events is append-only ...';`. The erasure function
-  (`erase_booking_pii`, #1072, **still owed**) sets that GUC inside its own
+  (`erase_booking_pii`, #1072, migration 0090) sets that GUC inside its own
   transaction (`perform set_config('slate.allow_erasure','on', true)`) before
   redacting `reason_detail`, and only for that transaction.
 
@@ -111,7 +111,8 @@ backup retention window.
 
 ## 7. Data-subject erasure (DSR) path
 
-Implemented by #1072 as a documented runbook plus a `SECURITY DEFINER`
+Implemented (#1072, **shipped** as migration 0090) as the
+[erasure runbook](./pii-erasure-runbook.md) plus a `SECURITY DEFINER`
 `erase_booking_pii(target_email)` function (chosen over an admin UI for a smaller
 attack surface). In one idempotent transaction it:
 
