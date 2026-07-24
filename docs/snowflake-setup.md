@@ -64,7 +64,11 @@ openssl rsa -in slate_snowflake_key.p8 -pubout -out slate_snowflake_key.pub
 ## Step 2: Create the Snowflake objects
 
 Open `docs/snowflake-setup.sql` in a Snowsight worksheet, set the role to
-ACCOUNTADMIN, and run the whole script. It is idempotent (safe to re-run).
+ACCOUNTADMIN, and run the whole script. It is idempotent (safe to re-run) and
+runs cleanly on every Snowflake edition. It ends with one OPTIONAL hardening line
+(`ALTER USER SLATE_SERVICE SET TYPE = SERVICE`) that locks the service user to
+key-pair only: run it if your edition accepts it, and skip it if it errors (the
+key-pair login already works either way).
 
 ## Step 3: Register the public key on the service user
 
