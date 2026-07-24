@@ -54,6 +54,9 @@
     "wrangler": "^4.113.0"
   },
   "pnpm": {
+    "overrides": {
+      "postcss@<8.5.18": ">=8.5.18"
+    },
     "auditConfig": {
       "ignoreGhsas": [
         "GHSA-f88m-g3jw-g9cj",
