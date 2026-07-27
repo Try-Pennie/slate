@@ -1,0 +1,35 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { isAuthorizedCron } from "@/lib/cron";
+import { acquireLock, releaseLock } from "@/lib/locks";
+import { runSnowflakeExport } from "@/lib/snowflake/export";
+import { log } from "@/lib/log";
+
+export const dynamic = "force-dynamic";
+
+// Longer than the export's 60s wall-time budget so the lock is never released
+// mid-run and a slow tick can't overlap itself.
+const LOCK_TTL_MS = 120_000;
+
+/**
+ * Snowflake archival mirror export lane (#1099). Its OWN cron expression + lock
+ * (cron_snowflake_export), never co-scheduled, so it gets its own CPU/subrequest
+ * budget. A no-op while the mirror is unconfigured. Fails loud (log.error + 500)
+ * so a table failure surfaces instead of a silently stale warehouse.
+ */
+export async function GET(req: NextRequest) {
+  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+
+  const lock = await acquireLock("cron_snowflake_export", LOCK_TTL_MS);
+  if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
+
+  try {
+    const result = await runSnowflakeExport();
+    return NextResponse.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("snowflake-export", { msg: "cron failed", error: message });
+    return NextResponse.json({ error: message }, { status: 500 });
+  } finally {
+    await releaseLock("cron_snowflake_export", lock);
+  }
+}

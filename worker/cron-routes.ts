@@ -61,6 +61,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     "/api/cron/prune-webhook-payloads",
     "/api/cron/prune-bookings-pii",
   ],
+  // Snowflake archival mirror export (#1099): its OWN expression (every 10 min),
+  // never co-scheduled, so it gets its own CPU/subrequest budget. Resumable via
+  // export_cursor, so a 10-min gap just means the next tick catches up.
+  "*/10 * * * *": "/api/cron/snowflake-export",
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */
