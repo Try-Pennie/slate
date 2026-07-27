@@ -67,6 +67,38 @@ rather than reasoning it out per PR.
   `drukfvgaynzrralbzkzj`) and the DB password. The same `SUPABASE_ACCESS_TOKEN` +
   `SUPABASE_DB_PASSWORD` are set as repo secrets for the CI `migration-drift` job.
 
+## Writing a function with a pinned search_path (#1126)
+
+Every function Slate ships pins its `search_path` (against a search-path attack on
+a SECURITY DEFINER function). A pinned path is **not** the path you get in a normal
+session, so a function that calls an **extension** function unqualified is
+unreachable and errors on every call, at runtime only. That shipped once as #1125:
+`erase_booking_pii` pinned `search_path = public` and hashed with pgcrypto's
+`digest()`, but pgcrypto lives in the **`extensions`** schema on Supabase, so the
+audit-hash step failed on every erasure. The migration looked correct, the drift
+gate was green, and the function existed in prod.
+
+**What is safe under `search_path = public`:** anything in `pg_catalog`, which
+Postgres always searches implicitly. `sha256()`, `gen_random_uuid()`, `encode()`,
+`convert_to()`, and `set_config()` are all built in and need no qualifier. Note
+that `gen_random_uuid()` exists in *both* `pg_catalog` and pgcrypto, which is why
+it works everywhere while its pgcrypto-only sibling `gen_random_bytes()` does not.
+
+**What is not:** anything from pgcrypto, uuid-ossp, or `supabase_vault`. Prefer a
+`pg_catalog` built-in; if you genuinely need the extension, schema-qualify it
+(`extensions.digest(...)`) or add the schema to the pin
+(`set search_path = public, extensions`).
+
+`scripts/test-definer-search-path.ts` enforces this on pre-push and in CI, scanning
+every migration. Its escape hatch is a `-- search-path-ok: <reason>` comment on or
+above the call, for a call the pinned path genuinely can reach. When a new
+extension is installed into a non-public schema, add its functions to
+`EXTENSION_FUNCTIONS` in `scripts/lib/scan-definer-search-path.ts` (the regenerating
+query is in that file's header), and drop any name that also exists in
+`pg_catalog`. A new pinned function also goes on that test's `EXPECTED_PINNED`
+list, which exists so a header-parse regression fails loudly instead of quietly
+scanning nothing.
+
 ## Roll-forward only, and what the migration tests cover (#607)
 
 Slate deliberately uses **roll-forward-only** migrations. There are no
