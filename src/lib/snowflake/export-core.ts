@@ -22,6 +22,15 @@ export const WALL_TIME_BUDGET_MS = 60_000;
  *  MERGE VALUES size. */
 export const DEFAULT_BATCH = 500;
 
+/**
+ * The warehouse load-stamp column every mirror table carries (#1116). Written by
+ * the MERGE on both branches, never sourced from Supabase, so it records when the
+ * warehouse last saw the row. Declared here rather than in merge.ts because this
+ * module owns the mirror contract and, having no runtime imports, is reachable
+ * from the node test suite.
+ */
+export const LOAD_STAMP_COL = "exported_at";
+
 export interface TableSpec {
   /** Table name, identical in Supabase and Snowflake. */
   table: string;

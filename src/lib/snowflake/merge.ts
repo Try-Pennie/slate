@@ -10,9 +10,21 @@
  * JSONB columns map to Snowflake VARIANT. Snowflake VALUES lists only allow
  * constants, so a variant value travels as an escaped JSON string in the VALUES
  * list and gets PARSE_JSON applied in the USING projection.
+ *
+ * Every mirror table also carries a warehouse load stamp, `exported_at` (#1116).
+ * It is written by the MERGE itself on both branches and is deliberately NOT a
+ * source column: it records when the warehouse last saw this row, which is what
+ * mirror-freshness monitoring and the deferred-deletion gate (#1102) need. A
+ * value sourced from Supabase would answer a different question and could be
+ * stale. Because the MERGE writes the column unconditionally, a mirror table that
+ * lacks it fails every export, so two checks hold the assumption in place:
+ * scripts/test-snowflake-mirror-columns.ts compares the DDL in
+ * docs/snowflake-setup.sql against this lane's column lists, and the healthcheck
+ * probes the live warehouse (/api/admin/snowflake-check).
  */
 
 import { escapeSqlLiteral } from "./client";
+import { LOAD_STAMP_COL } from "./export-core";
 
 export type ColType = "varchar" | "number" | "boolean" | "timestamp_tz" | "timestamp_ntz" | "variant";
 
@@ -21,15 +33,22 @@ export interface ColSpec {
   type: ColType;
 }
 
+/** SYSDATE() is the current UTC time as TIMESTAMP_NTZ, matching the column type
+ *  with no dependence on the session time zone (CURRENT_TIMESTAMP() is LTZ, so
+ *  it would be silently converted through whatever zone the session ran in). */
+export const LOAD_STAMP_SQL = "SYSDATE()";
+
 export function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
-  const colList = cols.map((c) => c.name).join(", ");
-  const sourceColList = cols.map((c) => `s.${c.name}`).join(", ");
+  // The load stamp is appended to the target column list only: it has no source
+  // column, so it never appears in the VALUES tuple or the USING projection.
+  const colList = [...cols.map((c) => c.name), LOAD_STAMP_COL].join(", ");
+  const insertValues = [...cols.map((c) => `s.${c.name}`), LOAD_STAMP_SQL].join(", ");
   // UPDATE clause covers every column except id (the join key). Lets us
   // re-export rows when columns are added or values are corrected upstream.
-  const updateSet = cols
-    .filter((c) => c.name !== "id")
-    .map((c) => `${c.name} = s.${c.name}`)
-    .join(", ");
+  const updateSet = [
+    ...cols.filter((c) => c.name !== "id").map((c) => `${c.name} = s.${c.name}`),
+    `${LOAD_STAMP_COL} = ${LOAD_STAMP_SQL}`,
+  ].join(", ");
   const valuesList = rows
     .map((r) => "(" + cols.map((c) => formatValue(r[c.name], c.type)).join(", ") + ")")
     .join(", ");
@@ -47,7 +66,7 @@ USING (
 ) s
 ON t.id = s.id
 WHEN MATCHED THEN UPDATE SET ${updateSet}
-WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${sourceColList})
+WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${insertValues})
 `.trim();
 }
 

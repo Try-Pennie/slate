@@ -70,8 +70,36 @@ describe("buildMergeSql", () => {
   });
 
   it("inserts the full column tuple when unmatched", () => {
-    expect(sql).toContain("WHEN NOT MATCHED THEN INSERT (id, status, routing_trace, created_at)");
-    expect(sql).toContain("VALUES (s.id, s.status, s.routing_trace, s.created_at)");
+    expect(sql).toContain("WHEN NOT MATCHED THEN INSERT (id, status, routing_trace, created_at, exported_at)");
+    expect(sql).toContain("VALUES (s.id, s.status, s.routing_trace, s.created_at, SYSDATE())");
+  });
+
+  it("stamps exported_at with the warehouse load time on both branches (#1116)", () => {
+    // SYSDATE() is UTC TIMESTAMP_NTZ, matching the column type with no
+    // dependence on the session time zone (CURRENT_TIMESTAMP() would be LTZ).
+    expect(sql).toContain("exported_at = SYSDATE()");
+    expect(sql).toContain("WHEN NOT MATCHED THEN INSERT (id, status, routing_trace, created_at, exported_at)");
+    expect(sql).toContain("VALUES (s.id, s.status, s.routing_trace, s.created_at, SYSDATE())");
+  });
+
+  it("never sources exported_at from the row, so a stale supabase value cannot land", () => {
+    const withStamp = buildMergeSql("bookings", cols, [
+      {
+        id: "b1",
+        status: "confirmed",
+        routing_trace: null,
+        created_at: "2026-07-24T00:00:00Z",
+        // A caller (or a future column addition) handing us an exported_at must
+        // be ignored: the stamp is the warehouse's, not the source's.
+        exported_at: "1999-01-01T00:00:00Z",
+      },
+    ]);
+    expect(withStamp).not.toContain("1999-01-01");
+    expect(withStamp).not.toContain("s.exported_at");
+    // exported_at is not a source column, so it stays out of the tuple alias
+    // and the USING projection.
+    const using = withStamp.split("USING (")[1].split(") s")[0];
+    expect(using).not.toContain("exported_at");
   });
 
   it("escapes single quotes in variant JSON so it cannot break out of the VALUES literal", () => {
