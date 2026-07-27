@@ -191,6 +191,24 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
 CLUSTER BY (created_at);
 
 -- ----------------------------------------------------------------------------
+-- Self-heal for a table provisioned before a column was added (#1116).
+--
+-- Every CREATE above is IF NOT EXISTS, which means re-running this file against
+-- an already-provisioned warehouse is a no-op: it will NOT add a column that was
+-- introduced after the tables were first created. These ALTERs make the file
+-- genuinely re-runnable. They matter most for `exported_at`, because the export
+-- MERGE writes it on every branch, so a table missing it fails 100% of its
+-- exports. /api/admin/snowflake-check probes the live schema for exactly this
+-- and reports 503 naming any table that lacks it.
+-- ----------------------------------------------------------------------------
+ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+ALTER TABLE IF EXISTS webhook_deliveries  ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+ALTER TABLE IF EXISTS booking_outbox      ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+ALTER TABLE IF EXISTS booking_events      ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+ALTER TABLE IF EXISTS audit_log           ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+ALTER TABLE IF EXISTS routing_decisions   ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+
+-- ----------------------------------------------------------------------------
 -- Grants on the mirror tables: SELECT + INSERT + UPDATE only. No DELETE.
 -- FUTURE grants cover any table added to this schema later under the same rule.
 -- ----------------------------------------------------------------------------

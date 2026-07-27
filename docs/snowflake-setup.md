@@ -70,6 +70,16 @@ runs cleanly on every Snowflake edition. It ends with one OPTIONAL hardening lin
 key-pair only: run it if your edition accepts it, and skip it if it errors (the
 key-pair login already works either way).
 
+**Re-run it after any change to the mirror columns.** The CREATE TABLE statements
+are all IF NOT EXISTS, so on an already-provisioned warehouse they do nothing;
+the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` block near the end is what
+actually adds a column introduced later. This matters for `exported_at`, the
+warehouse load stamp the export MERGE writes on every row (#1116): a mirror table
+missing that column fails 100% of its exports. To confirm the live warehouse is
+in shape, hit `/api/admin/snowflake-check` as an admin. It returns 200 when the
+login works and every mirror table has the stamp, and 503 naming the tables that
+do not.
+
 ## Step 3: Register the public key on the service user
 
 Print the public key body as a single line (no header/footer, no line breaks):
