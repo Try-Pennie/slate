@@ -62,11 +62,11 @@ export function evaluateRecon(tables: TableRecon[], control: ControlCheck | null
     );
   }
   for (const t of tables) {
-    if (t.snowflake > t.supabase) {
-      // Impossible without a delete in Snowflake or a delete in Supabase the
-      // mirror has not yet seen: worth a look either way.
-      reasons.push(`${t.table}: Snowflake has MORE rows than Supabase (${t.snowflake} vs ${t.supabase})`);
-    } else if (t.drift > reconThreshold(t.supabase)) {
+    // Only "Snowflake is BEHIND" is a fault (the mirror is losing/lagging rows).
+    // "Snowflake ahead" (more rows than Supabase) is EXPECTED once export-gated
+    // retention (#1102) prunes aged rows from Supabase while the warehouse keeps
+    // the full history, so it is deliberately NOT flagged.
+    if (t.drift > reconThreshold(t.supabase)) {
       reasons.push(`${t.table}: Snowflake is behind by ${t.drift} rows (${t.snowflake}/${t.supabase})`);
     }
   }
