@@ -86,6 +86,16 @@ MCP tool (it records a timestamp version that silently disables the lag monitor)
 The full step by step is **`docs/migrations-runbook.md`**; follow it rather than
 reasoning the order out per PR.
 
+Writing a **function** in a migration has one non-obvious rule: every Slate
+function pins its `search_path`, and a pinned path cannot reach an **extension**
+schema, so an unqualified pgcrypto / uuid-ossp / vault call is unreachable and
+errors on every call at runtime only (#1125: `digest()` under
+`search_path = public`). Use a `pg_catalog` built-in (`sha256`, `gen_random_uuid`),
+or schema-qualify (`extensions.digest`), or widen the pin.
+`scripts/test-definer-search-path.ts` enforces it, with a
+`-- search-path-ok: <reason>` escape hatch; the reasoning is in the runbook's
+"Writing a function with a pinned search_path" section (#1126).
+
 # Where a new test goes
 
 Slate runs two test harnesses on purpose. They are not interchangeable, and the
