@@ -80,7 +80,7 @@ differ by design:
 - **`booking_events` carries one sanctioned bypass** on a session GUC:
   `IF current_setting('slate.allow_erasure', true) IS DISTINCT FROM 'on' THEN
   RAISE EXCEPTION 'booking_events is append-only ...';`. The erasure function
-  (`erase_booking_pii`, #1072, **still owed**) sets that GUC inside its own
+  (`erase_booking_pii`, #1072, **shipped** as migration 0092) sets that GUC inside its own
   transaction (`perform set_config('slate.allow_erasure','on', true)`) before
   redacting `reason_detail`, and only for that transaction.
 
@@ -111,18 +111,34 @@ backup retention window.
 
 ## 7. Data-subject erasure (DSR) path
 
-Implemented by #1072 as a documented runbook plus a `SECURITY DEFINER`
+Erasure is **cross-system** (#1103): it must clear the person's contact PII from
+both Supabase and the Snowflake mirror. The full step-by-step is the
+[erasure runbook](./pii-erasure-runbook.md); read it before honoring a request.
+
+**Supabase half** (#1072, shipped as migration 0092): a `SECURITY DEFINER`
 `erase_booking_pii(target_email)` function (chosen over an admin UI for a smaller
 attack surface). In one idempotent transaction it:
 
 1. redacts matching `bookings` contact fields (name/email/phone/prefill), but
-   **not** `salesforce_id`/`external_id` (§4);
+   **not** `salesforce_id`/`external_id` (§4), and stamps `pii_redacted_at` so the
+   Snowflake export freezes the row instead of re-mirroring the blanked one (#1118);
 2. redacts their `booking_events.reason_detail` via the §5 escape hatch;
-3. blanks matching `webhook_deliveries.payload` rows, matched on the exact
-   attendee path `payload->'attendee'->>'email'` (not a top-level or agent email);
+3. blanks matching `webhook_deliveries.payload` rows, matched by the affected
+   **booking ids** (catches a delivery whose attendee email is null but whose
+   payload still carries the person's other PII);
 4. writes an `audit_log` erasure entry recording the affected booking ids and an
    **email hash** (never the cleartext email);
 5. does **not** delete Google Calendar events (§4).
+
+**Snowflake half** (#1103): the steady-state export role is append-only (no
+DELETE) by design, so the warehouse purge is an **operator-run manual step** with
+a credential that never lives in the Worker. Using the affected booking ids from
+the audit row, the operator redacts the same PII columns in place in Snowflake
+(bookings contact fields, `booking_events.reason_detail`, `webhook_deliveries`
+payload), then runs a verification query that must return zero residual PII. The
+[erasure runbook](./pii-erasure-runbook.md) carries the exact SQL. Because the
+Supabase redaction stamps `pii_redacted_at` / `payload_erased`, the export lane
+freezes those rows, so the operator's warehouse redaction is not later clobbered.
 
 ## 8. PII inventory / processor map
 
