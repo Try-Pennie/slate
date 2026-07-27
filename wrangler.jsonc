@@ -13,7 +13,8 @@
 			"0 14 * * 1-5",
 			"0 11 * * *",
 			"0 12 * * *",
-			"0 3 * * *"
+			"0 3 * * *",
+			"*/10 * * * *"
 		]
 	},
 	// The every-minute cron runs four lanes (sync/recompute/outbox/selfheal) in ONE
