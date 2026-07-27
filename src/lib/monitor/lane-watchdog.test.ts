@@ -11,8 +11,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // replaces.
 
 const dispatch = vi.hoisted(() => ({
-  sendThrottledAlert: vi.fn(async () => {}),
-  sendThrottledInfo: vi.fn(async () => {}),
+  sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string, _channel?: string) => {}),
+  sendThrottledInfo: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
 }));
 const heartbeat = vi.hoisted(() => ({
   readAllHeartbeatMs: vi.fn(async (): Promise<Record<string, number | null>> => ({})),
@@ -50,6 +50,21 @@ describe("alertOnStaleLanes (#803)", () => {
     const stale = await alertOnStaleLanes();
     expect(stale).toEqual([]);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("alerts (Slack only) when the Snowflake mirror export lane goes stale (#1101)", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(40 * MIN) });
+    const stale = await alertOnStaleLanes();
+    expect(stale.map((l) => l.lane)).toContain("snowflake-export");
+    const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:snowflake-export");
+    expect(call).toBeTruthy();
+    expect(String(call?.[2])).toMatch(/mirror export lane/);
+  });
+
+  it("does not alert when the mirror export lane is fresh", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(5 * MIN) });
+    const stale = await alertOnStaleLanes();
+    expect(stale.map((l) => l.lane)).not.toContain("snowflake-export");
   });
 
   it("alerts on each lane a CPU kill left unfinished, keyed per lane", async () => {

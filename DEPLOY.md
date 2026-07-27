@@ -162,6 +162,7 @@ not a subset; `scripts/test-cron-routes.ts` fails CI if any lane below drifts):
 - `0 11 * * *` **and** `0 12 * * *` → `/api/cron/ooo-approvals` (7am ET email of yesterday's OOO approvals; two DST slots, one fires)
 - `0 3 * * *`   → `/api/cron/prune-routing` (daily prune of routing_decisions rows older than 12 months) **+** `/api/cron/prune-webhook-payloads` (blank webhook_deliveries payload PII on terminal deliveries older than 90 days, #1073) **+** `/api/cron/prune-bookings-pii` (redact consumer PII on bookings whose appointment is past the 24-month window, enqueue gcal-event deletion, prune delivered outbox rows, #1071)
 - `*/10 * * * *` → `/api/cron/snowflake-export` (archival-mirror export to Snowflake, #1099; its own expression so it gets its own CPU budget, resumable via export_cursor, no-op until SNOWFLAKE_PRIVATE_KEY is set)
+- `0 */6 * * *` → `/api/cron/snowflake-reconcile` (counts Supabase vs Snowflake per mirrored table + a positive control, Slack-alerts on drift, #1101; the precondition future deletion must pass)
 
 No secret beyond `CRON_SECRET` (already set on the app) is needed — the crons
 deploy with the app via `pnpm cf:deploy`. Until the domain is Google-verified,

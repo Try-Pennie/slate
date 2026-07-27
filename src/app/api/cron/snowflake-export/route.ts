@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { runSnowflakeExport } from "@/lib/snowflake/export";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +25,9 @@ export async function GET(req: NextRequest) {
 
   try {
     const result = await runSnowflakeExport();
+    // Dead-man's switch (#1101): stamp only on a successful tick so the
+    // lane-watchdog pages if the export goes silently quiet. Best-effort.
+    await recordHeartbeat("snowflake-export").catch(() => {});
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
