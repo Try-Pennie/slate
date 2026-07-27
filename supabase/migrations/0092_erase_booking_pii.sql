@@ -102,7 +102,10 @@ begin
     'pii.erasure',
     null,
     jsonb_build_object(
-      'email_sha256', encode(digest(norm, 'sha256'), 'hex'),
+      -- Built-in sha256(bytea) (pg_catalog), NOT pgcrypto digest(): the function
+      -- pins search_path=public, and pgcrypto lives in the extensions schema, so
+      -- digest() is unreachable here and would error at runtime.
+      'email_sha256', encode(sha256(convert_to(norm, 'UTF8')), 'hex'),
       'booking_ids', to_jsonb(ids),
       'bookings_redacted', n_bookings,
       'events_redacted', n_events,

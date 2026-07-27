@@ -43,6 +43,13 @@ assert(
   code.includes("encode(") && code.includes("sha256"),
   "audits an email HASH (sha256), never cleartext email",
 );
+// Regression: the function pins search_path=public, but pgcrypto's digest() lives
+// in the extensions schema, so digest() errors at runtime (caught only by running
+// the redaction path, not the no-match path). Use the built-in sha256(bytea).
+assert(
+  !/\bdigest\s*\(/.test(code),
+  "hashes with the built-in sha256(), not pgcrypto digest() (unreachable under search_path=public)",
+);
 assert(
   code.includes("booking_events") && code.includes("reason_detail"),
   "redacts booking_events.reason_detail",
