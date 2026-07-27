@@ -1,0 +1,131 @@
+# PII erasure runbook (data-subject deletion requests)
+
+How an operator honors a verified request to erase a person's contact data from
+Slate. Erasure is **cross-system**: the person's PII must be cleared from both
+Supabase (the live database) and the Snowflake mirror (the long-term warehouse).
+Policy context and the full retention posture live in
+[pii-retention.md](./pii-retention.md); read sections 4 and 7 there first.
+
+The mechanism is two steps: a database function for the Supabase half, and an
+operator-run SQL step for the Snowflake half (the Worker's export role is
+append-only by design, so it cannot purge the warehouse; that credential stays
+with the operator, never in the app).
+
+## Before you run it
+
+1. **Verify the requester out of band.** Confirm the request is genuine and that
+   the email belongs to the person, per whatever identity check Pennie's process
+   requires. This function does no identity verification; it trusts the operator.
+2. **Have the exact email.** The function matches Slate bookings on the
+   attendee's email (case-insensitive, trimmed). If the person booked under more
+   than one email, run the whole runbook once per email.
+
+## Step 1: Supabase erasure
+
+Run this SQL against the production database as an admin (Supabase SQL editor, or
+`psql` with the service connection). It is server/operator-only: the API roles
+have no execute grant.
+
+```
+select erase_booking_pii('person@example.com');
+```
+
+It runs as a single transaction and returns a JSON summary, for example
+`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3}`. If nothing
+matched (already erased, or never present) it returns
+`{"erased": false, "reason": "no-match"}` and you are done (there is nothing in
+Snowflake to purge either).
+
+It is **idempotent**: re-running for the same email after a successful erasure is
+a safe no-op and writes no new audit row.
+
+What it does, in one transaction: redacts the booking contact fields (name, email,
+phone null; prefill emptied) and stamps `pii_redacted_at`; redacts those bookings'
+`booking_events.reason_detail`; blanks the matching outbound webhook payloads
+(matched by the affected booking ids); and writes one `audit_log` entry with the
+affected booking ids and a **SHA-256 hash** of the email (never the cleartext).
+
+## Step 2: get the affected booking ids
+
+The Snowflake purge needs the booking ids the Supabase step just redacted. Read
+them from the audit row (most recent erasure):
+
+```
+select details->'booking_ids' as booking_ids
+from audit_log
+where action = 'pii.erasure'
+order by created_at desc
+limit 1;
+```
+
+Confirm this is the erasure you just ran (the `email_sha256` in the same row
+matches `encode(digest('person@example.com','sha256'),'hex')` if you want to be
+certain). Copy the list of ids for the next step.
+
+## Step 3: Snowflake purge (operator credential, redact in place)
+
+Run this against Snowflake using your **own admin login**, never the Worker's
+export user. It redacts the same PII columns in place for the affected bookings,
+so the warehouse keeps the PII-free analytics rows but holds none of the person's
+contact data. Substitute the ids from step 2 for `<ids>` (comma-separated,
+single-quoted, e.g. `'id1','id2'`).
+
+```
+update SLATE.PUBLIC.bookings
+   set attendee_name = null, attendee_email = null, attendee_phone = null,
+       prefill = object_construct()
+ where id in (<ids>);
+
+update SLATE.PUBLIC.booking_events
+   set reason_detail = null
+ where booking_id in (<ids>);
+
+update SLATE.PUBLIC.webhook_deliveries
+   set payload = object_construct(), payload_erased = true
+ where payload:booking_id::string in (<ids>);
+```
+
+Because the Supabase redaction stamped `pii_redacted_at` / `payload_erased`, the
+export lane has frozen those rows and will not re-mirror the full-fidelity
+version back over your redaction.
+
+## Step 4: verify (mandatory)
+
+Run this against Snowflake. Every count **must be 0**. A non-zero count means the
+purge missed rows (or an export re-mirrored them); do not consider the request
+honored until it returns all zeros.
+
+```
+select
+  (select count(*) from SLATE.PUBLIC.bookings
+     where id in (<ids>) and attendee_email is not null) as bookings_residual,
+  (select count(*) from SLATE.PUBLIC.booking_events
+     where booking_id in (<ids>) and reason_detail is not null) as events_residual,
+  (select count(*) from SLATE.PUBLIC.webhook_deliveries
+     where payload:booking_id::string in (<ids>)
+       and payload:attendee:email is not null) as webhook_residual;
+```
+
+Also confirm the Supabase side: the `audit_log` row from step 2 exists with
+`action = 'pii.erasure'`. That row is the durable record that the request was
+honored.
+
+## What it deliberately does NOT do (policy, §4)
+
+1. It does **not** clear `salesforce_id` / `external_id`. Those are the external
+   Salesforce reference; Salesforce is the system of record for that identity, and
+   its deletion is Salesforce's responsibility, not Slate's.
+2. It does **not** delete the agent's Google Calendar events. A completed
+   meeting's event is the agent's operational record; only a genuine booking
+   cancellation deletes a calendar event.
+
+## Backups (important caveat, §6)
+
+Erasure is immediate in the live database and warehouse but **physically complete
+only after backups roll off**. Supabase daily backups (and point-in-time recovery,
+if enabled) still hold the pre-erasure data for their retention window, as do
+Snowflake Time Travel and Fail-safe. A restore from before the erasure would
+reintroduce the PII, so **any restore must re-run this runbook** for every
+`pii.erasure` audit entry as a post-restore reconciliation step. A defensible
+response states that erasure is complete in production immediately and in backups
+within the backup retention window.
