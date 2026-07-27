@@ -12,6 +12,16 @@ const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
   releaseLock: vi.fn(async () => {}),
 }));
+// #1118: redaction is export-gated (never redact a row Snowflake does not yet
+// hold at full fidelity). Default the gate ready + a far-future export watermark
+// so aged rows pass; individual tests override.
+const gate = vi.hoisted(() => ({
+  mirrorReadyForDeletion: vi.fn(async (): Promise<{ ready: boolean; reason: string | null }> => ({
+    ready: true,
+    reason: null,
+  })),
+  exportedThrough: vi.fn(async (_key: string): Promise<string | null> => "2099-01-01T00:00:00.000Z"),
+}));
 
 const rec = vi.hoisted(() => ({
   agedBookings: [] as Record<string, unknown>[],
@@ -46,12 +56,15 @@ const from = vi.hoisted(() =>
       return b;
     }
     if (table === "booking_outbox") {
+      // Thenable so a multi-.lt() chain (created_at + the export-gate updated_at)
+      // resolves on await, not on the first .lt().
       const b: Record<string, unknown> = {};
       b.delete = () => b;
       b.eq = () => b;
-      b.lt = () => {
+      b.lt = () => b;
+      b.then = (resolve: (v: { error: null; count: number }) => unknown) => {
         rec.outboxDeleted = true;
-        return Promise.resolve({ error: null, count: 3 });
+        return resolve({ error: null, count: 3 });
       };
       return b;
     }
@@ -61,6 +74,7 @@ const from = vi.hoisted(() =>
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
+vi.mock("@/lib/snowflake/retention-gate", () => gate);
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 
 import { GET } from "./route";
@@ -70,6 +84,8 @@ const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 beforeEach(() => {
   vi.clearAllMocks();
   locks.acquireLock.mockResolvedValue("lease");
+  gate.mirrorReadyForDeletion.mockResolvedValue({ ready: true, reason: null });
+  gate.exportedThrough.mockResolvedValue("2099-01-01T00:00:00.000Z");
   rec.agedBookings = [];
   rec.bookingUpdate = null;
   rec.bookingUpdateIds = null;
@@ -134,6 +150,28 @@ describe("GET /api/cron/prune-bookings-pii", () => {
     rec.bookingSelectError = { message: "boom" };
     const res = await GET(req());
     expect(res.status).toBe(500);
+    expect(locks.releaseLock).toHaveBeenCalledWith("cron_prune_bookings_pii", "lease");
+  });
+
+  it("stamps pii_redacted_at so the export freezes the row (#1118, Flaw A)", async () => {
+    rec.agedBookings = [{ id: "bk1" }];
+    await GET(req());
+    // Without this marker the redaction bumps updated_at and the export re-MERGEs
+    // the blanked row over Snowflake's full-fidelity copy.
+    expect(rec.bookingUpdate).toHaveProperty("pii_redacted_at");
+    expect(typeof rec.bookingUpdate?.pii_redacted_at).toBe("string");
+    expect(rec.bookingUpdate?.pii_redacted_at).not.toBeNull();
+  });
+
+  it("skips (redacts nothing) when the Snowflake mirror is not ready (#1118, export-gate)", async () => {
+    gate.mirrorReadyForDeletion.mockResolvedValue({ ready: false, reason: "drift" });
+    rec.agedBookings = [{ id: "bk1" }];
+    const res = await GET(req());
+    const body = await res.json();
+    expect(body.skipped).toBe("mirror-not-ready");
+    // Never redact (nor prune the outbox) while the warehouse copy is uncertain.
+    expect(rec.bookingUpdate).toBeNull();
+    expect(rec.outboxDeleted).toBe(false);
     expect(locks.releaseLock).toHaveBeenCalledWith("cron_prune_bookings_pii", "lease");
   });
 });

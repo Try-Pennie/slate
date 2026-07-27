@@ -11,6 +11,15 @@ const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
   releaseLock: vi.fn(async () => {}),
 }));
+// #1118: blanking is export-gated (never blank a payload Snowflake does not yet
+// hold at full fidelity). Default ready + far-future watermark; tests override.
+const gate = vi.hoisted(() => ({
+  mirrorReadyForDeletion: vi.fn(async (): Promise<{ ready: boolean; reason: string | null }> => ({
+    ready: true,
+    reason: null,
+  })),
+  exportedThrough: vi.fn(async (_key: string): Promise<string | null> => "2099-01-01T00:00:00.000Z"),
+}));
 
 // Chainable builder that records the update payload and every filter, and
 // resolves to a canned { error, count } at the end of the chain.
@@ -40,6 +49,7 @@ const from = vi.hoisted(() => vi.fn(() => builder));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
+vi.mock("@/lib/snowflake/retention-gate", () => gate);
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 
 import { GET } from "./route";
@@ -49,6 +59,8 @@ const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 beforeEach(() => {
   vi.clearAllMocks();
   locks.acquireLock.mockResolvedValue("lease");
+  gate.mirrorReadyForDeletion.mockResolvedValue({ ready: true, reason: null });
+  gate.exportedThrough.mockResolvedValue("2099-01-01T00:00:00.000Z");
   captured.update = null;
   captured.filters = [];
   captured.result = { error: null, count: 0 };
@@ -89,7 +101,19 @@ describe("GET /api/cron/prune-webhook-payloads", () => {
     expect(String(or?.args[0])).toMatch(/attempts\.gte\./);
     // Aged past the window (an lt on created_at).
     expect(captured.filters.some((f) => f.fn === "lt" && f.args[0] === "created_at")).toBe(true);
+    // Export-gated (#1118): only blank a row Snowflake already holds, gated on the
+    // confirmed-export watermark (an lt on updated_at).
+    expect(captured.filters.some((f) => f.fn === "lt" && f.args[0] === "updated_at")).toBe(true);
 
+    expect(locks.releaseLock).toHaveBeenCalledWith("cron_prune_webhook_payloads", "lease");
+  });
+
+  it("skips (blanks nothing) when the Snowflake mirror is not ready (#1118, export-gate)", async () => {
+    gate.mirrorReadyForDeletion.mockResolvedValue({ ready: false, reason: "drift" });
+    const res = await GET(req());
+    const body = await res.json();
+    expect(body.skipped).toBe("mirror-not-ready");
+    expect(captured.update).toBeNull();
     expect(locks.releaseLock).toHaveBeenCalledWith("cron_prune_webhook_payloads", "lease");
   });
 
