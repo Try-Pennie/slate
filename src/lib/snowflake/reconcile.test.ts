@@ -33,10 +33,10 @@ describe("evaluateRecon", () => {
     expect(r.reasons[0]).toMatch(/bookings: Snowflake is behind by 200/);
   });
 
-  it("flags Snowflake having MORE rows than Supabase", () => {
+  it("does NOT flag Snowflake ahead (expected once retention prunes Supabase, #1102)", () => {
     const r = evaluateRecon([t("bookings", 100, 130)], null);
-    expect(r.ok).toBe(false);
-    expect(r.reasons[0]).toMatch(/MORE rows/);
+    expect(r.ok).toBe(true);
+    expect(r.reasons).toEqual([]);
   });
 
   it("fails when the positive control did not find its known row (a zero cannot be trusted)", () => {
