@@ -65,6 +65,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // never co-scheduled, so it gets its own CPU/subrequest budget. Resumable via
   // export_cursor, so a 10-min gap just means the next tick catches up.
   "*/10 * * * *": "/api/cron/snowflake-export",
+  // Snowflake mirror reconciliation (#1101): every 6h, its own lane, counts
+  // Supabase vs Snowflake per table + a positive control and Slack-alerts on
+  // drift. The precondition the future deletion lane must pass.
+  "0 */6 * * *": "/api/cron/snowflake-reconcile",
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */

@@ -67,6 +67,20 @@ export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   "smoke-canary-full": 8 * 60 * MIN,
 };
 
+/**
+ * Staleness bound for the Snowflake archival-mirror export lane (#1101), kept
+ * SEPARATE from LANE_STALE_BOUNDS_MS on purpose (like the canary). A stopped
+ * mirror means the analytics warehouse is going stale, NOT that the app is down,
+ * so it must never flip the external /api/health 503 (that would page uptime as
+ * if the site were broken). Only the internal lane-watchdog consults this and
+ * alerts to Slack. The export lane stamps `snowflake-export` on every successful
+ * tick (cadence every 10 minutes); the bound is 3x that so ordinary cron jitter
+ * or a single slow tick can't trip a false alert, only a lane that genuinely stopped.
+ */
+export const MIRROR_STALE_BOUNDS_MS: Record<string, number> = {
+  "snowflake-export": 30 * MIN,
+};
+
 export interface StaleLane {
   lane: string;
   /** How long this lane has been quiet (ms). */

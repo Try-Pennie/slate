@@ -2,6 +2,7 @@ import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import {
   findStaleLanes,
   CANARY_STALE_BOUNDS_MS,
+  MIRROR_STALE_BOUNDS_MS,
   type StaleLane,
 } from "@/lib/monitor/health";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -62,8 +63,13 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   // Worker cron lane, so a CPU-kill message would be wrong and it must never touch
   // the external /api/health signal.
   const canaryStale = findStaleLanes(heartbeats, now, CANARY_STALE_BOUNDS_MS);
+  // The Snowflake mirror export lane (#1101) is judged against its OWN bound and,
+  // like the canary, alerts to Slack only: a stale mirror means the analytics
+  // warehouse is going stale, not that the app is down, so it must never touch
+  // the external /api/health signal.
+  const mirrorStale = findStaleLanes(heartbeats, now, MIRROR_STALE_BOUNDS_MS);
 
-  if (stale.length === 0 && canaryStale.length === 0) return [];
+  if (stale.length === 0 && canaryStale.length === 0 && mirrorStale.length === 0) return [];
 
   if (stale.length > 0) {
     log.warn("lane-watchdog", {
@@ -100,7 +106,20 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     });
   }
 
-  return [...stale, ...canaryStale];
+  for (const lane of mirrorStale) {
+    log.warn("lane-watchdog", { msg: "mirror lane stale", lane: lane.lane, age_min: minutes(lane.ageMs) });
+    await sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      STALE_LANE_COOLDOWN_MS,
+      `Slate: the Snowflake mirror export lane (${lane.lane}) has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
+        lane.maxStaleMs,
+      )}m), so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`,
+    ).catch((err) => {
+      log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
+    });
+  }
+
+  return [...stale, ...canaryStale, ...mirrorStale];
 }
 
 /**
