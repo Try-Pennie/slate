@@ -14,6 +14,7 @@ import { log } from "@/lib/log";
 import { readSnowflakeConfig } from "./config";
 import { executeStatement, type SnowflakeConfig } from "./client";
 import { buildMergeSql } from "./merge";
+import { applySkipRedacted } from "./skip-redacted";
 import {
   DEFAULT_BATCH,
   MIRROR_TABLES,
@@ -36,7 +37,8 @@ interface PgBuilder extends PromiseLike<PgRead> {
   order(col: string, opts: { ascending: boolean }): PgBuilder;
   limit(n: number): PgBuilder;
   or(filter: string): PgBuilder;
-  eq(col: string, val: string): PgBuilder;
+  eq(col: string, val: string | boolean): PgBuilder;
+  is(col: string, val: null): PgBuilder;
   maybeSingle(): PromiseLike<PgRead>;
   upsert(row: Record<string, unknown>, opts: { onConflict: string }): PromiseLike<{ error: { message: string } | null }>;
 }
@@ -70,6 +72,10 @@ export function makeExportDeps(config: SnowflakeConfig, db: PgClient): ExportDep
           `${spec.watermark}.gt.${cursor.last_ts},and(${spec.watermark}.eq.${cursor.last_ts},id.gt.${cursor.last_id})`,
         );
       }
+      // #1118: exclude rows redacted in place, AND-ed with the keyset above (a
+      // separate chained filter, never folded into the .or(), which would ignore
+      // the cursor). Freezes Snowflake at the last full-fidelity version.
+      q = applySkipRedacted(spec.table, q);
       return unwrap(await q, `snowflake-export fetch ${spec.table}`) as Row[];
     },
 

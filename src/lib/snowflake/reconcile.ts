@@ -18,6 +18,7 @@ import { log } from "@/lib/log";
 import { readSnowflakeConfig } from "./config";
 import { escapeSqlLiteral, executeStatement, type SnowflakeConfig } from "./client";
 import { MIRROR_TABLES } from "./export-core";
+import { applySkipRedacted } from "./skip-redacted";
 
 // Normal lag tolerance: the export runs every 10 min, so Supabase can legitimately
 // be a little ahead of Snowflake. Alert only when the gap exceeds the larger of a
@@ -78,6 +79,8 @@ interface ReconBuilder extends PromiseLike<ReconRead> {
   select(cols: string, opts?: { count: "exact"; head: true }): ReconBuilder;
   order(col: string, opts: { ascending: boolean }): ReconBuilder;
   limit(n: number): ReconBuilder;
+  is(col: string, val: null): ReconBuilder;
+  eq(col: string, val: boolean): ReconBuilder;
   maybeSingle(): PromiseLike<ReconRead>;
 }
 interface ReconDb {
@@ -85,7 +88,12 @@ interface ReconDb {
 }
 
 async function countSupabase(db: ReconDb, table: string): Promise<number> {
-  const { count, error } = await db.from(table).select("*", { count: "exact", head: true });
+  // #1118: count with the SAME skip predicate the export fetch uses, so a
+  // redacted-in-place row (excluded from export) is excluded here too. Without
+  // this, an erased-before-export row (in Supabase, never in Snowflake) reads as
+  // permanent "Snowflake is behind" drift and freezes the retention lane.
+  const q = applySkipRedacted(table, db.from(table).select("*", { count: "exact", head: true }));
+  const { count, error } = await q;
   if (error) throw new Error(`reconcile count ${table}: ${error.message}`);
   return count ?? 0;
 }

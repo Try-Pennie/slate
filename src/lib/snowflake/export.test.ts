@@ -8,9 +8,9 @@ vi.mock("./export-core", async (importOriginal) => {
   return { ...actual, exportTable: vi.fn() };
 });
 
-import { runSnowflakeExport } from "./export";
+import { runSnowflakeExport, makeExportDeps } from "./export";
 import { readSnowflakeConfig } from "./config";
-import { exportTable, MIRROR_TABLES } from "./export-core";
+import { exportTable, MIRROR_TABLES, type TableSpec } from "./export-core";
 import { log } from "@/lib/log";
 
 const cfg = {
@@ -54,5 +54,77 @@ describe("runSnowflakeExport", () => {
     await expect(runSnowflakeExport()).rejects.toThrow(/table failure/);
     expect(exportTable).toHaveBeenCalledTimes(MIRROR_TABLES.length);
     expect(log.error).toHaveBeenCalled();
+  });
+});
+
+// A chainable fake PostgREST builder that records every method call so a test can
+// assert what filters the fetch applied (and in what shape).
+interface MethodCall {
+  m: string;
+  args: unknown[];
+}
+function fakeDb() {
+  const byTable: Record<string, MethodCall[]> = {};
+  return {
+    byTable,
+    from(table: string) {
+      const methods: MethodCall[] = (byTable[table] = []);
+      const b: Record<string, unknown> = {};
+      for (const m of ["select", "order", "limit", "or", "is", "eq"]) {
+        b[m] = (...args: unknown[]) => {
+          methods.push({ m, args });
+          return b;
+        };
+      }
+      // Thenable: `await q` resolves to an empty, non-error page.
+      b.then = (resolve: (v: { data: unknown[]; error: null }) => unknown) => resolve({ data: [], error: null });
+      return b;
+    },
+  };
+}
+
+const specFor = (table: string): TableSpec => MIRROR_TABLES.find((t) => t.table === table)!;
+const hasCall = (calls: MethodCall[], m: string, ...args: unknown[]) =>
+  calls.some((c) => c.m === m && args.every((a, i) => c.args[i] === a));
+
+describe("makeExportDeps.fetchBatch skip filter (#1118)", () => {
+  it("keeps the keyset cursor AND-ed with the bookings skip filter (separate calls, not folded into .or)", async () => {
+    const db = fakeDb();
+    const deps = makeExportDeps(cfg, db as never);
+    await deps.fetchBatch(specFor("bookings"), { last_ts: "2026-01-01T00:00:00Z", last_id: "id1" }, 500);
+    const calls = db.byTable["bookings"];
+    // The keyset page is still applied as its own .or(...) ...
+    expect(hasCall(calls, "or")).toBe(true);
+    // ... and the redaction skip is a SEPARATE chained filter, so the fetch reads
+    // `(keyset) AND pii_redacted_at IS NULL`, not `keyset OR pii_redacted_at.is.null`.
+    expect(hasCall(calls, "is", "pii_redacted_at", null)).toBe(true);
+    // The skip filter must never be an .or argument (that would ignore the cursor).
+    const orCall = calls.find((c) => c.m === "or");
+    expect(String(orCall?.args[0] ?? "")).not.toMatch(/pii_redacted_at/);
+  });
+
+  it("applies the bookings skip filter even with no cursor (first tick)", async () => {
+    const db = fakeDb();
+    const deps = makeExportDeps(cfg, db as never);
+    await deps.fetchBatch(specFor("bookings"), null, 500);
+    const calls = db.byTable["bookings"];
+    expect(hasCall(calls, "or")).toBe(false); // no cursor yet
+    expect(hasCall(calls, "is", "pii_redacted_at", null)).toBe(true);
+  });
+
+  it("excludes blanked webhook payloads via payload_erased = false", async () => {
+    const db = fakeDb();
+    const deps = makeExportDeps(cfg, db as never);
+    await deps.fetchBatch(specFor("webhook_deliveries"), null, 500);
+    expect(hasCall(db.byTable["webhook_deliveries"], "eq", "payload_erased", false)).toBe(true);
+  });
+
+  it("applies no skip filter to an append-only table (audit_log)", async () => {
+    const db = fakeDb();
+    const deps = makeExportDeps(cfg, db as never);
+    await deps.fetchBatch(specFor("audit_log"), null, 500);
+    const calls = db.byTable["audit_log"];
+    expect(hasCall(calls, "is")).toBe(false);
+    expect(hasCall(calls, "eq")).toBe(false);
   });
 });

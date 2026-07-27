@@ -4,6 +4,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { webhookPayloadCutoffIso } from "@/lib/webhooks/retention";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
+import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +25,19 @@ export async function GET(req: NextRequest) {
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {
     const cutoff = webhookPayloadCutoffIso(new Date().toISOString());
+    // Export-gated (#1118): blanking a payload bumps updated_at and the export
+    // freezes it out afterward, so Snowflake must already hold the full-fidelity
+    // version. Gate on a passing reconciliation, and only blank rows STRICTLY
+    // before the confirmed-export watermark (strict `<`: the export cursor is a
+    // composite (updated_at, id) keyset, so an equal-watermark row may be unexported).
+    const gate = await mirrorReadyForDeletion();
+    if (!gate.ready) {
+      log.info("prune-webhook-payloads", { msg: "skipped: mirror not ready", reason: gate.reason });
+      return NextResponse.json({ skipped: "mirror-not-ready", reason: gate.reason });
+    }
+    const exportedTo = await exportedThrough("webhook_deliveries");
+    if (!exportedTo) return NextResponse.json({ skipped: "nothing-exported-yet" });
+
     const { error, count } = await supabaseAdmin()
       .from("webhook_deliveries")
       .update({ payload: {}, payload_erased: true, last_response: null }, { count: "exact" })
@@ -32,7 +46,8 @@ export async function GET(req: NextRequest) {
       // Terminal only: a delivered success, or a failure past the retry cap. A
       // pending/retryable row still needs its payload for the retry sweep.
       .or(`status.eq.success,and(status.eq.failed,attempts.gte.${WEBHOOK_MAX_ATTEMPTS})`)
-      .lt("created_at", cutoff);
+      .lt("created_at", cutoff)
+      .lt("updated_at", exportedTo);
     if (error) throw new Error(error.message);
     return NextResponse.json({ erased: count ?? 0, cutoff });
   } catch (err) {
