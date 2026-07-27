@@ -69,8 +69,11 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // every 6h, each under its own lock. Reconcile counts Supabase vs Snowflake per
   // table + a positive control and alerts on drift; the audit reads the pii.erasure
   // trail and alerts if the warehouse still holds PII for an erased booking (the
-  // operator's manual purge is incomplete). Co-scheduled, so if the lane stops
-  // firing, reconcile's dead-man's switch covers both.
+  // operator's manual purge is incomplete). Each stamps its OWN heartbeat, judged
+  // against MIRROR_STALE_BOUNDS_MS (#1123). Co-scheduling does NOT let one cover the
+  // other: this comment used to claim reconcile's dead-man's switch covered both,
+  // when reconcile's own stamp was read by no bound and a failing audit hid behind
+  // reconcile's fresh one.
   "0 */6 * * *": ["/api/cron/snowflake-reconcile", "/api/cron/erasure-audit"],
 };
 

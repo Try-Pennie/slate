@@ -35,6 +35,7 @@ const healthy = () => ({
   complete: ago(2 * MIN),
   watch: ago(2 * MIN),
   monitor: ago(2 * MIN),
+  "bulk-reassign": ago(2 * MIN),
 });
 
 beforeEach(() => {
@@ -65,6 +66,79 @@ describe("alertOnStaleLanes (#803)", () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(5 * MIN) });
     const stale = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).not.toContain("snowflake-export");
+  });
+
+  // #1123: the two 6h checks ON the mirror were unwatched. Reconcile stamped into a
+  // row no bound read; the erasure audit did not stamp at all. Each now has its own
+  // bound AND its own message: they sit on a different cron expression and different
+  // locks from the export lane, so the old shared copy would have sent a responder
+  // to the wrong lane.
+  describe("the 6h mirror checks (#1123)", () => {
+    it("alerts when the reconcile lane goes quiet, naming its own lock", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "snowflake-export": ago(2 * MIN),
+        "snowflake-reconcile": ago(9 * 60 * MIN),
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("snowflake-reconcile");
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:snowflake-reconcile",
+      );
+      const text = String(call?.[2]);
+      expect(text).toMatch(/cron_snowflake_reconcile/);
+      expect(text).not.toMatch(/cron_snowflake_export/);
+      expect(text).toMatch(/app itself is unaffected/);
+    });
+
+    it("alerts when the erasure audit goes quiet, saying what stopped being checked", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "erasure-audit": ago(9 * 60 * MIN),
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("erasure-audit");
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:erasure-audit",
+      );
+      const text = String(call?.[2]);
+      expect(text).toMatch(/erased/);
+      expect(text).toMatch(/cron_erasure_audit/);
+      expect(text).not.toMatch(/analytics warehouse is going stale/);
+    });
+
+    // The whole failure this issue describes: the audit is broken (not stamping)
+    // while its co-scheduled sibling keeps succeeding. That used to be silent.
+    it("alerts on a failing audit even while reconcile stays healthy", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "snowflake-reconcile": ago(10 * MIN),
+        "erasure-audit": ago(9 * 60 * MIN),
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toEqual(["erasure-audit"]);
+    });
+
+    it("stays quiet for a 6h lane that stamped within its 8h bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "snowflake-reconcile": ago(6 * 60 * MIN + 20 * MIN),
+        "erasure-audit": ago(6 * 60 * MIN + 20 * MIN),
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale).toEqual([]);
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("alerts when the bulk-reassign drain goes quiet (#1123)", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "bulk-reassign": ago(25 * MIN) });
+    const stale = await alertOnStaleLanes();
+    expect(stale.map((l) => l.lane)).toContain("bulk-reassign");
+    const call = dispatch.sendThrottledAlert.mock.calls.find(
+      (c) => c[0] === "cron_lane_stale:bulk-reassign",
+    );
+    expect(call).toBeTruthy();
   });
 
   it("alerts on each lane a CPU kill left unfinished, keyed per lane", async () => {

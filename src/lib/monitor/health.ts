@@ -21,13 +21,23 @@ const MIN = 60_000;
  * Bounds are generous multiples of each lane's cadence so ordinary Cloudflare
  * cron jitter or a single slow tick can't trip a false 503; only a lane that
  * has genuinely stopped does. Cadences come from worker/cron-routes.ts:
- *   every minute : sync, recompute, outbox, selfheal  -> 10 min bound
- *   every 5 min  : complete, watch, monitor           -> 20 min bound
+ *   every minute : sync, recompute, outbox, selfheal          -> 10 min bound
+ *   every 5 min  : complete, watch, monitor, bulk-reassign     -> 20 min bound
+ *
+ * `bulk-reassign` (#973) belongs here rather than in the Slack-only maps, and was
+ * missing entirely until #1123: it stamped a heartbeat that no bounds map read. It
+ * is a Worker cron lane doing app-critical work (draining coverage reassignments
+ * moves real bookings and their calendar events), which is the line the Slack-only
+ * maps draw: the canary is not a Worker lane at all, and the mirror lanes feed
+ * analytics rather than the app. In the usual failure mode, a CPU kill on the shared
+ * 5-min invocation, its three co-scheduled siblings already 503, so this adds a page
+ * only when bulk-reassign alone dies (its own lock stuck, or its own route erroring),
+ * where work really is not happening.
  *
  * The hourly `agents` lane is intentionally NOT covered: at a 60-min cadence a
  * heartbeat bound is noisy, and a stalled roster sync is already surfaced by its
- * own alert path. Acceptance for #685 scopes coverage to the 1-min and 5-min
- * lanes only.
+ * own alert path. It does not stamp a heartbeat at all, so there is nothing here to
+ * exempt. Acceptance for #685 scopes coverage to the 1-min and 5-min lanes only.
  */
 export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
   sync: 10 * MIN,
@@ -37,6 +47,7 @@ export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
   complete: 20 * MIN,
   watch: 20 * MIN,
   monitor: 20 * MIN,
+  "bulk-reassign": 20 * MIN,
 };
 
 /**
@@ -68,17 +79,29 @@ export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
 };
 
 /**
- * Staleness bound for the Snowflake archival-mirror export lane (#1101), kept
- * SEPARATE from LANE_STALE_BOUNDS_MS on purpose (like the canary). A stopped
- * mirror means the analytics warehouse is going stale, NOT that the app is down,
- * so it must never flip the external /api/health 503 (that would page uptime as
- * if the site were broken). Only the internal lane-watchdog consults this and
- * alerts to Slack. The export lane stamps `snowflake-export` on every successful
- * tick (cadence every 10 minutes); the bound is 3x that so ordinary cron jitter
- * or a single slow tick can't trip a false alert, only a lane that genuinely stopped.
+ * Staleness bounds for the Snowflake archival-mirror lanes (#1101), kept SEPARATE
+ * from LANE_STALE_BOUNDS_MS on purpose (like the canary). A stopped mirror lane
+ * means the analytics warehouse is going stale, or a compliance safety net has gone
+ * quiet, NOT that the app is down, so none of these may flip the external
+ * /api/health 503 (that would page uptime as if the site were broken). Only the
+ * internal lane-watchdog consults this map, and it alerts to Slack.
+ *
+ * - `snowflake-export` (every 10 min) is the mirror feed. Bound is 3x cadence, so
+ *   ordinary cron jitter or one slow tick can't trip a false alert.
+ * - `snowflake-reconcile` and `erasure-audit` (both every 6h, co-scheduled) are the
+ *   two checks ON that mirror: reconcile counts Supabase vs Snowflake per table,
+ *   and the audit proves an erased booking's PII is really gone from the warehouse.
+ *   Both were previously UNWATCHED (#1123). Reconcile stamped a heartbeat that no
+ *   bounds map read, and the erasure audit had no stamp at all while two comments
+ *   claimed reconcile's switch covered it. An 8h bound (cadence + ~2h of slack,
+ *   matching how `smoke-canary-full` is judged against its own 6h cadence) pages
+ *   within a couple of hours of one missed or failing run, which is prompt enough
+ *   for a 6h compliance check and loose enough that cron jitter is never the cause.
  */
 export const MIRROR_STALE_BOUNDS_MS: Record<string, number> = {
   "snowflake-export": 30 * MIN,
+  "snowflake-reconcile": 8 * 60 * MIN,
+  "erasure-audit": 8 * 60 * MIN,
 };
 
 export interface StaleLane {
