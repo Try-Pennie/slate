@@ -111,9 +111,7 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     await sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
-      `Slate: the Snowflake mirror export lane (${lane.lane}) has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
-        lane.maxStaleMs,
-      )}m), so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`,
+      mirrorAlertText(lane.lane, minutes(lane.ageMs), minutes(lane.maxStaleMs)),
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
@@ -134,4 +132,25 @@ function canaryAlertText(lane: string, ageMin: number, boundMin: number): string
     return `Slate: the booking smoke canary's full end to end pass (create, reschedule, cancel) has not run for ${ageMin} minutes (bound ${boundMin}m), so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
   }
   return `Slate: the booking smoke canary has not run for ${ageMin} minutes (bound ${boundMin}m), so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
+}
+
+/**
+ * Snowflake-mirror alert copy, keyed by which lane went quiet (#1101, #1123).
+ *
+ * The three lanes fail for different reasons and are recovered differently: the
+ * export FEEDS the warehouse, while reconcile and the erasure audit are the two
+ * CHECKS on it, on a different cron expression and different locks. One shared
+ * message used to name the export lane and its every-10-minutes lock for all of
+ * them, which would point a responder at the wrong lane and lock. Each lane
+ * gets its own cause and its own next step, and each says plainly that the app
+ * itself is unaffected so nobody treats it as an outage.
+ */
+function mirrorAlertText(lane: string, ageMin: number, boundMin: number): string {
+  if (lane === "snowflake-reconcile") {
+    return `Slate: the check that compares the live database against the Snowflake mirror has not run for ${ageMin} minutes (bound ${boundMin}m), so nothing is verifying that the warehouse still matches the source (the app itself is unaffected). Anything that trusts the mirror being complete, including export gated deletion, should be treated as unverified until this clears. Check the cron_snowflake_reconcile lock and the Worker outcome for the 6h lane.`;
+  }
+  if (lane === "erasure-audit") {
+    return `Slate: the check that proves an erased person's data is really gone from the Snowflake warehouse has not run for ${ageMin} minutes (bound ${boundMin}m), so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
+  }
+  return `Slate: the Snowflake mirror export lane has not run for ${ageMin} minutes (bound ${boundMin}m), so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
 }

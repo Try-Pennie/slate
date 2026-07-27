@@ -12,11 +12,13 @@ const locks = vi.hoisted(() => ({
 }));
 const audit = vi.hoisted(() => ({ auditSnowflakeErasures: vi.fn() }));
 const notify = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/erasure-audit", () => audit);
 vi.mock("@/lib/notify/dispatch", () => notify);
+vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
@@ -83,5 +85,62 @@ describe("GET /api/cron/erasure-audit", () => {
     const res = await GET(req());
     expect(res.status).toBe(500);
     expect(locks.releaseLock).toHaveBeenCalledWith("cron_erasure_audit", "lease");
+  });
+
+  // #1123: this lane is a safety net, and a safety net that fails every run in
+  // silence is worse than none. It stamps its OWN heartbeat so the lane-watchdog
+  // pages when the stamp goes stale. It used to be documented as relying on the
+  // co-scheduled snowflake-reconcile lane's heartbeat, which (a) was itself watched
+  // by no bound, and (b) could not have worked anyway: reconcile succeeding keeps
+  // its own stamp fresh while this lane fails.
+  describe("heartbeat", () => {
+    it("stamps its own lane on a clean pass", async () => {
+      await GET(req());
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("erasure-audit");
+    });
+
+    it("stamps even when the mirror is unconfigured (the lane still ran)", async () => {
+      audit.auditSnowflakeErasures.mockResolvedValue({
+        skipped: true,
+        ok: true,
+        erasedBookings: 0,
+        residuals: [],
+        reasons: [],
+      });
+      await GET(req());
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("erasure-audit");
+    });
+
+    it("stamps after alerting on a residual (the lane did its job)", async () => {
+      audit.auditSnowflakeErasures.mockResolvedValue({
+        ok: false,
+        erasedBookings: 1,
+        residuals: [{ table: "bookings", residual: 1 }],
+        reasons: ["bookings: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      });
+      await GET(req());
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("erasure-audit");
+    });
+
+    // THE failure path this whole change exists for: a lane erroring every run must
+    // NOT stamp, or the dead-man's switch stays green while the audit never runs.
+    it("does NOT stamp when the audit throws, so the watchdog can see it", async () => {
+      audit.auditSnowflakeErasures.mockRejectedValue(new Error("snowflake down"));
+      const res = await GET(req());
+      expect(res.status).toBe(500);
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+    });
+
+    it("does NOT stamp when the lock is held by another run", async () => {
+      locks.acquireLock.mockResolvedValueOnce(null);
+      await GET(req());
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+    });
+
+    it("still returns 200 when the heartbeat stamp itself fails", async () => {
+      heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+    });
   });
 });
