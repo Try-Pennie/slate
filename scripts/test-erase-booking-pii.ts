@@ -49,6 +49,15 @@ assert(
 );
 assert(code.includes("audit_log"), "writes an audit_log erasure entry");
 
+// Regression: org_id is a uuid, and min()/max() are undefined for uuid in
+// Postgres, so aggregating it that way makes EVERY call error at runtime (caught
+// only by actually running the function, not by this shape check). Use array
+// indexing instead.
+assert(
+  !/\b(?:min|max)\s*\(\s*org_id\s*\)/.test(code),
+  "does NOT aggregate org_id with min()/max() (undefined for uuid; use array indexing)",
+);
+
 // #1118 integration: stamps the marker so the export freezes the redacted row at
 // its last full-fidelity version instead of re-MERGEing the blanked one.
 assert(code.includes("pii_redacted_at"), "stamps bookings.pii_redacted_at (the #1118 export-freeze marker)");

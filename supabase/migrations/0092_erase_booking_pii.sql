@@ -47,7 +47,9 @@ begin
 
   -- Bookings belonging to this person, by normalized attendee email. A booking
   -- already redacted (email null) cannot match, which is what makes re-runs no-ops.
-  select array_agg(id), min(org_id) into ids, v_org
+  -- Take one org via array indexing: min()/max() are undefined for the uuid type,
+  -- and a person's bookings share an org, so the first is representative.
+  select array_agg(id), (array_agg(org_id))[1] into ids, v_org
   from bookings
   where lower(trim(attendee_email)) = norm;
 
