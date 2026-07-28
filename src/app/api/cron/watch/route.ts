@@ -9,22 +9,46 @@ import {
 } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { WATCH_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/dispatch";
 import { formatWatchLapseAlert, type FailingAgent } from "@/lib/notify/alerts";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
 const WATCH_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // don't re-alert within 30 min
 
-/** Post a throttled Slack alert NAMING the persistently-failing agents (#273). */
-async function alertWatchLapse(failing: FailingAgent[], totalAgents: number): Promise<void> {
-  if (failing.length === 0) return;
-  await sendThrottledAlert(
-    "watch_lapse",
-    WATCH_ALERT_COOLDOWN_MS,
-    formatWatchLapseAlert(failing, totalAgents, Date.now()),
+const WATCH_ALERT_KEY = "watch_lapse";
+
+/**
+ * Post a throttled Slack alert NAMING the persistently-failing agents (#273), and
+ * say so when the condition CLEARS (#1134).
+ *
+ * `failing === null` means the health signal could not be read, which is not health:
+ * stay silent both ways rather than announce a recovery there is no evidence for.
+ * An empty list is genuine health, established from the stored per-calendar streaks
+ * rather than from this lane merely having nothing to report.
+ */
+async function alertWatchLapse(
+  failing: FailingAgent[] | null,
+  totalAgents: number,
+): Promise<void> {
+  if (failing === null) return;
+  if (failing.length > 0) {
+    await sendThrottledAlert(
+      WATCH_ALERT_KEY,
+      WATCH_ALERT_COOLDOWN_MS,
+      formatWatchLapseAlert(failing, totalAgents, Date.now()),
+    );
+    return;
+  }
+  const cleared = await resolveAlert(
+    WATCH_ALERT_KEY,
+    "Slate: calendar watch renewal has recovered. Every agent calendar is watched and " +
+      "renewing again, so Google push is back and availability is no longer relying on " +
+      "the backup cron. The earlier warning is cleared and no action is needed.",
   );
+  if (cleared) log.info("watch", { msg: "watch-lapse alert cleared" });
 }
 
 /**
@@ -73,7 +97,12 @@ export async function GET(req: NextRequest) {
     // (consecutive_failures >= the threshold) from the diagnostics — a one-off
     // blip (streak of 1) stays quiet; the 30-min cooldown bounds repeats.
     const watchErrors = results.filter((r) => r.watch === "error").length;
-    if (watchErrors > 0) {
+    // #1134: also enter this when a page is OUTSTANDING and this tick saw no errors,
+    // which is precisely what recovery looks like. Gating solely on `watchErrors > 0`
+    // would make the recovery notice unreachable: a healed condition produces zero
+    // errors by definition. isAlertFiring is one cheap read, so the healthy no-alert
+    // case (almost every tick) pays nothing more than that.
+    if (watchErrors > 0 || (await isAlertFiring(WATCH_ALERT_KEY))) {
       await alertWatchLapse(await loadFailingAgents(), ordered.length);
     }
 

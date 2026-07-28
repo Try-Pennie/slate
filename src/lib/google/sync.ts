@@ -230,16 +230,24 @@ export async function markAgentsSynced(userIds: string[]): Promise<void> {
  * worst calendar kept, for the named alert. `minFailures` matches the
  * consecutive-failure threshold so a transient one-off blip stays quiet.
  */
-export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]> {
+export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[] | null> {
   const db = supabaseAdmin();
   // Two reads joined in code (the codebase convention, cf. loadSyncAgents):
   // the failing calendars, then the users they belong to.
-  // error-ok: best-effort watch-lapse alert input; a read error skips the alert
-  // this tick and the every-minute lane retries.
-  const { data: cals } = await db
+  // #1134: null means "could not determine", NOT "nothing is failing". Both reads
+  // still tolerate an error (the every-minute lane retries, so skipping one tick is
+  // safe), but an empty list now TRIGGERS a recovery notice (#1133), and a swallowed
+  // read error would therefore announce that sync had recovered on the strength of a
+  // failed query. An unreadable health signal must never read as health.
+  // error-ok: returned as null below, so the caller neither alerts nor all-clears.
+  const { data: cals, error: calsError } = await db
     .from("agent_calendars")
     .select("user_id, consecutive_failures, last_success_at, last_sync_error, last_failure_kind")
     .gte("consecutive_failures", minFailures);
+  if (calsError) {
+    log.warn("sync", { msg: "failing-agent read failed; health unknown this tick" });
+    return null;
+  }
   const calRows = ((cals ?? []) as {
     user_id: string;
     consecutive_failures: number;
@@ -254,12 +262,18 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
     .filter((c) => isPageableFailure(c.last_failure_kind, c.consecutive_failures));
   if (calRows.length === 0) return [];
 
-  // error-ok: best-effort alert enrichment; a read error drops agent names this
-  // tick and the every-minute lane retries.
-  const { data: users } = await db
+  // #1134: same rule as the read above. Without the agent names there is nothing to
+  // alert ABOUT, so a failure here would collapse to an empty list and read as
+  // health; return "unknown" instead.
+  // error-ok: returned as null below, so the caller neither alerts nor all-clears.
+  const { data: users, error: usersError } = await db
     .from("users")
     .select("id, email, bookable, deactivated_at")
     .in("id", [...new Set(calRows.map((c) => c.user_id))]);
+  if (usersError) {
+    log.warn("sync", { msg: "failing-agent name read failed; health unknown this tick" });
+    return null;
+  }
   const byId = new Map(
     ((users ?? []) as {
       id: string;

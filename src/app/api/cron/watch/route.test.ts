@@ -20,7 +20,13 @@ const pace = vi.hoisted(() => ({
   mapWithConcurrency: vi.fn(async () => ({ results: [], truncated: false })),
   SYNC_CONCURRENCY: 4,
 }));
-const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+  resolveAlert: vi.fn(async (_key: string, _text: string) => false),
+  // Default true so the healthy-tick tests reach the recovery path; one test below
+  // flips it to prove a healthy tick with nothing outstanding does no extra work.
+  isAlertFiring: vi.fn(async (_key: string) => true),
+}));
 const alerts = vi.hoisted(() => ({ formatWatchLapseAlert: vi.fn(() => "") }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
@@ -32,12 +38,17 @@ vi.mock("@/lib/google/sync-coalesce", () => ({ WATCH_LOCK_TTL_MS: 1000, SYNC_TIC
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/alerts", () => alerts);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
 
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  sync.loadFailingAgents.mockResolvedValue([]);
+  dispatch.isAlertFiring.mockResolvedValue(true);
+});
 
 describe("GET /api/cron/watch", () => {
   it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
@@ -60,5 +71,44 @@ describe("GET /api/cron/watch", () => {
     heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
     const res = await GET(req());
     expect(res.status).toBe(200);
+  });
+  // #1134: the watch-lapse page must say when it clears, and must NEVER all-clear on
+  // the strength of a read it could not complete. loadFailingAgents returns null for
+  // "could not determine", which used to be an empty list and so was indistinguishable
+  // from "every calendar is watched and renewing".
+  it("says so when the watch-lapse condition clears", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    await GET(req());
+    expect(dispatch.resolveAlert).toHaveBeenCalledWith("watch_lapse", expect.any(String));
+    const [, text] = dispatch.resolveAlert.mock.calls[0];
+    expect(text).toMatch(/recover|cleared/i);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("does NOT all-clear when the health signal cannot be read", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadFailingAgents.mockResolvedValue(null as never);
+    await GET(req());
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("alerts and does not all-clear while calendars are still failing to renew", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadFailingAgents.mockResolvedValue([
+      { email: "a@x.com", consecutiveFailures: 12, lastSuccessAt: null, error: "503" },
+    ] as never);
+    await GET(req());
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(dispatch.sendThrottledAlert.mock.calls[0][0]).toBe("watch_lapse");
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+  it("does no extra work on a healthy tick with no page outstanding", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    dispatch.isAlertFiring.mockResolvedValue(false);
+    await GET(req());
+    expect(sync.loadFailingAgents).not.toHaveBeenCalled();
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 });
