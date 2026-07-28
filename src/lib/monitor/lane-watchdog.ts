@@ -3,6 +3,8 @@ import {
   findStaleLanes,
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
+  RETENTION_STALE_BOUNDS_MS,
+  retentionAlertText,
   type StaleLane,
 } from "@/lib/monitor/health";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -68,8 +70,21 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   // warehouse is going stale, not that the app is down, so it must never touch
   // the external /api/health signal.
   const mirrorStale = findStaleLanes(heartbeats, now, MIRROR_STALE_BOUNDS_MS);
+  // The three daily retention lanes (#1102), judged against their own 28h bound.
+  // `neverIsStale` is ON for these: a lane that throws on its first run never
+  // stamps, and these lanes destroy customer data, so silent-forever is the worse
+  // failure. Slack only, like the mirror: stalled retention is a compliance and
+  // storage problem, not an app outage, so it must not touch /api/health.
+  const retentionStale = findStaleLanes(heartbeats, now, RETENTION_STALE_BOUNDS_MS, true);
 
-  if (stale.length === 0 && canaryStale.length === 0 && mirrorStale.length === 0) return [];
+  if (
+    stale.length === 0 &&
+    canaryStale.length === 0 &&
+    mirrorStale.length === 0 &&
+    retentionStale.length === 0
+  ) {
+    return [];
+  }
 
   if (stale.length > 0) {
     log.warn("lane-watchdog", {
@@ -117,8 +132,24 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     });
   }
 
-  return [...stale, ...canaryStale, ...mirrorStale];
+  for (const lane of retentionStale) {
+    log.warn("lane-watchdog", {
+      msg: "retention lane stale",
+      lane: lane.lane,
+      age_min: Number.isFinite(lane.ageMs) ? minutes(lane.ageMs) : -1,
+    });
+    await sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      STALE_LANE_COOLDOWN_MS,
+      retentionAlertText(lane.lane, lane.ageMs, minutes(lane.maxStaleMs)),
+    ).catch((err) => {
+      log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
+    });
+  }
+
+  return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale];
 }
+
 
 /**
  * Canary alert copy, keyed by which pass went quiet (#525, #982). The 30-min dry

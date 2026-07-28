@@ -27,17 +27,19 @@ import {
   LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
+  RETENTION_STALE_BOUNDS_MS,
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const HERE = import.meta.dirname; // scripts/
 const SRC = join(HERE, "..", "src");
 
-/** The three bounds maps the lane-watchdog and /api/health actually consult. */
+/** The bounds maps the lane-watchdog and /api/health actually consult. */
 const BOUNDS: Record<string, Record<string, number>> = {
   LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
+  RETENTION_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an
@@ -103,8 +105,8 @@ const { lanes: stamped, opaque } = stampedLanes();
 // pass by default, which is the exact false-confidence shape this file exists to
 // prevent. So require the known-good stamps to still be found.
 assert(
-  stamped.size >= 11,
-  `scan still finds the heartbeat stamp sites (expected at least 11, got ${stamped.size}: ` +
+  stamped.size >= 14,
+  `scan still finds the heartbeat stamp sites (expected at least 14, got ${stamped.size}: ` +
     `${[...stamped.keys()].sort().join(", ")}). A LOW count means the scan regressed, not that ` +
     `the stamps went away`,
 );

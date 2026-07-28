@@ -104,6 +104,27 @@ export const MIRROR_STALE_BOUNDS_MS: Record<string, number> = {
   "erasure-audit": 8 * 60 * MIN,
 };
 
+/**
+ * The three retention lanes (#1102). Until now these were watched by nothing at
+ * all: no heartbeat, no bounds entry, no alert. A lane that threw returned 500
+ * into `log.error` and stopped there, and Cloudflare logs are 7-day retention
+ * with no alerting, so the first permanent deletion of customer data in Slate was
+ * about to run with no one watching it.
+ *
+ * They fire daily at 03:00 UTC, so the bound is the cadence plus 4h of slack: one
+ * missed or failing run pages, and cron jitter never causes it.
+ *
+ * These lanes stamp on a SKIP as well as on real work, because "the cron fired"
+ * and "the cron did something" are different questions and only the first belongs
+ * to a dead-man's switch. The persistent-skip case gets its own alert from inside
+ * the lane instead (a not-ready mirror silently stops PII retention).
+ */
+export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
+  "prune-routing": 28 * 60 * MIN,
+  "prune-webhook-payloads": 28 * 60 * MIN,
+  "prune-bookings-pii": 28 * 60 * MIN,
+};
+
 export interface StaleLane {
   lane: string;
   /** How long this lane has been quiet (ms). */
@@ -121,9 +142,13 @@ export interface StaleLane {
  * a crash, a stuck lock and a bad deploy all surface the same way.
  *
  * Judges each lane against its OWN cadence bound (a 5-min lane quiet for 12 min
- * is fine; a 1-min lane quiet for 12 min is not), and never alarms on a lane that
- * has never stamped: that is a fresh deploy before its first tick, not a death.
- * Alerting there would page on every deploy and train people to ignore it.
+ * is fine; a 1-min lane quiet for 12 min is not), and by default never alarms on
+ * a lane that has never stamped: that is a fresh deploy before its first tick,
+ * not a death. Alerting there would page on every deploy and train people to
+ * ignore it. Pass `neverIsStale` to opt a bounds map out of that leniency, which
+ * the daily retention lanes do (#1102): a lane that throws on its first run never
+ * stamps, and for a lane whose job is destroying data, invisible-forever is worse
+ * than a noisy deploy.
  *
  * PURE, so it is node-testable (scripts/test-stale-lanes.ts). Where
  * computeHealthStatus reports only the single worst lane (it drives one 200/503),
@@ -133,11 +158,25 @@ export function findStaleLanes(
   lastRanAtMsByLane: Record<string, number | null | undefined>,
   nowMs: number,
   bounds: Record<string, number> = LANE_STALE_BOUNDS_MS,
+  /**
+   * Treat a lane that has NEVER stamped as stale rather than skipping it (#1102).
+   *
+   * Off by default, because for a fresh deploy before its first tick a "never
+   * stamped" lane is normal and alerting would page on every deploy. But it hides
+   * a real failure mode: a lane that throws on its very first run never stamps,
+   * so it stays invisible forever. That is tolerable for a lane firing every
+   * minute (it stamps within a minute or it is genuinely broken and other signals
+   * fire) and NOT tolerable for a daily lane whose whole job is destroying data.
+   */
+  neverIsStale = false,
 ): StaleLane[] {
   const stale: StaleLane[] = [];
   for (const [lane, maxStaleMs] of Object.entries(bounds)) {
     const lastRanAtMs = lastRanAtMsByLane[lane];
-    if (lastRanAtMs === null || lastRanAtMs === undefined) continue;
+    if (lastRanAtMs === null || lastRanAtMs === undefined) {
+      if (neverIsStale) stale.push({ lane, ageMs: Infinity, maxStaleMs });
+      continue;
+    }
     const ageMs = nowMs - lastRanAtMs;
     if (ageMs > maxStaleMs) stale.push({ lane, ageMs, maxStaleMs });
   }
@@ -244,4 +283,24 @@ export function computeHealthStatus(input: HealthInput): HealthResult {
   }
 
   return { healthy: true, httpStatus: 200, reason: "ok", staleLane: null, staleAgeMs: null };
+}
+
+/**
+ * Retention alert copy (#1102). These lanes destroy customer data, so the message
+ * says what stopped in terms of consequence, not just which cron is quiet. The
+ * never-ran case gets its own wording, because "quiet for Infinity minutes" is
+ * useless and the cause is different (it has failed every run since deploy, or it
+ * was never scheduled).
+ */
+export function retentionAlertText(lane: string, ageMs: number, boundMin: number): string {
+  const what =
+    lane === "prune-bookings-pii"
+      ? "consumer contact data past the 24 month window is not being redacted, and delivered outbox rows (which can carry the same PII) are not being pruned"
+      : lane === "prune-webhook-payloads"
+        ? "webhook payloads past the 90 day window are keeping full attendee PII"
+        : "routing decisions past the 12 month window are not being pruned";
+  if (!Number.isFinite(ageMs)) {
+    return `Slate: the ${lane} retention lane has NEVER completed a run, so ${what}. It has either failed every run since it was deployed or is not being scheduled. Check the Worker logs for tag=${lane} and the cron_${lane.replace(/-/g, "_")} lock.`;
+  }
+  return `Slate: the ${lane} retention lane has not completed for ${Math.round(ageMs / 60_000)} minutes (bound ${boundMin}m), so ${what}. Check the Worker logs for tag=${lane}.`;
 }
