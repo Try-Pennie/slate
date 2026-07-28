@@ -17,14 +17,35 @@ const slack = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/notify/slack", () => slack);
 
-// alert_state: no prior send (so the cooldown never blocks), and a spyable upsert
-// so the #1035 tests can inspect the stamped last_sent_at.
-const upsert = vi.hoisted(() => vi.fn(async (_row: unknown) => ({})));
+// alert_state stands in as a real in-memory key -> last_sent_at store rather than
+// a fixed shape, so the #1133 recovery tests can actually observe rows appearing
+// and being cleared instead of asserting against their own mock. Empty by default,
+// which is "no prior send", so the cooldown never blocks the older tests.
+const rows = vi.hoisted(() => new Map<string, string>());
+const upsert = vi.hoisted(() => vi.fn());
+const del = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
-    from: () => ({
-      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }),
-      upsert,
+    from: (_table: string) => ({
+      select: () => ({
+        eq: (_col: string, key: string) => ({
+          maybeSingle: async () => ({
+            data: rows.has(key) ? { last_sent_at: rows.get(key) } : null,
+          }),
+        }),
+      }),
+      upsert: async (row: { key: string; last_sent_at: string }) => {
+        upsert(row);
+        rows.set(row.key, row.last_sent_at);
+        return {};
+      },
+      delete: () => ({
+        eq: async (_col: string, key: string) => {
+          del(key);
+          rows.delete(key);
+          return {};
+        },
+      }),
     }),
   }),
 }));
@@ -33,13 +54,14 @@ vi.mock("@/lib/supabase/admin", () => ({
 const warn = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/log", () => ({ log: { warn: (...a: unknown[]) => warn(...a) } }));
 
-import { sendThrottledInfo, sendThrottledAlert } from "./dispatch";
+import { sendThrottledInfo, sendThrottledAlert, resolveAlert, firingKey } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
 import { __clearChannelCache } from "@/lib/notify/channels";
 
 const ENV = process.env;
 beforeEach(() => {
   vi.clearAllMocks();
+  rows.clear();
   process.env = { ...ENV };
   // #571: the info channel now comes from a store-aware, briefly-cached resolver;
   // clear it so each test's env is honored (the mocked config table is empty).
@@ -91,8 +113,16 @@ describe("sendThrottledInfo", () => {
 
 describe("sendThrottledAlert delivery-aware cooldown (#1035)", () => {
   const COOLDOWN = 30 * 60 * 1000;
-  const stampedMs = () =>
-    Date.parse((upsert.mock.calls[0][0] as { last_sent_at: string }).last_sent_at);
+  // The cooldown row, picked by key: a successful send also writes the #1133
+  // firing marker, so the cooldown stamp is no longer simply the first call.
+  const stampedMs = (key: string) =>
+    Date.parse(
+      (
+        upsert.mock.calls
+          .map((c) => c[0] as { key: string; last_sent_at: string })
+          .find((r) => r.key === key) as { last_sent_at: string }
+      ).last_sent_at,
+    );
 
   it("on a successful send: stamps ~now (full cooldown applies) and does not warn", async () => {
     slack.postSlack.mockResolvedValueOnce({ ok: true });
@@ -101,9 +131,8 @@ describe("sendThrottledAlert delivery-aware cooldown (#1035)", () => {
     const after = Date.now();
 
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
-    expect(upsert).toHaveBeenCalledTimes(1);
-    expect(stampedMs()).toBeGreaterThanOrEqual(before - 1000);
-    expect(stampedMs()).toBeLessThanOrEqual(after + 1000);
+    expect(stampedMs("k1")).toBeGreaterThanOrEqual(before - 1000);
+    expect(stampedMs("k1")).toBeLessThanOrEqual(after + 1000);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -113,11 +142,89 @@ describe("sendThrottledAlert delivery-aware cooldown (#1035)", () => {
     await sendThrottledAlert("k2", COOLDOWN, "hello");
 
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(upsert).toHaveBeenCalledTimes(1);
     // next-eligible = stamp + cooldown should land ~now + 2min, far below the
     // full-cooldown horizon, proving the alert is not silently muted.
-    const nextEligible = stampedMs() + COOLDOWN;
+    const nextEligible = stampedMs("k2") + COOLDOWN;
     expect(nextEligible).toBeLessThan(before + 5 * 60 * 1000);
     expect(nextEligible).toBeGreaterThanOrEqual(before + 60 * 1000);
+  });
+});
+
+// #1133: an actionable page must say when it clears. Silence is indistinguishable
+// from the cooldown still running, so a cleared condition sends a recovery notice
+// exactly once, and only when a page was actually DELIVERED.
+describe("resolveAlert recovery notice (#1133)", () => {
+  const COOLDOWN = 30 * 60 * 1000;
+
+  it("records a firing marker only when the page was actually delivered", async () => {
+    slack.postSlack.mockResolvedValueOnce({ ok: true });
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    expect(rows.has(firingKey("sync_failures"))).toBe(true);
+
+    rows.clear();
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    expect(rows.has(firingKey("sync_failures"))).toBe(false);
+  });
+
+  it("no-ops when nothing was firing (never announces a recovery from a page that never fired)", async () => {
+    const sent = await resolveAlert("sync_failures", "all better");
+    expect(sent).toBe(false);
+    expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+
+  it("posts the recovery notice and clears both the marker and the cooldown", async () => {
+    slack.postSlack.mockResolvedValueOnce({ ok: true });
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    vi.clearAllMocks();
+
+    slack.postSlack.mockResolvedValueOnce({ ok: true });
+    const sent = await resolveAlert("sync_failures", "all better");
+
+    expect(sent).toBe(true);
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: "all better" });
+    expect(rows.has(firingKey("sync_failures"))).toBe(false);
+    // The cooldown row goes too, so a genuinely NEW incident pages immediately
+    // instead of being muted for the remainder of the old cooldown.
+    expect(rows.has("sync_failures")).toBe(false);
+  });
+
+  it("sends the notice at most once for one incident", async () => {
+    slack.postSlack.mockResolvedValueOnce({ ok: true });
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    slack.postSlack.mockResolvedValue({ ok: true });
+
+    expect(await resolveAlert("sync_failures", "all better")).toBe(true);
+    expect(await resolveAlert("sync_failures", "all better")).toBe(false);
+    expect(await resolveAlert("sync_failures", "all better")).toBe(false);
+  });
+
+  // Failure path: a recovery notice that fails to send must be RETRIED, not lost.
+  it("keeps the marker and warns when the recovery notice fails to send", async () => {
+    slack.postSlack.mockResolvedValueOnce({ ok: true });
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    vi.clearAllMocks();
+
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    const sent = await resolveAlert("sync_failures", "all better");
+
+    expect(sent).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(rows.has(firingKey("sync_failures"))).toBe(true);
+
+    // ...and the next tick gets it through.
+    slack.postSlack.mockResolvedValueOnce({ ok: true });
+    expect(await resolveAlert("sync_failures", "all better")).toBe(true);
+    expect(rows.has(firingKey("sync_failures"))).toBe(false);
+  });
+
+  it("no-ops when Slack is unconfigured", async () => {
+    rows.set(firingKey("sync_failures"), new Date().toISOString());
+    slack.slackConfigured.mockReturnValueOnce(false);
+    expect(await resolveAlert("sync_failures", "all better")).toBe(false);
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    // The marker survives, so the notice still goes out once Slack is configured.
+    expect(rows.has(firingKey("sync_failures"))).toBe(true);
   });
 });

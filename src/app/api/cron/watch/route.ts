@@ -23,7 +23,7 @@ async function alertWatchLapse(failing: FailingAgent[], totalAgents: number): Pr
   await sendThrottledAlert(
     "watch_lapse",
     WATCH_ALERT_COOLDOWN_MS,
-    formatWatchLapseAlert(failing, totalAgents),
+    formatWatchLapseAlert(failing, totalAgents, Date.now()),
   );
 }
 

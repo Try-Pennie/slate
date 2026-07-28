@@ -21,8 +21,12 @@ import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { formatSyncFailureAlert, isConsecutiveFailure } from "@/lib/notify/alerts";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import {
+  formatSyncFailureAlert,
+  formatSyncRecoveryNotice,
+  isConsecutiveFailure,
+} from "@/lib/notify/alerts";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import { log } from "@/lib/log";
@@ -39,6 +43,23 @@ export const dynamic = "force-dynamic";
 const SYNC_STREAK_KEY = "cron_sync_failures";
 const SYNC_STREAK_WINDOW_S = 600;
 const SYNC_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const SYNC_ALERT_KEY = "sync_failures";
+
+/**
+ * Say so when the sync-failure page clears (#1133). A no-op unless a page was
+ * actually delivered, so it's safe to offer on every clean tick.
+ */
+async function resolveSyncFailureAlert(): Promise<void> {
+  // Never throws: a monitoring failure must not become a sync failure (same rule
+  // as alertOnStaleLanes below). The firing marker survives a failure, so the
+  // notice is retried next tick rather than lost.
+  try {
+    const sent = await resolveAlert(SYNC_ALERT_KEY, formatSyncRecoveryNotice());
+    if (sent) log.info("sync", { msg: "sync-failure alert cleared" });
+  } catch (err) {
+    log.error("sync", { msg: "recovery notice failed" }, err);
+  }
+}
 
 async function alertSyncFailures(
   failed: { error?: string }[],
@@ -47,6 +68,7 @@ async function alertSyncFailures(
   const db = supabaseAdmin();
   if (failed.length === 0) {
     await db.from("rate_limits").delete().eq("key", SYNC_STREAK_KEY);
+    await resolveSyncFailureAlert();
     return;
   }
   const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
@@ -65,11 +87,17 @@ async function alertSyncFailures(
   // the watch-lapse alert — not an anonymous count. If none are at the streak
   // threshold yet, stay quiet rather than send an empty-named alert.
   const failing = await loadFailingAgents();
-  if (failing.length === 0) return;
+  // Nothing is at its paging threshold (including a lone transient agent still
+  // inside the #1133 hold), so the paged condition is clear even though this tick
+  // saw errors: say it cleared rather than leaving the reader in silence.
+  if (failing.length === 0) {
+    await resolveSyncFailureAlert();
+    return;
+  }
   await sendThrottledAlert(
-    "sync_failures",
+    SYNC_ALERT_KEY,
     SYNC_ALERT_COOLDOWN_MS,
-    formatSyncFailureAlert(failing, totalAgents),
+    formatSyncFailureAlert(failing, totalAgents, Date.now()),
   );
 }
 

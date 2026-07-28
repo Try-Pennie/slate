@@ -39,6 +39,7 @@ import {
 import {
   dedupeFailingAgents,
   isPageableFailure,
+  applyBlastRadiusHold,
   type FailingAgent,
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
@@ -280,7 +281,21 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
       deactivated_at: u?.deactivated_at ?? null,
     };
   });
-  return dedupeFailingAgents(rows);
+  // #1133: the per-kind streak filter above is per-ROW and cannot see how many
+  // AGENTS are affected, which is the difference between "one flaky calendar" and
+  // "something is systemically broken". So the blast-radius hold is applied last,
+  // after dedup: a lone transient agent waits out TRANSIENT_HOLD_MS, several page
+  // at once on the fast threshold, and a gone account is never held.
+  //
+  // Applied HERE, so it covers the watch-lapse lane as well as the sync lane
+  // (same helper, same noise problem, so fix the class). Two notes on that:
+  //   - TRANSIENT_HOLD_PASSES is calibrated on the 1-minute sync cadence, and the
+  //     watch lane runs every ~5 min. It shares this streak column, so a real
+  //     transient problem still accumulates at 1/min from the sync lane, which is
+  //     what satisfies the pass count.
+  //   - A delayed watch-lapse page is safe by construction: it means Google push
+  //     is degraded, and availability is already being carried by the backup cron.
+  return applyBlastRadiusHold(dedupeFailingAgents(rows), Date.now());
 }
 
 // Cap rows per DB call so even a huge calendar's bootstrap stays well under the
