@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { mapWithConcurrency } from "@/lib/google/sync-pace";
-import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
@@ -20,6 +20,8 @@ import {
   formatDataAnomalyAlert,
   formatBookedSolidNotice,
   formatFallbackCoveredNotice,
+  availabilityAlertVerdict,
+  formatAvailabilityRecovery,
   type BucketHealth,
   type WorkingRule,
 } from "@/lib/monitor/availability-health";
@@ -258,12 +260,25 @@ export async function GET(req: NextRequest) {
           log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
       });
     }
-    if (cause.dataAnomaly.length || cause.unverified.length) {
+    // #1134: three outcomes, not two. `unknown` is a scan that ran out of budget
+    // before covering every bucket, so its empty anomaly list proves nothing and
+    // must neither page nor all-clear. Without that third case the recovery notice
+    // would fire off a scan that never looked.
+    const availabilityVerdict = availabilityAlertVerdict(cause, truncated);
+    if (availabilityVerdict === "alerting") {
       await sendThrottledAlert(
         DATA_ANOMALY_ALERT_KEY,
         settings.cooldownMs.availability_data_anomaly,
         formatDataAnomalyAlert(cause, selfHeal.healed),
       ).catch(() => {});
+    } else if (availabilityVerdict === "healthy") {
+      // Reachable on the ordinary healthy tick, which is the point: a recovery
+      // gated on the fault still being present could never run.
+      const cleared = await resolveAlert(
+        DATA_ANOMALY_ALERT_KEY,
+        formatAvailabilityRecovery(),
+      ).catch(() => false);
+      if (cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
     }
     if (cause.bookedSolid.length) {
       await sendThrottledInfo(
@@ -486,6 +501,10 @@ export async function GET(req: NextRequest) {
       shippedVersion: SHIPPED_MIGRATION_VERSION,
       readAppliedVersions: readAppliedMigrationVersions,
       notify: sendThrottledAlert,
+      // #1134: say so when the schema catches up. This page is cleared by a human
+      // running a migration, so silence afterwards is ambiguous: it looks the same
+      // as the cooldown still running.
+      resolve: resolveAlert,
       cooldownMs: settings.cooldownMs.migration_version_lag,
       log: (msg, status, applied) =>
         log.info("migration-drift", {

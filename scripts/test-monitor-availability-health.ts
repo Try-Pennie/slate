@@ -13,7 +13,10 @@ import {
   formatDataAnomalyAlert,
   formatBookedSolidNotice,
   isBroadRecomputeFailure,
+  availabilityAlertVerdict,
+  formatAvailabilityRecovery,
   type WorkingRule,
+  type DeadEndCause,
 } from "../src/lib/monitor/availability-health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -267,6 +270,56 @@ const ladder = (code: string) => {
   assert(msg.includes("FULL1") && msg.includes("FULL2"), "booked-solid notice names the tiers");
   assert(/capacity|booked solid|staffing/i.test(msg), "booked-solid notice reads as a capacity heads up");
   assert(!DASHES.test(msg), "booked-solid notice has no dashes");
+}
+
+// --- #1134: when may the data-anomaly page be cleared? -----------------------
+//
+// Three outcomes, not two. The trap this issue exists for is collapsing "we found
+// nothing wrong" and "we did not finish looking" into one healthy verdict: the
+// monitor's bucket scan is budget-bounded, so a slow tick can stop early and
+// report an empty anomaly list having examined a fraction of the buckets.
+{
+  const none: DeadEndCause = { bookedSolid: [], dataAnomaly: [], unverified: [] };
+  assert(
+    availabilityAlertVerdict(none, false) === "healthy",
+    "a complete scan that found no anomalies is health",
+  );
+  assert(
+    availabilityAlertVerdict(none, true) === "unknown",
+    "a TRUNCATED scan that found no anomalies is not health: it did not look everywhere",
+  );
+  assert(
+    availabilityAlertVerdict({ ...none, dataAnomaly: ["411"] }, false) === "alerting",
+    "an anomaly alerts",
+  );
+  assert(
+    availabilityAlertVerdict({ ...none, unverified: ["411"] }, false) === "alerting",
+    "a bucket whose cause could not be verified alerts, rather than passing as healthy",
+  );
+  // A real finding still alerts even from a partial scan: not finishing does not
+  // make what we DID find any less true.
+  assert(
+    availabilityAlertVerdict({ ...none, dataAnomaly: ["411"] }, true) === "alerting",
+    "an anomaly found during a truncated scan still alerts",
+  );
+  // Booked solid is a capacity fact, deliberately informational. It must not hold
+  // the anomaly page open, or a genuinely full calendar would suppress the
+  // all-clear indefinitely.
+  assert(
+    availabilityAlertVerdict({ ...none, bookedSolid: ["411", "412"] }, false) === "healthy",
+    "booked-solid buckets do not block the anomaly all-clear",
+  );
+}
+
+{
+  const msg = formatAvailabilityRecovery();
+  assert(/recover|cleared|showing times|back/i.test(msg), "the all-clear says the condition cleared");
+  assert(/no action/i.test(msg), "the all-clear tells the reader there is nothing to do");
+  assert(
+    !/check the precompute|calendar sync pipeline/i.test(msg),
+    "the all-clear does not repeat the page's investigate-the-pipeline instruction",
+  );
+  assert(!DASHES.test(msg), "the all-clear has no dashes");
 }
 
 finish();

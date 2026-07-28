@@ -1,6 +1,7 @@
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import {
   findStaleLanes,
+  LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
@@ -8,7 +9,12 @@ import {
   neverStampedVerdict,
   type StaleLane,
 } from "@/lib/monitor/health";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import {
+  sendThrottledAlert,
+  resolveAlert,
+  existingAlertStateKeys,
+  firingKey,
+} from "@/lib/notify/dispatch";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 
@@ -79,14 +85,11 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   // storage problem, not an app outage, so it must not touch /api/health.
   const retentionStale = findStaleLanes(heartbeats, now, RETENTION_STALE_BOUNDS_MS, true);
 
-  if (
-    stale.length === 0 &&
-    canaryStale.length === 0 &&
-    mirrorStale.length === 0 &&
-    retentionStale.length === 0
-  ) {
-    return [];
-  }
+  // #1134: NO early return on the all-healthy tick. There used to be one here, and
+  // it would have made the recovery notice below unreachable on the single path
+  // that matters: a fleet that has healed produces an empty stale list by
+  // definition. The loops below are no-ops on empty lists, so the healthy tick
+  // costs only the one bulk firing-marker read that `resolveRecoveredLanes` does.
 
   if (stale.length > 0) {
     log.warn("lane-watchdog", {
@@ -166,7 +169,170 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     });
   }
 
+  await resolveRecoveredLanes(
+    heartbeats,
+    now,
+    new Set([...stale, ...canaryStale, ...mirrorStale, ...retentionStale].map((l) => l.lane)),
+  );
+
   return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale];
+}
+
+/**
+ * The four lane families and the all-clear each one speaks (#1134).
+ *
+ * Kept alongside the four alert-text functions rather than collapsed into one
+ * generic "recovered": these lanes fail for different reasons, are recovered by
+ * different people doing different things, and #1123 already had to unpick one
+ * shared message that pointed responders at the wrong lane and lock. An all-clear
+ * that names the wrong thing is the same defect facing the other way.
+ */
+const LANE_FAMILIES: { bounds: Record<string, number>; recovery: (lane: string) => string }[] = [
+  { bounds: LANE_STALE_BOUNDS_MS, recovery: laneRecoveryText },
+  { bounds: CANARY_STALE_BOUNDS_MS, recovery: canaryRecoveryText },
+  { bounds: MIRROR_STALE_BOUNDS_MS, recovery: mirrorRecoveryText },
+  { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText },
+];
+
+/**
+ * Announce that a lane which was paged is stamping again (#1134).
+ *
+ * Recovery needs POSITIVE evidence, not merely the absence of a staleness verdict.
+ * A lane qualifies only if it has a heartbeat AND that heartbeat is inside its own
+ * bound. A lane missing from the table entirely has not recovered, it has never
+ * been seen, and `findStaleLanes` skips it silently for every family except
+ * retention, so "not in the stale list" alone would quietly all-clear it.
+ *
+ * Reached only after a SUCCESSFUL heartbeat read: the caller returns early when
+ * that read throws, because a failed query is not evidence that any lane is fine.
+ * That is the #1149 lesson, and this lane is where conflating the two would be
+ * worst, since it would declare the whole cron fleet healthy at once.
+ *
+ * One bulk read decides which pages are outstanding, because the watchdog runs on
+ * the every-minute lane against roughly fifteen lanes and a read per lane would be
+ * fifteen queries a minute on the shared cron budget. On the ordinary healthy tick
+ * nothing is firing, so this costs exactly one read and sends nothing.
+ */
+async function resolveRecoveredLanes(
+  heartbeats: Record<string, number | null>,
+  now: number,
+  staleLanes: Set<string>,
+): Promise<void> {
+  const recovered: { key: string; lane: string; text: string; retention: boolean }[] = [];
+  for (const { bounds, recovery } of LANE_FAMILIES) {
+    for (const [lane, maxStaleMs] of Object.entries(bounds)) {
+      if (staleLanes.has(lane)) continue;
+      const lastRanAtMs = heartbeats[lane];
+      if (lastRanAtMs === null || lastRanAtMs === undefined) continue;
+      if (now - lastRanAtMs > maxStaleMs) continue;
+      recovered.push({
+        key: staleLaneAlertKey(lane),
+        lane,
+        text: recovery(lane),
+        retention: bounds === RETENTION_STALE_BOUNDS_MS,
+      });
+    }
+  }
+  if (recovered.length === 0) return;
+
+  // Both questions this tick has about `alert_state` in ONE read: which lane pages
+  // are outstanding, and which recovered retention lanes still carry a stale
+  // first-sighting marker. Asking separately, or blind-deleting the markers, would
+  // add a query or a write per lane per minute to the shared cron budget for
+  // rows that almost never exist.
+  const present = await existingAlertStateKeys([
+    ...recovered.map((r) => firingKey(r.key)),
+    ...recovered.filter((r) => r.retention).map((r) => firstSeenKey(r.lane)),
+  ]).catch((err) => {
+    log.warn("lane-watchdog", { msg: "alert-state read failed; recovery deferred" });
+    void err;
+    return new Set<string>();
+  });
+
+  for (const r of recovered) {
+    // A recovered retention lane drops its "first noticed missing" marker (#1102).
+    // That was only cleared for a lane still in the stale list, so a lane that
+    // never stamped and then came good kept a marker dated to its original
+    // sighting; if it ever vanished again its grace window would already be spent
+    // and it would page instantly instead of waiting out a fresh one.
+    if (r.retention && present.has(firstSeenKey(r.lane))) {
+      await clearFirstSeenMissing(r.lane);
+    }
+    if (!present.has(firingKey(r.key))) continue;
+    const sent = await resolveAlert(r.key, r.text).catch((err) => {
+      // One lane's failed notice must not skip the rest, and the firing marker
+      // survives, so the next tick retries.
+      log.error("lane-watchdog", { msg: "recovery notice failed", lane: r.lane }, err);
+      return false;
+    });
+    if (sent) log.info("lane-watchdog", { msg: "lane-stale alert cleared", lane: r.lane });
+  }
+}
+
+/** All-clear for a Worker cron lane. Carries no remediation: the page sent the
+ *  reader to check for a CPU kill and a stuck lock, and repeating that here would
+ *  send them after a fault that is over. */
+function laneRecoveryText(lane: string): string {
+  return (
+    `Slate: the ${lane} cron lane is running again. It has stamped a heartbeat inside ` +
+    `its bound, so the work it had stopped doing is happening again and the earlier ` +
+    `page is cleared. No action is needed.`
+  );
+}
+
+/** All-clear for the external booking canary, keyed like its alert (#525, #982). */
+function canaryRecoveryText(lane: string): string {
+  if (lane === "smoke-canary-full") {
+    return (
+      `Slate: the booking smoke canary's full end to end pass is running again, so the ` +
+      `automated proof that a booking can be created, rescheduled and cancelled is back ` +
+      `in place. No action is needed.`
+    );
+  }
+  return (
+    `Slate: the booking smoke canary is running again, so the automated end to end ` +
+    `booking check is back in place. No action is needed.`
+  );
+}
+
+/** All-clear for the Snowflake mirror lanes, keyed like its alert (#1101, #1123). */
+function mirrorRecoveryText(lane: string): string {
+  if (lane === "snowflake-reconcile") {
+    return (
+      `Slate: the check comparing the live database against the Snowflake mirror is ` +
+      `running again, so the warehouse is being verified against the source once more. ` +
+      `Anything that was treated as unverified while it was quiet, including export ` +
+      `gated deletion, is being checked again. No action is needed.`
+    );
+  }
+  if (lane === "erasure-audit") {
+    return (
+      `Slate: the check proving an erased person's data is really gone from the ` +
+      `Snowflake warehouse is running again, so deletion requests are being watched ` +
+      `through to the end once more. No action is needed.`
+    );
+  }
+  if (lane === "snowflake-check") {
+    return (
+      `Slate: the Snowflake warehouse self check is passing again, so the statements ` +
+      `the retention and erasure work depends on are known to run against the real ` +
+      `warehouse. No action is needed.`
+    );
+  }
+  return (
+    `Slate: the Snowflake mirror export lane is running again, so the analytics ` +
+    `warehouse is being kept up to date. No action is needed.`
+  );
+}
+
+/** All-clear for a daily retention lane (#1102). These destroy customer data, so
+ *  the notice says plainly that the deletion work has resumed. */
+function retentionRecoveryText(lane: string): string {
+  return (
+    `Slate: the ${lane} retention lane is running again, so the scheduled deleting of ` +
+    `aged data has resumed and the retention window is being honored. No action is ` +
+    `needed.`
+  );
 }
 
 

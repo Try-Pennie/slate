@@ -94,6 +94,60 @@ export async function isAlertFiring(key: string): Promise<boolean> {
 }
 
 /**
+ * `isAlertFiring` for a SET of keys, in one read (#1134).
+ *
+ * The lane watchdog watches roughly fifteen lanes, each with its own alert key,
+ * and it runs on the every-minute sync lane. Asking per key would add fifteen
+ * queries a minute to the tightest budget in the system: the four minute-lanes
+ * share a single Worker invocation and its subrequest ceiling. This answers for
+ * the whole set at once, so the overwhelmingly common healthy tick costs ONE read
+ * and resolves nothing.
+ *
+ * Answers in the CALLER's key space, not the internal `alert_firing:` marker
+ * space, so a caller cannot accidentally hand a prefixed key back to
+ * `resolveAlert` and clear the wrong row.
+ *
+ * Fails CLOSED like `isAlertFiring`: an empty set on a read error. A wrong "not
+ * firing" only defers a recovery notice by a tick and the markers survive, while a
+ * wrong "firing" would send callers off to prove a health they cannot establish.
+ */
+export async function firingAlertKeys(keys: string[]): Promise<Set<string>> {
+  const present = await existingAlertStateKeys(keys.map(firingKey));
+  const firing = new Set<string>();
+  for (const k of keys) if (present.has(firingKey(k))) firing.add(k);
+  return firing;
+}
+
+/**
+ * Which of these RAW `alert_state` keys exist, in one read (#1134).
+ *
+ * The generic form under `firingAlertKeys`, exported because `alert_state` holds
+ * more than firing markers: the lane watchdog also keeps a "first noticed missing"
+ * marker per never-stamped lane. Sharing one read lets a caller settle every
+ * question it has about that table per tick instead of one query per key, which
+ * matters because the watchdog runs on the every-minute lane.
+ *
+ * Fails CLOSED (an empty set on a read error). Every caller treats "not present"
+ * as "do nothing", so a failed read defers work by a tick rather than inventing it.
+ */
+export async function existingAlertStateKeys(keys: string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  // cap-safe: bounded by `keys`, a caller-supplied list (the lane roster), never a
+  // growth table.
+  // error-ok: an empty set on error defers the work one tick; it can never invent a
+  // recovery, and the rows survive for the next attempt.
+  const { data, error } = await supabaseAdmin()
+    .from("alert_state")
+    .select("key")
+    .in("key", keys);
+  if (error) {
+    log.warn("slack-alert", { msg: "alert-state key read failed", keys: keys.length });
+    return new Set();
+  }
+  return new Set(((data ?? []) as { key: string }[]).map((r) => r.key));
+}
+
+/**
  * Announce that a previously-paged condition has CLEARED (#1133), then reset it.
  *
  * A no-op unless a page for `key` was actually delivered, so this can be called

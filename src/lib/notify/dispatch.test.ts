@@ -24,6 +24,9 @@ vi.mock("@/lib/notify/slack", () => slack);
 const rows = vi.hoisted(() => new Map<string, string>());
 const upsert = vi.hoisted(() => vi.fn());
 const del = vi.hoisted(() => vi.fn());
+// #1134: lets a test make every read error, to prove the bulk firing read fails
+// closed rather than inventing an answer.
+const failReads = vi.hoisted(() => ({ value: false }));
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: (_table: string) => ({
@@ -33,6 +36,11 @@ vi.mock("@/lib/supabase/admin", () => ({
             data: rows.has(key) ? { last_sent_at: rows.get(key) } : null,
           }),
         }),
+        // The bulk firing-marker read (#1134).
+        in: async (_col: string, keys: string[]) =>
+          failReads.value
+            ? { data: null, error: { message: "read timeout" } }
+            : { data: keys.filter((k) => rows.has(k)).map((key) => ({ key })), error: null },
       }),
       upsert: async (row: { key: string; last_sent_at: string }) => {
         upsert(row);
@@ -54,7 +62,14 @@ vi.mock("@/lib/supabase/admin", () => ({
 const warn = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/log", () => ({ log: { warn: (...a: unknown[]) => warn(...a) } }));
 
-import { sendThrottledInfo, sendThrottledAlert, resolveAlert, isAlertFiring, firingKey } from "./dispatch";
+import {
+  sendThrottledInfo,
+  sendThrottledAlert,
+  resolveAlert,
+  isAlertFiring,
+  firingAlertKeys,
+  firingKey,
+} from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
 import { __clearChannelCache } from "@/lib/notify/channels";
 
@@ -62,6 +77,7 @@ const ENV = process.env;
 beforeEach(() => {
   vi.clearAllMocks();
   rows.clear();
+  failReads.value = false;
   process.env = { ...ENV };
   // #571: the info channel now comes from a store-aware, briefly-cached resolver;
   // clear it so each test's env is honored (the mocked config table is empty).
@@ -241,6 +257,45 @@ describe("resolveAlert recovery notice (#1133)", () => {
       await sendThrottledAlert("watch_lapse", COOLDOWN, "broken");
       expect(await isAlertFiring("watch_lapse")).toBe(true);
       expect(await isAlertFiring("sync_failures")).toBe(false);
+    });
+  });
+
+  // #1134: the lane watchdog asks about ~15 keys on the every-minute lane, and
+  // one read each would be 15 extra queries a minute on the tightest budget in
+  // the system (the four minute-lanes share one invocation). This answers for the
+  // whole set in a single read.
+  describe("firingAlertKeys", () => {
+    it("returns only the keys that are actually firing", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert("cron_lane_stale:sync", COOLDOWN, "broken");
+      await sendThrottledAlert("cron_lane_stale:outbox", COOLDOWN, "broken");
+
+      const firing = await firingAlertKeys([
+        "cron_lane_stale:sync",
+        "cron_lane_stale:outbox",
+        "cron_lane_stale:watch",
+      ]);
+
+      expect(firing.has("cron_lane_stale:sync")).toBe(true);
+      expect(firing.has("cron_lane_stale:outbox")).toBe(true);
+      expect(firing.has("cron_lane_stale:watch")).toBe(false);
+      // Answers in the caller's own key space, not the internal marker prefix,
+      // so a caller can never accidentally resolve the wrong key.
+      expect([...firing].some((k) => k.startsWith("alert_firing:"))).toBe(false);
+    });
+
+    it("returns an empty set for no keys without reading at all", async () => {
+      const firing = await firingAlertKeys([]);
+      expect(firing.size).toBe(0);
+    });
+
+    it("returns an empty set when the read fails, so nothing is resolved on a bad query", async () => {
+      // Fails CLOSED, matching isAlertFiring: a wrong "not firing" only defers a
+      // recovery notice one tick, and the marker survives. A wrong "firing" would
+      // be worse, sending callers to prove health they cannot establish.
+      failReads.value = true;
+      const firing = await firingAlertKeys(["cron_lane_stale:sync"]);
+      expect(firing.size).toBe(0);
     });
   });
 
