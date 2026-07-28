@@ -302,15 +302,24 @@ export interface AgentCalendar {
   sync_pending: boolean;
   /** Per-calendar sync claim; stale after CALENDAR_CLAIM_TTL_MS. */
   sync_claimed_at: string | null;
-  /** Diagnostics (#273): last error message from sync/watch, or null if healthy. */
+  /** SYNC diagnostics (#273): last error from the 1-min events.list pass. */
   last_sync_error: string | null;
-  /** Diagnostics (#273): consecutive failed passes; 0 when last attempt succeeded. */
+  /** SYNC diagnostics (#273): consecutive failed passes; 0 when last attempt succeeded. */
   consecutive_failures: number;
-  /** Diagnostics (#273): last time this calendar synced/renewed cleanly. */
+  /** SYNC diagnostics (#273): last time this calendar synced cleanly. */
   last_success_at: string | null;
-  /** Diagnostics (#916): classification of the last failure ('gone' |
+  /** SYNC diagnostics (#916): classification of the last failure ('gone' |
    *  'transient'), or null when the last attempt succeeded / predates #916. */
   last_failure_kind: "gone" | "transient" | null;
+  /** WATCH diagnostics (#1150): the same four facts for the ~5-min push-channel
+   *  renewal lane, kept in their OWN columns. Sharing one counter let a
+   *  successful sync clear a renewal failure within the minute, so a watch-only
+   *  failure could never reach a paging threshold. Days-old values are NORMAL
+   *  here: a healthy channel is only renewed within 3 days of its ~7-day expiry. */
+  watch_consecutive_failures: number;
+  watch_last_success_at: string | null;
+  watch_last_error: string | null;
+  watch_last_failure_kind: "gone" | "transient" | null;
   created_at: string;
 }
 

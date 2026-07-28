@@ -57,3 +57,56 @@ export function nextSyncState(
     last_failure_kind: outcome.kind ?? null,
   };
 }
+
+/**
+ * Which lane's health a read or write is about (#1150). The transition above is
+ * shared, but the two lanes must land in DIFFERENT columns.
+ */
+export type HealthLane = "sync" | "watch";
+
+/**
+ * The `agent_calendars` columns each lane's health lives in (#1150).
+ *
+ * Both lanes used to write the sync set, and they run at different cadences: the
+ * sync lane every minute (resetting the streak on each success) and the watch
+ * lane every ~5 minutes (incrementing it on a failed renewal). A renewal failure
+ * was therefore erased before it could reach a paging threshold, which made
+ * "Google push is degraded but events still sync" impossible to alert on, and a
+ * successful renewal could equally erase a real sync-failure streak.
+ *
+ * Kept as data rather than two hand-written mappers so a caller cannot name one
+ * lane and write the other's column, and so a test can assert directly that the
+ * two sets do not overlap.
+ */
+export const LANE_COLUMNS = {
+  sync: {
+    failures: "consecutive_failures",
+    lastSuccess: "last_success_at",
+    error: "last_sync_error",
+    kind: "last_failure_kind",
+  },
+  watch: {
+    failures: "watch_consecutive_failures",
+    lastSuccess: "watch_last_success_at",
+    error: "watch_last_error",
+    kind: "watch_last_failure_kind",
+  },
+} as const satisfies Record<HealthLane, Record<string, string>>;
+
+/**
+ * A health state as the column payload for ONE lane (#1150), the shape handed
+ * to the `agent_calendars` update. Only that lane's four columns appear, so a
+ * write can never touch the other lane's streak.
+ */
+export function laneHealthUpdate(
+  lane: HealthLane,
+  next: CalSyncHealth,
+): Record<string, string | number | null> {
+  const col = LANE_COLUMNS[lane];
+  return {
+    [col.failures]: next.consecutive_failures,
+    [col.lastSuccess]: next.last_success_at,
+    [col.error]: next.last_sync_error,
+    [col.kind]: next.last_failure_kind,
+  };
+}

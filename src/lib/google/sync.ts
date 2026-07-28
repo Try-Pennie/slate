@@ -33,6 +33,9 @@ import {
 import { stampLastSynced, type SyncWritesDb } from "@/lib/google/sync-writes";
 import {
   nextSyncState,
+  laneHealthUpdate,
+  LANE_COLUMNS,
+  type HealthLane,
   type CalSyncHealth,
   type SyncOutcome,
 } from "@/lib/google/sync-health";
@@ -40,6 +43,8 @@ import {
   dedupeFailingAgents,
   isPageableFailure,
   applyBlastRadiusHold,
+  SYNC_PAGING,
+  WATCH_PAGING,
   type FailingAgent,
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
@@ -226,12 +231,22 @@ export async function markAgentsSynced(userIds: string[]): Promise<void> {
 }
 
 /**
- * Agents whose calendars are PERSISTENTLY failing (#273): one entry per agent,
- * worst calendar kept, for the named alert. `minFailures` matches the
- * consecutive-failure threshold so a transient one-off blip stays quiet.
+ * Agents whose calendars are PERSISTENTLY failing on ONE lane (#273, #1150): one
+ * entry per agent, worst calendar kept, for that lane's named alert.
+ *
+ * The lane decides which columns are read and which paging policy is applied.
+ * They are genuinely different questions: the sync lane asks "are this agent's
+ * events reaching the availability cache", the watch lane asks "is this agent's
+ * Google push channel still being renewed". Sharing one counter (the pre-#1150
+ * arrangement) meant the minute-cadence sync lane cleared the watch lane's
+ * streak on its next success, so the watch question could never be answered.
  */
-export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[] | null> {
+export async function loadFailingAgents(
+  lane: HealthLane = "sync",
+): Promise<FailingAgent[] | null> {
   const db = supabaseAdmin();
+  const col = LANE_COLUMNS[lane];
+  const policy = lane === "watch" ? WATCH_PAGING : SYNC_PAGING;
   // Two reads joined in code (the codebase convention, cf. loadSyncAgents):
   // the failing calendars, then the users they belong to.
   // #1134: null means "could not determine", NOT "nothing is failing". Both reads
@@ -242,24 +257,32 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
   // error-ok: returned as null below, so the caller neither alerts nor all-clears.
   const { data: cals, error: calsError } = await db
     .from("agent_calendars")
-    .select("user_id, consecutive_failures, last_success_at, last_sync_error, last_failure_kind")
-    .gte("consecutive_failures", minFailures);
+    .select(`user_id, ${col.failures}, ${col.lastSuccess}, ${col.error}, ${col.kind}`)
+    // The lower of the lane's two per-kind thresholds is the query floor; the
+    // per-kind filter below is what actually decides.
+    .gte(col.failures, Math.min(policy.gonePageAt, policy.transientPageAt));
   if (calsError) {
     log.warn("sync", { msg: "failing-agent read failed; health unknown this tick" });
     return null;
   }
-  const calRows = ((cals ?? []) as {
-    user_id: string;
-    consecutive_failures: number;
-    last_success_at: string | null;
-    last_sync_error: string | null;
-    last_failure_kind: string | null;
-  }[])
+  // Normalised out of the lane's columns into one shape, so everything below
+  // (the threshold filter, the join, the dedup, the formatting) is lane-agnostic.
+  const calRows = (cals ?? [])
+    .map((row) => {
+      const c = row as Record<string, unknown>;
+      return {
+        user_id: c.user_id as string,
+        consecutive_failures: (c[col.failures] as number | null) ?? 0,
+        last_success_at: (c[col.lastSuccess] as string | null) ?? null,
+        last_sync_error: (c[col.error] as string | null) ?? null,
+        last_failure_kind: (c[col.kind] as string | null) ?? null,
+      };
+    })
     // #916: apply the per-kind paging threshold BEFORE joining/dedup so a gone
     // calendar at streak 2 is never hidden behind a same-agent transient calendar
-    // with a longer streak. `minFailures` (the query floor) is the gone/legacy
-    // threshold; a transient calendar must persist to TRANSIENT_PAGE_AT to page.
-    .filter((c) => isPageableFailure(c.last_failure_kind, c.consecutive_failures));
+    // with a longer streak. The query floor above is the lower threshold; a
+    // transient calendar must persist to the lane's transient threshold to page.
+    .filter((c) => isPageableFailure(c.last_failure_kind, c.consecutive_failures, policy));
   if (calRows.length === 0) return [];
 
   // #1134: same rule as the read above. Without the agent names there is nothing to
@@ -298,18 +321,16 @@ export async function loadFailingAgents(minFailures = 2): Promise<FailingAgent[]
   // #1133: the per-kind streak filter above is per-ROW and cannot see how many
   // AGENTS are affected, which is the difference between "one flaky calendar" and
   // "something is systemically broken". So the blast-radius hold is applied last,
-  // after dedup: a lone transient agent waits out TRANSIENT_HOLD_MS, several page
+  // after dedup: a lone transient agent waits out the lane's hold, several page
   // at once on the fast threshold, and a gone account is never held.
   //
-  // Applied HERE, so it covers the watch-lapse lane as well as the sync lane
-  // (same helper, same noise problem, so fix the class). Two notes on that:
-  //   - TRANSIENT_HOLD_PASSES is calibrated on the 1-minute sync cadence, and the
-  //     watch lane runs every ~5 min. It shares this streak column, so a real
-  //     transient problem still accumulates at 1/min from the sync lane, which is
-  //     what satisfies the pass count.
-  //   - A delayed watch-lapse page is safe by construction: it means Google push
-  //     is degraded, and availability is already being carried by the backup cron.
-  return applyBlastRadiusHold(dedupeFailingAgents(rows), Date.now());
+  // The hold is per-LANE (#1150). It used to be assumed that a watch failure's
+  // pass count was topped up by the 1-minute sync lane sharing the column, which
+  // is the coupling that made the watch alert unreachable in the first place. Now
+  // each lane accumulates on its own cadence and WATCH_PAGING sizes the hold for
+  // ~5 minutes a pass. A delayed watch page stays safe by construction: it means
+  // Google push is degraded, and availability is already on the backup cron.
+  return applyBlastRadiusHold(dedupeFailingAgents(rows), Date.now(), policy);
 }
 
 // Cap rows per DB call so even a huge calendar's bootstrap stays well under the
@@ -439,8 +460,21 @@ export async function purgeVanished(
   }
 }
 
-/** The current diagnostics snapshot for a calendar (#273). */
-function healthOf(cal: AgentCalendar): CalSyncHealth {
+/**
+ * The current diagnostics snapshot for one LANE of a calendar (#273, #1150).
+ * Written out longhand per lane rather than indexed through LANE_COLUMNS so the
+ * types stay real: a typo here is a compile error, not a silent undefined that
+ * would reset the streak to 1 on every failure.
+ */
+function healthOf(cal: AgentCalendar, lane: HealthLane): CalSyncHealth {
+  if (lane === "watch") {
+    return {
+      consecutive_failures: cal.watch_consecutive_failures,
+      last_success_at: cal.watch_last_success_at,
+      last_sync_error: cal.watch_last_error,
+      last_failure_kind: cal.watch_last_failure_kind,
+    };
+  }
   return {
     consecutive_failures: cal.consecutive_failures,
     last_success_at: cal.last_success_at,
@@ -450,23 +484,32 @@ function healthOf(cal: AgentCalendar): CalSyncHealth {
 }
 
 /**
- * Persist the next diagnostics state for one calendar, plus any extra columns
- * (sync_token, watch fields) written in the same update. Never throws - a
+ * Persist the next diagnostics state for one calendar on ONE lane, plus any extra
+ * columns (sync_token, watch fields) written in the same update. Never throws - a
  * diagnostics write must not break or mask the sync/watch it describes.
+ *
+ * The lane picks the column set (#1150), so a sync result physically cannot
+ * overwrite the watch lane's streak or the reverse.
  */
 async function recordCalHealth(
   calId: string,
+  lane: HealthLane,
   prev: CalSyncHealth,
   outcome: SyncOutcome,
-  extra: Record<string, unknown> = {},
+  extra: Partial<AgentCalendar> = {},
 ): Promise<void> {
   try {
-    await supabaseAdmin()
-      .from("agent_calendars")
-      .update({ ...nextSyncState(prev, outcome, new Date().toISOString()), ...extra })
-      .eq("id", calId);
+    // laneHealthUpdate builds its keys from LANE_COLUMNS, so TypeScript widens
+    // them to a string index and cannot see that they are all AgentCalendar
+    // columns. The mapping itself is the guarantee, and the node test asserts
+    // both lanes produce exactly their own four columns and share none.
+    const payload = {
+      ...laneHealthUpdate(lane, nextSyncState(prev, outcome, new Date().toISOString())),
+      ...extra,
+    } as Partial<AgentCalendar>;
+    await supabaseAdmin().from("agent_calendars").update(payload).eq("id", calId);
   } catch (err) {
-    log.error("sync", { msg: "recordCalHealth failed", cal_id: calId }, err);
+    log.error("sync", { msg: "recordCalHealth failed", cal_id: calId, lane }, err);
   }
 }
 
@@ -479,7 +522,7 @@ async function syncCalendar(
   const bootstrapMin = new Date(
     Date.now() - BOOTSTRAP_LOOKBACK_MS,
   ).toISOString();
-  const prev = healthOf(cal);
+  const prev = healthOf(cal, "sync");
 
   try {
     let result;
@@ -536,14 +579,14 @@ async function syncCalendar(
         .update({ sync_token: result.nextSyncToken })
         .eq("id", cal.id);
     }
-    await recordCalHealth(cal.id, prev, { ok: true });
+    await recordCalHealth(cal.id, "sync", prev, { ok: true });
     return result.events.length;
   } catch (err) {
     // Record the failure (streak + message + classification) before rethrowing so
     // the per-agent error handling + alert still fire and the cache never drifts
     // silently. The kind (#916) lets the alert page a genuinely-gone account and
     // back off on a transient blip.
-    await recordCalHealth(cal.id, prev, {
+    await recordCalHealth(cal.id, "sync", prev, {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
       kind: reachabilityFromError(err),
@@ -742,7 +785,7 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
     let firstError: string | null = null;
     for (const cal of cals) {
       if (!dueForRenewal(cal)) continue;
-      const prev = healthOf(cal);
+      const prev = healthOf(cal, "watch");
       try {
         if (cal.watch_channel_id && cal.watch_resource_id) {
           await stopChannel(email, cal.watch_channel_id, cal.watch_resource_id).catch(() => {});
@@ -753,7 +796,7 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
           cal.calendar_id,
           channelId,
         );
-        await recordCalHealth(cal.id, prev, { ok: true }, {
+        await recordCalHealth(cal.id, "watch", prev, { ok: true }, {
           watch_channel_id: channelId,
           watch_resource_id: resourceId,
           watch_expiration: expiration,
@@ -762,7 +805,11 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         if (firstError === null) firstError = error;
-        await recordCalHealth(cal.id, prev, { ok: false, error, kind: reachabilityFromError(err) });
+        await recordCalHealth(cal.id, "watch", prev, {
+          ok: false,
+          error,
+          kind: reachabilityFromError(err),
+        });
         // keep going - the agent's other calendars still need their watches.
       }
     }
@@ -806,11 +853,38 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
   }
 
   // Clear the watch columns in one write so a re-run/reconcile sees no live watch
-  // and doesn't try to stop them again. Skip the write when nothing is set.
-  if (cals.some((c) => c.watch_channel_id || c.watch_resource_id || c.watch_expiration)) {
+  // and doesn't try to stop them again.
+  //
+  // #1150: the watch HEALTH is cleared in the same write. That counter now
+  // persists between renewal attempts (nothing else resets it, which is the whole
+  // point), so an agent who left the pool mid-failure would keep the streak
+  // indefinitely and page the instant they were made bookable again, before a
+  // single renewal had been attempted. Leaving the pool ends the condition, so it
+  // ends the streak. The sync lane's health is deliberately untouched: this
+  // function is about tearing down push, not about the events feed.
+  //
+  // The streak is part of the "is anything set" test too, because a FAILED
+  // renewal is exactly the case that leaves no channel behind, so keying the
+  // write on the channel columns alone would skip precisely the rows that need it.
+  const needsClear = cals.some(
+    (c) =>
+      c.watch_channel_id ||
+      c.watch_resource_id ||
+      c.watch_expiration ||
+      c.watch_consecutive_failures > 0 ||
+      c.watch_last_error !== null,
+  );
+  if (needsClear) {
     await db
       .from("agent_calendars")
-      .update({ watch_channel_id: null, watch_resource_id: null, watch_expiration: null })
+      .update({
+        watch_channel_id: null,
+        watch_resource_id: null,
+        watch_expiration: null,
+        watch_consecutive_failures: 0,
+        watch_last_error: null,
+        watch_last_failure_kind: null,
+      })
       .eq("user_id", userId);
   }
 

@@ -5,9 +5,17 @@ export interface SyncHealthRow {
   email: string;
   name: string | null;
   consecutiveFailures: number;
-  /** ISO timestamp of the last clean sync/renew, or null if never. */
+  /** ISO timestamp of the last clean pass on this row's lane, or null if never. */
   lastSuccessAt: string | null;
   error: string | null;
+  /**
+   * Which lane is failing (#1150). The two are separate conditions with separate
+   * counters: "events are not reaching the availability cache" (sync) and "the
+   * Google push channel is not being renewed" (watch). They read very
+   * differently to an operator, and a days-old timestamp is alarming on one and
+   * entirely normal on the other. Defaults to sync for callers predating #1150.
+   */
+  lane?: "sync" | "watch";
 }
 
 /**
@@ -33,17 +41,22 @@ export function SyncHealthPanel({ agents }: { agents: SyncHealthRow[] }): ReactE
     >
       <p className="flex items-center gap-2 text-sm font-semibold text-fg">
         <span className="inline-block h-2 w-2 rounded-full bg-pennie-yellow" />
-        {agents.length} agent{agents.length === 1 ? "" : "s"} with a calendar failing to sync
+        {agents.length} agent{agents.length === 1 ? "" : "s"} with a calendar problem
       </p>
       <ul className="mt-3 space-y-2">
         {agents.map((a) => {
-          const lastOk = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
+          const watch = a.lane === "watch";
+          // #1150: the label has to match the lane. "last ok 4 days ago" reads as
+          // a four-day outage, but a renewal four days old is exactly healthy.
+          const stamp = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
+          const what = watch ? "failing to renew its push channel" : "failing to sync";
+          const stampLabel = watch ? "last renewed" : "last ok";
           return (
-            <li key={a.email} className="text-sm">
+            <li key={`${a.lane ?? "sync"}:${a.email}`} className="text-sm">
               <span className="font-semibold text-fg">{a.name ?? a.email}</span>
               {a.name ? <span className="text-fg-muted"> ({a.email})</span> : null}
               <span className="text-fg-muted tabular-nums">
-                {` ${a.consecutiveFailures} consecutive failure${a.consecutiveFailures === 1 ? "" : "s"}, last ok ${lastOk}${a.error ? `: ${a.error}` : ""}`}
+                {` ${what}, ${a.consecutiveFailures} consecutive failure${a.consecutiveFailures === 1 ? "" : "s"}, ${stampLabel} ${stamp}${a.error ? `: ${a.error}` : ""}`}
               </span>
             </li>
           );

@@ -74,14 +74,39 @@ export interface FailingCalendarRow {
 export const GONE_PAGE_AT = 2;
 export const TRANSIENT_PAGE_AT = 4;
 
-/** Whether a failing calendar has crossed its per-kind paging threshold (#916).
- *  Applied per row BEFORE dedup so a genuinely-gone calendar at its threshold is
- *  never hidden behind a same-agent transient calendar with a longer streak. */
+/**
+ * How one lane decides to page (#1150). The sync lane (every minute) and the
+ * watch lane (every ~5 minutes) ask different questions of different columns at
+ * different cadences, so a single set of constants cannot serve both: a streak is
+ * a proxy for elapsed time only at the cadence it was calibrated on.
+ */
+export interface LanePagingPolicy {
+  /** Consecutive failures before a gone (or unclassified) row may page. */
+  gonePageAt: number;
+  /** Consecutive failures before a transient row may page. */
+  transientPageAt: number;
+  /** Extra consecutive failures required when only ONE agent is affected. */
+  loneTransientPasses: number;
+  /**
+   * Real elapsed time a lone transient must have been failing, or null when the
+   * lane's last-success stamp is not a usable freshness signal.
+   */
+  loneTransientHoldMs: number | null;
+  /** How the alert labels that stamp, since the two lanes mean different things. */
+  lastSuccessLabel: string;
+}
+
+/**
+ * Whether a failing calendar has crossed its per-kind paging threshold (#916).
+ * Applied per row BEFORE dedup so a genuinely-gone calendar at its threshold is
+ * never hidden behind a same-agent transient calendar with a longer streak.
+ */
 export function isPageableFailure(
   kind: string | null | undefined,
   consecutiveFailures: number,
+  policy: LanePagingPolicy = SYNC_PAGING,
 ): boolean {
-  const threshold = kind === "transient" ? TRANSIENT_PAGE_AT : GONE_PAGE_AT;
+  const threshold = kind === "transient" ? policy.transientPageAt : policy.gonePageAt;
   return consecutiveFailures >= threshold;
 }
 
@@ -138,15 +163,64 @@ export function dedupeFailingAgents(rows: FailingCalendarRow[]): FailingAgent[] 
 export const TRANSIENT_HOLD_MS = 10 * 60 * 1000;
 export const TRANSIENT_HOLD_PASSES = 10;
 
+/** The 1-minute sync lane, unchanged from #916 + #1133. */
+export const SYNC_PAGING: LanePagingPolicy = {
+  gonePageAt: GONE_PAGE_AT,
+  transientPageAt: TRANSIENT_PAGE_AT,
+  loneTransientPasses: TRANSIENT_HOLD_PASSES,
+  loneTransientHoldMs: TRANSIENT_HOLD_MS,
+  lastSuccessLabel: "last ok",
+};
+
+/**
+ * How many consecutive failed renewals a LONE transient watch failure must show
+ * before it pages (#1150). At the ~5-minute watch cadence this is roughly half an
+ * hour, the same "wait out a Google blip" intent as the sync lane's ten minutes,
+ * sized for a lane that gets one attempt per five minutes instead of per minute.
+ *
+ * "Roughly" is doing real work in that sentence: the lane attempts every
+ * already-onboarded agent each tick, but a tick that runs out of its budget stops
+ * starting agents, so a given calendar can miss a pass. The count is a floor on
+ * the number of confirmed failures, not a promise about wall-clock time. That is
+ * the safe direction to be wrong in for a degradation with a 3-day fuse.
+ */
+export const WATCH_TRANSIENT_HOLD_PASSES = 6;
+
+/**
+ * The ~5-minute watch-renewal lane (#1150).
+ *
+ * The per-kind thresholds are deliberately the same numbers as the sync lane's,
+ * which at this cadence means roughly 10 minutes for a gone account and 20 for a
+ * transient one. Slower is right here: a failed renewal is a DEGRADATION, not an
+ * outage. Renewal is attempted from 3 days before a channel expires, so push
+ * keeps working throughout, and even once it lapses availability is carried by
+ * the 1-minute backup cron.
+ *
+ * `loneTransientHoldMs` is null because the elapsed-time signal #1133 added
+ * cannot work on this lane. A healthy channel is renewed about every four days,
+ * so `watch_last_success_at` is ALWAYS far past any ten-minute window: it would
+ * release every hold instantly and measure nothing. The pass count is the only
+ * honest signal here, so it carries the whole hold.
+ */
+export const WATCH_PAGING: LanePagingPolicy = {
+  gonePageAt: GONE_PAGE_AT,
+  transientPageAt: TRANSIENT_PAGE_AT,
+  loneTransientPasses: WATCH_TRANSIENT_HOLD_PASSES,
+  loneTransientHoldMs: null,
+  lastSuccessLabel: "last renewed",
+};
+
 /** Whether a lone transient agent is still inside its hold (#1133). A calendar
- *  that has NEVER synced has no elapsed signal, so the streak alone decides; an
- *  unparseable timestamp is never used to HIDE a failure. */
-function isHeldTransient(a: FailingAgent, nowMs: number): boolean {
-  if (a.consecutiveFailures < TRANSIENT_HOLD_PASSES) return true;
+ *  that has NEVER succeeded has no elapsed signal, so the streak alone decides;
+ *  an unparseable timestamp is never used to HIDE a failure. A lane with no
+ *  usable elapsed signal (#1150) is decided by the pass count alone. */
+function isHeldTransient(a: FailingAgent, nowMs: number, policy: LanePagingPolicy): boolean {
+  if (a.consecutiveFailures < policy.loneTransientPasses) return true;
+  if (policy.loneTransientHoldMs === null) return false;
   if (!a.lastSuccessAt) return false;
   const lastOkMs = Date.parse(a.lastSuccessAt);
   if (Number.isNaN(lastOkMs)) return false;
-  return nowMs - lastOkMs < TRANSIENT_HOLD_MS;
+  return nowMs - lastOkMs < policy.loneTransientHoldMs;
 }
 
 /**
@@ -163,11 +237,12 @@ function isHeldTransient(a: FailingAgent, nowMs: number): boolean {
 export function applyBlastRadiusHold(
   failing: FailingAgent[],
   nowMs: number,
+  policy: LanePagingPolicy = SYNC_PAGING,
 ): FailingAgent[] {
   const transient = failing.filter((a) => a.failureKind === "transient");
   if (transient.length !== 1) return failing;
   const lone = transient[0];
-  return isHeldTransient(lone, nowMs) ? failing.filter((a) => a !== lone) : failing;
+  return isHeldTransient(lone, nowMs, policy) ? failing.filter((a) => a !== lone) : failing;
 }
 
 /** Longest reason we'll put in an alert line before truncating. */
@@ -255,8 +330,14 @@ function instructionFor(failing: FailingAgent[]): string {
 }
 
 /** The bulleted, capped per-agent lines shared by the named alerts (#293). */
-function failingAgentLines(failing: FailingAgent[], nowMs: number): string {
+function failingAgentLines(
+  failing: FailingAgent[],
+  nowMs: number,
+  policy: LanePagingPolicy = SYNC_PAGING,
+): string {
   const lines = failing.slice(0, MAX_NAMED_AGENTS).map((a) => {
+    // #1150: the label is per-lane. "last ok 4 days ago" reads as a four-day
+    // outage, but on the watch lane a four-day-old renewal is exactly healthy.
     const lastOk = relativeAge(a.lastSuccessAt, nowMs);
     const reason = shortFailureReason(a.error);
     const err = reason ? ` (${reason})` : "";
@@ -269,7 +350,10 @@ function failingAgentLines(failing: FailingAgent[], nowMs: number): string {
         : a.failureKind === "transient"
           ? " [transient: likely self-healing]"
           : "";
-    return `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, last ok ${lastOk}${kind}${err}`;
+    return (
+      `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, ` +
+      `${policy.lastSuccessLabel} ${lastOk}${kind}${err}`
+    );
   });
   const extra = failing.length - MAX_NAMED_AGENTS;
   return lines.join("\n") + (extra > 0 ? `\n…and ${extra} more` : "");
@@ -279,12 +363,20 @@ function failingAgentLines(failing: FailingAgent[], nowMs: number): string {
  * Human-readable watch-lapse alert that NAMES the failing agent(s) (#273
  * Phase 1.3) — replacing the old "N of M" body that named nobody and forced a
  * hand DB query. Lists each agent's email, consecutive-failure count, last
- * successful sync, and error, plus the remediation, capped with a summary tail.
+ * successful renewal, and error, plus the remediation, capped with a summary tail.
+ *
+ * #1150: this now describes ONLY the renewal lane, because it now has its own
+ * counter. It used to say the calendar was "failing to sync/renew", which was
+ * both vaguer than the data and usually wrong: the case this alert exists for is
+ * a calendar that syncs fine and cannot renew its push channel. It also has to
+ * convey that this is a degradation with a long fuse, or a reader will treat a
+ * flaky renewal as an availability outage.
  */
 export function formatWatchLapseAlert(
   failing: FailingAgent[],
   totalAgents: number,
   nowMs: number,
+  policy: LanePagingPolicy = WATCH_PAGING,
 ): string {
   const n = failing.length;
   return (
@@ -292,9 +384,11 @@ export function formatWatchLapseAlert(
     // FAILING count. Keying both off `failing.length` produced "1 of 97 bookable
     // agent have a calendar failing".
     `Slate: ${n} of ${totalAgents} bookable agent${totalAgents === 1 ? "" : "s"} ` +
-    `${n === 1 ? "has" : "have"} a calendar failing to sync/renew ` +
-    `(Google push degraded; availability is on the backup cron). ` +
-    `${instructionFor(failing)}\n${failingAgentLines(failing, nowMs)}`
+    `${n === 1 ? "has" : "have"} a calendar that cannot renew its Google push channel. ` +
+    `Those calendars are still syncing. Renewal keeps retrying until the existing ` +
+    `channel expires (within 3 days), after which their external changes reach the ` +
+    `availability cache only through the 1 minute backup cron, a minute or so later. ` +
+    `${instructionFor(failing)}\n${failingAgentLines(failing, nowMs, policy)}`
   );
 }
 
