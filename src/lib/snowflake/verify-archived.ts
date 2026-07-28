@@ -71,6 +71,13 @@ export const MAX_VERIFY_BATCH = 500;
  * `table` and `watermarkCol` come from the in-repo mirror definitions, never from
  * user input. Ids and watermarks are ours too, but they are still escaped, the
  * same way buildMergeSql escapes its VALUES literals.
+ *
+ * The aliases are prefixed (`is_present`, `is_current`) because `CURRENT` is a
+ * Snowflake reserved word. `AS current` was a hard SQL compilation error that no
+ * unit test could see, since they all answer with a stand-in instead of parsing the
+ * statement, so it shipped and made every verification fail until the live probe on
+ * /api/admin/snowflake-check surfaced it. A test now pins the aliases away from the
+ * reserved list.
  */
 export function buildVerifySql(table: string, watermarkCol: string, candidates: Candidate[]): string {
   if (candidates.length === 0) {
@@ -84,8 +91,8 @@ export function buildVerifySql(table: string, watermarkCol: string, candidates: 
     .join(", ");
   return `
 SELECT s.id,
-       t.id IS NOT NULL AS present,
-       (t.id IS NOT NULL AND t.${watermarkCol} >= TO_TIMESTAMP_TZ(s.wm)) AS current
+       t.id IS NOT NULL AS is_present,
+       (t.id IS NOT NULL AND t.${watermarkCol} >= TO_TIMESTAMP_TZ(s.wm)) AS is_current
 FROM (VALUES ${values}) AS s(id, wm)
 LEFT JOIN ${table} t ON t.id = s.id
 `.trim();

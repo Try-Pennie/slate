@@ -60,7 +60,18 @@ describe("buildVerifySql", () => {
 
   it("left-joins the mirror so an absent row still comes back with a verdict", () => {
     expect(sql).toContain("LEFT JOIN booking_outbox t");
-    expect(sql).toContain("t.id IS NOT NULL AS present");
+    expect(sql).toContain("t.id IS NOT NULL AS is_present");
+  });
+
+  it("avoids Snowflake reserved words in its column aliases", () => {
+    // `CURRENT` is reserved, and `AS current` was a hard SQL compilation error that
+    // no unit test could see, because they all answer with a stand-in rather than
+    // parsing the statement. It shipped broken and was caught by the live probe on
+    // /api/admin/snowflake-check. Keep the aliases prefixed so this cannot recur.
+    const aliases = [...sql.matchAll(/\bAS\s+(\w+)/gi)].map((m) => m[1].toLowerCase());
+    expect(aliases.length).toBeGreaterThan(0);
+    const reserved = ["current", "current_date", "current_time", "current_timestamp", "localtime", "values", "table"];
+    for (const a of aliases) expect(reserved).not.toContain(a);
   });
 
   it("compares the watermark inside Snowflake, where both timestamp types are known", () => {
