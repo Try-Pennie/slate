@@ -13,6 +13,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string, _channel?: string) => {}),
   sendThrottledInfo: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+  // #1134: every alert_state question this tick has, answered in one read so the
+  // every-minute lane does not pay a query per lane.
+  existingAlertStateKeys: vi.fn(async (_keys: string[]) => new Set<string>()),
+  resolveAlert: vi.fn(async (_key: string, _text: string) => true),
+  firingKey: (key: string) => `alert_firing:${key}`,
 }));
 const heartbeat = vi.hoisted(() => ({
   readAllHeartbeatMs: vi.fn(async (): Promise<Record<string, number | null>> => ({})),
@@ -84,6 +89,8 @@ beforeEach(() => {
   marker.cleared = [];
   marker.throwOn = null;
   dispatch.sendThrottledAlert.mockResolvedValue(undefined);
+  dispatch.existingAlertStateKeys.mockResolvedValue(new Set<string>());
+  dispatch.resolveAlert.mockResolvedValue(true);
   heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
@@ -445,4 +452,134 @@ describe("alertOnStaleLanes (#803)", () => {
     });
   });
 
+  // #1134: a lane coming back to life is the news the person who was paged is
+  // waiting for, and until now the only signal was silence, which is
+  // indistinguishable from the hourly cooldown still running.
+  describe("recovery notices (#1134)", () => {
+    const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
+    /** What the watchdog actually probes for: the prefixed firing markers. */
+    const firingFor = (...lanes: string[]) =>
+      new Set(lanes.map((l) => `alert_firing:${laneKey(l)}`));
+
+    it("says a core lane is running again once it stamps inside its bound", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
+      await alertOnStaleLanes();
+
+      expect(dispatch.resolveAlert).toHaveBeenCalledTimes(1);
+      const [key, text] = dispatch.resolveAlert.mock.calls[0];
+      expect(key).toBe(laneKey("outbox"));
+      expect(text).toContain("outbox");
+      expect(text).toMatch(/running again|recovered|is stamping/i);
+      // The page told the reader to go and check for a CPU kill and a stuck lock.
+      // Repeating that in the all-clear sends them to investigate a fault that is over.
+      expect(text).not.toMatch(/exceededCpu/i);
+    });
+
+    it("resolves nothing when no lane page is outstanding, at the cost of one read", async () => {
+      await alertOnStaleLanes();
+      expect(dispatch.existingAlertStateKeys).toHaveBeenCalledTimes(1);
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+
+    it("never resolves a lane that is still stale", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: ago(30 * MIN) });
+      dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
+      await alertOnStaleLanes();
+
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalled();
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+
+    // THE failure path, and the reason #1149 had to be fixed first. A heartbeat
+    // read that failed knows nothing about any lane. Announcing recovery here would
+    // tell everyone the fleet is fine on the strength of a query that never ran.
+    it("resolves nothing when the heartbeat read fails", async () => {
+      heartbeat.readAllHeartbeatMs.mockRejectedValue(new Error("supabase unreachable"));
+      dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale).toEqual([]);
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    // A lane absent from the heartbeat table has not recovered; it has never been
+    // seen. Recovery requires positive evidence of a recent stamp, not the absence
+    // of a staleness verdict.
+    it("never resolves a lane that has no heartbeat at all", async () => {
+      const { outbox: _dropped, ...withoutOutbox } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(withoutOutbox);
+      dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
+
+      await alertOnStaleLanes();
+
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+
+    // Each family's page says something different, so each all-clear must too. One
+    // generic "recovered" would be the same defect #1123 fixed on the alert side.
+    it("gives the canary, the mirror and a retention lane their own all-clear", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": ago(5 * MIN),
+        "snowflake-export": ago(5 * MIN),
+      });
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        firingFor("smoke-canary", "snowflake-export", "prune-routing"),
+      );
+
+      await alertOnStaleLanes();
+
+      const byKey = new Map(dispatch.resolveAlert.mock.calls.map(([k, t]) => [k, t]));
+      expect(byKey.get(laneKey("smoke-canary"))).toMatch(/booking|canary/i);
+      expect(byKey.get(laneKey("snowflake-export"))).toMatch(/warehouse|mirror/i);
+      expect(byKey.get(laneKey("prune-routing"))).toMatch(/retention|prune|deleting/i);
+      // Every family says plainly that nothing needs doing.
+      for (const text of byKey.values()) expect(text).toMatch(/no action/i);
+    });
+
+    // A retention lane that never stamped records a "first noticed missing" marker
+    // to start its #1102 grace window. That marker was only cleared for a lane that
+    // WAS stamping but had fallen behind, so a lane which never stamped and then
+    // recovered kept a marker dated to its original sighting. If it later
+    // disappeared again, the grace window would already be long expired and it
+    // would page instantly instead of waiting out a fresh one.
+    it("clears a recovered retention lane's stale first-sighting marker", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["lane_never_seen:prune-routing"]),
+      );
+      await alertOnStaleLanes();
+      expect(marker.cleared).toContain("lane_never_seen:prune-routing");
+      // No page was outstanding for it, so it gets no all-clear, only the cleanup.
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+
+    it("does not delete a marker that is not there, so a healthy tick writes nothing", async () => {
+      await alertOnStaleLanes();
+      expect(marker.cleared).toEqual([]);
+    });
+
+    it("does not clear the marker for a retention lane that is still missing", async () => {
+      const { "prune-routing": _gone, ...withoutPrune } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(withoutPrune);
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["lane_never_seen:prune-routing"]),
+      );
+      await alertOnStaleLanes();
+      expect(marker.cleared).not.toContain("lane_never_seen:prune-routing");
+    });
+
+    it("does not throw when a recovery notice fails to send", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
+      dispatch.resolveAlert.mockRejectedValue(new Error("slack down"));
+      await expect(alertOnStaleLanes()).resolves.toEqual([]);
+    });
+
+    it("does not throw when the firing-marker read fails", async () => {
+      dispatch.existingAlertStateKeys.mockRejectedValue(new Error("supabase unreachable"));
+      await expect(alertOnStaleLanes()).resolves.toEqual([]);
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+  });
 });

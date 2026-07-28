@@ -210,6 +210,46 @@ export function classifyDeadEndCause(
   return { bookedSolid, dataAnomaly, unverified };
 }
 
+/**
+ * What this tick establishes about the data-anomaly condition (#1134).
+ *
+ * Three outcomes, not two, and the third is the whole point. The bucket scan is
+ * budget-bounded (`mapWithConcurrency` stops starting work at the monitor's
+ * deadline), so a slow tick can finish early having examined a fraction of the
+ * buckets and produce an empty anomaly list. Treating that as health would clear
+ * an outstanding page on the strength of a scan that never looked, which is the
+ * #1149 defect in a different lane.
+ *
+ * `bookedSolid` deliberately does not count against health: a genuinely full
+ * calendar is a capacity fact routed to the info channel, and letting it hold this
+ * page open would mean a busy week suppresses the all-clear indefinitely.
+ */
+export type AvailabilityVerdict = "healthy" | "alerting" | "unknown";
+
+export function availabilityAlertVerdict(
+  cause: DeadEndCause,
+  scanTruncated: boolean,
+): AvailabilityVerdict {
+  // A real finding still alerts from a partial scan: not finishing the sweep does
+  // not make what it did find any less true.
+  if (cause.dataAnomaly.length > 0 || cause.unverified.length > 0) return "alerting";
+  return scanTruncated ? "unknown" : "healthy";
+}
+
+/**
+ * The all-clear for the data-anomaly page (#1134). Carries no remediation: the
+ * page it clears said to go and check the precompute and calendar sync pipeline,
+ * and repeating that here would send someone to investigate a fault that is over.
+ */
+export function formatAvailabilityRecovery(): string {
+  return (
+    `Slate: availability is healthy again. Every bucket that should be offering ` +
+    `booking times is showing them, and the cached availability agrees with the ` +
+    `agents' calendars, so the earlier page about buckets showing no times is ` +
+    `cleared. No action is needed.`
+  );
+}
+
 /** Truncated "code, code and N more" for one cause group. */
 function capList(codes: string[]): string {
   const head = codes.slice(0, ALERT_NAME_CAP).join(", ");

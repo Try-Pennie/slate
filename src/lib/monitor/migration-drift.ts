@@ -155,6 +155,23 @@ export function formatMigrationDriftAlert(
 }
 
 /**
+ * The all-clear for the lag page (#1134). Covers both quiet statuses, since from
+ * the reader's point of view they are the same news: the schema question is
+ * settled and there is nothing to apply.
+ *
+ * Carries no remediation. The page it clears said "run supabase db push now", and
+ * repeating that in the resolve is how an all-clear ends up sending someone to
+ * apply migrations that are already applied.
+ */
+export function formatMigrationDriftRecovery(shippedVersion: string): string {
+  return (
+    `Slate: the live database's schema is back in step with the deployed code, which ` +
+    `ships up to migration ${shippedVersion}. Every migration the running code expects ` +
+    `is applied, so the earlier schema lag page is cleared. No action is needed.`
+  );
+}
+
+/**
  * The monitor-cron step. Reads the live applied set, classifies, and (only for
  * db-behind or unverified) posts a throttled Slack alert. Returns the status for
  * the cron's response and log line.
@@ -164,11 +181,20 @@ export function formatMigrationDriftAlert(
  * being watched for. The notify throwing is swallowed (a flaky Slack must not fail
  * the monitor tick); the persistent alert_state cooldown inside `notify` is what
  * stops repeats.
+ *
+ * #1134: the two quiet statuses now CLEAR an outstanding page. This check needed no
+ * restructuring to make that safe, because it already refuses to call an unreadable
+ * set healthy: every way the read can fail lands in `unverified`, which alerts. So
+ * `in-sync` and `db-ahead` are reachable only from a read that actually succeeded,
+ * which is exactly the property a recovery notice has to rest on.
  */
 export async function runMigrationDriftCheck(deps: {
   shippedVersion: string;
   readAppliedVersions: () => Promise<string[] | null>;
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  /** Announce that an outstanding lag page has cleared. A no-op unless one was
+   *  actually delivered, so it is safe to call on every healthy tick. */
+  resolve: (key: string, text: string) => Promise<boolean>;
   cooldownMs: number;
   log?: (msg: string, status: MigrationDriftStatus, applied: string[] | null) => void;
 }): Promise<MigrationDriftStatus> {
@@ -183,6 +209,13 @@ export async function runMigrationDriftCheck(deps: {
   const text = formatMigrationDriftAlert(status, deps.shippedVersion, applied);
   if (text) {
     await deps.notify(MIGRATION_VERSION_LAG_KEY, deps.cooldownMs, text).catch(() => {});
+  } else {
+    // No alert text means `in-sync` or `db-ahead`, the two statuses that can only
+    // come from a successful read. Same swallow rule as notify: a flaky Slack must
+    // not fail the monitor tick, and the firing marker survives for a later retry.
+    await deps
+      .resolve(MIGRATION_VERSION_LAG_KEY, formatMigrationDriftRecovery(deps.shippedVersion))
+      .catch(() => {});
   }
   deps.log?.("migration version check", status, applied);
   return status;

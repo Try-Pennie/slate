@@ -117,9 +117,11 @@ function harness(opts: {
   applied?: string[] | null;
   readThrows?: boolean;
   notifyThrows?: boolean;
+  resolveThrows?: boolean;
   shipped?: string;
 }) {
   const sent: Sent[] = [];
+  const resolved: { key: string; text: string }[] = [];
   const run = () =>
     runMigrationDriftCheck({
       shippedVersion: opts.shipped ?? "0071",
@@ -131,9 +133,14 @@ function harness(opts: {
         sent.push({ key, cooldownMs, text });
         if (opts.notifyThrows) throw new Error("slack 500");
       },
+      resolve: async (key, text) => {
+        resolved.push({ key, text });
+        if (opts.resolveThrows) throw new Error("slack 500");
+        return true;
+      },
       cooldownMs: 60 * 60_000,
     });
-  return { run, sent };
+  return { run, sent, resolved };
 }
 
 {
@@ -181,6 +188,63 @@ function harness(opts: {
   assert(
     status === "db-behind" && sent.length === 1,
     "a throwing notify is swallowed: the check still returns its status",
+  );
+}
+
+// --- #1134: the all-clear -----------------------------------------------------
+//
+// The two quiet statuses are the ONLY ones that may clear the page, and both are
+// reachable only from a read that succeeded. `unverified` covers every way the
+// read can fail, so an unreadable schema can never announce that prod caught up.
+{
+  const { run, resolved, sent } = harness({ applied: fullSet(71) });
+  await run();
+  assert(sent.length === 0, "an in-sync run still pages nobody");
+  assert(resolved.length === 1, "an in-sync run clears any outstanding lag page");
+  assert(
+    resolved[0].key === MIGRATION_VERSION_LAG_KEY,
+    "the all-clear clears the same key the page used",
+  );
+  assert(
+    /migration|schema/i.test(resolved[0].text),
+    "the all-clear says what recovered",
+  );
+  assert(
+    !/supabase db push/i.test(resolved[0].text),
+    "the all-clear does not repeat the page's apply-the-migrations instruction",
+  );
+}
+
+{
+  const { run, resolved } = harness({ applied: fullSet(72) });
+  await run();
+  assert(
+    resolved.length === 1,
+    "db-ahead is genuine health (the normal apply-then-deploy window) and also clears",
+  );
+}
+
+// THE failure path, and the reason this issue exists. A read that failed knows
+// nothing, so it must not all-clear any more than it may report in-sync.
+{
+  const { run, resolved } = harness({ readThrows: true });
+  await run();
+  assert(resolved.length === 0, "an unreadable applied set never announces recovery");
+}
+
+{
+  const { run, resolved } = harness({ applied: fullSet(71).filter((v) => v !== "0032") });
+  await run();
+  assert(resolved.length === 0, "a db-behind run never announces recovery");
+}
+
+// Monitoring must not take the monitor tick down with it.
+{
+  const { run, resolved } = harness({ applied: fullSet(71), resolveThrows: true });
+  const status = await run();
+  assert(
+    status === "in-sync" && resolved.length === 1,
+    "a throwing resolve is swallowed: the check still returns its status",
   );
 }
 

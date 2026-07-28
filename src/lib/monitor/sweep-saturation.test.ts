@@ -9,8 +9,10 @@ const sendThrottledAlert = vi.hoisted(() =>
   vi.fn(async (_key: string, _cooldownMs: number, _body: string) => {}),
 );
 
+const resolveAlert = vi.hoisted(() => vi.fn(async (_key: string, _text: string) => true));
+
 vi.mock("@/lib/notify/streak", () => ({ recordConsecutiveStreak, clearFailureStreak }));
-vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
+vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, resolveAlert }));
 
 import {
   reportSweepSaturation,
@@ -73,6 +75,32 @@ describe("reportSweepSaturation (#726)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
     await expect(run(LIMIT)).resolves.toBeUndefined();
   });
+
+  // #1134: an under-cap tick is the sweep keeping up, which is what recovery
+  // looks like from the inside. Crucially this path IS reachable when healthy:
+  // a recovery gated on the sweep still being saturated could never fire.
+  it("says the backlog cleared when a tick comes back under its cap", async () => {
+    await run(3);
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
+    const [key, text] = resolveAlert.mock.calls[0];
+    expect(key).toBe(KEY);
+    expect(text).toContain("cancelled-block reconcile");
+    expect(text).toMatch(/caught up|cleared|keeping up/i);
+    // The all-clear must not repeat the remediation from the page it clears.
+    expect(text).not.toMatch(/raise the per tick cap/i);
+  });
+
+  // THE failure path. A sweep that threw says nothing about the backlog, so it
+  // must not announce recovery any more than it counts as saturation.
+  it("never announces recovery when the sweep itself failed", async () => {
+    await run(null);
+    expect(resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when the recovery notice fails to send", async () => {
+    resolveAlert.mockRejectedValueOnce(new Error("slack down"));
+    await expect(run(3)).resolves.toBeUndefined();
+  });
 });
 
 // #883: the completion sweep reports its OWN over-budget verdict (a boolean),
@@ -123,6 +151,22 @@ describe("reportCompletionSaturation (#883)", () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
     sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
     await expect(crun(true)).resolves.toBeUndefined();
+  });
+
+  it("says the backlog cleared when a run drains inside its budget", async () => {
+    await crun(false);
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
+    const [key, text] = resolveAlert.mock.calls[0];
+    expect(key).toBe(CKEY);
+    expect(text).toContain("completion sweep");
+    // The page warned that completed webhooks were being delayed, so the
+    // all-clear has to answer that specific worry.
+    expect(text).toMatch(/webhook/i);
+  });
+
+  it("never announces recovery when the run's verdict is unknown", async () => {
+    await crun(null);
+    expect(resolveAlert).not.toHaveBeenCalled();
   });
 });
 
@@ -200,5 +244,26 @@ describe("reportDeletionSaturation (#888)", () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
     sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
     await expect(drun({ deleted: DLIMIT, failed: 0 })).resolves.toBeUndefined();
+  });
+
+  it("says the queue cleared when a tick drains a partial page", async () => {
+    await drun({ deleted: 3, failed: 1 });
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
+    const [key, text] = resolveAlert.mock.calls[0];
+    expect(key).toBe(DKEY);
+    expect(text).toMatch(/deletion/i);
+  });
+
+  // The all-failed page is saturated, so it must never all-clear either. This is
+  // the same trap as the streak: deleted=0 looks like a quiet tick.
+  it("never announces recovery on a full page that failed every row", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(true);
+    await drun({ deleted: 0, failed: DLIMIT });
+    expect(resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("never announces recovery when the drain itself failed", async () => {
+    await drun(null);
+    expect(resolveAlert).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import {
   MAX_COMPLETION_DRAIN_BATCHES,
   PAST_COMPLETION_BATCH_LIMIT,
@@ -56,6 +56,41 @@ export function formatSaturationAlert(sweep: string, ticks: number, limit: numbe
 const SATURATION_ALERT_COOLDOWN_MS = 30 * 60_000;
 
 /**
+ * All-clear for a capped sweep (#1134). Says the backlog is gone and that there
+ * is nothing to do, and deliberately does NOT repeat the page's remediation
+ * ("consider raising the per tick cap"): the reader is being told to stand down,
+ * and carrying the fix-it text into the all-clear is how a resolve message ends up
+ * sending someone to tune a cap that no longer needs tuning.
+ */
+export function formatSaturationRecovery(sweep: string): string {
+  return (
+    `Slate: the ${sweep} sweep has caught up. It is draining under its per tick cap ` +
+    `again, so the backlog that triggered the earlier page has cleared and nothing is ` +
+    `stuck waiting on it. No action is needed.`
+  );
+}
+
+/** All-clear for the completion sweep (#1134). Answers the specific worry its page
+ *  raised, that finished bookings' completed webhooks were being delayed. */
+export function formatCompletionSaturationRecovery(): string {
+  return (
+    `Slate: the booking completion sweep has caught up. Finished bookings are being ` +
+    `marked complete inside the per run budget again, and the booking.completed ` +
+    `webhooks that were being delayed have gone out. No action is needed.`
+  );
+}
+
+/** All-clear for the failed-deletion drain (#1134). Answers its page's specific
+ *  worry, that cancelled bookings were leaving orphaned calendar reminders. */
+export function formatDeletionSaturationRecovery(): string {
+  return (
+    `Slate: the failed calendar event deletion drain has caught up. Queued deletions ` +
+    `are clearing under the per tick cap again, so cancelled bookings are no longer ` +
+    `at risk of leaving orphaned calendar reminders. No action is needed.`
+  );
+}
+
+/**
  * Shared streak+page core for the capped sweeps. `saturated` is the sweep's own
  * verdict for this run: `true` = it hit its budget with work still waiting,
  * `false` = it kept up (clear the streak), `null` = it threw and tells us nothing
@@ -72,10 +107,18 @@ async function pageOnSaturationStreak(
   alertAfter: number,
   cooldownMs: number,
   buildAlert: (runs: number) => string,
+  recoveryText: string,
 ): Promise<void> {
   if (saturated === null) return;
   if (!saturated) {
     await clearFailureStreak(key);
+    // #1134: an under-cap run IS the recovery, so the all-clear hangs off the
+    // healthy path rather than off a failure branch it could never reach.
+    // `resolveAlert` is a no-op unless a page was actually delivered, so a sweep
+    // that never alerted stays silent. The `null` case above still returns first:
+    // a sweep that threw knows nothing about the backlog and must no more announce
+    // recovery than it counts as saturation.
+    await resolveAlert(key, recoveryText).catch(() => {});
     return;
   }
   const sustained = await recordConsecutiveStreak(key, windowSeconds, alertAfter);
@@ -104,6 +147,7 @@ export async function reportSweepSaturation(
     SATURATION_ALERT_AFTER_TICKS,
     SATURATION_ALERT_COOLDOWN_MS,
     (runs) => formatSaturationAlert(sweep, runs, limit),
+    formatSaturationRecovery(sweep),
   );
 }
 
@@ -165,6 +209,7 @@ export async function reportCompletionSaturation(
     COMPLETION_SATURATION_ALERT_AFTER_RUNS,
     COMPLETION_SATURATION_COOLDOWN_MS,
     (runs) => formatCompletionSaturationAlert(runs, COMPLETION_DRAIN_BUDGET_PER_RUN),
+    formatCompletionSaturationRecovery(),
   );
 }
 
@@ -219,5 +264,6 @@ export async function reportDeletionSaturation(
     SATURATION_ALERT_AFTER_TICKS,
     SATURATION_ALERT_COOLDOWN_MS,
     (ticks) => formatDeletionSaturationAlert(ticks, limit),
+    formatDeletionSaturationRecovery(),
   );
 }
