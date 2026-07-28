@@ -20,6 +20,7 @@ import { executeStatement } from "./client";
 import { readSnowflakeConfig } from "./config";
 import { LOAD_STAMP_COL, MIRROR_TABLES } from "./export-core";
 import { verifyArchived } from "./verify-archived";
+import { reexportByIds } from "./reexport";
 import { applySkipRedacted } from "./skip-redacted";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
@@ -46,6 +47,12 @@ export interface SnowflakeHealth {
    * refuse to destroy anything until it is fixed.
    */
   verifyProbe?: { ok: boolean; detail: string };
+  /**
+   * Result of running the REAL repair MERGE (#1144), the statement the retention
+   * lanes lean on to make an unconfirmed row verifiable instead of refusing it
+   * forever. Absent when there was nothing safe to probe with (see below).
+   */
+  repairProbe?: { ok: boolean; detail: string };
 }
 
 export async function runSnowflakeHealthcheck(): Promise<SnowflakeHealth> {
@@ -63,7 +70,33 @@ export async function runSnowflakeHealthcheck(): Promise<SnowflakeHealth> {
 
     const missingLoadStamp = await findTablesMissingLoadStamp(config);
     const verifyProbe = await probeVerifyQuestion();
+    // Only ever probe the repair MERGE with a row the warehouse was JUST confirmed
+    // to hold. The statement ends `WHEN NOT MATCHED THEN INSERT`, and the export
+    // role is append-only by design, so probing it with a missing row would plant a
+    // row nothing could remove (and reconcile would then report it as drift
+    // forever). A confirmed row takes the MATCHED branch and rewrites identical
+    // values, so the statement executes end to end and writes nothing new.
+    const repairProbe = verifyProbe.confirmedId
+      ? await probeRepairMerge(verifyProbe.confirmedId)
+      : undefined;
     const elapsedMs = Date.now() - start;
+
+    if (repairProbe && !repairProbe.ok) {
+      log.error("snowflake-check", { msg: "repair probe failed", detail: repairProbe.detail, ms: elapsedMs });
+      return {
+        ok: false,
+        configured: true,
+        role,
+        warehouse,
+        elapsedMs,
+        missingLoadStamp,
+        verifyProbe: { ok: verifyProbe.ok, detail: verifyProbe.detail },
+        repairProbe,
+        error:
+          `the repair MERGE does not work against the live warehouse (${repairProbe.detail}), ` +
+          `so a row the warehouse cannot confirm can never be made verifiable and retention will refuse it forever`,
+      };
+    }
 
     if (!verifyProbe.ok) {
       log.error("snowflake-check", { msg: "verify probe failed", detail: verifyProbe.detail, ms: elapsedMs });
@@ -88,7 +121,16 @@ export async function runSnowflakeHealthcheck(): Promise<SnowflakeHealth> {
     }
 
     log.info("snowflake-check", { msg: "ok", role: role ?? null, warehouse: warehouse ?? null, ms: elapsedMs });
-    return { ok: true, configured: true, role, warehouse, elapsedMs, missingLoadStamp, verifyProbe };
+    return {
+      ok: true,
+      configured: true,
+      role,
+      warehouse,
+      elapsedMs,
+      missingLoadStamp,
+      verifyProbe: { ok: verifyProbe.ok, detail: verifyProbe.detail },
+      repairProbe,
+    };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     log.error("snowflake-check", { msg: "failed", ms: Date.now() - start }, e instanceof Error ? e : undefined);
@@ -140,7 +182,13 @@ interface ProbeBuilder {
   maybeSingle(): PromiseLike<{ data: unknown; error: { message: string } | null }>;
 }
 
-async function probeVerifyQuestion(): Promise<{ ok: boolean; detail: string }> {
+async function probeVerifyQuestion(): Promise<{
+  ok: boolean;
+  detail: string;
+  /** The id the warehouse CONFIRMED it holds, when it did. Gates the repair probe:
+   *  it is the only id that can be re-MERGEd without risking an INSERT. */
+  confirmedId?: string;
+}> {
   try {
     // Narrowed builder shape, like reconcile.ts's ReconDb: the full supabase-js
     // generic blows up TS2589 when applySkipRedacted is layered on it.
@@ -159,13 +207,45 @@ async function probeVerifyQuestion(): Promise<{ ok: boolean; detail: string }> {
       { id: row.id, watermark: row.updated_at },
     ]);
     if (outcome.archived.length === 1) {
-      return { ok: true, detail: `warehouse confirmed booking ${row.id}` };
+      return { ok: true, detail: `warehouse confirmed booking ${row.id}`, confirmedId: row.id };
     }
     const state = outcome.problems[0]?.state ?? "unknown";
     return {
       ok: false,
       detail: `warehouse reported the oldest booking (${row.id}) as ${state}, which should be impossible for a row long past export`,
     };
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Run the REAL repair MERGE against a row the warehouse just confirmed it holds
+ * (#1144).
+ *
+ * The repair path is what a retention lane calls when the warehouse cannot confirm
+ * a row, so that the next run can verify and destroy it instead of refusing
+ * forever. Until now nothing ever ran that statement against the live warehouse
+ * outside a real repair, which is the same exposure that let #1143 ship: a SQL
+ * compilation error that every unit test missed, because they all answer with a
+ * stand-in instead of parsing the statement.
+ *
+ * Safe to run for real because the id is one `verifyArchived` just confirmed. The
+ * MERGE is keyed on id and idempotent (see reexport.ts), so re-sending a row the
+ * warehouse already has takes the MATCHED branch and rewrites identical values plus
+ * a fresh load stamp. Nothing new is inserted, nothing is deleted, and the warehouse
+ * copy is not made older, so verification is unaffected.
+ */
+async function probeRepairMerge(bookingId: string): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const sent = await reexportByIds("bookings", [bookingId]);
+    if (sent !== 1) {
+      return {
+        ok: false,
+        detail: `the repair path reported ${sent} rows sent for one confirmed booking, so it is not re-sending what it is asked to`,
+      };
+    }
+    return { ok: true, detail: `warehouse accepted the repair MERGE for booking ${bookingId}` };
   } catch (e) {
     return { ok: false, detail: e instanceof Error ? e.message : String(e) };
   }

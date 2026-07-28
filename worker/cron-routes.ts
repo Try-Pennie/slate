@@ -74,6 +74,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // other: this comment used to claim reconcile's dead-man's switch covered both,
   // when reconcile's own stamp was read by no bound and a failing audit hid behind
   // reconcile's fresh one.
+  // The reconcile lane ALSO runs the live warehouse self-check at its tail (#1144),
+  // which stamps a THIRD heartbeat (`snowflake-check`) only when the probe is
+  // healthy. That check used to run solely when an admin opened the admin page,
+  // which is how #1143's SQL compilation error reached prod past 1,100 green tests.
   "0 */6 * * *": ["/api/cron/snowflake-reconcile", "/api/cron/erasure-audit"],
 };
 
