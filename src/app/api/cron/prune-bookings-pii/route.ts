@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { bookingPiiCutoffIso, REDACTED_BOOKING_UPDATE } from "@/lib/booking/pii-retention";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified, type VerifyVerdict } from "@/lib/snowflake/verify-archived";
+import { repairUnverified } from "@/lib/snowflake/reexport";
 import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
@@ -83,6 +84,7 @@ export async function GET(req: NextRequest) {
       table: "bookings",
       watermarkCol: "updated_at",
       candidates: rows.map((r) => ({ id: r.id, watermark: r.updated_at })),
+      repair: repairUnverified,
       destroy: async (ids) => {
         // Redact the contact fields in place (keeps aggregate rows + FK integrity),
         // and stamp pii_redacted_at so the export freezes the row at its last
@@ -128,7 +130,8 @@ export async function GET(req: NextRequest) {
         table: "booking_outbox",
         watermarkCol: "updated_at",
         candidates: obCandidates,
-        destroy: async (ids) => {
+        repair: repairUnverified,
+      destroy: async (ids) => {
           const { error: obErr, count } = await db
             .from("booking_outbox")
             .delete({ count: "exact" })

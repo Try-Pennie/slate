@@ -67,6 +67,8 @@ const hb = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
 }));
 
+const rx = vi.hoisted(() => ({ repairUnverified: vi.fn(async () => 0) }));
+
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/retention-gate", () => gate);
@@ -88,6 +90,7 @@ vi.mock("@/lib/snowflake/client", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
 vi.mock("@/lib/monitor/heartbeat", () => ({ recordHeartbeat: hb.recordHeartbeat }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: hb.sendThrottledAlert }));
+vi.mock("@/lib/snowflake/reexport", () => ({ repairUnverified: rx.repairUnverified }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";

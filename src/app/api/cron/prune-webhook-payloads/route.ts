@@ -6,6 +6,7 @@ import { webhookPayloadCutoffIso } from "@/lib/webhooks/retention";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
+import { repairUnverified } from "@/lib/snowflake/reexport";
 import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
@@ -72,6 +73,7 @@ export async function GET(req: NextRequest) {
       table: "webhook_deliveries",
       watermarkCol: "updated_at",
       candidates,
+      repair: repairUnverified,
       destroy: async (ids) => {
         const { error, count } = await db
           .from("webhook_deliveries")
