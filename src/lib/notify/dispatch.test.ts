@@ -54,7 +54,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 const warn = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/log", () => ({ log: { warn: (...a: unknown[]) => warn(...a) } }));
 
-import { sendThrottledInfo, sendThrottledAlert, resolveAlert, firingKey } from "./dispatch";
+import { sendThrottledInfo, sendThrottledAlert, resolveAlert, isAlertFiring, firingKey } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
 import { __clearChannelCache } from "@/lib/notify/channels";
 
@@ -217,6 +217,31 @@ describe("resolveAlert recovery notice (#1133)", () => {
     slack.postSlack.mockResolvedValueOnce({ ok: true });
     expect(await resolveAlert("sync_failures", "all better")).toBe(true);
     expect(rows.has(firingKey("sync_failures"))).toBe(false);
+  });
+
+  // #1134: lets a caller skip the (sometimes expensive) work of PROVING health when
+  // there is no outstanding page to clear.
+  describe("isAlertFiring", () => {
+    it("is false before any page and true once one is delivered", async () => {
+      expect(await isAlertFiring("sync_failures")).toBe(false);
+      slack.postSlack.mockResolvedValueOnce({ ok: true });
+      await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+      expect(await isAlertFiring("sync_failures")).toBe(true);
+    });
+
+    it("is false again once the condition is resolved", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+      await resolveAlert("sync_failures", "all better");
+      expect(await isAlertFiring("sync_failures")).toBe(false);
+    });
+
+    it("does not confuse one alert key with another", async () => {
+      slack.postSlack.mockResolvedValueOnce({ ok: true });
+      await sendThrottledAlert("watch_lapse", COOLDOWN, "broken");
+      expect(await isAlertFiring("watch_lapse")).toBe(true);
+      expect(await isAlertFiring("sync_failures")).toBe(false);
+    });
   });
 
   it("no-ops when Slack is unconfigured", async () => {

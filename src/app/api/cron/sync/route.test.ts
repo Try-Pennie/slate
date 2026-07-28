@@ -39,6 +39,9 @@ const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async 
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
   resolveAlert: vi.fn(async () => false),
+  // Default true so the clean-tick tests exercise the recovery path; a dedicated
+  // test below flips it to prove the health work is skipped when nothing is firing.
+  isAlertFiring: vi.fn(async () => true),
 }));
 const alerts = vi.hoisted(() => ({
   formatSyncFailureAlert: vi.fn(() => ""),
@@ -68,7 +71,11 @@ import { GET } from "./route";
 
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  dispatch.isAlertFiring.mockResolvedValue(true);
+  sync.loadFailingAgents.mockResolvedValue([]);
+});
 
 describe("GET /api/cron/sync", () => {
   it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
@@ -103,6 +110,35 @@ describe("GET /api/cron/sync", () => {
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
+  // #1134: a clean tick only proves the agents this tick REACHED are healthy (it is
+  // capped and budgeted), so health is confirmed against the stored streaks before
+  // any all-clear, and an unreadable signal stays silent.
+  it("does not all-clear on a clean tick when the stored streaks say agents are still failing", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadFailingAgents.mockResolvedValue([
+      { email: "a@x.com", consecutiveFailures: 12, lastSuccessAt: null, error: "503" },
+    ] as never);
+    await GET(req());
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("does not all-clear on a clean tick when the health signal cannot be read", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadFailingAgents.mockResolvedValue(null as never);
+    await GET(req());
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("skips the health confirmation entirely when no page is outstanding", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    dispatch.isAlertFiring.mockResolvedValue(false);
+    await GET(req());
+    // The overwhelmingly common case: nothing to clear, so it must not pay for the
+    // extra reads that proving health costs.
+    expect(sync.loadFailingAgents).not.toHaveBeenCalled();
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
   it("does not offer a recovery notice while agents are still failing", async () => {
     cron.isAuthorizedCron.mockReturnValueOnce(true);
     pace.mapWithConcurrency.mockResolvedValueOnce({
@@ -123,6 +159,29 @@ describe("GET /api/cron/sync", () => {
     await GET(req());
     expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
     expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  // #1134: the recovery notice must never be sent on the strength of a FAILED read.
+  // loadFailingAgents returns null for "could not determine", which used to be an
+  // empty list and so was indistinguishable from "nothing is failing" (a false
+  // all-clear the moment #1133 made empty mean recovered).
+  it("does not offer a recovery notice when the health read could not be completed", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.mapWithConcurrency.mockResolvedValueOnce({
+      results: [{ userId: "u1", error: "503" }],
+      processed: 1,
+      truncated: false,
+    } as never);
+    alerts.isConsecutiveFailure.mockReturnValueOnce(true);
+    sync.loadFailingAgents.mockResolvedValueOnce(null as never);
+    admin.supabaseAdmin.mockReturnValueOnce({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async () => ({ data: false, error: null }),
+    } as never);
+
+    await GET(req());
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   // Failure path: a monitoring failure must never become a sync failure.

@@ -492,7 +492,7 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
       ],
     );
 
-    const failing = await loadFailingAgents();
+    const failing = (await loadFailingAgents())!;
     const emails = failing.map((f) => f.email).sort();
     expect(emails).toEqual(["gone@x.com", "legacy@x.com", "persistent@x.com"]);
     expect(failing.find((f) => f.email === "gone@x.com")?.failureKind).toBe("gone");
@@ -531,7 +531,7 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
       ],
       [{ id: "u1", email: "lone@x.com", bookable: true, deactivated_at: null }],
     );
-    const failing = await loadFailingAgents();
+    const failing = (await loadFailingAgents())!;
     expect(failing.map((f) => f.email)).toEqual(["lone@x.com"]);
   });
 
@@ -547,8 +547,69 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
         { id: "u2", email: "b@x.com", bookable: true, deactivated_at: null },
       ],
     );
-    const failing = await loadFailingAgents();
+    const failing = (await loadFailingAgents())!;
     expect(failing.map((f) => f.email).sort()).toEqual(["a@x.com", "b@x.com"]);
+  });
+
+  // #1134: "nothing is failing" and "we could not find out" must not look the same.
+  // These reads deliberately tolerate an error (the every-minute lane retries), but
+  // once an empty list started TRIGGERING a recovery notice (#1133), a swallowed
+  // read error became a false all-clear: Slack would say sync had recovered on the
+  // strength of a failed query. So an unreadable health signal returns null.
+  function erroringDb(which: "calendars" | "users") {
+    return {
+      from(table: string) {
+        const failing = which === "calendars" ? "agent_calendars" : "users";
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          gte: () =>
+            Promise.resolve(
+              table === failing ? { data: null, error: { message: "boom" } } : { data: [], error: null },
+            ),
+          in: () =>
+            Promise.resolve(
+              table === failing ? { data: null, error: { message: "boom" } } : { data: [], error: null },
+            ),
+        };
+        return builder;
+      },
+    } as unknown as ReturnType<typeof supabaseAdmin>;
+  }
+
+  it("returns null (not empty) when the failing-calendar read errors", async () => {
+    admin.current = erroringDb("calendars");
+    expect(await loadFailingAgents()).toBeNull();
+  });
+
+  it("returns null (not empty) when the agent-name read errors", async () => {
+    admin.current = {
+      from(_table: string) {
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          gte: () =>
+            Promise.resolve({
+              data: [
+                {
+                  user_id: "u1",
+                  consecutive_failures: 20,
+                  last_success_at: null,
+                  last_sync_error: "503",
+                  last_failure_kind: "transient",
+                },
+              ],
+              error: null,
+            }),
+          in: () => Promise.resolve({ data: null, error: { message: "boom" } }),
+        };
+        return builder;
+      },
+    } as unknown as ReturnType<typeof supabaseAdmin>;
+    expect(await loadFailingAgents()).toBeNull();
+  });
+
+  it("returns an empty list when the reads succeed and genuinely nothing is failing", async () => {
+    admin.current = failingDb([], []);
+    expect(await loadFailingAgents()).toEqual([]);
   });
 
   it("never holds a gone account, even when it is the only one failing", async () => {
@@ -564,7 +625,7 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
       ],
       [{ id: "u1", email: "revoked@x.com", bookable: true, deactivated_at: null }],
     );
-    const failing = await loadFailingAgents();
+    const failing = (await loadFailingAgents())!;
     expect(failing.map((f) => f.email)).toEqual(["revoked@x.com"]);
   });
 });

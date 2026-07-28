@@ -21,7 +21,7 @@ import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
-import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/dispatch";
 import {
   formatSyncFailureAlert,
   formatSyncRecoveryNotice,
@@ -68,7 +68,15 @@ async function alertSyncFailures(
   const db = supabaseAdmin();
   if (failed.length === 0) {
     await db.from("rate_limits").delete().eq("key", SYNC_STREAK_KEY);
-    await resolveSyncFailureAlert();
+    // #1134: a clean tick is NOT proof the fleet is healthy. The tick is capped
+    // (MAX_AGENTS_PER_SYNC_TICK) and budgeted (SYNC_TICK_BUDGET_MS), so an agent it
+    // never reached contributes no error while its stored streak keeps climbing.
+    // So prove health from the stored streaks before all-clearing, and only bother
+    // when there is actually an outstanding page to clear.
+    if (await isAlertFiring(SYNC_ALERT_KEY)) {
+      const stillFailing = await loadFailingAgents();
+      if (stillFailing !== null && stillFailing.length === 0) await resolveSyncFailureAlert();
+    }
     return;
   }
   const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
@@ -87,6 +95,10 @@ async function alertSyncFailures(
   // the watch-lapse alert — not an anonymous count. If none are at the streak
   // threshold yet, stay quiet rather than send an empty-named alert.
   const failing = await loadFailingAgents();
+  // #1134: null is "we could not read the health signal", which is NOT health. Stay
+  // silent both ways: alerting would name no one, and all-clearing would announce a
+  // recovery we have no evidence for. The every-minute lane retries.
+  if (failing === null) return;
   // Nothing is at its paging threshold (including a lone transient agent still
   // inside the #1133 hold), so the paged condition is clear even though this tick
   // saw errors: say it cleared rather than leaving the reader in silence.

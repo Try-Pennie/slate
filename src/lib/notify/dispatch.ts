@@ -71,6 +71,29 @@ export async function sendThrottledAlert(
 }
 
 /**
+ * Whether a page for `key` was delivered and has not been cleared (#1134).
+ *
+ * Lets a caller skip the work of PROVING health when there is no outstanding alert
+ * to clear: establishing health can cost real reads, and on the overwhelmingly
+ * common healthy tick there is nothing to say. One cheap indexed read.
+ *
+ * Fails CLOSED (returns false on a read error): the cost of a wrong `false` is a
+ * recovery notice deferred one tick, while a wrong `true` would send callers off to
+ * do work whose result they cannot trust.
+ */
+export async function isAlertFiring(key: string): Promise<boolean> {
+  const db = supabaseAdmin();
+  // error-ok: a read error defers the recovery notice one tick; it can never invent
+  // a recovery, and the marker survives for the next attempt.
+  const { data } = await db
+    .from("alert_state")
+    .select("last_sent_at")
+    .eq("key", firingKey(key))
+    .maybeSingle();
+  return data != null;
+}
+
+/**
  * Announce that a previously-paged condition has CLEARED (#1133), then reset it.
  *
  * A no-op unless a page for `key` was actually delivered, so this can be called
