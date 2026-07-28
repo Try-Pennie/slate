@@ -304,3 +304,37 @@ export function retentionAlertText(lane: string, ageMs: number, boundMin: number
   }
   return `Slate: the ${lane} retention lane has not completed for ${Math.round(ageMs / 60_000)} minutes (bound ${boundMin}m), so ${what}. Check the Worker logs for tag=${lane}.`;
 }
+
+/**
+ * What to do about a lane that has NEVER stamped, under a `neverIsStale` bounds map.
+ *
+ * Why this exists. Turning `neverIsStale` on for the daily retention lanes (#1102)
+ * paged all three the moment the heartbeat code deployed: those lanes run at 03:00
+ * UTC, so between shipping the code and their first scheduled run they had
+ * legitimately never stamped, and the alert claimed they had "failed every run or
+ * are not being scheduled". Both false. That is exactly the cry-wolf failure the
+ * default leniency prevents, and L36's rule that an alert needs a window longer
+ * than the thing it measures.
+ *
+ * So strict mode gets its own window, anchored on when we FIRST noticed the lane
+ * missing rather than on a deploy time we do not record:
+ *
+ *   record-first-sighting  never seen missing before: remember it, say nothing
+ *   wait                   missing, but for less than its own bound
+ *   page                   still missing after a full bound has elapsed
+ *
+ * A newly deployed daily lane therefore has its whole bound (cadence plus slack) to
+ * produce a first stamp, and a lane that genuinely never runs still pages, just one
+ * bound later than before. PURE, so it is node-testable.
+ */
+export type NeverStampedVerdict = "record-first-sighting" | "wait" | "page";
+
+export function neverStampedVerdict(
+  firstSeenMissingMs: number | null,
+  nowMs: number,
+  boundMs: number,
+): NeverStampedVerdict {
+  if (firstSeenMissingMs === null) return "record-first-sighting";
+  // Strict `>`, matching findStaleLanes: exactly at the bound is not yet stale.
+  return nowMs - firstSeenMissingMs > boundMs ? "page" : "wait";
+}
