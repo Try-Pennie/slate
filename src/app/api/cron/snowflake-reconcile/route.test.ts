@@ -121,6 +121,9 @@ describe("GET /api/cron/snowflake-reconcile", () => {
     expect(res.status).toBe(200);
     expect(log.error).toHaveBeenCalled();
     expect(stamped()).toContain("snowflake-reconcile");
+    // #1152: a self-check that threw knows nothing about the warehouse, so it must
+    // not tell anyone the earlier warning is cleared and retention is unblocked.
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
   });
 
   it("still alerts on mirror drift, and stamps the lane heartbeat", async () => {

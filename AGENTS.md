@@ -274,6 +274,45 @@ covers the `const { data } = await` object-destructure shape the bug keeps takin
 an array destructure (`const [{ data }] = await Promise.all(...)`) or an inline
 `(await ...).data` is out of scope by design (documented in the scanner header).
 
+## Ask what the EMPTY result means downstream, not just what the read does
+
+The question that decides `error-ok` vs `unwrap` is not "can this read fail
+harmlessly", it is **"can anything downstream read the empty result as an
+answer?"** Two classes, and the comment must say which one it is:
+
+- **Empty degrades to a safe path.** Nothing acts on the emptiness: the tick
+  skips, the caller re-routes, the value falls back to a documented default, the
+  next run retries. `error-ok` is correct. Say what the safe path IS
+  ("the 1-min cron backstop reconverges", "the guard re-routes"), not just
+  "best effort".
+- **Empty is indistinguishable from healthy, or from within-limits.** Something
+  downstream treats the empty result as a real answer. Then it must fail loud
+  (`unwrap`) or return an explicit unknown (`null`), never `[]` or `0`.
+
+The second class keeps shipping because the read looks local and the consequence
+is three files away. Every instance so far:
+
+- **#277** an availability read returned empty, the pool collapsed, the booker
+  showed no times and a broken deploy looked like a quiet day.
+- **#1134** `loadFailingAgents` returned `[]`, which meant "no agents failing",
+  which posted "calendar sync has recovered" off a query that never ran.
+- **#1152** three self-heal worklist reads returned `[]`, the resulting count of
+  zero read as "under the cap", and that posted "the backlog has cleared, no
+  action is needed" while clearing the streak that would have paged. The same
+  audit found `agentActiveBookingStartsMs` returning `[]`, which counts as "no
+  bookings that day" and quietly waived an agent's daily cap.
+
+Note the asymmetry that keeps catching people out: **`null` and `[]` are not
+interchangeable.** `busyIntervalsForAgent` returns `null` for "could not tell" and
+its caller re-routes on it; the daily-cap read next to it returned `[]`, borrowed
+that comment, and meant the opposite.
+
+Two guards cover the alerting end of this, both in `pnpm test`:
+`scripts/test-swallowed-error-reads.ts` (the read shape) and
+`scripts/test-all-clear-failure-coverage.ts` (#1152: every module that sends a
+recovery notice must carry a test proving it stays silent when its health signal
+cannot be read, or point at the suite that does with `// all-clear-proof:`).
+
 # Reading production logs (Cloudflare observability)
 
 Cloudflare captures **every** console method from the deployed Worker, with the

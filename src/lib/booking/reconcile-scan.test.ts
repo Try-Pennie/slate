@@ -100,22 +100,23 @@ describe("loadActiveUpcomingBookings", () => {
     });
   });
 
-  // Failure path: a read blip must not look like "no bookings need healing" in a
-  // way that hides itself. It logs and yields nothing, so the sweep no-ops this
-  // tick and the next tick retries, rather than the sweep crashing the lane.
-  it("logs and scans nothing when the read fails, instead of failing silently", async () => {
+  // Failure path, rewritten in #1152. This used to log the error and return [],
+  // on the reasoning that a read blip should let the sweep no-op and retry next
+  // tick. That reasoning had a hole: an empty scan is EXACTLY what "no bookings
+  // need healing" looks like from the outside. The count of zero flowed into the
+  // saturation reporter, which since #1134 reads an under-cap count as healthy,
+  // clears the failure streak, and posts "the backlog has cleared, no action is
+  // needed" about rows nobody managed to read.
+  //
+  // So the loader now throws. The self-heal lane catches it into the `null` that
+  // already means "could not tell" (it neither pages nor all-clears), logs it with
+  // the cause attached, and the next tick retries exactly as before. The lane
+  // survives either way; what changes is that a failure can no longer pass itself
+  // off as good news.
+  it("throws when the read fails, so a failed scan can never read as a healthy one", async () => {
     state.rows = [booking("settled", 10 * 60_000)];
     state.error = { message: "read timeout" };
-    const err = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const scanned = await loadActiveUpcomingBookings(200);
-
-    expect(scanned).toEqual([]);
-    expect(err).toHaveBeenCalledOnce();
-    // #808: the line is tagged, and the real failure rides along as the second
-    // argument so Cloudflare serializes it rather than it being flattened away.
-    expect(String(err.mock.calls[0][0])).toContain("tag=reconcile-missing");
-    expect(JSON.stringify(err.mock.calls[0][1])).toContain("read timeout");
-    err.mockRestore();
+    await expect(loadActiveUpcomingBookings(200)).rejects.toThrow(/read timeout/);
   });
 });

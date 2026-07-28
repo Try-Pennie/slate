@@ -17,11 +17,9 @@ import {
   anyOnShift,
   classifyEmptyBuckets,
   classifyDeadEndCause,
-  formatDataAnomalyAlert,
   formatBookedSolidNotice,
   formatFallbackCoveredNotice,
-  availabilityAlertVerdict,
-  formatAvailabilityRecovery,
+  reportAvailabilityHealth,
   type BucketHealth,
   type WorkingRule,
 } from "@/lib/monitor/availability-health";
@@ -76,11 +74,11 @@ const PROBE_CONCURRENCY = 6;
 // A bucket_slots row only counts as a real (computed) empty within this window;
 // a stale/missing row is the recompute lane's concern, not a booker fault.
 const FRESH_WINDOW_MS = 6 * 60_000;
-// Urgent page: a dead-end whose cache disagrees with the real calendars (or could
-// not be verified). One consolidated message so a broad outage is one Slack post,
-// not a storm; the cooldown throttles repeats. Cooldowns are UI-tunable (#571) via
-// loadMonitorSettings(); these keys stay in code (they are alert_state row keys).
-const DATA_ANOMALY_ALERT_KEY = "availability_data_anomaly";
+// The urgent data-anomaly page (a dead-end whose cache disagrees with the real
+// calendars, or could not be verified) and its all-clear now live together in
+// availability-health.ts, which owns DATA_ANOMALY_ALERT_KEY. Cooldowns are
+// UI-tunable (#571) via loadMonitorSettings(); the keys stay in code (they are
+// alert_state row keys).
 // #573: on a data anomaly the monitor rewrites the fresh row so the booker recovers
 // at once, but only ONCE per bucket per this window (a DB lock we deliberately do
 // NOT release), so a persistent fault keeps paging instead of being silently
@@ -264,22 +262,17 @@ export async function GET(req: NextRequest) {
     // before covering every bucket, so its empty anomaly list proves nothing and
     // must neither page nor all-clear. Without that third case the recovery notice
     // would fire off a scan that never looked.
-    const availabilityVerdict = availabilityAlertVerdict(cause, truncated);
-    if (availabilityVerdict === "alerting") {
-      await sendThrottledAlert(
-        DATA_ANOMALY_ALERT_KEY,
-        settings.cooldownMs.availability_data_anomaly,
-        formatDataAnomalyAlert(cause, selfHeal.healed),
-      ).catch(() => {});
-    } else if (availabilityVerdict === "healthy") {
-      // Reachable on the ordinary healthy tick, which is the point: a recovery
-      // gated on the fault still being present could never run.
-      const cleared = await resolveAlert(
-        DATA_ANOMALY_ALERT_KEY,
-        formatAvailabilityRecovery(),
-      ).catch(() => false);
-      if (cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
-    }
+    // all-clear-proof: scripts/test-monitor-availability-health.ts - covers all
+    // three verdicts, including that a budget-truncated scan sends no all-clear.
+    const { cleared } = await reportAvailabilityHealth({
+      cause,
+      scanTruncated: truncated,
+      cooldownMs: settings.cooldownMs.availability_data_anomaly,
+      healed: selfHeal.healed,
+      notify: sendThrottledAlert,
+      resolve: resolveAlert,
+    });
+    if (cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
     if (cause.bookedSolid.length) {
       await sendThrottledInfo(
         BOOKED_SOLID_INFO_KEY,
@@ -504,6 +497,8 @@ export async function GET(req: NextRequest) {
       // #1134: say so when the schema catches up. This page is cleared by a human
       // running a migration, so silence afterwards is ambiguous: it looks the same
       // as the cooldown still running.
+      // all-clear-proof: scripts/test-migration-drift.ts - an unreadable applied
+      // set is classified unverified and never announces recovery.
       resolve: resolveAlert,
       cooldownMs: settings.cooldownMs.migration_version_lag,
       log: (msg, status, applied) =>

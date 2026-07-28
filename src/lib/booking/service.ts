@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
@@ -358,6 +359,40 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
  * then skipped: excluding them in SQL is what keeps them from eating the sweep's
  * per-tick row budget. See RECONCILE_MISSING_GRACE_MS.
  */
+/**
+ * An agent's OTHER active bookings in a window (#536), as epoch ms, excluding the
+ * booking being moved. The in-place reschedule and reassign guards count these
+ * against the event type's daily cap.
+ *
+ * Fails loud (#1152). This used to return [] on a read error, annotated as the
+ * safe default that made the guard re-route. It was not: `busyIntervalsForAgent`
+ * returns NULL for "could not tell" and the guard re-routes on that, but [] here
+ * is a real answer meaning "no other bookings that day", which is under every cap.
+ * A read blip therefore waved a booking past a cap it may well have exceeded. An
+ * unknown count must stay unknown, so the caller aborts (before any Google event
+ * is created) rather than granting a silent exemption.
+ */
+export async function agentActiveBookingStartsMs(
+  userId: string,
+  fromIso: string,
+  toIso: string,
+  excludeBookingId: string,
+): Promise<number[]> {
+  const data = unwrap(
+    await supabaseAdmin()
+      // cap-safe: one agent's active bookings within the reschedule window (the daily cap count).
+      .from("bookings")
+      .select("starts_at")
+      .eq("assigned_user_id", userId)
+      .in("status", ["confirmed", "rescheduled"])
+      .gte("starts_at", fromIso)
+      .lt("starts_at", toIso)
+      .neq("id", excludeBookingId),
+    "agentActiveBookingStartsMs",
+  );
+  return ((data as { starts_at: string }[] | null) ?? []).map((r) => Date.parse(r.starts_at));
+}
+
 export async function loadActiveUpcomingBookings(
   limit: number,
   offset = 0,
@@ -365,22 +400,27 @@ export async function loadActiveUpcomingBookings(
   const settledBefore = new Date(
     Date.now() - orchestration.RECONCILE_MISSING_GRACE_MS,
   ).toISOString();
-  const { data, error } = await supabaseAdmin()
-    .from("bookings")
-    .select("id, assigned_user_id, starts_at, ends_at")
-    .in("status", ["confirmed", "rescheduled"])
-    .gte("ends_at", new Date().toISOString())
-    .not("assigned_user_id", "is", null)
-    .lt("created_at", settledBefore)
-    .order("created_at", { ascending: false })
-    // `id` breaks created_at ties into a total order, so range paging (#512)
-    // can't skip or double-scan a row at a page boundary.
-    .order("id", { ascending: true })
-    .range(offset, offset + limit - 1);
-  if (error) {
-    log.error("reconcile-missing", { msg: "loadActiveUpcomingBookings failed" }, error);
-    return [];
-  }
+  // Fail loud (#1152): a failed scan must NOT come back as an empty one. The row
+  // count IS this sweep's verdict, and an under-cap count now clears the saturation
+  // streak and posts an all-clear, so a zero born of a read error would announce
+  // that a backlog had drained on the strength of a query that never ran. `unwrap`
+  // hands the lane its "could not tell" marker instead, which pages nobody and
+  // all-clears nobody.
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("bookings")
+      .select("id, assigned_user_id, starts_at, ends_at")
+      .in("status", ["confirmed", "rescheduled"])
+      .gte("ends_at", new Date().toISOString())
+      .not("assigned_user_id", "is", null)
+      .lt("created_at", settledBefore)
+      .order("created_at", { ascending: false })
+      // `id` breaks created_at ties into a total order, so range paging (#512)
+      // can't skip or double-scan a row at a page boundary.
+      .order("id", { ascending: true })
+      .range(offset, offset + limit - 1),
+    "loadActiveUpcomingBookings",
+  );
   return ((data ?? []) as {
     id: string;
     assigned_user_id: string;
@@ -553,19 +593,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     busyIntervalsForAgent: agentBusyIntervals,
     // The agent's OTHER active bookings in a window (#536), epoch-ms, excluding the
     // booking being moved — the in-place guard counts these for the daily cap.
-    agentActiveBookingStartsMs: async (userId, fromIso, toIso, excludeBookingId) => {
-      // error-ok: a read failure returns [] so the in-place reschedule guard re-routes (the safe default documented on busyIntervalsForAgent).
-      const { data } = await supabaseAdmin()
-        // cap-safe: one agent's active bookings within the reschedule window (the daily cap count).
-        .from("bookings")
-        .select("starts_at")
-        .eq("assigned_user_id", userId)
-        .in("status", ["confirmed", "rescheduled"])
-        .gte("starts_at", fromIso)
-        .lt("starts_at", toIso)
-        .neq("id", excludeBookingId);
-      return ((data as { starts_at: string }[] | null) ?? []).map((r) => Date.parse(r.starts_at));
-    },
+    agentActiveBookingStartsMs,
     // Working-hours schedule for one agent (#527), used by the reassign path's
     // target-agent daily-cap check. The reschedule in-place guard now reads this
     // from the folded context load (#538); the shared helper keeps both on one query.
@@ -650,14 +678,22 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         );
     },
     loadPendingEventDeletions: async (limit) => {
-      // error-ok: best-effort retry worklist; a read error processes nothing this tick and the deletion lane retries next tick.
-      const { data } = await supabaseAdmin()
-        .from("pending_event_deletions")
-        .select("*")
-        .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
-        .order("attempts", { ascending: true })
-        .order("created_at", { ascending: true })
-        .limit(limit);
+      // Fail loud (#1152): NOT best-effort any more. The drain's deleted+failed
+      // count is its saturation verdict, and an under-cap count now clears the
+      // streak and posts "the failed calendar event deletion drain has caught up".
+      // A read error that degraded to an empty queue would send exactly that
+      // all-clear about a queue nobody managed to look at. Throwing gives the lane
+      // its "could not tell" marker, which neither pages nor all-clears.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("pending_event_deletions")
+          .select("*")
+          .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
+          .order("attempts", { ascending: true })
+          .order("created_at", { ascending: true })
+          .limit(limit),
+        "loadPendingEventDeletions",
+      );
       return (data ?? []) as orchestration.PendingEventDeletion[];
     },
     loadCreationOrphans: async (limit) => {
@@ -890,20 +926,25 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       // Scoping to ends_at >= now keeps the scan bounded by concurrent future
       // bookings instead of the whole table. `offset` rotates the scan window
       // across ticks (#512) so blocks past the first page are eventually covered.
-      const { data, error } = await supabaseAdmin()
-        .from("busy_blocks")
-        .select("id, user_id, booking_id, source")
-        .eq("source", "slate")
-        .gte("ends_at", new Date().toISOString())
-        .order("ends_at", { ascending: true })
-        // `id` breaks ends_at ties into a total order, so range paging (#512) can't
-        // skip or double-scan a row at a page boundary.
-        .order("id", { ascending: true })
-        .range(offset, offset + limit - 1);
-      if (error) {
-        log.error("reconcile", { msg: "loadReconcilableBusyBlocks failed" }, error);
-        return [];
-      }
+      // Fail loud (#1152): the freed count is this sweep's saturation verdict, and
+      // an under-cap count now clears the streak and posts "the backlog that
+      // triggered the earlier page has cleared". A read error that degraded to an
+      // empty scan would send that all-clear about rows nobody read. Throwing gives
+      // the lane its "could not tell" marker, which neither pages nor all-clears.
+      // It also matches the in-flight read below, which has thrown since #784.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("busy_blocks")
+          .select("id, user_id, booking_id, source")
+          .eq("source", "slate")
+          .gte("ends_at", new Date().toISOString())
+          .order("ends_at", { ascending: true })
+          // `id` breaks ends_at ties into a total order, so range paging (#512) can't
+          // skip or double-scan a row at a page boundary.
+          .order("id", { ascending: true })
+          .range(offset, offset + limit - 1),
+        "loadReconcilableBusyBlocks",
+      );
       return (data ?? []) as {
         id: string;
         user_id: string;
