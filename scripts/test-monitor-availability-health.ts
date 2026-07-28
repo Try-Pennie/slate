@@ -15,6 +15,8 @@ import {
   isBroadRecomputeFailure,
   availabilityAlertVerdict,
   formatAvailabilityRecovery,
+  reportAvailabilityHealth,
+  DATA_ANOMALY_ALERT_KEY,
   type WorkingRule,
   type DeadEndCause,
 } from "../src/lib/monitor/availability-health.ts";
@@ -320,6 +322,69 @@ const ladder = (code: string) => {
     "the all-clear does not repeat the page's investigate-the-pipeline instruction",
   );
   assert(!DASHES.test(msg), "the all-clear has no dashes");
+}
+
+// The page-or-all-clear decision itself (#1152). The verdict function above is
+// pure and was already covered; what was not is what the lane DOES with each
+// verdict, and specifically that a truncated scan keeps its mouth shut. That is
+// the branch a swallowed read reaches, and it was the one branch with no test.
+{
+  const none: DeadEndCause = { dataAnomaly: [], bookedSolid: [], unverified: [], other: [] };
+
+  const run = async (cause: DeadEndCause, scanTruncated: boolean) => {
+    const paged: string[] = [];
+    const resolved: string[] = [];
+    const res = await reportAvailabilityHealth({
+      cause,
+      scanTruncated,
+      cooldownMs: 1000,
+      healed: [],
+      notify: async (key) => void paged.push(key),
+      resolve: async (key) => {
+        resolved.push(key);
+        return true;
+      },
+    });
+    return { paged, resolved, ...res };
+  };
+
+  const truncated = await run(none, true);
+  assert(truncated.verdict === "unknown", "a truncated scan with no findings is unknown");
+  assert(
+    truncated.resolved.length === 0,
+    "a truncated scan sends NO all-clear: it never looked at every bucket",
+  );
+  assert(truncated.paged.length === 0, "a truncated scan with no findings does not page either");
+
+  // Controls, so the assertions above cannot be passing because nothing is ever
+  // dispatched: the healthy tick really does all-clear, and a finding really pages.
+  const healthy = await run(none, false);
+  assert(healthy.verdict === "healthy", "a complete scan with no findings is healthy");
+  assert(
+    healthy.resolved[0] === DATA_ANOMALY_ALERT_KEY,
+    "a complete clean scan all-clears the data-anomaly page",
+  );
+  assert(healthy.cleared, "the all-clear reports whether a notice actually went out");
+
+  const alerting = await run({ ...none, dataAnomaly: ["411"] }, false);
+  assert(alerting.paged[0] === DATA_ANOMALY_ALERT_KEY, "a real anomaly pages");
+  assert(alerting.resolved.length === 0, "a tick that pages does not also all-clear");
+
+  // Failure path: monitoring must never take down the lane it watches.
+  const thrower = await reportAvailabilityHealth({
+    cause: none,
+    scanTruncated: false,
+    cooldownMs: 1000,
+    healed: [],
+    notify: async () => {},
+    resolve: async () => {
+      throw new Error("slack down");
+    },
+  });
+  assert(
+    thrower.cleared === false,
+    "a failed recovery notice reports not-cleared instead of throwing into the lane",
+  );
 }
 
 finish();

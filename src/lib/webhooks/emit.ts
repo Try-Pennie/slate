@@ -358,8 +358,12 @@ export async function replayDeadLetteredDeliveries(
   );
   if (byId.size === 0) return 0;
 
-  // error-ok: an operator-triggered incident replay; a read error yields zero
-  // rows (returns 0 replayed) so the operator re-runs, and nothing is lost.
+  // error-ok: an operator-triggered incident replay. A read error replays nothing
+  // and the durable rows are untouched, so re-running is safe and loses nothing.
+  // Note what it does NOT do: the caller discards the count, so a read error looks
+  // identical to "there was nothing to replay". That is only tolerable because
+  // nothing is displayed either way; giving the operator a real result (and
+  // distinguishing the two) is #1076.
   const { data: rows } = await db
     .from("webhook_deliveries")
     .select("id, endpoint_id, event, payload, attempts, status")

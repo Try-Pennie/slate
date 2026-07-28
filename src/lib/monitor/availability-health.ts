@@ -236,6 +236,54 @@ export function availabilityAlertVerdict(
   return scanTruncated ? "unknown" : "healthy";
 }
 
+/** The alert_state key the data-anomaly page and its all-clear share. */
+export const DATA_ANOMALY_ALERT_KEY = "availability_data_anomaly";
+
+/**
+ * Page or all-clear on the availability verdict (#1152).
+ *
+ * The decision used to sit inline in the monitor lane, where the only way to ask
+ * "does a truncated scan stay silent?" was to stand up the whole 577-line route.
+ * So nobody asked, and the one branch that must never fire off an unread scan was
+ * the one branch with no test. Injecting `notify` and `resolve` (the same shape
+ * `runMigrationDriftCheck` already uses in that lane) makes all three outcomes
+ * answerable directly.
+ *
+ * `unknown` is the outcome that matters: it neither pages nor all-clears, because
+ * a scan that ran out of budget has no opinion about health.
+ *
+ * Best-effort dispatch, like every other alert on the monitor lane: a flaky Slack
+ * must not fail the tick, and the firing marker survives for the next attempt.
+ */
+export async function reportAvailabilityHealth(deps: {
+  cause: DeadEndCause;
+  scanTruncated: boolean;
+  cooldownMs: number;
+  /** Buckets the lane self-healed this tick, named in the page. */
+  healed: string[];
+  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  resolve: (key: string, text: string) => Promise<boolean>;
+}): Promise<{ verdict: AvailabilityVerdict; cleared: boolean }> {
+  const verdict = availabilityAlertVerdict(deps.cause, deps.scanTruncated);
+  if (verdict === "alerting") {
+    await deps
+      .notify(
+        DATA_ANOMALY_ALERT_KEY,
+        deps.cooldownMs,
+        formatDataAnomalyAlert(deps.cause, deps.healed),
+      )
+      .catch(() => {});
+    return { verdict, cleared: false };
+  }
+  if (verdict === "unknown") return { verdict, cleared: false };
+  // Reachable on the ordinary healthy tick, which is the point: a recovery gated
+  // on the fault still being present could never run.
+  const cleared = await deps
+    .resolve(DATA_ANOMALY_ALERT_KEY, formatAvailabilityRecovery())
+    .catch(() => false);
+  return { verdict, cleared };
+}
+
 /**
  * The all-clear for the data-anomaly page (#1134). Carries no remediation: the
  * page it clears said to go and check the precompute and calendar sync pipeline,

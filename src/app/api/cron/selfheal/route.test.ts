@@ -27,6 +27,16 @@ const cursor = vi.hoisted(() => ({
 const google = vi.hoisted(() => ({
   reconcileOrphanedPoolExits: vi.fn(async () => ({ scanned: 3, cleaned: 2, blocksDeleted: 40 })),
 }));
+// #1152: the saturation reporters decide whether an all-clear goes out, so what
+// this lane hands them on a FAILED sweep is the thing under test here.
+const saturation = vi.hoisted(() => ({
+  reportSweepSaturation: vi.fn(
+    async (_sweep: string, _key: string, _drained: number | null, _limit: number) => {},
+  ),
+  reportDeletionSaturation: vi.fn(
+    async (_key: string, _drain: { deleted: number; failed: number } | null, _limit: number) => {},
+  ),
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
@@ -34,6 +44,7 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/selfheal-cursor", () => cursor);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/google/sync", () => google);
+vi.mock("@/lib/monitor/sweep-saturation", () => saturation);
 
 import { GET } from "./route";
 
@@ -109,5 +120,59 @@ describe("GET /api/cron/selfheal", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.creationOrphans).toBe("error");
+  });
+
+  // #1152: a sweep that FAILED knows nothing about its backlog, so the lane must
+  // hand the saturation reporter `null` ("could not tell") rather than the zero a
+  // swallowed read error used to produce. Zero is the healthy verdict: it clears
+  // the failure streak and posts an all-clear saying the backlog has drained and
+  // no action is needed. The reporters already treat `null` correctly (their own
+  // suite pins that); what these pin is that the failure reaches them AS null.
+  describe("a failed sweep reports an unknown verdict, never a healthy zero (#1152)", () => {
+    const sweepVerdict = (sweep: string) =>
+      saturation.reportSweepSaturation.mock.calls.find((c) => c[0] === sweep)?.[2];
+    const deletionVerdict = () => saturation.reportDeletionSaturation.mock.calls[0]?.[1];
+
+    it("hands the cancelled-block reconcile's saturation reporter null when the sweep throws", async () => {
+      cron.isAuthorizedCron.mockReturnValueOnce(true);
+      service.reconcileCancelledBusyBlocks.mockRejectedValueOnce(new Error("read failed"));
+
+      await GET(req());
+
+      expect(sweepVerdict("cancelled-block reconcile")).toBeNull();
+    });
+
+    it("hands the missing-block reconcile's saturation reporter null when the sweep throws", async () => {
+      cron.isAuthorizedCron.mockReturnValueOnce(true);
+      service.reconcileMissingBusyBlocks.mockRejectedValueOnce(new Error("read failed"));
+
+      await GET(req());
+
+      expect(sweepVerdict("missing-block reconcile")).toBeNull();
+    });
+
+    it("hands the deletion drain's saturation reporter null when the drain throws", async () => {
+      cron.isAuthorizedCron.mockReturnValueOnce(true);
+      service.processPendingEventDeletions.mockRejectedValueOnce(new Error("read failed"));
+
+      await GET(req());
+
+      expect(deletionVerdict()).toBeNull();
+    });
+
+    // Control: the healthy path really does report a verdict, so the three tests
+    // above can't be passing because nothing is ever reported.
+    it("reports each sweep's real verdict when the sweeps succeed", async () => {
+      cron.isAuthorizedCron.mockReturnValueOnce(true);
+      service.reconcileCancelledBusyBlocks.mockResolvedValueOnce({ freed: 4, scanned: 4 });
+      service.reconcileMissingBusyBlocks.mockResolvedValueOnce({ recreated: 2, scanned: 2 });
+      service.processPendingEventDeletions.mockResolvedValueOnce({ deleted: 3, failed: 1 });
+
+      await GET(req());
+
+      expect(sweepVerdict("cancelled-block reconcile")).toBe(4);
+      expect(sweepVerdict("missing-block reconcile")).toBe(2);
+      expect(deletionVerdict()).toEqual({ deleted: 3, failed: 1 });
+    });
   });
 });
