@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Wiring for the prune-routing cron. Since #1102 it is EXPORT-GATED: it deletes
-// routing_decisions older than the retention window AND only up to the confirmed
-// Snowflake-export watermark, and only when a reconciliation currently passes.
-// This covers the route glue: auth guard, lock guard, the mirror-ready + exported
-// gates, the delete shape (lt cutoff + lte watermark), lock release, and response.
+// Wiring for the prune-routing cron. Since #1102 it is VERIFY-GATED: it reads a
+// bounded batch of aged routing_decisions and asks the warehouse, per id, whether
+// it actually holds that row at a current version, then deletes ONLY the confirmed
+// ids. The export watermark stays as a cheap pre-filter but can never withhold a
+// candidate (a 12-month-old row is always below a watermark that is minutes old),
+// so the read-back is the real gate.
+//
+// The REAL verifier runs here (only the Snowflake transport is stubbed), so this
+// covers the whole path: candidate read, verification, delete-by-id, and the
+// refusal when the warehouse confirms nothing.
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
@@ -15,55 +20,109 @@ const gate = vi.hoisted(() => ({
     ready: true,
     reason: null,
   })),
-  exportedThrough: vi.fn(async (): Promise<string | null> => "2026-01-01T00:00:00Z"),
+  exportedThrough: vi.fn(async (): Promise<string | null> => "2026-07-28T00:00:00Z"),
 }));
-const lte = vi.hoisted(() =>
-  vi.fn(async (): Promise<{ error: { message: string } | null; count: number | null }> => ({ error: null, count: 0 })),
-);
-const lt = vi.hoisted(() => vi.fn(() => ({ lte })));
-const del = vi.hoisted(() => vi.fn(() => ({ lt })));
-const from = vi.hoisted(() => vi.fn(() => ({ delete: del })));
+const sf = vi.hoisted(() => ({ executeStatement: vi.fn() }));
+const db = vi.hoisted(() => {
+  const state = {
+    candidates: [] as { id: string; created_at: string }[],
+    readError: null as { message: string } | null,
+    deleteError: null as { message: string } | null,
+    deletedIds: [] as string[],
+    ltCalls: [] as Array<[string, string]>,
+    limitCalls: [] as number[],
+    orderCalls: [] as string[],
+  };
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.lt = (col: string, val: string) => {
+    state.ltCalls.push([col, val]);
+    return chain;
+  };
+  chain.order = (col: string) => {
+    state.orderCalls.push(col);
+    return chain;
+  };
+  chain.limit = (n: number) => {
+    state.limitCalls.push(n);
+    return Promise.resolve({ data: state.candidates, error: state.readError });
+  };
+  const del = () => ({
+    in: (_col: string, ids: string[]) => {
+      state.deletedIds = ids;
+      return Promise.resolve({ error: state.deleteError, count: state.deleteError ? null : ids.length });
+    },
+  });
+  const from = vi.fn(() => ({ ...chain, delete: del }));
+  return { state, from };
+});
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/retention-gate", () => gate);
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock("@/lib/snowflake/config", () => ({
+  readSnowflakeConfig: () => ({
+    account: "a",
+    user: "u",
+    privateKeyPem: "k",
+    database: "SLATE",
+    schema: "PUBLIC",
+    warehouse: "SLATE_WH",
+    role: "SLATE_ROLE",
+  }),
+}));
+vi.mock("@/lib/snowflake/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/snowflake/client")>()),
+  executeStatement: sf.executeStatement,
+}));
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
 
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 
+/** Warehouse answer: present + current for each id unless overridden. */
+const warehouseHolds = (ids: string[], opts: { present?: boolean; current?: boolean } = {}) => ({
+  data: ids.map((id) => [id, String(opts.present ?? true), String(opts.current ?? true)]),
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   locks.acquireLock.mockResolvedValue("lease");
   gate.mirrorReadyForDeletion.mockResolvedValue({ ready: true, reason: null });
-  gate.exportedThrough.mockResolvedValue("2026-01-01T00:00:00Z");
-  lte.mockResolvedValue({ error: null, count: 0 });
+  gate.exportedThrough.mockResolvedValue("2026-07-28T00:00:00Z");
+  db.state.candidates = [];
+  db.state.readError = null;
+  db.state.deleteError = null;
+  db.state.deletedIds = [];
+  db.state.ltCalls = [];
+  db.state.limitCalls = [];
+  db.state.orderCalls = [];
 });
 
-describe("GET /api/cron/prune-routing (export-gated, #1102)", () => {
-  it("returns 401 and does not delete when the request is unauthorized", async () => {
+describe("GET /api/cron/prune-routing (verify-gated, #1102)", () => {
+  it("returns 401 and touches nothing when the request is unauthorized", async () => {
     cron.isAuthorizedCron.mockReturnValueOnce(false);
     const res = await GET(req());
     expect(res.status).toBe(401);
-    expect(from).not.toHaveBeenCalled();
+    expect(db.from).not.toHaveBeenCalled();
     expect(locks.releaseLock).not.toHaveBeenCalled();
   });
 
-  it("skips (no delete) when the lock is not acquired", async () => {
+  it("skips when the lock is not acquired", async () => {
     locks.acquireLock.mockResolvedValueOnce(null);
     const res = await GET(req());
     expect(await res.json()).toEqual({ skipped: "overlapping-run" });
-    expect(from).not.toHaveBeenCalled();
+    expect(db.from).not.toHaveBeenCalled();
   });
 
-  it("skips WITHOUT deleting when the mirror is not ready for deletion", async () => {
+  it("skips without reading candidates when the mirror is not ready", async () => {
     gate.mirrorReadyForDeletion.mockResolvedValueOnce({ ready: false, reason: "mirror not configured" });
     const res = await GET(req());
     expect((await res.json()).skipped).toBe("mirror-not-ready");
     expect(gate.exportedThrough).not.toHaveBeenCalled();
-    expect(del).not.toHaveBeenCalled();
+    expect(db.from).not.toHaveBeenCalled();
     expect(locks.releaseLock).toHaveBeenCalledTimes(1);
   });
 
@@ -71,39 +130,103 @@ describe("GET /api/cron/prune-routing (export-gated, #1102)", () => {
     gate.exportedThrough.mockResolvedValueOnce(null);
     const res = await GET(req());
     expect((await res.json()).skipped).toBe("nothing-exported-yet");
-    expect(del).not.toHaveBeenCalled();
+    expect(db.from).not.toHaveBeenCalled();
   });
 
-  it("deletes with a ~12-month cutoff AND the confirmed-export watermark, then releases the lock", async () => {
-    lte.mockResolvedValueOnce({ error: null, count: 7 });
-    const beforeMs = Date.now();
-    const res = await GET(req());
-    const body = await res.json();
+  it("reads a BOUNDED, ordered batch with a ~12-month cutoff and a strict watermark bound", async () => {
+    await GET(req());
+    // Bounded: routing_decisions is a growth table, so an unbounded read would
+    // silently see only one PostgREST page.
+    expect(db.state.limitCalls[0]).toBeGreaterThan(0);
+    expect(db.state.orderCalls[0]).toBe("created_at");
 
-    expect(res.status).toBe(200);
-    expect(body.pruned).toBe(7);
-    expect(body.exportedThrough).toBe("2026-01-01T00:00:00Z");
-
-    expect(from).toHaveBeenCalledWith("routing_decisions");
-    expect(del).toHaveBeenCalledWith({ count: "exact" });
-
-    // lt uses created_at with a ~12-month cutoff...
-    const [ltField, cutoffIso] = lt.mock.calls[0] as unknown as [string, string];
-    expect(ltField).toBe("created_at");
-    const elapsedMs = beforeMs - new Date(cutoffIso).getTime();
+    const [[cutoffField, cutoffIso], [wmField, wmIso]] = db.state.ltCalls;
+    expect(cutoffField).toBe("created_at");
+    const elapsedMs = Date.now() - new Date(cutoffIso).getTime();
     expect(elapsedMs).toBeGreaterThan(11 * 30 * 24 * 60 * 60 * 1000);
     expect(elapsedMs).toBeLessThan(13 * 30 * 24 * 60 * 60 * 1000);
-    // ...and lte bounds the delete by the confirmed-export watermark.
-    expect(lte).toHaveBeenCalledWith("created_at", "2026-01-01T00:00:00Z");
+    // Strict `lt`, not `lte`: the export cursor is a composite (created_at, id)
+    // keyset, so an equal-watermark row was not necessarily exported.
+    expect(wmField).toBe("created_at");
+    expect(wmIso).toBe("2026-07-28T00:00:00Z");
+  });
 
+  it("deletes exactly the ids the warehouse confirms, and reports the count", async () => {
+    db.state.candidates = [
+      { id: "r1", created_at: "2025-01-01T00:00:00Z" },
+      { id: "r2", created_at: "2025-01-02T00:00:00Z" },
+    ];
+    sf.executeStatement.mockResolvedValue(warehouseHolds(["r1", "r2"]));
+
+    const res = await GET(req());
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.pruned).toBe(2);
+    expect(body.candidates).toBe(2);
+    expect(db.state.deletedIds).toEqual(["r1", "r2"]);
     expect(locks.releaseLock).toHaveBeenCalledWith("cron_prune_routing", "lease");
   });
 
-  it("returns 500 when the DB delete fails and still releases the lock", async () => {
-    lte.mockResolvedValueOnce({ error: { message: "db exploded" }, count: null });
+  it("leaves a row the warehouse does not hold in place, and deletes only the rest", async () => {
+    db.state.candidates = [
+      { id: "r1", created_at: "2025-01-01T00:00:00Z" },
+      { id: "r2", created_at: "2025-01-02T00:00:00Z" },
+    ];
+    sf.executeStatement.mockResolvedValue({
+      data: [
+        ["r1", "true", "true"],
+        ["r2", "false", "false"],
+      ],
+    });
+    const res = await GET(req());
+    expect((await res.json()).pruned).toBe(1);
+    expect(db.state.deletedIds).toEqual(["r1"]);
+  });
+
+  it("returns 500 and deletes NOTHING when the warehouse confirms none of the candidates", async () => {
+    // The watermark claimed these were archived. A quiet "0 pruned" here would be
+    // indistinguishable from a day with no aged rows.
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockResolvedValue(warehouseHolds(["r1"], { present: false, current: false }));
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/confirmed NONE/);
+    expect(db.state.deletedIds).toEqual([]);
+    expect(locks.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 500 and deletes NOTHING when the warehouse read fails", async () => {
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockRejectedValue(new Error("warehouse suspended"));
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/warehouse suspended/);
+    expect(db.state.deletedIds).toEqual([]);
+  });
+
+  it("succeeds with nothing pruned on a genuinely quiet day", async () => {
+    db.state.candidates = [];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).pruned).toBe(0);
+    expect(sf.executeStatement).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 when the candidate read fails and still releases the lock", async () => {
+    db.state.readError = { message: "db exploded" };
     const res = await GET(req());
     expect(res.status).toBe(500);
     expect((await res.json()).error).toBe("db exploded");
+    expect(locks.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 500 when the delete itself fails and still releases the lock", async () => {
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockResolvedValue(warehouseHolds(["r1"]));
+    db.state.deleteError = { message: "delete blew up" };
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe("delete blew up");
     expect(locks.releaseLock).toHaveBeenCalledTimes(1);
   });
 });
