@@ -140,6 +140,63 @@ payload), then runs a verification query that must return zero residual PII. The
 Supabase redaction stamps `pii_redacted_at` / `payload_erased`, the export lane
 freezes those rows, so the operator's warehouse redaction is not later clobbered.
 
+## 7b. How a retention lane actually destroys something (#1102)
+
+All three retention lanes (`prune-routing`, `prune-webhook-payloads`,
+`prune-bookings-pii`) follow one contract, and it is worth stating because the
+obvious-looking version of it does not work.
+
+**The export watermark is not a gate.** Each lane deletes rows older than its
+window and also requires the row to sit below `export_cursor.last_ts`. That cursor
+is minutes old, so for a row 30 days / 90 days / 12 months past its window the
+second condition is always true. It withholds nothing. Worse, "the cursor is past
+timestamp T" says nothing about whether the specific row at T was exported: the
+export fetch is a strictly-forward keyset, so a row committed with an earlier
+`updated_at` after the cursor moved past it is never exported. `booking_outbox` is
+the live example, because it has no `set_updated_at` trigger and its writers stamp
+`updated_at` from the Worker's own clock.
+
+**So the real control is a per-row read-back.** Before destroying anything, a lane
+reads a bounded batch of candidates and asks Snowflake, per id, whether it holds
+that row at a version no older than Supabase's. Only confirmed ids are destroyed,
+by explicit id list, never by a range predicate. Three outcomes are kept distinct:
+the row is archived, the warehouse lacks it, or the warehouse has an older copy. A
+failed or malformed warehouse read is none of those and throws, because an empty
+answer must never read as "the warehouse has none of these".
+
+**Redaction counts as destruction.** Blanking booking contact fields or a webhook
+payload leaves no other copy in Supabase, so it takes the same proof a delete does.
+
+**A refusal is recoverable.** Rows the warehouse could not confirm are re-sent by
+id (`reexportByIds`) before the lane refuses, so a single missed row does not make
+the refusal permanent. Nothing else would revisit it: the cursor only moves
+forward, and the #1100 backfill lane does not exist. A row already redacted in
+place is never re-sent, since that would overwrite the warehouse's full-fidelity
+copy.
+
+**Windows.** routing decisions 12 months, webhook payloads 90 days, booking contact
+data 24 months, delivered outbox rows 30 days. `bookings` are never hard-deleted:
+retention redacts in place and migration 0089 blocks the cascade outright.
+
+**Monitoring.** Each lane stamps a heartbeat when it completes without throwing
+(including a skip) and is judged against a 28h bound, so a lane that fails nightly
+goes stale and pages. A lane that runs but skips because the mirror is unusable
+gets its own alert, because both skip paths otherwise return a cheerful 200 and
+retention would stop indefinitely while reporting healthy.
+
+**Accepted residual risk: there is no database-layer control on these deletions.**
+`audit_log` and `booking_events` are tamper-evident against the secret key via
+triggers (0089), but the three hard-delete targets are not: they carry no
+append-only trigger, no RLS policy that binds the secret key, and no separate
+grant. A bug or a compromised secret key could delete from them directly, and the
+guarantees above all live in application code. This was a deliberate choice when
+Phase 6 landed: the issue originally called for a distinct
+`slate.allow_archival_delete` GUC plus a SECURITY DEFINER RPC, which was dropped
+after verifying nothing blocks these deletes and that the only case needing it
+(hard-deleting a booking) is one we never do. It is recorded here as residual risk,
+the way AGENTS.md records the main-push-guard residual risk, rather than being
+treated as free. Revisit it if these tables ever get a second writer.
+
 ## 8. PII inventory / processor map
 
 The processor map (who we send PII to: Regal/Cadence via webhooks, Google
