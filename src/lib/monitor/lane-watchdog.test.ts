@@ -20,6 +20,39 @@ const heartbeat = vi.hoisted(() => ({
 
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+// The first-sighting marker for never-stamped lanes (#1102), kept in alert_state.
+const marker = vi.hoisted(() => ({
+  firstSeenAt: null as string | null,
+  written: [] as string[],
+  cleared: [] as string[],
+  throwOn: null as "read" | "write" | "clear" | null,
+}));
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: () => ({
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => {
+            if (marker.throwOn === "read") throw new Error("supabase unreachable");
+            return { data: marker.firstSeenAt ? { last_sent_at: marker.firstSeenAt } : null };
+          },
+        }),
+      }),
+      upsert: async (row: { key: string }) => {
+        if (marker.throwOn === "write") throw new Error("supabase unreachable");
+        marker.written.push(row.key);
+        return { error: null };
+      },
+      delete: () => ({
+        eq: async (_c: string, key: string) => {
+          if (marker.throwOn === "clear") throw new Error("supabase unreachable");
+          marker.cleared.push(key);
+          return { error: null };
+        },
+      }),
+    }),
+  }),
+}));
 
 import { alertOnStaleLanes } from "./lane-watchdog";
 
@@ -46,6 +79,10 @@ const healthy = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  marker.firstSeenAt = null;
+  marker.written = [];
+  marker.cleared = [];
+  marker.throwOn = null;
   dispatch.sendThrottledAlert.mockResolvedValue(undefined);
   heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -315,12 +352,31 @@ describe("alertOnStaleLanes (#803)", () => {
   });
 
   describe("the daily retention lanes (#1102)", () => {
-    it("alerts with never-ran copy for a retention lane that has never completed", async () => {
-      // Unlike the every-minute lanes, a never-stamped retention lane IS alerted
-      // on: it destroys customer data, so a lane that throws on every run since
-      // deploy (and therefore never stamps) must not be invisible.
+    it("starts a grace window instead of paging the first time a lane is seen missing", async () => {
+      // The #1136 regression: deploying the heartbeat code paged all three daily
+      // lanes before they had reached their first 03:00 run, claiming they had
+      // failed every run. A newly deployed lane must get its bound to appear.
       const { "prune-bookings-pii": _omitted, ...rest } = healthy();
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = null;
+      await alertOnStaleLanes();
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+      expect(marker.written).toContain("lane_never_seen:prune-bookings-pii");
+    });
+
+    it("stays quiet while a never-stamped lane is still inside its grace window", async () => {
+      const { "prune-bookings-pii": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = new Date(Date.now() - 60 * MIN).toISOString();
+      await alertOnStaleLanes();
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    it("alerts with never-ran copy once the lane has been missing for a full bound", async () => {
+      // A lane that genuinely never runs still pages, one bound later than before.
+      const { "prune-bookings-pii": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = new Date(Date.now() - 40 * 60 * MIN).toISOString();
       const stale = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("prune-bookings-pii");
       const call = dispatch.sendThrottledAlert.mock.calls.find(
@@ -329,6 +385,44 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(call).toBeDefined();
       expect(String(call?.[2])).toMatch(/NEVER completed/);
       expect(String(call?.[2])).not.toMatch(/Infinity|NaN/);
+    });
+
+    it("defers rather than false-pages when the sighting marker cannot be read", async () => {
+      // A failed read must not become a page. It returns null, which reads as "first
+      // sighting", so the worst case is an alert delayed by one bound.
+      const { "prune-bookings-pii": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.throwOn = "read";
+      await expect(alertOnStaleLanes()).resolves.toBeDefined();
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    it("survives a failed sighting write without taking down the watchdog", async () => {
+      // This runs inside the every-minute cron lane; a throw here would stop the
+      // sync tick, which is worse than a late alert.
+      const { "prune-bookings-pii": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.throwOn = "write";
+      await expect(alertOnStaleLanes()).resolves.toBeDefined();
+    });
+
+    it("survives a failed sighting clear and still reports the stale lane", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "prune-routing": ago(40 * 60 * MIN),
+      });
+      marker.throwOn = "clear";
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("prune-routing");
+    });
+
+    it("clears a stale sighting once the lane starts stamping again", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "prune-routing": ago(40 * 60 * MIN),
+      });
+      await alertOnStaleLanes();
+      expect(marker.cleared).toContain("lane_never_seen:prune-routing");
     });
 
     it("alerts with the measured age for a retention lane past its bound", async () => {

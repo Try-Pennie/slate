@@ -12,8 +12,9 @@ import {
   CANARY_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   retentionAlertText,
+  neverStampedVerdict,
 } from "../src/lib/monitor/health.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
 const NOW = 1_800_000_000_000;
@@ -181,6 +182,38 @@ assert(
   Object.keys(RETENTION_STALE_BOUNDS_MS).every((l) => !(l in LANE_STALE_BOUNDS_MS)),
   "no retention lane is in LANE_STALE_BOUNDS_MS, so stalled retention can never flip the external /api/health 503",
 );
+
+// --- a never-stamped lane needs a grace period, not an instant page ------------
+// Turning neverIsStale on without this paged three lanes the moment #1136 deployed:
+// the lanes run daily at 03:00 UTC, so between shipping the heartbeat code and the
+// first scheduled run they had legitimately never stamped. The alert even told us
+// they "failed every run or are not being scheduled", which was wrong. That is the
+// cry-wolf failure the default leniency exists to prevent, so the strict mode needs
+// its own window: record when we FIRST noticed the lane missing, and page only once
+// it has been missing longer than its own bound.
+{
+  const BOUND = RETENTION_STALE_BOUNDS_MS["prune-routing"];
+  eq(
+    neverStampedVerdict(null, NOW, BOUND),
+    "record-first-sighting",
+    "the first time we see a lane missing we record it and do NOT page (it may have just deployed)",
+  );
+  eq(
+    neverStampedVerdict(ago(BOUND - MIN), NOW, BOUND),
+    "wait",
+    "a lane missing for less than its bound stays quiet, so a deploy cannot page",
+  );
+  eq(
+    neverStampedVerdict(ago(BOUND + MIN), NOW, BOUND),
+    "page",
+    "a lane still missing after its whole bound has elapsed IS genuinely broken",
+  );
+  eq(
+    neverStampedVerdict(ago(BOUND), NOW, BOUND),
+    "wait",
+    "exactly at the bound is not yet stale (strict >), matching findStaleLanes",
+  );
+}
 
 // The alert copy must name the consequence, not just the cron, and must handle the
 // never-ran case without emitting a meaningless age.

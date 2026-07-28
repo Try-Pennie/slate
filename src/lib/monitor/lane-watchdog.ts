@@ -5,9 +5,11 @@ import {
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   retentionAlertText,
+  neverStampedVerdict,
   type StaleLane,
 } from "@/lib/monitor/health";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 
 /** Per lane, so one dead lane can't throttle away the first alert for another. */
@@ -133,6 +135,23 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   }
 
   for (const lane of retentionStale) {
+    // A lane that has NEVER stamped gets a grace window before it can page (#1102).
+    // Without it, deploying the heartbeat code paged every daily lane until its
+    // first 03:00 run, with copy claiming it had failed every run. See
+    // neverStampedVerdict.
+    if (!Number.isFinite(lane.ageMs)) {
+      const verdict = neverStampedVerdict(await readFirstSeenMissingMs(lane.lane), now, lane.maxStaleMs);
+      if (verdict === "record-first-sighting") {
+        await recordFirstSeenMissing(lane.lane);
+        log.info("lane-watchdog", { msg: "retention lane not yet seen; starting its grace window", lane: lane.lane });
+        continue;
+      }
+      if (verdict === "wait") continue;
+    } else {
+      // It has stamped, so any earlier sighting is history: clear it so a future
+      // disappearance starts a fresh window rather than paging instantly.
+      await clearFirstSeenMissing(lane.lane);
+    }
     log.warn("lane-watchdog", {
       msg: "retention lane stale",
       lane: lane.lane,
@@ -184,4 +203,58 @@ function mirrorAlertText(lane: string, ageMin: number, boundMin: number): string
     return `Slate: the check that proves an erased person's data is really gone from the Snowflake warehouse has not run for ${ageMin} minutes (bound ${boundMin}m), so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
   }
   return `Slate: the Snowflake mirror export lane has not run for ${ageMin} minutes (bound ${boundMin}m), so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
+}
+
+
+/**
+ * The "first noticed missing" marker for a never-stamped lane (#1102).
+ *
+ * Stored in `alert_state`, which is already a generic key-to-timestamp table with
+ * deny-all RLS, so this needs no migration. The key is namespaced away from the
+ * alert cooldown keys (`cron_lane_stale:*`) so the two cannot collide.
+ *
+ * All three helpers are best-effort and never throw: they run inside a cron lane,
+ * and a watchdog that takes down the sync tick is worse than a late alert. A failed
+ * READ returns null, which means "record a first sighting", so the worst case is a
+ * page deferred by one bound rather than a false page.
+ */
+const firstSeenKey = (lane: string) => `lane_never_seen:${lane}`;
+
+async function readFirstSeenMissingMs(lane: string): Promise<number | null> {
+  try {
+    // error-ok: a read failure defers the page by one bound; it never causes a
+    // false page, and the next tick retries.
+    const { data } = await supabaseAdmin()
+      .from("alert_state")
+      .select("last_sent_at")
+      .eq("key", firstSeenKey(lane))
+      .maybeSingle();
+    const at = (data as { last_sent_at: string } | null)?.last_sent_at;
+    return at ? Date.parse(at) : null;
+  } catch (err) {
+    log.warn("lane-watchdog", { msg: "first-sighting read failed", lane });
+    void err;
+    return null;
+  }
+}
+
+async function recordFirstSeenMissing(lane: string): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin()
+      .from("alert_state")
+      .upsert({ key: firstSeenKey(lane), last_sent_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) log.warn("lane-watchdog", { msg: "first-sighting write failed", lane, error: error.message });
+  } catch (err) {
+    log.warn("lane-watchdog", { msg: "first-sighting write threw", lane });
+    void err;
+  }
+}
+
+async function clearFirstSeenMissing(lane: string): Promise<void> {
+  try {
+    await supabaseAdmin().from("alert_state").delete().eq("key", firstSeenKey(lane));
+  } catch (err) {
+    log.warn("lane-watchdog", { msg: "first-sighting clear failed", lane });
+    void err;
+  }
 }
