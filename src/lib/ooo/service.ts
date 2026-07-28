@@ -17,6 +17,7 @@ import {
 } from "@/lib/notify/slack";
 import { approvalBlocks } from "@/lib/notify/ooo-slack-blocks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { shortFailureReason } from "@/lib/notify/error-text";
 import { recordAudit } from "@/lib/audit";
 import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -139,7 +140,7 @@ function realDeps(): OooDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           OOO_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks INSERT for an approved OOO request failed (${error?.message}). The agent may keep getting bookings until the next sync pass.`,
+          `Slate: busy_blocks INSERT for an approved OOO request failed (${shortFailureReason(error?.message)}). The agent may keep getting bookings until the next sync pass.`,
         ).catch(() => {});
         return null;
       }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import { log } from "@/lib/log";
 
 /** The one client-facing message for an unexpected server fault. Shared so every
@@ -12,10 +13,6 @@ export const GENERIC_ERROR_MESSAGE =
  *  request; short enough that a fault still breaking an hour later is news again.
  *  Keyed per route (below), so this is a per-route budget, not a global one. */
 export const INTERNAL_ERROR_COOLDOWN_MS = 15 * 60 * 1000;
-
-/** How much real error text to carry into Slack: enough to identify the fault,
- *  bounded so a giant stack can't wreck the message. */
-const ALERT_DETAIL_CHARS = 300;
 
 /**
  * The single chokepoint for an UNEXPECTED server fault: log it, and TELL someone.
@@ -36,7 +33,12 @@ const ALERT_DETAIL_CHARS = 300;
 export async function reportInternalError(err: unknown, context: string): Promise<void> {
   log.error("api", { msg: "unexpected error", context }, err);
 
-  const detail = (err instanceof Error ? err.message : String(err)).slice(0, ALERT_DETAIL_CHARS);
+  // #1135: one readable sentence, never a raw body. This is the chokepoint for
+  // every unexpected fault, so whatever a library throws (a multi-line SQL
+  // compilation error, a Google JSON body, a stack) lands here. It used to hard
+  // slice at a fixed width, which is how a page ends up cut off mid-word. The
+  // full text is already in the log line above, which Cloudflare keeps complete.
+  const detail = shortErrorReason(err);
   await sendThrottledAlert(
     `internal_error:${context}`,
     INTERNAL_ERROR_COOLDOWN_MS,

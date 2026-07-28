@@ -9,6 +9,7 @@ import {
 } from "@/lib/env";
 import { sendGmailEmail } from "@/lib/notify/email";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import {
   approvalsBody,
   approvalsFileDate,
@@ -118,7 +119,7 @@ export async function GET(req: NextRequest) {
     await sendThrottledAlert(
       "ooo_approvals_digest",
       DIGEST_ALERT_COOLDOWN_MS,
-      `Slate: the daily OOO-approvals email (${rows.length} ${rows.length === 1 ? "approval" : "approvals"}) failed to send to ${recipients.length} ${recipients.length === 1 ? "recipient" : "recipients"}: ${String(e).slice(0, 200)}`,
+      `Slate: the daily OOO-approvals email (${rows.length} ${rows.length === 1 ? "approval" : "approvals"}) failed to send to ${recipients.length} ${recipients.length === 1 ? "recipient" : "recipients"}: ${shortErrorReason(e)}`,
     ).catch(() => {});
     throw e;
   }

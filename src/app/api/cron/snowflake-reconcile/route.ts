@@ -4,6 +4,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { reconcileSnowflakeMirror } from "@/lib/snowflake/reconcile";
 import { runSnowflakeHealthcheck } from "@/lib/snowflake/healthcheck";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { shortFailureReason } from "@/lib/notify/error-text";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 
@@ -49,7 +50,9 @@ async function runScheduledHealthcheck(): Promise<void> {
         HEALTHCHECK_ALERT_KEY,
         ALERT_COOLDOWN_MS,
         `Slate: the Snowflake warehouse self-check is failing, so we cannot trust the archive mirror. ` +
-          `${health.error ?? "no detail"}. Until this clears, retention will refuse to delete anything ` +
+          // #1135: Snowflake answers with a multi-line SQL compilation error and a
+          // driver stack. One readable line here; the full text is in the log.
+          `${shortFailureReason(health.error) ?? "no detail"}. Until this clears, retention will refuse to delete anything ` +
           `(the safe direction) and a deletion request's warehouse purge cannot be verified.`,
       );
       return;
