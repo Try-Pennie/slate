@@ -106,9 +106,17 @@ async function countSnowflake(config: SnowflakeConfig, table: string): Promise<n
 }
 
 async function positiveControl(config: SnowflakeConfig, db: ReconDb): Promise<ControlCheck | null> {
-  const { data, error } = await db
-    .from("bookings")
-    .select("id")
+  // #1102: apply the SAME skip predicate the count read uses (reconcile.ts
+  // countSupabase). Without it, the control picks the oldest booking whether or not
+  // it was redacted in place, and a booking erased BEFORE its first export exists in
+  // Supabase and never in Snowflake. If such a row is ever the oldest, the control
+  // fails on every tick, `mirrorReadyForDeletion` is never ready again, and all
+  // three retention lanes freeze permanently. That is the #1118 class the count read
+  // was already patched for; the control was missed.
+  const { data, error } = await applySkipRedacted(
+    "bookings",
+    db.from("bookings").select("id"),
+  )
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
