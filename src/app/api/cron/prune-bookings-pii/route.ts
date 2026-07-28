@@ -16,8 +16,14 @@ const LOCK_TTL_MS = 120_000;
 // backlog today (nothing is 24 months old yet), and at PoC scale a daily batch of
 // this size clears any future aging comfortably.
 const BATCH = 500;
-// Delivered outbox rows are operational cruft (their steps jsonb can also carry
-// PII); prune them well after the drain is done with them.
+// Delivered outbox rows are operational cruft; prune them well after the drain is
+// done with them. Their PII exposure is narrower than this comment used to claim
+// (it said "steps jsonb can also carry PII", which #1140 measured against prod and
+// found to mean the payload's free-text `reasonDetail`, plus an error string that
+// could embed an external response body, NOT attendee name/email/phone/prefill).
+// A DELETION REQUEST no longer waits on this window: erase_booking_pii clears
+// those fields immediately (migration 0093), which matters because this prune is
+// pausable and so cannot be relied on as the erasure path.
 const OUTBOX_DELIVERED_RETENTION_DAYS = 30;
 
 /**

@@ -42,8 +42,11 @@ a safe no-op and writes no new audit row.
 What it does, in one transaction: redacts the booking contact fields (name, email,
 phone null; prefill emptied) and stamps `pii_redacted_at`; redacts those bookings'
 `booking_events.reason_detail`; blanks the matching outbound webhook payloads
-(matched by the affected booking ids); and writes one `audit_log` entry with the
-affected booking ids and a **SHA-256 hash** of the email (never the cleartext).
+(matched by the affected booking ids); takes the free-text reason and any embedded
+error body out of those bookings' `booking_outbox` rows (#1140, keeping the
+operational fields the drain needs, so a still-pending row is safe to blank); and
+writes one `audit_log` entry with the affected booking ids and a **SHA-256 hash** of
+the email (never the cleartext).
 
 ## Step 2: get the affected booking ids
 
@@ -83,11 +86,25 @@ update SLATE.PUBLIC.booking_events
 update SLATE.PUBLIC.webhook_deliveries
    set payload = object_construct(), payload_erased = true
  where payload:booking_id::string in (<ids>);
+
+update SLATE.PUBLIC.booking_outbox
+   set payload = object_insert(payload, 'reasonDetail', null, true),
+       last_error = null
+ where booking_id in (<ids>);
 ```
 
 Because the Supabase redaction stamped `pii_redacted_at` / `payload_erased`, the
-export lane has frozen those rows and will not re-mirror the full-fidelity
-version back over your redaction.
+export lane has frozen the `bookings` and `webhook_deliveries` rows and will not
+re-mirror the full-fidelity version back over your redaction.
+
+`booking_outbox` works the other way round and is the reason the step above is
+belt-and-braces rather than the only defense: it is deliberately **not** frozen from
+the export, so within a few minutes the export MERGEs the already-blanked Supabase
+row over the warehouse copy and keeps it erased. Your manual update just makes it
+immediate instead of waiting for the next export tick. Note the `steps[].error`
+strings are cleared on the Supabase side only; the export overwrite is what carries
+that to the warehouse, so if step 4 shows a residual there, give the export a tick
+and re-check before escalating.
 
 ## Step 4: verify (mandatory)
 
@@ -103,7 +120,10 @@ select
      where booking_id in (<ids>) and reason_detail is not null) as events_residual,
   (select count(*) from SLATE.PUBLIC.webhook_deliveries
      where payload:booking_id::string in (<ids>)
-       and payload:attendee:email is not null) as webhook_residual;
+       and payload:attendee:email is not null) as webhook_residual,
+  (select count(*) from SLATE.PUBLIC.booking_outbox
+     where booking_id in (<ids>)
+       and payload:reasonDetail is not null) as outbox_residual;
 ```
 
 Also confirm the Supabase side: the `audit_log` row from step 2 exists with
