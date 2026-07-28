@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { shortErrorReason } from "@/lib/notify/error-text";
+import { shortErrorReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
 import { log } from "@/lib/log";
 
 /** The one client-facing message for an unexpected server fault. Shared so every
@@ -38,7 +38,9 @@ export async function reportInternalError(err: unknown, context: string): Promis
   // compilation error, a Google JSON body, a stack) lands here. It used to hard
   // slice at a fixed width, which is how a page ends up cut off mid-word. The
   // full text is already in the log line above, which Cloudflare keeps complete.
-  const detail = shortErrorReason(err);
+  // The wider budget: for an UNPREDICTED fault this text is the diagnosis itself,
+  // not a supporting detail on copy that already names the condition.
+  const detail = shortErrorReason(err, { maxChars: DIAGNOSTIC_REASON_CHARS });
   await sendThrottledAlert(
     `internal_error:${context}`,
     INTERNAL_ERROR_COOLDOWN_MS,
