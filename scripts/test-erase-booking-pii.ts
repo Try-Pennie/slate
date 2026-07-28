@@ -16,8 +16,15 @@ import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
 
 const dir = join(import.meta.dirname, "..", "supabase", "migrations");
+// The function is defined with `create or replace`, so when several migrations
+// define it the HIGHEST-numbered one is what is actually live. Taking the first
+// match (as this guard originally did) pins superseded SQL and silently stops
+// checking the real function the moment it is amended, which is how #1140's
+// missing outbox erasure would have passed this guard unnoticed.
 const file = readdirSync(dir)
   .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .reverse()
   .find((f) => readFileSync(join(dir, f), "utf8").toLowerCase().includes("function erase_booking_pii"));
 
 assert(file !== undefined, "a migration defines erase_booking_pii(...)");
@@ -80,6 +87,41 @@ assert(
   /payload\s*->>\s*'booking_id'/.test(code),
   "matches webhook deliveries by payload booking_id (the affected id set), not email alone",
 );
+
+// #1140: booking_outbox carries the SAME free-text reason as booking_events (its
+// payload.reasonDetail is written from the same mutation), so erasing one and not
+// the other leaves a copy of data we told the person was gone. Verified against
+// production: the outbox payload holds fromAgentUserId / fromStartsIso /
+// initiator / reasonCode / reasonDetail, and reasonDetail is the only PII-bearing
+// field; steps[].error and last_error can additionally embed an external response
+// body. It is NOT the attendee name/email/phone/prefill the issue first described.
+assert(code.includes("booking_outbox"), "erases the matching booking_outbox rows (#1140)");
+assert(
+  /reasondetail/.test(code),
+  "removes the outbox payload's free-text reasonDetail (the same text redacted in booking_events)",
+);
+assert(
+  code.includes("last_error"),
+  "clears the outbox last_error, which can embed an external response body",
+);
+// The outbox has NO set_updated_at trigger (its writers stamp updated_at from the
+// Worker's own clock), and it is deliberately absent from the export's
+// skip-redacted set. So stamping updated_at here is what makes the next export
+// MERGE the blanked row over the warehouse copy, erasing Snowflake automatically
+// instead of needing a hand-run purge. Without it the mirror keeps the reason text.
+assert(
+  /update\s+booking_outbox[\s\S]{0,400}updated_at\s*=\s*now\(\)/.test(code),
+  "stamps booking_outbox.updated_at so the export overwrites the warehouse copy",
+);
+// The operational fields are what the drain needs to finish a still-pending row.
+// Blanking them would strand a mutation's side effects, so erasure must take the
+// reason text ONLY, which is also why no row has to be excluded by status.
+for (const keep of ["reasoncode", "initiator", "fromstartsiso", "fromagentuserid"]) {
+  assert(
+    !new RegExp(`-\\s*'${keep}'`).test(code) && !new RegExp(`#-\\s*'?${keep}`).test(code),
+    `does NOT strip the outbox payload's operational '${keep}' (the drain needs it)`,
+  );
+}
 
 // Policy boundary (docs/pii-retention.md section 4): erasure is deliberately
 // NARROW. It must NOT clear the external Salesforce reference or delete calendar

@@ -126,19 +126,52 @@ attack surface). In one idempotent transaction it:
 3. blanks matching `webhook_deliveries.payload` rows, matched by the affected
    **booking ids** (catches a delivery whose attendee email is null but whose
    payload still carries the person's other PII);
-4. writes an `audit_log` erasure entry recording the affected booking ids and an
+4. takes the free-text reason out of those bookings' `booking_outbox` rows
+   (migration 0093, #1140), described below;
+5. writes an `audit_log` erasure entry recording the affected booking ids and an
    **email hash** (never the cleartext email);
-5. does **not** delete Google Calendar events (§4).
+6. does **not** delete Google Calendar events (§4).
+
+**The `booking_outbox` step (#1140)** closes a gap: 0092 redacted the reason text
+in `booking_events` but left the identical text in `booking_outbox.payload`, whose
+`reasonDetail` is written from the same mutation. That copy used to age out with the
+30-day delivered-outbox prune, but since #1102 that prune **pauses** when the
+warehouse cannot confirm a row, so the window became open-ended.
+
+Measured against production rather than assumed (601 rows, all delivered): the
+outbox `payload` carries `fromAgentUserId`, `fromStartsIso`, `initiator`,
+`reasonCode`, and `reasonDetail`, and `steps[]` carries `name`, `state`, `error`.
+**Only `reasonDetail` holds consumer PII**, and `steps[].error` / `last_error` can
+embed an external response body. It does **not** carry attendee name/email/phone/
+prefill: no producer writes those here.
+
+So erasure takes the reason text and the error strings **only**, leaving the
+operational fields (`reasonCode`, `initiator`, `fromStartsIso`, `fromAgentUserId`)
+intact. That is what makes it safe to blank a still-**pending** row rather than
+having to exclude it: the drain still has everything it needs to finish a half-done
+mutation, and its history-write step then records a null reason, which is exactly
+the erased state. No erasure ever waits on the drain.
+
+Unlike `bookings`, the outbox row is **not** frozen from the export. It has no
+`set_updated_at` trigger and is deliberately absent from the export's
+skip-redacted set, so the erasure stamps `updated_at` itself and the next export
+MERGEs the blanked row over the warehouse copy. The warehouse therefore converges
+on the erased version on its own, which reinforces the operator's step 3 purge
+instead of reverting it. Retention is not frozen either: the per-row verify reports
+`stale` until the export catches up, then allows the delete.
 
 **Snowflake half** (#1103): the steady-state export role is append-only (no
 DELETE) by design, so the warehouse purge is an **operator-run manual step** with
 a credential that never lives in the Worker. Using the affected booking ids from
 the audit row, the operator redacts the same PII columns in place in Snowflake
 (bookings contact fields, `booking_events.reason_detail`, `webhook_deliveries`
-payload), then runs a verification query that must return zero residual PII. The
-[erasure runbook](./pii-erasure-runbook.md) carries the exact SQL. Because the
-Supabase redaction stamps `pii_redacted_at` / `payload_erased`, the export lane
-freezes those rows, so the operator's warehouse redaction is not later clobbered.
+payload, and the `booking_outbox` reason), then runs a verification query that must
+return zero residual PII. The [erasure runbook](./pii-erasure-runbook.md) carries
+the exact SQL. Because the Supabase redaction stamps `pii_redacted_at` /
+`payload_erased`, the export lane freezes those rows, so the operator's warehouse
+redaction is not later clobbered. `booking_outbox` is the one exception, and in the
+safe direction: it is not frozen, so the export re-mirrors the already-blanked
+Supabase row over the warehouse copy and keeps it erased.
 
 ## 7b. How a retention lane actually destroys something (#1102)
 
