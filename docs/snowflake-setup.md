@@ -80,6 +80,22 @@ in shape, hit `/api/admin/snowflake-check` as an admin. It returns 200 when the
 login works and every mirror table has the stamp, and 503 naming the tables that
 do not.
 
+You do **not** have to remember to click it. Since #1144 the same check also runs
+at the tail of the 6-hourly `snowflake-reconcile` lane: it Slack-alerts when the
+probe fails and stamps a `snowflake-check` heartbeat only when the probe passes, so
+a check that stops succeeding pages within 8 hours even if the alert itself cannot
+get through. The admin page is now for on-demand confirmation during setup, not the
+only thing standing between a broken warehouse statement and production. Before that
+it was: #1143 was a SQL compilation error that broke every retention verification
+and was found only because someone happened to open the page.
+
+Beyond the login and the load stamp, the probe runs the two statements that a unit
+test cannot prove, because every unit test of them answers with a stand-in: the
+archive-verification question the retention lanes gate on, and the repair MERGE they
+call to make an unconfirmed row verifiable. Both run against a booking the warehouse
+was just confirmed to hold, so the repair takes its MATCHED branch and writes nothing
+new.
+
 ## Step 3: Register the public key on the service user
 
 Print the public key body as a single line (no header/footer, no line breaks):

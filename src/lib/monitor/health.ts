@@ -102,6 +102,14 @@ export const MIRROR_STALE_BOUNDS_MS: Record<string, number> = {
   "snowflake-export": 30 * MIN,
   "snowflake-reconcile": 8 * 60 * MIN,
   "erasure-audit": 8 * 60 * MIN,
+  // `snowflake-check` (#1144) is the live warehouse self-check, run at the tail of
+  // the 6h reconcile lane. It stamps ONLY when the probe comes back healthy, which
+  // is why it needs its own bound rather than hiding behind `snowflake-reconcile`:
+  // a probe that keeps failing goes stale here and pages even when the thing that
+  // is broken is the alerting path itself. Same 8h bound as its two siblings.
+  // An unconfigured mirror never stamps, and this map does not page a never-stamped
+  // lane, so a non-mirror environment stays quiet.
+  "snowflake-check": 8 * 60 * MIN,
 };
 
 /**

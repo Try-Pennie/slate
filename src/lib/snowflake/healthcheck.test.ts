@@ -8,6 +8,12 @@ chain.eq = () => chain;
 chain.order = () => chain;
 chain.limit = () => chain;
 chain.maybeSingle = () => Promise.resolve({ data: probe.row, error: null });
+// #1144: the repair probe runs the REAL reexport path, which filters by id list and
+// awaits the builder itself rather than a terminal method. Missing columns format to
+// NULL, so the probe row is enough to build a genuine MERGE statement.
+chain.in = () => chain;
+chain.then = (resolve: (v: { data: unknown; error: null }) => unknown) =>
+  resolve({ data: probe.row ? [probe.row] : [], error: null });
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: () => chain }) }));
 vi.mock("./config", () => ({ readSnowflakeConfig: vi.fn() }));
 vi.mock("./client", async (importOriginal) => ({
@@ -35,7 +41,14 @@ const cfg = {
 // resetAllMocks, not clearAllMocks: these tests queue per-call responses with
 // mockResolvedValueOnce, and clearAllMocks leaves an unconsumed once-queue
 // behind to be picked up by the next test.
-afterEach(() => vi.resetAllMocks());
+// `probe.row` is restored here too: a test that blanks it used to hand-restore it
+// on its last line, which silently leaks into every following test the moment one
+// is inserted between them or an assertion throws first.
+const PROBE_ROW = { id: "bk-oldest", updated_at: "2026-06-01T00:00:00Z" };
+afterEach(() => {
+  vi.resetAllMocks();
+  probe.row = { ...PROBE_ROW };
+});
 
 describe("runSnowflakeHealthcheck", () => {
   it("reports not-configured and does not call Snowflake when the key is unset", async () => {
@@ -54,11 +67,14 @@ describe("runSnowflakeHealthcheck", () => {
     vi.mocked(executeStatement)
       .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
       .mockResolvedValueOnce(allStamped())
-      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] });
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] })
+      .mockResolvedValueOnce({ data: [] });
     const r = await runSnowflakeHealthcheck();
     expect(r).toMatchObject({ ok: true, configured: true, role: "SLATE_ROLE", warehouse: "SLATE_WH" });
     expect(r.missingLoadStamp).toEqual([]);
-    expect(executeStatement).toHaveBeenCalledTimes(3);
+    // Four live statements now: login, load-stamp probe, verification question, and
+    // the #1144 repair MERGE.
+    expect(executeStatement).toHaveBeenCalledTimes(4);
   });
 
   it("matches the load-stamp probe case-insensitively against upper-cased Snowflake names", async () => {
@@ -126,6 +142,69 @@ describe("runSnowflakeHealthcheck", () => {
     expect(statement).toContain("bk-oldest");
   });
 
+  // #1144: the repair MERGE is the statement the retention lanes lean on to make an
+  // unconfirmed row verifiable. It runs for real here, against the row the verify
+  // probe just CONFIRMED is archived, so the MERGE takes its MATCHED branch and
+  // rewrites identical values. That ordering is the safety property: the statement
+  // ends `WHEN NOT MATCHED THEN INSERT`, so probing it with a row the warehouse
+  // lacks would plant a row the append-only export role could never remove.
+  it("runs the real repair MERGE against the confirmed row and reports success", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] })
+      .mockResolvedValueOnce({ data: [] });
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(true);
+    expect(r.repairProbe?.ok).toBe(true);
+    // It really ran the MERGE, for that row, with both branches present.
+    const [, statement] = vi.mocked(executeStatement).mock.calls[3];
+    expect(statement).toContain("MERGE INTO bookings");
+    expect(statement).toContain("bk-oldest");
+    expect(statement).toContain("WHEN MATCHED THEN UPDATE SET");
+  });
+
+  it("is not-ok when the repair MERGE the retention lanes depend on is rejected", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] })
+      .mockRejectedValueOnce(new Error("SQL compilation error: invalid identifier 'CURRENT'"));
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(false);
+    expect(r.repairProbe?.ok).toBe(false);
+    expect(r.repairProbe?.detail).toMatch(/compilation/);
+    expect(r.error).toMatch(/repair/i);
+  });
+
+  // Never probe the repair path with a row the warehouse does not hold: that hits
+  // the INSERT branch and plants an unremovable row in the compliance mirror.
+  it("does NOT run the repair MERGE when the verify probe could not confirm the row", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "false", "false"]] });
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(false);
+    expect(r.repairProbe).toBeUndefined();
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(3);
+  });
+
+  it("does NOT run the repair MERGE when there is no booking to probe with", async () => {
+    probe.row = null;
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped());
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(true);
+    expect(r.repairProbe).toBeUndefined();
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(2);
+  });
+
   it("is not-ok when the warehouse says it does not hold a row that is long past export", async () => {
     // Impossible for a healthy mirror, so it means the question or the mirror is
     // broken. Retention would refuse to destroy anything, so say so here.
@@ -163,7 +242,6 @@ describe("runSnowflakeHealthcheck", () => {
     const r = await runSnowflakeHealthcheck();
     expect(r.ok).toBe(true);
     expect(r.verifyProbe).toEqual({ ok: true, detail: "no bookings yet, nothing to probe" });
-    probe.row = { id: "bk-oldest", updated_at: "2026-06-01T00:00:00Z" };
   });
 
   it("fails loud when the load-stamp probe itself errors", async () => {
