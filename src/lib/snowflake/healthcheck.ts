@@ -19,6 +19,9 @@
 import { executeStatement } from "./client";
 import { readSnowflakeConfig } from "./config";
 import { LOAD_STAMP_COL, MIRROR_TABLES } from "./export-core";
+import { verifyArchived } from "./verify-archived";
+import { applySkipRedacted } from "./skip-redacted";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 
 export interface SnowflakeHealth {
@@ -34,6 +37,15 @@ export interface SnowflakeHealth {
   /** Mirror tables whose live DDL lacks the `exported_at` load stamp the MERGE
    *  always writes. Non-empty means the export lane cannot write those tables. */
   missingLoadStamp?: string[];
+  /**
+   * Result of running the REAL archive-verification question against a row we
+   * know is archived (#1102). Every unit test of that question uses a stand-in, so
+   * this is the only thing that proves the live warehouse answers it the way the
+   * retention lanes assume: that it parses the timestamp we hand it, and reports
+   * true/false in the shape we read. `ok: false` means the retention lanes will
+   * refuse to destroy anything until it is fixed.
+   */
+  verifyProbe?: { ok: boolean; detail: string };
 }
 
 export async function runSnowflakeHealthcheck(): Promise<SnowflakeHealth> {
@@ -50,7 +62,22 @@ export async function runSnowflakeHealthcheck(): Promise<SnowflakeHealth> {
     const warehouse = row?.[1] != null ? String(row[1]) : undefined;
 
     const missingLoadStamp = await findTablesMissingLoadStamp(config);
+    const verifyProbe = await probeVerifyQuestion();
     const elapsedMs = Date.now() - start;
+
+    if (!verifyProbe.ok) {
+      log.error("snowflake-check", { msg: "verify probe failed", detail: verifyProbe.detail, ms: elapsedMs });
+      return {
+        ok: false,
+        configured: true,
+        role,
+        warehouse,
+        elapsedMs,
+        missingLoadStamp,
+        verifyProbe,
+        error: `the archive-verification question does not work against the live warehouse (${verifyProbe.detail}), so retention will refuse to destroy anything`,
+      };
+    }
 
     if (missingLoadStamp.length > 0) {
       const error =
@@ -61,7 +88,7 @@ export async function runSnowflakeHealthcheck(): Promise<SnowflakeHealth> {
     }
 
     log.info("snowflake-check", { msg: "ok", role: role ?? null, warehouse: warehouse ?? null, ms: elapsedMs });
-    return { ok: true, configured: true, role, warehouse, elapsedMs, missingLoadStamp };
+    return { ok: true, configured: true, role, warehouse, elapsedMs, missingLoadStamp, verifyProbe };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     log.error("snowflake-check", { msg: "failed", ms: Date.now() - start }, e instanceof Error ? e : undefined);
@@ -87,4 +114,59 @@ async function findTablesMissingLoadStamp(
   );
   const stamped = new Set((res.data ?? []).map((r) => String(r[0]).toUpperCase()));
   return MIRROR_TABLES.filter((t) => !stamped.has(t.table.toUpperCase())).map((t) => t.table);
+}
+
+/**
+ * Run the REAL archive-verification question against a row we already believe is
+ * archived, and check the warehouse agrees (#1102).
+ *
+ * This exists because every unit test of that question uses a stand-in for the
+ * warehouse, so two assumptions were never checked against the live thing: that
+ * Snowflake parses the Supabase timestamp we hand it, and that it reports the two
+ * booleans in the shape we read. If either is wrong the retention lanes refuse to
+ * destroy anything (the safe direction) and alert nightly, so it is worth being
+ * able to confirm in one request rather than discovering it on a cleanup run.
+ *
+ * Uses the oldest un-redacted booking, the same known-present row the reconcile
+ * positive control uses: long past export, so a healthy warehouse must hold it.
+ * A "not archived" answer here is a genuine failure of the question or the mirror,
+ * not a legitimately-missing row.
+ */
+interface ProbeBuilder {
+  is(col: string, val: null): ProbeBuilder;
+  eq(col: string, val: boolean): ProbeBuilder;
+  order(col: string, opts: { ascending: boolean }): ProbeBuilder;
+  limit(n: number): ProbeBuilder;
+  maybeSingle(): PromiseLike<{ data: unknown; error: { message: string } | null }>;
+}
+
+async function probeVerifyQuestion(): Promise<{ ok: boolean; detail: string }> {
+  try {
+    // Narrowed builder shape, like reconcile.ts's ReconDb: the full supabase-js
+    // generic blows up TS2589 when applySkipRedacted is layered on it.
+    // cap-safe: single-row probe; .order + .limit(1) + .maybeSingle() below bound it.
+    const builder = supabaseAdmin().from("bookings").select("id,updated_at") as unknown as ProbeBuilder;
+    const { data, error } = await applySkipRedacted("bookings", builder)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (error) return { ok: false, detail: `probe row read failed: ${error.message}` };
+    const row = data as { id: string; updated_at: string } | null;
+    // No bookings yet is not a failure: there is nothing to verify against.
+    if (!row) return { ok: true, detail: "no bookings yet, nothing to probe" };
+
+    const outcome = await verifyArchived("bookings", "updated_at", [
+      { id: row.id, watermark: row.updated_at },
+    ]);
+    if (outcome.archived.length === 1) {
+      return { ok: true, detail: `warehouse confirmed booking ${row.id}` };
+    }
+    const state = outcome.problems[0]?.state ?? "unknown";
+    return {
+      ok: false,
+      detail: `warehouse reported the oldest booking (${row.id}) as ${state}, which should be impossible for a row long past export`,
+    };
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+  }
 }

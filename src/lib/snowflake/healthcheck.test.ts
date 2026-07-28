@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const probe = vi.hoisted(() => ({ row: { id: "bk-oldest", updated_at: "2026-06-01T00:00:00Z" } as { id: string; updated_at: string } | null }));
+const chain: Record<string, unknown> = {};
+chain.select = () => chain;
+chain.is = () => chain;
+chain.eq = () => chain;
+chain.order = () => chain;
+chain.limit = () => chain;
+chain.maybeSingle = () => Promise.resolve({ data: probe.row, error: null });
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: () => chain }) }));
 vi.mock("./config", () => ({ readSnowflakeConfig: vi.fn() }));
-vi.mock("./client", () => ({ executeStatement: vi.fn() }));
+vi.mock("./client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./client")>()),
+  executeStatement: vi.fn(),
+}));
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() } }));
 
 import { runSnowflakeHealthcheck } from "./healthcheck";
@@ -41,18 +53,20 @@ describe("runSnowflakeHealthcheck", () => {
     vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
     vi.mocked(executeStatement)
       .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
-      .mockResolvedValueOnce(allStamped());
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] });
     const r = await runSnowflakeHealthcheck();
     expect(r).toMatchObject({ ok: true, configured: true, role: "SLATE_ROLE", warehouse: "SLATE_WH" });
     expect(r.missingLoadStamp).toEqual([]);
-    expect(executeStatement).toHaveBeenCalledTimes(2);
+    expect(executeStatement).toHaveBeenCalledTimes(3);
   });
 
   it("matches the load-stamp probe case-insensitively against upper-cased Snowflake names", async () => {
     vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
     vi.mocked(executeStatement)
       .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
-      .mockResolvedValueOnce(allStamped());
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] });
     const r = await runSnowflakeHealthcheck();
     expect(r.ok).toBe(true);
     // The probe is scoped to the configured schema and the stamp column, bound
@@ -70,7 +84,8 @@ describe("runSnowflakeHealthcheck", () => {
       .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
       .mockResolvedValueOnce({
         data: MIRROR_TABLES.filter((t) => t.table !== "audit_log").map((t) => [t.table.toUpperCase()]),
-      });
+      })
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] });
     const r = await runSnowflakeHealthcheck();
     expect(r.ok).toBe(false);
     expect(r.configured).toBe(true);
@@ -84,10 +99,71 @@ describe("runSnowflakeHealthcheck", () => {
     vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
     vi.mocked(executeStatement)
       .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
-      .mockResolvedValueOnce({ data: [] });
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] });
     const r = await runSnowflakeHealthcheck();
     expect(r.ok).toBe(false);
     expect(r.missingLoadStamp).toEqual(MIRROR_TABLES.map((t) => t.table));
+  });
+
+  // #1102: the live self-test. Every unit test of the archive-verification question
+  // uses a stand-in for the warehouse, so this endpoint is the only thing that can
+  // confirm the live warehouse parses the timestamp we hand it and reports the
+  // booleans in the shape we read. Without it, a wrong assumption there would first
+  // show up as a nightly retention failure.
+  it("runs the real verification question against a known-archived row and reports success", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "true", "true"]] });
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(true);
+    expect(r.verifyProbe?.ok).toBe(true);
+    // It really asked the verification question, about the oldest booking.
+    const [, statement] = vi.mocked(executeStatement).mock.calls[2];
+    expect(statement).toContain("TO_TIMESTAMP_TZ(s.wm)");
+    expect(statement).toContain("bk-oldest");
+  });
+
+  it("is not-ok when the warehouse says it does not hold a row that is long past export", async () => {
+    // Impossible for a healthy mirror, so it means the question or the mirror is
+    // broken. Retention would refuse to destroy anything, so say so here.
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped())
+      .mockResolvedValueOnce({ data: [["bk-oldest", "false", "false"]] });
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(false);
+    expect(r.verifyProbe?.ok).toBe(false);
+    expect(r.verifyProbe?.detail).toMatch(/absent/);
+    expect(r.error).toMatch(/refuse to destroy anything/);
+  });
+
+  it("is not-ok when the warehouse rejects the verification question outright", async () => {
+    // The real risk this catches: a wrong function name or timestamp handling.
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped())
+      .mockRejectedValueOnce(new Error("SQL compilation error: invalid identifier 'TO_TIMESTAMP_TZ'"));
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(false);
+    expect(r.verifyProbe?.detail).toMatch(/TO_TIMESTAMP_TZ/);
+  });
+
+  it("passes the probe when there are no bookings to check against", async () => {
+    // An empty database is not a broken warehouse.
+    probe.row = null;
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce({ data: [["SLATE_ROLE", "SLATE_WH"]] })
+      .mockResolvedValueOnce(allStamped());
+    const r = await runSnowflakeHealthcheck();
+    expect(r.ok).toBe(true);
+    expect(r.verifyProbe).toEqual({ ok: true, detail: "no bookings yet, nothing to probe" });
+    probe.row = { id: "bk-oldest", updated_at: "2026-06-01T00:00:00Z" };
   });
 
   it("fails loud when the load-stamp probe itself errors", async () => {
