@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pruneCutoffIso } from "@/lib/routing/retention";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
+import { repairUnverified } from "@/lib/snowflake/reexport";
 import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
@@ -59,6 +60,7 @@ export async function GET(req: NextRequest) {
       table: "routing_decisions",
       watermarkCol: "created_at",
       candidates,
+      repair: repairUnverified,
       destroy: async (ids) => {
         const { error, count } = await db
           .from("routing_decisions")

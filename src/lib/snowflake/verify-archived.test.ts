@@ -242,6 +242,57 @@ describe("destroyVerified", () => {
     ).rejects.toThrow(/affected 0 rows/);
   });
 
+  // #1102 repair path. Refusing to destroy an unconfirmed row is only safe if the
+  // refusal is recoverable: the export cursor is strictly forward, so nothing else
+  // ever revisits a skipped row, and the #1100 backfill lane does not exist.
+  it("re-sends the unconfirmed rows, and does so BEFORE refusing, so tomorrow can succeed", async () => {
+    const order: string[] = [];
+    const repair = vi.fn(async (_t: string, ids: string[]) => {
+      order.push(`repair:${ids.join("|")}`);
+      return ids.length;
+    });
+    await expect(
+      destroyVerified({
+        table: "booking_outbox",
+        watermarkCol: "updated_at",
+        candidates: cands,
+        destroy: async () => 0,
+        verify: fakeVerify([], cands.map((c) => ({ id: c.id, state: "absent" as const }))),
+        repair,
+      }),
+    ).rejects.toThrow(/confirmed NONE/);
+    // Repaired every unconfirmed id, and ran before the throw.
+    expect(repair).toHaveBeenCalledWith("booking_outbox", cands.map((c) => c.id));
+    expect(order).toEqual([`repair:${cands.map((c) => c.id).join("|")}`]);
+  });
+
+  it("re-sends only the unconfirmed subset while still destroying the confirmed rows", async () => {
+    const repair = vi.fn(async () => 1);
+    const r = await destroyVerified({
+      table: "webhook_deliveries",
+      watermarkCol: "updated_at",
+      candidates: cands,
+      destroy: async (ids) => ids.length,
+      verify: fakeVerify([cands[0].id, cands[1].id], [{ id: cands[2].id, state: "stale" }]),
+      repair,
+    });
+    expect(repair).toHaveBeenCalledWith("webhook_deliveries", [cands[2].id]);
+    expect(r.destroyed).toBe(2);
+  });
+
+  it("does not attempt a repair when everything verified", async () => {
+    const repair = vi.fn(async () => 0);
+    await destroyVerified({
+      table: "routing_decisions",
+      watermarkCol: "created_at",
+      candidates: cands,
+      destroy: async (ids) => ids.length,
+      verify: fakeVerify(cands.map((c) => c.id)),
+      repair,
+    });
+    expect(repair).not.toHaveBeenCalled();
+  });
+
   it("propagates a failed warehouse read rather than degrading to a no-op", async () => {
     await expect(
       destroyVerified({

@@ -62,6 +62,8 @@ const hb = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
 }));
 
+const rx = vi.hoisted(() => ({ repairUnverified: vi.fn(async () => 0) }));
+
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/retention-gate", () => gate);
@@ -83,6 +85,7 @@ vi.mock("@/lib/snowflake/client", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
 vi.mock("@/lib/monitor/heartbeat", () => ({ recordHeartbeat: hb.recordHeartbeat }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: hb.sendThrottledAlert }));
+vi.mock("@/lib/snowflake/reexport", () => ({ repairUnverified: rx.repairUnverified }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
@@ -230,6 +233,33 @@ describe("GET /api/cron/prune-routing (verify-gated, #1102)", () => {
   // #1102 observability. Before this, none of the three lanes stamped a heartbeat,
   // appeared in any bounds map, or sent an alert: a failing lane returned 500 into
   // a log with 7-day retention and nothing was watching.
+  it("asks for a re-export of the rows the warehouse could not confirm (#1102 repair path)", async () => {
+    // Without this the refusal is permanent: the export cursor is strictly forward,
+    // so nothing else ever revisits a skipped row, and the #1100 backfill lane does
+    // not exist. The lane would then fail every night with no way to fix it.
+    db.state.candidates = [
+      { id: "r1", created_at: "2025-01-01T00:00:00Z" },
+      { id: "r2", created_at: "2025-01-02T00:00:00Z" },
+    ];
+    sf.executeStatement.mockResolvedValue({
+      data: [
+        ["r1", "true", "true"],
+        ["r2", "false", "false"],
+      ],
+    });
+    await GET(req());
+    expect(rx.repairUnverified).toHaveBeenCalledWith("routing_decisions", ["r2"]);
+    // ...and the confirmed row is still deleted in the same run.
+    expect(db.state.deletedIds).toEqual(["r1"]);
+  });
+
+  it("does not ask for a re-export when every candidate verified", async () => {
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockResolvedValue(warehouseHolds(["r1"]));
+    await GET(req());
+    expect(rx.repairUnverified).not.toHaveBeenCalled();
+  });
+
   it("stamps the dead-man's-switch heartbeat on a successful run", async () => {
     db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
     sf.executeStatement.mockResolvedValue(warehouseHolds(["r1"]));

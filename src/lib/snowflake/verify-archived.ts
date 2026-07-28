@@ -172,6 +172,12 @@ export interface DestroyVerifiedOpts {
   destroy: (ids: string[]) => Promise<number>;
   /** Injectable seam so this is testable with no warehouse (L2). */
   verify?: (table: string, watermarkCol: string, candidates: Candidate[]) => Promise<VerifyOutcome>;
+  /**
+   * Re-send rows the warehouse could not confirm, so a refusal is recoverable
+   * instead of permanent (#1102). Called BEFORE the refusal throw, so the lane
+   * both alerts today and is likely to succeed tomorrow. Must not throw.
+   */
+  repair?: (table: string, ids: string[]) => Promise<number>;
 }
 
 /**
@@ -199,6 +205,17 @@ export async function destroyVerified(opts: DestroyVerifiedOpts): Promise<Destro
   if (candidates.length === 0) return { candidates: 0, destroyed: 0, problems: [] };
 
   const { archived, problems } = await verify(table, watermarkCol, candidates);
+
+  // Repair BEFORE the refusal throw. The rows the warehouse could not confirm are
+  // exactly the rows that need re-sending, and doing it here (rather than leaving
+  // it to an operator) is what stops a single missed row from making the refusal
+  // permanent: the export cursor is strictly forward, so nothing else revisits it.
+  if (problems.length > 0 && opts.repair) {
+    await opts.repair(
+      table,
+      problems.map((p) => p.id),
+    );
+  }
 
   if (archived.length === 0) {
     throw new Error(
