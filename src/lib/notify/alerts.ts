@@ -1,8 +1,9 @@
 /**
  * Pure alert helpers (no IO) — throttle decision + message formatting, kept
- * import-free so they're unit-testable. The Slack transport lives in
+ * dependency-free so they're unit-testable. The Slack transport lives in
  * `./slack.ts`; the cooldown state is persisted by the caller.
  */
+import { shortFailureReason } from "@/lib/notify/error-text";
 
 /** Send only if we've never alerted, or the cooldown has elapsed. */
 export function shouldSendAlert(
@@ -245,45 +246,10 @@ export function applyBlastRadiusHold(
   return isHeldTransient(lone, nowMs, policy) ? failing.filter((a) => a !== lone) : failing;
 }
 
-/** Longest reason we'll put in an alert line before truncating. */
-const MAX_REASON_CHARS = 80;
-
-/**
- * A SHORT human reason for a sync failure (#1133), never a raw external body.
- *
- * `last_sync_error` is stored as `` `${label} failed: ${status} ${text}` `` (see
- * `src/lib/google/calendar.ts`), where `text` is Google's entire pretty-printed
- * JSON body. Slicing that to a fixed width produced the unreadable 2026-07-28
- * page: eight lines of braces cut off mid-word at `"mess`. So pull out the two
- * facts a human needs (the status, plus Google's machine reason) and leave the
- * body to the logs, which keep it in full.
- *
- * Extraction happens on READ rather than at write time so rows already carrying a
- * full body render readably too, with no migration and no write-path change.
- * Kept generic (status + reason, else a collapsed first line) so #1135's sweep of
- * the other alerts can reuse it.
- */
-export function shortFailureReason(raw: string | null): string | null {
-  if (!raw) return null;
-  const status = /\bfailed: (\d{3})\b/.exec(raw)?.[1];
-  if (status) {
-    // Google's structured `reason` ("backendError", "rateLimitExceeded") is the
-    // useful half; some endpoints answer with a bare string `error` instead.
-    const reason =
-      /"reason"\s*:\s*"([^"]+)"/.exec(raw)?.[1] ??
-      /"error"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
-    return reason ? `${status} ${reason}` : status;
-  }
-  // Not an HTTP failure (an abort, a timeout, a thrown Error): keep its own text,
-  // collapsed to one line so a stack or a multi-line message can't flood Slack.
-  const oneLine = raw.split("\n")[0].replace(/\s+/g, " ").trim();
-  if (oneLine.length <= MAX_REASON_CHARS) return oneLine;
-  // Cut on a word boundary when there is one, so the reader never gets a
-  // half-word like `"mess`.
-  const cut = oneLine.slice(0, MAX_REASON_CHARS);
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
-}
+// #1135: `shortFailureReason` moved to notify/error-text.ts so every alert that
+// carries an error can reach it, not just this file's sync pages. Re-exported
+// because the sync-alert callers and their suite already import it from here.
+export { shortFailureReason, MAX_REASON_CHARS } from "@/lib/notify/error-text";
 
 /**
  * How long ago a timestamp was, in words (#1133). `last ok` used to render as a

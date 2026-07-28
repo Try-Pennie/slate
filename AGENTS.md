@@ -313,6 +313,41 @@ Two guards cover the alerting end of this, both in `pnpm test`:
 recovery notice must carry a test proving it stays silent when its health signal
 cannot be read, or point at the suite that does with `// all-clear-proof:`).
 
+# Alert copy never carries a raw error (the `// alert-text-ok:` convention)
+
+An alert is read on a phone, mid-incident, by someone deciding whether to act.
+On 2026-07-28 a sync-failure page arrived as eight lines of Google's
+pretty-printed JSON, cut off mid-word at `"mess` by a fixed-width slice (#1133).
+The one fact worth having, a `503 backendError` that was already self-healing,
+was buried in it.
+
+**The alert carries a short human reason; the LOG carries the full text.**
+Cloudflare stores every console line with the `Error` serialized, so nothing is
+lost by keeping the body out of Slack, and `log.error(tag, fields, err)` is how
+you get it back.
+
+One formatter, `src/lib/notify/error-text.ts`:
+
+```ts
+shortFailureReason(row.last_sync_error)  // string | null, for a stored error
+shortErrorReason(err)                    // string, for a caught unknown
+```
+
+It returns the status plus the machine reason for an HTTP failure
+(`503 backendError`), and otherwise collapses the text to ONE line and truncates
+on a word boundary, so a reader never gets a half word.
+
+`scripts/test-alert-error-text.ts` (#1135) fails the build on a raw error
+interpolated into `sendThrottledAlert` / `sendThrottledInfo` / `resolveAlert`
+copy. It follows one hop through a local `const`, because the worst instance
+built the string a line earlier and passed the name; it does NOT follow more
+than that, and says so. The escape hatch, for a value that is already short and
+human (a reason string we built ourselves), is `// alert-text-ok: <why>` on or
+directly above the line.
+
+Prefer pointing at where the detail lives over pasting any of it:
+`Diagnose via booking_outbox.last_error; rows: ...` is the pattern to copy.
+
 # Reading production logs (Cloudflare observability)
 
 Cloudflare captures **every** console method from the deployed Worker, with the

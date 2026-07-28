@@ -116,4 +116,52 @@ describe("internalErrorResponse alerting (#802)", () => {
     expect(key).toContain("bookings-api/book");
     expect(text).toContain("bot api blew up");
   });
+
+  // #1135: this is the chokepoint for EVERY unexpected fault, so whatever a
+  // library decides to throw ends up in Slack here. It used to hard-slice the
+  // message at a fixed width, which is how the 2026-07-28 sync page became eight
+  // lines of JSON cut off mid-word at `"mess`. A page is read on a phone during an
+  // incident: it has to be one readable sentence, with the full text left in the
+  // Worker log, which Cloudflare stores complete.
+  describe("the alert body stays readable whatever was thrown (#1135)", () => {
+    const alertText = () =>
+      (dispatch.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string])[2];
+
+    it("collapses a multi-line error to a single line", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await reportInternalError(
+        new Error('SQL compilation error:\nsyntax error line 3 at position 8\nunexpected CURRENT'),
+        "snowflake",
+      );
+
+      const body = alertText();
+      expect(body.split("\n")).toHaveLength(1);
+      expect(body).toContain("SQL compilation error");
+    });
+
+    it("never cuts a word in half when the message is too long", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      // Long enough to force truncation, with a distinctive final word that must
+      // not survive as a fragment.
+      await reportInternalError(new Error(`${"diagnosis ".repeat(40)}supercalifragilistic`), "book");
+
+      const body = alertText();
+      expect(body).not.toMatch(/supercalifragil(?!istic)/);
+      expect(body.length).toBeLessThan(400);
+    });
+
+    it("keeps a raw JSON body out of the page entirely", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await reportInternalError(
+        new Error('events.list failed: 503 {\n  "error": {\n    "reason": "backendError"\n  }\n}'),
+        "sync",
+      );
+
+      const body = alertText();
+      // The useful half (status plus Google's machine reason) survives; the braces
+      // and quoting do not.
+      expect(body).toContain("503 backendError");
+      expect(body).not.toMatch(/[{}]/);
+    });
+  });
 });

@@ -86,6 +86,30 @@ describe("GET /api/cron/snowflake-reconcile", () => {
     expect(text).toMatch(/retention/i);
   });
 
+  // #1135: Snowflake answers a bad statement with a multi-line SQL compilation
+  // error. Pasted straight in, that is the 2026-07-28 page all over again, on the
+  // one lane whose whole job is telling us the warehouse cannot be trusted.
+  it("keeps a multi-line SQL error readable in the page", async () => {
+    healthcheck.runSnowflakeHealthcheck.mockResolvedValue({
+      ok: false,
+      configured: true,
+      error:
+        "SQL compilation error:\nsyntax error line 3 at position 8\ninvalid identifier 'CURRENT'\n" +
+        "  at Statement.execute (snowflake-sdk/lib/connection.js:412:19)",
+    } as never);
+
+    await GET(req());
+
+    const text = dispatch.sendThrottledAlert.mock.calls.find(
+      (c) => c[0] === "snowflake_healthcheck",
+    )?.[2] as string;
+    // The whole page is one line: the reader sees a sentence, not a stack.
+    expect(text.split("\n")).toHaveLength(1);
+    expect(text).toContain("SQL compilation error");
+    // And it still says what the failure MEANS, which is the half a raw dump loses.
+    expect(text).toMatch(/retention/i);
+  });
+
   it("stays silent and does not stamp when the mirror is not configured", async () => {
     healthcheck.runSnowflakeHealthcheck.mockResolvedValue({
       ok: false,

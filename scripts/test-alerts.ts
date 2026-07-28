@@ -221,9 +221,20 @@ assert(
     "The operation was aborted due to timeout",
   "a non-HTTP failure passes through as its own text",
 );
+// #1135 changed this from "keep line one, drop the rest" to "join, then bound".
+// Dropping everything after the first newline threw away the useful half of the
+// errors this sweep had to cover: Snowflake answers a bad statement with
+// "SQL compilation error:" on line one and the actual position and identifier on
+// line two. Joining keeps that, and the width cap below still stops a stack from
+// flooding Slack.
 assert(
-  shortFailureReason("first line\nsecond line") === "first line",
-  "a multi-line non-HTTP failure collapses to its first line",
+  shortFailureReason("first line\nsecond line") === "first line second line",
+  "a multi-line non-HTTP failure collapses to ONE line, keeping what follows",
+);
+assert(
+  shortFailureReason("SQL compilation error:\nsyntax error line 3 at position 8") ===
+    "SQL compilation error: syntax error line 3 at position 8",
+  "a Snowflake SQL error keeps the position, which is the part worth reading",
 );
 const longReason = shortFailureReason("x".repeat(300));
 assert(longReason !== null && longReason.length <= 90, "an overlong reason is truncated");

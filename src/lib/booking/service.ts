@@ -75,6 +75,10 @@ import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { deferWebhookSend } from "@/lib/after-response";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+// #1135: the one way an error reaches alert copy. A Postgres error message can be
+// long and multi-line (a constraint body, a nested detail), and a page is read on
+// a phone; the full text stays in the log line beside each of these alerts.
+import { shortFailureReason } from "@/lib/notify/error-text";
 import type {
   Booking,
   BookingEventInitiator,
@@ -339,7 +343,7 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
   await sendThrottledAlert(
     "busy_block_write_through",
     CACHE_ALERT_COOLDOWN_MS,
-    `Slate: busy_blocks INSERT failed for ${what} (${error.message}). The slot(s) may show as free in the embed until the next sync pass.`,
+    `Slate: busy_blocks INSERT failed for ${what} (${shortFailureReason(error.message)}). The slot(s) may show as free in the embed until the next sync pass.`,
   ).catch(() => {});
 }
 
@@ -836,7 +840,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks move (move_busy_block) failed for booking ${bookingId} (${error.message}). The slot cache may be stale until the next sync pass.`,
+          `Slate: busy_blocks move (move_busy_block) failed for booking ${bookingId} (${shortFailureReason(error.message)}). The slot cache may be stale until the next sync pass.`,
         ).catch(() => {});
       }
     },
@@ -895,7 +899,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks DELETE failed for booking ${bookingId} (${error.message}). The cancelled slot will keep showing as busy until cleaned up.`,
+          `Slate: busy_blocks DELETE failed for booking ${bookingId} (${shortFailureReason(error.message)}). The cancelled slot will keep showing as busy until cleaned up.`,
         ).catch(() => {});
       }
     },
@@ -1441,7 +1445,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         await sendThrottledAlert(
           "booking_event_insert",
           CACHE_ALERT_COOLDOWN_MS,
-          `Slate: booking_events INSERT failed for booking ${row.booking_id} (${row.action}, ${error.message}). The reschedule/cancel reason for this action was not recorded.`,
+          `Slate: booking_events INSERT failed for booking ${row.booking_id} (${row.action}, ${shortFailureReason(error.message)}). The reschedule/cancel reason for this action was not recorded.`,
         ).catch(() => {});
         return null;
       }
