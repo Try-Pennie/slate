@@ -57,6 +57,11 @@ const db = vi.hoisted(() => {
   return { state, from };
 });
 
+const hb = vi.hoisted(() => ({
+  recordHeartbeat: vi.fn(async () => {}),
+  sendThrottledAlert: vi.fn(async () => {}),
+}));
+
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/retention-gate", () => gate);
@@ -76,6 +81,8 @@ vi.mock("@/lib/snowflake/client", async (importOriginal) => ({
   executeStatement: sf.executeStatement,
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
+vi.mock("@/lib/monitor/heartbeat", () => ({ recordHeartbeat: hb.recordHeartbeat }));
+vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: hb.sendThrottledAlert }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
@@ -218,6 +225,59 @@ describe("GET /api/cron/prune-routing (verify-gated, #1102)", () => {
     expect(res.status).toBe(500);
     expect((await res.json()).error).toBe("db exploded");
     expect(locks.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // #1102 observability. Before this, none of the three lanes stamped a heartbeat,
+  // appeared in any bounds map, or sent an alert: a failing lane returned 500 into
+  // a log with 7-day retention and nothing was watching.
+  it("stamps the dead-man's-switch heartbeat on a successful run", async () => {
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockResolvedValue(warehouseHolds(["r1"]));
+    await GET(req());
+    expect(hb.recordHeartbeat).toHaveBeenCalledWith("prune-routing");
+  });
+
+  it("does NOT stamp the heartbeat when the lane throws, so a nightly failure goes stale and pages", async () => {
+    // This is the property that makes the dead-man's switch work at all. Stamping
+    // in a finally block would make a lane that fails every night look alive.
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockRejectedValue(new Error("warehouse suspended"));
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect(hb.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("alerts (and still stamps) when the mirror is not usable, since a skip is invisible otherwise", async () => {
+    // A skip returns a cheerful 200. If the warehouse credential were removed, all
+    // three lanes would no-op forever while reporting healthy: retention silently
+    // stopped, which is a protective control failing open.
+    gate.mirrorReadyForDeletion.mockResolvedValueOnce({ ready: false, reason: "mirror not configured" });
+    await GET(req());
+    expect(hb.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, cooldownMs, text] = hb.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string];
+    expect(key).toBe("retention_skipped:prune-routing");
+    // Throttled at roughly a day: these lanes only run daily, so a shorter cooldown
+    // would just re-post the same thing.
+    expect(cooldownMs).toBeGreaterThan(12 * 60 * 60_000);
+    expect(text).toMatch(/routing decisions/);
+    expect(text).toMatch(/mirror not configured/);
+    // Still stamps: the cron DID fire, which is a different question from whether
+    // it did any work.
+    expect(hb.recordHeartbeat).toHaveBeenCalledWith("prune-routing");
+  });
+
+  it("alerts when nothing has been exported yet", async () => {
+    gate.exportedThrough.mockResolvedValueOnce(null);
+    await GET(req());
+    expect(hb.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(String((hb.sendThrottledAlert.mock.calls[0] as unknown as unknown[])[2])).toMatch(/nothing exported yet/);
+  });
+
+  it("does not alert on a healthy run", async () => {
+    db.state.candidates = [{ id: "r1", created_at: "2025-01-01T00:00:00Z" }];
+    sf.executeStatement.mockResolvedValue(warehouseHolds(["r1"]));
+    await GET(req());
+    expect(hb.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   it("returns 500 when the delete itself fails and still releases the lock", async () => {

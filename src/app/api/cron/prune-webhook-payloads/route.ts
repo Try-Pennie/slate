@@ -6,6 +6,7 @@ import { webhookPayloadCutoffIso } from "@/lib/webhooks/retention";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
+import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -34,10 +35,14 @@ export async function GET(req: NextRequest) {
     const gate = await mirrorReadyForDeletion();
     if (!gate.ready) {
       log.info("prune-webhook-payloads", { msg: "skipped: mirror not ready", reason: gate.reason });
-      return NextResponse.json({ skipped: "mirror-not-ready", reason: gate.reason });
+      await alertRetentionSkipped("prune-webhook-payloads", gate.reason ?? "unknown");
+      return laneCompleted("prune-webhook-payloads", { skipped: "mirror-not-ready", reason: gate.reason });
     }
     const exportedTo = await exportedThrough("webhook_deliveries");
-    if (!exportedTo) return NextResponse.json({ skipped: "nothing-exported-yet" });
+    if (!exportedTo) {
+      await alertRetentionSkipped("prune-webhook-payloads", "nothing exported yet");
+      return laneCompleted("prune-webhook-payloads", { skipped: "nothing-exported-yet" });
+    }
 
     // Read a BOUNDED batch of candidates and prove the warehouse holds each one
     // before blanking it (#1102). Blanking is irreversible for the payload, so it
@@ -84,7 +89,7 @@ export async function GET(req: NextRequest) {
         state: report.problems[0].state,
       });
     }
-    return NextResponse.json({ erased: report.destroyed, candidates: report.candidates, cutoff });
+    return laneCompleted("prune-webhook-payloads", { erased: report.destroyed, candidates: report.candidates, cutoff });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("prune-webhook-payloads", { msg: "cron failed", error: message });

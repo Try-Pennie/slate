@@ -36,6 +36,12 @@ const healthy = () => ({
   watch: ago(2 * MIN),
   monitor: ago(2 * MIN),
   "bulk-reassign": ago(2 * MIN),
+  // The daily retention lanes (#1102) are judged with neverIsStale ON, so a
+  // fixture that omits them reads as "never ran" and alerts. A healthy fleet
+  // has them stamped within their 28h bound.
+  "prune-routing": ago(4 * 60 * MIN),
+  "prune-webhook-payloads": ago(4 * 60 * MIN),
+  "prune-bookings-pii": ago(4 * 60 * MIN),
 });
 
 beforeEach(() => {
@@ -307,4 +313,42 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe("the daily retention lanes (#1102)", () => {
+    it("alerts with never-ran copy for a retention lane that has never completed", async () => {
+      // Unlike the every-minute lanes, a never-stamped retention lane IS alerted
+      // on: it destroys customer data, so a lane that throws on every run since
+      // deploy (and therefore never stamps) must not be invisible.
+      const { "prune-bookings-pii": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("prune-bookings-pii");
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:prune-bookings-pii",
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[2])).toMatch(/NEVER completed/);
+      expect(String(call?.[2])).not.toMatch(/Infinity|NaN/);
+    });
+
+    it("alerts with the measured age for a retention lane past its bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "prune-routing": ago(40 * 60 * MIN),
+      });
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("prune-routing");
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:prune-routing",
+      );
+      expect(String(call?.[2])).toMatch(/routing decisions/);
+    });
+
+    it("stays quiet for retention lanes that completed inside their 28h bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+      expect(await alertOnStaleLanes()).toEqual([]);
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+  });
+
 });

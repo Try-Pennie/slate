@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { bookingPiiCutoffIso, REDACTED_BOOKING_UPDATE } from "@/lib/booking/pii-retention";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified, type VerifyVerdict } from "@/lib/snowflake/verify-archived";
+import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -51,10 +52,14 @@ export async function GET(req: NextRequest) {
     const gate = await mirrorReadyForDeletion();
     if (!gate.ready) {
       log.info("prune-bookings-pii", { msg: "skipped: mirror not ready", reason: gate.reason });
-      return NextResponse.json({ skipped: "mirror-not-ready", reason: gate.reason });
+      await alertRetentionSkipped("prune-bookings-pii", gate.reason ?? "unknown");
+      return laneCompleted("prune-bookings-pii", { skipped: "mirror-not-ready", reason: gate.reason });
     }
     const bookingsExportedTo = await exportedThrough("bookings");
-    if (!bookingsExportedTo) return NextResponse.json({ skipped: "nothing-exported-yet" });
+    if (!bookingsExportedTo) {
+      await alertRetentionSkipped("prune-bookings-pii", "nothing exported yet");
+      return laneCompleted("prune-bookings-pii", { skipped: "nothing-exported-yet" });
+    }
 
     // Aged, not-yet-redacted bookings (attendee_email still present) whose latest
     // version is already in Snowflake. The batch limit keeps this cap-safe on a
@@ -144,7 +149,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({
+    return laneCompleted("prune-bookings-pii", {
       redacted: bookingsReport.destroyed,
       outboxPruned: outboxReport.destroyed,
       cutoff,

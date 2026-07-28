@@ -10,6 +10,8 @@ import {
   findStaleLanes,
   LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
+  RETENTION_STALE_BOUNDS_MS,
+  retentionAlertText,
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -136,6 +138,61 @@ assert(
     full.length === 1 && full[0].lane === "smoke-canary-full",
     "a full-pass heartbeat past its bound is reported stale under the canary bounds",
   );
+}
+
+// --- the daily retention lanes (#1102) ----------------------------------------
+// These destroy customer data, so a lane that has NEVER completed must not be
+// invisible. By default findStaleLanes skips a never-stamped lane (a fresh deploy
+// before its first tick), which would hide a lane that throws on every run since
+// it never gets to stamp at all.
+{
+  const nothingStamped: Record<string, number | null> = {};
+  const lenient = findStaleLanes(nothingStamped, NOW, RETENTION_STALE_BOUNDS_MS);
+  assert(lenient.length === 0, "default leniency: a never-stamped lane is not reported (fresh deploy)");
+
+  const strict = findStaleLanes(nothingStamped, NOW, RETENTION_STALE_BOUNDS_MS, true);
+  assert(
+    strict.length === Object.keys(RETENTION_STALE_BOUNDS_MS).length,
+    "with neverIsStale, every retention lane that has never completed IS reported",
+  );
+  assert(
+    strict.every((l) => !Number.isFinite(l.ageMs)),
+    "a never-stamped lane reports an infinite age, which the alert copy special-cases",
+  );
+}
+{
+  // A lane inside its bound stays quiet even under neverIsStale.
+  const fresh = Object.fromEntries(
+    Object.keys(RETENTION_STALE_BOUNDS_MS).map((l) => [l, ago(60 * 60_000)]),
+  );
+  assert(
+    findStaleLanes(fresh, NOW, RETENTION_STALE_BOUNDS_MS, true).length === 0,
+    "a retention lane that completed an hour ago is well inside its 28h bound",
+  );
+  // ...and one past its bound is reported.
+  const late = { ...fresh, "prune-bookings-pii": ago(RETENTION_STALE_BOUNDS_MS["prune-bookings-pii"] + 1) };
+  const stale = findStaleLanes(late, NOW, RETENTION_STALE_BOUNDS_MS, true);
+  assert(
+    stale.length === 1 && stale[0].lane === "prune-bookings-pii",
+    "a retention lane past its bound is reported, and only that one",
+  );
+}
+assert(
+  Object.keys(RETENTION_STALE_BOUNDS_MS).every((l) => !(l in LANE_STALE_BOUNDS_MS)),
+  "no retention lane is in LANE_STALE_BOUNDS_MS, so stalled retention can never flip the external /api/health 503",
+);
+
+// The alert copy must name the consequence, not just the cron, and must handle the
+// never-ran case without emitting a meaningless age.
+{
+  const never = retentionAlertText("prune-bookings-pii", Infinity, 1680);
+  assert(never.includes("NEVER completed"), "never-ran copy says so explicitly");
+  assert(!/Infinity|NaN/.test(never), "never-ran copy contains no meaningless age");
+  assert(never.includes("contact data"), "never-ran copy names what is going unredacted");
+
+  const late = retentionAlertText("prune-webhook-payloads", 30 * 60 * 60_000, 1680);
+  assert(late.includes("1800 minutes"), "stale copy reports the measured age");
+  assert(late.includes("attendee PII"), "stale copy names the consequence for this lane");
 }
 
 finish();
