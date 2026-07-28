@@ -472,15 +472,15 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
     } as unknown as ReturnType<typeof supabaseAdmin>;
   }
 
-  it("pages a gone account at streak 2 but backs a transient one off until streak 4", async () => {
+  it("pages a gone account at streak 2 but backs a transient one off below streak 4", async () => {
     admin.current = failingDb(
       [
         // gone @ 2 -> pages
         { user_id: "u1", consecutive_failures: 2, last_success_at: null, last_sync_error: "unauthorized_client", last_failure_kind: "gone" },
         // transient @ 3 -> backs off (below TRANSIENT_PAGE_AT=4), must NOT page
         { user_id: "u2", consecutive_failures: 3, last_success_at: null, last_sync_error: "503", last_failure_kind: "transient" },
-        // transient @ 4 -> pages
-        { user_id: "u3", consecutive_failures: 4, last_success_at: null, last_sync_error: "timeout", last_failure_kind: "transient" },
+        // transient well past the #1133 single-agent hold -> pages
+        { user_id: "u3", consecutive_failures: 20, last_success_at: null, last_sync_error: "timeout", last_failure_kind: "transient" },
         // legacy null kind @ 2 -> treated as gone, pages (never goes silent)
         { user_id: "u4", consecutive_failures: 2, last_success_at: null, last_sync_error: "old", last_failure_kind: null },
       ],
@@ -497,5 +497,74 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
     expect(emails).toEqual(["gone@x.com", "legacy@x.com", "persistent@x.com"]);
     expect(failing.find((f) => f.email === "gone@x.com")?.failureKind).toBe("gone");
     expect(failing.find((f) => f.email === "persistent@x.com")?.failureKind).toBe("transient");
+  });
+
+  // #1133: the blast-radius hold is applied here, AFTER dedup, because it depends
+  // on how many agents are affected. The 2026-07-28 page fired for one agent on a
+  // Google 503 after ~4 minutes and healed itself with no bookings affected.
+  it("holds a LONE transient agent that has only just started failing", async () => {
+    admin.current = failingDb(
+      [
+        {
+          user_id: "u1",
+          consecutive_failures: 4,
+          last_success_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+          last_sync_error: "events.list failed: 503 backendError",
+          last_failure_kind: "transient",
+        },
+      ],
+      [{ id: "u1", email: "lone@x.com", bookable: true, deactivated_at: null }],
+    );
+    expect(await loadFailingAgents()).toEqual([]);
+  });
+
+  it("pages a lone transient agent once it has been down past the hold", async () => {
+    admin.current = failingDb(
+      [
+        {
+          user_id: "u1",
+          consecutive_failures: 15,
+          last_success_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+          last_sync_error: "events.list failed: 503 backendError",
+          last_failure_kind: "transient",
+        },
+      ],
+      [{ id: "u1", email: "lone@x.com", bookable: true, deactivated_at: null }],
+    );
+    const failing = await loadFailingAgents();
+    expect(failing.map((f) => f.email)).toEqual(["lone@x.com"]);
+  });
+
+  it("pages TWO transient agents immediately: a broad failure is systemic, not a blip", async () => {
+    const justFailed = new Date(Date.now() - 4 * 60 * 1000).toISOString();
+    admin.current = failingDb(
+      [
+        { user_id: "u1", consecutive_failures: 4, last_success_at: justFailed, last_sync_error: "503", last_failure_kind: "transient" },
+        { user_id: "u2", consecutive_failures: 4, last_success_at: justFailed, last_sync_error: "503", last_failure_kind: "transient" },
+      ],
+      [
+        { id: "u1", email: "a@x.com", bookable: true, deactivated_at: null },
+        { id: "u2", email: "b@x.com", bookable: true, deactivated_at: null },
+      ],
+    );
+    const failing = await loadFailingAgents();
+    expect(failing.map((f) => f.email).sort()).toEqual(["a@x.com", "b@x.com"]);
+  });
+
+  it("never holds a gone account, even when it is the only one failing", async () => {
+    admin.current = failingDb(
+      [
+        {
+          user_id: "u1",
+          consecutive_failures: 2,
+          last_success_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          last_sync_error: "token mint failed: 401 unauthorized_client",
+          last_failure_kind: "gone",
+        },
+      ],
+      [{ id: "u1", email: "revoked@x.com", bookable: true, deactivated_at: null }],
+    );
+    const failing = await loadFailingAgents();
+    expect(failing.map((f) => f.email)).toEqual(["revoked@x.com"]);
   });
 });

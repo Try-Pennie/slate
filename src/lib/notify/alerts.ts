@@ -114,14 +114,152 @@ export function dedupeFailingAgents(rows: FailingCalendarRow[]): FailingAgent[] 
   );
 }
 
+/**
+ * How long a LONE agent failing transiently must be unavailable before it pages
+ * (#1133), and the number of observed failing passes that must agree.
+ *
+ * The 2026-07-28 page fired after ~4 minutes because one calendar got a Google
+ * `503 backendError`, which healed itself with zero bookings affected. A single
+ * agent is almost always that one calendar having a moment, so it now has to be
+ * down for a while first; several agents at once is systemic and still pages on
+ * the fast per-kind threshold above.
+ *
+ * BOTH signals are required, because either alone is wrong:
+ *   - Elapsed time alone over-pages: `last_success_at` is only refreshed when the
+ *     sync actually reaches that calendar, and a slow tick (a big resync, a slow
+ *     Google) stops STARTING agents at SYNC_TICK_BUDGET_MS. A healthy-but-skipped
+ *     agent therefore already looks "down 15 minutes" at its FIRST real failure,
+ *     which would page in ~4 minutes again and defeat the hold.
+ *   - Streak alone is what #916 already does, and the streak is a proxy for time
+ *     only while the cadence holds; expressing the window in real elapsed time
+ *     keeps it correct if the 1-minute cadence ever changes or a pass is skipped.
+ * PASSES is the streak equivalent of the window at the 1-minute sync cadence.
+ */
+export const TRANSIENT_HOLD_MS = 10 * 60 * 1000;
+export const TRANSIENT_HOLD_PASSES = 10;
+
+/** Whether a lone transient agent is still inside its hold (#1133). A calendar
+ *  that has NEVER synced has no elapsed signal, so the streak alone decides; an
+ *  unparseable timestamp is never used to HIDE a failure. */
+function isHeldTransient(a: FailingAgent, nowMs: number): boolean {
+  if (a.consecutiveFailures < TRANSIENT_HOLD_PASSES) return true;
+  if (!a.lastSuccessAt) return false;
+  const lastOkMs = Date.parse(a.lastSuccessAt);
+  if (Number.isNaN(lastOkMs)) return false;
+  return nowMs - lastOkMs < TRANSIENT_HOLD_MS;
+}
+
+/**
+ * Blast-radius paging policy (#1133), applied AFTER dedup because it depends on
+ * how many agents are affected, which a per-row filter cannot see.
+ *
+ * One transient agent waits out TRANSIENT_HOLD_MS; two or more page immediately
+ * on the existing fast threshold, because "one calendar is flaky" and "something
+ * is systemically broken" are different events. A `gone` (or unclassified, which
+ * #916 treats as gone) calendar is NEVER held: a revoked account is a real human
+ * task from its first confirmation, and one gone calendar must not drag a quiet
+ * transient blip into a fast page alongside it.
+ */
+export function applyBlastRadiusHold(
+  failing: FailingAgent[],
+  nowMs: number,
+): FailingAgent[] {
+  const transient = failing.filter((a) => a.failureKind === "transient");
+  if (transient.length !== 1) return failing;
+  const lone = transient[0];
+  return isHeldTransient(lone, nowMs) ? failing.filter((a) => a !== lone) : failing;
+}
+
+/** Longest reason we'll put in an alert line before truncating. */
+const MAX_REASON_CHARS = 80;
+
+/**
+ * A SHORT human reason for a sync failure (#1133), never a raw external body.
+ *
+ * `last_sync_error` is stored as `` `${label} failed: ${status} ${text}` `` (see
+ * `src/lib/google/calendar.ts`), where `text` is Google's entire pretty-printed
+ * JSON body. Slicing that to a fixed width produced the unreadable 2026-07-28
+ * page: eight lines of braces cut off mid-word at `"mess`. So pull out the two
+ * facts a human needs (the status, plus Google's machine reason) and leave the
+ * body to the logs, which keep it in full.
+ *
+ * Extraction happens on READ rather than at write time so rows already carrying a
+ * full body render readably too, with no migration and no write-path change.
+ * Kept generic (status + reason, else a collapsed first line) so #1135's sweep of
+ * the other alerts can reuse it.
+ */
+export function shortFailureReason(raw: string | null): string | null {
+  if (!raw) return null;
+  const status = /\bfailed: (\d{3})\b/.exec(raw)?.[1];
+  if (status) {
+    // Google's structured `reason` ("backendError", "rateLimitExceeded") is the
+    // useful half; some endpoints answer with a bare string `error` instead.
+    const reason =
+      /"reason"\s*:\s*"([^"]+)"/.exec(raw)?.[1] ??
+      /"error"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
+    return reason ? `${status} ${reason}` : status;
+  }
+  // Not an HTTP failure (an abort, a timeout, a thrown Error): keep its own text,
+  // collapsed to one line so a stack or a multi-line message can't flood Slack.
+  const oneLine = raw.split("\n")[0].replace(/\s+/g, " ").trim();
+  if (oneLine.length <= MAX_REASON_CHARS) return oneLine;
+  // Cut on a word boundary when there is one, so the reader never gets a
+  // half-word like `"mess`.
+  const cut = oneLine.slice(0, MAX_REASON_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * How long ago a timestamp was, in words (#1133). `last ok` used to render as a
+ * bare date, so a failure that started four minutes ago read "last ok 2026-07-28":
+ * technically true and completely uninformative. An elapsed duration makes the
+ * severity legible at a glance.
+ */
+export function relativeAge(iso: string | null, nowMs: number): string {
+  if (!iso) return "never";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "unknown";
+  const minutes = Math.floor(Math.max(0, nowMs - t) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 /** How many agents to name inline before summarizing the rest. */
 const MAX_NAMED_AGENTS = 5;
 
+/**
+ * The instruction the alert should give (#1133), derived from the failure kinds
+ * actually present instead of hardcoded. The old copy told the reader to "Re-auth
+ * or deactivate" an account it had itself labelled "transient: likely
+ * self-healing", so the page contradicted its own diagnosis. An unclassified kind
+ * counts as an account problem, matching #916's conservative default.
+ */
+function instructionFor(failing: FailingAgent[]): string {
+  // Only the accounts tagged gone need the re-auth, so say which ones: on a mixed
+  // list a bare "Re-auth or deactivate" points at the transient agents too.
+  if (failing.some((a) => a.failureKind !== "transient")) {
+    return "Re-auth or deactivate the accounts marked gone:";
+  }
+  // All transient, but breadth changes what to do. One flaky calendar is nothing
+  // to act on; several at once is Google, a credential path, or a bad deploy, and
+  // telling the reader "no action needed" about that would be the same defect
+  // this instruction exists to fix, just pointing the other way.
+  return failing.length === 1
+    ? "No action needed unless it persists:"
+    : "Check whether Google is having an incident; no per agent action:";
+}
+
 /** The bulleted, capped per-agent lines shared by the named alerts (#293). */
-function failingAgentLines(failing: FailingAgent[]): string {
+function failingAgentLines(failing: FailingAgent[], nowMs: number): string {
   const lines = failing.slice(0, MAX_NAMED_AGENTS).map((a) => {
-    const lastOk = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
-    const err = a.error ? ` (${a.error.slice(0, 120)})` : "";
+    const lastOk = relativeAge(a.lastSuccessAt, nowMs);
+    const reason = shortFailureReason(a.error);
+    const err = reason ? ` (${reason})` : "";
     const n = a.consecutiveFailures;
     // #916: name the classification so ops knows which need a human now vs which
     // are likely self-healing.
@@ -146,12 +284,17 @@ function failingAgentLines(failing: FailingAgent[]): string {
 export function formatWatchLapseAlert(
   failing: FailingAgent[],
   totalAgents: number,
+  nowMs: number,
 ): string {
+  const n = failing.length;
   return (
-    `Slate: ${failing.length} of ${totalAgents} bookable agent` +
-    `${failing.length === 1 ? "" : "s"} have a calendar failing to sync/renew ` +
+    // #1133: the noun pluralizes on the TOTAL and the verb agrees with the
+    // FAILING count. Keying both off `failing.length` produced "1 of 97 bookable
+    // agent have a calendar failing".
+    `Slate: ${n} of ${totalAgents} bookable agent${totalAgents === 1 ? "" : "s"} ` +
+    `${n === 1 ? "has" : "have"} a calendar failing to sync/renew ` +
     `(Google push degraded; availability is on the backup cron). ` +
-    `Re-auth or deactivate:\n${failingAgentLines(failing)}`
+    `${instructionFor(failing)}\n${failingAgentLines(failing, nowMs)}`
   );
 }
 
@@ -163,12 +306,35 @@ export function formatWatchLapseAlert(
 export function formatSyncFailureAlert(
   failing: FailingAgent[],
   totalAgents: number,
+  nowMs: number,
 ): string {
+  const n = failing.length;
+  const agents = `bookable agent${totalAgents === 1 ? "" : "s"}`;
+  // #1133: one agent and many agents are different events and must not read the
+  // same. One is almost always a single flaky calendar; several at once points at
+  // Google, a credential path, or a bad deploy.
+  const scope =
+    n === 1
+      ? `Slate: calendar sync is failing for 1 of ${totalAgents} ${agents} on ` +
+        `consecutive passes (that agent's availability cache may be drifting from Google).`
+      : `Slate: calendar sync is failing for ${n} of ${totalAgents} ${agents} on ` +
+        `consecutive passes, which points at a systemic problem rather than one bad ` +
+        `calendar (the availability cache may be drifting from Google).`;
+  return `${scope} ${instructionFor(failing)}\n${failingAgentLines(failing, nowMs)}`;
+}
+
+/**
+ * The "it cleared" message for the sync-failure page (#1133). Nothing in Slate
+ * used to say a page had resolved, so the only signal was silence, which is
+ * indistinguishable from the 30-minute cooldown still running: during the
+ * 2026-07-28 incident the recipient had to query the database by hand to find out
+ * it had healed. An actionable alert must say when it clears.
+ */
+export function formatSyncRecoveryNotice(): string {
   return (
-    `Slate: calendar sync is failing for ${failing.length} of ${totalAgents} ` +
-    `bookable agent${failing.length === 1 ? "" : "s"} on consecutive passes ` +
-    `(the availability cache may be drifting from Google). Re-auth or deactivate:` +
-    `\n${failingAgentLines(failing)}`
+    "Slate: calendar sync has recovered. Every agent calendar that was failing is " +
+    "syncing again and the availability cache is back in step with Google, so the " +
+    "earlier page about failing calendars is cleared. No action is needed."
   );
 }
 

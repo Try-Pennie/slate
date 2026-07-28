@@ -36,10 +36,14 @@ const precompute = vi.hoisted(() => ({
   touchedBucketCodes: vi.fn(async () => [] as string[]),
 }));
 const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async () => {}) }));
-const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async () => {}),
+  resolveAlert: vi.fn(async () => false),
+}));
 const alerts = vi.hoisted(() => ({
   formatSyncFailureAlert: vi.fn(() => ""),
   isConsecutiveFailure: vi.fn(() => false),
+  formatSyncRecoveryNotice: vi.fn(() => "recovered"),
 }));
 // Fresh monitor heartbeat = no monitor-down alert on the happy path.
 const heartbeat = vi.hoisted(() => ({
@@ -85,6 +89,46 @@ describe("GET /api/cron/sync", () => {
   it("still returns 200 when the heartbeat stamp fails (best-effort)", async () => {
     cron.isAuthorizedCron.mockReturnValueOnce(true);
     heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+  });
+
+  // #1133: a cleared page must SAY it cleared. Silence is indistinguishable from
+  // the 30-minute cooldown still running, so a clean tick offers the recovery
+  // notice (resolveAlert is a no-op unless a page was actually delivered).
+  it("offers the recovery notice on a clean tick", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    await GET(req());
+    expect(dispatch.resolveAlert).toHaveBeenCalledWith("sync_failures", "recovered");
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a recovery notice while agents are still failing", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.mapWithConcurrency.mockResolvedValueOnce({
+      results: [{ userId: "u1", error: "503" }],
+      processed: 1,
+      truncated: false,
+    } as never);
+    alerts.isConsecutiveFailure.mockReturnValueOnce(true);
+    sync.loadFailingAgents.mockResolvedValueOnce([
+      { email: "a@x.com", consecutiveFailures: 12, lastSuccessAt: null, error: "503" },
+    ] as never);
+    // rate_limit_hit lives on the same mocked client; the streak read must answer.
+    admin.supabaseAdmin.mockReturnValueOnce({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async () => ({ data: false, error: null }),
+    } as never);
+
+    await GET(req());
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  // Failure path: a monitoring failure must never become a sync failure.
+  it("still returns 200 when the recovery notice throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    dispatch.resolveAlert.mockRejectedValueOnce(new Error("slack down") as never);
     const res = await GET(req());
     expect(res.status).toBe(200);
   });

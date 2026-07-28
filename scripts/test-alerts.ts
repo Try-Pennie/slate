@@ -9,11 +9,23 @@ import {
   isPageableFailure,
   alertStampMs,
   FAILED_SEND_RETRY_MS,
+  shortFailureReason,
+  relativeAge,
+  applyBlastRadiusHold,
+  formatSyncRecoveryNotice,
+  TRANSIENT_HOLD_MS,
+  TRANSIENT_HOLD_PASSES,
+  type FailingAgent,
 } from "../src/lib/notify/alerts.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const COOLDOWN = 30 * 60 * 1000; // 30 min
 const now = 1_000_000_000;
+
+/** A pinned "now" for every message-formatting assertion (#1133): `last ok` is
+ *  rendered as an elapsed duration, so the clock must never be the real one. */
+const NOW_MS = Date.parse("2026-07-28T12:00:00Z");
+const agoIso = (ms: number) => new Date(NOW_MS - ms).toISOString();
 
 assert(shouldSendAlert(null, now, COOLDOWN), "never-alerted: sends");
 assert(!shouldSendAlert(now - 60_000, now, COOLDOWN), "within cooldown: suppressed");
@@ -28,16 +40,17 @@ const oneFailing = formatWatchLapseAlert(
     {
       email: "alice@pennie.com",
       consecutiveFailures: 5,
-      lastSuccessAt: "2026-06-15T08:00:00Z",
+      lastSuccessAt: agoIso(3 * 60 * 60 * 1000),
       error: "404 account-gone",
     },
   ],
   110,
+  NOW_MS,
 );
 assert(oneFailing.includes("alice@pennie.com"), "names the failing agent");
 assert(oneFailing.includes("1 of 110"), "shows failing/total context");
 assert(oneFailing.includes("5 consecutive failures"), "shows the consecutive-failure count");
-assert(oneFailing.includes("2026-06-15"), "shows the last successful sync date");
+assert(oneFailing.includes("last ok 3 hours ago"), "shows how long ago the last successful sync was");
 assert(oneFailing.includes("404 account-gone"), "carries the underlying error");
 assert(/re-?auth|deactivate/i.test(oneFailing), "includes the remediation");
 
@@ -47,7 +60,7 @@ const manyFailing = Array.from({ length: 7 }, (_, i) => ({
   lastSuccessAt: null,
   error: null,
 }));
-const many = formatWatchLapseAlert(manyFailing, 110);
+const many = formatWatchLapseAlert(manyFailing, 110, NOW_MS);
 assert(many.includes("never"), "shows 'never' when the calendar never succeeded");
 assert(
   many.includes("a0@pennie.com") && !many.includes("a6@pennie.com"),
@@ -55,7 +68,7 @@ assert(
 );
 assert(/2 more/.test(many), "notes how many failing agents are beyond the cap");
 assert(
-  formatWatchLapseAlert([{ email: "a@b.com", consecutiveFailures: 2, lastSuccessAt: null, error: "x".repeat(500) }], 110).length < 600,
+  formatWatchLapseAlert([{ email: "a@b.com", consecutiveFailures: 2, lastSuccessAt: null, error: "x".repeat(500) }], 110, NOW_MS).length < 600,
   "per-agent error detail is truncated",
 );
 
@@ -94,7 +107,7 @@ const kinded = dedupeFailingAgents([
 ]);
 assert(kinded.find((a) => a.email === "gone@pennie.com")?.failureKind === "gone", "carries a 'gone' classification");
 assert(kinded.find((a) => a.email === "flaky@pennie.com")?.failureKind === "transient", "carries a 'transient' classification");
-const kindMsg = formatWatchLapseAlert(kinded, 110);
+const kindMsg = formatWatchLapseAlert(kinded, 110, NOW_MS);
 assert(/account gone: re-?auth or deactivate/i.test(kindMsg), "labels a gone account with its remediation");
 assert(/transient: likely self-healing/i.test(kindMsg), "labels a transient failure as likely self-healing");
 
@@ -110,21 +123,22 @@ const syncFailing = [
   {
     email: "sync1@pennie.com",
     consecutiveFailures: 4,
-    lastSuccessAt: "2026-06-20T09:00:00Z",
+    lastSuccessAt: agoIso(35 * 60 * 1000),
     error: "freeBusy failed: 503",
   },
 ];
-const syncMsg = formatSyncFailureAlert(syncFailing, 110);
+const syncMsg = formatSyncFailureAlert(syncFailing, 110, NOW_MS);
 assert(syncMsg.includes("sync1@pennie.com"), "sync alert names the failing agent");
 assert(syncMsg.includes("1 of 110"), "sync alert shows failing/total context");
 assert(syncMsg.includes("4 consecutive failures"), "sync alert shows the consecutive-failure count");
-assert(syncMsg.includes("2026-06-20"), "sync alert shows the last successful sync date");
-assert(syncMsg.includes("freeBusy failed: 503"), "sync alert carries the error");
+assert(syncMsg.includes("last ok 35 minutes ago"), "sync alert shows how long ago the last successful sync was");
+assert(syncMsg.includes("503"), "sync alert carries the failure status");
 assert(/re-?auth|deactivate/i.test(syncMsg), "sync alert includes the remediation");
 assert(
   formatSyncFailureAlert(
     [{ email: "a@b.com", consecutiveFailures: 2, lastSuccessAt: null, error: "x".repeat(500) }],
     110,
+    NOW_MS,
   ).length < 600,
   "sync alert truncates per-agent error detail",
 );
@@ -163,5 +177,202 @@ assert(
   alertStampMs(false, T, SHORT) + SHORT === T + SHORT,
   "failed send never pushes next-eligible past the cooldown it would have used",
 );
+
+// ---------------------------------------------------------------------------
+// #1133: readable copy + blast-radius paging.
+// ---------------------------------------------------------------------------
+
+// --- shortFailureReason: a short human reason, never a raw JSON body ---
+// The exact string that produced the unreadable 2026-07-28 page: `last_sync_error`
+// is built as `${label} failed: ${status} ${text}` where text is Google's whole
+// pretty-printed body, so the alert used to render eight lines of braces cut off
+// mid-word at `"mess`.
+const RAW_503 = `events.list failed: 503 {
+  "error": {
+    "errors": [
+      {
+        "domain": "global",
+        "reason": "backendError",
+        "message": "Backend Error"
+      }
+    ],
+    "code": 503,
+    "message": "Backend Error"
+  }
+}`;
+assert(shortFailureReason(RAW_503) === "503 backendError", "extracts status + Google reason from a raw body");
+assert(shortFailureReason(null) === null, "no error -> no reason");
+assert(shortFailureReason("freeBusy failed: 503") === "503", "a body-less Google failure keeps just the status");
+assert(
+  shortFailureReason("token mint failed: 401 { \"error\": \"unauthorized_client\" }") === "401 unauthorized_client",
+  "picks up a bare string error field as the reason",
+);
+// A non-Google failure (an abort/timeout) has no status to extract, so it falls
+// back to a collapsed single line rather than being dropped.
+assert(
+  shortFailureReason("The operation was aborted due to timeout") ===
+    "The operation was aborted due to timeout",
+  "a non-HTTP failure passes through as its own text",
+);
+assert(
+  shortFailureReason("first line\nsecond line") === "first line",
+  "a multi-line non-HTTP failure collapses to its first line",
+);
+const longReason = shortFailureReason("x".repeat(300));
+assert(longReason !== null && longReason.length <= 90, "an overlong reason is truncated");
+assert(
+  !/[{}"]/.test(shortFailureReason(RAW_503) ?? ""),
+  "the extracted reason carries no JSON punctuation",
+);
+
+// --- relativeAge: elapsed time, not a bare date ---
+assert(relativeAge(null, NOW_MS) === "never", "a never-successful calendar reads 'never'");
+assert(relativeAge(agoIso(30 * 1000), NOW_MS) === "just now", "under a minute reads 'just now'");
+assert(relativeAge(agoIso(60 * 1000), NOW_MS) === "1 minute ago", "one minute is singular");
+assert(relativeAge(agoIso(4 * 60 * 1000), NOW_MS) === "4 minutes ago", "minutes are plural");
+assert(relativeAge(agoIso(60 * 60 * 1000), NOW_MS) === "1 hour ago", "one hour is singular");
+assert(relativeAge(agoIso(5 * 60 * 60 * 1000), NOW_MS) === "5 hours ago", "hours are plural");
+assert(relativeAge(agoIso(48 * 60 * 60 * 1000), NOW_MS) === "2 days ago", "days are plural");
+assert(relativeAge("not-a-date", NOW_MS) === "unknown", "an unparseable timestamp says so rather than lying");
+
+// --- applyBlastRadiusHold: one agent waits, many page fast ---
+// Both signals are required for a lone transient agent (elapsed unavailability
+// AND enough observed passes), so a healthy agent whose last sync was skipped for
+// a while can't look like a long outage and page early.
+const transientAgent = (over: { streak: number; downMs: number | null; email?: string }): FailingAgent => ({
+  email: over.email ?? "lone@pennie.com",
+  consecutiveFailures: over.streak,
+  lastSuccessAt: over.downMs === null ? null : agoIso(over.downMs),
+  error: RAW_503,
+  failureKind: "transient",
+});
+
+assert(TRANSIENT_HOLD_MS === 10 * 60 * 1000, "the single-agent hold is 10 minutes");
+assert(TRANSIENT_HOLD_PASSES === 10, "10 minutes at the 1-minute sync cadence is 10 observed passes");
+
+// The incident itself: one agent, 4 consecutive failures, down ~4 minutes. Must NOT page.
+assert(
+  applyBlastRadiusHold([transientAgent({ streak: 4, downMs: 4 * 60 * 1000 })], NOW_MS).length === 0,
+  "a lone transient agent down 4 minutes is held, not paged (the 2026-07-28 incident)",
+);
+// Just under the boundary on time, streak satisfied.
+assert(
+  applyBlastRadiusHold([transientAgent({ streak: 12, downMs: TRANSIENT_HOLD_MS - 1_000 })], NOW_MS).length === 0,
+  "a lone transient agent one second short of 10 minutes is still held",
+);
+// Exactly at the boundary, both signals satisfied.
+assert(
+  applyBlastRadiusHold([transientAgent({ streak: 10, downMs: TRANSIENT_HOLD_MS })], NOW_MS).length === 1,
+  "a lone transient agent at exactly 10 minutes with 10 observed passes pages",
+);
+// The gap this closes: the elapsed clock alone says 20 minutes, but we have only
+// watched it fail twice, so it must stay quiet.
+assert(
+  applyBlastRadiusHold([transientAgent({ streak: 2, downMs: 20 * 60 * 1000 })], NOW_MS).length === 0,
+  "a stale last-success timestamp cannot page on its own: the observed streak must agree",
+);
+// A calendar that has NEVER succeeded has no elapsed signal, so the streak decides.
+assert(
+  applyBlastRadiusHold([transientAgent({ streak: TRANSIENT_HOLD_PASSES, downMs: null })], NOW_MS).length === 1,
+  "a never-successful lone transient calendar pages on the streak alone",
+);
+assert(
+  applyBlastRadiusHold([transientAgent({ streak: 3, downMs: null })], NOW_MS).length === 0,
+  "a never-successful lone transient calendar still needs the full streak",
+);
+
+// Two or more transient agents at once is systemic: page on the fast threshold.
+const twoTransient = [
+  transientAgent({ streak: 4, downMs: 4 * 60 * 1000, email: "a@pennie.com" }),
+  transientAgent({ streak: 4, downMs: 4 * 60 * 1000, email: "b@pennie.com" }),
+];
+assert(
+  applyBlastRadiusHold(twoTransient, NOW_MS).length === 2,
+  "two transient agents failing together page fast, with no 10-minute hold",
+);
+
+// gone is never held, alone or otherwise: a revoked account is a human task from
+// its first confirmation.
+const goneAgent: FailingAgent = {
+  email: "gone@pennie.com",
+  consecutiveFailures: 2,
+  lastSuccessAt: agoIso(60 * 1000),
+  error: "token mint failed: 401 { \"error\": \"unauthorized_client\" }",
+  failureKind: "gone",
+};
+assert(
+  applyBlastRadiusHold([goneAgent], NOW_MS).length === 1,
+  "a lone gone calendar pages immediately, unaffected by the transient hold",
+);
+const unclassified: FailingAgent = { ...goneAgent, email: "old@pennie.com", failureKind: null };
+assert(
+  applyBlastRadiusHold([unclassified], NOW_MS).length === 1,
+  "an unclassified failure is treated as gone and never held",
+);
+// Mixed list: the gone account pages, the lone brief transient is held. One gone
+// calendar must not convert a quiet blip into a fast page.
+const mixed = applyBlastRadiusHold(
+  [goneAgent, transientAgent({ streak: 4, downMs: 4 * 60 * 1000 })],
+  NOW_MS,
+);
+assert(mixed.length === 1 && mixed[0].email === "gone@pennie.com", "mixed list: gone pages, brief lone transient held");
+
+// --- copy: the header instruction must match the classification ---
+const transientOnlyMsg = formatSyncFailureAlert(
+  [transientAgent({ streak: 12, downMs: 15 * 60 * 1000 })],
+  97,
+  NOW_MS,
+);
+assert(
+  !/re-?auth|deactivate/i.test(transientOnlyMsg),
+  "an all-transient list never tells anyone to re-auth (the 2026-07-28 contradiction)",
+);
+assert(/no action/i.test(transientOnlyMsg), "an all-transient list says no action is needed unless it persists");
+assert(transientOnlyMsg.includes("503 backendError"), "the alert shows the short reason");
+assert(!transientOnlyMsg.includes("\"error\""), "the alert body carries no raw JSON");
+assert(!/"mess$|"mess\b/.test(transientOnlyMsg), "the alert body is never cut off mid-word");
+const goneMsg = formatSyncFailureAlert([goneAgent], 97, NOW_MS);
+assert(/re-?auth|deactivate/i.test(goneMsg), "a gone account still carries the re-auth instruction");
+const mixedMsg = formatSyncFailureAlert([goneAgent, transientAgent({ streak: 12, downMs: 15 * 60 * 1000 })], 97, NOW_MS);
+assert(/re-?auth|deactivate/i.test(mixedMsg), "a mixed list keeps the re-auth instruction for the gone account");
+
+// --- copy: counts read grammatically, and breadth is legible ---
+assert(
+  formatSyncFailureAlert([goneAgent], 97, NOW_MS).includes("1 of 97 bookable agents"),
+  "the total noun pluralizes on the total, not the failing count (was '1 of 97 bookable agent')",
+);
+assert(
+  formatWatchLapseAlert([goneAgent], 97, NOW_MS).includes("1 of 97 bookable agents has"),
+  "the watch-lapse verb agrees with the failing count",
+);
+assert(
+  formatWatchLapseAlert([goneAgent, unclassified], 97, NOW_MS).includes("2 of 97 bookable agents have"),
+  "several failing agents take the plural verb",
+);
+const broadMsg = formatSyncFailureAlert(twoTransient, 97, NOW_MS);
+assert(/systemic|broad|across/i.test(broadMsg), "a multi-agent failure reads as systemic, not as one bad calendar");
+assert(
+  !/systemic/i.test(formatSyncFailureAlert([goneAgent], 97, NOW_MS)),
+  "a single-agent failure does not claim a systemic problem",
+);
+// A broad transient outage IS actionable (check Google, the credential path, the
+// last deploy), so it must not inherit the lone-agent "nothing to do" framing.
+assert(
+  !/no action needed/i.test(broadMsg),
+  "a systemic failure never says no action is needed",
+);
+assert(/google/i.test(broadMsg), "a systemic transient failure points at Google as the thing to check");
+// A mixed list's instruction must say WHICH accounts need the re-auth, since only
+// the ones marked gone do.
+assert(
+  /marked gone/i.test(mixedMsg),
+  "the re-auth instruction names which accounts it applies to",
+);
+
+// --- recovery notice: a cleared page says it cleared ---
+const recovery = formatSyncRecoveryNotice();
+assert(/recover|cleared|resolved|back/i.test(recovery), "the recovery notice says the condition cleared");
+assert(/no action/i.test(recovery), "the recovery notice tells the reader there is nothing to do");
+assert(!/re-?auth|deactivate/i.test(recovery), "the recovery notice carries no stale remediation");
 
 finish();
