@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { webhookPayloadCutoffIso } from "@/lib/webhooks/retention";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
+import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -38,18 +39,52 @@ export async function GET(req: NextRequest) {
     const exportedTo = await exportedThrough("webhook_deliveries");
     if (!exportedTo) return NextResponse.json({ skipped: "nothing-exported-yet" });
 
-    const { error, count } = await supabaseAdmin()
+    // Read a BOUNDED batch of candidates and prove the warehouse holds each one
+    // before blanking it (#1102). Blanking is irreversible for the payload, so it
+    // needs the same proof a delete does. The bound is not optional: this table is
+    // already past PostgREST's 1000-row single-page cap, so an unbounded read
+    // would silently see part of the set.
+    const db = supabaseAdmin();
+    const { data: aged, error: readErr } = await db
       .from("webhook_deliveries")
-      .update({ payload: {}, payload_erased: true, last_response: null }, { count: "exact" })
+      .select("id,updated_at")
       .eq("payload_erased", false)
       .eq("suppressed", false)
       // Terminal only: a delivered success, or a failure past the retry cap. A
       // pending/retryable row still needs its payload for the retry sweep.
       .or(`status.eq.success,and(status.eq.failed,attempts.gte.${WEBHOOK_MAX_ATTEMPTS})`)
       .lt("created_at", cutoff)
-      .lt("updated_at", exportedTo);
-    if (error) throw new Error(error.message);
-    return NextResponse.json({ erased: count ?? 0, cutoff });
+      .lt("updated_at", exportedTo)
+      .order("created_at", { ascending: true })
+      .limit(MAX_VERIFY_BATCH);
+    if (readErr) throw new Error(readErr.message);
+    const candidates = ((aged ?? []) as { id: string; updated_at: string }[]).map((r) => ({
+      id: r.id,
+      watermark: r.updated_at,
+    }));
+
+    const report = await destroyVerified({
+      table: "webhook_deliveries",
+      watermarkCol: "updated_at",
+      candidates,
+      destroy: async (ids) => {
+        const { error, count } = await db
+          .from("webhook_deliveries")
+          .update({ payload: {}, payload_erased: true, last_response: null }, { count: "exact" })
+          .in("id", ids);
+        if (error) throw new Error(error.message);
+        return count ?? 0;
+      },
+    });
+    if (report.problems.length > 0) {
+      log.warn("prune-webhook-payloads", {
+        msg: "left unverified rows in place",
+        unverified: report.problems.length,
+        first: report.problems[0].id,
+        state: report.problems[0].state,
+      });
+    }
+    return NextResponse.json({ erased: report.destroyed, candidates: report.candidates, cutoff });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("prune-webhook-payloads", { msg: "cron failed", error: message });

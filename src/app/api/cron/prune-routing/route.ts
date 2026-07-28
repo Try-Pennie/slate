@@ -4,6 +4,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pruneCutoffIso } from "@/lib/routing/retention";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
+import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -28,13 +29,49 @@ export async function GET(req: NextRequest) {
     const exportedTo = await exportedThrough("routing_decisions");
     if (!exportedTo) return NextResponse.json({ skipped: "nothing-exported-yet" });
 
-    const { error, count } = await supabaseAdmin()
+    // Read a BOUNDED batch of candidates and prove the warehouse holds each one
+    // before deleting it (#1102). The watermark predicate below is only a cheap
+    // pre-filter: a 12-month-old row is always below a watermark that is minutes
+    // old, so it can never actually withhold a candidate. The read-back is the
+    // real gate. Strict `<` (was `.lte`): the export cursor is a composite
+    // (created_at, id) keyset, so a row whose created_at equals the watermark but
+    // whose id sorts later was not necessarily exported.
+    const db = supabaseAdmin();
+    const { data: aged, error: readErr } = await db
       .from("routing_decisions")
-      .delete({ count: "exact" })
+      .select("id,created_at")
       .lt("created_at", cutoff)
-      .lte("created_at", exportedTo);
-    if (error) throw new Error(error.message);
-    return NextResponse.json({ pruned: count ?? 0, cutoff, exportedThrough: exportedTo });
+      .lt("created_at", exportedTo)
+      .order("created_at", { ascending: true })
+      .limit(MAX_VERIFY_BATCH);
+    if (readErr) throw new Error(readErr.message);
+    const candidates = ((aged ?? []) as { id: string; created_at: string }[]).map((r) => ({
+      id: r.id,
+      watermark: r.created_at,
+    }));
+
+    const report = await destroyVerified({
+      table: "routing_decisions",
+      watermarkCol: "created_at",
+      candidates,
+      destroy: async (ids) => {
+        const { error, count } = await db
+          .from("routing_decisions")
+          .delete({ count: "exact" })
+          .in("id", ids);
+        if (error) throw new Error(error.message);
+        return count ?? 0;
+      },
+    });
+    if (report.problems.length > 0) {
+      log.warn("prune-routing", {
+        msg: "left unverified rows in place",
+        unverified: report.problems.length,
+        first: report.problems[0].id,
+        state: report.problems[0].state,
+      });
+    }
+    return NextResponse.json({ pruned: report.destroyed, candidates: report.candidates, cutoff });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("prune-routing", { msg: "cron failed", error: message });
