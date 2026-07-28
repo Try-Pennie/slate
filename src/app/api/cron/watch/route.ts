@@ -44,9 +44,10 @@ async function alertWatchLapse(
   }
   const cleared = await resolveAlert(
     WATCH_ALERT_KEY,
-    "Slate: calendar watch renewal has recovered. Every agent calendar is watched and " +
-      "renewing again, so Google push is back and availability is no longer relying on " +
-      "the backup cron. The earlier warning is cleared and no action is needed.",
+    "Slate: calendar watch renewal has recovered. Every agent calendar is renewing its " +
+      "Google push channel again, so external changes reach the availability cache " +
+      "immediately rather than waiting on the backup cron. The earlier warning is " +
+      "cleared and no action is needed.",
   );
   if (cleared) log.info("watch", { msg: "watch-lapse alert cleared" });
 }
@@ -103,7 +104,11 @@ export async function GET(req: NextRequest) {
     // errors by definition. isAlertFiring is one cheap read, so the healthy no-alert
     // case (almost every tick) pays nothing more than that.
     if (watchErrors > 0 || (await isAlertFiring(WATCH_ALERT_KEY))) {
-      await alertWatchLapse(await loadFailingAgents(), ordered.length);
+      // #1150: the WATCH lane's own counter. This used to read the sync lane's,
+      // which the 1-min sync tick reset on every success, so a renewal failure
+      // was erased before it could reach a threshold and this alert could only
+      // fire for an account that was failing both ways.
+      await alertWatchLapse(await loadFailingAgents("watch"), ordered.length);
     }
 
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.

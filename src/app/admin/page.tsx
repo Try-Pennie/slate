@@ -350,7 +350,9 @@ export default async function AdminPage({
       db
         .from("agent_calendars")
         .select(
-          "user_id, watch_expiration, consecutive_failures, last_success_at, last_sync_error",
+          // One literal, deliberately: supabase-js infers the row type from this
+          // string, and a concatenation collapses it to GenericStringError[].
+          "user_id, watch_expiration, consecutive_failures, last_success_at, last_sync_error, watch_consecutive_failures, watch_last_success_at, watch_last_error",
         ),
       db
         .from("bookings")
@@ -445,29 +447,45 @@ export default async function AdminPage({
     consecutive_failures: number | null;
     last_success_at: string | null;
     last_sync_error: string | null;
+    watch_consecutive_failures: number | null;
+    watch_last_success_at: string | null;
+    watch_last_error: string | null;
   }[];
   const userById = new Map(users.map((u) => [u.id, u]));
   const nameByEmail = new Map(users.map((u) => [u.email, u.name]));
-  const failingRows: FailingCalendarRow[] = calDiag
-    .filter((c) => (c.consecutive_failures ?? 0) > 0)
-    .map((c) => {
-      const u = userById.get(c.user_id);
-      return {
-        consecutive_failures: c.consecutive_failures ?? 0,
-        last_success_at: c.last_success_at,
-        last_sync_error: c.last_sync_error,
-        email: u?.email ?? null,
-        bookable: u?.bookable ?? false,
-        deactivated_at: u?.deactivated_at ?? null,
-      };
-    });
-  const syncHealthRows: SyncHealthRow[] = dedupeFailingAgents(failingRows).map((a) => ({
-    email: a.email,
-    name: nameByEmail.get(a.email) ?? null,
-    consecutiveFailures: a.consecutiveFailures,
-    lastSuccessAt: a.lastSuccessAt,
-    error: a.error,
-  }));
+  // #1150: both lanes, deduped independently. The watch lane keeps its own
+  // counter now, so reading only the sync columns (as this did) would show a
+  // calendar that syncs fine but cannot renew its push channel as fully healthy.
+  // Deduped per lane rather than across both, because an agent can legitimately
+  // be failing one and not the other, and collapsing them would hide whichever
+  // had the shorter streak.
+  const laneRows = (lane: "sync" | "watch") => {
+    const failing: FailingCalendarRow[] = calDiag
+      .filter((c) => ((lane === "watch" ? c.watch_consecutive_failures : c.consecutive_failures) ?? 0) > 0)
+      .map((c) => {
+        const u = userById.get(c.user_id);
+        return {
+          consecutive_failures:
+            (lane === "watch" ? c.watch_consecutive_failures : c.consecutive_failures) ?? 0,
+          last_success_at: lane === "watch" ? c.watch_last_success_at : c.last_success_at,
+          last_sync_error: lane === "watch" ? c.watch_last_error : c.last_sync_error,
+          email: u?.email ?? null,
+          bookable: u?.bookable ?? false,
+          deactivated_at: u?.deactivated_at ?? null,
+        };
+      });
+    return dedupeFailingAgents(failing).map(
+      (a): SyncHealthRow => ({
+        email: a.email,
+        name: nameByEmail.get(a.email) ?? null,
+        consecutiveFailures: a.consecutiveFailures,
+        lastSuccessAt: a.lastSuccessAt,
+        error: a.error,
+        lane,
+      }),
+    );
+  };
+  const syncHealthRows: SyncHealthRow[] = [...laneRows("sync"), ...laneRows("watch")];
 
   // Debt team(s) an agent belongs to (the attribute is a string or string[]).
   const teamsOf = (u: User): string[] => {

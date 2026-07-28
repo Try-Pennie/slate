@@ -15,6 +15,8 @@ import {
   formatSyncRecoveryNotice,
   TRANSIENT_HOLD_MS,
   TRANSIENT_HOLD_PASSES,
+  SYNC_PAGING,
+  WATCH_PAGING,
   type FailingAgent,
 } from "../src/lib/notify/alerts.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -50,7 +52,12 @@ const oneFailing = formatWatchLapseAlert(
 assert(oneFailing.includes("alice@pennie.com"), "names the failing agent");
 assert(oneFailing.includes("1 of 110"), "shows failing/total context");
 assert(oneFailing.includes("5 consecutive failures"), "shows the consecutive-failure count");
-assert(oneFailing.includes("last ok 3 hours ago"), "shows how long ago the last successful sync was");
+// #1150: labelled "last renewed", not "last ok". This lane's stamp is the last
+// successful RENEWAL, which is days old on a perfectly healthy channel.
+assert(
+  oneFailing.includes("last renewed 3 hours ago"),
+  "shows how long ago the last successful renewal was",
+);
 assert(oneFailing.includes("404 account-gone"), "carries the underlying error");
 assert(/re-?auth|deactivate/i.test(oneFailing), "includes the remediation");
 
@@ -374,5 +381,90 @@ const recovery = formatSyncRecoveryNotice();
 assert(/recover|cleared|resolved|back/i.test(recovery), "the recovery notice says the condition cleared");
 assert(/no action/i.test(recovery), "the recovery notice tells the reader there is nothing to do");
 assert(!/re-?auth|deactivate/i.test(recovery), "the recovery notice carries no stale remediation");
+
+// --- #1150: the watch lane pages on its own cadence, with its own signals ---
+//
+// The watch lane runs every ~5 min and only attempts a calendar within 3 days of
+// expiry, so a HEALTHY calendar's last renewal is days old by design. That makes
+// the #1133 elapsed-since-success signal useless here: every calendar always looks
+// "down for days". The watch policy therefore holds a lone transient on the pass
+// count alone, sized to the 5-min cadence.
+assert(
+  WATCH_PAGING.loneTransientHoldMs === null,
+  "the watch policy disables the elapsed-time signal, which cannot work at its cadence",
+);
+assert(
+  SYNC_PAGING.loneTransientHoldMs === TRANSIENT_HOLD_MS,
+  "the sync policy keeps the elapsed-time signal it was calibrated with",
+);
+assert(
+  SYNC_PAGING.loneTransientPasses === TRANSIENT_HOLD_PASSES,
+  "the sync policy keeps its existing pass count, so #1133's behaviour is unchanged",
+);
+
+const staleRenewal: FailingAgent = {
+  email: "lone@x.com",
+  consecutiveFailures: 4,
+  // Four days: normal for a healthy watch, and far past any elapsed-time hold.
+  lastSuccessAt: new Date(NOW_MS - 4 * 24 * 60 * 60 * 1000).toISOString(),
+  error: "watch failed: 503 backendError",
+  failureKind: "transient",
+};
+assert(
+  applyBlastRadiusHold([staleRenewal], NOW_MS, WATCH_PAGING).length === 0,
+  "a lone transient renewal is held on pass count despite an ancient last-renewal stamp",
+);
+assert(
+  applyBlastRadiusHold(
+    [{ ...staleRenewal, consecutiveFailures: WATCH_PAGING.loneTransientPasses }],
+    NOW_MS,
+    WATCH_PAGING,
+  ).length === 1,
+  "a lone transient renewal pages once it clears the watch-cadence pass count",
+);
+// The same agent on the SYNC policy would be released immediately by the ancient
+// stamp, which is exactly why the watch lane needs its own policy.
+assert(
+  applyBlastRadiusHold([{ ...staleRenewal, consecutiveFailures: TRANSIENT_HOLD_PASSES }], NOW_MS, SYNC_PAGING)
+    .length === 1,
+  "the sync policy releases on elapsed time, the behaviour the watch lane must not inherit",
+);
+// A gone account is never held on either lane: a revoked account is a human task.
+assert(
+  applyBlastRadiusHold(
+    [{ ...staleRenewal, failureKind: "gone", consecutiveFailures: 2 }],
+    NOW_MS,
+    WATCH_PAGING,
+  ).length === 1,
+  "the watch policy never holds a gone account",
+);
+assert(
+  isPageableFailure("transient", WATCH_PAGING.transientPageAt - 1, WATCH_PAGING) === false &&
+    isPageableFailure("transient", WATCH_PAGING.transientPageAt, WATCH_PAGING) === true,
+  "the watch policy applies its own per-kind transient threshold",
+);
+
+// --- #1150: the watch alert describes a DEGRADATION, not an outage ---
+const watchMsg = formatWatchLapseAlert([staleRenewal], 97, NOW_MS, WATCH_PAGING);
+assert(
+  /renew/i.test(watchMsg),
+  "the watch alert says what is failing: push-channel renewal, not the sync",
+);
+assert(
+  !/failing to sync/i.test(watchMsg),
+  "the watch alert no longer claims the calendar is failing to sync, which it is not",
+);
+assert(
+  /last renewed/i.test(watchMsg),
+  "the watch alert labels its timestamp as the last renewal, since days old is normal there",
+);
+assert(
+  !/last ok/i.test(watchMsg),
+  "the watch alert avoids 'last ok', which reads as an outage on a days-old stamp",
+);
+assert(
+  /backup cron|back-?up/i.test(watchMsg),
+  "the watch alert says availability falls back to the backup cron",
+);
 
 finish();

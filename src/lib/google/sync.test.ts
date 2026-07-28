@@ -17,20 +17,29 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => admin.current }));
 // CalendarListTruncated) and syncCalendar sees a page-capped events pass
 // (syncEvents returns truncated with no sync token). Every other calendar export
 // stays real, including CalendarListTruncated so the sync.ts instanceof matches.
-// syncEvents is a vi.fn so a test can override its behavior per case (default:
-// a page-capped pass with no token). #916 drives it to THROW a GoogleHttpError to
-// exercise the failure-classification wiring in syncCalendar's catch.
+// Each mocked call is a vi.fn so a test can override it per case. #916 drives
+// syncEvents to THROW a GoogleHttpError to exercise the failure-classification
+// wiring in syncCalendar's catch; #1150 drives watchCalendar to throw so the
+// renewal failure path records its own health.
 const calMock = vi.hoisted(() => ({
   syncEvents: vi.fn(async () => ({ events: [], nextSyncToken: null, truncated: true })),
+  listCalendars: vi.fn(async (): Promise<unknown[]> => {
+    throw new Error("listCalendars not stubbed for this test");
+  }),
+  watchCalendar: vi.fn(async () => ({
+    resourceId: "res-new",
+    expiration: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  })),
+  stopChannel: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/google/calendar", async (importActual) => {
   const actual = await importActual<typeof import("./calendar")>();
   return {
     ...actual,
-    listCalendars: async () => {
-      throw new actual.CalendarListTruncated();
-    },
+    listCalendars: calMock.listCalendars,
     syncEvents: calMock.syncEvents,
+    watchCalendar: calMock.watchCalendar,
+    stopChannel: calMock.stopChannel,
   };
 });
 
@@ -55,7 +64,10 @@ import {
   runIncrementalSync,
   loadSyncAgents,
   loadFailingAgents,
+  cleanupOnPoolExit,
 } from "./sync";
+import { LANE_COLUMNS } from "./sync-health";
+import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
 
 /**
@@ -186,6 +198,20 @@ beforeEach(() => {
     nextSyncToken: null,
     truncated: true,
   }));
+  // The #171 truncation case is the default: most tests here never reach the
+  // calendar list, and the ones that do want the truncated-list behaviour.
+  calMock.listCalendars.mockReset();
+  calMock.listCalendars.mockImplementation(async () => {
+    const { CalendarListTruncated } = await import("./calendar");
+    throw new CalendarListTruncated();
+  });
+  calMock.watchCalendar.mockReset();
+  calMock.watchCalendar.mockImplementation(async () => ({
+    resourceId: "res-new",
+    expiration: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  }));
+  calMock.stopChannel.mockReset();
+  calMock.stopChannel.mockImplementation(async () => {});
 });
 
 describe("applyEvents keys + deletes per calendar (#619)", () => {
@@ -452,6 +478,155 @@ describe("failure classification wiring (#916)", () => {
   });
 });
 
+describe("the sync and watch lanes keep separate failure counters (#1150)", () => {
+  // The two lanes used to share one `consecutive_failures` column. The 1-min sync
+  // lane resets it on every success and the ~5-min watch lane increments it, so a
+  // renewal failure was wiped within a minute and could never reach a paging
+  // threshold. "Google push is degraded but events still sync" was unalertable,
+  // which is precisely the condition the watch-lapse alert exists to report.
+  //
+  // These assert the STRUCTURE that makes that impossible: each lane's write may
+  // only touch its own columns. A test that merely checked the counter reached 2
+  // would pass while the other lane was still free to zero it a minute later.
+  const dueCalendar = {
+    id: "cal-1",
+    user_id: "agent-1",
+    calendar_id: "primary",
+    // No expiry stored, so dueForRenewal is true and the renewal loop runs.
+    watch_expiration: null,
+    watch_channel_id: null,
+    watch_resource_id: null,
+    sync_token: "stored-token",
+    consecutive_failures: 0,
+    last_success_at: null,
+    last_sync_error: null,
+    last_failure_kind: null,
+    watch_consecutive_failures: 0,
+    watch_last_success_at: null,
+    watch_last_error: null,
+    watch_last_failure_kind: null,
+  };
+
+  /** The agent_calendars health write a lane made, if any. */
+  function healthWrite(
+    updates: { table: string; payload: Record<string, unknown> }[],
+    column: string,
+  ) {
+    return updates.find((u) => u.table === "agent_calendars" && column in u.payload);
+  }
+
+  it("records a failed renewal on the watch counter, never on the sync counter", async () => {
+    calMock.listCalendars.mockImplementation(async () => [{ id: "primary", primary: true }]);
+    calMock.watchCalendar.mockImplementation(async () => {
+      throw new GoogleHttpError("watch failed: 503 backendError", 503);
+    });
+    const { db, updates } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [{ ...dueCalendar, watch_consecutive_failures: 1 }],
+    });
+    admin.current = db;
+
+    const result = await ensureWatches("agent-1");
+
+    expect(result.status).toBe("error");
+    const watch = healthWrite(updates, "watch_consecutive_failures");
+    expect(watch?.payload.watch_consecutive_failures).toBe(2);
+    expect(watch?.payload.watch_last_failure_kind).toBe("transient");
+    // The sync counter must be absent from the payload entirely: writing even a
+    // correct value here is what let the two lanes overwrite each other.
+    expect(watch?.payload).not.toHaveProperty(LANE_COLUMNS.sync.failures);
+    expect(healthWrite(updates, LANE_COLUMNS.sync.failures)).toBeUndefined();
+  });
+
+  it("records a successful sync on the sync counter, leaving a watch streak standing", async () => {
+    // This is the exact overwrite that made the watch alert unreachable: the
+    // calendar's renewal has failed twice, and a minute later the sync succeeds.
+    calMock.syncEvents.mockImplementation(async () => ({
+      events: [],
+      nextSyncToken: null,
+      truncated: false,
+    }));
+    const { db, updates } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [{ ...dueCalendar, watch_consecutive_failures: 2 }],
+    });
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    const sync = healthWrite(updates, "consecutive_failures");
+    expect(sync?.payload.consecutive_failures).toBe(0);
+    // Asserted through the shared column map, NOT a hardcoded "watch_..." name.
+    // A literal name could never catch the original bug, where the watch streak
+    // lived in `consecutive_failures` and this very write cleared it. Reading the
+    // column the watch lane actually uses makes the test red on that arrangement.
+    expect(sync?.payload).not.toHaveProperty(LANE_COLUMNS.watch.failures);
+    expect(healthWrite(updates, LANE_COLUMNS.watch.failures)).toBeUndefined();
+  });
+
+  it("records a successful renewal on the watch counter, leaving a sync streak standing", async () => {
+    // The same defect in the other direction: a renewal succeeding used to zero a
+    // genuine sync-failure streak. Rarer, because renewals only fire within three
+    // days of expiry, but the same class.
+    calMock.listCalendars.mockImplementation(async () => [{ id: "primary", primary: true }]);
+    const { db, updates } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [{ ...dueCalendar, consecutive_failures: 3, last_sync_error: "503" }],
+    });
+    admin.current = db;
+
+    const result = await ensureWatches("agent-1");
+
+    expect(result.status).toBe("renewed");
+    const watch = healthWrite(updates, "watch_consecutive_failures");
+    expect(watch?.payload.watch_consecutive_failures).toBe(0);
+    expect(watch?.payload.watch_channel_id).toBeTruthy();
+    expect(watch?.payload).not.toHaveProperty(LANE_COLUMNS.sync.failures);
+    expect(healthWrite(updates, LANE_COLUMNS.sync.failures)).toBeUndefined();
+  });
+});
+
+describe("leaving the bookable pool clears the watch health (#1150)", () => {
+  // Now that the watch streak PERSISTS (nothing else resets it between renewal
+  // attempts), a pool exit has to clear it. Otherwise an agent who left while
+  // their renewal was failing keeps the streak indefinitely, and pages the moment
+  // they are made bookable again, before a single renewal has been attempted.
+  // The 1-min sync lane used to zero this column, which hid the need.
+  it("clears a failing watch streak even when no live channel is left to stop", async () => {
+    const { db, updates } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [
+        {
+          id: "cal-1",
+          user_id: "agent-1",
+          calendar_id: "primary",
+          // A failed renewal leaves no channel behind, so the pre-#1150 guard
+          // ("only write when a watch column is set") would skip the write.
+          watch_channel_id: null,
+          watch_resource_id: null,
+          watch_expiration: null,
+          watch_consecutive_failures: 4,
+          watch_last_success_at: null,
+          watch_last_error: "watch failed: 401 unauthorized_client",
+          watch_last_failure_kind: "gone",
+        },
+      ],
+    });
+    admin.current = db;
+
+    await cleanupOnPoolExit("agent-1");
+
+    const cleared = updates.find(
+      (u) => u.table === "agent_calendars" && "watch_consecutive_failures" in u.payload,
+    );
+    expect(cleared?.payload.watch_consecutive_failures).toBe(0);
+    expect(cleared?.payload.watch_last_error).toBeNull();
+    expect(cleared?.payload.watch_last_failure_kind).toBeNull();
+    // The sync lane's own health is NOT this function's business to reset.
+    expect(cleared?.payload).not.toHaveProperty(LANE_COLUMNS.sync.failures);
+  });
+});
+
 describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
   // A fake DB serving loadFailingAgents' two reads: the failing agent_calendars
   // rows, then the users they belong to.
@@ -471,6 +646,11 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
       },
     } as unknown as ReturnType<typeof supabaseAdmin>;
   }
+
+  // The same stand-in, named for the watch lane (#1150). The fake serves whatever
+  // rows it is given regardless of which column the query filtered on, so the
+  // rows themselves carry the watch_* columns the watch lane must read.
+  const failingWatchDb = failingDb;
 
   it("pages a gone account at streak 2 but backs a transient one off below streak 4", async () => {
     admin.current = failingDb(
@@ -610,6 +790,79 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
   it("returns an empty list when the reads succeed and genuinely nothing is failing", async () => {
     admin.current = failingDb([], []);
     expect(await loadFailingAgents()).toEqual([]);
+  });
+
+  it("pages a lone transient WATCH failure on pass count alone, ignoring the ancient last-renewal stamp", async () => {
+    // #1150: a healthy watch channel is renewed about every four days, so
+    // `watch_last_success_at` is ALWAYS ancient and the #1133 elapsed-time signal
+    // cannot tell a healthy calendar from a failing one. The watch lane therefore
+    // holds a lone transient on the pass count only. Four passes (~20 min at the
+    // 5-min cadence) is still inside the hold even though the last success was
+    // four days ago, which would have released it instantly on the sync policy.
+    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
+    admin.current = failingWatchDb(
+      [
+        {
+          user_id: "u1",
+          watch_consecutive_failures: 4,
+          watch_last_success_at: fourDaysAgo,
+          watch_last_error: "watch failed: 503 backendError",
+          watch_last_failure_kind: "transient",
+        },
+      ],
+      [{ id: "u1", email: "lone@x.com", bookable: true, deactivated_at: null }],
+    );
+    expect(await loadFailingAgents("watch")).toEqual([]);
+
+    // Positive control in the same test: the hold must RELEASE on pass count, or
+    // the assertion above would also pass on a watch lane that can never page at
+    // all, which is the very bug being fixed.
+    admin.current = failingWatchDb(
+      [
+        {
+          user_id: "u1",
+          watch_consecutive_failures: WATCH_PAGING.loneTransientPasses,
+          watch_last_success_at: fourDaysAgo,
+          watch_last_error: "watch failed: 503 backendError",
+          watch_last_failure_kind: "transient",
+        },
+      ],
+      [{ id: "u1", email: "lone@x.com", bookable: true, deactivated_at: null }],
+    );
+    const failing = (await loadFailingAgents("watch"))!;
+    expect(failing.map((f) => f.email)).toEqual(["lone@x.com"]);
+  });
+
+  it("reads the WATCH columns, so a healthy sync counter cannot hide a watch failure", async () => {
+    // The whole point of #1150: this row is syncing perfectly (streak 0) while its
+    // push renewal is dead. Reading the sync columns would return nothing.
+    admin.current = failingWatchDb(
+      [
+        {
+          user_id: "u1",
+          consecutive_failures: 0,
+          last_success_at: new Date().toISOString(),
+          last_sync_error: null,
+          last_failure_kind: null,
+          watch_consecutive_failures: 3,
+          watch_last_success_at: null,
+          watch_last_error: "watch failed: 401 unauthorized_client",
+          watch_last_failure_kind: "gone",
+        },
+      ],
+      [{ id: "u1", email: "pushdead@x.com", bookable: true, deactivated_at: null }],
+    );
+    const failing = (await loadFailingAgents("watch"))!;
+    expect(failing.map((f) => f.email)).toEqual(["pushdead@x.com"]);
+    expect(failing[0].failureKind).toBe("gone");
+    expect(failing[0].error).toBe("watch failed: 401 unauthorized_client");
+  });
+
+  it("returns null (not empty) when the WATCH health read errors", async () => {
+    // Same #1134 rule on the watch lane: an unreadable signal must not all-clear
+    // the watch-lapse page.
+    admin.current = erroringDb("calendars");
+    expect(await loadFailingAgents("watch")).toBeNull();
   });
 
   it("never holds a gone account, even when it is the only one failing", async () => {

@@ -41,6 +41,33 @@ describe("SyncHealthPanel", () => {
     expect(screen.getByText(/never/i)).toBeTruthy();
   });
 
+  // #1150: the watch lane got its own failure counter, so a calendar that syncs
+  // fine but cannot renew its Google push channel now persists in the data. This
+  // panel used to read the sync counter alone; without the lane it would show
+  // that agent as "failing to sync", which is false, or not at all.
+  it("distinguishes a renewal failure from a sync failure", () => {
+    render(
+      <SyncHealthPanel
+        agents={[
+          { ...alice, lane: "watch", error: "watch failed: 401 unauthorized_client" },
+        ]}
+      />,
+    );
+    const item = screen.getByRole("listitem");
+    expect(item.textContent).toMatch(/renew/i);
+    // The row must not claim the calendar is failing to sync, because it is not.
+    expect(item.textContent).not.toMatch(/failing to sync/i);
+    // Days old is normal for a renewal, so the stamp is labelled as one.
+    expect(item.textContent).toMatch(/last renewed/i);
+  });
+
+  it("labels a sync failure as a sync failure", () => {
+    render(<SyncHealthPanel agents={[{ ...alice, lane: "sync" }]} />);
+    const item = screen.getByRole("listitem");
+    expect(item.textContent).toMatch(/last ok/i);
+    expect(item.textContent).not.toMatch(/renew/i);
+  });
+
   it("renders one list item per failing agent", () => {
     render(
       <SyncHealthPanel
