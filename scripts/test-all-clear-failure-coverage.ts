@@ -29,6 +29,7 @@ import {
   nodeProvesNoAllClear,
   declaredProofPaths,
   ALL_CLEAR_DEFINITION,
+  NODE_PROOF_SHAPE_HELP,
 } from "./lib/scan-all-clear-coverage.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -153,6 +154,31 @@ const NODE_WRONG_COLLECTION = `
 const NODE_COMMENTED = `
   // assert(resolved.length === 0, "an unreadable applied set never announces recovery");
 `;
+// #1163: the shared harness also offers eq(actual, expected, msg) sugar, and a
+// suite written with it proves exactly the same thing. The detector must read it,
+// or an author who used the harness's own helper gets told their real proof is
+// not a proof.
+const NODE_PROOF_EQ = `
+  const { run, resolved } = harness({ readThrows: true });
+  await run();
+  eq(resolved.length, 0, "an unreadable applied set never announces recovery");
+`;
+const NODE_PROOF_EQ_QUALIFIED = `
+  eq(
+    truncated.resolved.length,
+    0,
+    "a truncated scan sends NO all-clear: it never looked at every bucket",
+  );
+`;
+const NODE_EQ_HAPPY_ONLY = `
+  eq(resolved.length, 1, "an in-sync run clears the outstanding page");
+`;
+const NODE_EQ_WRONG_COLLECTION = `
+  eq(rows.length, 0, "no rows are left behind");
+`;
+const NODE_EQ_COMMENTED = `
+  // eq(resolved.length, 0, "an unreadable applied set never announces recovery");
+`;
 
 assert(
   nodeProvesNoAllClear(NODE_PROOF),
@@ -173,6 +199,50 @@ assert(
 assert(
   !nodeProvesNoAllClear(NODE_COMMENTED),
   "a commented-out node proof does not count",
+);
+assert(
+  nodeProvesNoAllClear(NODE_PROOF_EQ),
+  "positive control: the harness's eq() sugar on an empty resolved collection is a silent-path proof",
+);
+assert(
+  nodeProvesNoAllClear(NODE_PROOF_EQ_QUALIFIED),
+  "positive control: a qualified eq() subject still counts, across lines",
+);
+assert(
+  !nodeProvesNoAllClear(NODE_EQ_HAPPY_ONLY),
+  "an eq(resolved.length, 1) is a happy path, NOT a silent-path proof",
+);
+assert(
+  !nodeProvesNoAllClear(NODE_EQ_WRONG_COLLECTION),
+  "an eq() emptiness check on an unrelated collection is NOT a silent-path proof",
+);
+assert(
+  !nodeProvesNoAllClear(NODE_EQ_COMMENTED),
+  "a commented-out eq() proof does not count",
+);
+
+// #1163: the failure message tells a rejected author what to write, so it is a
+// claim about the detector and has to stay true. Each shape it names is fed back
+// through the detector here, so a message that drifts from what is accepted
+// fails the build rather than sending someone off to write a proof that will be
+// rejected again.
+for (const shape of [
+  { named: "assert(", src: `assert(resolved.length === 0, "sends no all-clear");` },
+  { named: "eq(", src: `eq(resolved.length, 0, "sends no all-clear");` },
+]) {
+  assert(
+    NODE_PROOF_SHAPE_HELP.includes(shape.named),
+    `the failure message names the ${shape.named} node shape`,
+  );
+  assert(
+    nodeProvesNoAllClear(shape.src),
+    `the ${shape.named} shape the failure message advertises is actually accepted`,
+  );
+}
+assert(
+  NODE_PROOF_SHAPE_HELP.includes("toHaveBeenCalled") &&
+    provesNoAllClear(`expect(resolveAlert).not.toHaveBeenCalled();`),
+  "the failure message names the vitest shape, and that shape is actually accepted",
 );
 
 // A pointer at a real file that tests something ELSE entirely must be rejected:
@@ -228,7 +298,8 @@ for (const path of surfaces) {
       false,
       `${rel} proves it sends no all-clear when its health signal cannot be read ` +
         `(assert resolveAlert is not called on the failed path, or point at the ` +
-        `suite that does with "// all-clear-proof: <path> - <why>")`,
+        `suite that does with "// all-clear-proof: <path> - <why>"); ` +
+        `accepted shapes: ${NODE_PROOF_SHAPE_HELP}`,
     );
     continue;
   }
@@ -243,7 +314,8 @@ for (const path of surfaces) {
     const proofSource = readFileSync(proofPath, "utf8");
     assert(
       provesNoAllClear(proofSource) || nodeProvesNoAllClear(proofSource),
-      `${rel}'s declared proof really pins the silent path (${proof})`,
+      `${rel}'s declared proof really pins the silent path (${proof}); ` +
+        `accepted shapes: ${NODE_PROOF_SHAPE_HELP}`,
     );
   }
 }
