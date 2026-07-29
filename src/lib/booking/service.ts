@@ -28,6 +28,7 @@ import {
   PAST_COMPLETION_BATCH_LIMIT,
   calendarIdsFromResult,
   freeAgentsFromBusy,
+  busyIntervalsFromFreeBusy,
   type CalendarBusy,
   type ValidatedReason,
   type BookingActor,
@@ -289,7 +290,10 @@ async function agentBusyIntervals(
     return null;
   }
   const busy = await freeBusy(email, fromIso, toIso, ids.length ? ids : ["primary"]);
-  return busy.map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) }));
+  // #1171: an unreadable interval yields null ("could not tell"), which the
+  // caller already re-routes on, rather than a NaN interval that can never
+  // overlap and so presents as free time.
+  return busyIntervalsFromFreeBusy(busy);
 }
 
 export {
