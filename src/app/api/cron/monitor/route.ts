@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
-import { mapWithConcurrency } from "@/lib/google/sync-pace";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
@@ -9,20 +8,11 @@ import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
-import { selfHealDataAnomalies } from "@/lib/monitor/anomaly-selfheal";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
-import {
-  anyOnShift,
-  classifyEmptyBuckets,
-  classifyDeadEndCause,
-  formatBookedSolidNotice,
-  formatFallbackCoveredNotice,
-  reportAvailabilityHealth,
-  type BucketHealth,
-  type WorkingRule,
-} from "@/lib/monitor/availability-health";
+import { type WorkingRule } from "@/lib/monitor/availability-health";
+import { runAvailabilityScan } from "@/lib/monitor/availability-scan";
 import {
   runLowVolumeCheck,
   type BusinessHoursConfig,
@@ -82,11 +72,6 @@ const FRESH_WINDOW_MS = 6 * 60_000;
 // NOT release), so a persistent fault keeps paging instead of being silently
 // re-masked every minute.
 const ANOMALY_SELFHEAL_WINDOW_MS = 15 * 60_000;
-// Quiet info: a dead-end because agents are booked solid. Full calendars are a
-// good outcome, not an incident, so this whispers on a long cooldown.
-const BOOKED_SOLID_INFO_KEY = "availability_booked_solid";
-// Low-priority info signal (#567): empty tiers the fallback is quietly covering.
-const FALLBACK_COVERED_INFO_KEY = "fallback_covered_availability";
 
 /** Default zone for an agent with no schedule row, matching how the availability
  *  compute treats a scheduleless agent (America/New_York, no working rules). */
@@ -185,138 +170,56 @@ export async function GET(req: NextRequest) {
       };
     };
 
-    const { results, truncated } = await mapWithConcurrency<Bucket, BucketHealth>(
-      buckets,
-      PROBE_CONCURRENCY,
-      async (bucket) => {
-        const slot = slotByCode.get(bucket.code);
-        const { ids } = await eligibleAgentIdsCached(bucket);
-        return {
-          code: bucket.code,
-          eligibleCount: ids.length,
-          slotCount: slot?.slotCount ?? 0,
-          computedAtMs: slot?.computedAtMs ?? null,
-          onShiftNow: anyOnShift(now, ids.map(shiftFor)),
-        };
-      },
-      { deadlineMs: now + MONITOR_LOCK_TTL_MS },
-    );
-
-    const health = results.filter(Boolean) as BucketHealth[];
-    // slot count + is_test per code, so the classifier can walk the tier ladder
-    // (skipping synthetic test buckets, like the booker's fallback) with no extra IO.
-    const bucketInfo = new Map(
-      buckets.map((b) => [
-        b.code,
-        { slotCount: slotByCode.get(b.code)?.slotCount ?? 0, isTest: b.is_test ?? false },
-      ]),
-    );
-    // Split empty-but-should-show buckets by whether the tier-drop fallback still
-    // serves a customer (#567): only a true dead-end (whole ladder dry) pages; a
-    // fallback-covered tier is a low-priority info signal, not an outage.
-    const { page, covered } = classifyEmptyBuckets(health, {
-      nowMs: now,
-      freshWindowMs: FRESH_WINDOW_MS,
-      ladder: tierLadder,
-      bucketInfo,
-    });
-    // For each paged bucket (the rare all-ladder-dry dead-end), recompute
-    // availability live from the DB (busy_blocks/bookings/schedules, no Google) and
-    // compare to the cached zero: recompute 0 = booked solid; > 0 = the cache
-    // disagrees with the calendars (data anomaly); a failed recompute = unverified.
-    const recomputeCounts = new Map<string, number | null>();
+    // The scan orchestration (probe, classify, recompute-verify, self-heal, page /
+    // whisper / all-clear) lives in runAvailabilityScan (#1158), tested directly in
+    // scripts/test-monitor-availability-scan.ts. The route only wires the IO.
     // Probe the SAME window the rows are computed over (#216): comparing a 4-day
     // probe against a 7-day row would flag a false data anomaly. Loaded once and
-    // reused by the self-heal below.
+    // reused by the self-heal.
     const horizonDays = await loadBookingHorizonDays();
-    if (page.length) {
-      const { results: recomputes } = await mapWithConcurrency<string, { code: string; count: number | null }>(
-        page,
-        PROBE_CONCURRENCY,
-        async (code) => {
-          const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
-          try {
-            const res = await getBucketSlots(code, fromIso, toIso);
-            return { code, count: res ? res.slots.length : null };
-          } catch {
-            return { code, count: null };
-          }
-        },
-        { deadlineMs: now + MONITOR_LOCK_TTL_MS },
-      );
-      for (const r of recomputes) if (r) recomputeCounts.set(r.code, r.count);
-    }
-    const cause = classifyDeadEndCause(page, recomputeCounts);
-    // #573: self-heal each data-anomaly bucket (cache empty but a live recompute
-    // found times) by rewriting its fresh row so the booker recovers immediately,
-    // capped at once per bucket per window via a non-released lock. We STILL page
-    // below so the root-cause sync/precompute bug is fixed, not just papered over.
-    let selfHeal = { healed: [] as string[], skipped: [] as string[], failed: [] as string[] };
-    if (cause.dataAnomaly.length) {
-      selfHeal = await selfHealDataAnomalies(cause.dataAnomaly, {
-        claim: async (code) =>
-          (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
-        heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
-        onError: (code, err) =>
-          log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
-      });
-    }
-    // #1134: three outcomes, not two. `unknown` is a scan that ran out of budget
-    // before covering every bucket, so its empty anomaly list proves nothing and
-    // must neither page nor all-clear. Without that third case the recovery notice
-    // would fire off a scan that never looked.
-    // all-clear-proof: scripts/test-monitor-availability-health.ts - covers all
-    // three verdicts, including that a budget-truncated scan sends no all-clear.
-    const { cleared } = await reportAvailabilityHealth({
-      cause,
-      scanTruncated: truncated,
-      cooldownMs: settings.cooldownMs.availability_data_anomaly,
-      healed: selfHeal.healed,
+    const bucketByCode = new Map(buckets.map((b) => [b.code, b]));
+    const scan = await runAvailabilityScan({
+      nowMs: now,
+      freshWindowMs: FRESH_WINDOW_MS,
+      probeConcurrency: PROBE_CONCURRENCY,
+      deadlineMs: now + MONITOR_LOCK_TTL_MS,
+      buckets: buckets.map((b) => ({ code: b.code, isTest: b.is_test ?? false })),
+      slotByCode,
+      ladder: tierLadder,
+      nameOf: (code) => bucketSpecForXbc(code)?.name ?? code,
+      eligibleIds: async (code) => {
+        const bucket = bucketByCode.get(code);
+        if (!bucket) return [];
+        const { ids } = await eligibleAgentIdsCached(bucket);
+        return ids;
+      },
+      shiftFor,
+      // Live recompute from the DB (busy_blocks/bookings/schedules, no Google);
+      // a falsy result or a throw is null (unverified), never a fake zero.
+      recomputeSlots: async (code) => {
+        const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
+        const res = await getBucketSlots(code, fromIso, toIso);
+        return res ? res.slots.length : null;
+      },
+      claimHeal: async (code) =>
+        (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
+      heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
+      onHealError: (code, err) =>
+        log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
       notify: sendThrottledAlert,
+      info: sendThrottledInfo,
+      // all-clear-proof: scripts/test-monitor-availability-scan.ts - a truncated
+      // scan sends no all-clear and a paging tick does not also all-clear.
       resolve: resolveAlert,
+      cooldownMs: {
+        dataAnomaly: settings.cooldownMs.availability_data_anomaly,
+        bookedSolid: settings.cooldownMs.availability_booked_solid,
+        fallbackCovered: settings.cooldownMs.fallback_covered_availability,
+      },
+      log: (fields) => log.info("monitor", { msg: "availability scan", ...fields }),
     });
-    if (cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
-    if (cause.bookedSolid.length) {
-      await sendThrottledInfo(
-        BOOKED_SOLID_INFO_KEY,
-        settings.cooldownMs.availability_booked_solid,
-        formatBookedSolidNotice(cause.bookedSolid),
-      ).catch(() => {});
-    }
-    if (covered.length) {
-      // Enrich each covered tier with its human name and the eligible-agent
-      // depth of both tiers (#585), so the on-call notice needs no code lookup.
-      // Counts come from the health scan already loaded; a code missing from it
-      // (budget-truncated scan) leaves the depth null and the notice omits it.
-      const eligibleByCode = new Map(health.map((h) => [h.code, h.eligibleCount]));
-      const nameOf = (code: string) => bucketSpecForXbc(code)?.name ?? code;
-      const coveredDetail = covered.map((c) => ({
-        ...c,
-        tierName: nameOf(c.code),
-        viaTierName: nameOf(c.via),
-        emptyDepth: eligibleByCode.get(c.code) ?? null,
-        coverDepth: eligibleByCode.get(c.via) ?? null,
-      }));
-      await sendThrottledInfo(
-        FALLBACK_COVERED_INFO_KEY,
-        settings.cooldownMs.fallback_covered_availability,
-        formatFallbackCoveredNotice(coveredDetail),
-      ).catch(() => {});
-    }
-    log.info("monitor", {
-      msg: "availability scan",
-      dead_end: page.length,
-      anomaly: cause.dataAnomaly.length,
-      self_healed: selfHeal.healed.length ? selfHeal.healed.join(",") : null,
-      self_heal_failed: selfHeal.failed.length ? selfHeal.failed.join(",") : null,
-      booked_solid: cause.bookedSolid.length,
-      unverified: cause.unverified.length,
-      fallback_covered: covered.length,
-      buckets: buckets.length,
-      page: page.length ? page.join(",") : null,
-      covered: covered.length ? covered.map((c) => `${c.code}->${c.via}`).join(",") : null,
-      truncated,
-    });
+    if (scan.cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
+    const { page, covered, truncated } = scan;
 
     // --- Low booking volume (#370): only during business hours; disarmed until
     // cutover (counts + logs but does not alert) so the ramp can't cry wolf.
