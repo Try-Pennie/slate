@@ -11,6 +11,7 @@ import {
 import { getImpersonationView } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { calendarHeaderStatus } from "@/lib/calendar/header-status";
+import { log } from "@/lib/log";
 import { stopImpersonation } from "@/app/admin/actions";
 import { ImpersonationDropNotice } from "@/components/ImpersonationDropNotice";
 import type { ThemePreference } from "@/lib/db/types";
@@ -157,7 +158,20 @@ export async function AppHeader({
     }
     // showTimeOff already implies isRole(r); the guard just narrows the type.
     if (isRole(r) && !canModerateAllOoo(r)) q = q.eq("manager_id", userId);
-    const { count } = await q;
+    // #1165: consult `error`. A failed count came back null and `?? 0` hid the
+    // badge, which is exactly what an empty queue looks like, so a broken read
+    // presented as "nothing waiting for you". The header still renders (throwing
+    // here would take down every admin page over a nudge, and the Team Requests
+    // page is the source of truth one click away), but the failure is logged
+    // rather than passing as a healthy zero.
+    const { count, error } = await q;
+    if (error) {
+      log.warn("app-header", {
+        msg: "pending time-off count read failed; badge hidden",
+        org_id: orgId,
+        err: error.message,
+      });
+    }
     pendingOoo = count ?? 0;
   }
   return (

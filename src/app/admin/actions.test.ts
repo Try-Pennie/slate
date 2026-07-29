@@ -55,7 +55,11 @@ const locks = vi.hoisted(() => ({
   releaseLock: vi.fn(async () => {}),
 }));
 
-const dbState = vi.hoisted(() => ({ single: null as unknown, count: 0 }));
+const dbState = vi.hoisted(() => ({
+  single: null as unknown,
+  count: 0,
+  countError: null as { message: string } | null,
+}));
 const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
 const update = vi.hoisted(() =>
   vi.fn((_patch: Record<string, unknown> = {}) => ({ eq: updateEq })),
@@ -69,7 +73,10 @@ const from = vi.hoisted(() =>
     const q: Record<string, unknown> = {
       select: vi.fn(() => q),
       eq: vi.fn(() => q),
-      in: vi.fn(async () => ({ count: dbState.count })),
+      in: vi.fn(async () => ({
+        count: dbState.countError ? null : dbState.count,
+        error: dbState.countError,
+      })),
       maybeSingle: vi.fn(async () => ({ data: dbState.single })),
       limit: vi.fn(() => q),
       update,
@@ -121,6 +128,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   dbState.single = null;
   dbState.count = 0;
+  dbState.countError = null;
   locks.acquireLock.mockResolvedValue("claim");
 });
 
@@ -157,6 +165,28 @@ describe("setUserRole denial branches", () => {
     await expect(
       setUserRole(form({ user_id: "u2", role: "agent" })),
     ).rejects.toThrow(/last admin/i);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // #1165: the admin count ignored `error`, so a FAILED read scored as count 0
+  // and the refusal claimed "Cannot remove the last admin", a fact the check
+  // never measured (L11: distinct causes get distinct messages). Refusing is the
+  // right direction (fail closed), but the operator must be told the count could
+  // not be read, not handed a false claim about the roster.
+  it("refuses with a could-not-verify message, not a last-admin claim, when the count read fails", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { role: "admin" };
+    dbState.count = 5; // plenty of admins; only the READ is broken
+    dbState.countError = { message: "permission denied for table users" };
+
+    const err = await setUserRole(form({ user_id: "u2", role: "agent" })).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/could not (be )?verif/i);
+    expect(err!.message).not.toMatch(/last admin/i);
     expect(update).not.toHaveBeenCalled();
   });
 });

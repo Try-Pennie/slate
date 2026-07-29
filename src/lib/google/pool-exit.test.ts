@@ -43,7 +43,7 @@ function matchOrTerm(r: Row, t: string): boolean {
   throw new Error("fake db: unhandled or-term " + t);
 }
 
-function fakeDb(tables: Record<string, Row[]>) {
+function fakeDb(tables: Record<string, Row[]>, faults: { deleteError?: string } = {}) {
   const from = (table: string) => {
     const rows = () => (tables[table] ??= []);
     let mode: "select" | "update" | "delete" = "select";
@@ -94,6 +94,15 @@ function fakeDb(tables: Record<string, Row[]>) {
           return Promise.resolve({ error: null }).then(resolve);
         }
         if (mode === "delete") {
+          // A failed delete: PostgREST removes nothing and returns a null count
+          // alongside the error, which is exactly what `count ?? 0` used to
+          // launder into a healthy-looking "0 blocks needed deleting" (#1165).
+          if (faults.deleteError) {
+            return Promise.resolve({
+              count: null,
+              error: { message: faults.deleteError },
+            }).then(resolve);
+          }
           const keep: Row[] = [];
           let removed = 0;
           for (const r of rows()) {
@@ -177,6 +186,19 @@ describe("cleanupOnPoolExit", () => {
     expect(res.blocksDeleted).toBe(0);
   });
 
+  // #1165: the prune used `const { count } = await ...delete({ count: "exact" })`
+  // and ignored `error`, so a delete that FAILED reported `blocksDeleted: 0`,
+  // indistinguishable from an agent who had no cached busy time at all. The
+  // stale blocks the #248 backstop exists to remove then lingered with nothing
+  // noticing. A failed prune must be a thrown error the caller logs, never a
+  // zero.
+  it("throws instead of reporting 0 blocks deleted when the busy_blocks prune fails", async () => {
+    const tables = seed();
+    admin.current = fakeDb(tables, { deleteError: "permission denied for table busy_blocks" });
+
+    await expect(cleanupOnPoolExit("u1")).rejects.toThrow(/busy_blocks/);
+  });
+
   it("a failing stopChannel does not abort the cleanup (columns still nulled, blocks still pruned)", async () => {
     const tables = seed();
     admin.current = fakeDb(tables);
@@ -253,6 +275,18 @@ describe("reconcileOrphanedPoolExits", () => {
     expect(tables.agent_calendars[2].watch_channel_id).toBe("ch3");
     // only the still-routable agent's cached blocks survive
     expect(tables.busy_blocks).toEqual([{ user_id: "u3" }]);
+  });
+
+  // #1165, the sweep's copy of the same defect: a failed bulk prune reported
+  // `poolExitBlocksDeleted: 0` on the self-heal lane, which reads as "nothing
+  // needed cleaning" rather than "this sweep did not run". The route already
+  // catches and logs a throw and reports "error" for the tick, so failing loud
+  // here is what makes the failure visible.
+  it("throws instead of reporting 0 blocks deleted when the bulk prune fails", async () => {
+    const tables = seed();
+    admin.current = fakeDb(tables, { deleteError: "permission denied for table busy_blocks" });
+
+    await expect(reconcileOrphanedPoolExits(50)).rejects.toThrow(/busy_blocks/);
   });
 
   it("returns zeroes and touches nothing when no agent has left the pool", async () => {

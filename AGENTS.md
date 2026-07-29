@@ -274,6 +274,23 @@ covers the `const { data } = await` object-destructure shape the bug keeps takin
 an array destructure (`const [{ data }] = await Promise.all(...)`) or an inline
 `(await ...).data` is out of scope by design (documented in the scanner header).
 
+### The count-shaped twin: `unwrapCount` (#1165)
+
+The same defect wears a second shape. A query asked for `{ count: "exact" }`
+returns `count: null` when it FAILS, and the `count ?? 0` every call site writes
+turns that into a healthy-looking **"0 rows"**. A `delete({ count: "exact" })`
+that never ran then reports `blocksDeleted: 0`, indistinguishable from having had
+nothing to clean, which is how stale cached busy time survived the #248 backstop.
+
+Use **`unwrapCount`** (`src/lib/db/result.ts`), the count-shaped sibling of
+`unwrap`: it throws on a real `error` and passes a null count with no error
+through as 0. `scripts/test-swallowed-count-results.ts` scans **all of `src/`**
+and fails on an awaited supabase chain destructured for `count` without also
+binding `error`. Two deliberate differences from the read guard: a **write is
+flagged too** (the delete case is the headline), and `.select(` is not required.
+The same `// error-ok:` escape hatch applies, and the same question decides
+whether you may use it (below).
+
 ## Ask what the EMPTY result means downstream, not just what the read does
 
 The question that decides `error-ok` vs `unwrap` is not "can this read fail
@@ -296,6 +313,11 @@ is three files away. Every instance so far:
   showed no times and a broken deploy looked like a quiet day.
 - **#1134** `loadFailingAgents` returned `[]`, which meant "no agents failing",
   which posted "calendar sync has recovered" off a query that never ran.
+- **#1165** a pool-exit prune reported `blocksDeleted: 0` for a delete that
+  errored, which reads as "nothing needed cleaning"; the last-admin guard scored
+  a failed count as zero admins and refused with a claim it never measured; and
+  the header's pending-approvals badge vanished on a broken read exactly as it
+  does when the queue is empty.
 - **#1152** three self-heal worklist reads returned `[]`, the resulting count of
   zero read as "under the cap", and that posted "the backlog has cleared, no
   action is needed" while clearing the streak that would have paged. The same

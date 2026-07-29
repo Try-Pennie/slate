@@ -27,3 +27,29 @@ export function unwrap<T>(res: DbResult<T>, context: string): T {
   }
   return res.data;
 }
+
+/**
+ * The count-shaped sibling of `unwrap` (#1165).
+ *
+ * A PostgREST result asked for `{ count: "exact" }` reports a FAILED query as
+ * `count: null`, and the `count ?? 0` that every call site writes then turns the
+ * failure into a perfectly healthy-looking "0 rows affected". That is the same
+ * defect as #277 wearing a different shape: the pool-exit prune reported
+ * `blocksDeleted: 0` on a delete that never ran, so the stale cached busy time
+ * the #248 backstop exists to remove lingered with nothing noticing.
+ *
+ * A null count with a null error is NOT a failure: it is "no count was asked
+ * for" / "nothing matched", so it passes through as 0. Only a real `error`
+ * throws.
+ */
+export interface DbCountResult {
+  count: number | null;
+  error: { message: string } | null;
+}
+
+export function unwrapCount(res: DbCountResult, context: string): number {
+  if (res.error) {
+    throw new Error(`count failed [${context}]: ${res.error.message}`);
+  }
+  return res.count ?? 0;
+}

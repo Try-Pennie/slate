@@ -356,6 +356,11 @@ export async function replayDeadLetteredDeliveries(
     .eq("org_id", orgId)
     .eq("active", true);
   if (endpointId) endpointQuery = endpointQuery.eq("id", endpointId);
+  // error-ok: same operator-triggered replay as the deliveries read below, and the
+  // same tolerance for the same reason: a read error yields no endpoints, replays
+  // nothing, touches no durable row, and is safe to re-run. It shares that read's
+  // caveat too, that "the read failed" and "this org has no active endpoint" look
+  // identical to the operator, which is what #1076 exists to fix.
   const { data: endpoints } = await endpointQuery;
   const byId = new Map(
     ((endpoints ?? []) as WebhookEndpoint[]).map((e) => [e.id, e]),

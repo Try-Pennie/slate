@@ -114,17 +114,23 @@ function hasOptOut(source: string, destructureIndex: number): boolean {
  * The text to analyze for the `.from(`/`.select(`/mutator ordering: the awaited
  * expression (from just after `await` to the statement's `;`). When that
  * expression is a bare builder variable with no `.from(` of its own
- * (`await q.limit(1).maybeSingle()`), the variable's nearest preceding
- * `const/let/var q = ...` definition is prepended, so a `.from("t").select(...)`
- * (or a `.update(...)` that makes it a write) declared on an earlier line still
- * counts. A sibling query on a neighbouring line is never pulled in.
+ * (`await q.limit(1).maybeSingle()`, or the bare `await q`), the variable's
+ * nearest preceding `const/let/var q = ...` definition is prepended, so a
+ * `.from("t").select(...)` (or a `.update(...)` that makes it a write) declared
+ * on an earlier line still counts. A sibling query on a neighbouring line is
+ * never pulled in.
+ *
+ * The bare `await q` form matters (#1165): the header's pending-time-off count
+ * is written that way, so a lead pattern that required a trailing `.` would have
+ * silently skipped it and the guard would have reported clean over a live
+ * instance of the very bug it exists to catch.
  */
 function analysisText(source: string, exprStart: number): string {
   const semi = source.indexOf(";", exprStart);
   const expr = source.slice(exprStart, semi === -1 ? Math.min(exprStart + 600, source.length) : semi);
   if (expr.includes(".from(")) return expr;
 
-  const lead = /^\s*([A-Za-z_$][\w$]*)\s*\./.exec(expr);
+  const lead = /^\s*([A-Za-z_$][\w$]*)\s*(?:\.|$)/.exec(expr);
   if (!lead) return expr;
   const varName = lead[1];
   const defRe = new RegExp(`(?:const|let|var)\\s+${varName}\\s*=`, "g");
@@ -160,6 +166,55 @@ export function scanSwallowedErrorReads(source: string, file = "<source>"): Swal
     const text = analysisText(source, exprStart);
     if (!isSelectRead(text)) continue; // a write, or not a supabase select
     if (hasOptOut(source, destructureIndex)) continue; // documented null-tolerant
+
+    const snippet = text.replace(/\s+/g, " ").trim();
+    findings.push({
+      file,
+      line: lineOf(source, destructureIndex),
+      binding: m[1].trim(),
+      snippet: snippet.length > 100 ? `${snippet.slice(0, 97)}...` : snippet,
+    });
+  }
+  return findings;
+}
+
+/**
+ * The count-shaped twin of the scan above (#1165), for the guard in
+ * scripts/test-swallowed-count-results.ts (which carries the full why).
+ *
+ * A PostgREST result asked for `{ count: "exact" }` reports a FAILED query as
+ * `count: null`, and the `count ?? 0` at the call site launders that into a
+ * healthy-looking "0 rows affected": a delete that never ran reads exactly like
+ * an agent with nothing to clean. This flags an awaited Supabase chain
+ * destructured for `count` without also binding `error`.
+ *
+ * TWO DELIBERATE DIFFERENCES from the read scan:
+ *   - a WRITE is flagged too. `delete({ count: "exact" })` is the headline case,
+ *     so the "a mutator reached first means it's a write, skip it" rule that
+ *     applies to `data` reads would skip precisely what this exists to catch;
+ *   - `.select(` is not required, for the same reason.
+ * A Supabase chain is identified by `.from(` alone, so a non-Supabase
+ * `const { count } = await api()` never matches.
+ *
+ * Shares the destructure regex, opt-out and builder-resolution helpers above, so
+ * both guards agree on what a read site is and on the one `// error-ok:` escape
+ * hatch.
+ */
+export function scanSwallowedCountResults(
+  source: string,
+  file = "<source>",
+): SwallowedReadFinding[] {
+  const findings: SwallowedReadFinding[] = [];
+  for (const m of source.matchAll(DESTRUCTURE)) {
+    const keys = bindingKeys(m[1]);
+    if (!keys.has("count")) continue; // result not consumed as `count`
+    if (keys.has("error")) continue; // error is captured for the caller
+
+    const destructureIndex = m.index as number;
+    const exprStart = destructureIndex + m[0].length;
+    const text = analysisText(source, exprStart);
+    if (!text.includes(".from(")) continue; // not a supabase chain
+    if (hasOptOut(source, destructureIndex)) continue; // documented zero-tolerant
 
     const snippet = text.replace(/\s+/g, " ").trim();
     findings.push({
