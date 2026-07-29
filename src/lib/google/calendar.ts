@@ -205,6 +205,9 @@ export async function isFree(
   ignore?: Interval,
 ): Promise<boolean> {
   const busy = await freeBusy(email, start, end, calendarIds);
+  // parse-ok: an unreadable slot boundary FAILS CLOSED here. NaN slot bounds make
+  // hasBlockingBusy's overlap width NaN, its `os >= oe` early-out false, and so it
+  // reports blocking: the agent reads busy, never free. Verified in core.ts.
   return !hasBlockingBusy(busy, Date.parse(start), Date.parse(end), ignore);
 }
 

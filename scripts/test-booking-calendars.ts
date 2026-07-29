@@ -6,6 +6,7 @@ import {
   calendarIdsFromResult,
   freeAgentsFromBusy,
   busyByCalendarFromResponse,
+  busyIntervalsFromFreeBusy,
 } from "../src/lib/booking/core.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -162,13 +163,71 @@ const overlapping = [{ start: "2026-06-08T13:15:00.000Z", end: "2026-06-08T13:45
 }
 
 {
-  // A busy entry missing start/end is dropped; undefined calendars -> all error.
-  const m = busyByCalendarFromResponse(["a@x"], {
-    "a@x": { busy: [{ start: "2026-06-08T13:00:00.000Z" }, { start: "x", end: "y" }] },
+  // #1171: a busy entry we cannot READ is a busy period we cannot rule out, so
+  // the calendar is marked error (-> the agent falls back to the accurate direct
+  // check) rather than having the unreadable block quietly dropped. Dropping it,
+  // or keeping an unparseable one, both present as "this agent is free then":
+  // an unparseable stamp becomes NaN, and NaN compares false against BOTH slot
+  // boundaries, so the overlap test can never fire. This is the last check
+  // before a booking is made, so it fails closed.
+  const missing = busyByCalendarFromResponse(["a@x"], {
+    "a@x": { busy: [{ start: "2026-06-08T13:00:00.000Z" }] },
   });
-  assert(m.get("a@x")?.busy.length === 1, "drops a busy entry missing start or end");
+  assert(missing.get("a@x")?.error === true, "a busy entry missing start or end marks the calendar unreadable");
+
+  const unparseable = busyByCalendarFromResponse(["a@x"], {
+    "a@x": { busy: [{ start: "not-a-date", end: "also-not-a-date" }] },
+  });
+  assert(unparseable.get("a@x")?.error === true, "a busy entry with an unparseable stamp marks the calendar unreadable");
+
+  // A clean response is still clean: the guard must not swallow real busy time.
+  const clean = busyByCalendarFromResponse(["a@x"], {
+    "a@x": { busy: [{ start: "2026-06-08T13:00:00.000Z", end: "2026-06-08T13:30:00.000Z" }] },
+  });
+  assert(
+    clean.get("a@x")?.error === false && clean.get("a@x")?.busy.length === 1,
+    "a fully readable busy entry stays clean",
+  );
+
   const none = busyByCalendarFromResponse(["a@x"], undefined);
   assert(none.get("a@x")?.error === true, "no calendars object -> every requested id is error");
+}
+
+// Defence in depth (#1171): even if an unparseable interval reaches the
+// classifier some other way, it must never let the agent through as free. The
+// agent goes to the direct per-agent check instead.
+{
+  const r = freeAgentsFromBusy(
+    [{ email: "a@x", calendarIds: ["a@x"] }],
+    new Map([["a@x", { busy: [{ start: "not-a-date", end: "also-not-a-date" }], error: false }]]),
+    START,
+    END,
+  );
+  assert(!r.free.has("a@x"), "an unparseable busy interval never reads as free");
+  assert(r.needsFallback.has("a@x"), "an unparseable busy interval falls back to the direct check");
+}
+
+// --- busyIntervalsFromFreeBusy: the single-agent mapping (#1171) --------------
+// Feeds the in-place reschedule guard, whose null branch means "could not tell"
+// and re-routes. One unreadable interval makes the whole read untrustworthy, so
+// it returns null rather than a shorter list that reads as extra free time.
+{
+  const ok = busyIntervalsFromFreeBusy([
+    { start: "2026-06-08T13:00:00.000Z", end: "2026-06-08T13:30:00.000Z" },
+  ]);
+  assert(ok !== null && ok.length === 1, "maps a readable interval");
+  assert(ok![0].start === Date.parse("2026-06-08T13:00:00.000Z"), "maps to epoch ms");
+
+  assert(
+    busyIntervalsFromFreeBusy([
+      { start: "2026-06-08T13:00:00.000Z", end: "2026-06-08T13:30:00.000Z" },
+      { start: "not-a-date", end: "2026-06-08T14:30:00.000Z" },
+    ]) === null,
+    "one unreadable interval makes the whole read 'could not tell' (null), never a shorter list",
+  );
+
+  const empty = busyIntervalsFromFreeBusy([]);
+  assert(empty !== null && empty.length === 0, "a genuinely empty calendar is an empty list, not null");
 }
 
 finish();

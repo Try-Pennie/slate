@@ -335,6 +335,40 @@ Two guards cover the alerting end of this, both in `pnpm test`:
 recovery notice must carry a test proving it stays silent when its health signal
 cannot be read, or point at the suite that does with `// all-clear-proof:`).
 
+# Raw `Date.parse` on a timestamp (the `// parse-ok:` convention)
+
+`Date.parse` returns **NaN** for anything it cannot read, and every comparison
+with NaN is false. So the check lands on the healthy / permissive branch with no
+error raised anywhere: not stale, not expired, not due for retry, **does not
+overlap**. #1169 found ten monitoring sites like this; #1171 found the same class
+on the verify-on-book path, where an unreadable busy interval from Google read as
+**free time** on the last check before a booking.
+
+Use **`parseStampMs`** (`src/lib/date/stamp.ts`), which returns a number or
+`null` and forces you to map `null` to the fail-safe side (stale for a heartbeat,
+due for an expiry, "never sent" for a cooldown). For a pair of interval bounds,
+`isReadableInterval` (`src/lib/booking/core.ts`) is the single judge of whether
+Google gave us something usable.
+
+`scripts/test-date-parse-guard.ts` (#1171) scans the surface where an unreadable
+stamp is **indistinguishable from healthy**: `src/lib/monitor`, `src/lib/notify`,
+`src/lib/snowflake`, `src/lib/google`, `src/app/api/cron`, `src/app/api/health`,
+and `src/lib/booking/core.ts`. A site is compliant when it routes through
+`parseStampMs`, is judged on the same line by `Number.isFinite` / `Number.isNaN`
+/ `isNaN`, or carries a **`// parse-ok:`** opt-out (per line, like its siblings)
+saying why NaN is impossible or safe there.
+
+The wider booking / availability domain is deliberately **out of scope**: ~40
+parses there read our own NOT NULL `timestamptz` columns, and blanket-annotating
+them would trade real thought for mechanical comments (the same call made for the
+table-aware capped-read guard). That boundary is stated in the guard's header so
+it is never read as broader coverage than it has.
+
+When you write the opt-out, say which way it fails. `hasBlockingBusy` fails
+**closed** (a NaN bound makes the block read as blocking, never free) and that
+rests entirely on its `Math.max` / `Math.min` and `os >= oe` ordering, which is
+why a test pins it. Do not restructure that comparison without rechecking it.
+
 # Alert copy never carries a raw error (the `// alert-text-ok:` convention)
 
 An alert is read on a phone, mid-incident, by someone deciding whether to act.

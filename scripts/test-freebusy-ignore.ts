@@ -66,4 +66,27 @@ assert(
   "busy ending exactly at window start is not a conflict (exclusive boundary)",
 );
 
+// 8. #1171: an unreadable stamp must land on the BLOCKING side. NaN compares
+// false against everything, so the arithmetic here (Math.max/Math.min, then the
+// `os >= oe` early-out) is what keeps an unreadable entry from reading as free.
+// That is load-bearing and easy to break while "simplifying", so it is pinned.
+assert(
+  hasBlockingBusy([{ start: "not-a-date", end: "also-not-a-date" }], win[0], win[1]) === true,
+  "an unreadable busy entry blocks (never silently reads as free)",
+);
+assert(
+  hasBlockingBusy([{ start: at("19:00"), end: at("19:20") }], NaN, NaN, own) === true,
+  "unreadable slot bounds block, so isFree reports busy rather than free",
+);
+// The own-event exemption must not rescue an unreadable ignore span either.
+assert(
+  hasBlockingBusy(
+    [{ start: at("19:00"), end: at("19:20") }],
+    win[0],
+    win[1],
+    { start: "not-a-date", end: "also-not-a-date" },
+  ) === true,
+  "an unreadable ignore span stops exempting, landing on the blocking side",
+);
+
 finish();

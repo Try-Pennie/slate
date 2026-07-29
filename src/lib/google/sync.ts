@@ -155,8 +155,12 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
       ends_at: string;
     }[]).map((b) => ({
       gcalEventId: b.gcal_event_id,
+      // parse-ok: busy_blocks.starts_at/ends_at are NOT NULL timestamptz that
+      // Postgres renders, so NaN would mean a schema break, not bad input. Worth
+      // naming what a NaN WOULD cost, since this feeds collision detection: an
+      // unreadable row would simply not collide, and this alert would stay quiet.
       startMs: Date.parse(b.starts_at),
-      endMs: Date.parse(b.ends_at),
+      endMs: Date.parse(b.ends_at), // parse-ok: NOT NULL timestamptz, as above
     }));
 
     const collisions = findExternalCollisions(
@@ -164,8 +168,10 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
       bookings.map((b) => ({
         id: b.id,
         gcalEventId: b.gcal_event_id,
+        // parse-ok: bookings.starts_at/ends_at are NOT NULL timestamptz, same as
+        // the busy-block side above, and carry the same caveat if that ever changes.
         startMs: Date.parse(b.starts_at),
-        endMs: Date.parse(b.ends_at),
+        endMs: Date.parse(b.ends_at), // parse-ok: NOT NULL timestamptz, as above
       })),
     );
     if (collisions.length === 0) return;

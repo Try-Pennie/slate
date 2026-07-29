@@ -193,6 +193,9 @@ export type BookingEventInsert = {
 export function bookingEventFrom(d: BookingEventDraft): BookingEventInsert {
   const lead_time_minutes =
     d.fromStartsIso != null
+      // parse-ok: a history column, never a gate. It is written from the booking's
+      // own NOT NULL starts_at, and a NaN would land in the record as null rather
+      // than deciding anything.
       ? Math.round((Date.parse(d.fromStartsIso) - d.nowMs) / 60_000)
       : null;
   return {
@@ -218,6 +221,9 @@ export function bookingWindow(
   durationMin: number,
 ): { startIso: string; endIso: string } {
   const start = new Date(startIso).toISOString();
+  // parse-ok: fails LOUD, not silently. `start` is the output of toISOString on
+  // the line above, so it always parses; and an unparseable startIso would have
+  // thrown a RangeError there before this line ever ran.
   const end = new Date(Date.parse(start) + durationMin * 60_000).toISOString();
   return { startIso: start, endIso: end };
 }
@@ -428,15 +434,56 @@ export function hasBlockingBusy(
   endMs: number,
   ignore?: { start: string; end: string } | null,
 ): boolean {
+  // parse-ok: this function FAILS CLOSED on an unreadable stamp, deliberately.
+  // A NaN busy bound makes `os`/`oe` NaN, the `os >= oe` early-out false, and the
+  // `ignore` subtraction false, so the block is reported as blocking: an
+  // unreadable calendar entry can only ever make an agent look busy, never free.
+  // An unreadable `ignore` span means the own-event exemption stops applying,
+  // which also lands on the blocking side. Do not "simplify" the comparison order
+  // here without rechecking that, the whole safety of the check rests on it.
   const igStart = ignore ? Date.parse(ignore.start) : NaN;
-  const igEnd = ignore ? Date.parse(ignore.end) : NaN;
+  const igEnd = ignore ? Date.parse(ignore.end) : NaN; // parse-ok: fails closed, see above
   return busy.some((b) => {
-    const os = Math.max(Date.parse(b.start), startMs);
-    const oe = Math.min(Date.parse(b.end), endMs);
+    const os = Math.max(Date.parse(b.start), startMs); // parse-ok: fails closed, see above
+    const oe = Math.min(Date.parse(b.end), endMs); // parse-ok: fails closed, see above
     if (os >= oe) return false; // no overlap with [start, end)
     if (ignore && os >= igStart && oe <= igEnd) return false; // overlap lies entirely within the ignored event
     return true;
   });
+}
+
+/**
+ * True when BOTH ends of a busy interval parse to finite epoch ms (#1171).
+ *
+ * The one place this pair of stamps is judged, so the parser and the overlap
+ * test can never disagree about what "readable" means. An interval that fails
+ * this is never trusted as free time: `Date.parse` gives NaN, every comparison
+ * with NaN is false, and an overlap test that can never fire reads exactly like
+ * an empty calendar.
+ */
+export function isReadableInterval(start: string, end: string): boolean {
+  return Number.isFinite(Date.parse(start)) && Number.isFinite(Date.parse(end));
+}
+
+/**
+ * Map one agent's freeBusy rows to epoch-ms intervals, or NULL when ANY of them
+ * is unreadable (#1171).
+ *
+ * Null is the caller's documented "could not tell" signal, which re-routes the
+ * booking instead of keeping the agent on a slot nothing verified. Returning the
+ * readable subset instead would be the fail-open answer: the unreadable block
+ * would simply vanish, and vanished busy time reads as free time.
+ */
+export function busyIntervalsFromFreeBusy(
+  rows: { start: string; end: string }[],
+): { start: number; end: number }[] | null {
+  const out: { start: number; end: number }[] = [];
+  for (const b of rows) {
+    if (!isReadableInterval(b.start, b.end)) return null;
+    // parse-ok: both ends were just proven finite by isReadableInterval above.
+    out.push({ start: Date.parse(b.start), end: Date.parse(b.end) });
+  }
+  return out;
 }
 
 /** Per-calendar outcome of a bulk freeBusy query: busy ranges or an error. */
@@ -453,6 +500,14 @@ export interface CalendarBusy {
  * `tooManyCalendarsRequested`), is marked `error: true` so the classifier never
  * assumes it free and risks a double-book (#167). Pure; the IO lives in
  * `calendar.ts`'s `freeBusyMany`.
+ *
+ * A busy entry we cannot READ counts as unread too (#1171): a missing or
+ * unparseable start/end used to be dropped from the list, and a dropped busy
+ * block is indistinguishable from free time. `Date.parse` on a bad stamp yields
+ * NaN, and NaN compares false against BOTH slot boundaries, so the overlap test
+ * downstream can never fire. This is the last check before a booking is made, so
+ * an unreadable block marks the whole calendar unreadable and the agent is routed
+ * to the accurate direct per-agent check instead.
  */
 export function busyByCalendarFromResponse(
   calendarIds: string[],
@@ -472,8 +527,17 @@ export function busyByCalendarFromResponse(
       continue;
     }
     const busy: BusyInterval[] = [];
+    let unreadable = false;
     for (const b of cal.busy ?? []) {
-      if (b.start && b.end) busy.push({ start: b.start, end: b.end });
+      if (!b.start || !b.end || !isReadableInterval(b.start, b.end)) {
+        unreadable = true;
+        break;
+      }
+      busy.push({ start: b.start, end: b.end });
+    }
+    if (unreadable) {
+      out.set(id, { busy: [], error: true });
+      continue;
     }
     out.set(id, { busy, error: false });
   }
@@ -514,8 +578,21 @@ export function freeAgentsFromBusy(
         allClean = false;
         break;
       }
+      // #1171: an unreadable interval reaching here (the parser above already
+      // marks its calendar error, so this is defence in depth) must NOT be
+      // silently skipped by the overlap test. NaN < endMs is false and
+      // NaN > startMs is false, so a bad stamp would read as "does not overlap",
+      // i.e. as free. Treat it as unreadable and route the agent to the direct
+      // per-agent check.
+      if (entry.busy.some((b) => !isReadableInterval(b.start, b.end))) {
+        allClean = false;
+        break;
+      }
       if (
         entry.busy.some(
+          // parse-ok: the unreadable case was routed to needsFallback by the
+          // isReadableInterval check directly above, so every interval reaching
+          // this comparison parses.
           (b) => Date.parse(b.start) < endMs && Date.parse(b.end) > startMs,
         )
       ) {

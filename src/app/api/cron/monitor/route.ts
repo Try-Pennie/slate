@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
-import { parseStampMs } from "@/lib/date/stamp";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
@@ -10,6 +9,7 @@ import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { slotHealthByCode } from "@/lib/monitor/slot-health";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
 import { type WorkingRule } from "@/lib/monitor/availability-health";
@@ -146,14 +146,11 @@ export async function GET(req: NextRequest) {
       payload: { slots?: string[] } | null;
       computed_at: string;
     }[];
-    const slotByCode = new Map(
-      slotRows.map((r) => [
-        r.bucket_code,
-        // #1169: fail closed. An unparseable computed_at reads as epoch 0
-        // (stale, canary alerts), never NaN (reads as fresh, canary silent).
-        { slotCount: r.payload?.slots?.length ?? 0, computedAtMs: parseStampMs(r.computed_at) ?? 0 },
-      ]),
-    );
+    // #1169: fail closed. An unparseable computed_at reads as epoch 0 (stale,
+    // canary alerts), never NaN (reads as fresh, canary silent). Extracted in
+    // #1171 so that direction is pinned by scripts/test-monitor-slot-health.ts
+    // instead of living untested inside the route.
+    const slotByCode = slotHealthByCode(slotRows);
 
     // Per-agent working hours, for the on-shift gate. Two whole-table reads
     // joined in JS; both are paged past PostgREST's 1,000-row cap (#828): the
