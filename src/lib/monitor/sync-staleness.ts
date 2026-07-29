@@ -1,3 +1,5 @@
+import { parseStampMs } from "@/lib/date/stamp";
+
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
 export const SYNC_STALENESS_KEY = "sync_staleness";
@@ -84,12 +86,13 @@ export function syncRotationCandidates(
   return agents
     .filter((a) => calendarUserIds.has(a.id))
     .map((a) => {
-      const parsed = a.last_synced_at ? Date.parse(a.last_synced_at) : null;
       return {
         id: a.id,
         name: a.name,
         email: a.email,
-        lastSyncedMs: parsed === null || Number.isNaN(parsed) ? null : parsed,
+        // Missing OR unparseable both degrade to never-synced (flagged), via the
+        // shared #1169 stamp parser.
+        lastSyncedMs: parseStampMs(a.last_synced_at),
       };
     });
 }

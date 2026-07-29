@@ -4,8 +4,10 @@
  * freshness comes from Google push), so it bounds its own work per tick and
  * rotates least-recently-synced agents first instead of re-processing the same
  * head of the list every minute. Exercised by scripts/test-sync-pace.ts and
- * scripts/test-sync-agents.ts.
+ * scripts/test-sync-agents.ts. The one import (#1169's stamp parser) is itself
+ * dependency-free, so this module stays node-testable.
  */
+import { parseStampMs } from "@/lib/date/stamp";
 
 /** Cap on brand-new agents onboarded (first watch setup) per cron tick. */
 export const MAX_ONBOARDS_PER_TICK = 10;
@@ -74,7 +76,9 @@ export function toSyncAgents(
     .map((r) => ({
       userId: r.id,
       hasCalendars: calendarUserIds.has(r.id),
-      lastSyncedMs: r.last_synced_at ? Date.parse(r.last_synced_at) : null,
+      // #1169: an unparseable stamp reads as never-synced (null -> leads the
+      // rotation), never NaN, which sorts unpredictably and can starve the agent.
+      lastSyncedMs: parseStampMs(r.last_synced_at),
     }));
 }
 

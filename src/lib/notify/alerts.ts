@@ -4,6 +4,7 @@
  * `./slack.ts`; the cooldown state is persisted by the caller.
  */
 import { shortFailureReason } from "@/lib/notify/error-text";
+import { parseStampMs } from "@/lib/date/stamp";
 
 /** Send only if we've never alerted, or the cooldown has elapsed. */
 export function shouldSendAlert(
@@ -218,9 +219,8 @@ export const WATCH_PAGING: LanePagingPolicy = {
 function isHeldTransient(a: FailingAgent, nowMs: number, policy: LanePagingPolicy): boolean {
   if (a.consecutiveFailures < policy.loneTransientPasses) return true;
   if (policy.loneTransientHoldMs === null) return false;
-  if (!a.lastSuccessAt) return false;
-  const lastOkMs = Date.parse(a.lastSuccessAt);
-  if (Number.isNaN(lastOkMs)) return false;
+  const lastOkMs = parseStampMs(a.lastSuccessAt);
+  if (lastOkMs === null) return false;
   return nowMs - lastOkMs < policy.loneTransientHoldMs;
 }
 
@@ -259,8 +259,8 @@ export { shortFailureReason, MAX_REASON_CHARS } from "@/lib/notify/error-text";
  */
 export function relativeAge(iso: string | null, nowMs: number): string {
   if (!iso) return "never";
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "unknown";
+  const t = parseStampMs(iso);
+  if (t === null) return "unknown";
   const minutes = Math.floor(Math.max(0, nowMs - t) / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;

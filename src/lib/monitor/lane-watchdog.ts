@@ -17,6 +17,7 @@ import {
 } from "@/lib/notify/dispatch";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
+import { parseStampMs } from "@/lib/date/stamp";
 
 /** Per lane, so one dead lane can't throttle away the first alert for another. */
 const staleLaneAlertKey = (lane: string) => `cron_lane_stale:${lane}`;
@@ -396,7 +397,12 @@ async function readFirstSeenMissingMs(lane: string): Promise<number | null> {
       .eq("key", firstSeenKey(lane))
       .maybeSingle();
     const at = (data as { last_sent_at: string } | null)?.last_sent_at;
-    return at ? Date.parse(at) : null;
+    if (!at) return null;
+    // #1169: fail closed. An unparseable sighting used to become NaN, which
+    // neverStampedVerdict compared false against forever ("wait" on every tick),
+    // so the lane could never page. Unreadable reads as ancient (page), never as
+    // a pending grace window.
+    return parseStampMs(at) ?? 0;
   } catch (err) {
     log.warn("lane-watchdog", { msg: "first-sighting read failed", lane });
     void err;

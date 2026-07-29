@@ -384,6 +384,41 @@ describe("ensureWatches on a truncated calendar list (#171)", () => {
   });
 });
 
+describe("ensureWatches on a corrupt watch_expiration (#1169)", () => {
+  it("treats an unparseable expiration as due for renewal, never as current", async () => {
+    // A corrupt stamp used to parse to NaN, so "expires soon?" compared false and
+    // ensureWatches returned "current" forever: the channel silently lapsed and
+    // push updates stopped, exactly the failure the renewal check exists to
+    // prevent. Unreadable must land on the DUE side. listCalendars returns the
+    // same stored primary calendar, so the reconcile is a no-op and the mocked
+    // watchCalendar performs the renewal.
+    const { db, deletes } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [
+        {
+          id: "cal-1",
+          user_id: "agent-1",
+          calendar_id: "primary",
+          watch_expiration: "not-a-timestamp",
+          watch_channel_id: "chan-1",
+          watch_resource_id: "res-1",
+          consecutive_failures: 0,
+          last_success_at: null,
+          last_sync_error: null,
+        },
+      ],
+    });
+    admin.current = db;
+    calMock.listCalendars.mockResolvedValue([{ id: "primary", primary: true }]);
+
+    const result = await ensureWatches("agent-1");
+
+    expect(result).toEqual({ status: "renewed" });
+    expect(calMock.watchCalendar).toHaveBeenCalled();
+    expect(deletes).toHaveLength(0);
+  });
+});
+
 describe("syncCalendar on a page-capped events pass (#171)", () => {
   it("keeps the stored sync token and warns instead of advancing past unread pages", async () => {
     // syncEvents (mocked) returns truncated with no next token. syncCalendar must

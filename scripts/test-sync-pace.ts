@@ -1,5 +1,6 @@
 import {
   withinBudget,
+  toSyncAgents,
   orderAgentsForTick,
   shouldOnboard,
   watchAgentsForTick,
@@ -157,6 +158,22 @@ assert(SYNC_CONCURRENCY > 1 && SYNC_CONCURRENCY <= 20, "sync concurrency is a sm
 {
   const { processed, truncated } = await mapWithConcurrency([], 4, async (x) => x);
   assert(processed === 0 && truncated === false, "empty input processes nothing and is not truncated");
+}
+
+// #1169: an unparseable last_synced_at must read as never-synced (null), which
+// LEADS the rotation, never as NaN, which sorts unpredictably and can starve the
+// agent of sync passes indefinitely.
+{
+  const [agent] = toSyncAgents(
+    [{ id: "u1", deactivated_at: null, last_synced_at: "not-a-timestamp" }],
+    new Set(["u1"]),
+  );
+  assert(agent.lastSyncedMs === null, "a corrupt last_synced_at maps to null (never synced)");
+  const ordered = orderAgentsForTick([
+    { userId: "u2", hasCalendars: true, lastSyncedMs: 1_000 },
+    agent,
+  ]);
+  assert(ordered[0].userId === "u1", "the corrupt-stamp agent leads the rotation");
 }
 
 finish();

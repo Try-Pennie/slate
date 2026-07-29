@@ -7,6 +7,7 @@
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
+import { parseStampMs } from "@/lib/date/stamp";
 
 /**
  * Returns true ONLY when `lastRanAtMs` is non-null AND the gap since the last
@@ -58,16 +59,19 @@ export async function readAllHeartbeatMs(): Promise<Record<string, number | null
 
   const out: Record<string, number | null> = {};
   for (const row of (data ?? []) as { lane: string; last_ran_at: string }[]) {
-    const ms = Date.parse(row.last_ran_at);
-    out[row.lane] = isNaN(ms) ? null : ms;
+    // #1169: fail closed. A row that EXISTS but cannot be parsed reads as epoch 0
+    // (infinitely old -> stale), never as null: null means "never stamped", which
+    // every consumer deliberately treats as a fresh deploy and stays quiet about,
+    // so a corrupt stamp mapped to null disabled the dead-man's switch for that lane.
+    out[row.lane] = parseStampMs(row.last_ran_at) ?? 0;
   }
   return out;
 }
 
 /**
  * Read the `last_ran_at` timestamp for `lane` from `lane_heartbeats`.
- * Returns `Date.parse(last_ran_at)` (ms) or null if the row is missing or the
- * read fails. Best-effort: never throws.
+ * Returns the stamp as epoch ms (0 when the stored value is unparseable, #1169),
+ * or null if the row is missing or the read fails. Best-effort: never throws.
  */
 export async function readHeartbeatMs(lane: string): Promise<number | null> {
   try {
@@ -82,8 +86,9 @@ export async function readHeartbeatMs(lane: string): Promise<number | null> {
       return null;
     }
     if (!data) return null;
-    const ms = Date.parse((data as { last_ran_at: string }).last_ran_at);
-    return isNaN(ms) ? null : ms;
+    // #1169: fail closed, same rule as readAllHeartbeatMs: an unparseable stamp
+    // on an existing row reads as epoch 0 (stale), never as null (never stamped).
+    return parseStampMs((data as { last_ran_at: string }).last_ran_at) ?? 0;
   } catch (err) {
     log.error("heartbeat", { msg: "read threw", lane }, err);
     return null;

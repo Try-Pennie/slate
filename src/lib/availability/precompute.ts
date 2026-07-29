@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
+import { parseStampMs } from "@/lib/date/stamp";
 import { getBucketSlots, type BucketSlots, type EligibleResolver } from "./service";
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import type { Attributes, Criteria } from "@/lib/db/types";
@@ -49,7 +50,11 @@ export async function listKnownBucketSlotRows(): Promise<
   );
   return (data ?? []).map((r) => {
     const row = r as { bucket_code: string; computed_at: string };
-    return { code: row.bucket_code, computedAtMs: Date.parse(row.computed_at) };
+    // #1169: fail closed. An unparseable computed_at reads as epoch 0 (ancient:
+    // first in line to recompute, flagged stale), never NaN, which compared false
+    // against the freshness window so the bucket was never recomputed AND never
+    // flagged: a frozen slot cache with no alert.
+    return { code: row.bucket_code, computedAtMs: parseStampMs(row.computed_at) ?? 0 };
   });
 }
 
