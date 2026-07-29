@@ -54,7 +54,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
-import { unwrap } from "@/lib/db/result";
+import { unwrap, unwrapCount } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { afterResponse } from "@/lib/after-response";
 
@@ -897,12 +897,19 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
 
   // Prune cached busy time. A delete is not a capped read, so this removes every
   // matching row regardless of PostgREST's page cap.
-  const { count } = await db
-    .from("busy_blocks")
-    .delete({ count: "exact" })
-    .eq("user_id", userId);
+  //
+  // #1165: fail loud on a delete error rather than `count ?? 0`. A failed delete
+  // returns a null count, and reporting that as `blocksDeleted: 0` is
+  // indistinguishable from an agent who simply had no cached busy time, so the
+  // stale blocks this exists to remove would linger with nothing noticing. Both
+  // callers already handle a throw (the toggle logs it and lets the self-heal
+  // backstop retry; the sweep reports the tick as "error").
+  const blocksDeleted = unwrapCount(
+    await db.from("busy_blocks").delete({ count: "exact" }).eq("user_id", userId),
+    "pool-exit-prune",
+  );
 
-  return { watchesStopped, blocksDeleted: count ?? 0 };
+  return { watchesStopped, blocksDeleted };
 }
 
 /**
@@ -960,11 +967,12 @@ export async function reconcileOrphanedPoolExits(
 
   // #248 backstop: prune cached busy time for everyone who left the pool (a bulk
   // delete, so already-cleaned agents from the loop above simply match nothing).
-  const { count } = await db
-    .from("busy_blocks")
-    .delete({ count: "exact" })
-    .in("user_id", ids);
-  blocksDeleted += count ?? 0;
+  // #1165: fail loud, so a sweep that could not prune reports as "error" on the
+  // lane rather than as a tick that found nothing to clean.
+  blocksDeleted += unwrapCount(
+    await db.from("busy_blocks").delete({ count: "exact" }).in("user_id", ids),
+    "pool-exit-reconcile-prune",
+  );
 
   return { scanned: ids.length, cleaned: withWatch.length, blocksDeleted };
 }

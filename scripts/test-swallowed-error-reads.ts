@@ -58,6 +58,15 @@ const FIXTURES: Fixture[] = [
     flagged: true,
     src: `let q = supabaseAdmin().from("booking_events").select("id").eq("booking_id", b);\nq = q.eq("action", a);\nconst { data } = await q.limit(1).maybeSingle();\nreturn data != null;`,
   },
+  // #1165: the bare `await q` form (no trailing method call) was invisible to the
+  // builder resolution until the count guard's fixtures caught the gap. It was
+  // hiding a real swallowed-error read in webhooks/emit.ts, so the guard was
+  // reporting clean over an instance of the very bug it exists to catch.
+  {
+    name: "builder terminal await with NO trailing call (bare await q)",
+    flagged: true,
+    src: `let q = db.from("webhook_endpoints").select("*").eq("org_id", o);\nif (id) q = q.eq("id", id);\nconst { data: endpoints } = await q;\nreturn (endpoints ?? []).length;`,
+  },
   {
     name: "precompute-style bucket_slots blob read",
     flagged: true,

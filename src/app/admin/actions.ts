@@ -765,10 +765,22 @@ export async function setUserRole(form: FormData): Promise<void> {
     throw new Error("You can't remove your own admin access");
   }
 
-  const { count } = await db
+  // #1165: consult `error`. A failed count came back null, `?? 0` scored it as
+  // "zero admins left", and the refusal then claimed "Cannot remove the last
+  // admin", a fact the check never actually measured. Still refuse (fail closed
+  // on the safe side), but say which of the two happened.
+  const { count, error: countError } = await db
     .from("users")
     .select("id", { count: "exact", head: true })
     .in("role", ["admin", "super_admin"]);
+  if (countError) {
+    log.error(
+      "admin-actions",
+      { msg: "admin count read failed", user_id: userId },
+      countError,
+    );
+    throw new Error("The number of admins could not be verified, so the role was left unchanged");
+  }
   if (!canChangeRole(current, next, count ?? 0)) {
     throw new Error("Cannot remove the last admin");
   }
