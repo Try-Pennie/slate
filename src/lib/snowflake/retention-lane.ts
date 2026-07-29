@@ -25,6 +25,7 @@ import { NextResponse } from "next/server";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
+import { retentionResumedText } from "@/lib/notify/misc-alert-copy";
 
 /** Daily lanes, so re-page at most once a day rather than on every run. */
 const SKIP_COOLDOWN_MS = 23 * 60 * 60_000;
@@ -98,9 +99,7 @@ export async function alertRetentionResumed(lane: string): Promise<void> {
   try {
     const cleared = await resolveAlert(
       `retention_skipped:${lane}`,
-      `Slate: the ${lane} retention lane is deleting again. The Snowflake mirror is usable, so aged ` +
-        `data is being cleared on schedule and the retention window is being honored once more. ` +
-        `No action is needed.`,
+      retentionResumedText(lane),
     );
     if (cleared) log.info(lane, { msg: "retention-skipped alert cleared" });
   } catch (err) {

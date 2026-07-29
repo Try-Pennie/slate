@@ -6,6 +6,7 @@ import type { Reachability } from "@/lib/google/reachability-classify";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cleanupOnPoolExit } from "@/lib/google/sync";
 import { log } from "@/lib/log";
+import { bookableBlockedAlert, bookableUnverifiedAlert } from "@/lib/notify/misc-alert-copy";
 
 /**
  * Keyed per agent (`bookable_blocked:<userId>`) so a single agent stuck with a
@@ -69,13 +70,13 @@ async function checkActivationGate(
     return {
       reason: "google_unreachable",
       key: `bookable_blocked:${userId}`,
-      message: `Slate: blocked making ${email} bookable because their Google calendar is unreachable (account gone from the Workspace, or delegation broken). The agent was NOT added to the booking pool; fix the calendar and retry.`,
+      message: bookableBlockedAlert(email),
     };
   }
   return {
     reason: "google_unverified",
     key: `bookable_unverified:${userId}`,
-    message: `Slate: could NOT verify ${email}'s Google calendar (a transient error persisted through one retry). The agent was NOT added to the booking pool; this is likely a temporary Google issue, so retry shortly.`,
+    message: bookableUnverifiedAlert(email),
   };
 }
 

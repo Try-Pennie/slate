@@ -1,0 +1,161 @@
+/**
+ * The words the booking layer's alerts say (#1153).
+ *
+ * Lifted out of the send sites so the alert preview can render the REAL copy by
+ * calling these, rather than holding a second copy that drifts the moment someone
+ * edits one and not the other (L41). The sending code imports them back, so there
+ * is exactly one place each of these sentences exists.
+ *
+ * Almost all of these are INCIDENT copy (src/lib/notify/alert-catalog.ts): they
+ * describe something that already happened to a specific booking, so they name
+ * the consequence and where to look, and never promise that anything will retry.
+ */
+
+/** A cached busy_blocks write that did not land, per operation. */
+export function busyBlockWriteThroughAlert(
+  operation: "insert" | "move" | "delete",
+  subject: string,
+  reason: string,
+): string {
+  if (operation === "move") {
+    return (
+      `Slate: busy_blocks move (move_busy_block) failed for booking ${subject} (${reason}). ` +
+      `The slot cache may be stale until the next sync pass.`
+    );
+  }
+  if (operation === "delete") {
+    return (
+      `Slate: busy_blocks DELETE failed for booking ${subject} (${reason}). ` +
+      `The cancelled slot will keep showing as busy until cleaned up.`
+    );
+  }
+  return (
+    `Slate: busy_blocks INSERT failed for ${subject} (${reason}). ` +
+    `The slot(s) may show as free in the embed until the next sync pass.`
+  );
+}
+
+/** A history row that was lost, so the reason for an action went unrecorded. */
+export function bookingEventInsertAlert(bookingId: string, action: string, reason: string): string {
+  return (
+    `Slate: booking_events INSERT failed for booking ${bookingId} (${action}, ${reason}). ` +
+    `The reschedule/cancel reason for this action was not recorded.`
+  );
+}
+
+/** Calendar deletions stuck retrying, so cancelled meetings may still remind. */
+export function pendingDeletionAlert(stuckCount: number, after: number, eventIds: string[]): string {
+  return (
+    `Slate: ${stuckCount} calendar event deletion(s) have failed ${after}+ times and may be ` +
+    `firing orphaned reminders. Check Google Calendar API health. Event ids: ${eventIds.join(", ")}`
+  );
+}
+
+/** The all-clear for the above: the queue drained (#1151). */
+export function pendingDeletionRecovery(): string {
+  return (
+    "Slate: the calendar event deletions that kept failing have gone through. No deletion is " +
+    "stuck retrying, so no cancelled meeting should still be sending reminders. No action is needed."
+  );
+}
+
+/** Calendar events that outlived the booking they were created for. */
+export function creationOrphanAlert(count: number, eventIds: string[]): string {
+  return (
+    `Slate: ${count} calendar event(s) were created but their booking never persisted (the insert ` +
+    `and its rollback both failed), and the event still exists on Google, so it may be sending the ` +
+    `customer reminders for a booking Slate has no record of. The deletion drain is retrying ` +
+    `removal; diagnose via pending_event_deletions where booking_id is null. Event ids: ` +
+    `${eventIds.join(", ")}`
+  );
+}
+
+/** The cancelled-booking reconcile freed slots a write-through delete had missed. */
+export function reconcileFreedAlert(freed: number, agentCount: number): string {
+  return (
+    `Slate: reconcile freed ${freed} stuck busy_block(s) whose booking was cancelled/missing ` +
+    `across ${agentCount} agent(s). The slot(s) are now bookable again, but a write-through ` +
+    `delete was missed. Check cancel-path health.`
+  );
+}
+
+/** The missing-block reconcile re-created slots that were showing free. */
+export function reconcileRecreatedAlert(recreated: number, bookingIds: string[], truncated: boolean): string {
+  return (
+    `Slate: re-created ${recreated} missing busy_block(s) for active booking(s) - a write-through INSERT had been missed, so the slot(s) were showing free and could have been double-booked. Now recomputed. Booking ids: ${bookingIds.join(", ")}${truncated ? " ..." : ""}. Check booking-path busy_block write health.`
+  );
+}
+
+/** Outbox rows past the attempt cap: real side effects are not completing. */
+export function outboxDrainStuckAlert(stuckCount: number, after: number, ids: string): string {
+  return (
+    `Slate: ${stuckCount} booking-outbox row(s) have failed >= ${after} delivery attempts and are ` +
+    `backing off (a mutation's side effects - calendar/webhook - are not completing). Diagnose via ` +
+    `booking_outbox.last_error; rows: ${ids}.`
+  );
+}
+
+/** The all-clear for the outbox backlog (#1151). */
+export function outboxDrainRecovery(): string {
+  return (
+    "Slate: the booking-outbox rows that were backing off have delivered. Calendar invites and " +
+    "webhooks for the affected bookings have completed, so nothing is stuck. No action is needed."
+  );
+}
+
+/** Crash-recovered creates that are not completing. */
+export function reservationDrainStuckAlert(stuckCount: number, after: number, ids: string): string {
+  return (
+    `Slate: ${stuckCount} booking reservation(s) have failed >= ${after} completion attempts and ` +
+    `are backing off (a crash-recovered create is not completing). Diagnose via ` +
+    `booking_reservations.last_error; rows: ${ids}.`
+  );
+}
+
+/** The all-clear for the reservation backlog (#1151). */
+export function reservationDrainRecovery(): string {
+  return (
+    "Slate: the crash-recovered booking reservations that were backing off have completed, so " +
+    "no half-made booking is stuck retrying. No action is needed."
+  );
+}
+
+/** A reschedule abandoned mid-flight: the booking did NOT move. */
+export function reschedulePinDroppedAlert(dropped: number): string {
+  return (
+    `Slate: ${dropped} reschedule(s) were abandoned mid-flight (crash before the move committed) and cleaned up by the sweep. The booking(s) are STILL AT THEIR ORIGINAL TIME; the requested move did NOT happen, and the attendee may believe it did. Re-run the reschedule. Diagnose via the reschedule_locks table + booking_events.`
+  );
+}
+
+/** A reassign abandoned mid-create: the booking stayed on the original agent. */
+export function reassignIntentDroppedAlert(dropped: number): string {
+  return (
+    `Slate: ${dropped} reassign(s) were abandoned mid-create (crash before the swap) and cleaned up by the sweep. The booking(s) stayed on the ORIGINAL agent; the intended reassignment did NOT happen. Re-run the contact-owner reassignment. Diagnose via the reassign_intents table + booking_events.`
+  );
+}
+
+/** Verify-on-book could not read an agent's calendars, per call path. */
+export function verifyReadFailedAlert(path: "book" | "reschedule", email: string): string {
+  return path === "reschedule"
+    ? `Slate: in-place reschedule could not read calendars for ${email}; re-routing to avoid ` +
+        `keeping the agent on an unverifiable slot. Check DB health.`
+    : `Slate: verify-on-book could not read calendars for ${email}; skipping this agent for the ` +
+        `slot to avoid a double-book. Check DB health.`;
+}
+
+/** Equal-share ordering degraded for one booking. */
+export function unfairOrderingAlert(context: string): string {
+  return (
+    `Slate: equal-share fairness ordering degraded (${context}). The booking still went through, but agent assignment may not reflect each agent's fair share this period. Check DB health.`
+  );
+}
+
+/** Verify-on-book could not confirm ANY candidate, so the booking was refused. */
+export function verifyOutageAlert(): string {
+  return "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.";
+}
+
+/** A reschedule failed closed because the lock claim hit a DB error. */
+export function rescheduleLockOutageAlert(): string {
+  return "Slate: a reschedule failed CLOSED because the per-booking lock claim hit an unexpected DB error (not a real conflict). The actor saw a retryable 503. Check DB health.";
+}

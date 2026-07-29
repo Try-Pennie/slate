@@ -12,6 +12,7 @@ import {
 import { agentDisplayName, formatRequestWhenAndReason } from "@/lib/ooo/core";
 import type { OooRequest } from "@/lib/db/types";
 import { log } from "@/lib/log";
+import { digestUnreachableAlert, digestUnreachableRecovery } from "@/lib/monitor/cron-alert-copy";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 
@@ -43,8 +44,7 @@ async function noteDigestDelivery(managerId: string, managerLabel: string, ok: b
     // send failed. resolveAlert is a no-op unless a page was delivered.
     const cleared = await resolveAlert(
       `ooo-digest-unreachable:${managerId}`,
-      `${managerLabel} is receiving their daily pending time off digest again, so approvals ` +
-        `waiting on them are being surfaced. No action is needed.`,
+      digestUnreachableRecovery(managerLabel),
     ).catch((err) => {
       log.error("ooo-digest", { msg: "recovery notice failed", manager: managerId }, err);
       return false;
@@ -62,10 +62,7 @@ async function noteDigestDelivery(managerId: string, managerLabel: string, ok: b
     await sendThrottledAlert(
       `ooo-digest-unreachable:${managerId}`,
       ALERT_COOLDOWN_MS,
-      `A manager is not receiving their daily pending time off digest on Slack. ` +
-        `${managerLabel} has been unreachable for at least ${ALERT_AFTER_RUNS} days running, ` +
-        `so time off requests waiting on their approval may be piling up unseen. ` +
-        `Check that their Slack account uses their Slate email address.`,
+      digestUnreachableAlert(managerLabel, ALERT_AFTER_RUNS),
     );
   } catch (err) {
     log.error("ooo-digest", { msg: "delivery alert failed", manager: managerId }, err);

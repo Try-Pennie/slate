@@ -369,6 +369,34 @@ When you write the opt-out, say which way it fails. `hasBlockingBusy` fails
 rests entirely on its `Math.max` / `Math.min` and `os >= oe` ordering, which is
 why a test pins it. Do not restructure that comparison without rechecking it.
 
+# Read alert copy before it ships (`pnpm preview:alerts`, #1153)
+
+Alert copy is a contract with a person holding a phone mid-incident, and it was
+the one user-facing surface in Slate that could not be looked at before it
+shipped. The 2026-07-28 page proved the cost: eight lines of raw Google JSON cut
+off mid-word, advice to re-authenticate an account the same message called
+self-healing, and "1 of 97 bookable agent". Unit tests assert substrings, so none
+of that was visible until Slack rendered it at 7am.
+
+**Run `pnpm preview:alerts` before changing any alert wording, and read the diff
+in review.** It prints every alert, grouped by key, in each state that reads
+differently (singular and plural, measured and unreadable, page and all-clear).
+
+The rule that makes it trustworthy: **the preview CALLS the real copy builders,
+it never holds its own copy of the wording.** That is why alert text lives in
+pure builders (`*/alert-copy.ts`, `lane-copy.ts`, the `format*` functions) rather
+than inline at the send site: a preview showing text that is not what ships would
+be worse than no preview (L41).
+
+`scripts/test-alert-preview-coverage.ts` keeps it honest: every catalog key has a
+rendered state, every condition previews its all-clear too, the render is
+deterministic (so a diff means the copy changed, not the clock), and no message
+renders `undefined`, `NaN`, `[object Object]`, a leaked null, or a raw JSON blob.
+A new alert cannot ship unreadable.
+
+Note the guard also fails an alert that does not name **Slate**: it is read in a
+busy channel and the reader has to know instantly which system is talking.
+
 # Condition vs incident: which alerts get an all-clear (#1151)
 
 Every alert key Slate can send is classified in **`src/lib/notify/alert-catalog.ts`**

@@ -8,6 +8,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
+import { agentSyncFailureAlert, agentSyncRecovery } from "@/lib/monitor/cron-alert-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -50,8 +51,7 @@ export async function GET(req: NextRequest) {
     // and a Slack problem must not turn a good run into a 500.
     const clearedSync = await resolveAlert(
       "agent_sync_failures",
-      "Slate: the hourly Salesforce agent sync is working again. The agent roster and team " +
-        "assignments are up to date, so the earlier page is cleared. No action is needed.",
+      agentSyncRecovery(),
     ).catch(() => false);
     if (clearedSync) log.info("agents", { msg: "sync failure alert cleared" });
     return NextResponse.json({ ...sync, hoursApplied, emptyBuckets: coverage.empty });
@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
       await sendThrottledAlert(
         "agent_sync_failures",
         SYNC_ALERT_COOLDOWN_MS,
-        `Slate: the hourly Salesforce agent sync failed on consecutive runs (${message.slice(0, 300)}). Agent teams and the roster may be stale until it succeeds or someone runs Sync from the admin page.`,
+        agentSyncFailureAlert(message.slice(0, 300)),
       ).catch(() => {});
     }
     return NextResponse.json({ error: message }, { status: 500 });

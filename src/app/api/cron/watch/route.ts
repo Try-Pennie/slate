@@ -13,6 +13,7 @@ import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/di
 import { formatWatchLapseAlert, type FailingAgent } from "@/lib/notify/alerts";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
+import { watchLapseRecovery } from "@/lib/notify/misc-alert-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -44,10 +45,7 @@ async function alertWatchLapse(
   }
   const cleared = await resolveAlert(
     WATCH_ALERT_KEY,
-    "Slate: calendar watch renewal has recovered. Every agent calendar is renewing its " +
-      "Google push channel again, so external changes reach the availability cache " +
-      "immediately rather than waiting on the backup cron. The earlier warning is " +
-      "cleared and no action is needed.",
+    watchLapseRecovery(),
   );
   if (cleared) log.info("watch", { msg: "watch-lapse alert cleared" });
 }

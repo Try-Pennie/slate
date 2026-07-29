@@ -3,6 +3,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { Attributes, Criteria, RoutingExclusion, RoutingDecision } from "@/lib/db/types";
 import { log } from "@/lib/log";
+import { misrouteAlert } from "@/lib/notify/misc-alert-copy";
 
 export { buildRoutingTraceExtras } from "./explain.ts";
 
@@ -63,7 +64,7 @@ export async function recordRoutingDecision(input: RecordRoutingDecisionInput): 
     await sendThrottledAlert(
       `misroute:${input.bucketCode}`,
       MISROUTE_ALERT_COOLDOWN_MS,
-      `Slate routing check: booking ${input.bookingId ?? "(none)"} in bucket ${input.bucketCode} went to agent ${input.chosenUserId ?? "(none)"}, who does not match the bucket criteria, and no fallback was applied. This looks like a routing bug; the booking was allowed through. Inspect routing_decisions for this booking.`,
+      misrouteAlert(input.bookingId ?? "(none)", input.bucketCode, input.chosenUserId ?? "(none)"),
     ).catch(() => {});
   }
 }

@@ -4,6 +4,7 @@ import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webho
 import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
+import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 
@@ -95,7 +96,7 @@ async function send(
     await sendThrottledAlert(
       `webhook_dead:${endpoint.id}`,
       DEAD_LETTER_COOLDOWN_MS,
-      `Slate: webhook delivery to ${endpoint.url} keeps failing (event ${event}, ${attempt} attempts). Last response: ${lastResponse}`,
+      webhookDeadAlert(endpoint.url, event, attempt, lastResponse),
     );
   }
 
@@ -107,9 +108,7 @@ async function send(
   if (ok) {
     await resolveAlert(
       `webhook_dead:${endpoint.id}`,
-      `Slate: webhook delivery to ${endpoint.url} is succeeding again, so events are reaching it ` +
-        `and the earlier page is cleared. Deliveries that dead-lettered while it was down are not ` +
-        `re-sent automatically; replay them from the admin webhooks page if they matter.`,
+      webhookDeadRecovery(endpoint.url),
     ).catch((err) => {
       // Monitoring must never fail a delivery that already succeeded.
       log.error("webhooks", { msg: "recovery notice failed", endpoint_id: endpoint.id }, err);

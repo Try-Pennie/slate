@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { shortErrorReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
 import { log } from "@/lib/log";
+import { internalErrorAlert } from "@/lib/notify/misc-alert-copy";
 
 /** The one client-facing message for an unexpected server fault. Shared so every
  *  route (the six #598 mutation routes and the direct bot API, #707) says the
@@ -44,7 +45,7 @@ export async function reportInternalError(err: unknown, context: string): Promis
   await sendThrottledAlert(
     `internal_error:${context}`,
     INTERNAL_ERROR_COOLDOWN_MS,
-    `Slate: unexpected server error on ${context} (${detail}). The caller got a generic 500. Full detail is in the Worker logs at level error.`,
+    internalErrorAlert(context, detail),
   ).catch((alertErr) => {
     log.error("api", { msg: "internal-error alert failed", context }, alertErr);
   });

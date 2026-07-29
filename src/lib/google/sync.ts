@@ -56,6 +56,7 @@ import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { log } from "@/lib/log";
+import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { afterResponse } from "@/lib/after-response";
 
 const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -180,7 +181,7 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     await sendThrottledAlert(
       `external_double_book:${userId}`,
       COLLISION_ALERT_COOLDOWN_MS,
-      `Slate: possible external double-book for ${email}. ${collisions.length} active Slate booking(s) overlap a Google event booked outside Slate (booking ids: ${ids}). Check the agent's calendar and reschedule one side.`,
+      externalDoubleBookAlert(email, collisions.length, ids),
     ).catch(() => {});
   } catch (err) {
     log.error("sync", { msg: "external-collision detection failed", user_id: userId }, err);
