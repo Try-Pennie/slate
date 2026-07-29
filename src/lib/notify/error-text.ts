@@ -21,8 +21,19 @@
  * Pure and dependency free, so it is node-testable (scripts/test-alerts.ts).
  */
 
-/** Longest reason we will put in an alert line before truncating. */
+/** Longest reason a routine alert carries. Its copy already names the condition,
+ *  so the error is a supporting detail and one clause is enough. */
 export const MAX_REASON_CHARS = 80;
+
+/**
+ * The wider budget for an alert about a fault nobody predicted, where the error
+ * text IS the diagnosis rather than a supporting detail (`reportInternalError`).
+ *
+ * Kept as a named exception rather than a per-call-site number, so the question
+ * "how much error goes in a page" stays answered in one place. Everything else
+ * about the formatting is unchanged: still one line, still cut on a word boundary.
+ */
+export const DIAGNOSTIC_REASON_CHARS = 300;
 
 /**
  * A SHORT human reason for a failure, never a raw external body.
@@ -43,7 +54,10 @@ export const MAX_REASON_CHARS = 80;
  * Returns null for no error, so a caller can omit the clause entirely rather than
  * printing "(null)".
  */
-export function shortFailureReason(raw: string | null | undefined): string | null {
+export function shortFailureReason(
+  raw: string | null | undefined,
+  maxChars: number = MAX_REASON_CHARS,
+): string | null {
   if (!raw) return null;
   const status = /\bfailed: (\d{3})\b/.exec(raw)?.[1];
   if (status) {
@@ -58,12 +72,13 @@ export function shortFailureReason(raw: string | null | undefined): string | nul
   // error): keep its own text, collapsed to one line so a stack or a multi-line
   // message can't flood Slack.
   const oneLine = raw.split("\n").join(" ").replace(/\s+/g, " ").trim();
-  if (oneLine.length <= MAX_REASON_CHARS) return oneLine;
+  if (oneLine.length <= maxChars) return oneLine;
   // Cut on a word boundary when there is one, so the reader never gets a
-  // half-word like `"mess`.
-  const cut = oneLine.slice(0, MAX_REASON_CHARS);
+  // half-word like `"mess`. The boundary search only gives up (and cuts mid-token)
+  // on a "word" longer than half the budget, which is a hash or a URL, not prose.
+  const cut = oneLine.slice(0, maxChars);
   const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+  return `${(lastSpace > maxChars / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
 /**
@@ -72,7 +87,10 @@ export function shortFailureReason(raw: string | null | undefined): string | nul
  * Every catch block was independently deciding between `err.message`,
  * `String(err)`, and a slice of one of them. This is that decision, once.
  */
-export function shortErrorReason(err: unknown, fallback = "no detail"): string {
+export function shortErrorReason(
+  err: unknown,
+  opts: { fallback?: string; maxChars?: number } = {},
+): string {
   const raw = err instanceof Error ? err.message : String(err);
-  return shortFailureReason(raw) ?? fallback;
+  return shortFailureReason(raw, opts.maxChars) ?? (opts.fallback ?? "no detail");
 }

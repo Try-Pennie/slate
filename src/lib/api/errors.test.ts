@@ -147,7 +147,21 @@ describe("internalErrorResponse alerting (#802)", () => {
 
       const body = alertText();
       expect(body).not.toMatch(/supercalifragil(?!istic)/);
-      expect(body.length).toBeLessThan(400);
+      expect(body.length).toBeLessThan(600);
+    });
+
+    // This alert is the on-call reader's FIRST diagnostic for a fault nobody
+    // predicted, so it gets a wider budget than a routine page whose cause is
+    // already named in its copy. Wider, not unbounded, and still whole words and
+    // one line: readable and useful are not in tension here.
+    it("carries more detail than a routine alert, still one line and whole words", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await reportInternalError(new Error(`${"diagnosis ".repeat(40)}supercalifragilistic`), "book");
+
+      const body = alertText();
+      expect(body.length).toBeGreaterThan(250);
+      expect(body).not.toMatch(/supercalifragil(?!istic)/);
+      expect(body.split("\n")).toHaveLength(1);
     });
 
     it("keeps a raw JSON body out of the page entirely", async () => {
