@@ -133,12 +133,35 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
   "prune-bookings-pii": 28 * 60 * MIN,
 };
 
+/**
+ * The epoch-ms a heartbeat reader stores for a stamp that EXISTS but cannot be
+ * parsed (#1169). Epoch 0 is never a real heartbeat, and it is chosen so the
+ * lane fails closed: infinitely old reads as stale and pages, where a null would
+ * have read as "never stamped" and stayed quiet forever.
+ *
+ * Defined once, here, next to the code that interprets it. The readers import it
+ * rather than writing a bare `0`, so the sentinel and its meaning cannot drift.
+ */
+export const UNREADABLE_STAMP_MS = 0;
+
+/** True when a stamp is the unreadable sentinel rather than a real heartbeat. */
+export function isUnreadableStamp(ms: number | null | undefined): boolean {
+  return ms === UNREADABLE_STAMP_MS;
+}
+
 export interface StaleLane {
   lane: string;
-  /** How long this lane has been quiet (ms). */
+  /** How long this lane has been quiet (ms). Meaningless when `unreadable`. */
   ageMs: number;
   /** The bound it blew through. */
   maxStaleMs: number;
+  /**
+   * The stored stamp could not be READ, so this lane's `ageMs` is arithmetic on
+   * the epoch-0 sentinel, not a measured age (#1172). The verdict (stale) is
+   * still right; the number is not, and copy must say the record is unreadable
+   * rather than quote roughly 29.8 million minutes to someone woken at 3am.
+   */
+  unreadable: boolean;
 }
 
 /**
@@ -182,14 +205,47 @@ export function findStaleLanes(
   for (const [lane, maxStaleMs] of Object.entries(bounds)) {
     const lastRanAtMs = lastRanAtMsByLane[lane];
     if (lastRanAtMs === null || lastRanAtMs === undefined) {
-      if (neverIsStale) stale.push({ lane, ageMs: Infinity, maxStaleMs });
+      // Never stamped is a THIRD state, distinct from both a real age and an
+      // unreadable record, and it has its own copy.
+      if (neverIsStale) stale.push({ lane, ageMs: Infinity, maxStaleMs, unreadable: false });
       continue;
     }
     const ageMs = nowMs - lastRanAtMs;
-    if (ageMs > maxStaleMs) stale.push({ lane, ageMs, maxStaleMs });
+    if (ageMs > maxStaleMs) {
+      stale.push({ lane, ageMs, maxStaleMs, unreadable: isUnreadableStamp(lastRanAtMs) });
+    }
   }
   // Most-overdue first, so the alert leads with the worst offender.
   return stale.sort((a, b) => b.ageMs - b.maxStaleMs - (a.ageMs - a.maxStaleMs));
+}
+
+/**
+ * The one clause every stale-lane alert uses to say how it knows (#1172).
+ *
+ * Mid-incident the reader needs the fact the check actually established. When
+ * the stored stamp cannot be read, that fact is "the last-run record is
+ * unreadable", NOT "quiet for 29,800,000 minutes", which is arithmetic on the
+ * epoch-0 sentinel and reads as a broken alert rather than a broken lane (L11: a
+ * message may claim only what its check measured).
+ *
+ * One implementation, because four copy paths render this and they were four
+ * separate template strings a change would have to find all of.
+ */
+export function laneQuietClause(opts: {
+  ageMs: number;
+  boundMin: number;
+  unreadable: boolean;
+  /** "run" for a cron lane, "completed" for the daily retention lanes. */
+  verb?: "run" | "completed";
+}): string {
+  const verb = opts.verb ?? "run";
+  if (opts.unreadable) {
+    return (
+      `has a last-${verb === "completed" ? "completion" : "run"} record that cannot be read, ` +
+      `so it is being treated as stale (bound ${opts.boundMin}m)`
+    );
+  }
+  return `has not ${verb} for ${Math.round(opts.ageMs / 60_000)} minutes (bound ${opts.boundMin}m)`;
 }
 
 export type LaneHealthState = "ok" | "stale" | "never";
@@ -235,6 +291,13 @@ export interface LaneObservation {
   ageMs: number | null;
   /** This lane is stale (unhealthy) when ageMs > maxStaleMs (strict >). */
   maxStaleMs: number;
+  /**
+   * This lane's stored stamp could not be READ (#1172), so `ageMs` is arithmetic
+   * on the epoch-0 sentinel rather than a measured age. The lane is still
+   * unhealthy; the endpoint just must not publish the number as if it meant
+   * something.
+   */
+  stampUnreadable?: boolean;
 }
 
 export interface HealthInput {
@@ -252,8 +315,14 @@ export interface HealthResult {
   reason: HealthReason;
   /** The offending lane when reason === "heartbeat_stale", else null. */
   staleLane: string | null;
-  /** That lane's age (ms) when reason === "heartbeat_stale", else null. */
+  /**
+   * That lane's age (ms) when reason === "heartbeat_stale", else null. Also null
+   * when the stamp could not be read: no age was measured, so none is reported
+   * (#1172). Read it together with `staleStampUnreadable`.
+   */
   staleAgeMs: number | null;
+  /** The offending lane's stored stamp could not be read (#1172). */
+  staleStampUnreadable: boolean;
 }
 
 export function computeHealthStatus(input: HealthInput): HealthResult {
@@ -264,6 +333,7 @@ export function computeHealthStatus(input: HealthInput): HealthResult {
       reason: "db_unreachable",
       staleLane: null,
       staleAgeMs: null,
+      staleStampUnreadable: false,
     };
   }
 
@@ -271,12 +341,12 @@ export function computeHealthStatus(input: HealthInput): HealthResult {
   // age exceeds its own bound (strict >). Never-stamped lanes don't alarm. When
   // several lanes are stale, report the one MOST over its bound: with
   // heterogeneous bounds that is the most-broken lane, not merely the oldest.
-  let worst: { lane: string; ageMs: number; over: number } | null = null;
+  let worst: { lane: string; ageMs: number; over: number; unreadable: boolean } | null = null;
   for (const l of input.lanes) {
     if (l.ageMs === null) continue;
     const over = l.ageMs - l.maxStaleMs;
     if (over > 0 && (worst === null || over > worst.over)) {
-      worst = { lane: l.lane, ageMs: l.ageMs, over };
+      worst = { lane: l.lane, ageMs: l.ageMs, over, unreadable: l.stampUnreadable === true };
     }
   }
 
@@ -286,11 +356,21 @@ export function computeHealthStatus(input: HealthInput): HealthResult {
       httpStatus: 503,
       reason: "heartbeat_stale",
       staleLane: worst.lane,
-      staleAgeMs: worst.ageMs,
+      // #1172: an unreadable stamp measured no age, so the body reports none
+      // rather than publishing arithmetic on the epoch-0 sentinel as a duration.
+      staleAgeMs: worst.unreadable ? null : worst.ageMs,
+      staleStampUnreadable: worst.unreadable,
     };
   }
 
-  return { healthy: true, httpStatus: 200, reason: "ok", staleLane: null, staleAgeMs: null };
+  return {
+    healthy: true,
+    httpStatus: 200,
+    reason: "ok",
+    staleLane: null,
+    staleAgeMs: null,
+    staleStampUnreadable: false,
+  };
 }
 
 /**
@@ -300,7 +380,12 @@ export function computeHealthStatus(input: HealthInput): HealthResult {
  * useless and the cause is different (it has failed every run since deploy, or it
  * was never scheduled).
  */
-export function retentionAlertText(lane: string, ageMs: number, boundMin: number): string {
+export function retentionAlertText(
+  lane: string,
+  ageMs: number,
+  boundMin: number,
+  unreadable = false,
+): string {
   const what =
     lane === "prune-bookings-pii"
       ? "consumer contact data past the 24 month window is not being redacted, and delivered outbox rows (which can carry the same PII) are not being pruned"
@@ -310,7 +395,7 @@ export function retentionAlertText(lane: string, ageMs: number, boundMin: number
   if (!Number.isFinite(ageMs)) {
     return `Slate: the ${lane} retention lane has NEVER completed a run, so ${what}. It has either failed every run since it was deployed or is not being scheduled. Check the Worker logs for tag=${lane} and the cron_${lane.replace(/-/g, "_")} lock.`;
   }
-  return `Slate: the ${lane} retention lane has not completed for ${Math.round(ageMs / 60_000)} minutes (bound ${boundMin}m), so ${what}. Check the Worker logs for tag=${lane}.`;
+  return `Slate: the ${lane} retention lane ${laneQuietClause({ ageMs, boundMin, unreadable, verb: "completed" })}, so ${what}. Check the Worker logs for tag=${lane}.`;
 }
 
 /**

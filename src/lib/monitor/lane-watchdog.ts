@@ -6,6 +6,7 @@ import {
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   retentionAlertText,
+  laneQuietClause,
   neverStampedVerdict,
   type StaleLane,
 } from "@/lib/monitor/health";
@@ -102,9 +103,11 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
       await sendThrottledAlert(
         staleLaneAlertKey(lane.lane),
         STALE_LANE_COOLDOWN_MS,
-        `Slate: the ${lane.lane} cron lane has not run for ${minutes(lane.ageMs)} minutes (bound ${minutes(
-          lane.maxStaleMs,
-        )}m). Its work is not happening. A mid-run CPU kill on the shared cron invocation is the usual cause (#760): check the Worker's outcome for exceededCpu, and the cron_${lane.lane} lock.`,
+        `Slate: the ${lane.lane} cron lane ${laneQuietClause({
+          ageMs: lane.ageMs,
+          boundMin: minutes(lane.maxStaleMs),
+          unreadable: lane.unreadable,
+        })}. Its work is not happening. A mid-run CPU kill on the shared cron invocation is the usual cause (#760): check the Worker's outcome for exceededCpu, and the cron_${lane.lane} lock.`,
       ).catch((err) => {
         // One lane's failed Slack post must not skip the remaining lanes.
         log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
@@ -121,7 +124,7 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     await sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
-      canaryAlertText(lane.lane, minutes(lane.ageMs), minutes(lane.maxStaleMs)),
+      canaryAlertText(lane, minutes(lane.maxStaleMs)),
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
@@ -132,7 +135,7 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     await sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
-      mirrorAlertText(lane.lane, minutes(lane.ageMs), minutes(lane.maxStaleMs)),
+      mirrorAlertText(lane, minutes(lane.maxStaleMs)),
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
@@ -164,7 +167,7 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     await sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
-      retentionAlertText(lane.lane, lane.ageMs, minutes(lane.maxStaleMs)),
+      retentionAlertText(lane.lane, lane.ageMs, minutes(lane.maxStaleMs), lane.unreadable),
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
@@ -344,11 +347,12 @@ function retentionRecoveryText(lane: string): string {
  * end-to-end booking proof stopped (the dry tick may still be fine), and recovery
  * is a full-pass re-run, so the two need distinct, actionable messages.
  */
-function canaryAlertText(lane: string, ageMin: number, boundMin: number): string {
-  if (lane === "smoke-canary-full") {
-    return `Slate: the booking smoke canary's full end to end pass (create, reschedule, cancel) has not run for ${ageMin} minutes (bound ${boundMin}m), so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
+function canaryAlertText(lane: StaleLane, boundMin: number): string {
+  const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
+  if (lane.lane === "smoke-canary-full") {
+    return `Slate: the booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
   }
-  return `Slate: the booking smoke canary has not run for ${ageMin} minutes (bound ${boundMin}m), so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
+  return `Slate: the booking smoke canary ${quiet}, so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
 }
 
 /**
@@ -362,14 +366,15 @@ function canaryAlertText(lane: string, ageMin: number, boundMin: number): string
  * gets its own cause and its own next step, and each says plainly that the app
  * itself is unaffected so nobody treats it as an outage.
  */
-function mirrorAlertText(lane: string, ageMin: number, boundMin: number): string {
-  if (lane === "snowflake-reconcile") {
-    return `Slate: the check that compares the live database against the Snowflake mirror has not run for ${ageMin} minutes (bound ${boundMin}m), so nothing is verifying that the warehouse still matches the source (the app itself is unaffected). Anything that trusts the mirror being complete, including export gated deletion, should be treated as unverified until this clears. Check the cron_snowflake_reconcile lock and the Worker outcome for the 6h lane.`;
+function mirrorAlertText(lane: StaleLane, boundMin: number): string {
+  const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
+  if (lane.lane === "snowflake-reconcile") {
+    return `Slate: the check that compares the live database against the Snowflake mirror ${quiet}, so nothing is verifying that the warehouse still matches the source (the app itself is unaffected). Anything that trusts the mirror being complete, including export gated deletion, should be treated as unverified until this clears. Check the cron_snowflake_reconcile lock and the Worker outcome for the 6h lane.`;
   }
-  if (lane === "erasure-audit") {
-    return `Slate: the check that proves an erased person's data is really gone from the Snowflake warehouse has not run for ${ageMin} minutes (bound ${boundMin}m), so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
+  if (lane.lane === "erasure-audit") {
+    return `Slate: the check that proves an erased person's data is really gone from the Snowflake warehouse ${quiet}, so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
   }
-  return `Slate: the Snowflake mirror export lane has not run for ${ageMin} minutes (bound ${boundMin}m), so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
+  return `Slate: the Snowflake mirror export lane ${quiet}, so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
 }
 
 

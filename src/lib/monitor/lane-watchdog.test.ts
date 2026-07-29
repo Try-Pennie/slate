@@ -471,6 +471,61 @@ describe("alertOnStaleLanes (#803)", () => {
   // #1134: a lane coming back to life is the news the person who was paged is
   // waiting for, and until now the only signal was silence, which is
   // indistinguishable from the hourly cooldown still running.
+  // #1172: a corrupt stored stamp reads as epoch 0 so the lane fails closed and
+  // pages, which is right. What the page must NOT do is render the arithmetic
+  // that follows: "has not run for 29,800,000 minutes" reads as a broken alert
+  // rather than a broken lane, and it buries the one fact worth having at 3am.
+  describe("a lane whose stored stamp cannot be read", () => {
+    // The epoch-0 sentinel the heartbeat readers store for an unparseable stamp.
+    const UNREADABLE = 0;
+
+    it("still pages (fails closed) rather than passing as healthy", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: UNREADABLE });
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).toContain("outbox");
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    });
+
+    it("says the last-run record is unreadable instead of quoting an absurd age", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: UNREADABLE });
+      await alertOnStaleLanes();
+
+      const [, , text] = dispatch.sendThrottledAlert.mock.calls[0];
+      expect(text).toMatch(/cannot be read/i);
+      // No five-plus digit minute count anywhere in the copy.
+      expect(text).not.toMatch(/\d{5,}\s*minutes/);
+      // It still names the lane and points somewhere useful.
+      expect(text).toContain("outbox");
+      expect(text).toContain("cron_outbox");
+    });
+
+    it("a genuinely quiet lane still gets its real, measured age", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: ago(25 * MIN) });
+      await alertOnStaleLanes();
+
+      const [, , text] = dispatch.sendThrottledAlert.mock.calls[0];
+      expect(text).toMatch(/has not run for 25 minutes/);
+      expect(text).not.toMatch(/cannot be read/i);
+    });
+
+    it("says it for the canary and the mirror lanes too, not just the core lanes", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "smoke-canary": UNREADABLE,
+        "snowflake-export": UNREADABLE,
+      });
+      await alertOnStaleLanes();
+
+      const texts = dispatch.sendThrottledAlert.mock.calls.map((c) => c[2] as string);
+      expect(texts).toHaveLength(2);
+      for (const text of texts) {
+        expect(text).toMatch(/cannot be read/i);
+        expect(text).not.toMatch(/\d{5,}\s*minutes/);
+      }
+    });
+  });
+
   describe("recovery notices (#1134)", () => {
     const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
     /** What the watchdog actually probes for: the prefixed firing markers. */
