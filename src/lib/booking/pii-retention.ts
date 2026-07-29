@@ -4,8 +4,13 @@ import { DateTime } from "luxon";
  * Consumer booking PII retention (#1071, part of the #1029 milestone). Bookings
  * hold attendee name/email/phone, a prefill blob, and the strong identity keys
  * salesforce_id/external_id (person-dedupe.ts). The retention cron redacts these
- * on bookings whose appointment is past this window. Provisional 24 months,
- * pending Pennie legal per #1029.
+ * on bookings whose appointment is past this window.
+ *
+ * 24 months is CONFIRMED, not provisional (Dan, 2026-07-29, #1074): see
+ * docs/pii-retention.md section 9 for that decision and the three alongside it,
+ * and docs/pii-legal-positions.md for the memo written for counsel's review.
+ * Changing this number is a compliance decision, not a tuning knob; the same
+ * window is stated to apply to the Snowflake mirror.
  */
 export const BOOKING_PII_RETENTION_MONTHS = 24;
 
