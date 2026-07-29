@@ -155,6 +155,19 @@ describe("retryFailedDeliveries", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("retries a delivery whose updated_at stamp is unparseable (#1169)", async () => {
+    // A corrupt stamp used to parse to NaN, so isDueForRetry compared false on
+    // every sweep and the failed delivery sat stuck forever: never retried,
+    // never dead-lettered, invisible. Unreadable must land on the DUE side
+    // (as if last attempted long ago); the attempt then rewrites updated_at.
+    state.deliveries = [{ ...delivery("d1"), updated_at: "not-a-timestamp" }];
+
+    const retried = await retryFailedDeliveries();
+
+    expect(retried).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("skips a delivery whose attempt claim is lost to a concurrent send (no double-POST)", async () => {
     state.deliveries = [delivery("d1")];
     state.claimWins = false; // another actor already bumped this attempt

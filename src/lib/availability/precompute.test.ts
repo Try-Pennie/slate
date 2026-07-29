@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   users: [] as Record<string, unknown>[],
   buckets: [] as Record<string, unknown>[],
   members: [] as Record<string, unknown>[],
+  slotRows: [] as Record<string, unknown>[],
   queries: [] as string[],
   failTable: null as string | null,
 }));
@@ -34,6 +35,10 @@ function result(table: string) {
   if (table === "users") return { data: state.users, error: null };
   if (table === "buckets") return { data: state.buckets, error: null };
   if (table === "bucket_members") return { data: state.members, error: null };
+  // Null when empty so readBucketSlotsRow's maybeSingle still sees a clean miss.
+  if (table === "bucket_slots") {
+    return { data: state.slotRows.length ? state.slotRows : null, error: null };
+  }
   return { data: null, error: null };
 }
 
@@ -56,6 +61,7 @@ beforeEach(() => {
   state.queries = [];
   state.failTable = null;
   state.users = [];
+  state.slotRows = [];
   state.buckets = [
     // Matched by attribute criteria.
     { id: "b-debt", code: "411", criteria: { team: "debt" }, fallback_user_id: null, org_id: ORG },
@@ -193,5 +199,25 @@ describe("precompute reads fail loud on a query error (#315)", () => {
   it("listKnownBucketSlotRows throws on a query error", async () => {
     state.failTable = "bucket_slots";
     await expect(listKnownBucketSlotRows()).rejects.toThrow();
+  });
+});
+
+// #1169: a bucket_slots row whose computed_at cannot be parsed must read as
+// computed at epoch 0 (infinitely old), never NaN. A NaN age compared false
+// against the freshness window, so the bucket was never recomputed (the booker
+// kept serving a frozen slot cache) and staleBuckets never flagged it: broken
+// and invisible at once. Epoch 0 puts it first in line to recompute and flags
+// it stale immediately.
+describe("listKnownBucketSlotRows on a corrupt computed_at (#1169)", () => {
+  it("maps an unparseable computed_at to 0, and a healthy one to its epoch ms", async () => {
+    const iso = "2026-07-29T12:00:00.000Z";
+    state.slotRows = [
+      { bucket_code: "411", computed_at: "not-a-timestamp" },
+      { bucket_code: "412", computed_at: iso },
+    ];
+    expect(await listKnownBucketSlotRows()).toEqual([
+      { code: "411", computedAtMs: 0 },
+      { code: "412", computedAtMs: Date.parse(iso) },
+    ]);
   });
 });

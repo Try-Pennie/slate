@@ -394,6 +394,22 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(String(call?.[2])).not.toMatch(/Infinity|NaN/);
     });
 
+    it("pages rather than waits forever when the sighting marker is unparseable (#1169)", async () => {
+      // A corrupt first-seen stamp used to parse to NaN, so "has a full bound
+      // elapsed since first sighting?" compared false on every tick and the lane
+      // could never page. Unreadable must land on the paged side: the sighting is
+      // treated as ancient, not as pending.
+      const { "prune-bookings-pii": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = "not-a-timestamp";
+      const stale = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("prune-bookings-pii");
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:prune-bookings-pii",
+      );
+      expect(call).toBeDefined();
+    });
+
     it("defers rather than false-pages when the sighting marker cannot be read", async () => {
       // A failed read must not become a page. It returns null, which reads as "first
       // sighting", so the worst case is an alert delayed by one bound.

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { computeHealthStatus, LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { parseStampMs } from "@/lib/date/stamp";
 import { slackConfigured } from "@/lib/notify/slack";
 
 export const dynamic = "force-dynamic";
@@ -31,8 +32,10 @@ export async function GET() {
       dbOk = false;
     } else {
       for (const row of (data ?? []) as { lane: string; last_ran_at: string }[]) {
-        const ms = Date.parse(row.last_ran_at);
-        if (isNaN(ms)) continue;
+        // #1169: fail closed. A stamp that exists but cannot be parsed reads as
+        // epoch 0 (an infinite age -> 503), never skipped as if never stamped:
+        // the lane's work cannot be proven to be happening.
+        const ms = parseStampMs(row.last_ran_at) ?? 0;
         ageByLane.set(row.lane, now - ms);
       }
     }

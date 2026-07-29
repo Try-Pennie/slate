@@ -50,6 +50,7 @@ import {
 } from "@/lib/notify/alerts";
 import { reachabilityFromError } from "@/lib/google/reachability-classify";
 import { googlePushUrl } from "@/lib/env";
+import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
@@ -727,9 +728,15 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
   if (!email) return { status: "skipped", reason: "no-agent-email" };
 
   const existing = await loadAgentCalendars(userId);
-  const dueForRenewal = (c: AgentCalendar) =>
-    !c.watch_expiration ||
-    Date.parse(c.watch_expiration) - Date.now() < WATCH_RENEW_THRESHOLD_MS;
+  // #1169: fail closed. A corrupt watch_expiration used to parse to NaN, which
+  // compared false against the threshold ("not due") forever, so the channel
+  // silently lapsed and push updates stopped, exactly the failure this check
+  // exists to prevent. Missing OR unreadable both read as due, and the renewal
+  // then overwrites the corrupt value.
+  const dueForRenewal = (c: AgentCalendar) => {
+    const expMs = parseStampMs(c.watch_expiration);
+    return expMs === null || expMs - Date.now() < WATCH_RENEW_THRESHOLD_MS;
+  };
   if (existing.length > 0 && !existing.some(dueForRenewal)) {
     return { status: "current" };
   }

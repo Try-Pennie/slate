@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { parseStampMs } from "@/lib/date/stamp";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
@@ -148,7 +149,9 @@ export async function GET(req: NextRequest) {
     const slotByCode = new Map(
       slotRows.map((r) => [
         r.bucket_code,
-        { slotCount: r.payload?.slots?.length ?? 0, computedAtMs: Date.parse(r.computed_at) },
+        // #1169: fail closed. An unparseable computed_at reads as epoch 0
+        // (stale, canary alerts), never NaN (reads as fresh, canary silent).
+        { slotCount: r.payload?.slots?.length ?? 0, computedAtMs: parseStampMs(r.computed_at) ?? 0 },
       ]),
     );
 

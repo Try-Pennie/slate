@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
 import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
+import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
 
@@ -36,8 +37,12 @@ export async function sendThrottledAlert(
     .select("last_sent_at")
     .eq("key", key)
     .maybeSingle();
+  // #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
+  // shouldSendAlert compared false against forever, permanently muting this
+  // alert. Unreadable reads as "never sent" (null -> send), and the send then
+  // overwrites the corrupt stamp with a fresh one.
   const lastSentAtMs = data
-    ? Date.parse((data as { last_sent_at: string }).last_sent_at)
+    ? parseStampMs((data as { last_sent_at: string }).last_sent_at)
     : null;
   const nowMs = Date.now();
   if (!shouldSendAlert(lastSentAtMs, nowMs, cooldownMs)) return;

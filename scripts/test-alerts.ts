@@ -298,6 +298,15 @@ assert(
   applyBlastRadiusHold([transientAgent({ streak: 3, downMs: null })], NOW_MS).length === 0,
   "a never-successful lone transient calendar still needs the full streak",
 );
+// #1169 regression guard: an unparseable last-success stamp must land on the
+// PAGED side (as if never successful), never read as "inside the hold".
+assert(
+  applyBlastRadiusHold(
+    [{ ...transientAgent({ streak: 12, downMs: 0 }), lastSuccessAt: "not-a-timestamp" }],
+    NOW_MS,
+  ).length === 1,
+  "an unparseable last-success stamp never hides a lone transient failure",
+);
 
 // Two or more transient agents at once is systemic: page on the fast threshold.
 const twoTransient = [

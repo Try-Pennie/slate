@@ -164,6 +164,18 @@ describe("sendThrottledAlert delivery-aware cooldown (#1035)", () => {
     expect(nextEligible).toBeLessThan(before + 5 * 60 * 1000);
     expect(nextEligible).toBeGreaterThanOrEqual(before + 60 * 1000);
   });
+
+  it("still sends when the stored cooldown stamp is unparseable (#1169)", async () => {
+    // A corrupt last_sent_at used to parse to NaN, which shouldSendAlert compared
+    // false against forever: the alert was permanently muted with nothing knowing.
+    // Unreadable must land on the SEND side (as if never sent), and the send then
+    // overwrites the corrupt stamp with a fresh one.
+    // No mockResolvedValueOnce here: the default postSlack mock returns ok, and a
+    // queued once-value would leak into the next test while this send is muted.
+    rows.set("k3", "not-a-timestamp");
+    await sendThrottledAlert("k3", COOLDOWN, "hello");
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+  });
 });
 
 // #1133: an actionable page must say when it clears. Silence is indistinguishable

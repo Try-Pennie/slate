@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { buildRequest } from "@/lib/webhooks/wire";
 import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webhooks/retry";
+import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
@@ -235,6 +236,9 @@ export async function retryFailedDeliveries(): Promise<number> {
     .limit(100);
 
   const now = Date.now();
+  // #1169: fail closed. An unparseable updated_at reads as "last attempted at
+  // epoch 0" (due now), never NaN, which compared false on every sweep and left
+  // the delivery stuck forever: never retried, never dead-lettered.
   const due = ((rows ?? []) as unknown as {
     id: string;
     endpoint_id: string;
@@ -242,7 +246,7 @@ export async function retryFailedDeliveries(): Promise<number> {
     payload: BookingEventPayload;
     attempts: number;
     updated_at: string;
-  }[]).filter((r) => isDueForRetry(r.attempts, Date.parse(r.updated_at), now));
+  }[]).filter((r) => isDueForRetry(r.attempts, parseStampMs(r.updated_at) ?? 0, now));
   if (due.length === 0) return 0;
 
   // One endpoints query per sweep (#623): batch-load the distinct endpoints the
