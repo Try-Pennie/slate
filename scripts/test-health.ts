@@ -13,6 +13,8 @@ import { assert, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
 const MINUTE_BOUND = 10 * MIN; // 1-min lanes (sync/recompute/outbox/selfheal)
+// The absurd "age" an epoch-0 stamp produces: roughly 29.8 million minutes.
+const NOW_MS = 1_800_000_000_000;
 const FIVE_MIN_BOUND = 20 * MIN; // 5-min lanes (complete/watch/monitor)
 
 // Every covered lane fresh -> 200 ok.
@@ -103,6 +105,43 @@ assert(
   atThreshold.healthy && atThreshold.httpStatus === 200,
   "exactly at threshold -> 200 (strict >)",
 );
+
+// #1172: a lane whose stored stamp could not be READ still fails closed (503),
+// but the body must not publish the arithmetic that follows from the epoch-0
+// sentinel as if it were a measured age. A reader of this endpoint gets the fact
+// (the record is unreadable) and no age at all, because none was measured.
+{
+  const unreadable = computeHealthStatus({
+    dbOk: true,
+    lanes: [
+      { lane: "sync", ageMs: 30_000, maxStaleMs: MINUTE_BOUND },
+      { lane: "monitor", ageMs: NOW_MS, maxStaleMs: FIVE_MIN_BOUND, stampUnreadable: true },
+    ],
+  });
+  assert(
+    !unreadable.healthy && unreadable.httpStatus === 503,
+    "an unreadable stamp still fails closed with a 503",
+  );
+  assert(unreadable.staleLane === "monitor", "and names the lane whose record could not be read");
+  assert(
+    unreadable.staleStampUnreadable === true,
+    "the body says the stamp was unreadable, so a reader is not left guessing",
+  );
+  assert(
+    unreadable.staleAgeMs === null,
+    "and reports NO age, because an unreadable stamp measures no age",
+  );
+
+  // A genuinely quiet lane is unchanged: it has a real age and says so.
+  const genuinelyStale = computeHealthStatus({
+    dbOk: true,
+    lanes: [{ lane: "sync", ageMs: 12 * MIN, maxStaleMs: MINUTE_BOUND }],
+  });
+  assert(
+    genuinelyStale.staleAgeMs === 12 * MIN && genuinelyStale.staleStampUnreadable === false,
+    "a real staleness still reports its measured age and is not flagged unreadable",
+  );
+}
 
 // The shipped config covers every 1-min and 5-min lane and excludes agents.
 for (const lane of ["sync", "recompute", "outbox", "selfheal", "complete", "watch", "monitor"]) {

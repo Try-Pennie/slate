@@ -13,6 +13,7 @@ import {
   RETENTION_STALE_BOUNDS_MS,
   retentionAlertText,
   neverStampedVerdict,
+  UNREADABLE_STAMP_MS,
 } from "../src/lib/monitor/health.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -226,6 +227,44 @@ assert(
   const late = retentionAlertText("prune-webhook-payloads", 30 * 60 * 60_000, 1680);
   assert(late.includes("1800 minutes"), "stale copy reports the measured age");
   assert(late.includes("attendee PII"), "stale copy names the consequence for this lane");
+}
+
+// --- #1172: a stored stamp that cannot be READ is not an age ------------------
+// The heartbeat readers map an existing-but-unparseable stamp to epoch 0 so the
+// lane fails closed and pages. The verdict is right; the arithmetic that follows
+// is not an age, and rendering it gives an on-call reader "has not run for
+// 29,800,000 minutes" at 3am. The fact worth having is that the record could not
+// be read, so findStaleLanes carries it and every copy path says it.
+{
+  const unreadable = findStaleLanes({ sync: UNREADABLE_STAMP_MS }, NOW);
+  eq(unreadable.length, 1, "a lane whose stamp cannot be read is still stale (fails closed)");
+  eq(unreadable[0].unreadable, true, "and is flagged as unreadable rather than merely old");
+
+  const genuinelyOld = findStaleLanes({ sync: ago(25 * MIN) }, NOW);
+  eq(genuinelyOld.length, 1, "a genuinely quiet lane is still stale");
+  eq(genuinelyOld[0].unreadable, false, "and is NOT flagged unreadable: its age is real");
+
+  const healthy = findStaleLanes({ sync: ago(30_000) }, NOW);
+  eq(healthy.length, 0, "a fresh stamp is not stale");
+
+  // A never-stamped lane is a THIRD thing, distinct from both.
+  const never = findStaleLanes({}, NOW, RETENTION_STALE_BOUNDS_MS, true);
+  assert(never.length > 0, "a never-stamped retention lane is stale under neverIsStale");
+  eq(never[0].unreadable, false, "never-stamped is not the same as unreadable");
+}
+
+// Every alert-copy path renders the unreadable case as a fact, never as minutes.
+{
+  const retention = retentionAlertText("prune-bookings-pii", NOW - UNREADABLE_STAMP_MS, 1680, true);
+  assert(
+    /cannot be read|unreadable/i.test(retention),
+    "retention copy says the last-run record could not be read",
+  );
+  assert(
+    !/\d{5,}\s*minutes/.test(retention),
+    "retention copy never renders an absurd age in minutes",
+  );
+  assert(retention.includes("contact data"), "and still names the consequence");
 }
 
 finish();

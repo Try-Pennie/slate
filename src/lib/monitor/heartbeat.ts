@@ -8,6 +8,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
+import { UNREADABLE_STAMP_MS } from "@/lib/monitor/health";
 
 /**
  * Returns true ONLY when `lastRanAtMs` is non-null AND the gap since the last
@@ -63,7 +64,7 @@ export async function readAllHeartbeatMs(): Promise<Record<string, number | null
     // (infinitely old -> stale), never as null: null means "never stamped", which
     // every consumer deliberately treats as a fresh deploy and stays quiet about,
     // so a corrupt stamp mapped to null disabled the dead-man's switch for that lane.
-    out[row.lane] = parseStampMs(row.last_ran_at) ?? 0;
+    out[row.lane] = parseStampMs(row.last_ran_at) ?? UNREADABLE_STAMP_MS;
   }
   return out;
 }
@@ -88,7 +89,7 @@ export async function readHeartbeatMs(lane: string): Promise<number | null> {
     if (!data) return null;
     // #1169: fail closed, same rule as readAllHeartbeatMs: an unparseable stamp
     // on an existing row reads as epoch 0 (stale), never as null (never stamped).
-    return parseStampMs((data as { last_ran_at: string }).last_ran_at) ?? 0;
+    return parseStampMs((data as { last_ran_at: string }).last_ran_at) ?? UNREADABLE_STAMP_MS;
   } catch (err) {
     log.error("heartbeat", { msg: "read threw", lane }, err);
     return null;

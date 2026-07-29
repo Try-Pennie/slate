@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { computeHealthStatus, LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import {
+  computeHealthStatus,
+  LANE_STALE_BOUNDS_MS,
+  UNREADABLE_STAMP_MS,
+  isUnreadableStamp,
+} from "@/lib/monitor/health";
 import { parseStampMs } from "@/lib/date/stamp";
 import { slackConfigured } from "@/lib/notify/slack";
 
@@ -24,6 +29,8 @@ export async function GET() {
 
   let dbOk = true;
   const ageByLane = new Map<string, number>();
+  // Lanes whose stored stamp exists but could not be parsed (#1172).
+  const unreadableLanes = new Set<string>();
 
   try {
     const db = supabaseAdmin();
@@ -35,8 +42,11 @@ export async function GET() {
         // #1169: fail closed. A stamp that exists but cannot be parsed reads as
         // epoch 0 (an infinite age -> 503), never skipped as if never stamped:
         // the lane's work cannot be proven to be happening.
-        const ms = parseStampMs(row.last_ran_at) ?? 0;
+        const ms = parseStampMs(row.last_ran_at) ?? UNREADABLE_STAMP_MS;
         ageByLane.set(row.lane, now - ms);
+        // #1172: remember WHICH lanes could not be read, so the body reports the
+        // fact instead of publishing now-minus-epoch as if it were a measured age.
+        if (isUnreadableStamp(ms)) unreadableLanes.add(row.lane);
       }
     }
   } catch {
@@ -50,6 +60,7 @@ export async function GET() {
     lane,
     ageMs: ageByLane.has(lane) ? (ageByLane.get(lane) as number) : null,
     maxStaleMs,
+    stampUnreadable: unreadableLanes.has(lane),
   }));
 
   const result = computeHealthStatus({ dbOk, lanes });
@@ -70,6 +81,7 @@ export async function GET() {
       alerting,
       staleLane: result.staleLane,
       staleAgeMs: result.staleAgeMs,
+      staleStampUnreadable: result.staleStampUnreadable,
     },
     { status: result.httpStatus },
   );
