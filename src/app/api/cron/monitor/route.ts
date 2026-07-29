@@ -34,6 +34,7 @@ import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
+  missingScheduleAgents,
   runScheduleCoverageCheck,
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
@@ -45,6 +46,7 @@ import {
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import {
   runSyncStalenessCheck,
+  syncRotationCandidates,
   type SyncAgentStaleness,
 } from "@/lib/monitor/sync-staleness";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -274,8 +276,7 @@ export async function GET(req: NextRequest) {
           (from, to) => db.from("availability_schedules").select("user_id").range(from, to),
         ),
       ]);
-      const have = new Set(scheds.map((s) => s.user_id));
-      return agents.filter((a) => !have.has(a.id));
+      return missingScheduleAgents(agents, new Set(scheds.map((s) => s.user_id)));
     };
     const scheduleCoverage = await runScheduleCoverageCheck({
       loadMissingAgents,
@@ -357,15 +358,7 @@ export async function GET(req: NextRequest) {
           (from, to) => db.from("agent_calendars").select("user_id").range(from, to),
         ),
       ]);
-      const haveCals = new Set(cals.map((c) => c.user_id));
-      return agents
-        .filter((a) => haveCals.has(a.id))
-        .map((a) => ({
-          id: a.id,
-          name: a.name,
-          email: a.email,
-          lastSyncedMs: a.last_synced_at ? Date.parse(a.last_synced_at) : null,
-        }));
+      return syncRotationCandidates(agents, new Set(cals.map((c) => c.user_id)));
     };
     const syncStaleness = await runSyncStalenessCheck({
       loadAgents: loadStaleCandidates,
