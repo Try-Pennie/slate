@@ -40,12 +40,34 @@ function harness(config: {
   healThrows?: string[];
   deadlineMs?: number;
   infoThrows?: boolean;
+  /**
+   * #1167 re-verification: what a RE-READ sees, per bucket, one entry per
+   * re-check (the last entry repeats). `cached` defaults to the bucket's
+   * configured slotCount and `recompute` to its configured recompute value, so a
+   * bucket set up to disagree keeps disagreeing and is confirmed, which is how
+   * every case written before #1167 keeps its original meaning.
+   */
+  verify?: Record<string, { cached?: (number | null)[]; recompute?: (number | null)[] }>;
+  verifyAttempts?: number;
+  verifyMaxBuckets?: number;
 }) {
   const notified: { key: string; text: string }[] = [];
   const infoed: { key: string; text: string }[] = [];
   const resolved: string[] = [];
   const healed: string[] = [];
   const healErrors: string[] = [];
+  /** Codes whose cached row was re-read by verification (empty when it skipped). */
+  const verifyReads: string[] = [];
+
+  // Recompute is called once for the initial classification and again per
+  // re-check, so its answers come from a sequence: [initial, ...re-checks].
+  const recomputeCalls = new Map<string, number>();
+  const cachedReads = new Map<string, number>();
+  const nextFrom = <T,>(seq: T[], code: string, counter: Map<string, number>): T => {
+    const i = counter.get(code) ?? 0;
+    counter.set(code, i + 1);
+    return seq[Math.min(i, seq.length - 1)];
+  };
 
   const codes = Object.keys(config.buckets);
   const buckets: ScanBucket[] = codes.map((code) => ({
@@ -89,8 +111,21 @@ function harness(config: {
         if (config.buckets[code].recomputeThrows) throw new Error("recompute boom");
         // Explicit undefined check, not `??`: a configured null means "the
         // recompute failed" and must reach the scan as null, not collapse to 0.
-        const count = config.buckets[code].recompute;
-        return count === undefined ? 0 : count;
+        const first = config.buckets[code].recompute;
+        const initial = first === undefined ? 0 : first;
+        return nextFrom([initial, ...(config.verify?.[code]?.recompute ?? [])], code, recomputeCalls);
+      },
+      verify: {
+        attempts: config.verifyAttempts ?? 2,
+        delayMs: 0,
+        maxBuckets: config.verifyMaxBuckets ?? 8,
+        cachedSlots: async (code) => {
+          verifyReads.push(code);
+          const seq = config.verify?.[code]?.cached;
+          // No override: the cache still reads the way the scan first saw it.
+          return seq ? nextFrom(seq, code, cachedReads) : (config.buckets[code].slotCount ?? 0);
+        },
+        wait: async () => {},
       },
       claimHeal: async (code) => !(config.claimDenied ?? []).includes(code),
       heal: async (code) => {
@@ -113,7 +148,7 @@ function harness(config: {
       log: () => {},
     });
 
-  return { run, notified, infoed, resolved, healed, healErrors };
+  return { run, notified, infoed, resolved, healed, healErrors, verifyReads };
 }
 
 // A healthy tick (buckets showing times): nothing pages, the outstanding
@@ -240,6 +275,95 @@ function harness(config: {
   const h = harness({ buckets: { "411": { recompute: 0 } }, infoThrows: true });
   const res = await h.run();
   assert(res.cause.bookedSolid.length === 1, "a throwing info channel is swallowed and the scan still reports");
+}
+
+// --- #1167: re-verify a suspected anomaly before waking anyone. The module's own
+// suite (scripts/test-monitor-anomaly-verify.ts) pins the decision table; these
+// pin that the SCAN acts on it: what heals, what pages, what all-clears. ---
+
+// The blip. The cache catches up on the re-read, so nobody is paged and nothing
+// is healed, because by the time we looked twice there was nothing wrong.
+{
+  const h = harness({
+    buckets: { "411": { recompute: 4 } },
+    verify: { "411": { cached: [6] } },
+  });
+  const res = await h.run();
+  assert(res.cause.dataAnomaly.length === 0, "a suspicion the re-read dissolves is not a data anomaly");
+  assert(h.notified.length === 0, "a one-off blip does not page");
+  assert(h.healed.length === 0, "a blip is not healed either: the cache already has times");
+  assert(res.verified.resolved[0] === "411", "the scan reports which suspicion was resolved");
+  assert(
+    h.resolved[0] === DATA_ANOMALY_ALERT_KEY,
+    "a tick whose only finding dissolved is healthy, so it all-clears",
+  );
+}
+
+// The real fault still behaves exactly as it did: verified, healed, paged.
+{
+  const h = harness({ buckets: { "411": { recompute: 4 } } });
+  const res = await h.run();
+  assert(res.verified.dataAnomaly[0] === "411", "a bucket that keeps disagreeing is confirmed");
+  assert(h.verifyReads.length > 0, "verification really re-read the cache");
+  assert(h.healed[0] === "411", "a confirmed anomaly is still self-healed");
+  assert(h.notified[0]?.key === DATA_ANOMALY_ALERT_KEY, "a confirmed anomaly still pages");
+}
+
+// An unverified bucket whose recompute recovers and agrees with the empty cache
+// turns out to be booked solid, so it whispers instead of paging.
+{
+  const h = harness({
+    buckets: { "411": { recompute: null } },
+    verify: { "411": { recompute: [0] } },
+  });
+  const res = await h.run();
+  assert(res.cause.unverified.length === 0, "a recovered recompute is no longer unverified");
+  assert(res.cause.bookedSolid[0] === "411", "agreeing with the empty cache is booked solid");
+  assert(h.notified.length === 0, "so it no longer pages");
+  assert(h.infoed[0]?.key === BOOKED_SOLID_INFO_KEY, "it whispers on the info channel instead");
+}
+
+// An unverified bucket whose recompute recovers and finds times is a real
+// anomaly, so it now earns the self-heal it would never have had.
+{
+  const h = harness({
+    buckets: { "411": { recompute: null } },
+    verify: { "411": { recompute: [4] } },
+  });
+  const res = await h.run();
+  assert(res.cause.dataAnomaly[0] === "411", "a recovered recompute finding times is a data anomaly");
+  assert(h.healed[0] === "411", "and it is self-healed, which the unverified path never was");
+  assert(h.notified[0]?.key === DATA_ANOMALY_ALERT_KEY, "and it pages");
+}
+
+// A BROAD anomaly is an outage, not a blip: page immediately, and do not spend
+// the shared subrequest budget re-reading every bucket.
+{
+  const codes = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  const h = harness({
+    buckets: Object.fromEntries(codes.map((c) => [c, { recompute: 4 }])),
+    verifyMaxBuckets: 8,
+    // Every re-read would say "fine", so if verification ran at all this would
+    // wrongly go quiet. It must not run.
+    verify: Object.fromEntries(codes.map((c) => [c, { cached: [9] }])),
+  });
+  const res = await h.run();
+  assert(res.cause.dataAnomaly.length === 9, "a broad anomaly is confirmed without re-verification");
+  assert(h.verifyReads.length === 0, "a broad anomaly issues no verification reads");
+  assert(h.notified[0]?.key === DATA_ANOMALY_ALERT_KEY, "and it pages on this tick, not a later one");
+  assert(res.verified.skipped, "the scan records that verification was skipped");
+}
+
+// Fail closed through the scan: a verification read that throws leaves the
+// finding standing, so a broken re-check can never silence a page.
+{
+  const h = harness({
+    buckets: { "411": { recompute: 4 } },
+    verify: { "411": { cached: [null] } },
+  });
+  const res = await h.run();
+  assert(res.cause.dataAnomaly[0] === "411", "an unreadable re-read keeps the anomaly (fails closed)");
+  assert(h.notified[0]?.key === DATA_ANOMALY_ALERT_KEY, "so it still pages");
 }
 
 finish();

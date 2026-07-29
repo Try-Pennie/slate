@@ -24,6 +24,7 @@ import {
   type FallbackCoveredDetail,
 } from "./availability-health.ts";
 import { selfHealDataAnomalies, type SelfHealResult } from "./anomaly-selfheal.ts";
+import { verifyAnomalies, type AnomalyVerifyResult } from "./anomaly-verify.ts";
 import { mapWithConcurrency } from "../google/sync-pace.ts";
 
 /** Quiet info: a dead-end because agents are booked solid. Full calendars are a
@@ -53,6 +54,19 @@ export interface AvailabilityScanDeps {
   claimHeal: (code: string) => Promise<boolean>;
   heal: (code: string) => Promise<void>;
   onHealError: (code: string, err: unknown) => void;
+  /**
+   * #1167: re-check a suspected anomaly before paging, so a momentary
+   * disagreement does not wake anyone. See anomaly-verify.ts; `cachedSlots` must
+   * be a FRESH read of the bucket's cached row (not the map this scan started
+   * with, whose whole point is that it may be the stale side of the comparison).
+   */
+  verify: {
+    attempts: number;
+    delayMs: number;
+    maxBuckets: number;
+    cachedSlots: (code: string) => Promise<number | null>;
+    wait: (ms: number) => Promise<void>;
+  };
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
   info: (key: string, cooldownMs: number, text: string) => Promise<void>;
   resolve: (key: string, text: string) => Promise<boolean>;
@@ -67,6 +81,8 @@ export interface AvailabilityScanResult {
   covered: FallbackCovered[];
   cause: DeadEndCause;
   selfHeal: SelfHealResult;
+  /** What re-verification concluded (#1167), including the blips it filtered. */
+  verified: AnomalyVerifyResult;
   truncated: boolean;
   /** Whether a recovery notice actually went out this tick. */
   cleared: boolean;
@@ -127,7 +143,38 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
     );
     for (const r of recomputes) if (r) recomputeCounts.set(r.code, r.count);
   }
-  const cause = classifyDeadEndCause(page, recomputeCounts);
+  const firstPass = classifyDeadEndCause(page, recomputeCounts);
+
+  // #1167: re-check the suspects before anyone is woken. A single tick's
+  // disagreement can be momentary (a read landing mid-write, a recompute that
+  // briefly answered wrong), and paging on it is how a real page later gets
+  // ignored. Only buckets that KEEP disagreeing survive.
+  //
+  // This runs BEFORE the self-heal on purpose: the heal rewrites the cache, so
+  // afterwards the two sides always agree and there is nothing left to compare.
+  // Every inconclusive path inside fails closed (keeps the finding), so a broken
+  // re-check can never silence a page; anomaly-verify.ts carries that reasoning
+  // and scripts/test-monitor-anomaly-verify.ts pins each path.
+  const verified = await verifyAnomalies({
+    dataAnomaly: firstPass.dataAnomaly,
+    unverified: firstPass.unverified,
+    attempts: deps.verify.attempts,
+    delayMs: deps.verify.delayMs,
+    maxBuckets: deps.verify.maxBuckets,
+    deadlineMs: deps.deadlineMs,
+    now: () => Date.now(),
+    cachedSlots: deps.verify.cachedSlots,
+    recomputeSlots: deps.recomputeSlots,
+    wait: deps.verify.wait,
+  });
+  // Re-verification can move a bucket between causes (a recovered recompute that
+  // agrees with the empty cache is booked solid, not a mystery), so the cause the
+  // rest of the tick acts on is the verified one.
+  const cause: DeadEndCause = {
+    dataAnomaly: verified.dataAnomaly,
+    unverified: verified.unverified,
+    bookedSolid: [...firstPass.bookedSolid, ...verified.bookedSolid],
+  };
 
   // #573: self-heal each data-anomaly bucket (cache empty but a live recompute
   // found times), capped at once per bucket per window via the injected claim
@@ -188,6 +235,11 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
   deps.log({
     dead_end: page.length,
     anomaly: cause.dataAnomaly.length,
+    // A filtered blip pages nobody, so the log is the only place it is visible.
+    // Without this we could not tell "nothing is wrong" from "verification is
+    // eating real findings" (#1167).
+    verify_resolved: verified.resolved.length ? verified.resolved.join(",") : null,
+    verify_skipped: verified.skipped ? (verified.reason ?? true) : null,
     self_healed: selfHeal.healed.length ? selfHeal.healed.join(",") : null,
     self_heal_failed: selfHeal.failed.length ? selfHeal.failed.join(",") : null,
     booked_solid: cause.bookedSolid.length,
@@ -205,6 +257,7 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
     covered,
     cause,
     selfHeal,
+    verified,
     truncated,
     cleared,
   };
