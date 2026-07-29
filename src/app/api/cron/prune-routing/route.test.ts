@@ -84,7 +84,12 @@ vi.mock("@/lib/snowflake/client", async (importOriginal) => ({
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
 vi.mock("@/lib/monitor/heartbeat", () => ({ recordHeartbeat: hb.recordHeartbeat }));
-vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: hb.sendThrottledAlert }));
+vi.mock("@/lib/notify/dispatch", () => ({
+  sendThrottledAlert: hb.sendThrottledAlert,
+  // #1151: the lane clears its "retention stopped" page once it gets past
+  // the export gate, so the boundary has to exist here too.
+  resolveAlert: vi.fn(async (_key: string, _text: string) => true),
+}));
 vi.mock("@/lib/snowflake/reexport", () => ({ repairUnverified: rx.repairUnverified }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 

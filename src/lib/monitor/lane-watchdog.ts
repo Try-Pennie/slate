@@ -263,6 +263,7 @@ async function resolveRecoveredLanes(
       await clearFirstSeenMissing(r.lane);
     }
     if (!present.has(firingKey(r.key))) continue;
+    // alert-key: cron_lane_stale:*
     const sent = await resolveAlert(r.key, r.text).catch((err) => {
       // One lane's failed notice must not skip the rest, and the firing marker
       // survives, so the next tick retries.

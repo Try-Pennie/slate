@@ -13,6 +13,8 @@ const locks = vi.hoisted(() => ({
 const admin = vi.hoisted(() => ({
   supabaseAdmin: vi.fn(() => ({
     from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+    // The behind-streak tracker on the NOT-drained path (#1151 tests drive it).
+    rpc: async () => ({ data: true, error: null }),
   })),
 }));
 const pace = vi.hoisted(() => ({ withinBudget: vi.fn(() => true) }));
@@ -27,7 +29,10 @@ const precomputeCron = vi.hoisted(() => ({
   recomputeDueBuckets: vi.fn(async () => 0),
 }));
 const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async () => {}) }));
-const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async () => {}),
+  resolveRecovered: vi.fn(async (_r: { key: string; text: string }[]) => [] as string[]),
+}));
 const alerts = vi.hoisted(() => ({ isConsecutiveFailure: vi.fn(() => false) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
@@ -63,6 +68,44 @@ describe("GET /api/cron/recompute", () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("recompute");
+  });
+
+  // #1151: both of this lane's alerts describe CONDITIONS, so a healthy cycle
+  // says they are over. Which conditions get cleared is driven by what the cycle
+  // MEASURED, never by "we did not alert this tick".
+  it("clears both conditions on a cycle that drained its work with nothing stale", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    await GET(req());
+    const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
+    expect(keys.sort()).toEqual(["bucket_slots_stale", "recompute_headroom"]);
+  });
+
+  it("clears only the stale condition when the cycle did NOT drain its due list", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.recomputeHeadroom.mockReturnValueOnce({ drained: false, utilizationPct: 99 });
+    await GET(req());
+    const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
+    expect(keys).toEqual(["bucket_slots_stale"]);
+  });
+
+  // The silent path (#1152): rows still stale means the condition is NOT over, so
+  // that key must not be cleared even though the other one can be.
+  it("clears only the headroom condition while rows are still stale", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411", "412"] as never);
+    await GET(req());
+    const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
+    expect(keys).toEqual(["recompute_headroom"]);
+  });
+
+  // The silent path (#1152): a cycle that is BOTH behind and still stale has
+  // measured nothing healthy, so it must announce nothing.
+  it("sends NO all-clear when the cycle is behind and rows are still stale", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.recomputeHeadroom.mockReturnValueOnce({ drained: false, utilizationPct: 99 });
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
+    await GET(req());
+    expect(dispatch.resolveRecovered).not.toHaveBeenCalled();
   });
 
   it("still returns 200 when the heartbeat stamp fails (best-effort)", async () => {

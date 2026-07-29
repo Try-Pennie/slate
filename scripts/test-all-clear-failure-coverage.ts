@@ -226,6 +226,16 @@ assert(
 // through the detector here, so a message that drifts from what is accepted
 // fails the build rather than sending someone off to write a proof that will be
 // rejected again.
+// #1151: the batched all-clear is the same send, so its spy is the same proof.
+assert(
+  provesNoAllClear(`expect(resolveRecovered).not.toHaveBeenCalled();`),
+  "positive control: a resolveRecovered spy assertion is a silent-path proof",
+);
+assert(
+  !provesNoAllClear(`expect(somethingElse).not.toHaveBeenCalled();`),
+  "an assertion about an unrelated spy is NOT a silent-path proof",
+);
+
 for (const shape of [
   { named: "assert(", src: `assert(resolved.length === 0, "sends no all-clear");` },
   { named: "eq(", src: `eq(resolved.length, 0, "sends no all-clear");` },

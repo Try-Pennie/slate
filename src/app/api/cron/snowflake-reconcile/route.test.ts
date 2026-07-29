@@ -124,17 +124,50 @@ describe("GET /api/cron/snowflake-reconcile", () => {
     expect(stamped()).not.toContain("snowflake-check");
   });
 
+  // Keyed lookups, not positional: this lane clears TWO conditions (the self-check
+  // and mirror drift), and asserting on call [0] would silently start testing
+  // whichever happened to run first.
+  const recoveryFor = (key: string) =>
+    (dispatch.resolveAlert.mock.calls as [string, string][]).find(([k]) => k === key);
+
   it("says so when the self-check recovers", async () => {
     await GET(req());
-    expect(dispatch.resolveAlert).toHaveBeenCalledWith("snowflake_healthcheck", expect.any(String));
-    const [, text] = dispatch.resolveAlert.mock.calls[0] as [string, string];
-    expect(text).toMatch(/recover|cleared|working again/i);
+    const call = recoveryFor("snowflake_healthcheck");
+    expect(call).toBeTruthy();
+    expect(call![1]).toMatch(/recover|cleared|working again/i);
   });
 
-  it("does not offer a recovery notice while the self-check is still failing", async () => {
+  it("does not offer a self-check recovery notice while the self-check is still failing", async () => {
     healthcheck.runSnowflakeHealthcheck.mockResolvedValue({ ok: false, configured: true, error: "x" } as never);
     await GET(req());
-    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    expect(recoveryFor("snowflake_healthcheck")).toBeUndefined();
+  });
+
+  // #1151: drift is its own condition with its own all-clear, and the two must not
+  // stand in for each other.
+  it("says so when the mirror drift clears", async () => {
+    await GET(req());
+    const call = recoveryFor("snowflake_reconcile_drift");
+    expect(call).toBeTruthy();
+    expect(call![1]).toMatch(/matches the live database again/i);
+  });
+
+  it("sends NO drift all-clear while the mirror is still out of sync", async () => {
+    reconcile.reconcileSnowflakeMirror.mockResolvedValue({
+      ok: false,
+      skipped: false,
+      reasons: ["bookings: 10 vs 4"],
+    } as never);
+    await GET(req());
+    expect(recoveryFor("snowflake_reconcile_drift")).toBeUndefined();
+  });
+
+  // The silent path (#1152): a SKIPPED run measured nothing, so it must not claim
+  // the mirror agrees with the source.
+  it("sends NO drift all-clear when the mirror is unconfigured (nothing measured)", async () => {
+    reconcile.reconcileSnowflakeMirror.mockResolvedValue({ ok: true, skipped: true, reasons: [] } as never);
+    await GET(req());
+    expect(recoveryFor("snowflake_reconcile_drift")).toBeUndefined();
   });
 
   // Failure path: the self-check is monitoring, so it must not take the lane down
@@ -147,6 +180,17 @@ describe("GET /api/cron/snowflake-reconcile", () => {
     expect(stamped()).toContain("snowflake-reconcile");
     // #1152: a self-check that threw knows nothing about the warehouse, so it must
     // not tell anyone the earlier warning is cleared and retention is unblocked.
+    // Scoped to ITS key: the drift check ran and measured the mirror in sync, and
+    // that verdict is its own (L43, two checks never share one status).
+    expect(recoveryFor("snowflake_healthcheck")).toBeUndefined();
+  });
+
+  // The strongest silent path (#1152): the reconciliation itself threw, so NEITHER
+  // condition was measured this run and the lane must announce nothing at all.
+  it("sends NO all-clear of any kind when the reconciliation itself throws", async () => {
+    reconcile.reconcileSnowflakeMirror.mockRejectedValue(new Error("warehouse unreachable") as never);
+    const res = await GET(req());
+    expect(res.status).toBe(500);
     expect(dispatch.resolveAlert).not.toHaveBeenCalled();
   });
 

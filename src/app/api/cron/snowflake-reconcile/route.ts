@@ -89,6 +89,17 @@ export async function GET(req: NextRequest) {
         ALERT_COOLDOWN_MS,
         `Slate: the Snowflake analytics mirror is out of sync with the live database. ${result.reasons.join("; ")}. The export lane may be lagging or failing; deletion (when built) must not run until this clears.`,
       );
+    } else if (!result.skipped) {
+      // #1151: drift is a CONDITION, so say when it ends. Hung off the measured
+      // in-sync result, never off "we did not alert this run": a SKIPPED run
+      // (mirror unconfigured) measured nothing and must not clear a real page.
+      // resolveAlert is a no-op unless a page was delivered.
+      const cleared = await resolveAlert(
+        "snowflake_reconcile_drift",
+        "Slate: the Snowflake analytics mirror matches the live database again. The export lane has " +
+          "caught up, so anything that was waiting on the mirror being complete can proceed. No action is needed.",
+      );
+      if (cleared) log.info("snowflake-reconcile", { msg: "drift alert cleared" });
     }
     // After the reconciliation, so a warehouse that is too broken to answer the
     // self-check still gets its drift counted and reported first (#1144).

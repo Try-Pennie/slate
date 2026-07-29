@@ -24,6 +24,7 @@ const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(
     async (_key: string, _cooldownMs: number, _text: string) => {},
   ),
+  resolveAlert: vi.fn(async (_key: string, _text: string) => true),
 }));
 const streak = vi.hoisted(() => ({
   recordFailureStreak: vi.fn(),
@@ -71,6 +72,21 @@ describe("GET /api/cron/agents", () => {
     expect(streak.clearFailureStreak).toHaveBeenCalledTimes(1);
     expect(streak.recordFailureStreak).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.
+  it("announces recovery on a clean pass, so the earlier page can be closed", async () => {
+    await GET(req());
+    expect(dispatch.resolveAlert).toHaveBeenCalledTimes(1);
+    expect(dispatch.resolveAlert.mock.calls[0][0]).toBe("agent_sync_failures");
+  });
+
+  // The silent path (#1152): the sync FAILING is not evidence that it works, so a
+  // run that could not read its health signal must announce nothing.
+  it("sends NO all-clear when the sync itself failed", async () => {
+    sync.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF unreachable"));
+    await GET(req());
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
   });
 
   it("stays quiet on a single (self-healing) failure", async () => {

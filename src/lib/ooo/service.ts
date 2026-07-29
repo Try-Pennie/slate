@@ -212,6 +212,13 @@ function realDeps(): OooDeps {
       await updateSlackMessage(ref, text);
     },
     alertOps: (key, message) =>
+      // alert-key: ooo_agent_calendar
+      // alert-key: ooo_manager_calendar
+      // alert-key: ooo_calendar_create
+      // alert-key: ooo_agent_dm
+      // alert-key: ooo_busy_block_fallback
+      // alert-key: ooo_calcom
+      // alert-key: ooo_undo
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),
 
     recordAudit: (action, actorId, orgId, requestId, details) =>

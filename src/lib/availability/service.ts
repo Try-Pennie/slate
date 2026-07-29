@@ -16,9 +16,10 @@ import {
   orderByBucketShare,
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import {
   emptyBucketMessage,
+  recoveredBucketMessage,
   emptyBuckets,
   type BucketCoverage,
 } from "@/lib/availability/bucket-coverage";
@@ -133,6 +134,8 @@ export interface EmptyBucketDeps {
   countEligible(bucket: Bucket): Promise<number>;
   /** One throttled alert per dead bucket, keyed by code so each surfaces independently. */
   sendAlert(code: string, message: string): Promise<void>;
+  /** The all-clear for a bucket that has agents again (#1151), same key. */
+  clearAlert(code: string, message: string): Promise<void>;
 }
 
 const realEmptyBucketDeps: EmptyBucketDeps = {
@@ -142,11 +145,18 @@ const realEmptyBucketDeps: EmptyBucketDeps = {
   // one eligibility read per bucket rather than each re-querying the DB.
   countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
   sendAlert: (code, message) =>
+    // alert-key: empty_buckets:*
     sendThrottledAlert(
       `${EMPTY_BUCKETS_ALERT_KEY}:${code}`,
       EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
       message,
     ).then(() => {}),
+  // all-clear-proof: src/lib/availability/empty-buckets.test.ts - drives this module
+  // against the real dispatch boundary with a failing bucket read, and pins that a
+  // sweep that measured no pool announces no recovery.
+  clearAlert: (code, message) =>
+    // alert-key: empty_buckets:*
+    resolveAlert(`${EMPTY_BUCKETS_ALERT_KEY}:${code}`, message).then(() => {}),
 };
 
 /**
@@ -173,8 +183,20 @@ export async function alertOnEmptyBuckets(
   );
 
   const empty = emptyBuckets(coverage);
+  const emptySet = new Set(empty);
   for (const code of empty) {
     await deps.sendAlert(code, emptyBucketMessage(code)).catch(() => {});
+  }
+  // #1151: "this bucket routes to nobody" is a CONDITION that ends when someone
+  // is staffed onto it, and this monitor is the only thing that re-measures it.
+  // Driven by the MEASURED coverage, not by "we did not alert this run": a bucket
+  // is cleared only because its pool was counted and is non-empty. A run that
+  // could not load any bucket returned earlier and clears nothing.
+  for (const c of coverage) {
+    if (emptySet.has(c.code)) continue;
+    await deps
+      .clearAlert(c.code, recoveredBucketMessage(c.code, c.eligibleCount))
+      .catch(() => {});
   }
   return { empty };
 }

@@ -5,7 +5,7 @@ import { withinBudget } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { RECOMPUTE_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 import { isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
@@ -64,6 +64,9 @@ async function alertIfFallingBehind(
   const db = supabaseAdmin();
   if (headroom.drained) {
     await db.from("rate_limits").delete().eq("key", RECOMPUTE_STREAK_KEY);
+    // #1151: falling behind is a CONDITION, and a cycle that drained its whole
+    // due list IS the recovery. Hung off the measured healthy result rather than
+    // off "we did not alert", so a cycle that could not measure clears nothing.
     return;
   }
   const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
@@ -152,6 +155,36 @@ export async function GET(req: NextRequest) {
         STALE_ALERT_COOLDOWN_MS,
         `Slate: ${stale.length} bucket_slots row(s) stale >${STALE_ALARM_MS / 60_000}m (e.g. ${stale.slice(0, 5).join(", ")}); a precompute writer may be stuck.`,
       ).catch(() => {});
+    }
+
+    // #1151: both of this lane's alerts describe CONDITIONS that end, so say when
+    // they do. Only conditions MEASURED healthy this cycle go in the list: a
+    // cycle that drained its due list proves the headroom condition is over, and
+    // a post-recompute re-read finding nothing stale proves the other is. Batched
+    // into one alert_state read because this lane runs every minute and shares a
+    // subrequest budget with three others.
+    const recovered: { key: string; text: string }[] = [];
+    if (headroom.drained) {
+      recovered.push({
+        key: "recompute_headroom",
+        text:
+          "Slate: bucket recompute has caught up. It refreshed every bucket that was due within " +
+          "its time budget this cycle, so availability is being kept fresh again. No action is needed.",
+      });
+    }
+    if (stale.length === 0) {
+      recovered.push({
+        key: "bucket_slots_stale",
+        text:
+          "Slate: no cached availability rows are stale any more. The precompute writers are " +
+          "keeping up, so the booker is showing current times again. No action is needed.",
+      });
+    }
+    if (recovered.length > 0) {
+      // alert-key: recompute_headroom
+      // alert-key: bucket_slots_stale
+      const cleared = await resolveRecovered(recovered);
+      if (cleared.length) log.info("recompute", { msg: "alerts cleared", keys: cleared.join(",") });
     }
 
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.

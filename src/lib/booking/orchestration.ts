@@ -1863,6 +1863,8 @@ async function completeReservation(
       rungsDropped: Math.max(0, booking.routing_trace?.rungs_dropped ?? 0),
     });
     if (tierAlert) {
+      // alert-key: tier_fallback:*
+      // alert-key: tier_fallback_deep:*
       await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
     }
   }

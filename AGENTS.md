@@ -369,6 +369,44 @@ When you write the opt-out, say which way it fails. `hasBlockingBusy` fails
 rests entirely on its `Math.max` / `Math.min` and `os >= oe` ordering, which is
 why a test pins it. Do not restructure that comparison without rechecking it.
 
+# Condition vs incident: which alerts get an all-clear (#1151)
+
+Every alert key Slate can send is classified in **`src/lib/notify/alert-catalog.ts`**
+as one of three things, and the classification decides whether it may ever send a
+recovery notice:
+
+- **condition**: an ongoing state that is true until something changes it (a lane
+  is quiet, a mirror has drifted, retention is stopped, an endpoint is
+  dead-lettering). Someone reads the page and then needs to know when it is over,
+  so a condition **must** have a `resolveAlert` (or `resolveRecovered`) on the
+  same key.
+- **incident**: a finished event with no healthy state to observe (this booking's
+  event insert failed, this reassign was abandoned, this request 500'd). An
+  all-clear here would say "the thing that already happened has stopped
+  happening", which is noise. An incident carries **no** recovery and records why.
+- **info**: a `sendThrottledInfo` whisper that never needed action, so it must
+  never resolve either.
+
+The test that decides it: **if this cleared, what would the all-clear SAY?**
+
+`scripts/test-alert-recovery-coverage.ts` checks the catalog against the code both
+ways: every key the code sends is classified and on the right channel, every
+condition really resolves, no info or incident does, and no catalog entry names a
+key nothing sends (so a rename cannot leave a stale classification looking like
+coverage). A key the scanner cannot read is a hard failure; declare it with
+`// alert-key: <key or prefix:*>` on or above the call.
+
+Two rules that fall out of this, both of which have already been violated once:
+
+- **Hang the all-clear off the MEASURED healthy result, never off "we did not
+  alert this run".** A run that skipped, threw, or could not read its signal
+  measured nothing and must clear nothing (#1134, #1152). Every module that
+  resolves must prove that silent path; `scripts/test-all-clear-failure-coverage.ts`
+  enforces it.
+- **Use `resolveRecovered` from an every-minute lane** when clearing several keys:
+  it settles them all with one `alert_state` read instead of one per key, on a
+  subrequest budget four cron lanes share.
+
 # Alert copy never carries a raw error (the `// alert-text-ok:` convention)
 
 An alert is read on a phone, mid-incident, by someone deciding whether to act.

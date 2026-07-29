@@ -32,7 +32,10 @@ export const ALL_CLEAR_DEFINITION = "src/lib/notify/dispatch.ts";
  * Both shapes count because both are wiring points: the monitor lane calls it
  * directly for one alert and passes it into `runMigrationDriftCheck` for another,
  * and a guard that saw only the first would let half that lane's all-clears ship
- * unexamined. Ignoring the import line and comments keeps a doc reference from
+ * unexamined. `resolveRecovered` (#1151), the batched form that clears several
+ * conditions on one read, counts for the same reason: a lane using it sends real
+ * all-clears, and seeing only the direct call would exempt it from proving it
+ * stays silent. Ignoring the import line and comments keeps a doc reference from
  * registering a surface that does not exist, which would demand a test for nothing
  * and train people to write exemptions.
  */
@@ -40,7 +43,7 @@ export function callsResolveAlert(source: string): boolean {
   return stripComments(source)
     .split("\n")
     .filter((line) => !/^\s*import\b/.test(line) && !/^\s*}\s*from\s+["']/.test(line))
-    .some((line) => /(^|[^\w.])(?:\w+\.)?resolveAlert\b/.test(line));
+    .some((line) => /(^|[^\w.])(?:\w+\.)?(resolveAlert|resolveRecovered)\b/.test(line));
 }
 
 /**
@@ -70,9 +73,14 @@ export function declaredProofPaths(source: string): string[] {
 /**
  * Does this test file prove that some path sends NO all-clear?
  *
- * The proof shape is an assertion that `resolveAlert` was not called:
+ * The proof shape is an assertion that the all-clear was not sent:
  *   expect(resolveAlert).not.toHaveBeenCalled();
  *   expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+ *   expect(resolveRecovered).not.toHaveBeenCalled();
+ *
+ * `resolveRecovered` counts because it is the batched form of the same send
+ * (#1151); a module that clears its conditions through it proves the silent path
+ * by showing that call did not happen.
  *
  * DELIBERATE LIMIT, stated so this guard never reads as more than it is: this
  * confirms such an assertion EXISTS, not that the scenario driving it is the
@@ -84,7 +92,9 @@ export function declaredProofPaths(source: string): string[] {
  * the runner keep the detector itself from rotting into a no-op.
  */
 export function provesNoAllClear(testSource: string): boolean {
-  return /resolveAlert\s*\)\s*\.\s*not\s*\.\s*toHaveBeenCalled/.test(stripComments(testSource));
+  return /(resolveAlert|resolveRecovered)\s*\)\s*\.\s*not\s*\.\s*toHaveBeenCalled/.test(
+    stripComments(testSource),
+  );
 }
 
 /**

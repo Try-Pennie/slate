@@ -7,7 +7,7 @@ import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
 import { repairUnverified } from "@/lib/snowflake/reexport";
-import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
+import { alertRetentionResumed, alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +44,8 @@ export async function GET(req: NextRequest) {
       await alertRetentionSkipped("prune-webhook-payloads", "nothing exported yet");
       return laneCompleted("prune-webhook-payloads", { skipped: "nothing-exported-yet" });
     }
+    // #1151: past both gates, so this lane really is deleting again.
+    await alertRetentionResumed("prune-webhook-payloads");
 
     // Read a BOUNDED batch of candidates and prove the warehouse holds each one
     // before blanking it (#1102). Blanking is irreversible for the payload, so it

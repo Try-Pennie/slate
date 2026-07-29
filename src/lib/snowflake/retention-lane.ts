@@ -23,7 +23,7 @@
 
 import { NextResponse } from "next/server";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 
 /** Daily lanes, so re-page at most once a day rather than on every run. */
@@ -77,4 +77,33 @@ export async function alertRetentionSkipped(lane: string, reason: string): Promi
   ).catch((err) => {
     log.error(lane, { msg: "skip alert failed" }, err instanceof Error ? err : undefined);
   });
+}
+
+/**
+ * The other half of `alertRetentionSkipped` (#1151): this lane is deleting again.
+ *
+ * "Retention is stopped" is a CONDITION, not an event: it stays true, silently,
+ * for as long as the mirror is unusable, and the only thing that ever observes it
+ * ending is a run that gets past the gate. Called from exactly there, so it can
+ * never announce a recovery off a run that skipped. `resolveAlert` is a no-op
+ * unless a page was delivered, so a lane that never stalled stays silent.
+ *
+ * Best-effort like its sibling: the deleting already happened, and a Slack
+ * problem must not turn a good run into a 500.
+ */
+export async function alertRetentionResumed(lane: string): Promise<void> {
+  // try/catch, not just `.catch`: this runs in the middle of a lane that has
+  // already begun deleting, and a notice that threw SYNCHRONOUSLY would abort the
+  // run and turn a healthy prune into a 500.
+  try {
+    const cleared = await resolveAlert(
+      `retention_skipped:${lane}`,
+      `Slate: the ${lane} retention lane is deleting again. The Snowflake mirror is usable, so aged ` +
+        `data is being cleared on schedule and the retention window is being honored once more. ` +
+        `No action is needed.`,
+    );
+    if (cleared) log.info(lane, { msg: "retention-skipped alert cleared" });
+  } catch (err) {
+    log.error(lane, { msg: "resume notice failed" }, err instanceof Error ? err : undefined);
+  }
 }

@@ -75,7 +75,7 @@ import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { deferWebhookSend } from "@/lib/after-response";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 // #1135: the one way an error reaches alert copy. A Postgres error message can be
 // long and multi-line (a constraint body, a nested detail), and a page is read on
 // a phone; the full text stays in the log line beside each of these alerts.
@@ -1675,6 +1675,9 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   } catch (err) {
     const spec = bookingFailureAlert(err);
     if (spec) {
+      // alert-key: verify_on_book_outage
+      // alert-key: reschedule_lock_outage
+      // alert-key: no_eligible_agents:*
       await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(() => {});
     }
     throw err;
@@ -2128,6 +2131,9 @@ const PENDING_DELETION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** #401: drain the deletion retry queue and alert if any deletion is stuck. */
 export async function processPendingEventDeletions(limit: number) {
+  // all-clear-proof: src/lib/booking/selfheal-worklist-reads.test.ts - pins that a
+  // failed worklist read aborts the tick and announces no recovery, for this sweep
+  // and its two siblings below.
   const res = await orchestration.processPendingEventDeletions(realDeps(), limit);
   if (res.stuck.length > 0) {
     await sendThrottledAlert(
@@ -2135,6 +2141,19 @@ export async function processPendingEventDeletions(limit: number) {
       PENDING_DELETION_ALERT_COOLDOWN_MS,
       `Slate: ${res.stuck.length} calendar event deletion(s) have failed ${orchestration.PENDING_DELETION_ALERT_AFTER}+ times and may be firing orphaned reminders. Check Google Calendar API health. Event ids: ${res.stuck.slice(0, 5).map((r) => r.gcal_event_id).join(", ")}`,
     ).catch(() => {});
+  } else {
+    // #1151: stuck deletions are a CONDITION (events keep firing reminders until
+    // they drain), so say when the queue is clean. Hung off a sweep that RAN and
+    // measured no stuck rows: a sweep that threw never reaches this line, so a
+    // failed tick can never read as recovery.
+    await resolveRecovered([
+      {
+        key: PENDING_DELETION_ALERT_KEY,
+        text:
+          "Slate: the calendar event deletions that kept failing have gone through. No deletion is " +
+          "stuck retrying, so no cancelled meeting should still be sending reminders. No action is needed.",
+      },
+    ]);
   }
   return res;
 }
@@ -2252,6 +2271,18 @@ export async function drainBookingOutbox() {
       DRAIN_ALERT_COOLDOWN_MS,
       `Slate: ${result.stuck.length} booking-outbox row(s) have failed >= ${DRAIN_ALERT_AFTER} delivery attempts and are backing off (a mutation's side effects - calendar/webhook - are not completing). Diagnose via booking_outbox.last_error; rows: ${ids}.`,
     ).catch(() => {});
+  } else {
+    // #1151: a backing-off outbox is a CONDITION (the side effects of real
+    // bookings are not completing), so say when it drains. Measured, not assumed:
+    // a drain that threw never gets here.
+    await resolveRecovered([
+      {
+        key: "outbox_drain_stuck",
+        text:
+          "Slate: the booking-outbox rows that were backing off have delivered. Calendar invites and " +
+          "webhooks for the affected bookings have completed, so nothing is stuck. No action is needed.",
+      },
+    ]);
   }
   // Return a PII-free summary: the full stuck rows carry attendee data in their
   // payload, and this flows into the cron HTTP response body.
@@ -2278,6 +2309,16 @@ export async function drainBookingReservations() {
       DRAIN_ALERT_COOLDOWN_MS,
       `Slate: ${result.stuck.length} booking reservation(s) have failed >= ${DRAIN_ALERT_AFTER} completion attempts and are backing off (a crash-recovered create is not completing). Diagnose via booking_reservations.last_error; rows: ${ids}.`,
     ).catch(() => {});
+  } else {
+    // #1151: same CONDITION on the reservation side, same measured-only rule.
+    await resolveRecovered([
+      {
+        key: "reservation_drain_stuck",
+        text:
+          "Slate: the crash-recovered booking reservations that were backing off have completed, so " +
+          "no half-made booking is stuck retrying. No action is needed.",
+      },
+    ]);
   }
   // Retention: delete up to a batch of pending reservations older than the TTL.
   const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();

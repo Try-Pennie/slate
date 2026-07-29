@@ -5,7 +5,7 @@ import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/s
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { alertOnEmptyBuckets } from "@/lib/availability/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
 
@@ -43,6 +43,17 @@ export async function GET(req: NextRequest) {
     const coverage = await alertOnEmptyBuckets().catch(() => ({ empty: [] }));
     // Clean pass: reset the streak so a later isolated failure starts from zero.
     await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
+    // #1151: a failing roster sync is a CONDITION, and this successful run IS the
+    // recovery. Hung off the healthy path, which is the only place that can know
+    // the sync works; resolveAlert is a no-op unless a page was delivered, so a
+    // sync that never failed stays silent. Best-effort: the roster already synced,
+    // and a Slack problem must not turn a good run into a 500.
+    const clearedSync = await resolveAlert(
+      "agent_sync_failures",
+      "Slate: the hourly Salesforce agent sync is working again. The agent roster and team " +
+        "assignments are up to date, so the earlier page is cleared. No action is needed.",
+    ).catch(() => false);
+    if (clearedSync) log.info("agents", { msg: "sync failure alert cleared" });
     return NextResponse.json({ ...sync, hoursApplied, emptyBuckets: coverage.empty });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
