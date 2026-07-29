@@ -31,13 +31,31 @@ select erase_booking_pii('person@example.com');
 ```
 
 It runs as a single transaction and returns a JSON summary, for example
-`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3}`. If nothing
-matched (already erased, or never present) it returns
+`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3, "outbox": 1}`. If
+nothing matched (already erased, or never present) it returns
 `{"erased": false, "reason": "no-match"}` and you are done (there is nothing in
 Snowflake to purge either).
 
+A zero in any of those counts is worth a second look before you move on: it means
+that path matched no rows. That is normal for a person with no reschedule or
+cancel history (`events: 0`) but not for `bookings`, which is 0 only on a
+no-match.
+
 It is **idempotent**: re-running for the same email after a successful erasure is
-a safe no-op and writes no new audit row.
+a safe no-op and writes no new audit row. The match is case-insensitive and
+trimmed, so a re-run with different capitalization or stray whitespace is also a
+no-op rather than a second erasure.
+
+Verified end to end against production on 2026-07-29 (#1074): on a retired smoke
+booking the function returned
+`{"erased": true, "bookings": 1, "events": 1, "deliveries": 3, "outbox": 1}`,
+matching the row counts measured beforehand; the contact fields came back null
+with `pii_redacted_at` stamped and `salesforce_id` / `external_id` intact; the
+`booking_events` rows survived with only `reason_detail` cleared; and a second
+call (plus a mixed-case padded variant) returned `no-match` leaving exactly one
+audit row. The append-only trigger was separately confirmed to REJECT the same
+`reason_detail` update when the sentinel is not set, so the escape hatch is
+genuinely load-bearing rather than redundant.
 
 What it does, in one transaction: redacts the booking contact fields (name, email,
 phone null; prefill emptied) and stamps `pii_redacted_at`; redacts those bookings'
@@ -61,9 +79,21 @@ order by created_at desc
 limit 1;
 ```
 
-Confirm this is the erasure you just ran (the `email_sha256` in the same row
-matches `encode(digest('person@example.com','sha256'),'hex')` if you want to be
-certain). Copy the list of ids for the next step.
+Copy the list of ids for the next step.
+
+If you want to be certain this is the erasure you just ran, recompute the hash and
+compare it to the `email_sha256` in the same row. The function hashes the
+**normalized** email (lowercased and trimmed), so you must normalize it here too:
+
+```
+select encode(sha256(convert_to(lower(trim('person@example.com')), 'UTF8')), 'hex');
+```
+
+Do **not** hash the address exactly as the requester typed it. Any capital letter
+or stray space produces a completely different hash, and you would wrongly
+conclude you are looking at the wrong erasure. Measured on 2026-07-29, the same
+address padded and mixed-case hashed to `1c5e9832...` raw against `bf887269...`
+normalized.
 
 ## Step 3: Snowflake purge (operator credential, redact in place)
 
@@ -129,6 +159,26 @@ select
 Also confirm the Supabase side: the `audit_log` row from step 2 exists with
 `action = 'pii.erasure'`. That row is the durable record that the request was
 honored.
+
+One thing not to be surprised by while checking the Supabase side: once a webhook
+delivery is blanked, it can no longer be found by `payload ->> 'booking_id'`,
+because the payload that held the booking id was itself emptied. A query keyed
+that way returns nothing whether the erasure worked or the rows never existed, so
+do not read an empty result there as proof of either. Use `payload_erased = true`
+(or `dedupe_key`, which for a `booking.created` delivery is the booking id) if you
+need to see the rows. In Snowflake the pre-purge rows ARE still findable by
+payload booking id, because the export freezes them at full fidelity, which is
+what makes steps 3 and 4 work there.
+
+### You are not the only check
+
+`/api/cron/erasure-audit` re-reads every booking id in every `pii.erasure` audit
+entry and asserts Snowflake holds no residual contact PII for it, alerting to
+Slack when it does. So a skipped or half-finished step 3 gets caught even if
+nobody re-reads this runbook. Treat that as a backstop, not a substitute: the
+lane can only report a residual, it cannot purge the warehouse (the export role
+is append-only by design). If it pages about an erasure you performed, come back
+to step 3.
 
 ## What it deliberately does NOT do (policy, §4)
 

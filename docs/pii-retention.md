@@ -1,8 +1,9 @@
 # PII retention, erasure, and compliance posture
 
-Status: policy of record for consumer PII in Slate. Retention windows are
-**provisional** and marked so; they are pending confirmation by Pennie legal (see
-"Legal confirmation owed" at the end). Parent: #1029 (milestone #14).
+Status: policy of record for consumer PII in Slate. The retention windows and the
+four compliance positions behind them were **confirmed on 2026-07-29** and are
+recorded in §9; the memo written for counsel's review is
+[pii-legal-positions.md](./pii-legal-positions.md). Parent: #1029 (milestone #14).
 
 Slate collects consumer contact information on a **public** booking surface
 (`/book`, `widget.js`) and routes it to agents. This document is the single record
@@ -25,7 +26,7 @@ and which data we deliberately keep forever and why.
 The attendee's meeting also exists as an event on the **assigned agent's Google
 Calendar** (`bookings.gcal_event_id`). That copy is addressed in §4.
 
-## 2. Retention windows (provisional)
+## 2. Retention windows (confirmed 2026-07-29)
 
 | Data | Window | Mechanism |
 |------|--------|-----------|
@@ -33,19 +34,49 @@ Calendar** (`bookings.gcal_event_id`). That copy is addressed in §4.
 | `webhook_deliveries.payload` + `last_response` | 90 days after the delivery is terminal | blank + `payload_erased` flag, `/api/cron/prune-webhook-payloads` (#1073) |
 | Delivered `booking_outbox` rows | 30 days | delete, `/api/cron/prune-bookings-pii` (#1071) |
 | `routing_decisions` | 12 months | delete, `/api/cron/prune-routing` (existing) |
-| `booking_events.reason_detail` | 24 months (matching the booking) | redact in place, **pending the #1040 lock (§5)** |
+| `booking_events.reason_detail` | on an erasure request, not on a timer | redact in place via `erase_booking_pii` through the §5 sentinel (shipped, migration 0092) |
+
+The 24 month booking window is **confirmed** (Dan, 2026-07-29, see §9), not
+provisional. Nothing in production is near it yet: the oldest bookings date from
+June 2026, so there is no aged backlog and the lane has nothing to redact.
+
+Note the last row is **not** a timer. The reschedule/cancel reason text is
+redacted when a person asks to be erased, not on an age sweep, because the
+`booking_events` table is append-only (§5) and the sanctioned escape hatch is the
+erasure function. An aged booking whose owner never requested erasure keeps its
+reason text.
 
 Retention is keyed on the **appointment time**, not a completion status a
 background sweep might fail to set (#883), so a stale booking cannot dodge the
 window.
+
+**The prune is gated on the Snowflake mirror.** Redaction is irreversible and the
+warehouse copy is the only remaining full-fidelity record, so
+`/api/cron/prune-bookings-pii` refuses to redact until a reconciliation passes,
+and then only redacts rows strictly behind the confirmed export watermark, proving
+per row that Snowflake holds that version first (#1102 / #1118). A run that cannot
+confirm the mirror skips and alerts rather than redacting blind.
+
+**The warehouse needs its own window.** These windows govern Supabase. Snowflake
+holds full-fidelity copies indefinitely unless a matching window is set there, so
+on its own a Supabase window does not limit how long Pennie actually holds the
+data. Setting the Snowflake side is tracked as part of the archival milestone; the
+confirmed position (§9) is that the 24 month window applies to both.
 
 ## 3. Redaction, not deletion
 
 Aged `bookings` rows are **redacted in place** (PII columns cleared), not
 hard-deleted, so aggregate reporting and foreign-key integrity survive. The row
 persists with its status, times, bucket, and agent; only the person's contact data
-is removed. Whether a data-subject "deletion" request legally requires physical
-deletion versus redaction is a legal question (see the end).
+is removed.
+
+Redaction (not physical deletion) is the **confirmed** answer for a data-subject
+deletion request as well (Dan, 2026-07-29, §9). It is also what the schema
+supports: `bulk_reassign_items.booking_id` is `NO ACTION`, so deleting a booking
+row errors outright once it has been part of a bulk batch, and
+`booking_events.booking_id` is `CASCADE`, so a delete would destroy the
+append-only history §5 exists to protect. Hard deletion would require unwinding
+both, plus losing the row from show-rate reporting and admin lookup.
 
 ## 4. What Slate deliberately does NOT touch
 
@@ -236,16 +267,33 @@ The processor map (who we send PII to: Regal/Cadence via webhooks, Google
 Calendar) lives in the separate PII inventory doc (#1045); this document
 cross-references it rather than duplicating it.
 
-## Legal confirmation owed (Pennie legal)
+## 9. Confirmed legal positions (2026-07-29)
 
-The following are business/legal decisions the implementer cannot make; the code
-ships provisional defaults until they are confirmed:
+The four questions this document previously left open were decided by Dan on
+2026-07-29 (#1074). They are recorded as **Pennie's stated position**, not as
+outside counsel's opinion: counsel can revise any of them later, and the memo in
+[pii-legal-positions.md](./pii-legal-positions.md) is written for that review. The
+code implements what is below.
 
-1. Does **CCPA** (and any **GLBA** safeguards/privacy obligation) apply to Slate's
-   consumer booking PII, given the lending-marketplace context?
-2. What is the **authoritative retention window** for completed/cancelled booking
-   contact data? (Code ships a provisional 24 months.)
-3. Does a data-subject "deletion" request require **hard deletion** or is
-   **redaction in place** sufficient?
-4. Does the attendee PII we send to Regal/Cadence via webhooks create a separate
-   **processor** obligation requiring a DPA or downstream erasure propagation?
+1. **Applicability: both CCPA and GLBA, built to the stricter reading.** Slate
+   treats consumer booking PII as in scope for CCPA consumer rights and a GLBA
+   safeguards posture. The operative consequence is a **45 day response deadline**
+   for a verified deletion request (see §7 and the erasure runbook).
+2. **Retention window: 24 months**, measured from the appointment, confirmed
+   rather than provisional, and applying to the Snowflake mirror as well as
+   Supabase (§2).
+3. **Deletion means redaction in place**, and `salesforce_id` / `external_id` stay
+   (§3, §4). Accepted residual risk, stated plainly so review can see it: an
+   erased row still carries an identifier that links to the person's record in
+   Salesforce, so Slate retains a linkable row after honoring an erasure. The
+   position is that the external reference is Salesforce's obligation as system of
+   record, not Slate's.
+4. **No separate processor obligation for Regal/Cadence.** They are treated as
+   downstream controllers with their own relationship to the consumer, so Slate
+   neither propagates an erasure to them nor holds a DPA for this flow. Accepted
+   residual risk, and the one most exposed to challenge given position 1: Slate
+   sends attendee name, email, and phone to Regal/Cadence on every booking, and
+   when Slate honors a deletion request **nothing tells them to delete their
+   copy**. A person told by Pennie that their data is erased still has it held
+   downstream. Revisit this if counsel reads position 1 as binding on the whole
+   data flow rather than on Slate's own store.
