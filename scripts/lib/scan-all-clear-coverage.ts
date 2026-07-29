@@ -51,11 +51,12 @@ export function callsResolveAlert(source: string): boolean {
  * honest about Slate's two harnesses. A vitest suite proves the silent path with
  * `expect(resolveAlert).not.toHaveBeenCalled()`, which `provesNoAllClear` can read.
  * A node script proves the same thing with `assert(resolved.length === 0, ...)`,
- * which no regex can recognise without inviting a fake. So a module whose proof
- * lives node-natively, or in the suite of the helper it injects into, points at
- * that file and the runner checks the file exists. The pointer sits in the source
- * beside the wiring rather than in a list off to one side, so it moves with the
- * code instead of drifting from it (L41).
+ * which `nodeProvesNoAllClear` can read. So a module whose proof lives
+ * node-natively, or in the suite of the helper it injects into, points at that
+ * file and the runner reads it, requiring one of those two shapes (#1160): a
+ * pointer at a real file that tests something else entirely does not pass. The
+ * pointer sits in the source beside the wiring rather than in a list off to one
+ * side, so it moves with the code instead of drifting from it (L41).
  */
 export function declaredProofPaths(source: string): string[] {
   const out: string[] = [];
@@ -84,6 +85,31 @@ export function declaredProofPaths(source: string): string[] {
  */
 export function provesNoAllClear(testSource: string): boolean {
   return /resolveAlert\s*\)\s*\.\s*not\s*\.\s*toHaveBeenCalled/.test(stripComments(testSource));
+}
+
+/**
+ * Does this NODE suite prove that some path sends NO all-clear? (#1160)
+ *
+ * The node harness has no spies, so its proof shape is an `assert` whose subject
+ * is a resolve/recovery collection being empty:
+ *   assert(resolved.length === 0, "an unreadable applied set never announces recovery");
+ *   assert(
+ *     truncated.resolved.length === 0,
+ *     "a truncated scan sends NO all-clear",
+ *   );
+ * The subject may be qualified (`result.resolved`) and the call may span lines,
+ * but the collection's own name must speak of resolving or recovering: an
+ * emptiness check on `rows` proves something about rows, not about all-clears.
+ *
+ * The same DELIBERATE LIMIT as `provesNoAllClear` applies, no further: this
+ * confirms the assertion exists, not that the scenario driving it is the
+ * unreadable one. What it closes is the #1160 hole where a pointer at a real
+ * file that tests something else entirely passed pointer mode.
+ */
+export function nodeProvesNoAllClear(testSource: string): boolean {
+  return /\bassert\s*\(\s*(?:[\w$]+\s*\.\s*)*[\w$]*(?:resolv|recover)[\w$]*\s*\.\s*length\s*===\s*0\b/.test(
+    stripComments(testSource),
+  );
 }
 
 /** Drop `//` and block comments so a commented-out call or assertion never counts. */

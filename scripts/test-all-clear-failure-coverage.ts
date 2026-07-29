@@ -26,6 +26,7 @@ import { join, relative, dirname, basename } from "node:path";
 import {
   callsResolveAlert,
   provesNoAllClear,
+  nodeProvesNoAllClear,
   declaredProofPaths,
   ALL_CLEAR_DEFINITION,
 } from "./lib/scan-all-clear-coverage.ts";
@@ -41,15 +42,16 @@ const SRC = join(ROOT, "src");
 //      (auto-detected, the strongest signal, and how five of the six surfaces are
 //      covered today); or
 //   2. it points at the file holding the proof with an in-source
-//      `// all-clear-proof: <path> - <why>` comment, and that file exists.
+//      `// all-clear-proof: <path> - <why>` comment, and that file exists AND
+//      itself pins the silent path (#1160).
 //
 // Mode 2 exists because Slate runs two harnesses. A node script proves the silent
-// path with `assert(resolved.length === 0, ...)`, which no regex can recognise
-// without inviting a fake, and a lane that injects `resolve` into a helper is
-// rightly tested at the helper. What the guard verifies there is that a file was
-// named and is really there; whether its assertions are the right ones is a review
-// call. Stated plainly because a check that overstates what it verified is this
-// repo's most repeated defect.
+// path with `assert(resolved.length === 0, ...)` rather than a spy, and a lane
+// that injects `resolve` into a helper is rightly tested at the helper. The guard
+// READS the named file (#1160) and requires it to pin the silent path in either
+// harness's shape; it still cannot know the scenario driving the assertion is a
+// genuinely failed read, which stays a review call. Stated plainly because a
+// check that overstates what it verified is this repo's most repeated defect.
 //
 // A surface that deliberately ships with NO silent-path test at all. Empty on
 // purpose: an exemption must be an argued decision recorded here, not a gap nobody
@@ -128,6 +130,59 @@ assert(
   "a surface with no pointer declares no proof",
 );
 
+// The node harness's proof shape (#1160): an `assert` whose subject is a
+// resolve/recovery collection being empty. This is what lets pointer mode READ
+// the file it is pointed at instead of trusting that it exists.
+const NODE_PROOF = `
+  const { run, resolved } = harness({ readThrows: true });
+  await run();
+  assert(resolved.length === 0, "an unreadable applied set never announces recovery");
+`;
+const NODE_PROOF_QUALIFIED = `
+  assert(
+    truncated.resolved.length === 0,
+    "a truncated scan sends NO all-clear: it never looked at every bucket",
+  );
+`;
+const NODE_HAPPY_ONLY = `
+  assert(resolved.length === 1, "an in-sync run clears the outstanding page");
+`;
+const NODE_WRONG_COLLECTION = `
+  assert(rows.length === 0, "no rows are left behind");
+`;
+const NODE_COMMENTED = `
+  // assert(resolved.length === 0, "an unreadable applied set never announces recovery");
+`;
+
+assert(
+  nodeProvesNoAllClear(NODE_PROOF),
+  "positive control: a node assert on an empty resolved collection is a silent-path proof",
+);
+assert(
+  nodeProvesNoAllClear(NODE_PROOF_QUALIFIED),
+  "positive control: a qualified subject (result.resolved) still counts, across lines",
+);
+assert(
+  !nodeProvesNoAllClear(NODE_HAPPY_ONLY),
+  "a resolved-length-one assert is a happy path, NOT a silent-path proof",
+);
+assert(
+  !nodeProvesNoAllClear(NODE_WRONG_COLLECTION),
+  "an emptiness assert on an unrelated collection is NOT a silent-path proof",
+);
+assert(
+  !nodeProvesNoAllClear(NODE_COMMENTED),
+  "a commented-out node proof does not count",
+);
+
+// A pointer at a real file that tests something ELSE entirely must be rejected:
+// that pass-by-existence hole is the whole reason for #1160.
+const UNRELATED_SUITE = readFileSync(join(HERE, "test-vitest-environment.ts"), "utf8");
+assert(
+  !provesNoAllClear(UNRELATED_SUITE) && !nodeProvesNoAllClear(UNRELATED_SUITE),
+  "positive control: a pointer at an unrelated real suite is rejected",
+);
+
 // --- the real source tree must be covered ------------------------------------
 
 function walk(dir: string): string[] {
@@ -178,9 +233,17 @@ for (const path of surfaces) {
     continue;
   }
   for (const proof of declared) {
+    const proofPath = join(ROOT, proof);
+    if (!existsSync(proofPath)) {
+      assert(false, `${rel} names an all-clear-proof suite that exists (${proof})`);
+      continue;
+    }
+    // Read the proof, don't trust it (#1160): the named file must itself pin the
+    // silent path, in either harness's shape.
+    const proofSource = readFileSync(proofPath, "utf8");
     assert(
-      existsSync(join(ROOT, proof)),
-      `${rel} names an all-clear-proof suite that exists (${proof})`,
+      provesNoAllClear(proofSource) || nodeProvesNoAllClear(proofSource),
+      `${rel}'s declared proof really pins the silent path (${proof})`,
     );
   }
 }
@@ -201,6 +264,23 @@ const stripped = realTestSrc
 assert(
   !provesNoAllClear(stripped),
   "mutation control: removing sweep-saturation's not-called assertions is caught",
+);
+
+// Same control for the node shape: strip the silent-path asserts out of a real
+// pointed-at suite and the tightened pointer mode must stop accepting it.
+const REAL_NODE_PROOF = join(HERE, "test-migration-drift.ts");
+const realNodeProofSrc = readFileSync(REAL_NODE_PROOF, "utf8");
+assert(
+  nodeProvesNoAllClear(realNodeProofSrc),
+  "the real migration-drift suite proves the silent path node-natively",
+);
+const strippedNode = realNodeProofSrc
+  .split("\n")
+  .filter((line) => !/resolved\.length\s*===\s*0/.test(line))
+  .join("\n");
+assert(
+  !nodeProvesNoAllClear(strippedNode),
+  "mutation control: removing migration-drift's silent-path asserts is caught",
 );
 
 finish();
