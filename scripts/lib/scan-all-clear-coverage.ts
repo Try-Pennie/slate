@@ -90,9 +90,12 @@ export function provesNoAllClear(testSource: string): boolean {
 /**
  * Does this NODE suite prove that some path sends NO all-clear? (#1160)
  *
- * The node harness has no spies, so its proof shape is an `assert` whose subject
- * is a resolve/recovery collection being empty:
+ * The node harness has no spies, so its proof shape is a resolve/recovery
+ * collection asserted empty, in either of the two forms the shared harness
+ * offers (#1163: `eq` is sugar over `assert`, so a suite written with it proves
+ * exactly the same thing and must not be told its real proof is not a proof):
  *   assert(resolved.length === 0, "an unreadable applied set never announces recovery");
+ *   eq(resolved.length, 0, "an unreadable applied set never announces recovery");
  *   assert(
  *     truncated.resolved.length === 0,
  *     "a truncated scan sends NO all-clear",
@@ -100,6 +103,7 @@ export function provesNoAllClear(testSource: string): boolean {
  * The subject may be qualified (`result.resolved`) and the call may span lines,
  * but the collection's own name must speak of resolving or recovering: an
  * emptiness check on `rows` proves something about rows, not about all-clears.
+ * The expected value must be 0: `eq(resolved.length, 1)` is a happy path.
  *
  * The same DELIBERATE LIMIT as `provesNoAllClear` applies, no further: this
  * confirms the assertion exists, not that the scenario driving it is the
@@ -107,10 +111,28 @@ export function provesNoAllClear(testSource: string): boolean {
  * file that tests something else entirely passed pointer mode.
  */
 export function nodeProvesNoAllClear(testSource: string): boolean {
-  return /\bassert\s*\(\s*(?:[\w$]+\s*\.\s*)*[\w$]*(?:resolv|recover)[\w$]*\s*\.\s*length\s*===\s*0\b/.test(
-    stripComments(testSource),
-  );
+  const stripped = stripComments(testSource);
+  return NODE_PROOF_SHAPES.some((re) => re.test(stripped));
 }
+
+/** The subject: an optionally-qualified collection whose own name speaks of
+ *  resolving or recovering, then `.length`. */
+const RESOLVE_COLLECTION = String.raw`(?:[\w$]+\s*\.\s*)*[\w$]*(?:resolv|recover)[\w$]*\s*\.\s*length`;
+
+/**
+ * The accepted node-harness proof shapes, kept beside the human-readable list in
+ * NODE_PROOF_SHAPE_HELP so a rejected author is told what to write (#1163).
+ */
+const NODE_PROOF_SHAPES = [
+  new RegExp(String.raw`\bassert\s*\(\s*${RESOLVE_COLLECTION}\s*===\s*0\b`),
+  new RegExp(String.raw`\beq\s*\(\s*${RESOLVE_COLLECTION}\s*,\s*0\b`),
+];
+
+/** Written out for the guard's failure message: a rejected author should not
+ *  have to read the scanner to learn which shapes count. */
+export const NODE_PROOF_SHAPE_HELP =
+  `assert(<resolved-collection>.length === 0, ...) or eq(<resolved-collection>.length, 0, ...) ` +
+  `in a node suite, or expect(resolveAlert).not.toHaveBeenCalled() in a vitest suite`;
 
 /** Drop `//` and block comments so a commented-out call or assertion never counts. */
 function stripComments(source: string): string {
