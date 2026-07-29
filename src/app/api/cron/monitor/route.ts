@@ -24,11 +24,9 @@ import {
   type WorkingRule,
 } from "@/lib/monitor/availability-health";
 import {
-  isBusinessHours,
-  lowVolumeBreaches,
-  formatLowVolumeAlert,
+  runLowVolumeCheck,
   type BusinessHoursConfig,
-  type VolumeWindow,
+  type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
@@ -108,17 +106,22 @@ const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
 // coded default. Arming is now UI-tunable too (#575): loadMonitorSettings resolves
 // `lowVolumeArmed` with precedence store > env (BOOKING_VOLUME_ALERT_ARMED) >
 // disarmed default, so the cutover flip no longer needs a redeploy.
-const VOLUME_ALERT_KEY = "low_booking_volume";
 
-/** Count bookings created at or after `sinceIso` (head-only, no rows). */
+/** Count bookings created at or after `sinceIso` (head-only, no rows), or null
+ *  when the read failed: runLowVolumeCheck treats null as unverified rather
+ *  than paging a false "0 bookings" off a query that never ran (#1158). */
 async function bookingsCreatedSince(
   db: ReturnType<typeof supabaseAdmin>,
   sinceIso: string,
-): Promise<number> {
-  const { count } = await db
+): Promise<number | null> {
+  const { count, error } = await db
     .from("bookings")
     .select("*", { count: "exact", head: true })
     .gte("created_at", sinceIso);
+  if (error) {
+    log.error("monitor", { msg: "booking volume count read failed", since: sinceIso }, error);
+    return null;
+  }
   return count ?? 0;
 }
 
@@ -316,35 +319,19 @@ export async function GET(req: NextRequest) {
     });
 
     // --- Low booking volume (#370): only during business hours; disarmed until
-    // cutover (counts + logs but does not alert) so the ramp can't cry wolf. ---
-    let volume: { armed: boolean; windows: VolumeWindow[]; breaches: number } | null = null;
-    if (isBusinessHours(now, VOLUME_BUSINESS_HOURS)) {
-      const [count30, count120] = await Promise.all([
-        bookingsCreatedSince(db, new Date(now - 30 * 60_000).toISOString()),
-        bookingsCreatedSince(db, new Date(now - 120 * 60_000).toISOString()),
-      ]);
-      const windows: VolumeWindow[] = [
-        { label: "30 min", count: count30, floor: settings.floors.floor30 },
-        { label: "120 min", count: count120, floor: settings.floors.floor120 },
-      ];
-      const breaches = lowVolumeBreaches(windows);
-      const armed = settings.lowVolumeArmed;
-      if (breaches.length && armed) {
-        await sendThrottledAlert(
-          VOLUME_ALERT_KEY,
-          settings.cooldownMs.low_booking_volume,
-          formatLowVolumeAlert(breaches),
-        ).catch(() => {});
-      }
-      log.info("monitor", {
-        msg: "booking volume",
-        count_30m: count30,
-        count_120m: count120,
-        below_floor: breaches.length,
-        armed,
-      });
-      volume = { armed, windows, breaches: breaches.length };
-    }
+    // cutover (counts + logs but does not alert) so the ramp can't cry wolf.
+    // Extracted and tested (#1158): a failed count read reports unverified
+    // rather than paging a false zero. ---
+    const volume: LowVolumeResult = await runLowVolumeCheck({
+      nowMs: now,
+      businessHours: VOLUME_BUSINESS_HOURS,
+      countSince: (sinceIso) => bookingsCreatedSince(db, sinceIso),
+      floors: settings.floors,
+      armed: settings.lowVolumeArmed,
+      cooldownMs: settings.cooldownMs.low_booking_volume,
+      notify: sendThrottledAlert,
+      log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
+    });
 
     // --- Thin-tier staffing early warning (#569): a slow, low-priority whisper
     // of tiers resting on 1-2 bookable agents, reusing the #584 depth helper
