@@ -9,7 +9,7 @@ import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { slotHealthByCode } from "@/lib/monitor/slot-health";
+import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
 import { type WorkingRule } from "@/lib/monitor/availability-health";
@@ -75,6 +75,18 @@ const FRESH_WINDOW_MS = 6 * 60_000;
 // NOT release), so a persistent fault keeps paging instead of being silently
 // re-masked every minute.
 const ANOMALY_SELFHEAL_WINDOW_MS = 15 * 60_000;
+
+// #1167: a suspected anomaly is re-checked this many more times before it pages,
+// so a momentary disagreement (a read landing mid-write) does not wake anyone.
+// Two extra checks two seconds apart adds ~4s to a tick that found something, and
+// nothing at all to the ordinary healthy tick. Kept well inside the 2-minute lock
+// TTL, and the verifier stops at the scan deadline regardless.
+const ANOMALY_VERIFY_ATTEMPTS = 2;
+const ANOMALY_VERIFY_DELAY_MS = 2_000;
+// Above this, skip re-verification and page now: a wide anomaly is an outage
+// rather than a blip, and re-reading every bucket would spend a subrequest budget
+// this lane shares with three others (complete, watch, bulk-reassign).
+const ANOMALY_VERIFY_MAX_BUCKETS = 8;
 
 /** Default zone for an agent with no schedule row, matching how the availability
  *  compute treats a scheduleless agent (America/New_York, no working rules). */
@@ -202,6 +214,30 @@ export async function GET(req: NextRequest) {
         const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
         const res = await getBucketSlots(code, fromIso, toIso);
         return res ? res.slots.length : null;
+      },
+      // #1167: re-check a suspected anomaly before paging. `cachedSlots` must be a
+      // FRESH single-row read, not the slotByCode map above: that map is the side
+      // of the comparison suspected of being wrong, so re-reading it would just
+      // repeat the same answer. Routed through slotHealthByCode so an unreadable
+      // computed_at fails the same way here as in the scan (#1171).
+      verify: {
+        attempts: ANOMALY_VERIFY_ATTEMPTS,
+        delayMs: ANOMALY_VERIFY_DELAY_MS,
+        maxBuckets: ANOMALY_VERIFY_MAX_BUCKETS,
+        cachedSlots: async (code) => {
+          // cap-safe: bucket_code is unique in bucket_slots, so this is one row.
+          const { data, error } = await db
+            .from("bucket_slots")
+            .select("bucket_code, payload, computed_at")
+            .eq("bucket_code", code)
+            .maybeSingle();
+          // A read we could not do must read as unknown, never as a healthy zero:
+          // the verifier treats null as inconclusive and keeps the finding.
+          if (error) return null;
+          if (!data) return 0;
+          return slotHealthByCode([data as SlotHealthRow]).get(code)?.slotCount ?? 0;
+        },
+        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       },
       claimHeal: async (code) =>
         (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
