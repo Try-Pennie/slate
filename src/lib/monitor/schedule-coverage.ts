@@ -10,6 +10,16 @@ export type ScheduleLessAgent = {
   org_id: string;
 };
 
+/** From the bookable agents and the user ids that have an availability_schedules
+ *  row, the agents with NO row (#838). Pure so the set difference is pinned by
+ *  tests (#1158); the paged reads live in the cron route. */
+export function missingScheduleAgents(
+  agents: ScheduleLessAgent[],
+  scheduledUserIds: Set<string>,
+): ScheduleLessAgent[] {
+  return agents.filter((a) => !scheduledUserIds.has(a.id));
+}
+
 // Match the other monitor notices' list cap so a broad gap stays one readable
 // Slack post, not a wall of names.
 const NAME_CAP = 8;

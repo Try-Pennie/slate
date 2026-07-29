@@ -12,6 +12,7 @@ import {
   classifySyncStaleness,
   formatSyncStalenessAlert,
   runSyncStalenessCheck,
+  syncRotationCandidates,
   SYNC_STALENESS_KEY,
 } from "../src/lib/monitor/sync-staleness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -26,6 +27,30 @@ const agent = (id: string, ageMin: number | null) => ({
   email: `${id}@trypennie.com`,
   lastSyncedMs: ageMin === null ? null : NOW - ageMin * MIN,
 });
+
+// --- syncRotationCandidates (#1158): the join deciding who is IN the rotation ---
+{
+  const row = (id: string, lastSyncedAt: string | null) => ({
+    id,
+    name: `Agent ${id}`,
+    email: `${id}@trypennie.com`,
+    last_synced_at: lastSyncedAt,
+  });
+  const iso = new Date(NOW - 5 * MIN).toISOString();
+
+  const out = syncRotationCandidates([row("a", iso), row("b", iso)], new Set(["a"]));
+  eq(out.map((c) => c.id), ["a"], "an agent with no calendar row is not in the rotation");
+  eq(out[0]?.lastSyncedMs, NOW - 5 * MIN, "last_synced_at is parsed to epoch ms");
+
+  const never = syncRotationCandidates([row("a", null)], new Set(["a"]));
+  eq(never[0]?.lastSyncedMs, null, "a never-synced agent keeps null (worst case, flagged)");
+
+  // A malformed timestamp must read as never-synced (flagged), not as fresh: a
+  // NaN age would compare false against the threshold and silently pass as
+  // healthy, the unreadable-scored-as-answer class.
+  const garbage = syncRotationCandidates([row("a", "not-a-date")], new Set(["a"]));
+  eq(garbage[0]?.lastSyncedMs, null, "an unparseable last_synced_at degrades to never-synced");
+}
 
 // Fresh roster (all within threshold): nothing stale.
 {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   AGENTS_WITHOUT_SCHEDULE_KEY,
   formatScheduleGapNotice,
+  missingScheduleAgents,
   runScheduleCoverageCheck,
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
@@ -16,6 +17,21 @@ const agent = (id: string, over: Partial<ScheduleLessAgent> = {}): ScheduleLessA
   email: `${id}@ex.com`,
   org_id: "org-1",
   ...over,
+});
+
+describe("missingScheduleAgents (#1158)", () => {
+  it("returns only the agents with no schedule row", () => {
+    const out = missingScheduleAgents([agent("a"), agent("b")], new Set(["a"]));
+    expect(out.map((x) => x.id)).toEqual(["b"]);
+  });
+
+  it("returns empty when every agent has a row", () => {
+    expect(missingScheduleAgents([agent("a")], new Set(["a", "z"]))).toEqual([]);
+  });
+
+  it("an empty schedule set flags every agent", () => {
+    expect(missingScheduleAgents([agent("a"), agent("b")], new Set()).length).toBe(2);
+  });
 });
 
 describe("formatScheduleGapNotice", () => {

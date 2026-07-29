@@ -69,6 +69,31 @@ export function classifySyncStaleness(
   };
 }
 
+/**
+ * Join the bookable agents to the sync rotation (#241, extracted #1158): only an
+ * agent with a calendar row is IN the rotation (a bookable agent with none is the
+ * schedule/watch-onboarding lane's concern). `last_synced_at` becomes epoch ms;
+ * null stays null (never synced, the worst case), and an UNPARSEABLE timestamp
+ * also degrades to null rather than NaN, because a NaN age compares false against
+ * the threshold and would silently read a corrupt stamp as a healthy agent.
+ */
+export function syncRotationCandidates(
+  agents: { id: string; name: string | null; email: string | null; last_synced_at: string | null }[],
+  calendarUserIds: Set<string>,
+): SyncAgentStaleness[] {
+  return agents
+    .filter((a) => calendarUserIds.has(a.id))
+    .map((a) => {
+      const parsed = a.last_synced_at ? Date.parse(a.last_synced_at) : null;
+      return {
+        id: a.id,
+        name: a.name,
+        email: a.email,
+        lastSyncedMs: parsed === null || Number.isNaN(parsed) ? null : parsed,
+      };
+    });
+}
+
 function agentLine(a: StaleAgent): string {
   const name = a.name?.trim() || a.email || a.id;
   const who = a.email && a.email !== name ? `${name} (${a.email})` : name;
