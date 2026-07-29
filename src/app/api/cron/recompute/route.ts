@@ -16,6 +16,12 @@ import {
 } from "@/lib/availability/precompute";
 import { log } from "@/lib/log";
 import {
+  bucketSlotsStaleAlert,
+  bucketSlotsStaleRecovery,
+  recomputeHeadroomAlert,
+  recomputeHeadroomRecovery,
+} from "@/lib/monitor/cron-alert-copy";
+import {
   bucketsDueForRecompute,
   staleBuckets,
   recomputeHeadroom,
@@ -82,7 +88,7 @@ async function alertIfFallingBehind(
   await sendThrottledAlert(
     "recompute_headroom",
     HEADROOM_ALERT_COOLDOWN_MS,
-    `Slate: bucket recompute is falling behind. Refreshed only ${recomputed} of ${due} due buckets within its time budget on consecutive cycles (${totalBuckets} buckets total, last cycle used ${headroom.utilizationPct}%). Availability may start going stale. Scale: widen the freshness window or move to the Durable-Objects design.`,
+    recomputeHeadroomAlert(recomputed, due, totalBuckets, headroom.utilizationPct),
   ).catch(() => {});
 }
 
@@ -153,7 +159,7 @@ export async function GET(req: NextRequest) {
       await sendThrottledAlert(
         "bucket_slots_stale",
         STALE_ALERT_COOLDOWN_MS,
-        `Slate: ${stale.length} bucket_slots row(s) stale >${STALE_ALARM_MS / 60_000}m (e.g. ${stale.slice(0, 5).join(", ")}); a precompute writer may be stuck.`,
+        bucketSlotsStaleAlert(stale.length, STALE_ALARM_MS / 60_000, stale.slice(0, 5)),
       ).catch(() => {});
     }
 
@@ -168,16 +174,14 @@ export async function GET(req: NextRequest) {
       recovered.push({
         key: "recompute_headroom",
         text:
-          "Slate: bucket recompute has caught up. It refreshed every bucket that was due within " +
-          "its time budget this cycle, so availability is being kept fresh again. No action is needed.",
+          recomputeHeadroomRecovery(),
       });
     }
     if (stale.length === 0) {
       recovered.push({
         key: "bucket_slots_stale",
         text:
-          "Slate: no cached availability rows are stale any more. The precompute writers are " +
-          "keeping up, so the booker is showing current times again. No action is needed.",
+          bucketSlotsStaleRecovery(),
       });
     }
     if (recovered.length > 0) {

@@ -7,6 +7,12 @@ import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { shortFailureReason } from "@/lib/notify/error-text";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
+import {
+  snowflakeDriftAlert,
+  snowflakeDriftRecovery,
+  snowflakeHealthcheckAlert,
+  snowflakeHealthcheckRecovery,
+} from "@/lib/snowflake/alert-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -49,19 +55,14 @@ async function runScheduledHealthcheck(): Promise<void> {
       await sendThrottledAlert(
         HEALTHCHECK_ALERT_KEY,
         ALERT_COOLDOWN_MS,
-        `Slate: the Snowflake warehouse self-check is failing, so we cannot trust the archive mirror. ` +
-          // #1135: Snowflake answers with a multi-line SQL compilation error and a
-          // driver stack. One readable line here; the full text is in the log.
-          `${shortFailureReason(health.error) ?? "no detail"}. Until this clears, retention will refuse to delete anything ` +
-          `(the safe direction) and a deletion request's warehouse purge cannot be verified.`,
+        snowflakeHealthcheckAlert(shortFailureReason(health.error) ?? "no detail"),
       );
       return;
     }
     await recordHeartbeat("snowflake-check");
     const cleared = await resolveAlert(
       HEALTHCHECK_ALERT_KEY,
-      "Slate: the Snowflake warehouse self-check is working again. The mirror can be trusted, " +
-        "retention is no longer blocked on it, and the earlier warning is cleared. No action is needed.",
+      snowflakeHealthcheckRecovery(),
     );
     if (cleared) log.info("snowflake-check", { msg: "healthcheck alert cleared" });
   } catch (err) {
@@ -87,7 +88,7 @@ export async function GET(req: NextRequest) {
       await sendThrottledAlert(
         "snowflake_reconcile_drift",
         ALERT_COOLDOWN_MS,
-        `Slate: the Snowflake analytics mirror is out of sync with the live database. ${result.reasons.join("; ")}. The export lane may be lagging or failing; deletion (when built) must not run until this clears.`,
+        snowflakeDriftAlert(result.reasons),
       );
     } else if (!result.skipped) {
       // #1151: drift is a CONDITION, so say when it ends. Hung off the measured
@@ -96,8 +97,7 @@ export async function GET(req: NextRequest) {
       // resolveAlert is a no-op unless a page was delivered.
       const cleared = await resolveAlert(
         "snowflake_reconcile_drift",
-        "Slate: the Snowflake analytics mirror matches the live database again. The export lane has " +
-          "caught up, so anything that was waiting on the mirror being complete can proceed. No action is needed.",
+        snowflakeDriftRecovery(),
       );
       if (cleared) log.info("snowflake-reconcile", { msg: "drift alert cleared" });
     }

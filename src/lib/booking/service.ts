@@ -76,6 +76,24 @@ import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { deferWebhookSend } from "@/lib/after-response";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
+import {
+  bookingEventInsertAlert,
+  busyBlockWriteThroughAlert,
+  creationOrphanAlert,
+  outboxDrainRecovery,
+  outboxDrainStuckAlert,
+  pendingDeletionAlert,
+  pendingDeletionRecovery,
+  reassignIntentDroppedAlert,
+  reconcileFreedAlert,
+  reconcileRecreatedAlert,
+  reschedulePinDroppedAlert,
+  rescheduleLockOutageAlert,
+  verifyOutageAlert,
+  reservationDrainRecovery,
+  reservationDrainStuckAlert,
+  verifyReadFailedAlert,
+} from "@/lib/booking/alert-copy";
 // #1135: the one way an error reaches alert copy. A Postgres error message can be
 // long and multi-line (a constraint body, a nested detail), and a page is read on
 // a phone; the full text stays in the log line beside each of these alerts.
@@ -259,7 +277,7 @@ async function checkAgentFree(
     await sendThrottledAlert(
       VERIFY_READ_ALERT_KEY,
       VERIFY_READ_ALERT_COOLDOWN_MS,
-      `Slate: verify-on-book could not read calendars for ${email}; skipping this agent for the slot to avoid a double-book. Check DB health.`,
+      verifyReadFailedAlert("book", email),
     ).catch(() => {});
     return "unverified";
   }
@@ -285,7 +303,7 @@ async function agentBusyIntervals(
     await sendThrottledAlert(
       VERIFY_READ_ALERT_KEY,
       VERIFY_READ_ALERT_COOLDOWN_MS,
-      `Slate: in-place reschedule could not read calendars for ${email}; re-routing to avoid keeping the agent on an unverifiable slot. Check DB health.`,
+      verifyReadFailedAlert("reschedule", email),
     ).catch(() => {});
     return null;
   }
@@ -347,7 +365,7 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
   await sendThrottledAlert(
     "busy_block_write_through",
     CACHE_ALERT_COOLDOWN_MS,
-    `Slate: busy_blocks INSERT failed for ${what} (${shortFailureReason(error.message)}). The slot(s) may show as free in the embed until the next sync pass.`,
+    busyBlockWriteThroughAlert("insert", what, shortFailureReason(error.message) ?? "no detail"),
   ).catch(() => {});
 }
 
@@ -844,7 +862,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks move (move_busy_block) failed for booking ${bookingId} (${shortFailureReason(error.message)}). The slot cache may be stale until the next sync pass.`,
+          busyBlockWriteThroughAlert("move", bookingId, shortFailureReason(error.message) ?? "no detail"),
         ).catch(() => {});
       }
     },
@@ -903,7 +921,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks DELETE failed for booking ${bookingId} (${shortFailureReason(error.message)}). The cancelled slot will keep showing as busy until cleaned up.`,
+          busyBlockWriteThroughAlert("delete", bookingId, shortFailureReason(error.message) ?? "no detail"),
         ).catch(() => {});
       }
     },
@@ -1449,7 +1467,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         await sendThrottledAlert(
           "booking_event_insert",
           CACHE_ALERT_COOLDOWN_MS,
-          `Slate: booking_events INSERT failed for booking ${row.booking_id} (${row.action}, ${shortFailureReason(error.message)}). The reschedule/cancel reason for this action was not recorded.`,
+          bookingEventInsertAlert(String(row.booking_id), String(row.action), shortFailureReason(error.message) ?? "no detail"),
         ).catch(() => {});
         return null;
       }
@@ -1643,16 +1661,14 @@ export function bookingFailureAlert(
     return {
       key: VERIFY_OUTAGE_ALERT_KEY,
       cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
-      message:
-        "Slate: a booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.",
+      message: verifyOutageAlert(),
     };
   }
   if (err instanceof orchestration.RescheduleLockUnavailableError) {
     return {
       key: RESCHEDULE_LOCK_OUTAGE_ALERT_KEY,
       cooldownMs: RESCHEDULE_LOCK_OUTAGE_ALERT_COOLDOWN_MS,
-      message:
-        "Slate: a reschedule failed CLOSED because the per-booking lock claim hit an unexpected DB error (not a real conflict). The actor saw a retryable 503. Check DB health.",
+      message: rescheduleLockOutageAlert(),
     };
   }
   if (err instanceof orchestration.NoEligibleAgentsError) {
@@ -2139,7 +2155,7 @@ export async function processPendingEventDeletions(limit: number) {
     await sendThrottledAlert(
       PENDING_DELETION_ALERT_KEY,
       PENDING_DELETION_ALERT_COOLDOWN_MS,
-      `Slate: ${res.stuck.length} calendar event deletion(s) have failed ${orchestration.PENDING_DELETION_ALERT_AFTER}+ times and may be firing orphaned reminders. Check Google Calendar API health. Event ids: ${res.stuck.slice(0, 5).map((r) => r.gcal_event_id).join(", ")}`,
+      pendingDeletionAlert(res.stuck.length, orchestration.PENDING_DELETION_ALERT_AFTER, res.stuck.slice(0, 5).map((r) => String(r.gcal_event_id))),
     ).catch(() => {});
   } else {
     // #1151: stuck deletions are a CONDITION (events keep firing reminders until
@@ -2149,9 +2165,7 @@ export async function processPendingEventDeletions(limit: number) {
     await resolveRecovered([
       {
         key: PENDING_DELETION_ALERT_KEY,
-        text:
-          "Slate: the calendar event deletions that kept failing have gone through. No deletion is " +
-          "stuck retrying, so no cancelled meeting should still be sending reminders. No action is needed.",
+        text: pendingDeletionRecovery(),
       },
     ]);
   }
@@ -2173,10 +2187,10 @@ export async function checkCreationOrphans(limit: number) {
     await sendThrottledAlert(
       CREATION_ORPHAN_ALERT_KEY,
       CREATION_ORPHAN_ALERT_COOLDOWN_MS,
-      `Slate: ${res.confirmed.length} calendar event(s) were created but their booking never persisted (the insert and its rollback both failed), and the event still exists on Google, so it may be sending the customer reminders for a booking Slate has no record of. The deletion drain is retrying removal; diagnose via pending_event_deletions where booking_id is null. Event ids: ${res.confirmed
-        .slice(0, 5)
-        .map((r) => r.gcal_event_id)
-        .join(", ")}`,
+      creationOrphanAlert(
+        res.confirmed.length,
+        res.confirmed.slice(0, 5).map((r) => String(r.gcal_event_id)),
+      ),
     ).catch(() => {});
   }
   return res;
@@ -2213,7 +2227,7 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
   await sendThrottledAlert(
     RECONCILE_ALERT_KEY,
     RECONCILE_ALERT_COOLDOWN_MS,
-    `Slate: reconcile freed ${res.freed} stuck busy_block(s) whose booking was cancelled/missing across ${res.userIds.length} agent(s). The slot(s) are now bookable again, but a write-through delete was missed. Check cancel-path health.`,
+    reconcileFreedAlert(res.freed, res.userIds.length),
   ).catch(() => {});
 
   return res;
@@ -2247,7 +2261,7 @@ export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
   await sendThrottledAlert(
     RECONCILE_MISSING_ALERT_KEY,
     RECONCILE_ALERT_COOLDOWN_MS,
-    `Slate: re-created ${res.recreated} missing busy_block(s) for active booking(s) - a write-through INSERT had been missed, so the slot(s) were showing free and could have been double-booked. Now recomputed. Booking ids: ${res.bookingIds.slice(0, 10).join(", ")}${res.bookingIds.length > 10 ? " ..." : ""}. Check booking-path busy_block write health.`,
+    reconcileRecreatedAlert(res.recreated, res.bookingIds.slice(0, 10).map(String), res.bookingIds.length > 10),
   ).catch(() => {});
 
   return res;
@@ -2269,7 +2283,7 @@ export async function drainBookingOutbox() {
     await sendThrottledAlert(
       "outbox_drain_stuck",
       DRAIN_ALERT_COOLDOWN_MS,
-      `Slate: ${result.stuck.length} booking-outbox row(s) have failed >= ${DRAIN_ALERT_AFTER} delivery attempts and are backing off (a mutation's side effects - calendar/webhook - are not completing). Diagnose via booking_outbox.last_error; rows: ${ids}.`,
+      outboxDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
     ).catch(() => {});
   } else {
     // #1151: a backing-off outbox is a CONDITION (the side effects of real
@@ -2278,9 +2292,7 @@ export async function drainBookingOutbox() {
     await resolveRecovered([
       {
         key: "outbox_drain_stuck",
-        text:
-          "Slate: the booking-outbox rows that were backing off have delivered. Calendar invites and " +
-          "webhooks for the affected bookings have completed, so nothing is stuck. No action is needed.",
+        text: outboxDrainRecovery(),
       },
     ]);
   }
@@ -2307,16 +2319,14 @@ export async function drainBookingReservations() {
     await sendThrottledAlert(
       "reservation_drain_stuck",
       DRAIN_ALERT_COOLDOWN_MS,
-      `Slate: ${result.stuck.length} booking reservation(s) have failed >= ${DRAIN_ALERT_AFTER} completion attempts and are backing off (a crash-recovered create is not completing). Diagnose via booking_reservations.last_error; rows: ${ids}.`,
+      reservationDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
     ).catch(() => {});
   } else {
     // #1151: same CONDITION on the reservation side, same measured-only rule.
     await resolveRecovered([
       {
         key: "reservation_drain_stuck",
-        text:
-          "Slate: the crash-recovered booking reservations that were backing off have completed, so " +
-          "no half-made booking is stuck retrying. No action is needed.",
+        text: reservationDrainRecovery(),
       },
     ]);
   }
@@ -2348,7 +2358,7 @@ export async function sweepAbandonedReschedulePins() {
     await sendThrottledAlert(
       "reschedule_pin_dropped",
       DRAIN_ALERT_COOLDOWN_MS,
-      `Slate: ${result.dropped} reschedule(s) were abandoned mid-flight (crash before the move committed) and cleaned up by the sweep. The booking(s) are STILL AT THEIR ORIGINAL TIME; the requested move did NOT happen, and the attendee may believe it did. Re-run the reschedule. Diagnose via the reschedule_locks table + booking_events.`,
+      reschedulePinDroppedAlert(result.dropped),
     ).catch(() => {});
   }
   return result;
@@ -2372,7 +2382,7 @@ export async function sweepAbandonedReassignIntents() {
     await sendThrottledAlert(
       "reassign_intent_dropped",
       DRAIN_ALERT_COOLDOWN_MS,
-      `Slate: ${result.dropped} reassign(s) were abandoned mid-create (crash before the swap) and cleaned up by the sweep. The booking(s) stayed on the ORIGINAL agent; the intended reassignment did NOT happen. Re-run the contact-owner reassignment. Diagnose via the reassign_intents table + booking_events.`,
+      reassignIntentDroppedAlert(result.dropped),
     ).catch(() => {});
   }
   return result;

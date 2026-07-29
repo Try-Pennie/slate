@@ -1,3 +1,4 @@
+import { oooApprovalsDigestAlert } from "@/lib/notify/misc-alert-copy";
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -119,7 +120,7 @@ export async function GET(req: NextRequest) {
     await sendThrottledAlert(
       "ooo_approvals_digest",
       DIGEST_ALERT_COOLDOWN_MS,
-      `Slate: the daily OOO-approvals email (${rows.length} ${rows.length === 1 ? "approval" : "approvals"}) failed to send to ${recipients.length} ${recipients.length === 1 ? "recipient" : "recipients"}: ${shortErrorReason(e)}`,
+      oooApprovalsDigestAlert(rows.length, recipients.length, shortErrorReason(e)),
     ).catch(() => {});
     throw e;
   }

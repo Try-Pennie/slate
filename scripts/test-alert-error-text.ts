@@ -163,13 +163,26 @@ assert(clean, "no alert in src/ carries a raw error body");
 // real tree. Strip the formatter calls out of a real file's alerts and the guard
 // must catch it, so a green run means something about production code.
 
-const REAL = join(SRC, "lib", "booking", "service.ts");
+// #1153 moved most alert wording into copy builders, so the control moved with
+// it: booking/alert-copy.ts is where the booking layer's error text now lives.
+const REAL = join(SRC, "lib", "booking", "alert-copy.ts");
 const realSrc = readFileSync(REAL, "utf8");
-assert(scanAlertErrorText(realSrc, REAL).length === 0, "the real booking/service.ts is clean");
-const stripped = realSrc.replace(/shortFailureReason\(([^)]*)\)/g, "$1");
+assert(scanAlertErrorText(realSrc, REAL).length === 0, "the real booking/alert-copy.ts is clean");
+const reintroduced =
+  realSrc +
+  "\nexport function _regression(err: Error): string {\n" +
+  "  return `Slate: something failed (${err.message}). Check health.`;\n}\n";
 assert(
-  scanAlertErrorText(stripped, REAL).length > 0,
-  "mutation control: unrouting booking/service.ts's alert errors is caught",
+  scanAlertErrorText(reintroduced, REAL).length > 0,
+  "mutation control: a raw error interpolated in a copy builder is caught",
+);
+
+// And the send sites themselves stay clean.
+const SERVICE = join(SRC, "lib", "booking", "service.ts");
+const serviceSrc = readFileSync(SERVICE, "utf8");
+assert(
+  scanAlertErrorText(serviceSrc, SERVICE).length === 0,
+  "the real booking/service.ts is clean",
 );
 
 finish();

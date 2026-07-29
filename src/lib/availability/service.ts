@@ -17,6 +17,7 @@ import {
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import {
   emptyBucketMessage,
   recoveredBucketMessage,
@@ -452,7 +453,7 @@ async function alertUnfairOrdering(context: string): Promise<void> {
   await sendThrottledAlert(
     UNFAIR_ORDERING_ALERT_KEY,
     UNFAIR_ORDERING_COOLDOWN_MS,
-    `Slate: equal-share fairness ordering degraded (${context}). The booking still went through, but agent assignment may not reflect each agent's fair share this period. Check DB health.`,
+    unfairOrderingAlert(context),
   ).catch(() => {});
 }
 

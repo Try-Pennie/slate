@@ -62,6 +62,19 @@ const ERROR_SHAPED = [
 
 const ALERT_CALL = /\b(?:sendThrottledAlert|sendThrottledInfo|resolveAlert)\s*\(/g;
 
+/**
+ * Alert COPY BUILDERS (#1153). Alert wording now lives in pure builders so the
+ * preview can render it, which moved a lot of text out of the send calls above.
+ * Without this, a raw error interpolated inside one of those builders would sit
+ * outside the scan entirely: the send site would look clean because it passes a
+ * function call, and the text with the error in it would never be examined.
+ *
+ * Any exported function in a `*alert-copy.ts` / `*-copy.ts` module counts, and so
+ * does any exported `format*` / `*AlertText` / `*Message` / `*Notice` builder, so
+ * the copy is judged wherever it lives.
+ */
+const COPY_MODULE = /(?:alert-copy|lane-copy)\.ts$/;
+
 export interface AlertTextFinding {
   line: number;
   text: string;
@@ -152,12 +165,8 @@ function errorShapedLocals(source: string): Set<string> {
 export function scanAlertErrorText(source: string, _path = ""): AlertTextFinding[] {
   const findings: AlertTextFinding[] = [];
   const errorLocals = errorShapedLocals(source);
-  ALERT_CALL.lastIndex = 0;
-  let call: RegExpExecArray | null;
-  while ((call = ALERT_CALL.exec(source)) !== null) {
-    const openParen = source.indexOf("(", call.index);
-    if (openParen === -1) continue;
-    const [start, end] = callSpan(source, openParen);
+
+  const flag = (start: number, end: number) => {
     for (const [index, expr] of interpolations(source.slice(start, end), start)) {
       if (ROUTED.test(expr)) continue;
       const isLocal = errorLocals.has(expr.trim());
@@ -165,6 +174,21 @@ export function scanAlertErrorText(source: string, _path = ""): AlertTextFinding
       if (hasOptOut(source, index)) continue;
       findings.push({ line: lineOf(source, index), text: expr.trim() });
     }
+  };
+
+  ALERT_CALL.lastIndex = 0;
+  let call: RegExpExecArray | null;
+  while ((call = ALERT_CALL.exec(source)) !== null) {
+    const openParen = source.indexOf("(", call.index);
+    if (openParen === -1) continue;
+    const [start, end] = callSpan(source, openParen);
+    flag(start, end);
   }
+
+  // #1153: a copy module IS alert text, even though it never calls the sender.
+  // Scanning the whole file is right here: these modules exist only to build
+  // alert wording, so every template in one is a message a human will read.
+  if (COPY_MODULE.test(_path)) flag(0, source.length);
+
   return findings;
 }

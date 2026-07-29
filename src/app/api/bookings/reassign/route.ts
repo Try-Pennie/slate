@@ -7,6 +7,7 @@ import { validateReason, type ValidatedReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { sendThrottledInfo } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
+import { unknownReasonCodeNotice } from "@/lib/notify/misc-alert-copy";
 
 /** Throttle window for the unknown-reason-code visibility alert (#993): a
  *  persistent misconfiguration nudges once an hour, never per call. */
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
     await sendThrottledInfo(
       "reassign-unknown-reason-code",
       UNKNOWN_REASON_ALERT_COOLDOWN_MS,
-      `Automated reassign API received an unknown reason code (\`${rawCode}\`); recorded owner_reassignment instead. Check the caller's reason mapping.`,
+      unknownReasonCodeNotice(rawCode),
     ).catch((err) => {
       log.error("reassign", { msg: "unknown-reason alert send failed" }, err instanceof Error ? err : err);
     });

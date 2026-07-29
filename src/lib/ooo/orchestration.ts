@@ -1,6 +1,17 @@
 // Relative value import so this module runs under `node --experimental-strip-types`
 // in tests (type-only "@/" imports are erased anyway).
 import {
+  oooManagerCalendarAlert,
+  oooCalendarCreateBothFailedAlert,
+  oooCalendarCreateAlert,
+  oooAgentCalendarAlert,
+  oooBusyBlockFallbackAlert,
+  oooCalcomAlert,
+  oooAgentDmAlert,
+  oooUndoManagerAlert,
+  oooUndoAgentAlert,
+} from "./alert-copy.ts";
+import {
   agentDisplayName,
   managerDisplayName,
   canCancel,
@@ -412,20 +423,20 @@ async function runPostApproval(
           effects[EFFECTS.managerEvent] = "ok (main fallback)";
           await deps.alertOps(
             "ooo_manager_calendar",
-            `Slate: the OOO calendar for request ${request.id} was not accessible (${String(e).slice(0, 200)}); the event landed on the main OOO calendar instead.`,
+            oooManagerCalendarAlert(request.id, String(e).slice(0, 200)),
           );
         } catch (e2) {
           effects[EFFECTS.managerEvent] = `failed: ${String(e2).slice(0, 200)}`;
           await deps.alertOps(
             "ooo_calendar_create",
-            `Slate: creating the OOO calendar event for request ${request.id} failed on both the manager and main calendars: ${String(e2).slice(0, 200)}`,
+            oooCalendarCreateBothFailedAlert(request.id, String(e2).slice(0, 200)),
           );
         }
       } else {
         effects[EFFECTS.managerEvent] = `failed: ${String(e).slice(0, 200)}`;
         await deps.alertOps(
           "ooo_calendar_create",
-          `Slate: creating the OOO calendar event for request ${request.id} failed: ${String(e).slice(0, 200)}`,
+          oooCalendarCreateAlert(request.id, String(e).slice(0, 200)),
         );
       }
     }
@@ -451,7 +462,7 @@ async function runPostApproval(
       effects[EFFECTS.agentEvent] = `failed: ${String(e).slice(0, 200)}`;
       await deps.alertOps(
         "ooo_agent_calendar",
-        `Slate: creating the agent calendar OOO event for request ${request.id} failed: ${String(e).slice(0, 200)}`,
+        oooAgentCalendarAlert(request.id, String(e).slice(0, 200)),
       );
     }
   }
@@ -486,7 +497,7 @@ async function runPostApproval(
       if (!agentEventId) {
         await deps.alertOps(
           "ooo_busy_block_fallback",
-          `Slate: availability for request ${request.id} was blocked with a Slate-native busy block (the calendar-linked one couldn't be used because the agent calendar event wasn't created). Availability is blocked correctly; flagging the fallback.`,
+          oooBusyBlockFallbackAlert(request.id),
         );
       }
     } else {
@@ -536,7 +547,7 @@ async function runPostApproval(
     else if (outcome.startsWith("failed")) {
       await deps.alertOps(
         "ooo_calcom",
-        `Slate: the Cal.com availability override for request ${request.id} failed (${outcome}).`,
+        oooCalcomAlert(request.id, outcome),
       );
     }
   }
@@ -551,7 +562,7 @@ async function runPostApproval(
     if (!delivered) {
       await deps.alertOps(
         "ooo_agent_dm",
-        `Slate: the approval DM to ${agent.email} for request ${request.id} could not be delivered.`,
+        oooAgentDmAlert(agent.email, request.id),
       );
     }
   }
@@ -578,7 +589,7 @@ async function undoPostApproval(
     } catch (e) {
       await deps.alertOps(
         "ooo_undo",
-        `Slate: removing the manager OOO event for request ${request.id} failed: ${String(e).slice(0, 200)}`,
+        oooUndoManagerAlert(request.id, String(e).slice(0, 200)),
       );
     }
   }
@@ -592,7 +603,7 @@ async function undoPostApproval(
     } catch (e) {
       await deps.alertOps(
         "ooo_undo",
-        `Slate: removing the agent calendar OOO event for request ${request.id} failed: ${String(e).slice(0, 200)}`,
+        oooUndoAgentAlert(request.id, String(e).slice(0, 200)),
       );
     }
   }
