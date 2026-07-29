@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { auditSnowflakeErasures } from "@/lib/snowflake/erasure-audit";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 
@@ -45,6 +45,18 @@ export async function GET(req: NextRequest) {
         ALERT_COOLDOWN_MS,
         `Slate: a data-subject erasure is incomplete in the Snowflake warehouse. ${result.reasons.join("; ")}. Run the Snowflake purge step in docs/pii-erasure-runbook.md for the affected bookings.`,
       );
+    } else if (!result.skipped) {
+      // #1151: an incomplete erasure is a CONDITION that ends when the operator
+      // runs the purge, and this audit is the only thing that would ever notice.
+      // Hung off the MEASURED clean result: a skipped run (mirror unconfigured)
+      // checked nothing and must not clear a real page.
+      const cleared = await resolveAlert(
+        "snowflake_erasure_residual",
+        "Slate: the data-subject erasure that was incomplete in the Snowflake warehouse is now " +
+          "complete. The audit finds no remaining data for the erased bookings, so the compliance " +
+          "request is fully honored and the earlier page is cleared. No action is needed.",
+      );
+      if (cleared) log.info("erasure-audit", { msg: "residual alert cleared" });
     }
     await recordHeartbeat("erasure-audit").catch(() => {});
     return NextResponse.json(result);

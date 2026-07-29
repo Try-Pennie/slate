@@ -11,7 +11,10 @@ const locks = vi.hoisted(() => ({
   releaseLock: vi.fn(async () => {}),
 }));
 const audit = vi.hoisted(() => ({ auditSnowflakeErasures: vi.fn() }));
-const notify = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+const notify = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async () => {}),
+  resolveAlert: vi.fn(async (_key: string, _text: string) => true),
+}));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/cron", () => cron);
@@ -78,6 +81,28 @@ describe("GET /api/cron/erasure-audit", () => {
     });
     await GET(req());
     expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #1151: an incomplete erasure is a CONDITION that ends when the operator runs
+  // the purge, and this audit is the only thing that ever observes it ending.
+  it("announces recovery once the audit measures the erasure as complete", async () => {
+    await GET(req());
+    expect(notify.resolveAlert).toHaveBeenCalledTimes(1);
+    expect(notify.resolveAlert.mock.calls[0][0]).toBe("snowflake_erasure_residual");
+  });
+
+  // The silent paths (#1152). A skipped run measured nothing and a thrown run
+  // knows nothing, so neither may claim the compliance request is now honored.
+  it("sends NO all-clear when the mirror is unconfigured (nothing was measured)", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValueOnce({ skipped: true, reasons: [] });
+    await GET(req());
+    expect(notify.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("sends NO all-clear when the audit throws", async () => {
+    audit.auditSnowflakeErasures.mockRejectedValueOnce(new Error("snowflake unreachable"));
+    await GET(req());
+    expect(notify.resolveAlert).not.toHaveBeenCalled();
   });
 
   it("500s and releases the lock when the audit throws (fail loud)", async () => {

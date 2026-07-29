@@ -261,6 +261,9 @@ export async function allowRequest(
  *  alert_state, so whatever broke the limiter can break the alert too, and a monitoring
  *  failure must never become a booking failure. */
 async function alertBestEffort(key: string, text: string, label: string): Promise<void> {
+  // alert-key: rate_limit_blocked:*
+  // alert-key: rate_limit_broken:*
+  // alert-key: rate_limit_refund_broken:*
   await sendThrottledAlert(key, LIMITER_BROKEN_COOLDOWN_MS, text).catch((err) => {
     log.error("rate-limit", { msg: "alert failed", label }, err);
   });

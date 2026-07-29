@@ -24,6 +24,7 @@ const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(
     async (_key: string, _cooldownMs: number, _text: string, _channel?: string): Promise<void> => {},
   ),
+  resolveAlert: vi.fn(async (_key: string, _text: string) => true),
 }));
 
 vi.mock("@/lib/cron", () => cron);
@@ -168,6 +169,44 @@ describe("GET /api/cron/ooo-digest", () => {
     expect(cleared).toContain("ooo-digest-send-fail:m2");
     expect(streak.recordConsecutiveStreak).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #1151: "this manager is not receiving their digest" is a CONDITION, and one
+  // successful DM is the only thing that ever observes it ending.
+  it("announces recovery for each manager it actually reached", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+
+    await GET(forcedReq());
+
+    const cleared = dispatch.resolveAlert.mock.calls.map((c) => c[0]);
+    expect(cleared).toContain("ooo-digest-unreachable:m1");
+    expect(cleared).toContain("ooo-digest-unreachable:m2");
+  });
+
+  // The silent path (#1152): a manager we could NOT reach gets no all-clear. The
+  // failed send is not evidence their DM works, and clearing here would close a
+  // page about the exact manager still going unreached.
+  it("sends NO all-clear for a manager whose DM failed", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    slack.dmSlackUserByEmail.mockImplementation(async (email: string) => email !== "m1@x.com");
+
+    await GET(forcedReq());
+
+    const cleared = dispatch.resolveAlert.mock.calls.map((c) => c[0]);
+    expect(cleared).not.toContain("ooo-digest-unreachable:m1");
+    expect(cleared).toContain("ooo-digest-unreachable:m2");
+  });
+
+  it("sends NO all-clear at all when every manager is unreachable", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    slack.dmSlackUserByEmail.mockResolvedValue(false);
+
+    await GET(forcedReq());
+
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
   });
 
   it("records a send-failure streak but stays quiet on a lone failure (#1001)", async () => {

@@ -96,7 +96,13 @@ const from = vi.hoisted(() => vi.fn());
 const fetchMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
-vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+// #1151: a dead-lettering endpoint is a CONDITION, so a delivery that lands
+// clears it. Hoisted so the silent-path test can assert on the real boundary.
+const notify = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async () => {}),
+  resolveAlert: vi.fn(async (_key: string, _text: string) => true),
+}));
+vi.mock("@/lib/notify/dispatch", () => notify);
 
 import {
   emitWebhook,
@@ -303,6 +309,43 @@ describe("emitWebhook", () => {
 // backstop for a dropped send), but hands the POST to a scheduler (Next after())
 // when one is supplied. The cron drains pass none and keep sending inline, so
 // their bounded fan-out still caps simultaneous connections.
+// #1151: a dead-lettering endpoint is a CONDITION that ends when a delivery
+// lands, and the delivery path is the only place that can observe it.
+describe("dead-letter recovery notice", () => {
+  const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+
+  it("announces recovery on a delivery that succeeds, keyed to the endpoint", async () => {
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(notify.resolveAlert).toHaveBeenCalledTimes(1);
+    expect(notify.resolveAlert.mock.calls[0][0]).toBe("webhook_dead:ep1");
+  });
+
+  // The silent path (#1152): a delivery that FAILED is not evidence the endpoint
+  // is healthy, so it must not clear the page saying it is dead.
+  it("sends NO all-clear when the delivery fails", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "boom" });
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(notify.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("clears one endpoint without clearing another that is still failing", async () => {
+    state.endpoints = [endpoint, { ...endpoint, id: "ep2", url: "https://other.example/hook" }];
+    fetchMock.mockImplementation(async (url: string) =>
+      String(url).includes("other.example")
+        ? { ok: false, status: 500, text: async () => "boom" }
+        : { ok: true, status: 200, text: async () => "ok" },
+    );
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    const cleared = notify.resolveAlert.mock.calls.map((c) => c[0]);
+    expect(cleared).toEqual(["webhook_dead:ep1"]);
+  });
+});
+
 describe("emitWebhook deferred send (#884)", () => {
   const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
 

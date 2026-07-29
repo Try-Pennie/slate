@@ -6,7 +6,7 @@ import { bookingPiiCutoffIso, REDACTED_BOOKING_UPDATE } from "@/lib/booking/pii-
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified, type VerifyVerdict } from "@/lib/snowflake/verify-archived";
 import { repairUnverified } from "@/lib/snowflake/reexport";
-import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
+import { alertRetentionResumed, alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +67,8 @@ export async function GET(req: NextRequest) {
       await alertRetentionSkipped("prune-bookings-pii", "nothing exported yet");
       return laneCompleted("prune-bookings-pii", { skipped: "nothing-exported-yet" });
     }
+    // #1151: past both gates, so this lane really is deleting again.
+    await alertRetentionResumed("prune-bookings-pii");
 
     // Aged, not-yet-redacted bookings (attendee_email still present) whose latest
     // version is already in Snowflake. The batch limit keeps this cap-safe on a

@@ -25,6 +25,16 @@ const state = vi.hoisted(() => ({
   rows: {} as Record<string, unknown[]>,
 }));
 
+// #1151: the same three sweeps now also CLEAR their conditions when they measure
+// a clean run, through the batched all-clear. That makes the silent path here
+// doubly load-bearing: a failed worklist read must not merely avoid reporting
+// zero work, it must avoid announcing that the backlog has cleared.
+const notify = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async () => {}),
+  resolveRecovered: vi.fn(async (_r: { key: string; text: string }[]) => [] as string[]),
+}));
+vi.mock("@/lib/notify/dispatch", () => notify);
+
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
@@ -146,5 +156,24 @@ describe("self-heal worklist reads never report a failed read as no work (#1152)
       expect(res.recreated).toBe(0);
       expect(res.scanned).toBe(0);
     });
+  });
+});
+
+describe("the same sweeps never announce recovery off a failed read (#1151)", () => {
+  it("sends NO all-clear when the deletion queue read fails", async () => {
+    state.errors.pending_event_deletions = { message: "read timeout" };
+
+    await expect(processPendingEventDeletions(20)).rejects.toThrow(/read timeout/);
+
+    expect(notify.resolveRecovered).not.toHaveBeenCalled();
+  });
+
+  it("DOES announce recovery when the queue is genuinely, measurably empty", async () => {
+    state.rows.pending_event_deletions = [];
+
+    await processPendingEventDeletions(20);
+
+    const keys = (notify.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
+    expect(keys).toEqual(["pending_event_deletions"]);
   });
 });

@@ -34,6 +34,21 @@ export function emptyBucketMessage(code: string): string {
 }
 
 /**
+ * The all-clear for a bucket that routes somewhere again (#1151).
+ *
+ * The page told someone a bucket could not take a lead, so the thing they need
+ * next is that it can. It names the count, because "has agents again" and "has
+ * exactly one agent again" call for different follow-up.
+ */
+export function recoveredBucketMessage(code: string, eligibleCount: number): string {
+  const who = eligibleCount === 1 ? "1 eligible bookable agent" : `${eligibleCount} eligible bookable agents`;
+  return (
+    `Slate: booking bucket ${code} can route leads again (${who}). The earlier page about it ` +
+    `having nobody to route to is cleared. No action is needed.`
+  );
+}
+
+/**
  * Reactive alert text: a live booking just hit a bucket with no eligible agents.
  * Tolerates a missing bucket code (defensive).
  */

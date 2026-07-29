@@ -13,7 +13,7 @@ import { agentDisplayName, formatRequestWhenAndReason } from "@/lib/ooo/core";
 import type { OooRequest } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +37,19 @@ async function noteDigestDelivery(managerId: string, managerLabel: string, ok: b
   const streakKey = `ooo-digest-send-fail:${managerId}`;
   if (ok) {
     await clearFailureStreak(streakKey);
+    // #1151: "this manager is not receiving their digest" is a CONDITION that
+    // ends the moment one reaches them, and this delivery IS that observation.
+    // Hung off the successful send, so it can never clear on a run where the
+    // send failed. resolveAlert is a no-op unless a page was delivered.
+    const cleared = await resolveAlert(
+      `ooo-digest-unreachable:${managerId}`,
+      `${managerLabel} is receiving their daily pending time off digest again, so approvals ` +
+        `waiting on them are being surfaced. No action is needed.`,
+    ).catch((err) => {
+      log.error("ooo-digest", { msg: "recovery notice failed", manager: managerId }, err);
+      return false;
+    });
+    if (cleared) log.info("ooo-digest", { msg: "unreachable alert cleared", manager: managerId });
     return;
   }
   const tripped = await recordConsecutiveStreak(

@@ -6,7 +6,7 @@ import { pruneCutoffIso } from "@/lib/routing/retention";
 import { exportedThrough, mirrorReadyForDeletion } from "@/lib/snowflake/retention-gate";
 import { MAX_VERIFY_BATCH, destroyVerified } from "@/lib/snowflake/verify-archived";
 import { repairUnverified } from "@/lib/snowflake/reexport";
-import { alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
+import { alertRetentionResumed, alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -34,6 +34,8 @@ export async function GET(req: NextRequest) {
       await alertRetentionSkipped("prune-routing", "nothing exported yet");
       return laneCompleted("prune-routing", { skipped: "nothing-exported-yet" });
     }
+    // #1151: past both gates, so this lane really is deleting again.
+    await alertRetentionResumed("prune-routing");
 
     // Read a BOUNDED batch of candidates and prove the warehouse holds each one
     // before deleting it (#1102). The watermark predicate below is only a cheap

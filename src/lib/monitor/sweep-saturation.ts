@@ -118,11 +118,21 @@ async function pageOnSaturationStreak(
     // that never alerted stays silent. The `null` case above still returns first:
     // a sweep that threw knows nothing about the backlog and must no more announce
     // recovery than it counts as saturation.
+    // The four saturation keys this shared reporter dispatches for; each caller
+    // passes one of them (#1151).
+    // alert-key: completion_sweep_saturated
+    // alert-key: reconcile_cancelled_saturated
+    // alert-key: reconcile_missing_saturated
+    // alert-key: deletion_drain_saturated
     await resolveAlert(key, recoveryText).catch(() => {});
     return;
   }
   const sustained = await recordConsecutiveStreak(key, windowSeconds, alertAfter);
   if (!sustained) return;
+  // alert-key: completion_sweep_saturated
+  // alert-key: reconcile_cancelled_saturated
+  // alert-key: reconcile_missing_saturated
+  // alert-key: deletion_drain_saturated
   await sendThrottledAlert(key, cooldownMs, buildAlert(alertAfter)).catch(() => {});
 }
 

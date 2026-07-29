@@ -153,6 +153,46 @@ export async function existingAlertStateKeys(keys: string[]): Promise<Set<string
 }
 
 /**
+ * Clear several conditions at once, at the cost of ONE read on the healthy tick
+ * (#1151).
+ *
+ * `resolveAlert` reads `alert_state` per key to find out whether that key was
+ * actually paging. Called for three or four keys from an every-minute lane, that
+ * is three or four queries a minute spent almost always learning that nothing is
+ * firing, on a subrequest budget four cron lanes share. This asks once, then
+ * resolves only the keys that really have an outstanding page.
+ *
+ * Pass ONLY conditions the caller has MEASURED to be healthy this tick. A key
+ * that could not be measured must not be in the list: clearing a page because a
+ * check failed to run is the same defect as posting an all-clear off a query that
+ * errored (#1134, #1152).
+ *
+ * Best-effort and never throws: a monitoring problem must not fail the lane it
+ * rides on. A failed read resolves nothing and the next tick retries, because the
+ * firing markers survive.
+ */
+export async function resolveRecovered(
+  recovered: { key: string; text: string }[],
+): Promise<string[]> {
+  if (recovered.length === 0) return [];
+  const firing = await existingAlertStateKeys(recovered.map((r) => firingKey(r.key))).catch(
+    () => new Set<string>(),
+  );
+  const cleared: string[] = [];
+  for (const r of recovered) {
+    if (!firing.has(firingKey(r.key))) continue;
+    const sent = await resolveAlert(r.key, r.text).catch((err) => {
+      // One key's failed notice must not skip the rest; the marker survives, so
+      // the next tick retries.
+      log.error("slack-alert", { msg: "recovery notice failed", key: r.key }, err);
+      return false;
+    });
+    if (sent) cleared.push(r.key);
+  }
+  return cleared;
+}
+
+/**
  * Announce that a previously-paged condition has CLEARED (#1133), then reset it.
  *
  * A no-op unless a page for `key` was actually delivered, so this can be called
