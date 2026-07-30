@@ -135,6 +135,29 @@ rows** from data that is actually present, so none of them can be told apart fro
 know is in the window (the every-minute `tag=recompute` line is a good one). If
 the control also returns zero, your query is wrong, not the platform.
 
+### The sync lane's cycle line
+
+`tag=sync msg="cycle"` is emitted once per minute tick and, like the recompute
+line, is unconditional, so it works as a positive control too:
+
+```
+slate tag=sync msg="cycle" agents=98 deferred=0 processed=98 gone_skipped=3 truncated=false
+```
+
+`gone_skipped` (#1187) is how many calendars the tick held back because they are
+established as gone (#1049 gives each one attempt per `GONE_RETRY_INTERVAL_MIN`
+rather than all 1440 a day). It is the only place the SIZE of that population is
+visible: the backoff removes the failing Google calls, and those calls were the
+incidental signal that delegation had been revoked, so a Workspace change that
+kills thirty agents at once makes this lane quieter rather than louder. A
+`gone_skipped` that climbs and stays high is a revocation wave, not noise.
+
+Read it as a per-tick sample, not a fleet census: the tick is capped at
+`MAX_AGENTS_PER_SYNC_TICK` and can end early on the budget deadline, so the
+number covers only the agents that tick reached. That partial coverage is why it
+is a log field rather than an alert threshold; the persistent-failure paging
+stays with the `sync_failures` alert, which judges stored streaks.
+
 **Don't hand-roll the query: use `scripts/logs.ts` (#807).** It encodes every trap
 above and *refuses* to report a zero unless the positive control found something in
 the same window, so "absent" and "my query is broken" can never be confused again:

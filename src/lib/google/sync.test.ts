@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { supabaseAdmin } from "@/lib/supabase/admin";
 
 // #834: two Google-sync reads were cap-safe only on a data assumption, not a hard
@@ -67,6 +67,11 @@ import {
   cleanupOnPoolExit,
 } from "./sync";
 import { LANE_COLUMNS } from "./sync-health";
+import {
+  syncEligible,
+  GONE_BACKOFF_STREAK,
+  GONE_RETRY_INTERVAL_MIN,
+} from "./sync-coalesce";
 import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
 
@@ -915,5 +920,105 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
     );
     const failing = (await loadFailingAgents())!;
     expect(failing.map((f) => f.email)).toEqual(["revoked@x.com"]);
+  });
+});
+
+// #1187: the #1049 backoff removed the wasted Google calls for calendars
+// established as gone, but those calls were also the incidental signal that
+// something was wrong. A Workspace change that revokes delegation for thirty
+// agents at once now makes the rotation lane QUIETER, not noisier. The lane has
+// to report the size of the population it is skipping, or the scale of a
+// revocation is unreportable.
+describe("runIncrementalSync reports the calendars it backed off (#1187)", () => {
+  /**
+   * A wall-clock ms value at which `id` is NOT due for its once-per-interval
+   * retry. Searched through the real `syncEligible` rather than hand-picked: a
+   * pinned literal would keep passing if the slot rule changed under it, and a
+   * test that runs on the real clock would be eligible (so green for the wrong
+   * reason) on one minute in every GONE_RETRY_INTERVAL_MIN.
+   */
+  function backedOffAtMs(id: string): number {
+    const gone = {
+      id,
+      last_failure_kind: "gone" as const,
+      consecutive_failures: GONE_BACKOFF_STREAK,
+    };
+    const base = Date.UTC(2026, 6, 30, 12, 0, 0);
+    for (let i = 0; i <= GONE_RETRY_INTERVAL_MIN; i++) {
+      const ms = base + i * 60_000;
+      if (!syncEligible(gone, ms)) return ms;
+    }
+    throw new Error(`no backed-off minute found for ${id}`);
+  }
+
+  const healthy = {
+    id: "cal-ok",
+    user_id: "agent-1",
+    calendar_id: "primary",
+    sync_token: "tok",
+    consecutive_failures: 0,
+    last_failure_kind: null,
+    last_success_at: null,
+    last_sync_error: null,
+  };
+  const gone = {
+    id: "cal-gone",
+    user_id: "agent-1",
+    calendar_id: "revoked@x.com",
+    sync_token: "tok",
+    consecutive_failures: GONE_BACKOFF_STREAK,
+    last_failure_kind: "gone",
+    last_success_at: null,
+    last_sync_error: "token mint failed: 401 unauthorized_client",
+  };
+
+  beforeEach(() => {
+    // Only Date: the flow awaits real promises, and faking timers wholesale
+    // would stall anything that yields to the macrotask queue.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    calMock.syncEvents.mockImplementation(async () => ({
+      events: [],
+      nextSyncToken: null,
+      truncated: false,
+    }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("counts the calendar it skipped, and syncs only the one that was due", async () => {
+    vi.setSystemTime(backedOffAtMs(gone.id));
+    const { db } = syncFlowDb({ email: "agent@x.com", calendars: [healthy, gone] });
+    admin.current = db;
+
+    const out = await runIncrementalSync("agent-1");
+
+    expect(out.goneSkipped).toBe(1);
+    // The count has to describe what the lane actually did, so prove the skip
+    // really happened rather than trusting the number on its own.
+    expect(calMock.syncEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports zero when every calendar was attempted", async () => {
+    vi.setSystemTime(backedOffAtMs(gone.id));
+    const { db } = syncFlowDb({ email: "agent@x.com", calendars: [healthy] });
+    admin.current = db;
+
+    const out = await runIncrementalSync("agent-1");
+
+    expect(out.goneSkipped).toBe(0);
+    expect(calMock.syncEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports zero for an agent with no mailbox, rather than leaving it undefined", async () => {
+    // The early return is the shape most likely to be missed, and an undefined
+    // here would sum into NaN across the tick and make the field unreadable.
+    const { db } = syncFlowDb({ email: null, calendars: [gone] });
+    admin.current = db;
+
+    const out = await runIncrementalSync("agent-1");
+
+    expect(out.goneSkipped).toBe(0);
   });
 });

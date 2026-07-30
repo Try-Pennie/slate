@@ -17,7 +17,7 @@ const admin = vi.hoisted(() => ({
   })),
 }));
 const sync = vi.hoisted(() => ({
-  runIncrementalSync: vi.fn(async () => ({ events: 0, truncated: false })),
+  runIncrementalSync: vi.fn(async () => ({ events: 0, truncated: false, goneSkipped: 0 })),
   loadSyncAgents: vi.fn(async () => []),
   markAgentsSynced: vi.fn(async () => {}),
   loadFailingAgents: vi.fn(async () => []),
@@ -56,7 +56,8 @@ const heartbeat = vi.hoisted(() => ({
 }));
 
 const logWarn = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/log", () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
+const logInfo = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { warn: logWarn, error: vi.fn(), info: logInfo } }));
 // #216 horizon read: one value for the batch, irrelevant to what is asserted here.
 vi.mock("@/lib/booking/settings", () => ({ loadBookingHorizonDays: vi.fn(async () => 3) }));
 
@@ -246,5 +247,63 @@ describe("GET /api/cron/sync records a failed post-sync recompute (#1049)", () =
         String((c[1] as Record<string, unknown>)?.msg ?? "").includes("recompute"),
       ),
     ).toBe(false);
+  });
+});
+
+// #1187: the backoff #1049 added makes a fleet-wide revocation QUIETER on this
+// lane, because the retries that used to fail loudly simply stop happening. The
+// tick has to publish the size of the skipped population so the scale stays
+// visible in the Worker logs.
+describe("GET /api/cron/sync reports how many calendars it backed off (#1187)", () => {
+  /** The one per-cycle summary line this lane emits. */
+  function cycleLine() {
+    const call = logInfo.mock.calls.find(
+      (c) => c[0] === "sync" && (c[1] as Record<string, unknown>)?.msg === "cycle",
+    );
+    return call ? (call[1] as Record<string, unknown>) : undefined;
+  }
+
+  it("sums the skipped count across the agents it processed", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.mapWithConcurrency.mockResolvedValueOnce({
+      results: [
+        { userId: "u1", synced: 0, goneSkipped: 2 },
+        { userId: "u2", synced: 1, goneSkipped: 3 },
+        // An agent with nothing backed off must contribute 0, not undefined.
+        { userId: "u3", synced: 4 },
+      ],
+      processed: 3,
+      truncated: false,
+    } as never);
+
+    await GET(req());
+
+    expect(cycleLine()?.gone_skipped).toBe(5);
+  });
+
+  it("emits the cycle line on a quiet tick too, so zero is stated rather than absent", async () => {
+    // An absent field is indistinguishable from a lane that did not run. The
+    // line is also this lane's positive control when querying the logs.
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+
+    await GET(req());
+
+    expect(cycleLine()?.gone_skipped).toBe(0);
+  });
+
+  it("still emits the count when the tick was truncated", async () => {
+    // Truncation is exactly when a revocation wave is most likely to be in
+    // progress, so the field must survive the early-exit path.
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.mapWithConcurrency.mockResolvedValueOnce({
+      results: [{ userId: "u1", synced: 0, truncated: true, goneSkipped: 7 }],
+      processed: 1,
+      truncated: true,
+    } as never);
+
+    await GET(req());
+
+    expect(cycleLine()?.gone_skipped).toBe(7);
+    expect(cycleLine()?.truncated).toBe(true);
   });
 });
