@@ -609,27 +609,37 @@ async function syncCalendar(
  * `deadlineMs` (#44) stops STARTING new calendars once the tick budget is
  * spent - incrementals run first, bootstraps last - and reports truncation;
  * sync tokens make the next invocation resume where this one stopped.
+ *
+ * `goneSkipped` (#1187) is how many of this agent's calendars the backoff below
+ * held back this tick. The backoff is the point of #1049, but the retries it
+ * removes were also the incidental signal that something was wrong: a Workspace
+ * change revoking delegation across the fleet now makes this lane QUIETER, not
+ * noisier. Reporting the count keeps the SCALE of a revocation observable.
  */
 export async function runIncrementalSync(
   userId: string,
   deadlineMs: number | null = null,
-): Promise<{ events: number; truncated: boolean }> {
+): Promise<{ events: number; truncated: boolean; goneSkipped: number }> {
   const email = await loadAgentEmail(userId);
-  if (!email) return { events: 0, truncated: false };
+  if (!email) return { events: 0, truncated: false, goneSkipped: 0 };
   const timeZone = await loadAgentTimezone(userId);
   // #1049: sync order, minus calendars established as gone whose turn this is
   // not. A revoked delegation cannot recover without a human, so re-attempting it
   // on all 1440 rotations a day only burns Google calls that can only fail; each
   // one now gets one attempt per GONE_RETRY_INTERVAL_MIN so it still recovers.
-  const cals = eligibleCalendarsForSync(await loadAgentCalendars(userId), Date.now());
+  const all = await loadAgentCalendars(userId);
+  const cals = eligibleCalendarsForSync(all, Date.now());
+  // Derived from the one predicate that made the decision, never re-deciding it
+  // here: a second copy of the rule would drift from the filter it describes.
+  const goneSkipped = all.length - cals.length;
   let events = 0;
   for (let i = 0; i < cals.length; i++) {
     if (pastDeadline(Date.now(), deadlineMs)) {
-      return { events, truncated: true };
+      return { events, truncated: true, goneSkipped };
     }
     events += await syncCalendar(email, cals[i], timeZone);
   }
-  return { events, truncated: false };
+  return { events, truncated: false, goneSkipped };
 }
 
 /**

@@ -160,12 +160,16 @@ export async function GET(req: NextRequest) {
             userId: string;
             synced?: number;
             truncated?: boolean;
+            goneSkipped?: number;
             error?: string;
           } = { userId: agent.userId };
           try {
             const sync = await runIncrementalSync(agent.userId, deadlineMs);
             row.synced = sync.events;
             if (sync.truncated) row.truncated = true;
+            // Only when there IS a backed-off calendar, so the overwhelmingly
+            // common healthy row stays as small as it was.
+            if (sync.goneSkipped > 0) row.goneSkipped = sync.goneSkipped;
           } catch (err) {
             row.error = err instanceof Error ? err.message : String(err);
           }
@@ -224,6 +228,21 @@ export async function GET(req: NextRequest) {
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.
     const truncated = deferred > 0 || budgetTruncated || results.some((r) => r.truncated);
+    // #1187: how many calendars the #1049 gone-backoff held back this tick.
+    const goneSkipped = results.reduce((n, r) => n + (r.goneSkipped ?? 0), 0);
+    // One line per cycle, always, mirroring the recompute lane. Two reasons it
+    // is unconditional: a zero has to be STATED, because an absent field reads
+    // the same as a lane that never ran, and this is the sync lane's positive
+    // control when querying Worker logs (a query returning nothing is then a
+    // wrong query, not proof of silence).
+    log.info("sync", {
+      msg: "cycle",
+      agents: agents.length,
+      deferred,
+      processed,
+      gone_skipped: goneSkipped,
+      truncated,
+    });
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
     await recordHeartbeat("sync").catch(() => {});
     return NextResponse.json({
@@ -231,6 +250,7 @@ export async function GET(req: NextRequest) {
       deferred,
       processed,
       truncated,
+      goneSkipped,
       results,
     });
   } finally {
