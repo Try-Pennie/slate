@@ -104,6 +104,29 @@ Change one by editing `wrangler.jsonc` and redeploying.
 pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm builtin)
 ```
 
+### What CI does around that command (#1037)
+A merge to `main` reaches 100% of traffic instantly, so the `deploy` job wraps
+`cf:deploy` in two extra steps. Both matter if you ever deploy by hand:
+
+1. **Before** the build, `scripts/stamp-build-info.ts` writes the deploying commit
+   into `src/lib/build-info.ts`, which is compiled into the Worker bundle. The
+   committed value is the placeholder `"dev"` and is *expected* to be stale in git.
+2. **After** the deploy, `scripts/post-deploy-probe.ts` polls
+   `GET /api/smoke/version` (key-authed with `BOOKING_API_KEY`) until the live site
+   reports that commit, and only then checks `/api/health` and the availability read
+   path for the isolated `SMOKE` bucket.
+
+The order is the point. Checking health without first confirming the new version is
+live gets a 200 from the *previous* version during Cloudflare's propagation window,
+so a completely broken deploy would report healthy. The probe **does not roll back**:
+it fails the job, and a failed job on a push to `main` posts a Slack alert
+(`.github/workflows/deploy-alert.yml`), which turns "broken until the scheduled
+canary notices, up to 30 minutes" into "broken and someone is told in about a
+minute".
+
+A hand-run `pnpm cf:deploy` skips both steps, so the live site will report commit
+`dev` and the next CI probe is the first thing to confirm the version again.
+
 ## 4. Post-deploy config
 - **Offboarding API (optional):** to let the offboarding automation deactivate
   departed users, set `OFFBOARDING_API_KEY` (above), then point the automation at
