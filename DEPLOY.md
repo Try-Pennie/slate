@@ -169,6 +169,33 @@ A hand-run `pnpm cf:deploy` skips both steps, so the live site will report commi
   the push endpoint. Until then, calendar changes still sync — just not in
   real-time (see Cron below).
 - The Google OAuth client redirect URI is unchanged (it points at Supabase).
+- **http → https redirect (#1024, Cloudflare zone config):** the public booker
+  collects lead name, email and phone, so a first-time visitor arriving on an
+  `http://` link must be redirected before the browser sends anything. This is a
+  **Redirect Rule** on the `trypennie.app` zone (Rules → Redirect Rules), not the
+  zone-wide "Always Use HTTPS" toggle:
+
+  | field | value |
+  |---|---|
+  | expression | `(http.host eq "slate.trypennie.app" and http.request.scheme eq "http")` |
+  | URL type | Dynamic |
+  | target expression | `concat("https://", http.host, http.request.uri)` |
+  | status code | 301 |
+  | preserve query string | **off** (`http.request.uri` already carries it) |
+
+  **Why scoped rather than the zone toggle.** The zone carries nine proxied
+  hostnames (`automations`, `le`, `main`, `prescreen`, `rml.smartly`,
+  `skyfall-offer-wall`, `slate`, `smsassign`, `training`), several of them
+  machine-to-machine. A zone-wide 301 would reach all of them, and a client that
+  does not follow redirects (or a `POST` whose body is dropped on a 301) would
+  break silently on a property nobody was changing. Scoping to Slate's hostname
+  keeps the blast radius at one service.
+
+  This is dashboard-only config with no rollback path in git, which is exactly
+  why it is written down here and asserted live: the smoke canary re-checks it
+  every 30 minutes (`scripts/lib/https-redirect.ts`). Set the repo Actions
+  variable `EXPECT_HTTPS_REDIRECT=1` once the rule is deployed so a later
+  regression **pages** instead of only warning.
 
 ## Cron
 Cron runs entirely on the **main** Worker: `worker/index.ts` `scheduled()`
