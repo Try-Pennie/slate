@@ -43,6 +43,7 @@ import {
   oooUndoManagerAlert,
 } from "@/lib/ooo/alert-copy";
 import {
+  auditWriteFailedAlert,
   bookableBlockedAlert,
   bookableUnverifiedAlert,
   externalDoubleBookAlert,
@@ -551,6 +552,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: misrouteAlert("bk_8f21c4", "411", "usr_22") },
   { key: "internal_error:*", state: "an unexpected 500", channel: "alert",
     text: internalErrorAlert("POST /api/bookings", "503 backendError") },
+  // Two states: the returned-error shape (a schema/grant break, what actually
+  // happens) and the thrown shape. Both read the same to the person paged.
+  { key: "audit_write_failed", state: "the trail stopped recording (schema or grant)", channel: "alert",
+    text: auditWriteFailedAlert("role.set", 'column "details" does not exist') },
+  { key: "audit_write_failed", state: "the trail stopped recording (client threw)", channel: "alert",
+    text: auditWriteFailedAlert("agent.deactivate", "connection reset") },
   { key: "reassign-unknown-reason-code", state: "an unrecognised code", channel: "info",
     text: unknownReasonCodeNotice("owner_switch") },
   { key: "rate_limit_blocked:*", state: "a caller throttled", channel: "alert",

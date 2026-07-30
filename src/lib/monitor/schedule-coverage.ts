@@ -1,3 +1,5 @@
+import { log } from "@/lib/log";
+
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
 export const AGENTS_WITHOUT_SCHEDULE_KEY = "agents_without_schedule";
@@ -78,7 +80,13 @@ export async function runScheduleCoverageCheck(deps: {
   // Best-effort heal: a throw here (a broken fill) must not skip the recheck.
   // That is exactly the case the alert exists to surface.
   const orgIds = [...new Set(before.map((a) => a.org_id))];
-  await deps.heal(orgIds).catch(() => {});
+  await deps
+    .heal(orgIds)
+    // A failed self-heal is why the gap alert then fires; without a trace the
+    // alert looks like the gap was never fixable rather than never attempted.
+    .catch((err) =>
+      log.error("schedule-coverage", { msg: "schedule self-heal failed", orgs: orgIds.length }, err),
+    );
 
   const after = await deps.loadMissingAgents();
   const healed = before.length - after.length;

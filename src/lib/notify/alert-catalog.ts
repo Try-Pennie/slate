@@ -161,6 +161,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One history row was lost. Nothing later restores it, so there is nothing to clear.",
   },
   {
+    key: "audit_write_failed",
+    kind: "incident",
+    why: "One audit-trail row was lost, and the action it described has already committed. Nothing backfills it, so there is no healthy state to observe and an all-clear would only say the past stopped happening. recordAudit is called per action, not from a lane, so there is no measured sweep to hang a recovery on either.",
+  },
+  {
     key: "creation_orphan_events",
     kind: "incident",
     why: "Specific calendar events outlived their booking; each is resolved by hand, not by a state flipping back.",

@@ -76,3 +76,78 @@ export function orderCalendarsForSync<T extends { sync_token: string | null }>(
     (a, b) => Number(a.sync_token === null) - Number(b.sync_token === null),
   );
 }
+
+/**
+ * Consecutive `gone` classifications before a calendar is treated as ESTABLISHED
+ * gone rather than possibly-misread. One or two can be a bad response from
+ * Google; three in a row on the minute lane is a real revocation.
+ */
+export const GONE_BACKOFF_STREAK = 3;
+
+/**
+ * How often an established-gone calendar is still attempted, in minutes.
+ *
+ * Ten, not the sixty the issue floated, because this interval is also the
+ * RECOVERY LAG: nothing marks a calendar un-gone except an attempt that
+ * succeeds, so whatever is chosen here is how long a human's fix can sit
+ * unnoticed by the rotation lane. Ten still removes ~90% of the wasted calls
+ * (1440 attempts a day becomes 144) while keeping that lag inside a coffee
+ * break. Re-activating an agent goes through the live bookable check instead,
+ * which is immediate and does not wait on this at all.
+ */
+export const GONE_RETRY_INTERVAL_MIN = 10;
+
+/** Stable non-cryptographic hash of a calendar id (FNV-1a, 32-bit). Used only to
+ *  spread retries across minutes, so collisions are harmless. */
+function slotHash(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
+/**
+ * Is this calendar due for a sync attempt on the rotation lane right now?
+ *
+ * True for everything except a calendar that is ESTABLISHED gone, which gets one
+ * attempt per `GONE_RETRY_INTERVAL_MIN` on a minute derived from its own id.
+ *
+ * Why a clock slot rather than a counter or a timestamp (#1049): there is no
+ * `last_attempt_at` column, and `last_success_at` stops moving the moment a
+ * calendar starts failing, so neither can answer "when did we last try". A
+ * counter cannot work either, because SKIPPING an attempt records no failure, so
+ * `consecutive_failures` freezes at whatever value triggered the skip and the
+ * rule then fires either never or every tick. Hashing the id against the wall
+ * clock needs no new column and no stored state, is stable for a given calendar,
+ * and spreads a fleet of dead calendars across different minutes instead of
+ * having them all retry in the same tick.
+ *
+ * Deliberately scoped to the every-minute rotation lane (`runIncrementalSync`),
+ * its only caller. A push webhook or a human re-activating an agent does not
+ * come through here, so neither is ever delayed by this.
+ */
+export function syncEligible(
+  cal: { id: string; last_failure_kind: "gone" | "transient" | null; consecutive_failures: number },
+  nowMs: number,
+  intervalMin: number = GONE_RETRY_INTERVAL_MIN,
+): boolean {
+  const established =
+    cal.last_failure_kind === "gone" && cal.consecutive_failures >= GONE_BACKOFF_STREAK;
+  if (!established) return true;
+  const minuteOfEpoch = Math.floor(nowMs / 60_000);
+  return minuteOfEpoch % intervalMin === slotHash(cal.id) % intervalMin;
+}
+
+/** The rotation lane's calendar list: sync order, minus anything backed off. */
+export function eligibleCalendarsForSync<
+  T extends {
+    id: string;
+    sync_token: string | null;
+    last_failure_kind: "gone" | "transient" | null;
+    consecutive_failures: number;
+  },
+>(cals: T[], nowMs: number): T[] {
+  return orderCalendarsForSync(cals).filter((c) => syncEligible(c, nowMs));
+}

@@ -297,7 +297,18 @@ async function deleteEventBestEffort(
   try {
     await deps.deleteEvent(email, eventId, opts);
   } catch {
-    await deps.enqueueEventDeletion(email, eventId, bookingId).catch(() => {});
+    await deps
+      .enqueueEventDeletion(email, eventId, bookingId)
+      // Last line of defence: the live delete already failed, so if the retry
+      // queue write is lost too, the Google event is orphaned on the agent's
+      // calendar with nothing left to find it.
+      .catch((err) =>
+        log.error(
+          "booking",
+          { msg: "event-deletion enqueue failed", booking_id: bookingId, gcal_event_id: eventId },
+          err,
+        ),
+      );
   }
 }
 

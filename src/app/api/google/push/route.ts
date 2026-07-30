@@ -1,4 +1,5 @@
 import { NextResponse, after, type NextRequest } from "next/server";
+import { log } from "@/lib/log";
 import { googleChannelToken } from "@/lib/env";
 import { syncByChannel } from "@/lib/google/sync";
 
@@ -25,7 +26,13 @@ export async function POST(req: NextRequest) {
     // after() keeps the Worker alive until the sync settles. A bare
     // fire-and-forget promise is cut off once the response is sent on the
     // Cloudflare runtime, so the sync could silently never land (#191).
-    after(() => syncByChannel(channelId).catch(() => {}));
+    after(() =>
+      syncByChannel(channelId).catch((err) =>
+        // Google will not redeliver this notification, so a lost sync means the
+        // calendar change waits for the 1-min backstop with no trace of the miss.
+        log.error("google-push", { msg: "push-triggered sync failed", channel_id: channelId }, err),
+      ),
+    );
   }
 
   return new NextResponse(null, { status: 200 });

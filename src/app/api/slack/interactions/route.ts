@@ -1,4 +1,5 @@
 import { NextResponse, after, type NextRequest } from "next/server";
+import { log } from "@/lib/log";
 import { appUrl, slackSigningSecret } from "@/lib/env";
 import { verifySlackSignature } from "@/lib/slack/verify";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -149,7 +150,13 @@ export async function POST(req: NextRequest) {
         // after() keeps the Worker alive until the reject finishes — a plain
         // fire-and-forget promise is killed once the response is sent on the
         // Cloudflare runtime, so the rejection never lands (#191).
-        after(() => runReject(requestId, slackUserId, note).catch(() => {}));
+        after(() =>
+          runReject(requestId, slackUserId, note).catch((err) =>
+            // The requester was already told the modal closed, so a silent
+            // failure here means a rejection that never happened and nobody knows.
+            log.error("slack", { msg: "OOO reject failed", request_id: requestId }, err),
+          ),
+        );
       }
     }
     // Empty 200 closes the modal.
@@ -166,7 +173,13 @@ export async function POST(req: NextRequest) {
       // Ack now; the approval (Google + Slack writes) finishes after the
       // response via after(), which keeps the Worker alive — a bare
       // fire-and-forget promise is cut off on the Cloudflare runtime (#191).
-      after(() => runApprove(requestId, slackUserId, responseUrl).catch(() => {}));
+      after(() =>
+        runApprove(requestId, slackUserId, responseUrl).catch((err) =>
+          // Same as reject: an approval that silently never landed leaves the
+          // agent still bookable over time off they were told was approved.
+          log.error("slack", { msg: "OOO approve failed", request_id: requestId }, err),
+        ),
+      );
       return new NextResponse(null, { status: 200 });
     }
 
