@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import {
@@ -19,7 +20,7 @@ import {
 } from "@/lib/google/sync-core";
 import {
   claimWindow,
-  orderCalendarsForSync,
+  eligibleCalendarsForSync,
   pastDeadline,
   shouldRerun,
   CALENDAR_CLAIM_TTL_MS,
@@ -616,7 +617,11 @@ export async function runIncrementalSync(
   const email = await loadAgentEmail(userId);
   if (!email) return { events: 0, truncated: false };
   const timeZone = await loadAgentTimezone(userId);
-  const cals = orderCalendarsForSync(await loadAgentCalendars(userId));
+  // #1049: sync order, minus calendars established as gone whose turn this is
+  // not. A revoked delegation cannot recover without a human, so re-attempting it
+  // on all 1440 rotations a day only burns Google calls that can only fail; each
+  // one now gets one attempt per GONE_RETRY_INTERVAL_MIN so it still recovers.
+  const cals = eligibleCalendarsForSync(await loadAgentCalendars(userId), Date.now());
   let events = 0;
   for (let i = 0; i < cals.length; i++) {
     if (pastDeadline(Date.now(), deadlineMs)) {
@@ -779,7 +784,15 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
     for (const c of existing) {
       if (wantedSet.has(c.calendar_id)) continue;
       if (c.watch_channel_id && c.watch_resource_id) {
-        await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch(() => {});
+        await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch((err) =>
+        // An un-stopped channel keeps Google notifying us about a calendar we
+        // have dropped, so this is worth a trace even though teardown continues.
+        log.warn("sync", {
+          msg: "stopChannel failed",
+          channel_id: c.watch_channel_id,
+          reason: shortErrorReason(err),
+        }),
+      );
       }
       // Drop cached busy blocks for a calendar the agent no longer has, so a
       // removed calendar can't keep over-blocking their availability.
@@ -802,7 +815,13 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       const prev = healthOf(cal, "watch");
       try {
         if (cal.watch_channel_id && cal.watch_resource_id) {
-          await stopChannel(email, cal.watch_channel_id, cal.watch_resource_id).catch(() => {});
+          await stopChannel(email, cal.watch_channel_id, cal.watch_resource_id).catch((err) =>
+            log.warn("sync", {
+              msg: "stopChannel failed",
+              channel_id: cal.watch_channel_id,
+              reason: shortErrorReason(err),
+            }),
+          );
         }
         const channelId = nanoid();
         const { resourceId, expiration } = await watchCalendar(
@@ -861,7 +880,15 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
   let watchesStopped = 0;
   for (const c of cals) {
     if (email && c.watch_channel_id && c.watch_resource_id) {
-      await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch(() => {});
+      await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch((err) =>
+        // An un-stopped channel keeps Google notifying us about a calendar we
+        // have dropped, so this is worth a trace even though teardown continues.
+        log.warn("sync", {
+          msg: "stopChannel failed",
+          channel_id: c.watch_channel_id,
+          reason: shortErrorReason(err),
+        }),
+      );
       watchesStopped++;
     }
   }

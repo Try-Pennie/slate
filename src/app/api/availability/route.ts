@@ -4,6 +4,7 @@ import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
+import { internalErrorResponse } from "@/lib/api/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,20 @@ export const dynamic = "force-dynamic";
  * Reads precomputed slots from the cache — no live Google calls.
  */
 export async function GET(req: NextRequest) {
+  // #1049: an UNPREDICTED fault here used to fall through to a framework 500
+  // with nothing told to anyone. This is the booker's hot path, and its failure
+  // mode is the worst kind: the lead sees NO times, which looks exactly like a
+  // genuinely full calendar, so a broken deploy reads as a quiet day (the #277
+  // shape). Every expected outcome below (429, 400, 404) is returned from inside
+  // and keeps its own status, so the catch only ever sees a real fault.
+  try {
+    return await handle(req);
+  } catch (err) {
+    return internalErrorResponse(err, "availability");
+  }
+}
+
+async function handle(req: NextRequest) {
   // Edge-throttle (#56) — in-datacenter, no DB round-trip, so the cached hot
   // path stays fast. Fails open.
   if (!(await availabilityWithinLimit(clientIp(req.headers)))) {

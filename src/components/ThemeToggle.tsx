@@ -53,6 +53,10 @@ export function ThemeToggle({
     setPref(next);
     apply(next);
     document.cookie = `slate-theme=${next}; path=/; max-age=31536000; samesite=lax`;
+    // swallow-ok: a client-side cosmetic preference. The toggle has already
+    // applied the theme locally, so a failed persist only means the next visit
+    // starts from the system default. This is a client component, so the
+    // server-side logger is not available here anyway.
     void setThemePreference(next).catch(() => {});
   }
 

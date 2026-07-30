@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import {
@@ -194,7 +195,15 @@ export async function GET(req: NextRequest) {
       // #216: one horizon read for the batch, not per bucket.
       const horizonDays = await loadBookingHorizonDays();
       for (const code of touched) {
-        await recomputeBucketSlotsForToday(code, true, undefined, horizonDays).catch(() => {});
+        await recomputeBucketSlotsForToday(code, true, undefined, horizonDays).catch((err) =>
+          // Best-effort: the recompute lane reconverges. Logged so a bucket that
+          // never recomputes after a sync is findable.
+          log.warn("sync", {
+            msg: "post-sync recompute failed",
+            bucket: code,
+            reason: shortErrorReason(err),
+          }),
+        );
       }
     }
 

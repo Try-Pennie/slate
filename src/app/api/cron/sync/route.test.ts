@@ -25,7 +25,7 @@ const sync = vi.hoisted(() => ({
 const pace = vi.hoisted(() => ({
   orderAgentsForTick: vi.fn((a: unknown[]) => a),
   mapWithConcurrency: vi.fn(async () => ({ results: [], processed: 0, truncated: false })),
-  agentsWithChanges: vi.fn(() => []),
+  agentsWithChanges: vi.fn((): { userId: string }[] => []),
   SYNC_CONCURRENCY: 4,
   MAX_AGENTS_PER_SYNC_TICK: 200,
   MAX_TOUCHED_AGENTS: 50,
@@ -54,6 +54,11 @@ const heartbeat = vi.hoisted(() => ({
   readHeartbeatMs: vi.fn(async () => 1),
   recordHeartbeat: vi.fn(async () => {}),
 }));
+
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
+// #216 horizon read: one value for the batch, irrelevant to what is asserted here.
+vi.mock("@/lib/booking/settings", () => ({ loadBookingHorizonDays: vi.fn(async () => 3) }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
@@ -190,5 +195,56 @@ describe("GET /api/cron/sync", () => {
     dispatch.resolveAlert.mockRejectedValueOnce(new Error("slack down") as never);
     const res = await GET(req());
     expect(res.status).toBe(200);
+  });
+});
+
+// #1049: the post-sync per-bucket recompute used to swallow its rejection. The
+// recompute lane does reconverge the bucket, so this is genuinely best-effort and
+// stays a warn rather than a page. What was missing is any trace at all: a bucket
+// whose recompute fails on EVERY tick looked identical to one that never needed
+// recomputing.
+describe("GET /api/cron/sync records a failed post-sync recompute (#1049)", () => {
+  beforeEach(() => {
+    logWarn.mockClear();
+    // Drive the recompute loop: one agent with changes, one touched bucket.
+    pace.agentsWithChanges.mockReturnValue([{ userId: "u1" }]);
+    precompute.touchedBucketCodes.mockResolvedValue(["411"]);
+  });
+
+  it("logs the bucket and a short reason when the recompute rejects, and still returns 200", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    slotCache.recomputeBucketSlotsForToday.mockRejectedValueOnce(
+      new Error("bucket_slots upsert deadlock detected"),
+    );
+
+    const res = await GET(req());
+
+    // The tick must not fail over a best-effort freshness nudge.
+    expect(res.status).toBe(200);
+    expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledTimes(1);
+
+    const call = logWarn.mock.calls.find(
+      (c) => String((c[1] as Record<string, unknown>)?.msg ?? "").includes("recompute"),
+    );
+    expect(call).toBeDefined();
+    const [tag, fields] = call as [string, Record<string, unknown>];
+    expect(tag).toBe("sync");
+    // The bucket is what makes it actionable, and the reason must be ONE short
+    // line rather than a pasted database error.
+    expect(fields.bucket).toBe("411");
+    expect(String(fields.reason)).not.toContain("\n");
+    expect(String(fields.reason).length).toBeLessThan(120);
+  });
+
+  it("logs no recompute warning when the recompute succeeds", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledTimes(1);
+    expect(
+      logWarn.mock.calls.some((c) =>
+        String((c[1] as Record<string, unknown>)?.msg ?? "").includes("recompute"),
+      ),
+    ).toBe(false);
   });
 });

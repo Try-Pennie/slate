@@ -97,7 +97,7 @@ import {
 // #1135: the one way an error reaches alert copy. A Postgres error message can be
 // long and multi-line (a constraint body, a nested detail), and a page is read on
 // a phone; the full text stays in the log line beside each of these alerts.
-import { shortFailureReason } from "@/lib/notify/error-text";
+import { shortErrorReason, shortFailureReason } from "@/lib/notify/error-text";
 import type {
   Booking,
   BookingEventInitiator,
@@ -755,7 +755,15 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // blocked on the recompute; the recompute lane's freshness sweep is the
     // backstop if this best-effort call is missed.
     invalidateSlots: (bucketCode) => {
-      void recomputeBucketSlotsForToday(bucketCode).catch(() => {});
+      void recomputeBucketSlotsForToday(bucketCode).catch((err) =>
+        // Best-effort freshness nudge; the recompute lane reconverges this bucket
+        // regardless. Logged so a lane that is failing EVERY time is findable.
+        log.warn("booking", {
+          msg: "post-confirm recompute failed",
+          bucket: bucketCode,
+          reason: shortErrorReason(err),
+        }),
+      );
       return Promise.resolve();
     },
     // #504: the routing decision log, injected so the orchestration's calls are
@@ -2221,7 +2229,15 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
     "reconcile",
   );
   for (const code of touched) {
-    await recomputeBucketSlotsForToday(code, true).catch(() => {});
+    await recomputeBucketSlotsForToday(code, true).catch((err) =>
+      // Best-effort: the recompute lane owns convergence. Logged so a
+      // persistently failing recompute is findable rather than invisible.
+      log.warn("booking", {
+        msg: "reconcile recompute failed",
+        bucket: code,
+        reason: shortErrorReason(err),
+      }),
+    );
   }
 
   await sendThrottledAlert(
@@ -2255,7 +2271,15 @@ export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
     "reconcile-missing",
   );
   for (const code of touched) {
-    await recomputeBucketSlotsForToday(code, true).catch(() => {});
+    await recomputeBucketSlotsForToday(code, true).catch((err) =>
+      // Best-effort: the recompute lane owns convergence. Logged so a
+      // persistently failing recompute is findable rather than invisible.
+      log.warn("booking", {
+        msg: "reconcile recompute failed",
+        bucket: code,
+        reason: shortErrorReason(err),
+      }),
+    );
   }
 
   await sendThrottledAlert(
@@ -2332,7 +2356,16 @@ export async function drainBookingReservations() {
   }
   // Retention: delete up to a batch of pending reservations older than the TTL.
   const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();
-  await deps.deleteExpiredReservations(cutoff, RESERVATION_DRAIN_LIMIT).catch(() => {});
+  await deps
+    .deleteExpiredReservations(cutoff, RESERVATION_DRAIN_LIMIT)
+    // Best-effort retention trim; the next tick retries the same cutoff. Logged
+    // so a cleanup that never succeeds does not grow the table in silence.
+    .catch((err) =>
+      log.warn("booking", {
+        msg: "expired-reservation cleanup failed",
+        reason: shortErrorReason(err),
+      }),
+    );
   // PII-free summary (stuck rows carry attendee payload -> cron response body).
   const { stuck, ...summary } = result;
   return { ...summary, stuck: stuck.length };

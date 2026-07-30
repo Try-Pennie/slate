@@ -57,6 +57,25 @@ export function internalErrorAlert(context: string, detail: string): string {
   return `Slate: unexpected server error on ${context} (${detail}). The caller got a generic 500. Full detail is in the Worker logs at level error.`;
 }
 
+/**
+ * A privileged action happened but its audit-trail row was not written (#1049).
+ *
+ * Names the action, because the blast radius is the question the reader has: the
+ * mutation itself already committed, so this is about a gap in the record of who
+ * did what, not about a failed operation. `reason` is already shortened by
+ * shortFailureReason / shortErrorReason at the call site; the full text is in the
+ * Worker log.
+ */
+export function auditWriteFailedAlert(action: string, reason: string): string {
+  return (
+    `Slate: the audit trail did NOT record a "${action}" action (${reason}). ` +
+    `The action itself went through, so this is a gap in the record of who did ` +
+    `what, not a failed change. Further audit writes are likely failing too. ` +
+    `Check the audit_log table's schema and grants; full detail is in the Worker ` +
+    `logs at level error.`
+  );
+}
+
 /** A caller sent a reason code we do not recognise (informational). */
 export function unknownReasonCodeNotice(rawCode: string): string {
   return (
