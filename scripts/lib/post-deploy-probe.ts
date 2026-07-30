@@ -55,7 +55,20 @@ export interface ProbeConfig {
   pollIntervalMs: number;
 }
 
-export const DEFAULT_VERSION_TIMEOUT_MS = 120_000;
+/**
+ * How long to wait for the new version to become live before failing the deploy.
+ *
+ * Four minutes, sized from a MEASURED propagation rather than a guess: the first
+ * real run (merge 81b6598, 2026-07-30) needed 10 polls, about 50 seconds. Two
+ * minutes would have passed, but only about 2.4x headroom, and falling short
+ * fails a perfectly good deploy and pages someone at whatever hour it happens.
+ *
+ * The asymmetry is what settles the number. Waiting longer costs nothing on a
+ * healthy deploy, because the probe returns the moment the version appears; it
+ * only extends the wait when something is already wrong. Being too short costs a
+ * false page and, worse, trains everyone to disregard this alert (L36).
+ */
+export const DEFAULT_VERSION_TIMEOUT_MS = 240_000;
 export const DEFAULT_POLL_INTERVAL_MS = 5_000;
 
 /**

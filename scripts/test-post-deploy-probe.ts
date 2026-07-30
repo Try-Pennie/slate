@@ -203,9 +203,21 @@ const cfg = {
 
 // The defaults have to be sane on their own terms: long enough for a real
 // propagation, short enough that a broken deploy is known about quickly.
+// Sized from a MEASURED propagation, not a guess. The first real run (merge
+// 81b6598, 2026-07-30) needed 10 polls, about 50s, for the new version to go live.
+// The window must leave real headroom above that, because falling short fails a
+// perfectly good deploy and pages someone, and a gate that cries wolf gets ignored
+// (L36). Four minutes is roughly 5x the observed figure. The floor below is what
+// stops a future edit quietly trimming it back under that margin.
 assert(
-  DEFAULT_VERSION_TIMEOUT_MS >= 60_000 && DEFAULT_VERSION_TIMEOUT_MS <= 300_000,
-  "the version timeout allows a real propagation without delaying detection past a few minutes",
+  DEFAULT_VERSION_TIMEOUT_MS >= 4 * 60_000 && DEFAULT_VERSION_TIMEOUT_MS <= 600_000,
+  "the version timeout keeps ~5x headroom over the ~50s propagation actually observed, without delaying detection beyond a few minutes",
+);
+// Enough polls that a slow propagation is sampled repeatedly rather than being
+// decided by one or two unlucky checks.
+assert(
+  DEFAULT_VERSION_TIMEOUT_MS / DEFAULT_POLL_INTERVAL_MS >= 20,
+  "the window allows at least 20 attempts, so the verdict never rests on a couple of samples",
 );
 assert(
   DEFAULT_POLL_INTERVAL_MS >= 1_000 && DEFAULT_POLL_INTERVAL_MS < DEFAULT_VERSION_TIMEOUT_MS,
