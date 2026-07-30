@@ -1,4 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const logError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: vi.fn() } }));
+
 import {
   AGENTS_WITHOUT_SCHEDULE_KEY,
   formatScheduleGapNotice,
@@ -139,5 +143,60 @@ describe("runScheduleCoverageCheck", () => {
 
     expect(notify).toHaveBeenCalledTimes(1);
     expect(out).toEqual({ missingBefore: 1, healed: 0, stillMissing: 1 });
+  });
+});
+
+// #1049: the self-heal call used to swallow its rejection. That matters because a
+// heal that never ran is exactly why the gap alert then fires, so with no trace
+// the alert reads as "these agents cannot be fixed" rather than "the fix never
+// ran". Both are one line apart in the log and worlds apart to diagnose.
+describe("runScheduleCoverageCheck records a failed self-heal (#1049)", () => {
+  beforeEach(() => logError.mockClear());
+
+  it("logs when heal rejects, and still completes the check and alerts", async () => {
+    const heal = vi.fn<HealFn>(async () => {
+      throw new Error("insert into availability_schedules denied");
+    });
+    const notify = vi.fn<NotifyFn>(async () => {});
+    const loadMissingAgents = vi
+      .fn<LoadFn>()
+      .mockResolvedValueOnce([agent("a")])
+      // The heal failed, so the gap is still there on the recheck.
+      .mockResolvedValueOnce([agent("a")]);
+
+    const out = await runScheduleCoverageCheck({
+      loadMissingAgents,
+      heal,
+      notify,
+      cooldownMs: 1000,
+    });
+
+    // A failed heal must NOT abort the lane: the alert about the surviving gap is
+    // the whole point of the check.
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ missingBefore: 1, healed: 0, stillMissing: 1 });
+
+    // And the reason the heal did nothing is now findable.
+    expect(logError).toHaveBeenCalledTimes(1);
+    const [tag, fields, err] = logError.mock.calls[0] as [string, Record<string, unknown>, unknown];
+    expect(tag).toBe("schedule-coverage");
+    expect(String(fields.msg)).toMatch(/heal/i);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("logs nothing when the heal succeeds", async () => {
+    const loadMissingAgents = vi
+      .fn<LoadFn>()
+      .mockResolvedValueOnce([agent("a")])
+      .mockResolvedValueOnce([]);
+
+    await runScheduleCoverageCheck({
+      loadMissingAgents,
+      heal: vi.fn<HealFn>(async () => {}),
+      notify: vi.fn<NotifyFn>(async () => {}),
+      cooldownMs: 1000,
+    });
+
+    expect(logError).not.toHaveBeenCalled();
   });
 });

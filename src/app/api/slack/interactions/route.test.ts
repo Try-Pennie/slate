@@ -63,6 +63,11 @@ const ooo = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/ooo/service", () => ooo);
 
+const logError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({
+  log: { error: logError, warn: vi.fn(), info: vi.fn() },
+}));
+
 import { POST } from "./route";
 import {
   OOO_APPROVE_ACTION,
@@ -210,5 +215,83 @@ describe("POST /api/slack/interactions", () => {
     await flushDeferred();
     expect(ooo.approveOoo).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledWith("https://hooks.slack/resp", expect.anything());
+  });
+});
+
+// #1049: the approve/reject work is deferred past the 200 ack, and its rejection
+// used to be discarded by a bare catch. Slack has already closed the modal and
+// told the manager their click landed, so a silent failure means an approval or
+// rejection that never happened, with no log line anywhere to find it. These
+// assert the trace exists, not just that nothing throws.
+describe("POST /api/slack/interactions deferred-work failures are recorded", () => {
+  it("logs when the deferred approve fails, and still acks 200", async () => {
+    ooo.approveOoo.mockRejectedValueOnce(new Error("db unreachable"));
+
+    const res = await POST(
+      slackReq(
+        payloadBody({
+          type: "block_actions",
+          user: { id: "slack-1" },
+          response_url: "https://hooks.slack/resp",
+          actions: [{ action_id: OOO_APPROVE_ACTION, value: "req-1" }],
+        }),
+      ),
+    );
+
+    // The ack is unconditional: Slack must not see a 500 for background work.
+    expect(res.status).toBe(200);
+    // The rejection must be HANDLED (this resolves rather than rejecting), and
+    // must not vanish silently, which is what the log assertions below pin.
+    await expect(flushDeferred()).resolves.toBeUndefined();
+    expect(logError).toHaveBeenCalledTimes(1);
+    const [tag, fields, err] = logError.mock.calls[0] as [string, Record<string, unknown>, unknown];
+    expect(tag).toBe("slack");
+    expect(String(fields.msg)).toMatch(/approve/i);
+    // The request id is what makes the line actionable.
+    expect(fields.request_id).toBe("req-1");
+    // The Error itself is passed through so Cloudflare serializes the stack.
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("logs when the deferred reject fails, and still acks 200", async () => {
+    ooo.rejectOoo.mockRejectedValueOnce(new Error("db unreachable"));
+
+    const res = await POST(
+      slackReq(
+        payloadBody({
+          type: "view_submission",
+          user: { id: "slack-1" },
+          view: {
+            callback_id: OOO_REJECT_MODAL,
+            private_metadata: "req-1",
+            state: { values: {} },
+          },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    await flushDeferred();
+    expect(logError).toHaveBeenCalledTimes(1);
+    const [tag, fields] = logError.mock.calls[0] as [string, Record<string, unknown>];
+    expect(tag).toBe("slack");
+    expect(String(fields.msg)).toMatch(/reject/i);
+    expect(fields.request_id).toBe("req-1");
+  });
+
+  it("logs nothing on the happy path", async () => {
+    const res = await POST(
+      slackReq(
+        payloadBody({
+          type: "block_actions",
+          user: { id: "slack-1" },
+          response_url: "https://hooks.slack/resp",
+          actions: [{ action_id: OOO_APPROVE_ACTION, value: "req-1" }],
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    await flushDeferred();
+    expect(logError).not.toHaveBeenCalled();
   });
 });

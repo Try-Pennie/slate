@@ -286,8 +286,13 @@ export class BookingNotChangeableError extends Error {
 
 /** Delete a calendar event, and if the delete FAILS, enqueue it for the retry
  *  drain (#401) instead of silently dropping it. Never throws to the caller —
- *  the booking flow proceeds; the queue is the durable net. */
-async function deleteEventBestEffort(
+ *  the booking flow proceeds; the queue is the durable net.
+ *
+ *  Exported for its own test (#1049): reaching it through cancel/reschedule needs
+ *  the whole BookingDeps surface, and the behaviour worth pinning is narrow:
+ *  when BOTH the live delete and the queue write fail, the event is orphaned on
+ *  the agent's calendar and that must leave a trace. */
+export async function deleteEventBestEffort(
   deps: BookingDeps,
   email: string,
   eventId: string,

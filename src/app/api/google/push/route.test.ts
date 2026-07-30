@@ -23,6 +23,9 @@ const server = vi.hoisted(() => ({
   }),
 }));
 
+const logError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: vi.fn() } }));
+
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/google/sync", () => sync);
 vi.mock("next/server", async (importOriginal) => {
@@ -94,5 +97,49 @@ describe("Google push handler", () => {
     expect(res.status).toBe(403);
     expect(server.after).not.toHaveBeenCalled();
     expect(sync.syncByChannel).not.toHaveBeenCalled();
+  });
+});
+
+// #1049: Google does NOT redeliver a push notification, so a background sync that
+// fails is a calendar change that waits for the 1-minute backstop. That is
+// survivable; being unable to tell it ever happened is not. The rejection used to
+// be discarded by a bare catch.
+describe("Google push handler background failures are recorded", () => {
+  it("logs when the background sync rejects, and still acks 200", async () => {
+    sync.syncByChannel.mockRejectedValueOnce(new Error("sync token expired"));
+
+    const res = await POST(
+      push({
+        "x-goog-channel-token": "secret-token",
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+
+    // Google must still get its immediate ack; it retries aggressively on non-2xx.
+    expect(res.status).toBe(200);
+    // Let the after() callback's rejection settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(logError).toHaveBeenCalledTimes(1);
+    const [tag, fields, err] = logError.mock.calls[0] as [string, Record<string, unknown>, unknown];
+    expect(tag).toBe("google-push");
+    // The channel id is what ties the line back to a calendar.
+    expect(fields.channel_id).toBe("chan-1");
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("logs nothing when the background sync succeeds", async () => {
+    const res = await POST(
+      push({
+        "x-goog-channel-token": "secret-token",
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+    expect(res.status).toBe(200);
+    await Promise.resolve();
+    expect(logError).not.toHaveBeenCalled();
   });
 });

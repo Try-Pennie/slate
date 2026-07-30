@@ -13,7 +13,7 @@
 // approve/reject (an approval the requester was told about, silently vanishing)
 // and enqueueEventDeletion (a Google calendar event orphaned forever).
 //
-// Fixing 13 instances would leave the class open (L30), so the boundary lives
+// Fixing the 14 instances would leave the class open (L30), so the boundary lives
 // here. The escape hatch is `// swallow-ok: <why>` on, or in the `//` block
 // directly above, the line.
 //
@@ -183,8 +183,8 @@ if (offenders.length) {
   console.error(
     `\n${offenders.length} bare .catch(() => {}) on real work (not a notifier send):\n` +
       offenders.map((o) => `  ${o}`).join("\n") +
-      `\n\nGive it a handler that logs — .catch((err) => log.warn("<tag>", { msg: "..." }, err)) —` +
-      `\nor add "// ${OPT_OUT} <why losing this error is safe>" on or above the line.\n`,
+      `\n\nGive it a handler that logs: .catch((err) => log.warn("<tag>", { msg: "..." }, err)).` +
+      `\nOr add "// ${OPT_OUT} <why losing this error is safe>" on or above the line.\n`,
   );
 }
 eq(offenders.length, 0, "no bare catch in src/ discards a real-work failure");
