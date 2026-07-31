@@ -53,20 +53,167 @@ export function isHttpsRedirect(status: number, location: string | null | undefi
   return /^https:\/\//i.test(location);
 }
 
-/** What the live smoke check should do about an observed redirect state. */
+/**
+ * The http:// URL to probe for a FILE under public/, or null to skip.
+ *
+ * #1203 / #1204: Cloudflare's asset binding answers a request for anything under
+ * public/ without invoking the Worker, so `widget.js` (the script partner pages
+ * load to embed the booker) was the one surface the #1024 redirect and the
+ * global hardening headers never reached. Probing the site root would not catch
+ * that, because the root is a page and pages were always covered: the probe has
+ * to hit the asset path itself.
+ */
+export function assetProbeUrl(base: string, assetPath: string): string | null {
+  const origin = httpProbeUrl(base);
+  if (!origin) return null;
+  return new URL(assetPath, origin).toString();
+}
+
+/**
+ * The baseline hardening headers every Slate response is supposed to carry
+ * (served globally by next.config `headers()`; HSTS #1024, the other two #1030).
+ * Lowercased because a live probe reads them off a `Headers` object.
+ */
+export const HARDENING_HEADERS = [
+  "strict-transport-security",
+  "x-content-type-options",
+  "referrer-policy",
+] as const;
+
+/**
+ * Which of the hardening headers a response is missing, in order; empty when it
+ * carries all of them.
+ *
+ * Takes a getter rather than a `Headers` so the decision is unit-testable off
+ * the network. A present-but-EMPTY value counts as missing: a blank
+ * Referrer-Policy tells a browser nothing, and scoring it as present would
+ * report a real gap as covered.
+ */
+export function missingSecurityHeaders(
+  get: (name: string) => string | null | undefined,
+): string[] {
+  return HARDENING_HEADERS.filter((name) => !get(name)?.trim());
+}
+
+/** What the live smoke check should do about an observed transport state. */
 export type RedirectVerdict = "ok" | "warn" | "page";
 
 /**
- * Decide whether a missing http->https redirect should PAGE or merely WARN.
+ * Warn-then-page tiering for any live transport check.
  *
- * The redirect is served by the Worker (see the module header). Paging BEFORE it
- * is live is self-inflicted alert noise, so the guard only pages once we EXPECT
- * the redirect (`expectRedirect`, wired from the EXPECT_HTTPS_REDIRECT repo var,
- * set once the redirect is confirmed live in production). Until then a missing
- * redirect is a visible WARN, not a failure. Once expected, a missing redirect is
- * a real regression and pages.
+ * Paging BEFORE the fix is live in production is self-inflicted alert noise, so
+ * a non-compliant result only pages once we EXPECT compliance (the
+ * EXPECT_HTTPS_REDIRECT repo var, set once the behavior is confirmed live).
+ * Until then it is a visible WARN. Once expected, non-compliance is a real
+ * regression and pages.
+ */
+export function transportVerdict(compliant: boolean, expected: boolean): RedirectVerdict {
+  if (compliant) return "ok";
+  return expected ? "page" : "warn";
+}
+
+/**
+ * Decide whether a missing http->https redirect should PAGE or merely WARN.
+ * The redirect-shaped caller of `transportVerdict`, kept as its own name because
+ * that is what the smoke check reads as at the call site.
  */
 export function redirectVerdict(isRedirect: boolean, expectRedirect: boolean): RedirectVerdict {
-  if (isRedirect) return "ok";
-  return expectRedirect ? "page" : "warn";
+  return transportVerdict(isRedirect, expectRedirect);
+}
+
+/** One line the smoke canary prints: `fail` counts against the run, `warn` does not. */
+export type TransportCheck = {
+  level: "ok" | "fail" | "warn" | "skip";
+  message: string;
+};
+
+/**
+ * Probe a static asset and judge its transport, for the smoke canary (#1203 / #1204).
+ *
+ * Three findings, in the order that matters if more than one is true:
+ *   1. does `http://…/<asset>` redirect to https (#1203),
+ *   2. does the asset still SERVE as the script partner pages load (the
+ *      regression that routing assets through the Worker could introduce, and
+ *      the worst of the three, since every embed breaks at once),
+ *   3. does it carry the hardening headers (#1204).
+ *
+ * `fetch` is injected so every branch is provable without a network and a test
+ * can never touch the live site. An unreachable asset fails 2 AND 3: "we could
+ * not tell" must never score as healthy, which is how a broken deploy reads as a
+ * quiet day around here.
+ */
+export async function evaluateStaticAssetTransport(opts: {
+  base: string;
+  expected: boolean;
+  assetPath?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<TransportCheck[]> {
+  const assetPath = opts.assetPath ?? "/widget.js";
+  const doFetch = opts.fetchImpl ?? fetch;
+  const probe = assetProbeUrl(opts.base, assetPath);
+  if (!probe) {
+    return [
+      {
+        level: "skip",
+        message: `static asset transport check (base ${opts.base} is not a public https host)`,
+      },
+    ];
+  }
+
+  const plain = await doFetch(probe, { redirect: "manual" }).then(
+    (r) => ({ status: r.status, location: r.headers.get("location") }),
+    () => ({ status: 0, location: null }),
+  );
+  const redirectLevel = transportVerdict(
+    isHttpsRedirect(plain.status, plain.location),
+    opts.expected,
+  );
+  const checks: TransportCheck[] = [
+    {
+      level: redirectLevel === "page" ? "fail" : redirectLevel,
+      message:
+        `http://…${assetPath} redirects to https:// (#1203): ` +
+        `got ${plain.status} -> ${plain.location ?? "(no Location)"}`,
+    },
+  ];
+
+  const secure = await doFetch(new URL(assetPath, opts.base).toString()).then(
+    (r) => ({
+      status: r.status,
+      contentType: r.headers.get("content-type") ?? "",
+      missing: missingSecurityHeaders((name) => r.headers.get(name)),
+      reachable: true,
+    }),
+    (e: unknown) => ({
+      status: 0,
+      contentType: "",
+      // Unreachable: report every header as missing rather than an empty list,
+      // which would read as "all present".
+      missing: [...HARDENING_HEADERS],
+      reachable: false,
+      error: e,
+    }),
+  );
+
+  const servesAsExpected =
+    secure.reachable && secure.status === 200 && /javascript/i.test(secure.contentType);
+  checks.push({
+    // Always a hard fail, never gated on `expected`: this one is not about the
+    // fix being live, it is the embed being broken.
+    level: servesAsExpected ? "ok" : "fail",
+    message:
+      `${assetPath} still serves as javascript (got ${secure.status} ` +
+      `${secure.contentType || "(no content-type)"})`,
+  });
+
+  const headerLevel = transportVerdict(secure.missing.length === 0, opts.expected);
+  checks.push({
+    // An unreachable asset never merely "warns": we measured nothing.
+    level: !secure.reachable ? "fail" : headerLevel === "page" ? "fail" : headerLevel,
+    message:
+      `${assetPath} carries the hardening headers (#1204): ` +
+      (secure.missing.length ? `missing ${secure.missing.join(", ")}` : "all present"),
+  });
+
+  return checks;
 }

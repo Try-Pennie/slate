@@ -30,11 +30,18 @@ const nextConfig: NextConfig = {
   //   - HSTS (#1024): the public booker collects name / email / phone, so a
   //     returning visitor's browser must auto-upgrade http->https before it sends
   //     anything. No `preload`, so this stays reversible. The first-visit
-  //     http->https redirect is a Cloudflare "Always Use HTTPS" zone setting.
+  //     http->https redirect is served by the Worker itself (worker/index.ts via
+  //     src/lib/http/https-redirect.ts), NOT by Cloudflare config: the hostname is
+  //     a Workers Custom Domain, which leaves zone Redirect Rules out of the path.
   //   - nosniff + Referrer-Policy (#1030): the booker, the manage-by-token pages,
   //     and every /api response used to carry none of the standard hardening
   //     headers (they were middleware-only on the staff surfaces). Serving them
   //     globally covers the PII-bearing public surfaces too.
+  //
+  // "Every response" means every response the Worker handles. A static file under
+  // public/ reaches these headers only because wrangler.jsonc routes it through
+  // the Worker first (`assets.run_worker_first`, #1203/#1204); an asset left off
+  // that list is served by Cloudflare directly and ships bare.
   async headers() {
     return [
       {
