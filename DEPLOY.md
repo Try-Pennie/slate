@@ -169,33 +169,40 @@ A hand-run `pnpm cf:deploy` skips both steps, so the live site will report commi
   the push endpoint. Until then, calendar changes still sync — just not in
   real-time (see Cron below).
 - The Google OAuth client redirect URI is unchanged (it points at Supabase).
-- **http → https redirect (#1024, Cloudflare zone config):** the public booker
-  collects lead name, email and phone, so a first-time visitor arriving on an
-  `http://` link must be redirected before the browser sends anything. This is a
-  **Redirect Rule** on the `trypennie.app` zone (Rules → Redirect Rules), not the
-  zone-wide "Always Use HTTPS" toggle:
+- **http → https redirect (#1024): nothing to configure, it is in the Worker.**
+  The public booker collects lead name, email and phone, so a first-time visitor
+  arriving on an `http://` link is redirected before the browser sends anything.
+  `worker/index.ts` returns a **308** to the https form of the URL
+  (`src/lib/http/https-redirect.ts`), so there is no Cloudflare setting to
+  maintain and the behavior is versioned, tested and revertible.
 
-  | field | value |
-  |---|---|
-  | expression | `(http.host eq "slate.trypennie.app" and http.request.scheme eq "http")` |
-  | URL type | Dynamic |
-  | target expression | `concat("https://", http.host, http.request.uri)` |
-  | status code | 301 |
-  | preserve query string | **off** (`http.request.uri` already carries it) |
+  **Do not try to solve this with a Cloudflare Redirect Rule: it cannot work
+  here.** `slate.trypennie.app` is attached to the Worker as a **Custom Domain**
+  (`custom_domain: true`, `wrangler.jsonc`), and Cloudflare treats a Worker on a
+  Custom Domain as the ORIGIN, so zone Redirect Rules are never consulted for it.
+  This was established the expensive way: a valid, correctly scoped rule was
+  deployed and plaintext requests went straight past it. If you find such a rule
+  on the zone, it is dead weight from that attempt and can be deleted.
 
-  **Why scoped rather than the zone toggle.** The zone carries nine proxied
-  hostnames (`automations`, `le`, `main`, `prescreen`, `rml.smartly`,
+  The zone-wide **Always Use HTTPS** toggle *would* work, because it is an
+  SSL/TLS edge setting applied before the pipeline a Custom Domain bypasses. It
+  was rejected on blast radius: the zone carries nine proxied hostnames
+  (`automations`, `le`, `main`, `prescreen`, `rml.smartly`,
   `skyfall-offer-wall`, `slate`, `smsassign`, `training`), several of them
-  machine-to-machine. A zone-wide 301 would reach all of them, and a client that
-  does not follow redirects (or a `POST` whose body is dropped on a 301) would
-  break silently on a property nobody was changing. Scoping to Slate's hostname
-  keeps the blast radius at one service.
+  machine-to-machine, and a zone-wide redirect would silently break any that call
+  an `http://` address without following redirects.
 
-  This is dashboard-only config with no rollback path in git, which is exactly
-  why it is written down here and asserted live: the smoke canary re-checks it
-  every 30 minutes (`scripts/lib/https-redirect.ts`). Set the repo Actions
-  variable `EXPECT_HTTPS_REDIRECT=1` once the rule is deployed so a later
-  regression **pages** instead of only warning.
+  Two details that are deliberate rather than incidental. **308, not 301**, so a
+  `POST` keeps its method and body: a 301 lets clients rewrite it to `GET` and
+  drop the payload, which would turn an integrator's booking call into an empty
+  page request. And the guard **passes through anything it cannot positively
+  establish as plaintext**, which is the opposite of the usual fail-closed
+  instinct, because redirecting an already-secure request loops the browser
+  forever.
+
+  Set the repo Actions variable `EXPECT_HTTPS_REDIRECT=1` so the smoke canary's
+  every-30-minute live check **pages** on a regression instead of only warning
+  (`scripts/lib/https-redirect.ts`).
 
 ## Cron
 Cron runs entirely on the **main** Worker: `worker/index.ts` `scheduled()`

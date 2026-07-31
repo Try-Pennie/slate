@@ -25,12 +25,12 @@ assert(isHttpsRedirect(301, null) === false, "301 with no Location is NOT compli
 assert(isHttpsRedirect(200, "https://x/") === false, "200 is NOT a redirect even with an https Location");
 
 // --- redirectVerdict: warn until the redirect is expected, then page ---
-// A page-able failure BEFORE the Cloudflare Redirect Rule exists is
+// A page-able failure BEFORE the redirect is live in production is
 // self-inflicted alert noise, so the guard only pages once we EXPECT the
-// redirect (EXPECT_HTTPS_REDIRECT=1, set when the rule is deployed).
+// redirect (EXPECT_HTTPS_REDIRECT=1, set once it is confirmed live).
 assert(redirectVerdict(true, true) === "ok", "redirect present + expected -> ok");
 assert(redirectVerdict(true, false) === "ok", "redirect present + not yet expected -> ok (already live)");
 assert(redirectVerdict(false, true) === "page", "redirect absent + expected -> page (regression)");
-assert(redirectVerdict(false, false) === "warn", "redirect absent + not yet expected -> warn (rule pending, no page)");
+assert(redirectVerdict(false, false) === "warn", "redirect absent + not yet expected -> warn (redirect not live yet, no page)");
 
 finish();

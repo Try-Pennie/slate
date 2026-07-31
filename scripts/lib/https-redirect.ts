@@ -3,20 +3,22 @@
  * phone, so a first-time visitor following an http:// link must be redirected to
  * https:// BEFORE the browser sends anything.
  *
- * That redirect is Cloudflare config, not code: a **Redirect Rule on the
- * trypennie.app zone scoped to `http.host eq "slate.trypennie.app"`**, NOT the
- * zone-wide "Always Use HTTPS" toggle. The toggle was the obvious move and is
- * what the audit suggested, but the zone carries nine proxied hostnames
- * (automations, le, main, prescreen, rml.smartly, skyfall-offer-wall, slate,
- * smsassign, training), several of which look machine-to-machine, and a blanket
- * 301 would have reached all of them; a client that does not follow redirects,
- * or a POST whose body is dropped on a 301, would have broken silently on a
- * property nobody was changing. So the fix is scoped to Slate's hostname alone.
+ * That redirect is served by the Worker itself (`worker/index.ts` via
+ * `src/lib/http/https-redirect.ts`), NOT by Cloudflare config. A zone Redirect
+ * Rule cannot do it: `slate.trypennie.app` is a Workers **Custom Domain**, which
+ * makes the Worker the origin, so zone rules are never consulted for it (proven
+ * by deploying a valid one and watching plaintext requests pass it). The
+ * zone-wide "Always Use HTTPS" toggle would have worked but was rejected on
+ * blast radius, since the zone carries nine hostnames, several of them
+ * machine-to-machine.
  *
- * Because it lives in Cloudflare, nothing in this repo can prevent it silently
- * regressing. The smoke canary asserts it live every 30 min (a detective
- * control, matching the after-the-fact model of main-push-guard); this module
- * holds the pure logic so it is unit-testable off the network.
+ * So why keep a LIVE canary check for behavior that now lives in code and has
+ * unit tests? Because the unit tests prove the decision, not the deployment. A
+ * bad deploy, a Custom Domain reattached as a route, or someone reordering the
+ * Worker entry would all leave the tests green while production served
+ * plaintext. This module holds the pure logic so the verdict is unit-testable
+ * off the network; the canary asserts the real site every 30 min (a detective
+ * control, matching the after-the-fact model of main-push-guard).
  */
 
 /**
@@ -57,12 +59,12 @@ export type RedirectVerdict = "ok" | "warn" | "page";
 /**
  * Decide whether a missing http->https redirect should PAGE or merely WARN.
  *
- * The redirect is a Cloudflare Redirect Rule created out of band (see the module
- * header). Paging BEFORE it exists is self-inflicted alert noise, so the guard
- * only pages once we EXPECT the redirect (`expectRedirect`, wired from the
- * EXPECT_HTTPS_REDIRECT repo var, set when the rule is deployed). Until then a
- * missing redirect is a visible WARN, not a failure. Once expected, a missing
- * redirect is a real regression and pages.
+ * The redirect is served by the Worker (see the module header). Paging BEFORE it
+ * is live is self-inflicted alert noise, so the guard only pages once we EXPECT
+ * the redirect (`expectRedirect`, wired from the EXPECT_HTTPS_REDIRECT repo var,
+ * set once the redirect is confirmed live in production). Until then a missing
+ * redirect is a visible WARN, not a failure. Once expected, a missing redirect is
+ * a real regression and pages.
  */
 export function redirectVerdict(isRedirect: boolean, expectRedirect: boolean): RedirectVerdict {
   if (isRedirect) return "ok";
