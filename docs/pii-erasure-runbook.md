@@ -301,6 +301,37 @@ both before and after the purge, because the export freezes them at full fidelit
 and step 3 deliberately keeps that one key, which is what makes steps 3 and 4 work there
 and what keeps the erasure-audit lane a real check rather than a vacuous one.
 
+### Recorded runs
+
+What has actually been executed against the real systems, and when. A future reader
+can tell a verified step from an assumed one by whether it appears here.
+
+**2026-07-31 (#1128), steps 3 and 4 against the production warehouse, both halves.**
+
+*The SQL compiles.* All four purge statements plus the verify were executed against
+`SLATE.PUBLIC` bound to the non-matching sentinel. Every one compiled and changed 0
+rows. This now re-runs every 6 hours, so the claim is never older than that.
+
+*The SQL clears real rows.* The purge was then run for real on the one booking in
+the erasure trail (`7dc86c04`, a retired SMOKE test booking erased on 2026-07-29).
+Measured: `bookings` 1 row, `booking_events` 2, `webhook_deliveries` 3,
+`booking_outbox` 2. Step 4 returned `0 / 0 / 0 / 0`, and the erasure-audit lane then
+re-read the warehouse independently and reported clean. The
+`snowflake_erasure_residual` page, which had fired every 6 hours since 2026-07-29,
+cleared with a recovery notice.
+
+Three things that were previously reasoned about are now observed rather than
+assumed. The corrected `webhook_deliveries` statement (the #1201 / #1205 shape) had
+never run against real rows until this pass; it cleared all 3. `object_insert(...,
+null, true)` removes the key rather than storing a blank, as Snowflake documents.
+And Slate's own export credential is sufficient to run the purge, which the top of
+this runbook had denied for two months.
+
+**2026-07-29 (#1074), step 1 only.** Recorded under step 1 above. Worth keeping
+visible as the cautionary half: that pass was written up as verified end to end
+while having exercised only the automated half, which is exactly why the broken
+statement in step 3 survived unnoticed until #1197.
+
 ### You are not the only check
 
 `/api/cron/erasure-audit` re-reads every booking id in every `pii.erasure` audit
