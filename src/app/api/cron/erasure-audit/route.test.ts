@@ -12,14 +12,16 @@ const locks = vi.hoisted(() => ({
 }));
 const audit = vi.hoisted(() => ({ auditSnowflakeErasures: vi.fn() }));
 const notify = vi.hoisted(() => ({
-  sendThrottledAlert: vi.fn(async () => {}),
+  sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
   resolveAlert: vi.fn(async (_key: string, _text: string) => true),
 }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
+const purge = vi.hoisted(() => ({ runErasurePurgeSqlProbe: vi.fn() }));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/erasure-audit", () => audit);
+vi.mock("@/lib/snowflake/purge", () => purge);
 vi.mock("@/lib/notify/dispatch", () => notify);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -32,7 +34,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   locks.acquireLock.mockResolvedValue("lease");
   audit.auditSnowflakeErasures.mockResolvedValue({ ok: true, erasedBookings: 0, residuals: [], reasons: [] });
+  purge.runErasurePurgeSqlProbe.mockResolvedValue({ ok: true, statements: [], reasons: [] });
 });
+
+/** Keys the run sent an alert on / cleared, so an assertion names the condition it
+ *  means rather than counting calls (there are two independent conditions here). */
+const alertedKeys = () => notify.sendThrottledAlert.mock.calls.map((c) => c[0]);
+const clearedKeys = () => notify.resolveAlert.mock.calls.map((c) => c[0]);
 
 describe("GET /api/cron/erasure-audit", () => {
   it("401s and touches nothing when unauthorized", async () => {
@@ -57,7 +65,7 @@ describe("GET /api/cron/erasure-audit", () => {
       reasons: ["bookings: 1 erased booking row(s) still hold contact PII in Snowflake"],
     });
     const res = await GET(req());
-    expect(notify.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(alertedKeys()).toEqual(["snowflake_erasure_residual"]);
     const [key, , text] = notify.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string];
     expect(key).toBe("snowflake_erasure_residual");
     expect(String(text)).toMatch(/bookings/);
@@ -87,8 +95,7 @@ describe("GET /api/cron/erasure-audit", () => {
   // the purge, and this audit is the only thing that ever observes it ending.
   it("announces recovery once the audit measures the erasure as complete", async () => {
     await GET(req());
-    expect(notify.resolveAlert).toHaveBeenCalledTimes(1);
-    expect(notify.resolveAlert.mock.calls[0][0]).toBe("snowflake_erasure_residual");
+    expect(clearedKeys()).toContain("snowflake_erasure_residual");
   });
 
   // The silent paths (#1152). A skipped run measured nothing and a thrown run
@@ -96,13 +103,79 @@ describe("GET /api/cron/erasure-audit", () => {
   it("sends NO all-clear when the mirror is unconfigured (nothing was measured)", async () => {
     audit.auditSnowflakeErasures.mockResolvedValueOnce({ skipped: true, reasons: [] });
     await GET(req());
-    expect(notify.resolveAlert).not.toHaveBeenCalled();
+    expect(clearedKeys()).not.toContain("snowflake_erasure_residual");
   });
 
   it("sends NO all-clear when the audit throws", async () => {
     audit.auditSnowflakeErasures.mockRejectedValueOnce(new Error("snowflake unreachable"));
     await GET(req());
     expect(notify.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  // #1128: the same lane also PROVES the purge SQL still runs, on a separate key.
+  // The two conditions are independent: the warehouse still holding data is a
+  // different fact from the statements meant to clear it having stopped compiling,
+  // and letting either clear the other's page is how a check silently stops being
+  // able to report (L53).
+  describe("purge SQL probe", () => {
+    const broken = {
+      ok: false,
+      statements: [{ label: "webhook_deliveries", ok: false, rows: null }],
+      reasons: ["webhook_deliveries: the statement no longer runs (400 invalid identifier 'PAYLOAD_ERASED')"],
+    };
+
+    it("alerts on its own key when a statement no longer runs", async () => {
+      purge.runErasurePurgeSqlProbe.mockResolvedValue(broken);
+      const res = await GET(req());
+      expect(alertedKeys()).toEqual(["snowflake_purge_sql_broken"]);
+      const text = String(notify.sendThrottledAlert.mock.calls[0][2]);
+      expect(text).toMatch(/webhook_deliveries/);
+      expect(res.status).toBe(200);
+    });
+
+    it("clears its own key once every statement compiles again", async () => {
+      await GET(req());
+      expect(clearedKeys()).toContain("snowflake_purge_sql_broken");
+    });
+
+    it("sends NO all-clear when the mirror is unconfigured (nothing was probed)", async () => {
+      purge.runErasurePurgeSqlProbe.mockResolvedValue({ skipped: true, ok: true, statements: [], reasons: [] });
+      await GET(req());
+      expect(clearedKeys()).not.toContain("snowflake_purge_sql_broken");
+      expect(alertedKeys()).not.toContain("snowflake_purge_sql_broken");
+    });
+
+    it("a clean residual audit does NOT clear a broken-SQL page", async () => {
+      purge.runErasurePurgeSqlProbe.mockResolvedValue(broken);
+      await GET(req());
+      expect(clearedKeys()).toContain("snowflake_erasure_residual");
+      expect(clearedKeys()).not.toContain("snowflake_purge_sql_broken");
+    });
+
+    it("a passing probe does NOT clear a residual page", async () => {
+      audit.auditSnowflakeErasures.mockResolvedValue({
+        ok: false,
+        erasedBookings: 1,
+        residuals: [{ table: "webhook_deliveries", residual: 3 }],
+        reasons: ["webhook_deliveries: 3 erased booking row(s) still hold contact PII in Snowflake"],
+      });
+      await GET(req());
+      expect(clearedKeys()).toContain("snowflake_purge_sql_broken");
+      expect(clearedKeys()).not.toContain("snowflake_erasure_residual");
+      expect(alertedKeys()).toContain("snowflake_erasure_residual");
+    });
+
+    it("reports the probe result in the response so a run can be read back", async () => {
+      const res = await GET(req());
+      expect((await res.json()).purgeSql).toMatchObject({ ok: true });
+    });
+
+    it("500s when the probe itself throws (fail loud)", async () => {
+      purge.runErasurePurgeSqlProbe.mockRejectedValue(new Error("snowflake unreachable"));
+      const res = await GET(req());
+      expect(res.status).toBe(500);
+      expect(locks.releaseLock).toHaveBeenCalledWith("cron_erasure_audit", "lease");
+    });
   });
 
   it("500s and releases the lock when the audit throws (fail loud)", async () => {

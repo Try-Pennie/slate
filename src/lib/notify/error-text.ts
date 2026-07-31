@@ -68,10 +68,23 @@ export function shortFailureReason(
       /"error"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
     return reason ? `${status} ${reason}` : status;
   }
+  // A Snowflake SQL API failure, thrown by src/lib/snowflake/client.ts as
+  // `Snowflake <status>: <json body>`. Without this branch the JSON prefix eats
+  // the whole budget and the reader gets `400 {"code":"000904","message":"SQL
+  // compilation error: invalid…`, losing the only fact that matters: WHICH
+  // identifier. That is the exact diagnosis #1197 needed and did not have.
+  const snowflake = /^Snowflake (\d{3}): /.exec(raw);
+  const text = snowflake
+    ? `${snowflake[1]} ${
+        /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw.slice(snowflake[0].length))?.[1]?.replace(/\\"/g, '"') ??
+        raw.slice(snowflake[0].length)
+      }`
+    : raw;
+
   // Not an HTTP failure (an abort, a timeout, a thrown Error, a SQL compilation
   // error): keep its own text, collapsed to one line so a stack or a multi-line
   // message can't flood Slack.
-  const oneLine = raw.split("\n").join(" ").replace(/\s+/g, " ").trim();
+  const oneLine = text.split("\n").join(" ").replace(/\s+/g, " ").trim();
   if (oneLine.length <= maxChars) return oneLine;
   // Cut on a word boundary when there is one, so the reader never gets a
   // half-word like `"mess`. The boundary search only gives up (and cuts mid-token)

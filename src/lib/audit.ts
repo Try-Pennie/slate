@@ -25,7 +25,10 @@ export type AuditAction =
   | "impersonate.ended"
   | "monitor.settings"
   | "reason.options"
-  | "booking.settings";
+  | "booking.settings"
+  // The warehouse half of a data-subject erasure (#1128). Its Supabase half is
+  // audited by the erase_booking_pii function itself, as `pii.erasure`.
+  | "pii.warehouse_purge";
 
 /** One key for the whole trail: if audit writes are broken they are broken for
  *  every action, so a per-action key would page N times for one cause. */
@@ -55,7 +58,9 @@ export const AUDIT_WRITE_FAILED_COOLDOWN_MS = 15 * 60 * 1000;
  */
 export async function recordAudit(entry: {
   orgId: string;
-  actorId: string;
+  /** Null for an action taken by an operator process rather than a signed-in user
+   *  (the column is nullable, and erase_booking_pii already writes null). */
+  actorId: string | null;
   action: AuditAction;
   targetId?: string | null;
   details?: Record<string, unknown>;
@@ -63,7 +68,7 @@ export async function recordAudit(entry: {
   try {
     const { error } = await supabaseAdmin().from("audit_log").insert({
       org_id: entry.orgId,
-      actor_id: entry.actorId,
+      actor_id: entry.actorId ?? null,
       action: entry.action,
       target_id: entry.targetId ?? null,
       details: entry.details ?? {},
@@ -87,7 +92,7 @@ export async function recordAudit(entry: {
  * logged, never swallowed.
  */
 async function reportAuditFailure(
-  entry: { orgId: string; actorId: string; action: AuditAction; targetId?: string | null },
+  entry: { orgId: string; actorId: string | null; action: AuditAction; targetId?: string | null },
   reason: string,
 ): Promise<void> {
   log.error("audit", {
