@@ -148,6 +148,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why: "Calendar deletions are stuck failing until they succeed or are cleared; the sweep re-measures.",
   },
+  {
+    key: "inactive_agent_bookings",
+    kind: "condition",
+    why: "Customers hold appointments with an agent who has left the pool until someone reassigns them; the monitor lane re-measures every 5 minutes.",
+  },
 
   // --- Incidents: a finished event, with no healthy state to announce -------
   //

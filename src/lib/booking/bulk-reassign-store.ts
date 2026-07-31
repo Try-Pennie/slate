@@ -5,8 +5,13 @@ import { selectAllPages } from "@/lib/supabase/paginate";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import type { BookingStatus, BulkReassignItem, BulkReassignJob } from "@/lib/db/types";
 
-/** The active-upcoming statuses a coverage sweep moves. */
-const ACTIVE_BOOKING_STATUSES: BookingStatus[] = ["confirmed", "rescheduled"];
+/**
+ * The active-upcoming statuses a coverage sweep moves. Exported so the #1215
+ * monitor counts exactly the bookings the coverage panel would enqueue: two
+ * definitions of "still needs an agent" would let the page and the panel disagree
+ * about the same gap (L16).
+ */
+export const ACTIVE_BOOKING_STATUSES: BookingStatus[] = ["confirmed", "rescheduled"];
 
 /**
  * The booking ids currently assigned to `outUserId` that fall inside a coverage

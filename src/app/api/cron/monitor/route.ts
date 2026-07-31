@@ -50,6 +50,13 @@ import {
   syncRotationCandidates,
   type SyncAgentStaleness,
 } from "@/lib/monitor/sync-staleness";
+import {
+  inactiveHoldersFromBookings,
+  runInactiveAgentBookingsCheck,
+  type OutOfPoolAgent,
+} from "@/lib/monitor/inactive-agent-bookings";
+import { unwrap } from "@/lib/db/result";
+import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -404,6 +411,54 @@ export async function GET(req: NextRequest) {
       log: (m) => log.info("sync-staleness", { msg: m }),
     });
 
+    // --- Appointments held by an agent who has left the pool (#1215): a customer
+    // booked with a departed advisor. Deactivating and reassigning are independent
+    // actions, and the Salesforce roster sync deactivates with no admin present at
+    // all, so this is the backstop for both paths. Two reads: the out-of-pool
+    // roster, then ONE bulk booking query over those ids (a count per agent would
+    // spend the subrequest budget this lane shares with three others). Both go
+    // through `unwrap`, because a read that failed comes back empty and an empty
+    // result here is indistinguishable from "nobody is holding anything", which
+    // would post an all-clear over a real gap. ---
+    const loadInactiveHolders = async () => {
+      // cap-safe: `users` is roster-bounded (a fixed 100-200 agent target), so the
+      // out-of-pool subset can never fill a PostgREST page.
+      const agents = (unwrap(
+        await db
+          .from("users")
+          .select("id, name, email, deactivated_at")
+          .or("bookable.eq.false,deactivated_at.not.is.null")
+          .eq("is_test", false),
+        "monitor inactive-agent roster",
+      ) ?? []) as { id: string; name: string | null; email: string | null; deactivated_at: string | null }[];
+      if (agents.length === 0) return [];
+      const outOfPool: OutOfPoolAgent[] = agents.map((a) => ({
+        id: a.id,
+        name: a.name,
+        email: a.email,
+        deactivated: a.deactivated_at !== null,
+      }));
+      // Every page: an offboarding backlog can hold more than 1,000 upcoming
+      // bookings between them, and a truncated page would under-report the gap.
+      const bookings = await selectAllPages<{ assigned_user_id: string | null }>(
+        "monitor inactive-agent bookings",
+        (from, to) =>
+          db
+            .from("bookings")
+            .select("assigned_user_id")
+            .in("assigned_user_id", outOfPool.map((a) => a.id))
+            .in("status", ACTIVE_BOOKING_STATUSES)
+            .gte("starts_at", new Date(now).toISOString())
+            .range(from, to),
+      );
+      return inactiveHoldersFromBookings(outOfPool, bookings);
+    };
+    const inactiveBookings = await runInactiveAgentBookingsCheck({
+      loadHolders: loadInactiveHolders,
+      cooldownMs: settings.cooldownMs.inactive_agent_bookings,
+      log: (fields) => log.info("inactive-agent-bookings", { msg: "tick", ...fields }),
+    });
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -481,6 +536,7 @@ export async function GET(req: NextRequest) {
         worstNeverSynced: syncStaleness.worstNeverSynced,
         worstAgeMs: syncStaleness.worstAgeMs,
       },
+      inactiveBookings,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       truncated,
       volume,

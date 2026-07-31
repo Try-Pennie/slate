@@ -23,6 +23,9 @@ import {
 } from "@/app/admin/actions";
 import { AppHeader } from "@/components/AppHeader";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
+import DeactivateAgentButton from "@/components/DeactivateAgentButton";
+import { previewBulkReassign } from "@/lib/booking/service";
+import { log } from "@/lib/log";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
@@ -34,6 +37,25 @@ export const dynamic = "force-dynamic";
 
 function minutesToTime(m: number): string {
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+/**
+ * How many active future appointments this agent still holds (#1215), or null
+ * when the count could not be read.
+ *
+ * Null, never 0, on a read error. Zero is what the UI uses to skip the confirm
+ * entirely, so turning a failed read into 0 would wave the admin through with an
+ * implied "nothing is booked" that nothing measured, the same defect as an
+ * all-clear off a query that never ran (#1134). The profile page still renders:
+ * an unreadable count degrades to a confirm that says so, not to a blank page.
+ */
+async function upcomingBookingCount(agentId: string): Promise<number | null> {
+  try {
+    return await previewBulkReassign(agentId, new Date().toISOString(), null);
+  } catch (err) {
+    log.error("admin-agent", { msg: "upcoming booking count failed", user_id: agentId }, err);
+    return null;
+  }
 }
 
 function attrToText(v: Attributes[string] | undefined): string {
@@ -434,7 +456,16 @@ export default async function AgentProfilePage({
                 <form action={setUserLifecycle} className="flex items-end">
                   <input type="hidden" name="user_id" value={agent.id} />
                   <input type="hidden" name="action" value="deactivate" />
-                  <button className={btnSecondaryCls}>Deactivate account</button>
+                  {/* #1215: confirm (never block) when this agent still holds
+                      upcoming appointments, because deactivating does not move
+                      them. The count comes from previewBulkReassign, the same
+                      helper the coverage sweep enqueues from, so the warning and
+                      the panel below can never disagree about the same gap. */}
+                  <DeactivateAgentButton
+                    agentId={agent.id}
+                    agentName={agent.name ?? agent.email}
+                    upcomingBookings={await upcomingBookingCount(agent.id)}
+                  />
                 </form>
               )
             ) : (
@@ -452,13 +483,16 @@ export default async function AgentProfilePage({
           </p>
         </section>
 
-        {/* Coverage: bulk-reassign this agent's upcoming bookings (#974) */}
+        {/* Coverage: bulk-reassign this agent's upcoming bookings (#974). The
+            id is the anchor the #1215 deactivate confirm links to. */}
         {canManageThisAgent && (
-          <BulkReassignCoverage
-            agentId={agent.id}
-            agentName={agent.name ?? agent.email}
-            reassignReasons={(await loadReasonOptions()).reassign.active}
-          />
+          <div id="coverage">
+            <BulkReassignCoverage
+              agentId={agent.id}
+              agentName={agent.name ?? agent.email}
+              reassignReasons={(await loadReasonOptions()).reassign.active}
+            />
+          </div>
         )}
       </main>
     </>

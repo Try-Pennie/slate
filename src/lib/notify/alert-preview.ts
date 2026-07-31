@@ -92,6 +92,10 @@ import {
   retentionRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
+  formatInactiveAgentBookingsAlert,
+  formatInactiveAgentBookingsRecovery,
+} from "@/lib/monitor/inactive-agent-bookings";
+import {
   formatSaturationAlert,
   formatSaturationRecovery,
   formatCompletionSaturationAlert,
@@ -260,6 +264,67 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the mirror is not configured",
     channel: "alert",
     text: retentionSkippedText("prune-bookings-pii", "mirror not configured"),
+  },
+
+  // --- appointments held by an agent who left the pool (#1215) --------------
+  // Three states, because the wording changes shape in each: one agent holding
+  // one appointment (the singular that shipped as "1 of 97 bookable agent"),
+  // several agents on both exit axes, and a gap wide enough to truncate.
+  {
+    key: "inactive_agent_bookings",
+    state: "one deactivated agent holding one appointment",
+    channel: "alert",
+    text: formatInactiveAgentBookingsAlert([
+      {
+        userId: "u1",
+        name: "Dana Ruiz",
+        email: "dana.ruiz@example.com",
+        reason: "deactivated",
+        bookingCount: 1,
+      },
+    ]),
+  },
+  {
+    key: "inactive_agent_bookings",
+    state: "several agents, both exit reasons",
+    channel: "alert",
+    text: formatInactiveAgentBookingsAlert([
+      {
+        userId: "u1",
+        name: "Dana Ruiz",
+        email: "dana.ruiz@example.com",
+        reason: "deactivated",
+        bookingCount: 6,
+      },
+      {
+        userId: "u2",
+        name: "Sam Okafor",
+        email: "sam.okafor@example.com",
+        reason: "not_bookable",
+        bookingCount: 2,
+      },
+      { userId: "u3", name: null, email: "kim.ito@example.com", reason: "deactivated", bookingCount: 1 },
+    ]),
+  },
+  {
+    key: "inactive_agent_bookings",
+    state: "more agents than the list cap",
+    channel: "alert",
+    text: formatInactiveAgentBookingsAlert(
+      Array.from({ length: 11 }, (_, i) => ({
+        userId: `u${i}`,
+        name: `Agent ${i}`,
+        email: `agent${i}@example.com`,
+        reason: (i % 2 === 0 ? "deactivated" : "not_bookable") as "deactivated" | "not_bookable",
+        bookingCount: 11 - i,
+      })),
+    ),
+  },
+  {
+    key: "inactive_agent_bookings",
+    state: "every appointment reassigned",
+    channel: "recovery",
+    text: formatInactiveAgentBookingsRecovery(),
   },
 
   // --- saturated sweeps ------------------------------------------------------
