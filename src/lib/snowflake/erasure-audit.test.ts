@@ -106,6 +106,41 @@ describe("auditSnowflakeErasures", () => {
     expect(r.reasons.join(" ")).toMatch(/webhook_deliveries/);
   });
 
+  // The outbox PAYLOAD is out of erasure scope (staff free text, internal ids), but
+  // last_error is `err.message` from whatever a step threw, and two steps are
+  // outbound calls, so a Google Calendar error can quote an attendee email.
+  it("flags an outbox row whose last_error still holds an external error message", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(selectAllPages).mockResolvedValue([{ details: { booking_ids: ["bk1"] } }]);
+    vi.mocked(executeStatement).mockImplementation(
+      async (_c, sql: string) =>
+        ({ data: [[/booking_outbox/i.test(sql) ? "1" : "0"]] }) as never,
+    );
+
+    const r = await auditSnowflakeErasures();
+
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/booking_outbox/);
+  });
+
+  it("does not judge the outbox payload, only its error text", async () => {
+    // Guards the scope split: counting reasonDetail would flag staff free text that
+    // is deliberately not erased, so the audit would alert on healthy rows forever.
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(selectAllPages).mockResolvedValue([{ details: { booking_ids: ["bk1"] } }]);
+    vi.mocked(executeStatement).mockResolvedValue({ data: [["0"]] } as never);
+
+    await auditSnowflakeErasures();
+
+    const outboxQuery = vi
+      .mocked(executeStatement)
+      .mock.calls.map((c) => String(c[1]))
+      .find((s) => /FROM booking_outbox/i.test(s));
+    expect(outboxQuery).toBeDefined();
+    expect(outboxQuery).toMatch(/last_error\s+IS\s+NOT\s+NULL/i);
+    expect(outboxQuery).not.toMatch(/reasonDetail/i);
+  });
+
   it("asks Snowflake about last_response at all", async () => {
     // Pins the query shape rather than only the verdict: without this, the test
     // above could pass on a query that merely happens to mention the column in a

@@ -173,25 +173,36 @@ booking id **still present in the warehouse**, no contact PII remains, in both t
 payload and `last_response`. It cannot prove a row was not deleted or made
 unfindable by some other means.
 
-**`booking_outbox` is deliberately out of erasure scope, and step 4 does not check
-it.** Its payload carries no contact data at all: only `reasonCode`, a staff-typed
-`reasonDetail`, `initiator`, timestamps, and internal agent and staff user ids
-(`OutboxPayload`, `src/lib/db/types.ts`), and `last_error` is built from our own
-fixed-form step messages (`src/lib/booking/outbox.ts`), not a remote response body.
-Internal user ids are our own record identifiers, not the data subject's personal
-data, and incidental mentions in staff free text are explicitly not treated as PII
-requiring erasure (decision, 2026-07-31, #1199). The statement above is
-belt-and-braces tidiness, not a compliance requirement, so **a residual there does
-not block honoring the request.**
+**`booking_outbox` is split: its payload is out of erasure scope, its `last_error`
+is not.** Read both halves before editing that statement.
 
-Do not reinstate a `booking_outbox` count in step 4. An earlier version of this
-runbook did, and told you to "give the export a tick and re-check" if it was
-non-zero, on the belief that the export would MERGE the blanked Supabase row over
-the warehouse copy. That was false: `booking_outbox` retention is a **hard delete**,
-not a redaction (`src/app/api/cron/prune-bookings-pii/route.ts`), so once the
-Supabase row is gone there is nothing left to MERGE and the count can never reach
-zero. Combined with "do not consider the request honored until it returns all
-zeros", that left an operator waiting on a condition that would never clear (#1199).
+The **payload** carries no contact data: only `reasonCode`, a staff-typed
+`reasonDetail`, `initiator`, timestamps, and internal agent and staff user ids
+(`OutboxPayload`, `src/lib/db/types.ts`). Internal user ids are our own record
+identifiers, not the data subject's personal data, and incidental mentions in staff
+free text are explicitly not treated as PII requiring erasure (decision,
+2026-07-31, #1199). So step 4 does **not** count `payload:reasonDetail`, and a
+value there does not block honoring the request.
+
+**`last_error` is different, and an earlier version of this runbook got it wrong by
+asserting otherwise.** It is `err.message` from whatever a step threw
+(`src/lib/booking/outbox.ts`), and two of those steps are OUTBOUND calls (a Google
+Calendar delete and a notify), so the text is the external service's rather than
+ours. A calendar API error can quote an attendee's email address back at us. We
+cannot enumerate what a third party puts in an error string, so it is treated as
+**possibly carrying contact data**: step 3 clears it, and step 4 verifies that
+clear rather than assuming it.
+
+**Never wait for the export to fix a `booking_outbox` residual.** An earlier
+version of this runbook told you to "give the export a tick and re-check", on the
+belief that the export would MERGE the blanked Supabase row over the warehouse
+copy. That is false: `booking_outbox` retention is a **hard delete**, not a
+redaction (`src/app/api/cron/prune-bookings-pii/route.ts`), so once the Supabase
+row is gone there is nothing left to MERGE and no amount of waiting changes the
+warehouse. Combined with "do not consider the request honored until it returns all
+zeros", that left an operator waiting on a condition that could never clear
+(#1199). Step 3's statement is the only thing that clears it; if
+`outbox_error_residual` is non-zero, re-run step 3, do not wait.
 
 ## Step 4: verify (mandatory)
 
@@ -208,7 +219,10 @@ select
   (select count(*) from SLATE.PUBLIC.webhook_deliveries
      where payload:booking_id::string in (<ids>)
        and (payload:attendee:email is not null
-            or last_response is not null)) as webhook_residual;
+            or last_response is not null)) as webhook_residual,
+  (select count(*) from SLATE.PUBLIC.booking_outbox
+     where booking_id in (<ids>)
+       and last_error is not null) as outbox_error_residual;
 ```
 
 Also confirm the Supabase side: the `audit_log` row from step 2 exists with

@@ -377,14 +377,47 @@ assert(
 // request honored until it returns all zeros". A check that certifies the wrong
 // thing is worse than no check (L1/L11: a message may claim only what its check
 // actually measured).
-const verifyBlock = /select[\s\S]*?as\s+outbox_residual|select[\s\S]*?as\s+webhook_residual/i.exec(
-  runbook,
-);
-assert(verifyBlock !== null, "found the runbook's step 4 verify query");
+// Scoped to the FENCED CODE BLOCK holding the verify query, not a regex span
+// across the whole document. An earlier version matched from the first `select`
+// anywhere in the file to the last `_residual` alias, which swept in unrelated
+// prose (the step 3 statement and the scope note both mention `reasonDetail`) and
+// made these assertions answer about text that is not the query at all.
+const verifyBlock = runbook
+  .split("```")
+  .find((block) => /\bbookings_residual\b/.test(block));
+assert(verifyBlock !== undefined, "found the runbook's step 4 verify query block");
 assert(
-  /\blast_response\b/i.test(verifyBlock?.[0] ?? ""),
+  /\blast_response\b/i.test(verifyBlock ?? ""),
   "step 4's verify reads webhook_deliveries.last_response, so it measures what it claims " +
     "rather than only the column step 3 already cleared (#1205)",
+);
+
+// --- Claim 9: step 4 verifies booking_outbox.last_error.
+//
+// Scope split, and the reason it is not symmetric. `booking_outbox`'s PAYLOAD is
+// out of erasure scope: it carries only a reason code, staff-typed free text,
+// timestamps and internal user ids, and incidental mentions in staff free text are
+// deliberately not treated as PII requiring erasure (#1199, 2026-07-31). So no
+// `reasonDetail` count belongs here.
+//
+// `last_error` is different and this was initially got wrong. Its text is
+// `err.message` from whatever a step threw (`src/lib/booking/outbox.ts`), and two
+// of those steps are OUTBOUND calls (a Google Calendar delete and a notify), so
+// the message is the external service's, not ours. A calendar API error can quote
+// an attendee's email address. So it may incidentally carry contact data, step 3
+// clears it, and that clear needs verifying like any other.
+assert(
+  /booking_outbox/i.test(verifyBlock ?? "") && /\blast_error\b/i.test(verifyBlock ?? ""),
+  "step 4's verify reads booking_outbox.last_error, which may incidentally carry contact data " +
+    "from an external API error message, so step 3's clear of it is verified rather than assumed",
+);
+
+// The payload count must stay OUT: staff free text is out of scope by decision,
+// and re-adding it would restore a count with no compliance meaning.
+assert(
+  !/reasonDetail/i.test(verifyBlock ?? ""),
+  "step 4 does not count booking_outbox payload:reasonDetail, which is staff free text and " +
+    "deliberately out of erasure scope (#1199)",
 );
 
 finish();

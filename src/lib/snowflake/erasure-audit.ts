@@ -110,6 +110,31 @@ export async function auditSnowflakeErasures(): Promise<ErasureAuditOutcome> {
         `SELECT count(*) FROM webhook_deliveries WHERE payload:booking_id::string IN (${idList}) AND (payload:attendee:email IS NOT NULL OR last_response IS NOT NULL)`,
       ),
     },
+    {
+      table: "booking_outbox",
+      // `last_error` ONLY, deliberately, and the asymmetry is the point.
+      //
+      // The payload is out of erasure scope: it carries a reason code, staff-typed
+      // free text, timestamps and internal user ids, and incidental mentions in
+      // staff free text are not treated as PII requiring erasure (#1199). Counting
+      // it would alert on healthy rows forever.
+      //
+      // `last_error` is in scope because it is `err.message` from whatever a step
+      // threw (src/lib/booking/outbox.ts), and two steps are OUTBOUND calls (a
+      // Google Calendar delete and a notify), so the text is the external
+      // service's. A calendar API error can quote an attendee's email back at us,
+      // and we cannot enumerate what a third party writes into an error string, so
+      // it is treated as possibly carrying contact data.
+      //
+      // It cannot self-heal either: outbox retention is a hard DELETE in Supabase,
+      // so once the row is gone nothing remains to MERGE over the warehouse copy,
+      // and only the runbook's manual purge clears it. This is the sole unattended
+      // check that an operator ran that statement.
+      residual: await countSnowflake(
+        config,
+        `SELECT count(*) FROM booking_outbox WHERE booking_id IN (${idList}) AND last_error IS NOT NULL`,
+      ),
+    },
   ];
 
   const { ok, reasons } = evaluateErasureAudit(residuals);
