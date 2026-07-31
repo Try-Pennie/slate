@@ -117,7 +117,8 @@ update SLATE.PUBLIC.booking_events
  where booking_id in (<ids>);
 
 update SLATE.PUBLIC.webhook_deliveries
-   set payload = object_construct('booking_id', payload:booking_id)
+   set payload = object_construct('booking_id', payload:booking_id),
+       last_response = null
  where payload:booking_id::string in (<ids>);
 
 update SLATE.PUBLIC.booking_outbox
@@ -130,8 +131,18 @@ Because the Supabase redaction stamped `pii_redacted_at` / `payload_erased`, the
 export lane has frozen the `bookings` and `webhook_deliveries` rows and will not
 re-mirror the full-fidelity version back over your redaction.
 
-Three things about the `webhook_deliveries` statement are deliberate. **Do not
+Four things about the `webhook_deliveries` statement are deliberate. **Do not
 "simplify" any of them**, and read this before editing that line:
+
+0. It clears **`last_response` as well as `payload`**, and that column is the easy
+   one to miss (#1205). It holds up to 1000 characters of whatever the subscriber
+   sent back, and an error response commonly quotes the request that caused it, so
+   it carries the person's name, email and phone (`docs/pii-retention.md` lists it
+   as "may echo PII"). Supabase blanks it during erasure, but blanking is exactly
+   what **freezes the row from re-export** so the mirror cannot clobber a
+   redaction, which means the Supabase null **never reaches the warehouse**. This
+   statement is the only thing that ever clears it there. Before #1205 it was left
+   behind indefinitely and step 4 still returned zero.
 
 1. It does **not** set `payload_erased`. That column exists only in Supabase, where
    it is the flag that freezes the row from re-export; the warehouse table has no
@@ -158,18 +169,29 @@ statement names a column the warehouse lacks, drops the booking id, or reaches f
 `object_delete`, so the three points above are enforced rather than merely asked for.
 
 What step 4 can and cannot tell you, stated plainly: it proves that for every erased
-booking id **still present in the warehouse**, no contact PII remains. It cannot
-prove a row was not deleted or made unfindable by some other means, and it says
-nothing about `booking_outbox`, which it does not check at all (see #1199).
+booking id **still present in the warehouse**, no contact PII remains, in both the
+payload and `last_response`. It cannot prove a row was not deleted or made
+unfindable by some other means.
 
-`booking_outbox` works the other way round and is the reason the step above is
-belt-and-braces rather than the only defense: it is deliberately **not** frozen from
-the export, so within a few minutes the export MERGEs the already-blanked Supabase
-row over the warehouse copy and keeps it erased. Your manual update just makes it
-immediate instead of waiting for the next export tick. Note the `steps[].error`
-strings are cleared on the Supabase side only; the export overwrite is what carries
-that to the warehouse, so if step 4 shows a residual there, give the export a tick
-and re-check before escalating.
+**`booking_outbox` is deliberately out of erasure scope, and step 4 does not check
+it.** Its payload carries no contact data at all: only `reasonCode`, a staff-typed
+`reasonDetail`, `initiator`, timestamps, and internal agent and staff user ids
+(`OutboxPayload`, `src/lib/db/types.ts`), and `last_error` is built from our own
+fixed-form step messages (`src/lib/booking/outbox.ts`), not a remote response body.
+Internal user ids are our own record identifiers, not the data subject's personal
+data, and incidental mentions in staff free text are explicitly not treated as PII
+requiring erasure (decision, 2026-07-31, #1199). The statement above is
+belt-and-braces tidiness, not a compliance requirement, so **a residual there does
+not block honoring the request.**
+
+Do not reinstate a `booking_outbox` count in step 4. An earlier version of this
+runbook did, and told you to "give the export a tick and re-check" if it was
+non-zero, on the belief that the export would MERGE the blanked Supabase row over
+the warehouse copy. That was false: `booking_outbox` retention is a **hard delete**,
+not a redaction (`src/app/api/cron/prune-bookings-pii/route.ts`), so once the
+Supabase row is gone there is nothing left to MERGE and the count can never reach
+zero. Combined with "do not consider the request honored until it returns all
+zeros", that left an operator waiting on a condition that would never clear (#1199).
 
 ## Step 4: verify (mandatory)
 
@@ -185,10 +207,8 @@ select
      where booking_id in (<ids>) and reason_detail is not null) as events_residual,
   (select count(*) from SLATE.PUBLIC.webhook_deliveries
      where payload:booking_id::string in (<ids>)
-       and payload:attendee:email is not null) as webhook_residual,
-  (select count(*) from SLATE.PUBLIC.booking_outbox
-     where booking_id in (<ids>)
-       and payload:reasonDetail is not null) as outbox_residual;
+       and (payload:attendee:email is not null
+            or last_response is not null)) as webhook_residual;
 ```
 
 Also confirm the Supabase side: the `audit_log` row from step 2 exists with
