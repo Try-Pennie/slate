@@ -246,15 +246,15 @@ function laterSlot(slots: string[], from: string, minGapMs = 60 * 60 * 1000): st
 
 // --- Transport health: the public booker must force http->https (#1024) ---
 // A lead following an http:// link submits name/email/phone in plaintext unless
-// the edge redirects to https first. That redirect is a Cloudflare Redirect Rule
-// scoped to slate.trypennie.app (config, not code, and deliberately NOT the
-// zone-wide toggle: see scripts/lib/https-redirect.ts for why), so assert it LIVE
-// here. Skips on a localhost/http dev base (see httpProbeUrl). Side-effect-free,
-// so it runs on the every-30-min dry tick too.
+// the edge redirects to https first. The Worker serves that redirect itself
+// (worker/index.ts; a Cloudflare Redirect Rule cannot, see
+// scripts/lib/https-redirect.ts for why), and unit tests prove the DECISION but
+// not the DEPLOYMENT, so assert it LIVE here. Skips on a localhost/http dev base
+// (see httpProbeUrl). Side-effect-free, so it runs on the every-30-min dry tick.
 //
-// It only PAGES once we EXPECT the redirect (EXPECT_HTTPS_REDIRECT=1, set when the
-// rule is deployed); until then a missing redirect is a visible WARN, so shipping
-// the guard before the rule doesn't page every 30 min (see redirectVerdict).
+// It only PAGES once we EXPECT the redirect (EXPECT_HTTPS_REDIRECT=1, set once it
+// is confirmed live); until then a missing redirect is a visible WARN, so
+// shipping the guard early doesn't page every 30 min (see redirectVerdict).
 async function checkHttpsRedirect() {
   const probe = httpProbeUrl(BASE);
   if (!probe) {
@@ -271,7 +271,7 @@ async function checkHttpsRedirect() {
   const verdict = redirectVerdict(isRedirect, expected);
   if (verdict === "warn") {
     // Toggle not enabled yet: visible, but does not fail the run or page.
-    console.warn(`WARN: http:// does not yet redirect to https:// (#1024, Cloudflare Redirect Rule pending): ${detail}`);
+    console.warn(`WARN: http:// does not yet redirect to https:// (#1024, redirect not live yet): ${detail}`);
     return;
   }
   check(verdict === "ok", `http:// redirects to https:// (#1024): ${detail}`);

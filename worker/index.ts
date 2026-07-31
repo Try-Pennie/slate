@@ -12,6 +12,7 @@
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import handler from "../.open-next/worker.js";
 import { routesForCron } from "./cron-routes";
+import { httpsRedirect } from "@/lib/http/https-redirect";
 import { log } from "@/lib/log";
 
 // Durable Object classes the generated worker exports must be re-exported
@@ -29,8 +30,15 @@ interface Env {
 }
 
 const worker = {
+  // #1024: bounce plaintext to https BEFORE the app sees the request, so a lead
+  // following an http:// link never transmits name/email/phone in the clear.
+  // This lives here rather than in Cloudflare config because the hostname is a
+  // Workers Custom Domain, which makes this Worker the origin and leaves zone
+  // Redirect Rules out of the path entirely (see @/lib/http/https-redirect).
+  // Returns null for anything not positively established as plaintext, so the
+  // common secure case is untouched and can never loop.
   fetch: (request: Request, env: Env, ctx: ExecutionContext) =>
-    handler.fetch(request, env, ctx),
+    httpsRedirect(request) ?? handler.fetch(request, env, ctx),
 
   async scheduled(
     controller: { cron: string },
