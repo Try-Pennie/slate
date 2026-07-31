@@ -14,7 +14,7 @@
  *     lane that fails every night goes stale and pages.
  *   - `alertRetentionSkipped` covers the case the heartbeat cannot see: a lane
  *     that runs fine and skips forever. If the warehouse credential is removed or
- *     the warehouse is suspended, `mirrorReadyForDeletion` returns not-ready and
+ *     the export lane falls behind, `mirrorReadyForDeletion` returns not-ready and
  *     all three lanes no-op while returning a cheerful 200. PII retention would
  *     stop indefinitely with nothing anywhere saying so, which is a protective
  *     control failing open (L42). A skip is now an alert, throttled long because
@@ -25,7 +25,7 @@ import { NextResponse } from "next/server";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
-import { retentionResumedText } from "@/lib/notify/misc-alert-copy";
+import { retentionResumedText, retentionSkippedText } from "@/lib/notify/misc-alert-copy";
 
 /** Daily lanes, so re-page at most once a day rather than on every run. */
 const SKIP_COOLDOWN_MS = 23 * 60 * 60_000;
@@ -65,16 +65,11 @@ export async function laneCompleted(lane: string, body: Record<string, unknown>)
  * heartbeat cannot distinguish this from healthy work, so it gets its own alert.
  */
 export async function alertRetentionSkipped(lane: string, reason: string): Promise<void> {
-  const what =
-    lane === "prune-bookings-pii"
-      ? "consumer contact data past the 24 month window is not being redacted"
-      : lane === "prune-webhook-payloads"
-        ? "webhook payloads past the 90 day window are keeping full attendee PII"
-        : "routing decisions past the 12 month window are not being pruned";
   await sendThrottledAlert(
     `retention_skipped:${lane}`,
     SKIP_COOLDOWN_MS,
-    `Slate: the ${lane} retention lane ran but did nothing because the Snowflake mirror is not usable (${reason}), so ${what}. Retention stays stopped until the mirror is healthy: check /api/admin/snowflake-check and the snowflake-export lane.`,
+    // alert-text-ok: `reason` is our own gate wording (export-lag-core.ts), never a raw error.
+    retentionSkippedText(lane, reason),
   ).catch((err) => {
     log.error(lane, { msg: "skip alert failed" }, err instanceof Error ? err : undefined);
   });

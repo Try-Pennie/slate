@@ -3,14 +3,24 @@
  *
  * Counts every mirrored table in Supabase and in Snowflake and flags drift, so a
  * silently-lagging or broken export lane surfaces instead of a quietly stale
- * warehouse. Also the hard precondition the future deletion phase (#1102) must
- * pass before it deletes anything.
+ * warehouse.
+ *
+ * NOT the deletion gate any more (#1139). It was, and it could not stay: this
+ * comparison flags only "Snowflake is behind", which goes structurally negative
+ * the moment retention deletes or redacts anything in Supabase, so as a gate it
+ * would have become a rubber stamp exactly when deletion began. The gate now
+ * reads an export-lag signal computed entirely in Supabase (export-lag.ts). This
+ * lane keeps running every 6h as an INDEPENDENT drift monitor, which is the job
+ * it is actually good at: it is the only thing that asks the warehouse whether
+ * it still holds what we think it holds.
  *
  * A POSITIVE CONTROL guards the class of bug this exists to catch (see
  * feedback-run-a-positive-control): before trusting a Snowflake COUNT of 0, we
- * confirm a row we KNOW is present (the oldest booking, long past export) is
- * found in Snowflake. If even that read comes back empty, the count query is
- * reading the wrong place and a "0 drift" cannot be believed, so we alert.
+ * confirm a row we KNOW is present (the oldest row, long past export) is found
+ * in Snowflake. If even that read comes back empty, the count query is reading
+ * the wrong place and a "0 drift" cannot be believed, so we alert. Probed on
+ * `bookings` and, since #1139, on `routing_decisions`, the table retention
+ * actually hard-deletes from.
  */
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -49,15 +59,16 @@ export interface ReconOutcome {
   skipped?: true;
   ok: boolean;
   tables: TableRecon[];
-  control: ControlCheck | null;
+  controls: ControlCheck[];
   reasons: string[];
 }
 
-/** Pure decision: given per-table counts and the control, what (if anything) is
+/** Pure decision: given per-table counts and the controls, what (if anything) is
  *  wrong. Node/vitest-testable without any IO. */
-export function evaluateRecon(tables: TableRecon[], control: ControlCheck | null): { ok: boolean; reasons: string[] } {
+export function evaluateRecon(tables: TableRecon[], controls: ControlCheck[]): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
-  if (control && !control.foundInSnowflake) {
+  for (const control of controls) {
+    if (control.foundInSnowflake) continue;
     reasons.push(
       `positive control failed: ${control.table} row ${control.id} is in Supabase but not found in Snowflake, so the count reads cannot be trusted (a zero may be a broken query, not an empty table)`,
     );
@@ -105,31 +116,49 @@ async function countSnowflake(config: SnowflakeConfig, table: string): Promise<n
   return Number(res.data?.[0]?.[0] ?? 0);
 }
 
-async function positiveControl(config: SnowflakeConfig, db: ReconDb): Promise<ControlCheck | null> {
+/**
+ * The tables a positive control probes.
+ *
+ * `bookings` is the busiest mirror. `routing_decisions` was added in #1139
+ * because it is the one table retention actually HARD-DELETES from, and it had
+ * no control at all: a broken count query against it would have read as zero
+ * drift, which is precisely the false-negative a control exists to catch.
+ */
+const CONTROL_TABLES: { table: string; orderBy: string }[] = [
+  { table: "bookings", orderBy: "created_at" },
+  { table: "routing_decisions", orderBy: "created_at" },
+];
+
+async function positiveControl(
+  config: SnowflakeConfig,
+  db: ReconDb,
+  table: string,
+  orderBy: string,
+): Promise<ControlCheck | null> {
   // #1102: apply the SAME skip predicate the count read uses (reconcile.ts
-  // countSupabase). Without it, the control picks the oldest booking whether or not
+  // countSupabase). Without it, the control picks the oldest row whether or not
   // it was redacted in place, and a booking erased BEFORE its first export exists in
   // Supabase and never in Snowflake. If such a row is ever the oldest, the control
   // fails on every tick, `mirrorReadyForDeletion` is never ready again, and all
   // three retention lanes freeze permanently. That is the #1118 class the count read
   // was already patched for; the control was missed.
-  const { data, error } = await applySkipRedacted(
-    "bookings",
-    db.from("bookings").select("id"),
-  )
-    .order("created_at", { ascending: true })
+  // cap-safe: limit(1) + maybeSingle, a single-row read.
+  const { data, error } = await applySkipRedacted(table, db.from(table).select("id"))
+    .order(orderBy, { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (error) throw new Error(`reconcile control read: ${error.message}`);
-  if (!data) return null; // no bookings yet: nothing to control against
+  if (error) throw new Error(`reconcile control read ${table}: ${error.message}`);
+  if (!data) return null; // no rows yet: nothing to control against
   const id = (data as { id: string }).id;
-  const res = await executeStatement(config, `SELECT COUNT(*) AS c FROM bookings WHERE id = '${escapeSqlLiteral(id)}'`);
-  return { table: "bookings", id, foundInSnowflake: Number(res.data?.[0]?.[0] ?? 0) > 0 };
+  // `table` comes from CONTROL_TABLES (a fixed in-repo allowlist), never user
+  // input, so interpolating it into the statement is safe.
+  const res = await executeStatement(config, `SELECT COUNT(*) AS c FROM ${table} WHERE id = '${escapeSqlLiteral(id)}'`);
+  return { table, id, foundInSnowflake: Number(res.data?.[0]?.[0] ?? 0) > 0 };
 }
 
 export async function reconcileSnowflakeMirror(): Promise<ReconOutcome> {
   const config = readSnowflakeConfig();
-  if (!config) return { skipped: true, ok: true, tables: [], control: null, reasons: [] };
+  if (!config) return { skipped: true, ok: true, tables: [], controls: [], reasons: [] };
 
   const db = supabaseAdmin() as unknown as ReconDb;
   const tables: TableRecon[] = [];
@@ -138,13 +167,18 @@ export async function reconcileSnowflakeMirror(): Promise<ReconOutcome> {
     const snowflake = await countSnowflake(config, spec.table);
     tables.push({ table: spec.table, supabase, snowflake, drift: supabase - snowflake });
   }
-  const control = await positiveControl(config, db);
-  const { ok, reasons } = evaluateRecon(tables, control);
+  const controls: ControlCheck[] = [];
+  for (const c of CONTROL_TABLES) {
+    const check = await positiveControl(config, db, c.table, c.orderBy);
+    if (check) controls.push(check);
+  }
+  const { ok, reasons } = evaluateRecon(tables, controls);
   log.info("snowflake-reconcile", {
     msg: ok ? "in sync" : "drift",
     tables: tables.length,
     reasons: reasons.length,
-    control: control ? String(control.foundInSnowflake) : "none",
+    controls: controls.length,
+    controls_failed: controls.filter((c) => !c.foundInSnowflake).length,
   });
-  return { ok, tables, control, reasons };
+  return { ok, tables, controls, reasons };
 }

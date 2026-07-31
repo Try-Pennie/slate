@@ -64,10 +64,10 @@ window.
 
 **The prune is gated on the Snowflake mirror.** Redaction is irreversible and the
 warehouse copy is the only remaining full-fidelity record, so
-`/api/cron/prune-bookings-pii` refuses to redact until a reconciliation passes,
-and then only redacts rows strictly behind the confirmed export watermark, proving
-per row that Snowflake holds that version first (#1102 / #1118). A run that cannot
-confirm the mirror skips and alerts rather than redacting blind.
+`/api/cron/prune-bookings-pii` refuses to redact until the export lane is proven
+current, and then only redacts rows strictly behind the confirmed export watermark,
+proving per row that Snowflake holds that version first (#1102 / #1118 / #1139). A
+run that cannot confirm the mirror skips and alerts rather than redacting blind.
 
 **The warehouse needs its own window.** These windows govern Supabase. Snowflake
 holds full-fidelity copies indefinitely unless a matching window is set there, so
@@ -254,11 +254,36 @@ copy.
 data 24 months, delivered outbox rows 30 days. `bookings` are never hard-deleted:
 retention redacts in place and migration 0089 blocks the cascade outright.
 
+**The outer gate is an export-lag reading, not a row count (#1139).** Before any of
+this, a lane checks that the export lane is keeping up: per mirrored table, how far
+the newest exportable row sits past the export cursor. Past an hour behind (six
+missed 10-minute export ticks) the lane refuses and alerts. It reads only Supabase.
+
+That replaced a Supabase-vs-Snowflake row-count reconciliation, which could not
+survive its own success: the count flags only "Snowflake is behind", which goes
+structurally negative the moment retention deletes rows (routing_decisions,
+booking_outbox) or redacts them (bookings, webhook_deliveries, since the Supabase
+count skips redacted rows while the warehouse counts every row). As a gate it would
+have become a rubber stamp exactly when deletion began. The reconciliation still
+runs every 6h as an independent drift monitor, which is the job only it can do:
+it is the one thing that asks the warehouse what it actually holds. Its positive
+control now probes `routing_decisions` as well as `bookings`, the table these
+lanes hard-delete from and previously the one with no control at all.
+
+What the lag reading proves is that the export lane is alive and current, not that
+the warehouse still holds a given row: that remains the per-row read-back above.
+Its one blind spot is a row committed with a watermark EARLIER than the cursor
+(booking_outbox, which has no `set_updated_at` trigger), which the forward keyset
+fetch never exports and which is neither backlog nor lag. The per-row read-back
+catches exactly that at delete time.
+
 **Monitoring.** Each lane stamps a heartbeat when it completes without throwing
 (including a skip) and is judged against a 28h bound, so a lane that fails nightly
-goes stale and pages. A lane that runs but skips because the mirror is unusable
-gets its own alert, because both skip paths otherwise return a cheerful 200 and
-retention would stop indefinitely while reporting healthy.
+goes stale and pages. A lane that runs but skips because the mirror is not confirmed
+current gets its own alert, because both skip paths otherwise return a cheerful 200
+and retention would stop indefinitely while reporting healthy. The skip alert names
+its cause and gives the matching remedy: an unconfigured warehouse credential sends
+the reader to DEPLOY.md, a lagging export lane to the export lane itself.
 
 **Accepted residual risk: there is no database-layer control on these deletions.**
 `audit_log` and `booking_events` are tamper-evident against the secret key via

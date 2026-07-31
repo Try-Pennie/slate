@@ -1,68 +1,69 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./export-lag", () => ({ measureExportLag: vi.fn(), exportedThrough: vi.fn() }));
+vi.mock("./config", () => ({ readSnowflakeConfig: vi.fn() }));
 vi.mock("./reconcile", () => ({ reconcileSnowflakeMirror: vi.fn() }));
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: vi.fn() }));
 
-import { exportedThrough, mirrorReadyForDeletion } from "./retention-gate";
+import { mirrorReadyForDeletion } from "./retention-gate";
+import { measureExportLag } from "./export-lag";
+import { readSnowflakeConfig } from "./config";
 import { reconcileSnowflakeMirror } from "./reconcile";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { MAX_EXPORT_LAG_MS, type TableLag } from "./export-lag-core";
 
 afterEach(() => vi.clearAllMocks());
 
+const CONFIG = { account: "acc", user: "u", privateKeyPem: "k", database: "d", schema: "s", warehouse: "w", role: "r" };
+
+const lag = (over: Partial<TableLag> = {}): TableLag => ({
+  table: "bookings",
+  cursorTs: "2026-07-31T12:00:00Z",
+  newestTs: "2026-07-31T12:05:00Z",
+  lagMs: 5 * 60_000,
+  backlog: 1,
+  ...over,
+});
+
 describe("mirrorReadyForDeletion", () => {
   it("is not ready when the mirror is unconfigured (never delete unarchived data)", async () => {
-    vi.mocked(reconcileSnowflakeMirror).mockResolvedValue({
-      skipped: true,
-      ok: true,
-      tables: [],
-      control: null,
-      reasons: [],
-    });
+    vi.mocked(readSnowflakeConfig).mockReturnValue(null);
     const g = await mirrorReadyForDeletion();
     expect(g.ready).toBe(false);
     expect(g.reason).toMatch(/not configured/);
+    expect(measureExportLag).not.toHaveBeenCalled();
   });
 
-  it("is not ready when reconciliation reports the mirror is behind", async () => {
-    vi.mocked(reconcileSnowflakeMirror).mockResolvedValue({
-      ok: false,
-      tables: [],
-      control: null,
-      reasons: ["bookings: Snowflake is behind by 999 rows"],
-    });
+  it("is ready when the export lane is keeping up", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(CONFIG);
+    vi.mocked(measureExportLag).mockResolvedValue([lag()]);
+    const g = await mirrorReadyForDeletion();
+    expect(g.ready).toBe(true);
+    expect(g.reason).toBeNull();
+  });
+
+  it("is not ready when the export lane has fallen behind", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(CONFIG);
+    vi.mocked(measureExportLag).mockResolvedValue([lag({ lagMs: MAX_EXPORT_LAG_MS + 60_000, backlog: 400 })]);
     const g = await mirrorReadyForDeletion();
     expect(g.ready).toBe(false);
-    expect(g.reason).toMatch(/behind by 999/);
+    expect(g.reason).toMatch(/bookings/);
+    expect(g.reason).toMatch(/behind/);
   });
 
-  it("is ready when configured and in sync", async () => {
-    vi.mocked(reconcileSnowflakeMirror).mockResolvedValue({ ok: true, tables: [], control: null, reasons: [] });
-    expect((await mirrorReadyForDeletion()).ready).toBe(true);
-  });
-});
-
-describe("exportedThrough", () => {
-  function fakeCursor(row: { last_ts: string | null } | null, error: { message: string } | null = null) {
-    const builder = {
-      select: () => builder,
-      eq: () => builder,
-      maybeSingle: async () => ({ data: row, error }),
-    };
-    vi.mocked(supabaseAdmin).mockReturnValue({ from: () => builder } as never);
-  }
-
-  it("returns the confirmed-export watermark when present", async () => {
-    fakeCursor({ last_ts: "2026-01-01T00:00:00Z" });
-    expect(await exportedThrough("routing_decisions")).toBe("2026-01-01T00:00:00Z");
+  it("does NOT ask Snowflake anything, so a suspended warehouse cannot stall the lane", async () => {
+    // The whole point of #1139: the gate is Supabase-only now. It used to run a
+    // full 7-statement reconciliation per lane, three times a day, while holding
+    // a 60s lock a cold-warehouse poll could outlast.
+    vi.mocked(readSnowflakeConfig).mockReturnValue(CONFIG);
+    vi.mocked(measureExportLag).mockResolvedValue([lag()]);
+    await mirrorReadyForDeletion();
+    expect(reconcileSnowflakeMirror).not.toHaveBeenCalled();
   });
 
-  it("returns null when nothing has been exported yet", async () => {
-    fakeCursor(null);
-    expect(await exportedThrough("routing_decisions")).toBeNull();
-  });
-
-  it("throws on a read error (fail-loud, never silently 'nothing to gate on')", async () => {
-    fakeCursor(null, { message: "boom" });
-    await expect(exportedThrough("routing_decisions")).rejects.toThrow(/boom/);
+  it("propagates a measurement failure instead of reporting a healthy mirror", async () => {
+    // Fail loud: an unmeasured mirror must never present as a ready one, because
+    // the caller's next move is to destroy data.
+    vi.mocked(readSnowflakeConfig).mockReturnValue(CONFIG);
+    vi.mocked(measureExportLag).mockRejectedValue(new Error("cursor read failed"));
+    await expect(mirrorReadyForDeletion()).rejects.toThrow(/cursor read failed/);
   });
 });
