@@ -116,7 +116,7 @@ export function formatSyncStalenessAlert(res: StalenessResult, thresholdMs: numb
   const lines = res.stale.slice(0, NAME_CAP).map(agentLine);
   const more = res.staleCount > NAME_CAP ? ` (and ${res.staleCount - NAME_CAP} more)` : "";
   return (
-    `Slate: ${res.staleCount} bookable agent(s) have not been calendar-synced in over ` +
+    `${res.staleCount} bookable agent(s) have not been calendar-synced in over ` +
     `${mins} min; the sync rotation may be falling behind (roster too large for a tick, ` +
     `or agents being skipped), so their cached availability can drift and double-book.${more}\n` +
     lines.join("\n")

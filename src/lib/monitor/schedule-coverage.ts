@@ -44,7 +44,7 @@ export function formatScheduleGapNotice(agents: ScheduleLessAgent[]): string {
   const lines = agents.slice(0, NAME_CAP).map(agentLine);
   const more = agents.length > NAME_CAP ? ` (and ${agents.length - NAME_CAP} more)` : "";
   return (
-    `Slate (info): could not auto-create a working-hours schedule for ${agents.length} ` +
+    `Could not auto-create a working-hours schedule for ${agents.length} ` +
     `bookable agent(s); they show zero availability and take no bookings until fixed ` +
     `(admin > agent hours, or check the roster sync).${more}\n` +
     lines.join("\n")

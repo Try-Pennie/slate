@@ -171,7 +171,7 @@ export function formatFallbackCoveredNotice(covered: FallbackCoveredDetail[]): s
   const more =
     covered.length > ALERT_NAME_CAP ? ` (and ${covered.length - ALERT_NAME_CAP} more)` : "";
   return (
-    `Slate (info): ${covered.length} tier(s) show no times, but a lower tier is still ` +
+    `${covered.length} tier(s) show no times, but a lower tier is still ` +
     `covering them, so no customer is blocked (thin-capacity heads up, not an outage).${more}\n` +
     lines.join("\n")
   );
@@ -291,7 +291,7 @@ export async function reportAvailabilityHealth(deps: {
  */
 export function formatAvailabilityRecovery(): string {
   return (
-    `Slate: availability is healthy again. Every bucket that should be offering ` +
+    `Availability is healthy again. Every bucket that should be offering ` +
     `booking times is showing them, and the cached availability agrees with the ` +
     `agents' calendars, so the earlier page about buckets showing no times is ` +
     `cleared. No action is needed.`
@@ -364,7 +364,7 @@ export function formatDataAnomalyAlert(cause: DeadEndCause, healed: string[] = [
       );
     }
   }
-  return `Slate: ${parts.join(" ")}`;
+  return `${parts.join(" ")}`;
 }
 
 /** Low-priority info body: tiers empty because the agents are booked solid. This
@@ -372,7 +372,7 @@ export function formatDataAnomalyAlert(cause: DeadEndCause, healed: string[] = [
  *  em/en dashes (copy lint). */
 export function formatBookedSolidNotice(bookedSolid: string[]): string {
   return (
-    `Slate (info): ${bookedSolid.length} tier(s) show no booking times because the ` +
+    `${bookedSolid.length} tier(s) show no booking times because the ` +
     `agents are booked solid (${capList(bookedSolid)}). Calendars are full, not ` +
     `broken; this is a capacity heads up, so check staffing if it persists.`
   );

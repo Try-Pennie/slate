@@ -148,7 +148,7 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
   const oneAgent = holders.length === 1;
   const oneBooking = totalBookings === 1;
   return (
-    `Slate: ${plural(holders.length, "agent", "agents")} who ${oneAgent ? "has" : "have"} left ` +
+    `${plural(holders.length, "agent", "agents")} who ${oneAgent ? "has" : "have"} left ` +
     `the booking pool still ${oneAgent ? "holds" : "hold"} ` +
     `${plural(totalBookings, "appointment", "appointments")} in the future. ` +
     `${oneBooking ? "That customer is" : "Those customers are"} booked with someone Slate no ` +
@@ -168,7 +168,7 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
  */
 export function formatInactiveAgentBookingsRecovery(): string {
   return (
-    `Slate: no agent who has left the booking pool is holding future appointments any more. ` +
+    `No agent who has left the booking pool is holding future appointments any more. ` +
     `The bookings behind the earlier page have been reassigned or have passed, so every upcoming ` +
     `appointment belongs to an agent Slate still routes to. No action is needed.`
   );

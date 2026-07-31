@@ -67,8 +67,9 @@ describe("recordAudit", () => {
     const [key, cooldown, text] = sendThrottledAlert.mock.calls[0];
     expect(key).toBe(AUDIT_WRITE_FAILED_KEY);
     expect(cooldown).toBeGreaterThan(0);
-    // Read on a phone mid-incident: it must name Slate and say what stopped.
-    expect(text).toMatch(/^Slate:/);
+    // Read on a phone mid-incident: it opens with what stopped, not with a
+    // "Slate:" label repeating the Slack app name above it.
+    expect(text).not.toMatch(/^\s*Slate\b/i);
     expect(text).toMatch(/audit/i);
     // It must name the action whose record was lost, so the reader knows the
     // blast radius rather than just "something failed".

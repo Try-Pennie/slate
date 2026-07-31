@@ -393,9 +393,9 @@ export function retentionAlertText(
         ? "webhook payloads past the 90 day window are keeping full attendee PII"
         : "routing decisions past the 12 month window are not being pruned";
   if (!Number.isFinite(ageMs)) {
-    return `Slate: the ${lane} retention lane has NEVER completed a run, so ${what}. It has either failed every run since it was deployed or is not being scheduled. Check the Worker logs for tag=${lane} and the cron_${lane.replace(/-/g, "_")} lock.`;
+    return `The ${lane} retention lane has NEVER completed a run, so ${what}. It has either failed every run since it was deployed or is not being scheduled. Check the Worker logs for tag=${lane} and the cron_${lane.replace(/-/g, "_")} lock.`;
   }
-  return `Slate: the ${lane} retention lane ${laneQuietClause({ ageMs, boundMin, unreadable, verb: "completed" })}, so ${what}. Check the Worker logs for tag=${lane}.`;
+  return `The ${lane} retention lane ${laneQuietClause({ ageMs, boundMin, unreadable, verb: "completed" })}, so ${what}. Check the Worker logs for tag=${lane}.`;
 }
 
 /**

@@ -22,7 +22,7 @@ const minutes = (ms: number) => Math.round(ms / 60_000);
  */
 export function coreLaneAlertText(lane: StaleLane): string {
   return (
-    `Slate: the ${lane.lane} cron lane ${laneQuietClause({
+    `The ${lane.lane} cron lane ${laneQuietClause({
       ageMs: lane.ageMs,
       boundMin: minutes(lane.maxStaleMs),
       unreadable: lane.unreadable,
@@ -37,7 +37,7 @@ export function coreLaneAlertText(lane: StaleLane): string {
  *  send them after a fault that is over. */
 export function laneRecoveryText(lane: string): string {
   return (
-    `Slate: the ${lane} cron lane is running again. It has stamped a heartbeat inside ` +
+    `The ${lane} cron lane is running again. It has stamped a heartbeat inside ` +
     `its bound, so the work it had stopped doing is happening again and the earlier ` +
     `page is cleared. No action is needed.`
   );
@@ -47,13 +47,13 @@ export function laneRecoveryText(lane: string): string {
 export function canaryRecoveryText(lane: string): string {
   if (lane === "smoke-canary-full") {
     return (
-      `Slate: the booking smoke canary's full end to end pass is running again, so the ` +
+      `The booking smoke canary's full end to end pass is running again, so the ` +
       `automated proof that a booking can be created, rescheduled and cancelled is back ` +
       `in place. No action is needed.`
     );
   }
   return (
-    `Slate: the booking smoke canary is running again, so the automated end to end ` +
+    `The booking smoke canary is running again, so the automated end to end ` +
     `booking check is back in place. No action is needed.`
   );
 }
@@ -62,7 +62,7 @@ export function canaryRecoveryText(lane: string): string {
 export function mirrorRecoveryText(lane: string): string {
   if (lane === "snowflake-reconcile") {
     return (
-      `Slate: the check comparing the live database against the Snowflake mirror is ` +
+      `The check comparing the live database against the Snowflake mirror is ` +
       `running again, so the warehouse is being verified against the source once more. ` +
       `Anything that was treated as unverified while it was quiet, including export ` +
       `gated deletion, is being checked again. No action is needed.`
@@ -70,20 +70,20 @@ export function mirrorRecoveryText(lane: string): string {
   }
   if (lane === "erasure-audit") {
     return (
-      `Slate: the check proving an erased person's data is really gone from the ` +
+      `The check proving an erased person's data is really gone from the ` +
       `Snowflake warehouse is running again, so deletion requests are being watched ` +
       `through to the end once more. No action is needed.`
     );
   }
   if (lane === "snowflake-check") {
     return (
-      `Slate: the Snowflake warehouse self check is passing again, so the statements ` +
+      `The Snowflake warehouse self check is passing again, so the statements ` +
       `the retention and erasure work depends on are known to run against the real ` +
       `warehouse. No action is needed.`
     );
   }
   return (
-    `Slate: the Snowflake mirror export lane is running again, so the analytics ` +
+    `The Snowflake mirror export lane is running again, so the analytics ` +
     `warehouse is being kept up to date. No action is needed.`
   );
 }
@@ -92,7 +92,7 @@ export function mirrorRecoveryText(lane: string): string {
  *  the notice says plainly that the deletion work has resumed. */
 export function retentionRecoveryText(lane: string): string {
   return (
-    `Slate: the ${lane} retention lane is running again, so the scheduled deleting of ` +
+    `The ${lane} retention lane is running again, so the scheduled deleting of ` +
     `aged data has resumed and the retention window is being honored. No action is ` +
     `needed.`
   );
@@ -108,9 +108,9 @@ export function retentionRecoveryText(lane: string): string {
 export function canaryAlertText(lane: StaleLane, boundMin: number): string {
   const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
   if (lane.lane === "smoke-canary-full") {
-    return `Slate: the booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
+    return `The booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
   }
-  return `Slate: the booking smoke canary ${quiet}, so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
+  return `The booking smoke canary ${quiet}, so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
 }
 
 /**
@@ -127,10 +127,10 @@ export function canaryAlertText(lane: StaleLane, boundMin: number): string {
 export function mirrorAlertText(lane: StaleLane, boundMin: number): string {
   const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
   if (lane.lane === "snowflake-reconcile") {
-    return `Slate: the check that compares the live database against the Snowflake mirror ${quiet}, so nothing is verifying that the warehouse still matches the source (the app itself is unaffected). Anything that trusts the mirror being complete, including export gated deletion, should be treated as unverified until this clears. Check the cron_snowflake_reconcile lock and the Worker outcome for the 6h lane.`;
+    return `The check that compares the live database against the Snowflake mirror ${quiet}, so nothing is verifying that the warehouse still matches the source (the app itself is unaffected). Anything that trusts the mirror being complete, including export gated deletion, should be treated as unverified until this clears. Check the cron_snowflake_reconcile lock and the Worker outcome for the 6h lane.`;
   }
   if (lane.lane === "erasure-audit") {
-    return `Slate: the check that proves an erased person's data is really gone from the Snowflake warehouse ${quiet}, so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
+    return `The check that proves an erased person's data is really gone from the Snowflake warehouse ${quiet}, so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
   }
-  return `Slate: the Snowflake mirror export lane ${quiet}, so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
+  return `The Snowflake mirror export lane ${quiet}, so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
 }

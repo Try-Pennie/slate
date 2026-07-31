@@ -349,7 +349,7 @@ export function formatWatchLapseAlert(
     // #1133: the noun pluralizes on the TOTAL and the verb agrees with the
     // FAILING count. Keying both off `failing.length` produced "1 of 97 bookable
     // agent have a calendar failing".
-    `Slate: ${n} of ${totalAgents} bookable agent${totalAgents === 1 ? "" : "s"} ` +
+    `${n} of ${totalAgents} bookable agent${totalAgents === 1 ? "" : "s"} ` +
     `${n === 1 ? "has" : "have"} a calendar that cannot renew its Google push channel. ` +
     `Those calendars are still syncing. Renewal keeps retrying until the existing ` +
     `channel expires (within 3 days), after which their external changes reach the ` +
@@ -375,9 +375,9 @@ export function formatSyncFailureAlert(
   // Google, a credential path, or a bad deploy.
   const scope =
     n === 1
-      ? `Slate: calendar sync is failing for 1 of ${totalAgents} ${agents} on ` +
+      ? `Calendar sync is failing for 1 of ${totalAgents} ${agents} on ` +
         `consecutive passes (that agent's availability cache may be drifting from Google).`
-      : `Slate: calendar sync is failing for ${n} of ${totalAgents} ${agents} on ` +
+      : `Calendar sync is failing for ${n} of ${totalAgents} ${agents} on ` +
         `consecutive passes, which points at a systemic problem rather than one bad ` +
         `calendar (the availability cache may be drifting from Google).`;
   return `${scope} ${instructionFor(failing)}\n${failingAgentLines(failing, nowMs)}`;
@@ -392,7 +392,7 @@ export function formatSyncFailureAlert(
  */
 export function formatSyncRecoveryNotice(): string {
   return (
-    "Slate: calendar sync has recovered. Every agent calendar that was failing is " +
+    "Calendar sync has recovered. Every agent calendar that was failing is " +
     "syncing again and the availability cache is back in step with Google, so the " +
     "earlier page about failing calendars is cleared. No action is needed."
   );

@@ -114,7 +114,7 @@ export function formatLowVolumeAlert(breaches: VolumeWindow[]): string {
     .map((b) => `${b.count} in the last ${b.label} (expected at least ${b.floor})`)
     .join("; ");
   return (
-    `Slate booking volume is low: ${lines}. The booker may be down ` +
+    `Booking volume is low: ${lines}. The booker may be down ` +
     `(broken embed, empty availability, or sync wedged); check it.`
   );
 }

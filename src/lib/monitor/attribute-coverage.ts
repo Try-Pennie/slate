@@ -63,7 +63,7 @@ export function formatAttributeGapNotice(agents: UnroutableAgent[]): string {
   const lines = agents.slice(0, NAME_CAP).map(agentLine);
   const more = agents.length > NAME_CAP ? ` (and ${agents.length - NAME_CAP} more)` : "";
   return (
-    `Slate (info): ${agents.length} bookable agent(s) have no routing attributes and no ` +
+    `${agents.length} bookable agent(s) have no routing attributes and no ` +
     `manual bucket membership, so they match no bucket and are never routed a booking. ` +
     `Set their attributes (admin > agents) or add them to a bucket.${more}\n` +
     lines.join("\n")

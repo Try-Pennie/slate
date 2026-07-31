@@ -78,11 +78,21 @@ for (const p of ALERT_PREVIEWS) {
     );
   }
   assert(p.text.trim().length > 0, `"${p.key}" (${p.state}) renders a non-empty message`);
-  // Every alert must name the product, so a reader scanning a busy channel knows
-  // instantly which system is talking to them.
+  // No "Slate:" prefix. The reader does need to know instantly which system is
+  // talking, and in Slack they already do: every one of these arrives under the
+  // Slate app's own name and icon, so an opening "Slate:" repeats the header and
+  // pushes the one fact worth having (what is wrong) further along the line, on a
+  // surface read on a phone. Naming Slate INSIDE a sentence is fine and often
+  // necessary ("an agent Slate still routes to"); only the label is banned.
+  // Banned in every label shape it has taken, which is why this tests for the
+  // WORD rather than for "Slate:": the copy also carried "Slate routing check:",
+  // "Slate routing notice:", "Slate routing ALERT:" and "Slate booking volume is
+  // low:", and a check tuned to the colon form would have called those clean.
   assert(
-    p.text.includes("Slate") || p.channel === "info",
-    `"${p.key}" (${p.state}) names Slate, so the reader knows which system is speaking`,
+    !/^\s*Slate\b/i.test(p.text),
+    `"${p.key}" (${p.state}) opens with the word "Slate"; the Slack app name and icon ` +
+      `already say who is speaking, so start with what is wrong. Naming Slate inside a ` +
+      `sentence is fine: ${JSON.stringify(p.text.slice(0, 90))}`,
   );
 }
 

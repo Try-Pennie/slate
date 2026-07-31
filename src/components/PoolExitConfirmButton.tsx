@@ -5,39 +5,65 @@ import { useEffect, useRef, useState } from "react";
 import { btnSecondaryCls } from "@/components/ui/styles";
 
 /**
- * The deactivate control on the agent profile, with a confirm when the agent
- * still holds upcoming appointments (#1215).
+ * The two controls that take an agent out of the booking pool, each with a
+ * confirm when that agent still holds upcoming appointments (#1215).
  *
- * Deactivating an agent and reassigning that agent's upcoming bookings were two
- * completely independent actions. Deactivating pulls the agent out of
- * availability and out of every picker, but leaves their already-booked future
- * appointments assigned to them, so a customer could arrive to meet an advisor
- * who had left. The only thing preventing that was an admin remembering the
- * coverage panel further down the same page.
+ * Taking an agent out of the pool and moving that agent's upcoming bookings were
+ * two completely independent actions. Either exit (deactivating, or clearing the
+ * bookable flag) pulls the agent from availability and from every picker, and the
+ * pool-exit cleanup prunes their cached busy time either way, but their
+ * already-booked future appointments stay assigned to them. A customer could
+ * arrive to meet an advisor who was gone, and the only thing preventing it was an
+ * admin remembering the coverage panel further down the same page.
+ *
+ * One component for both controls on purpose: they ask the identical question and
+ * a second copy would drift. Each speaks in the language of the control that was
+ * pressed, because a toggle that warns about "deactivating" reads as the wrong
+ * dialog.
  *
  * This is a CONFIRM, not a block (L54: a guard may refuse only what the system
  * genuinely cannot do). An agent really can leave mid-notice with the
- * appointments placed afterwards, and the coverage panel works on an
- * already-deactivated agent, so refusing would only ever stop the admin who
- * meant it. The monitor lane is the backstop for the paths with no human present
- * at all (the Salesforce roster sync deactivates with no UI).
+ * appointments placed afterwards, and the coverage panel works on an agent who has
+ * already left the pool, so refusing would only ever stop the admin who meant it.
+ * The monitor lane is the backstop for the paths with no human present at all (the
+ * Salesforce roster sync and the lifecycle API).
  *
  * `upcomingBookings` is null when the count could not be read. That is NOT zero:
- * waving the admin through on a failed read would claim "nothing is booked"
- * having measured nothing, so an unreadable count gets the confirm too, with copy
- * that says which of the two happened.
+ * waving the admin through on a failed read would claim "nothing is booked" having
+ * measured nothing, so an unreadable count gets the confirm too, with copy that
+ * says which of the two happened.
  */
-export default function DeactivateAgentButton({
+export type PoolExitAction = "deactivate" | "not_bookable";
+
+const COPY: Record<PoolExitAction, { label: string; confirm: string; effect: string }> = {
+  deactivate: {
+    label: "Deactivate account",
+    confirm: "Deactivate anyway",
+    effect:
+      "Deactivating removes them from the booking pool, but it does not move those appointments",
+  },
+  not_bookable: {
+    label: "Make not bookable",
+    confirm: "Make not bookable anyway",
+    effect:
+      "Making them not bookable takes them out of the booking pool, but it does not move those appointments",
+  },
+};
+
+export default function PoolExitConfirmButton({
+  action,
   agentId,
   agentName,
   upcomingBookings,
 }: {
+  action: PoolExitAction;
   agentId: string;
   agentName: string;
   /** Active future appointments still assigned to this agent, or null when the
    *  count could not be read. */
   upcomingBookings: number | null;
 }) {
+  const copy = COPY[action];
   const [confirming, setConfirming] = useState(false);
   const openRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
@@ -55,7 +81,7 @@ export default function DeactivateAgentButton({
   // Nothing at stake: one click, as before. A confirm here would be a speed bump
   // in front of nothing, which is how confirms get clicked through by reflex.
   if (upcomingBookings === 0) {
-    return <button className={btnSecondaryCls}>Deactivate account</button>;
+    return <button className={btnSecondaryCls}>{copy.label}</button>;
   }
 
   if (!confirming) {
@@ -66,7 +92,7 @@ export default function DeactivateAgentButton({
         className={btnSecondaryCls}
         onClick={() => setConfirming(true)}
       >
-        Deactivate account
+        {copy.label}
       </button>
     );
   }
@@ -80,13 +106,12 @@ export default function DeactivateAgentButton({
   return (
     <div role="alert" className="rounded-sm border border-border bg-[var(--field)] p-4">
       <p className="text-sm text-fg">
-        {held} Deactivating removes them from the booking pool, but it does not move those
-        appointments: the customers stay booked with {agentName} and will meet nobody. Reassign them
-        in Coverage below, either before or after this.
+        {held} {copy.effect}: the customers stay booked with {agentName} and will meet nobody.
+        Reassign them in Coverage below, either before or after this.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <button ref={confirmRef} className={btnSecondaryCls}>
-          Deactivate anyway
+          {copy.confirm}
         </button>
         <button
           type="button"

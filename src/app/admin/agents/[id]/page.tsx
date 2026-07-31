@@ -23,7 +23,7 @@ import {
 } from "@/app/admin/actions";
 import { AppHeader } from "@/components/AppHeader";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
-import DeactivateAgentButton from "@/components/DeactivateAgentButton";
+import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
 import { previewBulkReassign } from "@/lib/booking/service";
 import { log } from "@/lib/log";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
@@ -109,6 +109,12 @@ export default async function AgentProfilePage({
   // those controls on the SAME predicate. Admin-only controls (role, OOO calendar)
   // keep their own isAdmin gates, which are already correct.
   const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
+
+  // #1215: how many upcoming appointments this agent still holds, read ONCE and
+  // shared by both pool-exit controls (deactivate and the bookable toggle). Two
+  // reads of the same question could disagree with each other on the same page.
+  // Only needed when the controls actually render.
+  const heldUpcoming = canManageThisAgent ? await upcomingBookingCount(agent.id) : null;
 
   const [schedRes, usersRes, orgRes] = await Promise.all([
     db
@@ -249,9 +255,20 @@ export default async function AgentProfilePage({
                   name="bookable"
                   value={agent.bookable ? "false" : "true"}
                 />
-                <button className={btnSecondaryCls}>
-                  {agent.bookable ? "Make not bookable" : "Make bookable"}
-                </button>
+                {/* #1215: taking an agent out of the pool via this toggle
+                    strands their booked appointments exactly as deactivating
+                    does, so the person who flips it is asked the same question.
+                    The other direction strands nothing, so it stays one click. */}
+                {agent.bookable ? (
+                  <PoolExitConfirmButton
+                    action="not_bookable"
+                    agentId={agent.id}
+                    agentName={agent.name ?? agent.email}
+                    upcomingBookings={heldUpcoming}
+                  />
+                ) : (
+                  <button className={btnSecondaryCls}>Make bookable</button>
+                )}
               </form>
             )}
             {canManageThisAgent && (
@@ -461,10 +478,11 @@ export default async function AgentProfilePage({
                       them. The count comes from previewBulkReassign, the same
                       helper the coverage sweep enqueues from, so the warning and
                       the panel below can never disagree about the same gap. */}
-                  <DeactivateAgentButton
+                  <PoolExitConfirmButton
+                    action="deactivate"
                     agentId={agent.id}
                     agentName={agent.name ?? agent.email}
-                    upcomingBookings={await upcomingBookingCount(agent.id)}
+                    upcomingBookings={heldUpcoming}
                   />
                 </form>
               )
