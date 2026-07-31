@@ -117,7 +117,7 @@ update SLATE.PUBLIC.booking_events
  where booking_id in (<ids>);
 
 update SLATE.PUBLIC.webhook_deliveries
-   set payload = object_delete(payload, 'attendee', 'prefill', 'manage_url', 'reason')
+   set payload = object_construct('booking_id', payload:booking_id)
  where payload:booking_id::string in (<ids>);
 
 update SLATE.PUBLIC.booking_outbox
@@ -130,21 +130,37 @@ Because the Supabase redaction stamped `pii_redacted_at` / `payload_erased`, the
 export lane has frozen the `bookings` and `webhook_deliveries` rows and will not
 re-mirror the full-fidelity version back over your redaction.
 
-Two things about the `webhook_deliveries` statement that are deliberate and were
-both wrong before #1197:
+Three things about the `webhook_deliveries` statement are deliberate. **Do not
+"simplify" any of them**, and read this before editing that line:
 
 1. It does **not** set `payload_erased`. That column exists only in Supabase, where
    it is the flag that freezes the row from re-export; the warehouse table has no
    such column and never did. Naming it made Snowflake reject the entire statement
    with an invalid identifier, so the payloads were silently never purged. If you
    are reading a copy of this runbook older than #1197, that is the bug.
-2. It strips the PII keys rather than emptying the payload, which is what the
-   Supabase side does. Emptying it would destroy `payload:booking_id`, the only key
-   step 4 and the erasure-audit lane can find these rows by (the warehouse copy has
-   no `payload_erased` and no `dedupe_key` to fall back on). The verify below would
-   then return 0 whether the purge worked or the rows were never there, which is no
-   check at all. Keeping the booking id also keeps the rows useful for the
-   analytics the mirror exists to serve.
+2. It **keeps `booking_id`** rather than emptying the payload, which is what the
+   Supabase side does. `payload:booking_id` is the ONLY key step 4 and the
+   erasure-audit lane can find these rows by: the warehouse copy carries no
+   `payload_erased` and no `dedupe_key` to fall back on. Empty the payload and the
+   verify below returns 0 whether the purge worked or the rows were never there, so
+   it becomes a check that cannot fail, which is worse than no check. A booking id
+   is one of our own record identifiers, not personal data, so keeping it costs
+   nothing against the request being honored.
+3. It builds the survivor with `object_construct` rather than deleting keys with
+   `object_delete`. Snowflake documents `OBJECT_DELETE` as **failing** on a key that
+   is absent from a structured object, and documents nothing at all for the variant
+   case these payloads are, while the payloads legitimately omit keys (`reason` is
+   null on `booking.created`). `OBJECT_CONSTRUCT` is documented to omit a key whose
+   value is NULL, so this form is the only well-defined one here.
+
+`scripts/test-erasure-runbook-claims.ts` (claims 5 and 6) fails the build if this
+statement names a column the warehouse lacks, drops the booking id, or reaches for
+`object_delete`, so the three points above are enforced rather than merely asked for.
+
+What step 4 can and cannot tell you, stated plainly: it proves that for every erased
+booking id **still present in the warehouse**, no contact PII remains. It cannot
+prove a row was not deleted or made unfindable by some other means, and it says
+nothing about `booking_outbox`, which it does not check at all (see #1199).
 
 `booking_outbox` works the other way round and is the reason the step above is
 belt-and-braces rather than the only defense: it is deliberately **not** frozen from
@@ -187,7 +203,7 @@ do not read an empty result there as proof of either. Use `payload_erased = true
 (or `dedupe_key`, which for a `booking.created` delivery is the booking id) if you
 need to see the rows. In Snowflake the rows stay findable by payload booking id
 both before and after the purge, because the export freezes them at full fidelity
-and step 3 strips only the PII keys, which is what makes steps 3 and 4 work there
+and step 3 deliberately keeps that one key, which is what makes steps 3 and 4 work there
 and what keeps the erasure-audit lane a real check rather than a vacuous one.
 
 ### You are not the only check
