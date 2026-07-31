@@ -7,9 +7,15 @@ Policy context and the full retention posture live in
 [pii-retention.md](./pii-retention.md); read sections 4 and 7 there first.
 
 The mechanism is two steps: a database function for the Supabase half, and an
-operator-run SQL step for the Snowflake half (the Worker's export role is
-append-only by design, so it cannot purge the warehouse; that credential stays
-with the operator, never in the app).
+operator-triggered purge for the Snowflake half.
+
+A correction worth knowing, because three places in this repo used to say
+otherwise (#1128). The export role is append-only in the sense that matters:
+`docs/snowflake-setup.sql` withholds DELETE and TRUNCATE. It does hold **UPDATE**,
+which the export's own MERGE needs. Redacting in place is an UPDATE, so Slate can
+run the warehouse purge with the credential it already has, and step 3 below is
+one authenticated request rather than four statements pasted by hand. Nothing in
+Slate can delete a warehouse row.
 
 ## Before you run it
 
@@ -98,14 +104,46 @@ conclude you are looking at the wrong erasure. Measured on 2026-07-29, the same
 address padded and mixed-case hashed to `1c5e9832...` raw against `bf887269...`
 normalized.
 
-## Step 3: Snowflake purge (operator credential, redact in place)
+## Step 3: Snowflake purge (redact in place)
 
-Run this against Snowflake using your **own admin login**, never the Worker's
-export user. It redacts the same PII columns in place for the affected bookings,
+Trigger it. This redacts the same PII columns in place for the affected bookings,
 so the warehouse keeps the PII-free analytics rows but holds none of the person's
-contact data. Substitute the ids from step 2 for `<ids>` (comma-separated,
-single-quoted, e.g. `'id1','id2'`).
+contact data, then runs step 4's verify itself and reports the counts.
 
+```
+POST /api/admin/erasure-purge
+```
+
+Callable by a signed-in admin, or by an operator process holding `CRON_SECRET`. It
+purges **every** booking in the `pii.erasure` audit trail by default, so you do not
+need the ids from step 2 unless you deliberately want a subset:
+`{"bookingIds": ["..."]}`.
+
+Repeating it is safe, and idempotent in effect rather than in the counts: the
+statements carry no "only if not already null" guard, so a second run re-nulls
+already-null columns and reports the same rows changed. Judge a run by the verify
+counts, never by the rows-changed counts.
+
+It can only ever touch a booking that already appears in a `pii.erasure` audit row,
+i.e. one whose contact data Slate has ALREADY erased in Supabase. An id outside
+that trail is refused with a 400 rather than purged, so a typo cannot blank the
+wrong person's row. `ok` in the response is true only when the verify measured zero
+residual everywhere; a purge that ran and left data behind reports false and a 500.
+
+### The SQL it runs
+
+Kept here because an operator sometimes needs to read, or hand-run, exactly what
+executed. This block is not a copy: it is the same text Slate executes, and
+`scripts/test-erasure-purge-sql.ts` fails the build if this and
+`src/lib/snowflake/purge-sql.ts` differ by a character. That parity is the point.
+If the runbook kept its own copy, the every-6-hour probe below would only prove
+that the copy compiles, and the version an operator pastes could rot untouched,
+which is exactly how #1197 happened.
+
+To hand-run it, substitute the ids from step 2 for `<ids>` (comma-separated,
+single-quoted, e.g. `'id1','id2'`) and use your own Snowflake admin login.
+
+<!-- canonical-sql: purge -->
 ```
 update SLATE.PUBLIC.bookings
    set attendee_name = null, attendee_email = null, attendee_phone = null,
@@ -168,6 +206,24 @@ Four things about the `webhook_deliveries` statement are deliberate. **Do not
 statement names a column the warehouse lacks, drops the booking id, or reaches for
 `object_delete`, so the three points above are enforced rather than merely asked for.
 
+### It is proven to RUN, every six hours
+
+A static guard can only check the SQL against a column list in this repo. What it
+cannot check is whether the statements still compile against the warehouse as it
+exists today, and that gap is the whole of #1197.
+
+So the erasure-audit lane (`/api/cron/erasure-audit`, every 6h) now executes **every
+statement above, plus step 4's verify**, bound to an id no booking can have
+(`slate-purge-sql-probe-matches-nothing`, deliberately not uuid-shaped). Each one
+must compile and report zero rows changed. A statement that stops running pages on
+its own key, `snowflake_purge_sql_broken`, separate from the residual page so
+neither can clear the other.
+
+Stated plainly, because a check may claim only what it measured: this proves the SQL
+parses and resolves against the live warehouse schema. A zero-row statement can only
+ever report zero rows, so it says nothing about whether the statements clear fields
+on a real row. That half is proven by the recorded runs below.
+
 What step 4 can and cannot tell you, stated plainly: it proves that for every erased
 booking id **still present in the warehouse**, no contact PII remains, in both the
 payload and `last_response`. It cannot prove a row was not deleted or made
@@ -206,10 +262,15 @@ zeros", that left an operator waiting on a condition that could never clear
 
 ## Step 4: verify (mandatory)
 
-Run this against Snowflake. Every count **must be 0**. A non-zero count means the
-purge missed rows (or an export re-mirrored them); do not consider the request
-honored until it returns all zeros.
+Step 3 runs this itself and returns the counts, so on the normal path you read them
+in its response rather than running anything. Run it by hand when you hand-ran the
+purge, or when you want to re-check later.
 
+Every count **must be 0**. A non-zero count means the purge missed rows (or an
+export re-mirrored them); do not consider the request honored until it returns all
+zeros.
+
+<!-- canonical-sql: verify -->
 ```
 select
   (select count(*) from SLATE.PUBLIC.bookings
@@ -245,10 +306,11 @@ and what keeps the erasure-audit lane a real check rather than a vacuous one.
 `/api/cron/erasure-audit` re-reads every booking id in every `pii.erasure` audit
 entry and asserts Snowflake holds no residual contact PII for it, alerting to
 Slack when it does. So a skipped or half-finished step 3 gets caught even if
-nobody re-reads this runbook. Treat that as a backstop, not a substitute: the
-lane can only report a residual, it cannot purge the warehouse (the export role
-is append-only by design). If it pages about an erasure you performed, come back
-to step 3.
+nobody re-reads this runbook. Treat that as a backstop, not a substitute: the lane
+reports a residual, it does not clear one. That separation is deliberate rather
+than a limit of the credential (see the correction at the top): a check that
+silently fixed what it found would stop being able to tell you the purge had been
+missed at all. If it pages about an erasure you performed, come back to step 3.
 
 ## What it deliberately does NOT do (policy, §4)
 

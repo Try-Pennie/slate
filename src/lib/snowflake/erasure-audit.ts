@@ -1,22 +1,26 @@
 /**
  * Erasure content audit for the Snowflake mirror (#1103, Workstream C).
  *
- * The Snowflake half of a DSR erasure is an operator-run MANUAL step (the export
- * role is append-only by design). Nothing forces the operator to actually do it,
- * and the count reconcile (#1101) is structurally blind to it: a redacted-in-place
- * row and a full-fidelity one have the SAME row count, so a warehouse that still
- * holds an erased person's PII reconciles as perfectly in sync.
+ * The Snowflake half of a DSR erasure is a deliberate, separately triggered step,
+ * and the count reconcile (#1101) is structurally blind to whether it happened: a
+ * redacted-in-place row and a full-fidelity one have the SAME row count, so a
+ * warehouse that still holds an erased person's PII reconciles as perfectly in
+ * sync.
  *
  * This lane is the detective control that closes that gap. For every booking id
  * recorded in a `pii.erasure` audit entry, it asserts Snowflake holds NO residual
- * contact PII, and the cron route alerts loudly if it does. The Worker's export
- * role can READ Snowflake (reads are allowed by design), so this needs no extra
- * credential; it only surfaces an incomplete operator purge, it cannot fix it.
+ * contact PII, and the cron route alerts loudly if it does.
+ *
+ * It reports; it does not remediate. What clears a residual is
+ * `purgeSnowflakeErasure` (`purge.ts`), a deliberate operator action, and the two
+ * are kept apart on purpose: this lane's job is to be the thing that notices, and
+ * a check that silently fixes what it finds stops being able to tell you the
+ * purge was ever missed. Note the export role CAN write the fix (#1128: it
+ * withholds DELETE, not UPDATE), so this separation is a choice, not a limit.
  */
 
-import { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
 import { log } from "@/lib/log";
+import { erasedIdsFrom, readErasureAuditRows } from "./erasure-trail";
 import { readSnowflakeConfig } from "./config";
 import { escapeSqlLiteral, executeStatement, type SnowflakeConfig } from "./client";
 
@@ -57,20 +61,10 @@ export async function auditSnowflakeErasures(): Promise<ErasureAuditOutcome> {
   const config = readSnowflakeConfig();
   if (!config) return { skipped: true, ok: true, erasedBookings: 0, residuals: [], reasons: [] };
 
-  const db = supabaseAdmin();
-  // Every erased booking id, from the pii.erasure audit trail. Paginated because
-  // audit_log is a growth table (the .range in the page callback bounds each read).
-  const rows = await selectAllPages<{ details: { booking_ids?: string[] } | null }>(
-    "erasure-audit ids",
-    (from, to) =>
-      db
-        .from("audit_log")
-        .select("details")
-        .eq("action", "pii.erasure")
-        .range(from, to) as unknown as PromiseLike<{ data: unknown[] | null; error?: { message: string } | null }>,
-  );
-  const ids = new Set<string>();
-  for (const r of rows) for (const id of r.details?.booking_ids ?? []) ids.add(id);
+  // Every erased booking id, from the pii.erasure audit trail. Read through the
+  // shared trail reader (#1128) so this lane and the purge that clears what it
+  // finds can never disagree about which bookings are in scope.
+  const ids = new Set(erasedIdsFrom(await readErasureAuditRows()));
   if (ids.size === 0) return { ok: true, erasedBookings: 0, residuals: [], reasons: [] };
 
   // `ids` come from our own audit rows (uuids), never user input; still escape

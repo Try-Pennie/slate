@@ -94,6 +94,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An erasure is incomplete until the operator runs the purge; the audit re-measures every 6h.",
   },
   {
+    key: "snowflake_purge_sql_broken",
+    kind: "condition",
+    why: "The purge SQL stays broken until someone fixes it; the 6h probe re-runs it against the warehouse.",
+  },
+  {
     key: "agent_sync_failures",
     kind: "condition",
     why: "The Salesforce roster sync is failing on consecutive runs; a successful run ends it.",

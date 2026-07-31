@@ -1,0 +1,47 @@
+/**
+ * The `pii.erasure` audit trail: the list of booking ids Slate has erased in
+ * Supabase, and therefore the exact set whose warehouse copy must hold no contact
+ * data.
+ *
+ * Lifted out of `erasure-audit.ts` (#1128) so the lane that DETECTS a warehouse
+ * residual and the purge that CLEARS one read the same trail through one
+ * implementation. Two readers would be two chances to disagree about which
+ * bookings are in scope, and the purge's entire safety argument is that it can
+ * only ever touch a booking already erased in Supabase.
+ */
+
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { selectAllPages } from "@/lib/supabase/paginate";
+
+export interface ErasureAuditRow {
+  org_id: string;
+  details: { booking_ids?: string[] } | null;
+}
+
+/**
+ * Every `pii.erasure` audit row. Paginated because `audit_log` is a growth table
+ * (the `.range` in the page callback bounds each read), and it THROWS on a read
+ * error rather than returning a short list: an empty trail read as "nothing has
+ * been erased" would make the residual audit report clean and the purge do
+ * nothing, both of which look identical to a healthy system.
+ */
+export async function readErasureAuditRows(): Promise<ErasureAuditRow[]> {
+  const db = supabaseAdmin();
+  return selectAllPages<ErasureAuditRow>("erasure-audit ids", (from, to) =>
+    db
+      .from("audit_log")
+      .select("org_id, details")
+      .eq("action", "pii.erasure")
+      .range(from, to) as unknown as PromiseLike<{
+      data: unknown[] | null;
+      error?: { message: string } | null;
+    }>,
+  );
+}
+
+/** The distinct booking ids across those rows, in first-seen order. */
+export function erasedIdsFrom(rows: ErasureAuditRow[]): string[] {
+  const ids = new Set<string>();
+  for (const r of rows) for (const id of r.details?.booking_ids ?? []) ids.add(id);
+  return [...ids];
+}

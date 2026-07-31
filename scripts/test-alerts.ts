@@ -236,6 +236,30 @@ assert(
     "SQL compilation error: syntax error line 3 at position 8",
   "a Snowflake SQL error keeps the position, which is the part worth reading",
 );
+// #1128: the Snowflake SQL API's own throw shape, `Snowflake <status>: <body>`.
+// Without a branch for it the JSON prefix eats the whole width budget and the
+// reason truncates to `400 {"code":"000904","message":"SQL compilation error:
+// invalid…`, dropping WHICH identifier was invalid. That is precisely the fact
+// #1197 needed: a statement naming a column the warehouse does not have.
+assert(
+  shortFailureReason(
+    'Snowflake 400: {"code":"000904","message":"SQL compilation error: invalid identifier \'PAYLOAD_ERASED\'"}',
+  ) === "400 SQL compilation error: invalid identifier 'PAYLOAD_ERASED'",
+  "a Snowflake API failure keeps the status and the identifier, not the JSON",
+);
+assert(
+  !/[{}]/.test(
+    shortFailureReason('Snowflake 400: {"code":"000904","message":"SQL compilation error: nope"}') ?? "",
+  ),
+  "the Snowflake reason carries no JSON punctuation",
+);
+// A body this branch cannot parse must still degrade to the collapsed line rather
+// than to nothing: an unreadable error is still worth reporting.
+assert(
+  shortFailureReason("Snowflake 503: service unavailable") === "503 service unavailable",
+  "a Snowflake failure with a non-JSON body keeps the status and the text",
+);
+
 const longReason = shortFailureReason("x".repeat(300));
 assert(longReason !== null && longReason.length <= 90, "an overlong reason is truncated");
 assert(

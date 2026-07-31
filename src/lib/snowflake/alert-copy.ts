@@ -43,6 +43,34 @@ export function erasureResidualAlert(reasons: string[]): string {
   return `Slate: a data-subject erasure is incomplete in the Snowflake warehouse. ${reasons.join("; ")}. Run the Snowflake purge step in docs/pii-erasure-runbook.md for the affected bookings.`;
 }
 
+/**
+ * The purge SQL itself no longer runs (#1128).
+ *
+ * A separate condition from a residual, and deliberately its own alert key: this
+ * one says the TOOL is broken, that one says a particular request is unfinished.
+ * Sharing a key would let a clean residual audit clear a broken-SQL page, which
+ * is how a check quietly stops being able to report (L53).
+ */
+export function purgeSqlBrokenAlert(reasons: string[]): string {
+  return (
+    `Slate: the Snowflake purge SQL for a deletion request no longer runs against the warehouse. ` +
+    // alert-text-ok: each reason is already one short human line (the statement's
+    // table plus a shortened Snowflake reason); the full text is in the log.
+    `${reasons.join("; ")}. Nothing is broken for customers, but until this is fixed an erasure ` +
+    `would be honored in the live database and NOT in the archive. The statements are in ` +
+    `src/lib/snowflake/purge-sql.ts, quoted by docs/pii-erasure-runbook.md.`
+  );
+}
+
+/** The purge SQL runs again. */
+export function purgeSqlBrokenRecovery(): string {
+  return (
+    "Slate: the Snowflake purge SQL for a deletion request runs against the warehouse again. Every " +
+    "statement compiled against the live schema, so a deletion request can be completed there. " +
+    "No action is needed."
+  );
+}
+
 /** The erasure is complete. */
 export function erasureResidualRecovery(): string {
   return "Slate: the data-subject erasure that was incomplete in the Snowflake warehouse is now " +

@@ -5,7 +5,13 @@ import { auditSnowflakeErasures } from "@/lib/snowflake/erasure-audit";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
-import { erasureResidualAlert, erasureResidualRecovery } from "@/lib/snowflake/alert-copy";
+import {
+  erasureResidualAlert,
+  erasureResidualRecovery,
+  purgeSqlBrokenAlert,
+  purgeSqlBrokenRecovery,
+} from "@/lib/snowflake/alert-copy";
+import { runErasurePurgeSqlProbe } from "@/lib/snowflake/purge";
 
 export const dynamic = "force-dynamic";
 
@@ -57,8 +63,28 @@ export async function GET(req: NextRequest) {
       );
       if (cleared) log.info("erasure-audit", { msg: "residual alert cleared" });
     }
+
+    // #1128: prove the purge SQL still RUNS, on its own key. The audit above can
+    // only see that the warehouse still holds data; it cannot see that the
+    // statements meant to clear it stopped compiling, which is what #1197 was.
+    // Deliberately a second key rather than folded into the result above: a clean
+    // residual audit must never clear a broken-SQL page, and vice versa (L53).
+    const probe = await runErasurePurgeSqlProbe();
+    if (!probe.skipped && !probe.ok) {
+      await sendThrottledAlert(
+        "snowflake_purge_sql_broken",
+        ALERT_COOLDOWN_MS,
+        purgeSqlBrokenAlert(probe.reasons),
+      );
+    } else if (!probe.skipped) {
+      // Hung off the MEASURED pass (every statement compiled), never off "this run
+      // did not alert": a skipped or unconfigured run proved nothing (#1134/#1152).
+      const cleared = await resolveAlert("snowflake_purge_sql_broken", purgeSqlBrokenRecovery());
+      if (cleared) log.info("erasure-audit", { msg: "purge sql alert cleared" });
+    }
+
     await recordHeartbeat("erasure-audit").catch(() => {});
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, purgeSql: probe });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("erasure-audit", { msg: "cron failed", error: message });

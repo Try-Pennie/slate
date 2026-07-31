@@ -66,6 +66,8 @@ import {
   snowflakeHealthcheckRecovery,
   erasureResidualAlert,
   erasureResidualRecovery,
+  purgeSqlBrokenAlert,
+  purgeSqlBrokenRecovery,
 } from "@/lib/snowflake/alert-copy";
 import {
   agentSyncFailureAlert,
@@ -509,6 +511,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: erasureResidualAlert(["bookings: 3 rows still hold contact data for erased booking bk_77a"]) },
   { key: "snowflake_erasure_residual", state: "erasure complete", channel: "recovery",
     text: erasureResidualRecovery() },
+  { key: "snowflake_purge_sql_broken", state: "a statement no longer compiles", channel: "alert",
+    text: purgeSqlBrokenAlert([
+      "webhook_deliveries: the statement no longer runs (400 SQL compilation error: invalid identifier 'PAYLOAD_ERASED')",
+    ]) },
+  { key: "snowflake_purge_sql_broken", state: "running again", channel: "recovery",
+    text: purgeSqlBrokenRecovery() },
 
   // --- the hourly and every-minute lanes ---------------------------------------
   { key: "agent_sync_failures", state: "consecutive failures", channel: "alert",
