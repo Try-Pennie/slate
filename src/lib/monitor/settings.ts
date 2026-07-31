@@ -18,7 +18,8 @@ export type MonitorAlertKey =
   | "agents_without_schedule"
   | "agents_without_routing"
   | "migration_version_lag"
-  | "sync_staleness";
+  | "sync_staleness"
+  | "inactive_agent_bookings";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -30,6 +31,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "agents_without_routing",
   "migration_version_lag",
   "sync_staleness",
+  "inactive_agent_bookings",
 ];
 
 /**
@@ -84,6 +86,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     label: "Sync-staleness alert cooldown",
     help: "Alert when a bookable agent has not been calendar-synced for too long (the rotation is falling behind).",
   },
+  {
+    key: "inactive_agent_bookings",
+    label: "Orphaned-appointment alert cooldown",
+    help: "Alert when an agent who has left the booking pool (deactivated or not bookable) still holds future appointments, so those customers are booked with nobody.",
+  },
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -112,6 +119,10 @@ export const MONITOR_DEFAULTS = {
     // shrinks or a stuck agent is fixed, so repeat while it lasts. Hourly, like the
     // migration-lag page; the settings screen can tighten it.
     sync_staleness: 60 * 60_000,
+    // Orphaned appointments (#1215): a customer booked with an agent who has left
+    // stays wrong until a human reassigns, and it only pages after an hour of the
+    // gap standing open, so repeat while it lasts. Hourly, like the two above.
+    inactive_agent_bookings: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

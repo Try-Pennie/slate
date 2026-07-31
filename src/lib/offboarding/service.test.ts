@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const updates: Array<{ col: string; val: string; patch: { deactivated_at: string | null } }> = [];
 let row: { id: string; deactivated_at: string | null } | null = null;
 let lastLookup: { col: string; val: string } | null = null;
+let selectError: { message: string } | null = null;
+let updateError: { message: string } | null = null;
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -16,13 +18,15 @@ vi.mock("@/lib/supabase/admin", () => ({
       select: () => ({
         eq: (col: string, val: string) => {
           lastLookup = { col, val };
-          return { maybeSingle: async () => ({ data: row, error: null }) };
+          return {
+            maybeSingle: async () => ({ data: selectError ? null : row, error: selectError }),
+          };
         },
       }),
       update: (patch: { deactivated_at: string | null }) => ({
         eq: async (col: string, val: string) => {
           updates.push({ col, val, patch });
-          return { error: null };
+          return { error: updateError };
         },
       }),
     }),
@@ -35,6 +39,8 @@ beforeEach(() => {
   updates.length = 0;
   row = null;
   lastLookup = null;
+  selectError = null;
+  updateError = null;
 });
 
 describe("applyLifecycleByUserId", () => {
@@ -67,6 +73,40 @@ describe("applyLifecycleByUserId", () => {
     const res = await applyLifecycleByUserId("ghost", "deactivate");
     expect(res).toEqual({ status: "not_found" });
     expect(updates).toHaveLength(0);
+  });
+});
+
+// Fail loud. Both reads and the write used to ignore their `error`, so a
+// deactivate that never happened returned `status: "applied"`. Everything
+// downstream believes that word: the admin page says the agent is deactivated,
+// the offboarding automation records the offboarding as done, and the agent keeps
+// taking bookings. A silent no-op here is worse than an error, because nobody
+// looks again.
+describe("a lifecycle write that failed never reports success (#1215)", () => {
+  it("throws when the update errors instead of claiming applied", async () => {
+    row = { id: "u1", deactivated_at: null };
+    updateError = { message: "permission denied for table users" };
+    await expect(applyLifecycleByUserId("u1", "deactivate")).rejects.toThrow(
+      /permission denied/,
+    );
+  });
+
+  it("throws when the lookup errors instead of claiming not_found", async () => {
+    row = { id: "u1", deactivated_at: null };
+    selectError = { message: "column users.deactivated_at does not exist" };
+    await expect(applyLifecycleByUserId("u1", "deactivate")).rejects.toThrow(
+      /does not exist/,
+    );
+    expect(updates).toHaveLength(0);
+  });
+
+  // Same for the automation path, which is the one with no human watching.
+  it("throws on the by-email path too", async () => {
+    row = { id: "u9", deactivated_at: null };
+    updateError = { message: "deadlock detected" };
+    await expect(applyLifecycleByEmail("leaver@trypennie.com", "deactivate")).rejects.toThrow(
+      /deadlock detected/,
+    );
   });
 });
 

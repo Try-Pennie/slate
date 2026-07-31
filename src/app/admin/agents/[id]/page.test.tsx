@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // Access guard for the agent-profile page (#676): unauthenticated to /login, a
 // below-manager caller gets the deny notice, the OOO-only flag diverts managers
@@ -67,6 +68,18 @@ const from = vi.hoisted(() =>
   }),
 );
 
+// #1215: the deactivate confirm's number must come from the SAME helper the
+// coverage sweep enqueues from, so the warning and the panel can never disagree
+// about the same gap.
+const previewBulkReassign = vi.hoisted(() =>
+  vi.fn(async (_userId: string, _rangeStartIso: string, _rangeEndIso: string | null) => 0),
+);
+
+vi.mock("@/lib/booking/service", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/booking/service")>()),
+  previewBulkReassign,
+}));
+
 vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect, notFound }));
 vi.mock("@/lib/env", async (importOriginal) => ({
@@ -113,6 +126,52 @@ beforeEach(() => {
   dbState.sched = null;
   dbState.usersList = [];
   dbState.rules = [];
+  previewBulkReassign.mockResolvedValue(0);
+});
+
+// #1215. The count in the confirm and the work the coverage sweep would enqueue
+// are the same question, so they must come from the same code. Asking it twice is
+// how the warning ends up saying "3 appointments" while the panel moves 5.
+describe("AgentProfilePage deactivate confirm (#1215)", () => {
+  const renderFor = async (count: number | Error) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    if (count instanceof Error) previewBulkReassign.mockRejectedValueOnce(count);
+    else previewBulkReassign.mockResolvedValueOnce(count);
+    render(await AgentProfilePage(props));
+  };
+
+  it("asks the coverage helper how many appointments this agent still holds", async () => {
+    await renderFor(3);
+    expect(previewBulkReassign).toHaveBeenCalledTimes(1);
+    expect(previewBulkReassign.mock.calls[0][0]).toBe("x1");
+  });
+
+  it("warns with that count before deactivating", async () => {
+    await renderFor(3);
+    await userEvent.click(screen.getByRole("button", { name: /deactivate account/i }));
+    expect(screen.getByRole("alert").textContent).toMatch(/3 upcoming appointments/i);
+  });
+
+  // A read that failed is not a clean bill of health (L11). It must not become a
+  // one-click deactivate that implies nothing was booked.
+  it("still confirms when the count could not be read", async () => {
+    await renderFor(new Error("relation \"bookings\" does not exist"));
+    await userEvent.click(screen.getByRole("button", { name: /deactivate account/i }));
+    expect(screen.getByRole("alert").textContent).toMatch(/could not|couldn't/i);
+  });
+
+  // Asserted on the rendered shape rather than by clicking: this form's action is
+  // the REAL server action, so a click here would fire setUserLifecycle. That the
+  // submit path works is pinned in DeactivateAgentButton.test.tsx, which supplies
+  // its own form. A submit-type button with no confirm in the way IS the one-click
+  // deactivate; a confirm would render a type="button" instead.
+  it("deactivates in one click when the agent holds nothing", async () => {
+    await renderFor(0);
+    const button = screen.getByRole("button", { name: /deactivate account/i });
+    expect(button.getAttribute("type")).not.toBe("button");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });
 
 describe("AgentProfilePage guard", () => {
