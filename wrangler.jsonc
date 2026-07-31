@@ -73,7 +73,22 @@
 	},
 	"assets": {
 		"binding": "ASSETS",
-		"directory": ".open-next/assets"
+		"directory": ".open-next/assets",
+		// #1203 / #1204: a matching request is routed to THIS Worker before the
+		// asset binding answers it. Without this, Cloudflare serves anything under
+		// public/ without invoking the Worker at all, so `widget.js` (the script
+		// partner pages load to embed the booker) was served over plain http with
+		// none of the hardening headers every page and API route carries: the
+		// #1024 redirect in worker/index.ts never ran, and neither did Next's
+		// global headers(), which the routing layer applies to a worker-served
+		// asset.
+		//
+		// Scoped to the ten files we actually ship in public/ rather than `true`:
+		// worker-first on `/_next/*` would spend a Worker invocation on every
+		// hashed, immutable build asset, which is always a subresource of an https
+		// page we already redirect. scripts/test-asset-worker-first.ts pins both
+		// halves (every public/ file covered, /_next/ still excluded).
+		"run_worker_first": ["/widget.js", "/embed-example.html", "/brand/*"]
 	},
 	// Run the Worker near the data (Supabase us-west) since this app is DB-bound.
 	"placement": {

@@ -60,7 +60,12 @@ import { loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
-import { httpProbeUrl, isHttpsRedirect, redirectVerdict } from "./lib/https-redirect.ts";
+import {
+  evaluateStaticAssetTransport,
+  httpProbeUrl,
+  isHttpsRedirect,
+  redirectVerdict,
+} from "./lib/https-redirect.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -280,6 +285,35 @@ async function checkHttpsRedirect() {
   // verifies nothing).
   if (isRedirect && !expected) {
     console.warn("WARN: http->https redirect is LIVE but EXPECT_HTTPS_REDIRECT is unset; set it to 1 (repo Actions var) to arm the regression guard (#1024).");
+  }
+}
+
+// --- Transport health: the embed script is an ASSET, and assets skipped it ---
+// #1203 / #1204: Cloudflare's asset binding serves anything under public/ WITHOUT
+// invoking the Worker, so widget.js alone got neither the http->https redirect
+// above nor the global hardening headers (measured live 2026-07-31: 200 over
+// plaintext, none of the three headers, while /api/health had all of them). The
+// fix is `assets.run_worker_first` in wrangler.jsonc, and
+// scripts/test-asset-worker-first.ts pins that CONFIG. Only this check proves the
+// deployed site actually behaves that way, which is the half that kept shipping
+// broken here. Side-effect-free, so it runs on the every-30-min dry tick.
+//
+// It also asserts widget.js still SERVES correctly, because the plausible
+// regression from routing assets through the Worker is the opposite of a header
+// gap: the file 404s into an HTML page and every partner embed breaks at once.
+async function checkStaticAssetTransport() {
+  // The decision lives in scripts/lib/https-redirect.ts with an injected fetch,
+  // so every branch (unreachable asset, HTML 404 in place of the script, missing
+  // headers, not-yet-armed) is unit-tested in scripts/test-https-redirect.ts.
+  // This is only the renderer.
+  const checks = await evaluateStaticAssetTransport({
+    base: BASE,
+    expected: process.env.EXPECT_HTTPS_REDIRECT === "1",
+  });
+  for (const { level, message } of checks) {
+    if (level === "skip") console.log(`SKIP-INFO: ${message}`);
+    else if (level === "warn") console.warn(`WARN: not live yet, no page: ${message}`);
+    else check(level === "ok", message);
   }
 }
 
@@ -562,9 +596,11 @@ async function main() {
   }
   console.log(`Smoke test against ${BASE} (bucket ${BUCKET_A}${BUCKET_B ? `, cross-bucket ${BUCKET_B}` : ""})`);
 
-  // Transport health (#1024) runs before the availability gate so it reports even
-  // when the fleet is misconfigured; both are side-effect-free.
+  // Transport health (#1024 pages, #1203/#1204 assets) runs before the
+  // availability gate so it reports even when the fleet is misconfigured; all of
+  // it is side-effect-free.
   await checkHttpsRedirect();
+  await checkStaticAssetTransport();
 
   // Gate on real availability before booking anything. Zero slots means the
   // isolated test agent is misconfigured, so the run would exercise NOTHING;
