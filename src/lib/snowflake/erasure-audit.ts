@@ -93,9 +93,21 @@ export async function auditSnowflakeErasures(): Promise<ErasureAuditOutcome> {
     },
     {
       table: "webhook_deliveries",
+      // Both PII-bearing columns, not just the payload (#1205). `last_response`
+      // holds up to 1000 chars of the subscriber's response body, and an error
+      // response commonly quotes the request that caused it, so it carries the
+      // person's name, email and phone (docs/pii-retention.md: "may echo PII").
+      //
+      // It needs checking HERE specifically because it cannot self-heal: blanking
+      // it in Supabase sets payload_erased, which is exactly what freezes the row
+      // from re-export (applySkipRedacted) so the mirror cannot clobber a
+      // redaction. The Supabase null therefore never propagates, and only the
+      // runbook's manual purge clears the warehouse copy. Checking the payload
+      // alone made this audit report "clean" on a row that still held contact
+      // data, which is worse than no check.
       residual: await countSnowflake(
         config,
-        `SELECT count(*) FROM webhook_deliveries WHERE payload:booking_id::string IN (${idList}) AND payload:attendee:email IS NOT NULL`,
+        `SELECT count(*) FROM webhook_deliveries WHERE payload:booking_id::string IN (${idList}) AND (payload:attendee:email IS NOT NULL OR last_response IS NOT NULL)`,
       ),
     },
   ];

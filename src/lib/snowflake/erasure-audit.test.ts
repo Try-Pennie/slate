@@ -83,4 +83,42 @@ describe("auditSnowflakeErasures", () => {
     expect(r.ok).toBe(false);
     expect(r.reasons.join(" ")).toMatch(/bookings/);
   });
+
+  // #1205: `last_response` holds up to 1000 chars of the subscriber's response
+  // body, which commonly quotes the request and so carries attendee name, email
+  // and phone. Supabase blanks it on erasure, but blanking sets `payload_erased`,
+  // which FREEZES the row from re-export, so the Supabase null never reaches the
+  // warehouse. This audit is the only unattended thing that can catch it.
+  it("flags a webhook delivery whose last_response still holds the response body", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(selectAllPages).mockResolvedValue([{ details: { booking_ids: ["bk1"] } }]);
+    // The payload was purged correctly, so the OLD check finds nothing. Only a
+    // query that looks at last_response can see this residual, which is exactly
+    // how the gap read as "clean" while contact data sat in the warehouse.
+    vi.mocked(executeStatement).mockImplementation(
+      async (_c, sql: string) =>
+        ({ data: [[/last_response/i.test(sql) ? "1" : "0"]] }) as never,
+    );
+
+    const r = await auditSnowflakeErasures();
+
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/webhook_deliveries/);
+  });
+
+  it("asks Snowflake about last_response at all", async () => {
+    // Pins the query shape rather than only the verdict: without this, the test
+    // above could pass on a query that merely happens to mention the column in a
+    // comment, and a refactor that dropped the condition would stay green.
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(selectAllPages).mockResolvedValue([{ details: { booking_ids: ["bk1"] } }]);
+    vi.mocked(executeStatement).mockResolvedValue({ data: [["0"]] } as never);
+
+    await auditSnowflakeErasures();
+
+    const asked = vi.mocked(executeStatement).mock.calls.map((c) => String(c[1]));
+    const webhookQuery = asked.find((s) => /FROM webhook_deliveries/i.test(s));
+    expect(webhookQuery).toBeDefined();
+    expect(webhookQuery).toMatch(/last_response\s+IS\s+NOT\s+NULL/i);
+  });
 });

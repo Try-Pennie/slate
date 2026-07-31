@@ -36,6 +36,18 @@ Calendar** (`bookings.gcal_event_id`). That copy is addressed in §4.
 | `routing_decisions` | 12 months | delete, `/api/cron/prune-routing` (existing) |
 | `booking_events.reason_detail` | on an erasure request, not on a timer | redact in place via `erase_booking_pii` through the §5 sentinel (shipped, migration 0092) |
 
+**Every window above describes Supabase only, and the Snowflake mirror does not
+inherit it.** Redacting or blanking a row in place sets the flag that freezes it
+from re-export (`applySkipRedacted`), deliberately, so the mirror cannot clobber a
+redaction with the full-fidelity copy. The consequence is that the redaction
+propagates nowhere: Snowflake keeps what it last held until something clears the
+warehouse copy explicitly. So "90 days" for
+`webhook_deliveries.payload` + `last_response` is the Supabase lifetime, not the
+lifetime of the data. The mirror has no PII window of its own yet (#1180), and for
+an erasure request the runbook's manual purge is the only thing that clears it
+(#1205, which found `last_response` missing from that purge and from the audit
+that checks it).
+
 The 24 month booking window is **confirmed** (Dan, 2026-07-29, see §9), not
 provisional. Nothing in production is near it yet: the oldest bookings date from
 June 2026, so there is no aged backlog and the lane has nothing to redact.
