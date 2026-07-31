@@ -56,6 +56,7 @@ import {
   watchLapseRecovery,
 } from "@/lib/notify/misc-alert-copy";
 import {
+  friendlyRateArea,
   limiterBlockedAlert,
   limiterFailOpenAlert,
   refundFailedAlert,
@@ -649,12 +650,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: auditWriteFailedAlert("agent.deactivate", "connection reset") },
   { key: "reassign-unknown-reason-code", state: "an unrecognised code", channel: "info",
     text: unknownReasonCodeNotice("owner_switch") },
+  // The area label MUST be a value the code really produces (friendlyRateArea, or
+  // a `friendly` from the rule table): every one is a bare noun with no article,
+  // and the copy supplies the article itself. An invented "the public booker"
+  // rendered "The the public booker rate limit" here, which is the fixture lying
+  // about the shape of its own input (L48).
   { key: "rate_limit_blocked:*", state: "a caller throttled", channel: "alert",
-    text: limiterBlockedAlert("the public booker", "203.0.113.9", 30, 60) },
+    text: limiterBlockedAlert(friendlyRateArea("book"), "203.0.113.9", 30, 60) },
   { key: "rate_limit_broken:*", state: "the limiter failed open", channel: "alert",
-    text: limiterFailOpenAlert("the public booker") },
+    text: limiterFailOpenAlert(friendlyRateArea("bookapi")) },
   { key: "rate_limit_refund_broken:*", state: "a refund of a counted hit failed", channel: "alert",
-    text: refundFailedAlert("the public booker") },
+    text: refundFailedAlert(friendlyRateArea("book")) },
 
   // --- time off ----------------------------------------------------------------
   { key: "ooo_manager_calendar", state: "manager calendar unreachable", channel: "alert",

@@ -186,7 +186,7 @@ export function humanWindow(seconds: number): string {
 /** The limiter stopped working and is allowing requests through uncapped. */
 export function limiterFailOpenAlert(area: string): string {
   return (
-    `Slate: the rate limit for ${area} has stopped working, so those requests are ` +
+    `The rate limit for ${area} has stopped working, so those requests are ` +
     `being allowed through with no cap right now. Requests still succeed; this is a ` +
     `safeguard, not an outage. An engineer should check the rate limiter (the cause ` +
     `is in the logs).`
@@ -201,7 +201,7 @@ export function limiterBlockedAlert(
   windowSeconds: number,
 ): string {
   return (
-    `Slate: the ${area} rate limit turned away a request from ${ip} for going over ` +
+    `The ${area} rate limit turned away a request from ${ip} for going over ` +
     `${max} requests per ${humanWindow(windowSeconds)}. If that is our own automated ` +
     `booker, its limit is set too low and real bookings are being rejected. If it is ` +
     `not, an access key may have leaked.`
@@ -211,7 +211,7 @@ export function limiterBlockedAlert(
 /** A rate-limit refund failed, so a customer may keep losing allowance unfairly. */
 export function refundFailedAlert(area: string): string {
   return (
-    `Slate: could not restore the ${area} booking allowance for a customer whose ` +
+    `Could not restore the ${area} booking allowance for a customer whose ` +
     `booking failed through no fault of their own, so they may be left with less ` +
     `allowance than they should have. An engineer should check the rate-limit refund ` +
     `(the cause is in the logs).`

@@ -45,7 +45,7 @@ export function isSweepSaturated(drained: number | null, limit: number): boolean
  *  duration would understate a long outage. No em/en dashes (copy lint). */
 export function formatSaturationAlert(sweep: string, ticks: number, limit: number): string {
   return (
-    `Slate: the ${sweep} sweep has been draining at its cap (${limit} per tick) for at ` +
+    `The ${sweep} sweep has been draining at its cap (${limit} per tick) for at ` +
     `least ${ticks} consecutive minute(s). The backlog is growing faster than the sweep ` +
     `can clear it, so stuck slots are staying stuck. Check for a mass cancel or a failing ` +
     `cancel path, and consider raising the per tick cap.`
@@ -64,7 +64,7 @@ const SATURATION_ALERT_COOLDOWN_MS = 30 * 60_000;
  */
 export function formatSaturationRecovery(sweep: string): string {
   return (
-    `Slate: the ${sweep} sweep has caught up. It is draining under its per tick cap ` +
+    `The ${sweep} sweep has caught up. It is draining under its per tick cap ` +
     `again, so the backlog that triggered the earlier page has cleared and nothing is ` +
     `stuck waiting on it. No action is needed.`
   );
@@ -74,7 +74,7 @@ export function formatSaturationRecovery(sweep: string): string {
  *  raised, that finished bookings' completed webhooks were being delayed. */
 export function formatCompletionSaturationRecovery(): string {
   return (
-    `Slate: the booking completion sweep has caught up. Finished bookings are being ` +
+    `The booking completion sweep has caught up. Finished bookings are being ` +
     `marked complete inside the per run budget again, and the booking.completed ` +
     `webhooks that were being delayed have gone out. No action is needed.`
   );
@@ -84,7 +84,7 @@ export function formatCompletionSaturationRecovery(): string {
  *  worry, that cancelled bookings were leaving orphaned calendar reminders. */
 export function formatDeletionSaturationRecovery(): string {
   return (
-    `Slate: the failed calendar event deletion drain has caught up. Queued deletions ` +
+    `The failed calendar event deletion drain has caught up. Queued deletions ` +
     `are clearing under the per tick cap again, so cancelled bookings are no longer ` +
     `at risk of leaving orphaned calendar reminders. No action is needed.`
   );
@@ -196,7 +196,7 @@ const COMPLETION_DRAIN_BUDGET_PER_RUN =
  *  No em/en dashes (copy lint). */
 export function formatCompletionSaturationAlert(runs: number, perRun: number): string {
   return (
-    `Slate: the booking completion sweep has exhausted its per run drain budget ` +
+    `The booking completion sweep has exhausted its per run drain budget ` +
     `(${perRun} finished bookings per run) for at least ${runs} consecutive runs. ` +
     `Finished bookings are piling up faster than the sweep can mark them complete, ` +
     `so their booking.completed webhooks are being delayed. Check for a backlog ` +
@@ -242,7 +242,7 @@ export async function reportCompletionSaturation(
  *  No em/en dashes (copy lint). */
 export function formatDeletionSaturationAlert(ticks: number, limit: number): string {
   return (
-    `Slate: the failed calendar event deletion drain has been running at its cap ` +
+    `The failed calendar event deletion drain has been running at its cap ` +
     `(${limit} per tick) for at least ${ticks} consecutive minute(s). Queued deletions ` +
     `are arriving faster than the drain can clear them, so cancelled bookings may keep ` +
     `firing orphaned calendar reminders. Check Google Calendar API health and the cancel ` +

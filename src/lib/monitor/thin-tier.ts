@@ -65,7 +65,7 @@ export function formatThinTierNotice(tiers: TierDepth[]): string {
   const lines = tiers.slice(0, NAME_CAP).map(tierLine);
   const more = tiers.length > NAME_CAP ? ` (and ${tiers.length - NAME_CAP} more)` : "";
   return (
-    `Slate (info): ${tiers.length} tier(s) are thinly staffed (1 to 2 agents available today), ` +
+    `${tiers.length} tier(s) are thinly staffed (1 to 2 agents available today), ` +
     `so add coverage or set a fallback before customers hit empty availability.${more}\n` +
     lines.join("\n")
   );

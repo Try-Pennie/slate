@@ -13,7 +13,7 @@
 /** The warehouse self-check is failing, so nothing may trust the mirror. */
 export function snowflakeHealthcheckAlert(reason: string): string {
   return (
-    `Slate: the Snowflake warehouse self-check is failing, so we cannot trust the archive mirror. ` +
+    `The Snowflake warehouse self-check is failing, so we cannot trust the archive mirror. ` +
           // #1135: Snowflake answers with a multi-line SQL compilation error and a
           // driver stack. One readable line here; the full text is in the log.
           `${reason}. Until this clears, retention will refuse to delete anything ` +
@@ -23,24 +23,24 @@ export function snowflakeHealthcheckAlert(reason: string): string {
 
 /** The self-check passes again. */
 export function snowflakeHealthcheckRecovery(): string {
-  return "Slate: the Snowflake warehouse self-check is working again. The mirror can be trusted, " +
+  return "The Snowflake warehouse self-check is working again. The mirror can be trusted, " +
         "retention is no longer blocked on it, and the earlier warning is cleared. No action is needed.";
 }
 
 /** The mirror disagrees with the live database. */
 export function snowflakeDriftAlert(reasons: string[]): string {
-  return `Slate: the Snowflake analytics mirror is out of sync with the live database. ${reasons.join("; ")}. The export lane may be lagging or failing; deletion (when built) must not run until this clears.`;
+  return `The Snowflake analytics mirror is out of sync with the live database. ${reasons.join("; ")}. The export lane may be lagging or failing; deletion (when built) must not run until this clears.`;
 }
 
 /** The mirror agrees again. */
 export function snowflakeDriftRecovery(): string {
-  return "Slate: the Snowflake analytics mirror matches the live database again. The export lane has " +
+  return "The Snowflake analytics mirror matches the live database again. The export lane has " +
           "caught up, so anything that was waiting on the mirror being complete can proceed. No action is needed.";
 }
 
 /** An erasure is not finished in the warehouse. */
 export function erasureResidualAlert(reasons: string[]): string {
-  return `Slate: a data-subject erasure is incomplete in the Snowflake warehouse. ${reasons.join("; ")}. Run the Snowflake purge step in docs/pii-erasure-runbook.md for the affected bookings.`;
+  return `A data-subject erasure is incomplete in the Snowflake warehouse. ${reasons.join("; ")}. Run the Snowflake purge step in docs/pii-erasure-runbook.md for the affected bookings.`;
 }
 
 /**
@@ -53,7 +53,7 @@ export function erasureResidualAlert(reasons: string[]): string {
  */
 export function purgeSqlBrokenAlert(reasons: string[]): string {
   return (
-    `Slate: the Snowflake purge SQL for a deletion request no longer runs against the warehouse. ` +
+    `The Snowflake purge SQL for a deletion request no longer runs against the warehouse. ` +
     // alert-text-ok: each reason is already one short human line (the statement's
     // table plus a shortened Snowflake reason); the full text is in the log.
     `${reasons.join("; ")}. Nothing is broken for customers, but until this is fixed an erasure ` +
@@ -65,7 +65,7 @@ export function purgeSqlBrokenAlert(reasons: string[]): string {
 /** The purge SQL runs again. */
 export function purgeSqlBrokenRecovery(): string {
   return (
-    "Slate: the Snowflake purge SQL for a deletion request runs against the warehouse again. Every " +
+    "The Snowflake purge SQL for a deletion request runs against the warehouse again. Every " +
     "statement compiled against the live schema, so a deletion request can be completed there. " +
     "No action is needed."
   );
@@ -73,7 +73,7 @@ export function purgeSqlBrokenRecovery(): string {
 
 /** The erasure is complete. */
 export function erasureResidualRecovery(): string {
-  return "Slate: the data-subject erasure that was incomplete in the Snowflake warehouse is now " +
+  return "The data-subject erasure that was incomplete in the Snowflake warehouse is now " +
           "complete. The audit finds no remaining data for the erased bookings, so the compliance " +
           "request is fully honored and the earlier page is cleared. No action is needed.";
 }

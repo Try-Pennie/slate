@@ -261,7 +261,10 @@ assert(
     for (const t of CODE_TOKENS) {
       assert(!text.includes(t), `${label} alert is free of the code token ${JSON.stringify(t)}`);
     }
-    assert(text.startsWith("Slate:"), `${label} alert is a Slate-branded line`);
+    assert(
+      !/^\s*Slate\b/i.test(text),
+      `${label} alert does not open with a redundant Slate label (the app name says it)`,
+    );
     assert(text.length > 40, `${label} alert actually explains something`);
   };
 

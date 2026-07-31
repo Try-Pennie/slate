@@ -136,7 +136,7 @@ export function formatMigrationDriftAlert(
       ? `is missing migration${missing.length > 1 ? "s" : ""} ${nameMissing(missing)}`
       : `is behind the shipped set`;
     return (
-      `Slate: the deployed code ships up to migration ${shippedVersion} but the live ` +
+      `The deployed code ships up to migration ${shippedVersion} but the live ` +
       `database ${detail}. Code is running against schema it expects to exist and that ` +
       `is missing, so features touching the new schema can fail silently. Apply the ` +
       `pending migrations (supabase db push) now.`
@@ -144,7 +144,7 @@ export function formatMigrationDriftAlert(
   }
   if (status === "unverified") {
     return (
-      `Slate: could not read the live database's applied migration versions, so it is ` +
+      `Could not read the live database's applied migration versions, so it is ` +
       `unknown whether prod's schema matches the deployed code (which ships up to ` +
       `${shippedVersion}). The applied_migration_versions function may itself be ` +
       `unapplied, which would mean the database is behind. Check with ` +
@@ -165,7 +165,7 @@ export function formatMigrationDriftAlert(
  */
 export function formatMigrationDriftRecovery(shippedVersion: string): string {
   return (
-    `Slate: the live database's schema is back in step with the deployed code, which ` +
+    `The live database's schema is back in step with the deployed code, which ` +
     `ships up to migration ${shippedVersion}. Every migration the running code expects ` +
     `is applied, so the earlier schema lag page is cleared. No action is needed.`
   );

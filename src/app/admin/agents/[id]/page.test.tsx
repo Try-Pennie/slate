@@ -166,6 +166,30 @@ describe("AgentProfilePage deactivate confirm (#1215)", () => {
   // submit path works is pinned in DeactivateAgentButton.test.tsx, which supplies
   // its own form. A submit-type button with no confirm in the way IS the one-click
   // deactivate; a confirm would render a type="button" instead.
+  // The bookable toggle is the other way out of the pool, so it asks the same
+  // question. Rendered for a BOOKABLE agent, where the toggle reads "Make not
+  // bookable"; the opposite direction strands nothing and stays one click.
+  it("warns on the bookable toggle too, in that control's words", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), bookable: true };
+    previewBulkReassign.mockResolvedValueOnce(2);
+    render(await AgentProfilePage(props));
+    await userEvent.click(screen.getByRole("button", { name: /make not bookable/i }));
+    const warning = screen.getByRole("alert");
+    expect(warning.textContent).toMatch(/2 upcoming appointments/i);
+    expect(screen.getByRole("button", { name: /make not bookable anyway/i })).toBeTruthy();
+  });
+
+  // Both controls read the count once between them, so the page cannot show two
+  // different answers to the same question.
+  it("reads the count once for both pool-exit controls", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), bookable: true };
+    previewBulkReassign.mockResolvedValueOnce(2);
+    render(await AgentProfilePage(props));
+    expect(previewBulkReassign).toHaveBeenCalledTimes(1);
+  });
+
   it("deactivates in one click when the agent holds nothing", async () => {
     await renderFor(0);
     const button = screen.getByRole("button", { name: /deactivate account/i });

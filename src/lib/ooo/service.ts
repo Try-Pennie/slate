@@ -140,7 +140,7 @@ function realDeps(): OooDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           OOO_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks INSERT for an approved OOO request failed (${shortFailureReason(error?.message)}). The agent may keep getting bookings until the next sync pass.`,
+          `Busy_blocks INSERT for an approved OOO request failed (${shortFailureReason(error?.message)}). The agent may keep getting bookings until the next sync pass.`,
         ).catch(() => {});
         return null;
       }
@@ -177,7 +177,7 @@ function realDeps(): OooDeps {
         await sendThrottledAlert(
           "busy_block_write_through",
           OOO_ALERT_COOLDOWN_MS,
-          `Slate: busy_blocks DELETE for a cancelled OOO request failed. The agent may look busy until cleaned up.`,
+          `Busy_blocks DELETE for a cancelled OOO request failed. The agent may look busy until cleaned up.`,
         ).catch(() => {});
       }
     },

@@ -11,6 +11,6 @@ assert(!/ALERT/.test(one.text), "single-rung text is a notice, not an alert");
 const deep = tierFallbackAlert({ requestedCode: "511", effectiveCode: "311", rungsDropped: 2 })!;
 assert(deep.key === "tier_fallback_deep:511", "deep-drop key is distinct");
 assert(deep.cooldownMs === 5 * 60 * 1000, "deep drop escalates (shorter cooldown)");
-assert(/ALERT/.test(deep.text), "deep-drop text is a loud alert");
+assert(/^Routing alert:/.test(deep.text), "deep-drop text reads as an alert, not a notice");
 
 finish();

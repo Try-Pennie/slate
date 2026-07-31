@@ -34,7 +34,9 @@ import { assert, finish } from "./lib/harness.ts";
   const msg = emptyBucketMessage("412");
   assert(msg.includes("412"), "proactive message names the specific bucket");
   assert(/no eligible|no bookable|no advisors/i.test(msg), "proactive message explains the cause");
-  assert(/slate/i.test(msg), "proactive message is Slate-branded for the channel");
+  // No leading "Slate" label: the Slack app name and icon already say who is
+  // speaking, so the line opens with what is wrong.
+  assert(!/^\s*Slate\b/i.test(msg), "proactive message does not open with a Slate label");
 }
 
 // --- noEligibleAgentsAlert: the reactive (booking hit an empty bucket) copy ---

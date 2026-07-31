@@ -27,7 +27,7 @@ export function emptyBuckets(coverage: BucketCoverage[]): string[] {
  */
 export function emptyBucketMessage(code: string): string {
   return (
-    `Slate: booking bucket ${code} has NO eligible bookable agents and cannot ` +
+    `Booking bucket ${code} has NO eligible bookable agents and cannot ` +
     `route a lead. Check its agent attributes, bookable flags, and schedules ` +
     `before customers hit it.`
   );
@@ -43,7 +43,7 @@ export function emptyBucketMessage(code: string): string {
 export function recoveredBucketMessage(code: string, eligibleCount: number): string {
   const who = eligibleCount === 1 ? "1 eligible bookable agent" : `${eligibleCount} eligible bookable agents`;
   return (
-    `Slate: booking bucket ${code} can route leads again (${who}). The earlier page about it ` +
+    `Booking bucket ${code} can route leads again (${who}). The earlier page about it ` +
     `having nobody to route to is cleared. No action is needed.`
   );
 }
@@ -55,7 +55,7 @@ export function recoveredBucketMessage(code: string, eligibleCount: number): str
 export function noEligibleAgentsAlert(bucketCode: string | null): string {
   const where = bucketCode ? `bucket ${bucketCode}` : "a booking bucket";
   return (
-    `Slate: a booking just failed because ${where} has NO eligible bookable agents ` +
+    `A booking just failed because ${where} has NO eligible bookable agents ` +
     `to route to. A lead could not be booked. Check the bucket's agent attributes, ` +
     `bookable flags, and schedules.`
   );

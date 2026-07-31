@@ -58,7 +58,10 @@ function main() {
       retentionSkippedText("prune-routing", "x"),
       retentionResumedText("prune-routing"),
     ]) {
-      assert(text.startsWith("Slate:"), `the alert names Slate: ${text.slice(0, 24)}`);
+      assert(
+        !/^\s*Slate\b/i.test(text),
+        `the alert does not open with a Slate label: ${text.slice(0, 32)}`,
+      );
       assert(!/undefined|NaN|\[object Object\]/.test(text), "no placeholder leaked into the copy");
     }
   }

@@ -74,7 +74,7 @@ describe("formatThinTierNotice", () => {
       tier({ code: "520", name: "Ultra High | Beyond", depth: 1, soleAgentName: "Tyler Moffett" }),
       tier({ code: "420", name: "Very High | Beyond", depth: 2 }),
     ]);
-    expect(msg).toContain("Slate (info):");
+    expect(msg).not.toMatch(/^\s*Slate\b/i);
     expect(msg).toContain("520 (Ultra High | Beyond)");
     expect(msg).toContain("Tyler Moffett");
     expect(msg).toContain("420 (Very High | Beyond)");
