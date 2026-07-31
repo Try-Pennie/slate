@@ -24,10 +24,42 @@ export function watchLapseRecovery(): string {
       "cleared and no action is needed.";
 }
 
+/** What stops being honored while a given retention lane is not deleting. */
+export function retentionLaneStake(lane: string): string {
+  if (lane === "prune-bookings-pii") return "consumer contact data past the 24 month window is not being redacted";
+  if (lane === "prune-webhook-payloads") return "webhook payloads past the 90 day window are keeping full attendee PII";
+  return "routing decisions past the 12 month window are not being pruned";
+}
+
+/**
+ * The gate's reason when the warehouse credential is absent entirely, as opposed
+ * to present but behind. Shared with retention-gate.ts so the two cannot drift:
+ * they need different remedies, and a reader mid-incident must not be sent to
+ * chase a lagging export lane that was never configured (L11).
+ */
+export const MIRROR_NOT_CONFIGURED = "mirror not configured";
+
+/**
+ * A retention lane ran but destroyed nothing, because the mirror is not
+ * confirmed current. Lives here so `pnpm preview:alerts` renders the sentence
+ * that actually ships rather than a copy of it (L41).
+ */
+export function retentionSkippedText(lane: string, reason: string): string {
+  const remedy =
+    reason === MIRROR_NOT_CONFIGURED
+      ? `Retention stays stopped until the warehouse credential is set: see the Snowflake settings in DEPLOY.md.`
+      : `Retention stays stopped until the export lane catches up: check the snowflake-export lane and ` +
+        `/api/admin/snowflake-check.`;
+  return (
+    `Slate: the ${lane} retention lane ran but did nothing because the Snowflake mirror is not ` +
+        `confirmed current (${reason}), so ${retentionLaneStake(lane)}. ${remedy}`
+  );
+}
+
 /** A retention lane is past its gate and deleting again. */
 export function retentionResumedText(lane: string): string {
   return (
-    `Slate: the ${lane} retention lane is deleting again. The Snowflake mirror is usable, so aged ` +
+    `Slate: the ${lane} retention lane is deleting again. The Snowflake mirror is confirmed current, so aged ` +
         `data is being cleared on schedule and the retention window is being honored once more. ` +
         `No action is needed.`
   );

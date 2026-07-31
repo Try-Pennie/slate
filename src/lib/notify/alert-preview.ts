@@ -51,6 +51,7 @@ import {
   misrouteAlert,
   oooApprovalsDigestAlert,
   retentionResumedText,
+  retentionSkippedText,
   unknownReasonCodeNotice,
   watchLapseRecovery,
 } from "@/lib/notify/misc-alert-copy";
@@ -244,6 +245,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "its last-run record cannot be read",
     channel: "alert",
     text: retentionAlertText("prune-routing", NOW_MS, 1680, true),
+  },
+  {
+    key: "retention_skipped:*",
+    state: "the export lane has fallen behind",
+    channel: "alert",
+    text: retentionSkippedText(
+      "prune-routing",
+      "routing_decisions: the export lane is 4 hours behind, with 812 rows waiting",
+    ),
+  },
+  {
+    key: "retention_skipped:*",
+    state: "the mirror is not configured",
+    channel: "alert",
+    text: retentionSkippedText("prune-bookings-pii", "mirror not configured"),
   },
 
   // --- saturated sweeps ------------------------------------------------------
