@@ -212,6 +212,51 @@ for (const { table, columns } of referenced) {
   }
 }
 
+// Claim 6: the webhook_deliveries purge must PRESERVE the key its own verification
+// searches on, so step 4 and the erasure-audit lane stay real checks.
+//
+// Step 4 and src/lib/snowflake/erasure-audit.ts both locate these rows by
+// `payload:booking_id`, and that is the ONLY handle they have: the warehouse copy
+// carries no payload_erased and no dedupe_key (docs/snowflake-setup.sql). So a purge
+// that empties the payload wholesale destroys the very key that proves it worked, and
+// the verify then returns 0 whether the purge ran or the rows were never there. That
+// is a check that cannot fail, which is worse than no check (L1), and it is the same
+// shape as #1199 (a control reporting all clear on data it cannot see).
+//
+// Also note the purge must not lean on OBJECT_DELETE. Snowflake documents that call as
+// FAILING on a key absent from a structured object and documents nothing at all for the
+// variant case, while these payloads legitimately omit some keys (`reason` is null on
+// booking.created). OBJECT_CONSTRUCT is documented to drop a key whose value is NULL,
+// so building the survivor explicitly is the only well-defined form here.
+const webhookPurge = runbook
+  .split("\n")
+  .find((l) => /set\s+payload\s*=/i.test(l) && !/^\s*\(/.test(l));
+assert(
+  webhookPurge !== undefined,
+  "found the runbook's webhook_deliveries payload purge assignment",
+);
+assert(
+  /booking_id/i.test(webhookPurge ?? ""),
+  "the webhook purge keeps payload:booking_id, the only key step 4 and the erasure-audit " +
+    `lane can find these rows by: ${(webhookPurge ?? "").trim()}`,
+);
+assert(
+  !/object_delete/i.test(webhookPurge ?? ""),
+  "the webhook purge does not use OBJECT_DELETE, whose behavior on an absent key is " +
+    `undocumented for these variant payloads: ${(webhookPurge ?? "").trim()}`,
+);
+
+// Positive controls for claim 6: both ways of blinding the check must be caught.
+for (const bad of [
+  "   set payload = object_construct()",
+  "   set payload = object_delete(payload, 'attendee', 'prefill')",
+]) {
+  assert(
+    !/booking_id/i.test(bad) || /object_delete/i.test(bad),
+    `positive control: claim 6 rejects the blinding form "${bad.trim()}"`,
+  );
+}
+
 // Positive control for claim 5: re-introducing the #1197 shape must be caught.
 // Without this, a parse that quietly matched nothing would leave the loop above
 // asserting zero columns and reading as full coverage.
