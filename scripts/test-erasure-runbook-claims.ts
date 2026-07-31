@@ -112,6 +112,122 @@ assert(
   "the runbook names the /api/cron/erasure-audit lane that watches for residual warehouse PII",
 );
 
+// Claim 5: every column the runbook's Snowflake SQL names really exists in the
+// warehouse, so each statement an operator pastes actually runs.
+//
+// #1197: step 3's webhook_deliveries purge set `payload_erased = true`, a column
+// that exists only on the Supabase side (it is the flag applySkipRedacted uses to
+// freeze the row from re-export) and was never in the warehouse DDL or the export
+// column list. Snowflake rejects the whole statement with an invalid identifier,
+// so the payloads were never purged. Measured against production 2026-07-31: the
+// other three statements returned 0 residual and this one left 3, and the
+// erasure-audit lane had been re-paging every 6 hours since 2026-07-29 because of
+// it. The step was written and its verify query was written, but the SQL was never
+// executed against the real warehouse schema, so it read as correct forever (L52).
+//
+// Derived from docs/snowflake-setup.sql (the DDL that provisions the warehouse)
+// rather than from a hand-kept list, so a column renamed there cannot leave this
+// guard passing against a stale copy (L41).
+const ddl = readFileSync(join(root, "docs", "snowflake-setup.sql"), "utf8");
+
+/** Column names per warehouse table, parsed out of the provisioning DDL. */
+function warehouseColumns(schema: string): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const table of schema.matchAll(
+    /create\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_]+)\s*\(([\s\S]*?)\n\)/gi,
+  )) {
+    const cols = new Set<string>();
+    for (const line of table[2].split("\n")) {
+      // "  attendee_email      VARCHAR," : an identifier followed by a type.
+      const col = line.trim().match(/^([a-z_][a-z0-9_]*)\s+[A-Z]/i);
+      if (col) cols.add(col[1].toLowerCase());
+    }
+    out.set(table[1].toLowerCase(), cols);
+  }
+  return out;
+}
+
+/**
+ * Tokens that are SQL syntax or a function name rather than a column. Kept as a
+ * denylist (not an allowlist of known columns) so a genuinely unknown identifier
+ * is FLAGGED by default: a column this guard cannot recognize is the bug it
+ * exists to catch, and defaulting it to "probably fine" would reproduce #1197.
+ */
+const NOT_A_COLUMN = new Set([
+  "select", "count", "from", "where", "and", "or", "in", "is", "not", "null", "true", "false",
+  "set", "update", "string", "as", "case", "when", "then", "else", "end", "limit", "order",
+  "by", "desc", "slate", "public", "object_construct", "object_insert", "object_delete",
+]);
+
+/**
+ * Every (table, columns) pair the runbook's Snowflake statements reference. A
+ * statement runs from `update SLATE.PUBLIC.<table>` or `from SLATE.PUBLIC.<table>`
+ * up to its terminator, and a column is an identifier that is either assigned to
+ * (`col = ...`) or compared (`col in (...)`, `col is not null`). A VARIANT path
+ * suffix is dropped, so `payload:attendee:email` counts as the `payload` column.
+ */
+function snowflakeColumnsNamed(doc: string): { table: string; columns: string[] }[] {
+  const found: { table: string; columns: string[] }[] = [];
+  for (const stmt of doc.matchAll(
+    /\b(?:update|from)\s+SLATE\.PUBLIC\.([a-z_]+)([\s\S]*?)(?=;|\n\s*\(select|\n\n)/gi,
+  )) {
+    const named = new Set<string>();
+    for (const m of stmt[2].matchAll(/([a-z_][a-z0-9_]*)\s*=/gi)) named.add(m[1].toLowerCase());
+    for (const m of stmt[2].matchAll(/([a-z_][a-z0-9_]*)\s*(?::[a-z_:]+)?\s+(?:in|is)\b/gi)) {
+      named.add(m[1].toLowerCase());
+    }
+    found.push({
+      table: stmt[1].toLowerCase(),
+      columns: [...named].filter((n) => !NOT_A_COLUMN.has(n)),
+    });
+  }
+  return found;
+}
+
+const warehouse = warehouseColumns(ddl);
+assert(warehouse.size > 0, "parsed the warehouse table definitions out of docs/snowflake-setup.sql");
+assert(
+  (warehouse.get("webhook_deliveries")?.size ?? 0) > 0,
+  "sanity check on the DDL parse: webhook_deliveries has columns",
+);
+
+const referenced = snowflakeColumnsNamed(runbook);
+// Sanity check on the statement parse. The runbook's purge (step 3) and verify
+// (step 4) each touch four tables, so a parse returning almost nothing means the
+// regex stopped matching and every claim below would pass vacuously.
+assert(
+  referenced.length >= 8,
+  `parsed the runbook's Snowflake statements (found ${referenced.length}, expected at least 8)`,
+);
+
+for (const { table, columns } of referenced) {
+  const known = warehouse.get(table);
+  assert(known !== undefined, `the runbook's SLATE.PUBLIC.${table} is a table the warehouse DDL creates`);
+  for (const column of columns) {
+    assert(
+      known?.has(column) ?? false,
+      `the runbook's Snowflake SQL names ${table}.${column}, which the warehouse DDL really has ` +
+        `(a column that exists only in Supabase makes Snowflake reject the whole statement)`,
+    );
+  }
+}
+
+// Positive control for claim 5: re-introducing the #1197 shape must be caught.
+// Without this, a parse that quietly matched nothing would leave the loop above
+// asserting zero columns and reading as full coverage.
+const reintroduced = snowflakeColumnsNamed(
+  "update SLATE.PUBLIC.webhook_deliveries\n   set payload = object_construct(), payload_erased = true\n where payload:booking_id::string in ('x');",
+);
+eq(reintroduced.length, 1, "positive control: parsed the reintroduced bad statement");
+assert(
+  reintroduced[0].columns.includes("payload_erased"),
+  "positive control: the parse SEES payload_erased as a named column",
+);
+assert(
+  !(warehouse.get("webhook_deliveries")?.has("payload_erased") ?? true),
+  "positive control: payload_erased is genuinely absent from the warehouse DDL, so claim 5 would fail on it",
+);
+
 // Positive control: this guard must be able to FAIL. Strip the outbox key from a
 // copy of the runbook and confirm the claim-1 check would catch it, so the guard
 // cannot rot into a no-op if the parse silently returns nothing.

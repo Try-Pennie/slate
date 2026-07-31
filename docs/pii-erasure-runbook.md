@@ -46,8 +46,11 @@ a safe no-op and writes no new audit row. The match is case-insensitive and
 trimmed, so a re-run with different capitalization or stray whitespace is also a
 no-op rather than a second erasure.
 
-Verified end to end against production on 2026-07-29 (#1074): on a retired smoke
-booking the function returned
+Verified against production on 2026-07-29 (#1074). Note this verified **step 1
+only**: the Snowflake half (steps 3 and 4) was not run in that pass, which is
+exactly how the broken purge statement in step 3 survived unnoticed until #1197.
+A verification that exercises only the automated half of a cross-system procedure
+proves only that half. On a retired smoke booking the function returned
 `{"erased": true, "bookings": 1, "events": 1, "deliveries": 3, "outbox": 1}`,
 matching the row counts measured beforehand; the contact fields came back null
 with `pii_redacted_at` stamped and `salesforce_id` / `external_id` intact; the
@@ -114,7 +117,7 @@ update SLATE.PUBLIC.booking_events
  where booking_id in (<ids>);
 
 update SLATE.PUBLIC.webhook_deliveries
-   set payload = object_construct(), payload_erased = true
+   set payload = object_delete(payload, 'attendee', 'prefill', 'manage_url', 'reason')
  where payload:booking_id::string in (<ids>);
 
 update SLATE.PUBLIC.booking_outbox
@@ -126,6 +129,22 @@ update SLATE.PUBLIC.booking_outbox
 Because the Supabase redaction stamped `pii_redacted_at` / `payload_erased`, the
 export lane has frozen the `bookings` and `webhook_deliveries` rows and will not
 re-mirror the full-fidelity version back over your redaction.
+
+Two things about the `webhook_deliveries` statement that are deliberate and were
+both wrong before #1197:
+
+1. It does **not** set `payload_erased`. That column exists only in Supabase, where
+   it is the flag that freezes the row from re-export; the warehouse table has no
+   such column and never did. Naming it made Snowflake reject the entire statement
+   with an invalid identifier, so the payloads were silently never purged. If you
+   are reading a copy of this runbook older than #1197, that is the bug.
+2. It strips the PII keys rather than emptying the payload, which is what the
+   Supabase side does. Emptying it would destroy `payload:booking_id`, the only key
+   step 4 and the erasure-audit lane can find these rows by (the warehouse copy has
+   no `payload_erased` and no `dedupe_key` to fall back on). The verify below would
+   then return 0 whether the purge worked or the rows were never there, which is no
+   check at all. Keeping the booking id also keeps the rows useful for the
+   analytics the mirror exists to serve.
 
 `booking_outbox` works the other way round and is the reason the step above is
 belt-and-braces rather than the only defense: it is deliberately **not** frozen from
@@ -166,9 +185,10 @@ because the payload that held the booking id was itself emptied. A query keyed
 that way returns nothing whether the erasure worked or the rows never existed, so
 do not read an empty result there as proof of either. Use `payload_erased = true`
 (or `dedupe_key`, which for a `booking.created` delivery is the booking id) if you
-need to see the rows. In Snowflake the pre-purge rows ARE still findable by
-payload booking id, because the export freezes them at full fidelity, which is
-what makes steps 3 and 4 work there.
+need to see the rows. In Snowflake the rows stay findable by payload booking id
+both before and after the purge, because the export freezes them at full fidelity
+and step 3 strips only the PII keys, which is what makes steps 3 and 4 work there
+and what keeps the erasure-audit lane a real check rather than a vacuous one.
 
 ### You are not the only check
 
