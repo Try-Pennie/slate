@@ -97,14 +97,35 @@ export function internalErrorAlert(context: string, detail: string): string {
  * did what, not about a failed operation. `reason` is already shortened by
  * shortFailureReason / shortErrorReason at the call site; the full text is in the
  * Worker log.
+ *
+ * It claims nothing it did not measure (#1223). Two sentences were removed after
+ * #1220, where the audit_log schema and grants were both correct and the CALLER
+ * was wrong (an ooo_requests id passed into a column that references users):
+ *
+ *   - "Check the audit_log table's schema and grants" was canned remediation that
+ *     sent the investigation to the two places that were fine (L36).
+ *   - "Further audit writes are likely failing too" is not something this check
+ *     can see: it fires on ONE write, and in #1220 role and settings writes
+ *     recorded normally throughout (L11).
+ *
+ * `constraint` is the database's own verdict when the row was rejected by a
+ * constraint (SQLSTATE 23503), which is the useful signal: it says which column
+ * carried a value the table would not take, and it is the fact that a
+ * length-budgeted `reason` would otherwise truncate away.
  */
-export function auditWriteFailedAlert(action: string, reason: string): string {
+export function auditWriteFailedAlert(action: string, reason: string, constraint?: string | null): string {
+  const cause = constraint
+    ? `the database rejected the row on ${constraint}, so a column carried an id that column does not accept`
+    : reason;
+  // Only a rejection HAS a rejected value to point at; promising one for a grant
+  // break or a dropped connection would be the same overclaim in miniature.
+  const where = constraint
+    ? `The rejected value and the full error are in the Worker logs`
+    : `The full error is in the Worker logs`;
   return (
-    `The audit trail did NOT record a "${action}" action (${reason}). ` +
+    `The audit trail did NOT record a "${action}" action (${cause}). ` +
     `The action itself went through, so this is a gap in the record of who did ` +
-    `what, not a failed change. Further audit writes are likely failing too. ` +
-    `Check the audit_log table's schema and grants; full detail is in the Worker ` +
-    `logs at level error.`
+    `what, not a failed change. ${where} at level error, tag=audit.`
   );
 }
 

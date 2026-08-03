@@ -16,7 +16,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // AFTER the mutation it records has already committed, so a raising audit write
 // would turn a successful admin action into an error the admin cannot act on.
 const insert = vi.hoisted(() =>
-  vi.fn(async (): Promise<{ error: { message: string } | null }> => ({ error: null })),
+  // The error shape PostgREST really returns: a SQLSTATE `code`, the message, and
+  // `details` carrying the offending key on a constraint rejection.
+  vi.fn(
+    async (): Promise<{ error: { code?: string; message: string; details?: string } | null }> => ({ error: null }),
+  ),
 );
 const from = vi.hoisted(() => vi.fn(() => ({ insert })));
 const sendThrottledAlert = vi.hoisted(() =>
@@ -105,6 +109,84 @@ describe("recordAudit", () => {
     await expect(recordAudit(entry)).resolves.toBeUndefined();
     // Once for the audit failure, once for the alert that could not be sent.
     expect(logError).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * #1223: the page may claim only what the check measured.
+   *
+   * In #1220 the audit_log schema and grants were both fine and the CALLER was
+   * wrong (an ooo_requests id passed into target_id, which references users), so
+   * advice to check schema and grants sent the investigation to the wrong place.
+   * Only the six ooo.* actions were affected, so "further audit writes are likely
+   * failing too" was false as well.
+   *
+   * The error fixtures below are MEASURED from Postgres, not invented: a
+   * foreign-key rejection on this shape answers SQLSTATE 23503 with the constraint
+   * named in the message and the offending key in DETAIL (probed 2026-08-03 on the
+   * real project against temp tables of the same shape).
+   */
+  describe("a foreign key rejection (#1223)", () => {
+    const fkError = {
+      code: "23503",
+      message:
+        'insert or update on table "audit_log" violates foreign key constraint "audit_log_target_id_fkey"',
+      details: 'Key (target_id)=(0f0e1d2c-3b4a-5968-8776-655443322110) is not present in table "users".',
+    };
+
+    it("names the constraint that rejected the row", async () => {
+      // The raw message is 96 characters, so the constraint name is exactly what a
+      // length-budgeted reason drops. It has to survive.
+      insert.mockResolvedValueOnce({ error: fkError });
+
+      await recordAudit(entry);
+
+      const text = sendThrottledAlert.mock.calls[0][2];
+      expect(text).toContain("audit_log_target_id_fkey");
+    });
+
+    it("does not send the reader to the schema and grants", async () => {
+      insert.mockResolvedValueOnce({ error: fkError });
+
+      await recordAudit(entry);
+
+      const text = sendThrottledAlert.mock.calls[0][2];
+      expect(text).not.toMatch(/grants/i);
+      expect(text).not.toMatch(/schema/i);
+    });
+
+    it("puts the rejected value in the log, since the alert says that is where it is", async () => {
+      insert.mockResolvedValueOnce({ error: fkError });
+
+      await recordAudit(entry);
+
+      const fields = logError.mock.calls[0][1] as Record<string, unknown>;
+      expect(JSON.stringify(fields)).toContain("0f0e1d2c-3b4a-5968-8776-655443322110");
+      expect(fields.code).toBe("23503");
+    });
+  });
+
+  it("does not claim other audit writes are failing, which nothing here measures", async () => {
+    insert.mockResolvedValueOnce({ error: { code: "42501", message: "permission denied for table audit_log" } });
+
+    await recordAudit(entry);
+
+    const text = sendThrottledAlert.mock.calls[0][2];
+    expect(text).not.toMatch(/further audit writes/i);
+    expect(text).not.toMatch(/likely failing/i);
+  });
+
+  it("keeps the short reason for a failure that is not a constraint rejection", async () => {
+    insert.mockResolvedValueOnce({ error: { code: "42501", message: "permission denied for table audit_log" } });
+
+    await recordAudit(entry);
+
+    const text = sendThrottledAlert.mock.calls[0][2];
+    expect(text).toContain("permission denied for table audit_log");
+    // No constraint to name, so it must not imply there was one, and there is no
+    // "rejected value" to promise the reader either.
+    expect(text).not.toMatch(/foreign key/i);
+    expect(text).not.toMatch(/rejected value/i);
+    expect(text).toMatch(/full error is in the Worker logs/);
   });
 
   it("does not put a raw database error in the alert text (#1135)", async () => {

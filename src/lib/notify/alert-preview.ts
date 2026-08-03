@@ -684,8 +684,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: misrouteAlert("bk_8f21c4", "411", "usr_22") },
   { key: "internal_error:*", state: "an unexpected 500", channel: "alert",
     text: internalErrorAlert("POST /api/bookings", "503 backendError") },
-  // Two states: the returned-error shape (a schema/grant break, what actually
-  // happens) and the thrown shape. Both read the same to the person paged.
+  // Three states, because the reader's next move differs. The database rejecting
+  // the row points at the CALLER (#1220, and #1223 for the copy); a grant or schema
+  // break and a thrown client point at the trail itself.
+  { key: "audit_write_failed", state: "the database rejected the row", channel: "alert",
+    text: auditWriteFailedAlert(
+      "ooo.approve",
+      'insert or update on table "audit_log" violates foreign key constraint…',
+      "audit_log_target_id_fkey",
+    ) },
   { key: "audit_write_failed", state: "the trail stopped recording (schema or grant)", channel: "alert",
     text: auditWriteFailedAlert("role.set", 'column "details" does not exist') },
   { key: "audit_write_failed", state: "the trail stopped recording (client threw)", channel: "alert",
