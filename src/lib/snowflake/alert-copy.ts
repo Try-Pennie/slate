@@ -27,15 +27,43 @@ export function snowflakeHealthcheckRecovery(): string {
         "retention is no longer blocked on it, and the earlier warning is cleared. No action is needed.";
 }
 
-/** The mirror disagrees with the live database. */
+/**
+ * The mirror disagrees with the live database.
+ *
+ * Says nothing about the cause: each reason carries the cause the check actually
+ * measured (`driftCause`, reconcile.ts). The old wording asserted "the export lane
+ * may be lagging or failing" for every drift, and on 2026-08-03 that was the one
+ * cause that was not happening (#1230), while the real one, rows inserted behind
+ * the lane's strictly forward watermark, went unnamed.
+ *
+ * It also promised "deletion (when built) must not run until this clears". That is
+ * now doubly wrong: deletion IS built, and it is gated on the Supabase-only export
+ * lag reading rather than on this comparison (#1139), so pointing a reader here
+ * during a retention question sends them to the wrong lane.
+ */
 export function snowflakeDriftAlert(reasons: string[]): string {
-  return `The Snowflake analytics mirror is out of sync with the live database. ${reasons.join("; ")}. The export lane may be lagging or failing; deletion (when built) must not run until this clears.`;
+  return (
+    `The Snowflake analytics mirror is out of sync with the live database. ${reasons.join("; ")}. ` +
+    // The remedy stays in the reason, which is the only part that knows the cause:
+    // a failed positive control reaches this same wrapper, and there re-exporting
+    // stranded rows is advice for a problem the reader does not have.
+    `Retention deletion is gated on the export lag reading, not on this comparison, so it keeps ` +
+    `running either way.`
+  );
 }
 
-/** The mirror agrees again. */
+/**
+ * The mirror agrees again.
+ *
+ * Deliberately does not say the export lane caught up (#1230). The drift it clears
+ * may have been rows stranded behind the watermark and repaired by a re-export,
+ * with the lane current throughout, and the all-clear may claim only what the
+ * lane measured: that the counts agree.
+ */
 export function snowflakeDriftRecovery(): string {
-  return "The Snowflake analytics mirror matches the live database again. The export lane has " +
-          "caught up, so anything that was waiting on the mirror being complete can proceed. No action is needed.";
+  return "The Snowflake analytics mirror matches the live database again. Every mirrored table is " +
+          "back within tolerance and the positive control found its known row, so anything that was " +
+          "waiting on the mirror being complete can proceed. No action is needed.";
 }
 
 /** An erasure is not finished in the warehouse. */

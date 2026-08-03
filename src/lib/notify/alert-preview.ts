@@ -61,6 +61,7 @@ import {
   limiterFailOpenAlert,
   refundFailedAlert,
 } from "@/lib/rate-limit-core";
+import { evaluateRecon } from "@/lib/snowflake/reconcile-core";
 import {
   snowflakeDriftAlert,
   snowflakeDriftRecovery,
@@ -585,8 +586,38 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: snowflakeHealthcheckAlert("390100 SQL compilation error") },
   { key: "snowflake_healthcheck", state: "passing again", channel: "recovery",
     text: snowflakeHealthcheckRecovery() },
-  { key: "snowflake_reconcile_drift", state: "counts disagree", channel: "alert",
-    text: snowflakeDriftAlert(["bookings: supabase 10412, snowflake 9880", "routing_decisions: supabase 51002, snowflake 50871"]) },
+  // #1230: the drift page reads completely differently per cause, and the reason
+  // sentence comes from evaluateRecon, so it is CALLED here rather than retyped.
+  // The stranded fixture is the real 2026-08-03 page (an OOO audit backfill
+  // inserted behind the export watermark) that the old copy blamed on a lagging
+  // lane.
+  { key: "snowflake_reconcile_drift", state: "rows stranded behind the export watermark", channel: "alert",
+    text: snowflakeDriftAlert(
+      evaluateRecon(
+        [{ table: "audit_log", supabase: 278, snowflake: 27, drift: 251 }],
+        [],
+        [{ table: "audit_log", cursorTs: "2026-08-03T05:59:00.000Z", newestTs: "2026-08-03T05:59:00.000Z", lagMs: 0, backlog: 0 }],
+      ).reasons,
+    ) },
+  { key: "snowflake_reconcile_drift", state: "the export lane is behind", channel: "alert",
+    text: snowflakeDriftAlert(
+      evaluateRecon(
+        [{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532 }],
+        [],
+        [{ table: "bookings", cursorTs: "2026-08-03T03:00:00.000Z", newestTs: "2026-08-03T06:00:00.000Z", lagMs: 3 * 60 * 60_000, backlog: 540 }],
+      ).reasons,
+    ) },
+  { key: "snowflake_reconcile_drift", state: "the cause could not be measured", channel: "alert",
+    text: snowflakeDriftAlert(
+      evaluateRecon([{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532 }], []).reasons,
+    ) },
+  { key: "snowflake_reconcile_drift", state: "the warehouse count cannot be trusted", channel: "alert",
+    text: snowflakeDriftAlert(
+      evaluateRecon(
+        [{ table: "routing_decisions", supabase: 51002, snowflake: 51002, drift: 0 }],
+        [{ table: "routing_decisions", id: "rd_4f21c8", foundInSnowflake: false }],
+      ).reasons,
+    ) },
   { key: "snowflake_reconcile_drift", state: "back in step", channel: "recovery",
     text: snowflakeDriftRecovery() },
   { key: "snowflake_erasure_residual", state: "data still in the warehouse", channel: "alert",

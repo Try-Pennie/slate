@@ -86,7 +86,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "snowflake_reconcile_drift",
     kind: "condition",
-    why: "The mirror disagrees with the source until the export catches up; reconcile re-measures every 6h.",
+    why: "The mirror disagrees with the source until the export catches up or the missed rows are re-exported; reconcile re-measures every 6h.",
   },
   {
     key: "snowflake_erasure_residual",

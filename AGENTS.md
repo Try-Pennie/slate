@@ -394,8 +394,11 @@ deterministic (so a diff means the copy changed, not the clock), and no message
 renders `undefined`, `NaN`, `[object Object]`, a leaked null, or a raw JSON blob.
 A new alert cannot ship unreadable.
 
-Note the guard also fails an alert that does not name **Slate**: it is read in a
-busy channel and the reader has to know instantly which system is talking.
+Note the guard also fails an alert that OPENS with the word **Slate**. In Slack
+every one of these arrives under Slate's own app name and icon, so a "Slate:" (or
+"Slate routing check:") label repeats the header and pushes the one fact worth
+having further along a line read on a phone. Naming Slate inside a sentence is
+fine and often necessary.
 
 # Condition vs incident: which alerts get an all-clear (#1151)
 

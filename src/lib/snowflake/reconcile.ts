@@ -21,69 +21,37 @@
  * the wrong place and a "0 drift" cannot be believed, so we alert. Probed on
  * `bookings` and, since #1139, on `routing_decisions`, the table retention
  * actually hard-deletes from.
+ *
+ * This file is the IO half. The decision, including the wording of each reason and
+ * which of the two causes of drift the lag reading names (#1230), is in
+ * reconcile-core.ts.
  */
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { readSnowflakeConfig } from "./config";
 import { escapeSqlLiteral, executeStatement, type SnowflakeConfig } from "./client";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import { MIRROR_TABLES } from "./export-core";
 import { applySkipRedacted } from "./skip-redacted";
+import { measureExportLag } from "./export-lag";
+import { type TableLag } from "./export-lag-core";
+import { evaluateRecon, type ControlCheck, type ReconOutcome, type TableRecon } from "./reconcile-core";
 
-// Normal lag tolerance: the export runs every 10 min, so Supabase can legitimately
-// be a little ahead of Snowflake. Alert only when the gap exceeds the larger of a
-// flat floor and a small fraction of the table, so a genuinely stuck lane shows
-// but ordinary between-tick lag does not.
-export const DRIFT_TOLERANCE_ROWS = 25;
-export const DRIFT_TOLERANCE_PCT = 0.02;
-
-export function reconThreshold(supabaseRows: number): number {
-  return Math.max(DRIFT_TOLERANCE_ROWS, Math.ceil(supabaseRows * DRIFT_TOLERANCE_PCT));
-}
-
-export interface TableRecon {
-  table: string;
-  supabase: number;
-  snowflake: number;
-  /** Supabase minus Snowflake: positive = Snowflake is behind. */
-  drift: number;
-}
-
-export interface ControlCheck {
-  table: string;
-  id: string;
-  foundInSnowflake: boolean;
-}
-
-export interface ReconOutcome {
-  skipped?: true;
-  ok: boolean;
-  tables: TableRecon[];
-  controls: ControlCheck[];
-  reasons: string[];
-}
-
-/** Pure decision: given per-table counts and the controls, what (if anything) is
- *  wrong. Node/vitest-testable without any IO. */
-export function evaluateRecon(tables: TableRecon[], controls: ControlCheck[]): { ok: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  for (const control of controls) {
-    if (control.foundInSnowflake) continue;
-    reasons.push(
-      `positive control failed: ${control.table} row ${control.id} is in Supabase but not found in Snowflake, so the count reads cannot be trusted (a zero may be a broken query, not an empty table)`,
-    );
-  }
-  for (const t of tables) {
-    // Only "Snowflake is BEHIND" is a fault (the mirror is losing/lagging rows).
-    // "Snowflake ahead" (more rows than Supabase) is EXPECTED once export-gated
-    // retention (#1102) prunes aged rows from Supabase while the warehouse keeps
-    // the full history, so it is deliberately NOT flagged.
-    if (t.drift > reconThreshold(t.supabase)) {
-      reasons.push(`${t.table}: Snowflake is behind by ${t.drift} rows (${t.snowflake}/${t.supabase})`);
-    }
-  }
-  return { ok: reasons.length === 0, reasons };
-}
+// The pure decision (thresholds, the reason wording, the cause the lag reading
+// names) lives in reconcile-core.ts so the alert preview can render the real
+// sentences without loading Supabase. Re-exported here because this module is the
+// lane's public face.
+export {
+  DRIFT_TOLERANCE_ROWS,
+  DRIFT_TOLERANCE_PCT,
+  driftCause,
+  evaluateRecon,
+  reconThreshold,
+  type ControlCheck,
+  type ReconOutcome,
+  type TableRecon,
+} from "./reconcile-core";
 
 type ReconRead = { count: number | null; data: unknown; error: { message: string } | null };
 interface ReconBuilder extends PromiseLike<ReconRead> {
@@ -161,6 +129,28 @@ export async function reconcileSnowflakeMirror(): Promise<ReconOutcome> {
   if (!config) return { skipped: true, ok: true, tables: [], controls: [], reasons: [] };
 
   const db = supabaseAdmin() as unknown as ReconDb;
+
+  // #1230: read the lane's own position FIRST, so the reason can name the cause it
+  // measured. Supabase-only and cheap. Deliberately before the counts: any skew
+  // between the two readings then understates how many rows look stranded, which
+  // is the safe direction for the strongest claim this alert makes, and small skew
+  // is absorbed by the drift tolerance either way.
+  //
+  // A failure here costs the DIAGNOSIS, never the page. measureExportLag throws by
+  // design (an unmeasured mirror must not present as a healthy one for the delete
+  // gate), so it is caught here and degrades to an explicit unknown cause: losing
+  // a real drift alert because its explanation could not be read would be the
+  // worse failure.
+  let lags: TableLag[] = [];
+  try {
+    lags = await measureExportLag();
+  } catch (err) {
+    log.warn("snowflake-reconcile", {
+      msg: "export lag unreadable, drift cause reported as unknown",
+      error: shortErrorReason(err),
+    });
+  }
+
   const tables: TableRecon[] = [];
   for (const spec of MIRROR_TABLES) {
     const supabase = await countSupabase(db, spec.table);
@@ -172,10 +162,11 @@ export async function reconcileSnowflakeMirror(): Promise<ReconOutcome> {
     const check = await positiveControl(config, db, c.table, c.orderBy);
     if (check) controls.push(check);
   }
-  const { ok, reasons } = evaluateRecon(tables, controls);
+  const { ok, reasons } = evaluateRecon(tables, controls, lags);
   log.info("snowflake-reconcile", {
     msg: ok ? "in sync" : "drift",
     tables: tables.length,
+    lags_measured: lags.length,
     reasons: reasons.length,
     controls: controls.length,
     controls_failed: controls.filter((c) => !c.foundInSnowflake).length,
