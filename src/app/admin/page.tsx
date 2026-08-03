@@ -48,6 +48,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
+import { auditActionLabel, auditActorText, auditDetailText } from "@/lib/audit-display";
 import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { FilterForm } from "@/components/ui/FilterForm";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
@@ -80,15 +81,6 @@ type DeliveryRow = Pick<
   | "created_at"
   | "suppressed"
 >;
-
-const AUDIT_LABEL: Record<string, string> = {
-  "role.set": "changed role",
-  "agent.hours": "set hours",
-  "agent.use_default_hours": "applied default hours",
-  "agent.bookable": "set bookable",
-  "agent.attributes": "set attributes",
-  "monitor.settings": "changed alert settings",
-};
 
 
 export const dynamic = "force-dynamic";
@@ -1308,8 +1300,10 @@ export default async function AdminPage({
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Audit log</h2>
           <p className="mb-3 text-xs text-fg-muted">
-            The last {auditEntries.length} privileged actions (role changes and
-            agent edits).
+            The last {auditEntries.length} privileged actions (role changes, agent
+            edits, time off decisions, and settings changes). Rows marked as
+            rebuilt were reconstructed from the request record after a fault left
+            them unrecorded at the time.
           </p>
           {auditEntries.length === 0 ? (
             <p className="text-sm text-fg-muted">No activity yet.</p>
@@ -1336,14 +1330,10 @@ export default async function AdminPage({
                           minute: "2-digit",
                         })}
                       </td>
-                      <td className="py-1.5 pr-3">{nameOf(a.actor_id)}</td>
-                      <td className="py-1.5 pr-3">{AUDIT_LABEL[a.action] ?? a.action}</td>
+                      <td className="py-1.5 pr-3">{auditActorText(a, nameOf)}</td>
+                      <td className="py-1.5 pr-3">{auditActionLabel(a.action)}</td>
                       <td className="py-1.5 pr-3">{nameOf(a.target_id)}</td>
-                      <td className="py-1.5 text-fg-muted">
-                        {a.action === "role.set"
-                          ? `${String(a.details.from)} → ${String(a.details.to)}`
-                          : ""}
-                      </td>
+                      <td className="py-1.5 text-fg-muted">{auditDetailText(a)}</td>
                     </tr>
                   ))}
                 </tbody>

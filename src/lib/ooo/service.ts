@@ -221,13 +221,13 @@ function realDeps(): OooDeps {
       // alert-key: ooo_undo
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),
 
-    recordAudit: (action, actorId, orgId, requestId, details) =>
+    recordAudit: ({ action, actorId, orgId, targetUserId, requestId, details }) =>
       recordAudit({
         orgId,
         actorId,
         action,
-        targetId: requestId,
-        details,
+        targetUserId,
+        details: { ...details, ooo_request_id: requestId },
       }),
 
     appBaseUrl: appUrl,

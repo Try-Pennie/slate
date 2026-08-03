@@ -165,19 +165,32 @@ export interface OooDeps {
   /** Throttled ops alert (mirrors postToStatusPage_). */
   alertOps(key: string, message: string): Promise<void>;
 
-  recordAudit(
+  /**
+   * Append one OOO action to the audit trail.
+   *
+   * Takes an object, not five positional strings, because the two uuids here mean
+   * different things and were silently swapped for two months (#1220): the
+   * request id was passed where the agent belonged, and `audit_log.target_id`
+   * has a foreign key to `users(id)`, so every ooo.* write was rejected. The
+   * names now say which is which at every call site.
+   */
+  recordAudit(entry: {
     action:
       | "ooo.submit"
       | "ooo.approve"
       | "ooo.reject"
       | "ooo.cancel"
       | "ooo.modify"
-      | "ooo.retry",
-    actorId: string,
-    orgId: string,
-    requestId: string,
-    details?: Record<string, unknown>,
-  ): Promise<void>;
+      | "ooo.retry";
+    /** Who took the action: the agent for submit, the decider for the rest. */
+    actorId: string;
+    orgId: string;
+    /** The agent the request is ABOUT. Lands in target_id, which FKs users(id). */
+    targetUserId: string;
+    /** The ooo_requests row. Lands in `details`, where no foreign key applies. */
+    requestId: string;
+    details?: Record<string, unknown>;
+  }): Promise<void>;
 
   appBaseUrl(): string;
   mainOooCalendarId(): string;
@@ -286,9 +299,13 @@ export async function submitOoo(
   }
   const request = inserted.request;
 
-  await deps.recordAudit("ooo.submit", agent.id, agent.org_id, request.id, {
-    starts_at: request.starts_at,
-    ends_at: request.ends_at,
+  await deps.recordAudit({
+    action: "ooo.submit",
+    actorId: agent.id,
+    orgId: agent.org_id,
+    targetUserId: agent.id,
+    requestId: request.id,
+    details: { starts_at: request.starts_at, ends_at: request.ends_at },
   });
   await notifyManagerOfPending(request, agent, "New time off request", deps);
   return { ok: true, request };
@@ -647,7 +664,13 @@ export async function approveOoo(
     });
   if (!flipped.ok) return fail("This request was already decided.");
 
-  await deps.recordAudit("ooo.approve", actor.id, actor.org_id, requestId);
+  await deps.recordAudit({
+    action: "ooo.approve",
+    actorId: actor.id,
+    orgId: actor.org_id,
+    targetUserId: request.user_id,
+    requestId,
+  });
 
   const agent = await deps.getUser(request.user_id);
   if (!agent) return fail("The requesting agent no longer exists.");
@@ -680,7 +703,13 @@ export async function rejectOoo(
     });
   if (!flipped.ok) return fail("This request was already decided.");
 
-  await deps.recordAudit("ooo.reject", actor.id, actor.org_id, requestId);
+  await deps.recordAudit({
+    action: "ooo.reject",
+    actorId: actor.id,
+    orgId: actor.org_id,
+    targetUserId: request.user_id,
+    requestId,
+  });
 
   const agent = await deps.getUser(request.user_id);
   if (agent) {
@@ -719,8 +748,13 @@ export async function cancelOoo(
     });
   if (!flipped.ok) return fail("This request was already closed.");
 
-  await deps.recordAudit("ooo.cancel", actor.id, actor.org_id, requestId, {
-    was_approved: wasApproved,
+  await deps.recordAudit({
+    action: "ooo.cancel",
+    actorId: actor.id,
+    orgId: actor.org_id,
+    targetUserId: request.user_id,
+    requestId,
+    details: { was_approved: wasApproved },
   });
 
   await deps.dmUserByEmail(
@@ -812,10 +846,17 @@ export async function modifyOoo(
     );
   }
 
-  await deps.recordAudit("ooo.modify", actor.id, actor.org_id, requestId, {
-    was_approved: wasApproved,
-    starts_at: input.startIso,
-    ends_at: input.endIso,
+  await deps.recordAudit({
+    action: "ooo.modify",
+    actorId: actor.id,
+    orgId: actor.org_id,
+    targetUserId: request.user_id,
+    requestId,
+    details: {
+      was_approved: wasApproved,
+      starts_at: input.startIso,
+      ends_at: input.endIso,
+    },
   });
 
   // notifyManagerOfPending posts a fresh message and overwrites the stored
@@ -860,7 +901,13 @@ export async function retryOooSideEffects(
   const agent = await deps.getUser(request.user_id);
   if (!agent) return fail("The requesting agent no longer exists.");
 
-  await deps.recordAudit("ooo.retry", actor.id, actor.org_id, requestId);
+  await deps.recordAudit({
+    action: "ooo.retry",
+    actorId: actor.id,
+    orgId: actor.org_id,
+    targetUserId: request.user_id,
+    requestId,
+  });
   const updated = await runPostApproval(request, agent, deps, {
     notifyAgent: false,
   });
