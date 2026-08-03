@@ -55,6 +55,7 @@ import {
   loadUserOrgId,
   markBulkReassignJobDoneIfDrained,
 } from "@/lib/booking/bulk-reassign-store";
+import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
@@ -2035,6 +2036,7 @@ function realCoverageTargetDeps(): CoverageTargetDeps {
     verifyFree: base.verifyFree,
     agentWorkingHours: base.agentWorkingHours,
     agentActiveBookingStartsMs: base.agentActiveBookingStartsMs,
+    userIdsOnApprovedTimeOff,
   };
 }
 
