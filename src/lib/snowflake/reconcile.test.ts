@@ -7,10 +7,14 @@ vi.mock("./client", () => ({
   executeStatement: vi.fn(async () => ({ data: [["5"]] })),
   escapeSqlLiteral: (s: string) => s,
 }));
+vi.mock("./export-lag", () => ({ measureExportLag: vi.fn(async () => [] as unknown[]) }));
 
 import { evaluateRecon, reconThreshold, reconcileSnowflakeMirror, type TableRecon } from "./reconcile";
 import { readSnowflakeConfig } from "./config";
+import { measureExportLag } from "./export-lag";
+import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import type { TableLag } from "./export-lag-core";
 
 const t = (table: string, supabase: number, snowflake: number): TableRecon => ({
   table,
@@ -63,6 +67,84 @@ describe("evaluateRecon", () => {
   it("threshold is the larger of the flat floor and a small percentage", () => {
     expect(reconThreshold(100)).toBe(25); // floor wins on small tables
     expect(reconThreshold(10_000)).toBe(200); // 2% wins at scale
+  });
+});
+
+/**
+ * #1230: the drift reason must name the cause it MEASURED.
+ *
+ * On 2026-08-03 the lane paged `audit_log: Snowflake is behind by 251 rows
+ * (27/278)` under copy that said "the export lane may be lagging or failing".
+ * The lane was fully caught up: those 251 rows were the OOO audit backfill,
+ * inserted behind the forward `created_at` watermark, which the keyset fetch can
+ * never revisit. The alert named the one cause that was not happening (L11).
+ */
+describe("evaluateRecon drift cause (#1230)", () => {
+  const lag = (table: string, over: Partial<TableLag> = {}): TableLag => ({
+    table,
+    cursorTs: "2026-08-03T12:00:00.000Z",
+    newestTs: "2026-08-03T12:00:00.000Z",
+    lagMs: 0,
+    backlog: 0,
+    ...over,
+  });
+
+  it("says the rows sit behind the watermark when the export lane is measured current", () => {
+    // The real 2026-08-03 shape: cursor on the newest row, nothing waiting.
+    const r = evaluateRecon([t("audit_log", 278, 27)], [], [lag("audit_log")]);
+    expect(r.ok).toBe(false);
+    expect(r.reasons[0]).toMatch(/audit_log: Snowflake is behind by 251 rows \(27\/278\)/);
+    expect(r.reasons[0]).toMatch(/export lane is current/);
+    expect(r.reasons[0]).toMatch(/251 of these rows sit behind/);
+    expect(r.reasons[0]).toMatch(/will never export on their own/);
+    // The remedy travels with the cause that needs it, not in the wrapper.
+    expect(r.reasons[0]).toMatch(/reexport\.ts/);
+    // Must NOT accuse the lane of being behind, which is what shipped.
+    expect(r.reasons[0]).not.toMatch(/lane is \d+ (minute|hour)/);
+  });
+
+  it("says how far behind the lane is when the lane really is the cause", () => {
+    const r = evaluateRecon(
+      [t("bookings", 10412, 9880)],
+      [],
+      [lag("bookings", { lagMs: 3 * 60 * 60_000, backlog: 540 })],
+    );
+    expect(r.reasons[0]).toMatch(/export lane is 3 hours behind/);
+    expect(r.reasons[0]).toMatch(/540 rows waiting/);
+    expect(r.reasons[0]).toMatch(/clears itself once the lane catches up/);
+    expect(r.reasons[0]).not.toMatch(/never export/);
+    expect(r.reasons[0]).not.toMatch(/reexport\.ts/);
+  });
+
+  it("says the cause is unknown when the lane's position was not measured", () => {
+    // An unmeasured signal must not be presented as either cause.
+    const r = evaluateRecon([t("bookings", 10412, 9880)], [], []);
+    expect(r.reasons[0]).toMatch(/could not be read/);
+    expect(r.reasons[0]).not.toMatch(/never export/);
+    expect(r.reasons[0]).not.toMatch(/hours behind/);
+  });
+
+  it("treats an unreadable timestamp as unknown, not as a current lane (#1171)", () => {
+    const r = evaluateRecon([t("bookings", 10412, 9880)], [], [lag("bookings", { lagMs: Number.NaN })]);
+    expect(r.reasons[0]).toMatch(/could not be read/);
+    expect(r.reasons[0]).not.toMatch(/NaN/);
+    expect(r.reasons[0]).not.toMatch(/is current/);
+  });
+
+  it("says the lane has not started when nothing was ever exported", () => {
+    const r = evaluateRecon(
+      [t("audit_log", 278, 0)],
+      [],
+      [lag("audit_log", { cursorTs: null, lagMs: Number.POSITIVE_INFINITY, backlog: 278 })],
+    );
+    expect(r.reasons[0]).toMatch(/nothing has ever been exported/);
+    expect(r.reasons[0]).not.toMatch(/Infinity/);
+  });
+
+  it("does not attach a cause to a positive-control failure (it is not about lag)", () => {
+    const r = evaluateRecon([t("bookings", 5, 5)], [{ table: "bookings", id: "oldest", foundInSnowflake: false }], []);
+    expect(r.reasons[0]).toMatch(/positive control failed/);
+    expect(r.reasons[0]).not.toMatch(/export lane/);
   });
 });
 
@@ -151,5 +233,60 @@ describe("reconcileSnowflakeMirror", () => {
     const r = await reconcileSnowflakeMirror();
 
     expect(r.controls.map((c) => c.table).sort()).toEqual(["bookings", "routing_decisions"]);
+  });
+
+  // --- #1230: the lane's own position feeds the reason -------------------------
+  const configured = () =>
+    vi.mocked(readSnowflakeConfig).mockReturnValue({
+      account: "a",
+      user: "u",
+      privateKeyPem: "k",
+      database: "SLATE",
+      schema: "PUBLIC",
+      warehouse: "W",
+      role: "R",
+    });
+
+  /** A Supabase stand-in whose every count read answers `count`. */
+  const dbWithCount = (count: number) => ({
+    from() {
+      const b: Record<string, unknown> = {};
+      for (const m of ["select", "order", "limit", "is", "eq"]) b[m] = () => b;
+      b.maybeSingle = async () => ({ data: { id: "oldest" }, error: null });
+      b.then = (resolve: (v: { count: number; data: unknown[]; error: null }) => unknown) =>
+        resolve({ count, data: [], error: null });
+      return b;
+    },
+  });
+
+  it("feeds the measured export lag into the drift reason (#1230)", async () => {
+    configured();
+    vi.mocked(supabaseAdmin).mockReturnValue(dbWithCount(300) as never);
+    // Every mirrored table's lane is current, so a drift can only be rows sitting
+    // behind the watermark.
+    vi.mocked(measureExportLag).mockResolvedValue([
+      { table: "audit_log", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+    ] as never);
+
+    const r = await reconcileSnowflakeMirror();
+
+    const auditReason = r.reasons.find((x) => x.startsWith("audit_log:"));
+    expect(auditReason).toMatch(/295 of these rows sit behind/);
+    expect(auditReason).toMatch(/will never export on their own/);
+  });
+
+  it("still reports the drift when the lag measurement itself fails, with an honest unknown cause", async () => {
+    // Fail-loud, not fail-silent: losing the page because the DIAGNOSIS read
+    // broke would hide the drift the lane exists to report.
+    configured();
+    vi.mocked(supabaseAdmin).mockReturnValue(dbWithCount(300) as never);
+    vi.mocked(measureExportLag).mockRejectedValue(new Error("export_cursor unreadable") as never);
+
+    const r = await reconcileSnowflakeMirror();
+
+    expect(r.ok).toBe(false);
+    expect(r.reasons[0]).toMatch(/Snowflake is behind by 295 rows/);
+    expect(r.reasons[0]).toMatch(/could not be read/);
+    expect(log.warn).toHaveBeenCalled();
   });
 });
