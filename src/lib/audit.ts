@@ -83,12 +83,39 @@ export async function recordAudit(entry: {
     });
     // The shape that actually happens: no exception, just an error nobody read.
     if (error) {
-      await reportAuditFailure(entry, shortFailureReason(error.message) ?? "no detail");
+      await reportAuditFailure(entry, shortFailureReason(error.message) ?? "no detail", error);
     }
   } catch (err) {
     // The rarer shape (the client itself blew up: no network, bad config).
     await reportAuditFailure(entry, shortErrorReason(err));
   }
+}
+
+/** A returned Postgres error, as PostgREST shapes it. */
+interface PgError {
+  code?: string;
+  message?: string;
+  details?: string;
+}
+
+/**
+ * The constraint that rejected the row, when the database rejected it (#1223).
+ *
+ * Classified on the SQLSTATE, not on the message text: `23503` IS foreign key
+ * violation, so the branch cannot drift with Postgres wording (L35). The
+ * constraint NAME is then read out of the message, which is the only place it
+ * appears, and a null return simply means the alert falls back to the short
+ * reason rather than claiming a constraint that may not exist.
+ *
+ * Measured against the real database (2026-08-03): a rejection answers
+ *   code 23503
+ *   message  insert or update on table "audit_log" violates foreign key constraint "audit_log_target_id_fkey"
+ *   details  Key (target_id)=(...) is not present in table "users".
+ */
+export function rejectingConstraint(error: unknown): string | null {
+  const e = error as PgError | null;
+  if (!e || e.code !== "23503") return null;
+  return /constraint "([^"]+)"/.exec(e.message ?? "")?.[1] ?? null;
 }
 
 /**
@@ -107,7 +134,10 @@ async function reportAuditFailure(
     targetUserId?: string | null;
   },
   reason: string,
+  dbError?: unknown,
 ): Promise<void> {
+  const pg = (dbError ?? null) as PgError | null;
+  const constraint = rejectingConstraint(dbError);
   log.error("audit", {
     msg: "audit_log insert failed",
     action: entry.action,
@@ -115,13 +145,20 @@ async function reportAuditFailure(
     actor_id: entry.actorId,
     target_id: entry.targetUserId ?? null,
     reason,
+    // The alert tells the reader the rejected values are HERE, so they have to be.
+    // `details` is where Postgres puts the offending key ("Key (target_id)=(...)
+    // is not present in table \"users\""), which is the fact that identifies the
+    // bad caller (#1223).
+    code: pg?.code ?? null,
+    constraint,
+    detail: pg?.details ?? null,
   });
   // alert-text-ok: `reason` is already shortened to one human line by
   // shortFailureReason / shortErrorReason above; the full text is in the log line.
   await sendThrottledAlert(
     AUDIT_WRITE_FAILED_KEY,
     AUDIT_WRITE_FAILED_COOLDOWN_MS,
-    auditWriteFailedAlert(entry.action, reason),
+    auditWriteFailedAlert(entry.action, reason, constraint),
   ).catch((alertErr) => {
     log.error("audit", { msg: "audit-failure alert failed", action: entry.action }, alertErr);
   });
