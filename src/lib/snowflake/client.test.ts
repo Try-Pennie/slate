@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   escapeSqlLiteral,
@@ -108,6 +112,100 @@ describe("executeStatement JWT", () => {
     expect(payload.sub).toBe("AB12345.SLATE_SERVICE");
     expect(payload.iss).toMatch(/^AB12345\.SLATE_SERVICE\.SHA256:.+/);
     expect(payload.exp - payload.iat).toBe(3600);
+  });
+});
+
+// #1200: the key the OPERATOR is told to make, not one we fabricated.
+//
+// `makePemConfig` above generates its key with WebCrypto, so every JWT test
+// here answers about a key this file created. Nothing proved that the key
+// produced by the openssl invocation in docs/snowflake-setup.md is one the
+// client can read: an invented fixture standing in for the real artifact, which
+// is how a runbook command stays broken while its tests stay green (L48, L52).
+//
+// The commands are READ OUT OF THE RUNBOOK rather than copied here, so this
+// cannot pass against a stale duplicate of a command the doc no longer gives
+// (L41). Editing the doc's openssl line re-points this test at the new line.
+describe("the Snowflake setup runbook's key-pair commands (docs/snowflake-setup.md)", () => {
+  /** Every bash line in the runbook that invokes openssl, in document order. */
+  function runbookOpensslCommands(): string[] {
+    const doc = readFileSync(
+      join(import.meta.dirname, "..", "..", "..", "docs", "snowflake-setup.md"),
+      "utf8",
+    );
+    return [...doc.matchAll(/```bash\n([\s\S]*?)```/g)]
+      .flatMap((m) => m[1].split("\n"))
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("openssl "));
+  }
+
+  it("produce a key the client can sign a Snowflake JWT with", async () => {
+    const commands = runbookOpensslCommands();
+    // Sanity check on the parse: a regex that stopped matching would leave this
+    // test running zero commands and passing vacuously.
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain("genpkey");
+    expect(commands[1]).toContain("-pubout");
+
+    const dir = mkdtempSync(join(tmpdir(), "slate-snowflake-key-"));
+    try {
+      for (const command of commands) {
+        // Step 1 cd's into the scratch directory first, so the later commands
+        // use bare filenames; run them all with that directory as the cwd.
+        execFileSync("/bin/sh", ["-c", command], { cwd: dir, stdio: "pipe" });
+      }
+
+      const pem = readFileSync(join(dir, "slate_snowflake_key.p8"), "utf8");
+      // Unencrypted PKCS#8 is the one format the client's PEM parser and
+      // Snowflake both accept. An encrypted key ("BEGIN ENCRYPTED PRIVATE KEY")
+      // would import nowhere, and openssl emits one if the command ever grows a
+      // cipher flag.
+      expect(pem).toContain("-----BEGIN PRIVATE KEY-----");
+      expect(pem).not.toContain("ENCRYPTED");
+
+      const config: SnowflakeConfig = {
+        account: "vrkfjso-rwc54963",
+        user: "SLATE_SERVICE",
+        privateKeyPem: pem,
+        database: "SLATE",
+        schema: "PUBLIC",
+        warehouse: "SLATE_WH",
+        role: "SLATE_ROLE",
+      };
+
+      const calls: Array<{ init: { headers: Record<string, string> } }> = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+          calls.push({ init });
+          return fakeRes(200, JSON.stringify({ message: "ok" }));
+        }),
+      );
+
+      await executeStatement(config, "SELECT 1");
+
+      const token = calls[0].init.headers.Authorization.replace(/^Bearer /, "");
+      const payload = decodeJwtPart(token.split(".")[1]) as { iss: string };
+
+      // The halves of the runbook have to agree, and nothing checked that they
+      // did. Step 3 registers a public key body on the Snowflake user; the
+      // client derives a fingerprint from the private key and puts it in `iss`.
+      // Snowflake authenticates by comparing them, so if they disagree the login
+      // fails at runtime with credentials that look perfectly well-formed. This
+      // recomputes the fingerprint the way Snowflake does (SHA-256 over the DER
+      // of the registered public key) and requires the match.
+      const registeredBody = readFileSync(join(dir, "slate_snowflake_key.pub"), "utf8")
+        .split("\n")
+        .filter((l) => !l.includes("PUBLIC KEY"))
+        .join("");
+      const der = Uint8Array.from(atob(registeredBody), (c) => c.charCodeAt(0));
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", der));
+      const expected = btoa(String.fromCharCode(...digest));
+
+      expect(payload.iss).toBe(`VRKFJSO-RWC54963.SLATE_SERVICE.SHA256:${expected}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

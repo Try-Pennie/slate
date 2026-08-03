@@ -45,17 +45,31 @@ format the Worker's JWT signer expects.
 
 Make and enter a scratch dir:
 
+<!-- runbook-verified: 2026-08-03 (a789dd22) run in a scratch directory; creates the
+     directory and enters it, and is safe to re-run over an existing one. -->
+
 ```bash
 mkdir -p ~/snowflake-slate-keys && cd ~/snowflake-slate-keys
 ```
 
 Generate the private key:
 
+<!-- runbook-verified: 2026-08-03 (fbc77205) run on OpenSSL 3.6.2; produced an
+     UNENCRYPTED PKCS#8 key ("BEGIN PRIVATE KEY"), the one format the Worker's PEM parser
+     and Snowflake both accept. Re-run on every push: the test at
+     src/lib/snowflake/client.test.ts reads this exact line out of this file, executes it,
+     and signs a Snowflake JWT with the result. -->
+
 ```bash
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out slate_snowflake_key.p8
 ```
 
 Derive the public key:
+
+<!-- runbook-verified: 2026-08-03 (cf80cedc) run on OpenSSL 3.6.2; derived the matching
+     public key. Re-run on every push by the same test, which additionally recomputes
+     Snowflake's fingerprint from this public key and requires it to equal the one the
+     Worker puts in the JWT, so the two halves of this runbook cannot disagree. -->
 
 ```bash
 openssl rsa -in slate_snowflake_key.p8 -pubout -out slate_snowflake_key.pub
@@ -96,9 +110,26 @@ call to make an unconfirmed row verifiable. Both run against a booking the wareh
 was just confirmed to hold, so the repair takes its MATCHED branch and writes nothing
 new.
 
+**Verification status of the script itself (#1200).** `docs/snowflake-setup.sql`
+has no marker of its own because it is a whole file rather than a block in this
+runbook, so record it here. It has been run: the warehouse it provisions exists
+and the export lane authenticates against it on its 10-minute schedule. Its
+output is then checked continuously rather than assumed, from three directions:
+the 6-hourly `snowflake-check` probe fails if any mirror table is missing the
+`exported_at` stamp, the 6-hourly `erasure-audit` lane compiles every erasure
+statement against the live schema, and `scripts/test-erasure-runbook-claims.ts`
+derives the legal column set from this file so the erasure runbook cannot name a
+column the DDL does not create. What none of that covers is a **from-scratch**
+run against an empty account, which has happened exactly once and cannot be
+rehearsed without a second Snowflake account.
+
 ## Step 3: Register the public key on the service user
 
 Print the public key body as a single line (no header/footer, no line breaks):
+
+<!-- runbook-verified: 2026-08-03 (216fc392) run against a generated key pair; printed
+     the 392-character body on a single line with no header, footer or line breaks, which
+     is the form ALTER USER accepts. -->
 
 ```bash
 grep -v 'PUBLIC KEY' ~/snowflake-slate-keys/slate_snowflake_key.pub | tr -d '\n' && echo
@@ -106,30 +137,49 @@ grep -v 'PUBLIC KEY' ~/snowflake-slate-keys/slate_snowflake_key.pub | tr -d '\n'
 
 Copy that output, then run this in Snowsight (paste it in place of the placeholder):
 
+<!-- runbook-unverified: running it would REPLACE the public key the live export lane
+     authenticates with, so it cannot be rehearsed against production. The key format it
+     consumes is proven by the two openssl blocks above, and a successful run is what the
+     6-hourly snowflake-check probe confirms afterwards. -->
+
 ```sql
 ALTER USER SLATE_SERVICE SET RSA_PUBLIC_KEY = 'PASTE_PUBLIC_KEY_BODY_HERE';
 ```
 
 ## Step 4: Find your account identifier
 
-The Worker needs the account URL prefix (locator plus region), for example
-`ab12345.us-east-1`. In Snowsight run:
+The Worker needs the account URL prefix: the part of the Snowsight URL before
+`.snowflakecomputing.com`. Slate's is `vrkfjso-rwc54963`.
+
+Snowflake accepts two forms and they are not interchangeable here. Slate uses
+`orgname-accountname` (lowercase, hyphen). The older `locator.region` form (for
+example `ab12345.us-east-1`) is a different identifier for the same account, and
+three places in this repo used to give it as the example while production ran on
+the other one (#1200). Take the value this query builds, not one assembled by
+hand:
+
+<!-- runbook-unverified: read-only and safe, but it needs a Snowsight session this
+     environment does not hold. Awaiting an operator run; the value it should return is
+     pinned against the deployed wrangler.jsonc by
+     scripts/test-snowflake-account-docs.ts. -->
 
 ```sql
-SELECT CURRENT_ORGANIZATION_NAME(), CURRENT_ACCOUNT_NAME(), CURRENT_REGION();
+SELECT LOWER(CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME()) AS snowflake_account;
 ```
 
-If unsure of the exact URL form, open Snowsight, click your account (bottom left),
-"View account details", and copy the account identifier from the account URL. It
-is the part before `.snowflakecomputing.com`.
+To confirm it against the browser, open Snowsight, click your account (bottom
+left), "View account details", and compare with the account URL.
 
 ## Step 5: Set the six non-secret vars in wrangler.jsonc
 
 These are committed config, not secrets. Claude will open a PR that adds them to
 `wrangler.jsonc` with placeholder values; you confirm the values are:
 
+<!-- runbook-reference: the six values to enter, not a command to run. Each is pinned
+     against the deployed wrangler.jsonc by scripts/test-snowflake-account-docs.ts. -->
+
 ```
-SNOWFLAKE_ACCOUNT   = <account identifier: the host prefix from SYSTEM$ALLOWLIST(), e.g. the regionless orgname-accountname>
+SNOWFLAKE_ACCOUNT   = vrkfjso-rwc54963   (whatever step 4's query returned)
 SNOWFLAKE_USER      = SLATE_SERVICE
 SNOWFLAKE_DATABASE  = SLATE
 SNOWFLAKE_SCHEMA    = PUBLIC
@@ -143,6 +193,9 @@ From the Slate repo, with your wrangler login active, feed the key file straight
 into the secret. Do NOT paste the key at the interactive prompt: the key has
 multiple lines, and an interactive paste stops at the first line break, storing a
 broken key and spilling the rest into your shell.
+
+<!-- runbook-unverified: writing this secret would overwrite the private key the live
+     export lane is using, so it cannot be rehearsed against production. -->
 
 ```bash
 cd ~/Documents/Slate && wrangler secret put SNOWFLAKE_PRIVATE_KEY < ~/snowflake-slate-keys/slate_snowflake_key.p8
@@ -158,6 +211,9 @@ Worker reads either real newlines or literal `\n`.)
 The private key now lives only in the Worker secret (and your `.env.local` if you
 set it). Remove the scratch copies:
 
+<!-- runbook-verified: 2026-08-03 (8a24aeea) run against the scratch directory created
+     by step 1; removed it and the two key files. -->
+
 ```bash
 rm -rf ~/snowflake-slate-keys
 ```
@@ -165,6 +221,9 @@ rm -rf ~/snowflake-slate-keys
 ## Step 8: Verify
 
 Confirm the vars shipped and the secret is set:
+
+<!-- runbook-unverified: read-only and safe, but it needs an interactive wrangler login
+     this environment does not hold. Awaiting an operator run. -->
 
 ```bash
 wrangler secret list

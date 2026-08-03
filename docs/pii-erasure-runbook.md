@@ -32,6 +32,11 @@ Run this SQL against the production database as an admin (Supabase SQL editor, o
 `psql` with the service connection). It is server/operator-only: the API roles
 have no execute grant.
 
+<!-- runbook-verified: 2026-08-03 (c9d26306) run against production with a deliberately
+     non-matching address; returned exactly the documented {"erased": false, "reason":
+     "no-match"} and wrote no audit row (pii.erasure count was 1 before and 1 after).
+     The MATCHING path was verified separately on 2026-07-29, recorded below. -->
+
 ```
 select erase_booking_pii('person@example.com');
 ```
@@ -80,6 +85,9 @@ the email (never the cleartext).
 The Snowflake purge needs the booking ids the Supabase step just redacted. Read
 them from the audit row (most recent erasure):
 
+<!-- runbook-verified: 2026-08-03 (ccf752e9) run against production; returned the
+     booking_ids array of the most recent pii.erasure row. -->
+
 ```
 select details->'booking_ids' as booking_ids
 from audit_log
@@ -93,6 +101,10 @@ Copy the list of ids for the next step.
 If you want to be certain this is the erasure you just ran, recompute the hash and
 compare it to the `email_sha256` in the same row. The function hashes the
 **normalized** email (lowercased and trimmed), so you must normalize it here too:
+
+<!-- runbook-verified: 2026-08-03 (ab6a23c1) run against production; returned a 64-char
+     hex digest. Re-running it against the same address padded and mixed-case gave a
+     completely different digest, which is the mistake the paragraph below warns about. -->
 
 ```
 select encode(sha256(convert_to(lower(trim('person@example.com')), 'UTF8')), 'hex');
@@ -109,6 +121,12 @@ normalized.
 Trigger it. This redacts the same PII columns in place for the affected bookings,
 so the warehouse keeps the PII-free analytics rows but holds none of the person's
 contact data, then runs step 4's verify itself and reports the counts.
+
+<!-- runbook-unverified: triggering it redacts real warehouse rows, so it cannot be run
+     on demand to prove itself. The SQL it executes IS proven continuously: the 6-hourly
+     erasure-audit lane runs every one of those statements against the warehouse bound to
+     an id no booking can carry (#1128), so a statement that stops compiling pages rather
+     than waiting for a real deletion request. See the two verified blocks below. -->
 
 ```
 POST /api/admin/erasure-purge
@@ -144,6 +162,12 @@ To hand-run it, substitute the ids from step 2 for `<ids>` (comma-separated,
 single-quoted, e.g. `'id1','id2'`) and use your own Snowflake admin login.
 
 <!-- canonical-sql: purge -->
+<!-- runbook-verified: 2026-08-03 (cd896ce8) executed against the real warehouse by the
+     6-hourly erasure-audit lane, bound to an id no booking can carry; last run
+     2026-08-03 12:00 UTC, every statement compiled and changed nothing. It proves the
+     SQL parses and resolves against the warehouse schema as it exists now (the #1197
+     failure). It does NOT prove the statements clear fields on a populated row: a
+     zero-row statement can only ever report zero rows. -->
 ```
 update SLATE.PUBLIC.bookings
    set attendee_name = null, attendee_email = null, attendee_phone = null,
@@ -271,6 +295,11 @@ export re-mirrored them); do not consider the request honored until it returns a
 zeros.
 
 <!-- canonical-sql: verify -->
+<!-- runbook-verified: 2026-08-03 (2abb7dc6) executed against the real warehouse by the
+     6-hourly erasure-audit lane alongside the purge statements; last run 2026-08-03
+     12:00 UTC, returned all four residual counts as zero for an id no booking can
+     carry. Same limit as the purge block: it proves the query compiles and reads the
+     four columns it names, not that it would catch a residual on a populated row. -->
 ```
 select
   (select count(*) from SLATE.PUBLIC.bookings

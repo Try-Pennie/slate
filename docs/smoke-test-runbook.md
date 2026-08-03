@@ -46,16 +46,24 @@ The moving parts:
 2. **Preview the seed (writes nothing).** From the repo root, run the seed in its
    default dry-run mode and read the planned rows:
 
+   <!-- runbook-verified: 2026-08-03 (bfff44b0) run against the live project; printed the
+        planned agents, schedules, rules, buckets and members and wrote nothing, as the
+        default dry-run mode promises. -->
+
    ```
-   node --experimental-strip-types scripts/seed-smoke-test.ts
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
    ```
 
 3. **Apply the seed.** Re-run with `APPLY=1` to write the agents, schedules,
    rules, buckets, and members to the project in `.env.local`. It is idempotent,
    so re-running only refreshes the rows in place:
 
+   <!-- runbook-unverified: writes the seed rows to the live project, so it was not run
+        for verification. It is the same script and code path as the dry run above, which
+        was, differing only in the APPLY flag. -->
+
    ```
-   APPLY=1 node --experimental-strip-types scripts/seed-smoke-test.ts
+   APPLY=1 node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
    ```
 
 4. **Wait for the crons to publish SMOKE slots.** The seed does not create the
@@ -64,8 +72,13 @@ The moving parts:
    recompute cron then publishes open `SMOKE` and `SMOKE2` slots. Give it a cycle
    or two, then confirm the slots are live before running the test:
 
+   <!-- runbook-verified: 2026-08-03 (8b0db9be) this exact invocation is what the
+        smoke-canary workflow runs every 6 hours against production on the isolated SMOKE
+        agents, which is the only automated proof a booking can be made, rescheduled and
+        cancelled end to end. Not run by hand here: it creates real bookings. -->
+
    ```
-   node --experimental-strip-types scripts/smoke-booking-api.ts
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
    ```
 
    The run first checks that `SMOKE` has at least five open slots and exits early
@@ -73,12 +86,23 @@ The moving parts:
    wait another cycle and re-run. To confirm routing is healthy without creating
    any bookings, run the side-effect-free dry-run only:
 
+   <!-- runbook-verified: 2026-08-03 (45bdee43) run against production; ALL CHECKS PASSED,
+        including the https redirect, the widget.js headers, 161 open SMOKE slots and a dry
+        run that named the agent it would assign while creating no booking. -->
+
    ```
-   SMOKE_DRY_RUN_ONLY=1 node --experimental-strip-types scripts/smoke-booking-api.ts
+   SMOKE_DRY_RUN_ONLY=1 node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
    ```
 
 ## Notes
 
+- **Keep `--import ./scripts/register-paths.mjs` on every command above.** It is
+  what resolves the `@/` alias, the same flag every `package.json` script carries.
+  Until #1200 the step 4 commands here omitted it and crashed on the spot with
+  `ERR_MODULE_NOT_FOUND: Cannot find package '@/lib'`, because
+  `scripts/lib/smoke-event-cleanup.ts` imports through the alias. The step 2 seed
+  happened to survive without it only because nothing it imports uses the alias
+  yet, so the shorter form was never safe, just lucky.
 - **Keys live in `.env.local`, never on the command line.** `BOOKING_API_KEY` is
   required; the test exits with a message if it is missing. `REASSIGN_API_KEY`
   enables the reassign scenario (#450), which otherwise reports SKIP. Add both to
