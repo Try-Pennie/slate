@@ -98,6 +98,10 @@ import {
   formatInactiveAgentBookingsRecovery,
 } from "@/lib/monitor/inactive-agent-bookings";
 import {
+  formatCoverageNeedsHumanAlert,
+  formatCoverageNeedsHumanRecovery,
+} from "@/lib/monitor/coverage-needs-human";
+import {
   formatSaturationAlert,
   formatSaturationRecovery,
   formatCompletionSaturationAlert,
@@ -327,6 +331,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every appointment reassigned",
     channel: "recovery",
     text: formatInactiveAgentBookingsRecovery(),
+  },
+
+  // --- appointments a coverage sweep gave up on (#1242) -----------------------
+  // Four states, because the wording changes shape in each: the singular, the two
+  // outcomes side by side on one agent (nobody free vs the move erroring), a list
+  // wide enough to truncate, and the all-clear.
+  {
+    key: "coverage_needs_human",
+    state: "one appointment nobody was free for",
+    channel: "alert",
+    text: formatCoverageNeedsHumanAlert([
+      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 1, failed: 0 },
+    ]),
+  },
+  {
+    key: "coverage_needs_human",
+    state: "both outcomes, several agents",
+    channel: "alert",
+    text: formatCoverageNeedsHumanAlert([
+      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 4, failed: 2 },
+      { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1 },
+      { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0 },
+    ]),
+  },
+  {
+    key: "coverage_needs_human",
+    state: "more agents than the list cap",
+    channel: "alert",
+    text: formatCoverageNeedsHumanAlert(
+      Array.from({ length: 11 }, (_, i) => ({
+        userId: `u${i}`,
+        name: `Agent ${i}`,
+        email: `agent${i}@example.com`,
+        unplaceable: 11 - i,
+        failed: i % 3 === 0 ? 1 : 0,
+      })),
+    ),
+  },
+  {
+    key: "coverage_needs_human",
+    state: "everything placed or passed",
+    channel: "recovery",
+    text: formatCoverageNeedsHumanRecovery(),
   },
 
   // --- saturated sweeps ------------------------------------------------------
