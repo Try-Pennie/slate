@@ -709,6 +709,10 @@ export interface BulkReassignJob {
   status: BulkReassignJobStatus;
   created_by: string | null;
   acting_as_user_id: string | null;
+  /** The approved time-off request that triggered this sweep (#1235); NULL for an
+   *  admin-initiated one. Unique per (request, window), so a re-approval of a
+   *  changed window may sweep again but the same window never twice. */
+  ooo_request_id: string | null;
   created_at: string;
   updated_at: string;
 }

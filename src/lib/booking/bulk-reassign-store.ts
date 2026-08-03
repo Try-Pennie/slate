@@ -3,6 +3,7 @@ import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
+import { enqueueCoverageSweep } from "@/lib/booking/coverage-sweep-enqueue";
 import type { BookingStatus, BulkReassignItem, BulkReassignJob } from "@/lib/db/types";
 
 /**
@@ -53,44 +54,97 @@ export interface CreateBulkReassignJobInput {
   reasonDetail: string | null;
   createdBy: string | null;
   actingAsUserId: string | null;
+  /** The approved time-off request this sweep covers (#1235), when it came from
+   *  one. Present means the enqueue is idempotent by database constraint: a unique
+   *  key on (request, window) makes re-running the approval converge on one sweep
+   *  rather than creating a second. Absent for an admin-initiated sweep. */
+  oooRequestId?: string | null;
 }
+
+/** Postgres unique-violation. The ONLY error class that means "a sweep already
+ *  exists for this request and window"; anything else is a real error and must not
+ *  be mistaken for it. */
+const UNIQUE_VIOLATION = "23505";
 
 /**
  * Create a coverage sweep and snapshot its work: insert the job, then one pending
- * item per booking currently assigned to the out agent in range. Item creation is
- * idempotent (UNIQUE(job_id, booking_id)). A job with no bookings to move is born
- * already `done`. Fails loud on any write error so a half-created job can't look
- * like a successful empty sweep.
+ * item per booking currently assigned to the out agent in range. A job with no
+ * bookings to move is born already `done`. Fails loud on any write error so a
+ * half-created job can't look like a successful empty sweep.
+ *
+ * The two-write shape is why the conflict path re-snapshots rather than just
+ * returning the existing job: see `coverage-sweep-enqueue.ts`, which holds that
+ * decision and its tests. This function is only the IO.
  */
 export async function createBulkReassignJob(
   input: CreateBulkReassignJobInput,
 ): Promise<{ jobId: string; itemCount: number }> {
-  const bookingIds = await coverageBookingIds(input.outUserId, input.rangeStartIso, input.rangeEndIso);
+  const oooRequestId = input.oooRequestId ?? null;
+  return enqueueCoverageSweep({
+    snapshotBookingIds: () =>
+      coverageBookingIds(input.outUserId, input.rangeStartIso, input.rangeEndIso),
 
-  const { data, error } = await supabaseAdmin()
-    .from("bulk_reassign_jobs")
-    .insert({
-      org_id: input.orgId,
-      out_user_id: input.outUserId,
-      range_start: input.rangeStartIso,
-      range_end: input.rangeEndIso,
-      reason_code: input.reasonCode,
-      reason_detail: input.reasonDetail,
-      status: bookingIds.length > 0 ? "active" : "done",
-      created_by: input.createdBy,
-      acting_as_user_id: input.actingAsUserId,
-    })
-    .select("id")
-    .single();
-  if (error || !data) throw new Error(`bulk-reassign job insert failed: ${error?.message ?? "no row"}`);
-  const jobId = (data as { id: string }).id;
+    insertJob: async (status) => {
+      const { data, error } = await supabaseAdmin()
+        .from("bulk_reassign_jobs")
+        .insert({
+          org_id: input.orgId,
+          out_user_id: input.outUserId,
+          range_start: input.rangeStartIso,
+          range_end: input.rangeEndIso,
+          reason_code: input.reasonCode,
+          reason_detail: input.reasonDetail,
+          status,
+          created_by: input.createdBy,
+          acting_as_user_id: input.actingAsUserId,
+          ooo_request_id: oooRequestId,
+        })
+        .select("id")
+        .single();
+      if (error) {
+        return { ok: false, conflict: error.code === UNIQUE_VIOLATION, message: error.message };
+      }
+      if (!data) return { ok: false, conflict: false, message: "no row returned" };
+      return { ok: true, jobId: (data as { id: string }).id };
+    },
 
-  if (bookingIds.length > 0) {
-    const items = bookingIds.map((booking_id) => ({ job_id: jobId, booking_id }));
-    const { error: itemErr } = await supabaseAdmin().from("bulk_reassign_items").insert(items);
-    if (itemErr) throw new Error(`bulk-reassign items insert failed: ${itemErr.message}`);
-  }
-  return { jobId, itemCount: bookingIds.length };
+    findExistingJob: async () => {
+      if (!oooRequestId) return null;
+      let q = supabaseAdmin()
+        .from("bulk_reassign_jobs")
+        // cap-safe: the unique index on (ooo_request_id, range_start, range_end)
+        // means this matches at most one row.
+        .select("id")
+        .eq("ooo_request_id", oooRequestId)
+        .eq("range_start", input.rangeStartIso);
+      q = input.rangeEndIso === null ? q.is("range_end", null) : q.eq("range_end", input.rangeEndIso);
+      const data = unwrap(await q.maybeSingle(), "find-existing-coverage-sweep") as { id: string } | null;
+      return data ?? null;
+    },
+
+    addItems: async (jobId, bookingIds) => {
+      // ignoreDuplicates on the existing UNIQUE(job_id, booking_id): re-snapshotting
+      // can never insert a booking twice, and `.select()` reports what was NEWLY
+      // added, which is what decides whether the job gained work.
+      const { data, error } = await supabaseAdmin()
+        .from("bulk_reassign_items")
+        .upsert(
+          bookingIds.map((booking_id) => ({ job_id: jobId, booking_id })),
+          { onConflict: "job_id,booking_id", ignoreDuplicates: true },
+        )
+        .select("id");
+      if (error) throw new Error(`bulk-reassign items insert failed: ${error.message}`);
+      return (data as { id: string }[] | null)?.length ?? 0;
+    },
+
+    reactivateJob: async (jobId) => {
+      const { error } = await supabaseAdmin()
+        .from("bulk_reassign_jobs")
+        .update({ status: "active", updated_at: new Date().toISOString() })
+        .eq("id", jobId);
+      if (error) throw new Error(`bulk-reassign job reactivate failed: ${error.message}`);
+    },
+  });
 }
 
 /**
