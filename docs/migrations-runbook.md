@@ -122,6 +122,61 @@ query is in that file's header), and drop any name that also exists in
 list, which exists so a header-parse regression fails loudly instead of quietly
 scanning nothing.
 
+## Backfilling a mirrored table: rewind the export cursor (#1231)
+
+A write that supplies its own timestamp into a **mirrored** table
+(`MIRROR_TABLES` in `src/lib/snowflake/export-core.ts`: `bookings`,
+`webhook_deliveries`, `booking_outbox`, `booking_events`, `audit_log`,
+`routing_decisions`) can land **behind** the Snowflake export cursor, and the
+export walks each table on a strictly forward keyset over its watermark, so those
+rows are never fetched again. The mirror simply never gets them.
+
+That shipped on 2026-08-03: a 269 row OOO audit backfill carried its real
+historical `created_at` values while the cursor sat at 2026-07-31, so 251 rows were
+skipped. Nothing failed, nothing errored, and the only symptom was a drift page
+hours later.
+
+**So a backfill owns its own reachability.** Rewind that table's cursor in the same
+change as the write:
+
+<!-- runbook-unverified: running this outside a real backfill would restart a full
+     re-export of the table and pause the retention lanes until it caught up, so it
+     is deliberately not executed to test it. The equivalent statement WAS run
+     against production by hand on 2026-08-03 to recover the OOO audit backfill,
+     and it now lives, executable and guarded against double-running, at the end of
+     scripts/sql/backfill-ooo-audit-1220.sql. -->
+
+```sql
+update export_cursor
+set last_ts = (select min(created_at) from audit_log),
+    last_id = null
+where key = 'audit_log';
+```
+
+Clearing `last_id` makes the next export tick walk the table from the start (the
+keyset only applies when both halves are set). Re-exporting is safe: the warehouse
+load is a MERGE on `id` with UPDATE and INSERT and **no DELETE**
+(`src/lib/snowflake/merge.ts`), so it cannot duplicate or destroy a warehouse row.
+`scripts/sql/backfill-ooo-audit-1220.sql` is the worked example, including how to
+make the rewind a no-op when re-run after the export has caught up.
+
+Expect one temporary side effect while the cursor sits behind: `export-lag.ts` reads
+that table as lagging and the retention lanes refuse to delete (the safe
+direction), clearing once the export catches up. The drift all-clear arrives on the
+next 6-hourly reconcile, not immediately.
+
+Two things enforce this rather than trusting memory:
+
+- `scripts/test-mirror-backfill-cursor.ts` (pre-push and CI) fails a migration or
+  script that writes a mirrored table's watermark column without a rewind in the
+  same file. Its escape hatch is `-- export-cursor-ok: <why>` (or `//` in TS) on or
+  above the write, for a write whose watermark is genuinely current.
+- The 6-hourly reconcile lane counts, per table, the exportable rows strictly
+  **behind** the cursor and compares that to the warehouse count. Every row behind
+  the cursor should already be there, and every legitimate difference makes the
+  warehouse bigger, so a single stranded row pages with no tolerance. That is the
+  net under **hand-run** SQL, which no repo scan can see.
+
 ## Roll-forward only, and what the migration tests cover (#607)
 
 Slate deliberately uses **roll-forward-only** migrations. There are no

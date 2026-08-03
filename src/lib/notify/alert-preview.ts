@@ -591,30 +591,41 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // The stranded fixture is the real 2026-08-03 page (an OOO audit backfill
   // inserted behind the export watermark) that the old copy blamed on a lagging
   // lane.
+  // The real 2026-08-03 numbers: 278 audit rows in Supabase, 27 in the warehouse,
+  // 277 of them already behind the cursor.
   { key: "snowflake_reconcile_drift", state: "rows stranded behind the export watermark", channel: "alert",
     text: snowflakeDriftAlert(
       evaluateRecon(
-        [{ table: "audit_log", supabase: 278, snowflake: 27, drift: 251 }],
+        [{ table: "audit_log", supabase: 278, snowflake: 27, drift: 251, behindCursor: 277 }],
         [],
         [{ table: "audit_log", cursorTs: "2026-08-03T05:59:00.000Z", newestTs: "2026-08-03T05:59:00.000Z", lagMs: 0, backlog: 0 }],
+      ).reasons,
+    ) },
+  // #1231: a small stranding the total-count tolerance would never have reported.
+  { key: "snowflake_reconcile_drift", state: "a single row stranded, under the drift tolerance", channel: "alert",
+    text: snowflakeDriftAlert(
+      evaluateRecon(
+        [{ table: "booking_events", supabase: 1086, snowflake: 1084, drift: 2, behindCursor: 1085 }],
+        [],
+        [{ table: "booking_events", cursorTs: "2026-08-03T14:11:47.000Z", newestTs: "2026-08-03T14:11:47.000Z", lagMs: 0, backlog: 0 }],
       ).reasons,
     ) },
   { key: "snowflake_reconcile_drift", state: "the export lane is behind", channel: "alert",
     text: snowflakeDriftAlert(
       evaluateRecon(
-        [{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532 }],
+        [{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532, behindCursor: 9880 }],
         [],
         [{ table: "bookings", cursorTs: "2026-08-03T03:00:00.000Z", newestTs: "2026-08-03T06:00:00.000Z", lagMs: 3 * 60 * 60_000, backlog: 540 }],
       ).reasons,
     ) },
   { key: "snowflake_reconcile_drift", state: "the cause could not be measured", channel: "alert",
     text: snowflakeDriftAlert(
-      evaluateRecon([{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532 }], []).reasons,
+      evaluateRecon([{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532, behindCursor: 9880 }], []).reasons,
     ) },
   { key: "snowflake_reconcile_drift", state: "the warehouse count cannot be trusted", channel: "alert",
     text: snowflakeDriftAlert(
       evaluateRecon(
-        [{ table: "routing_decisions", supabase: 51002, snowflake: 51002, drift: 0 }],
+        [{ table: "routing_decisions", supabase: 51002, snowflake: 51002, drift: 0, behindCursor: 51001 }],
         [{ table: "routing_decisions", id: "rd_4f21c8", foundInSnowflake: false }],
       ).reasons,
     ) },

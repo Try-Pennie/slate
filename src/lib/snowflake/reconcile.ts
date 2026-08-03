@@ -60,6 +60,7 @@ interface ReconBuilder extends PromiseLike<ReconRead> {
   limit(n: number): ReconBuilder;
   is(col: string, val: null): ReconBuilder;
   eq(col: string, val: boolean): ReconBuilder;
+  lt(col: string, val: string): ReconBuilder;
   maybeSingle(): PromiseLike<ReconRead>;
 }
 interface ReconDb {
@@ -74,6 +75,37 @@ async function countSupabase(db: ReconDb, table: string): Promise<number> {
   const q = applySkipRedacted(table, db.from(table).select("*", { count: "exact", head: true }));
   const { count, error } = await q;
   if (error) throw new Error(`reconcile count ${table}: ${error.message}`);
+  return count ?? 0;
+}
+
+/**
+ * Exportable rows strictly BEHIND the export cursor (#1231).
+ *
+ * The set the warehouse should already hold in full. Two details it must get
+ * right, or the comparison it feeds is meaningless:
+ *
+ *   - the SAME skip predicate as the export fetch and the total count, so a
+ *     redacted row (deliberately never exported) is not counted as missing;
+ *   - STRICT `<`. The cursor is a composite (watermark, id) keyset, so rows AT the
+ *     cursor timestamp may be mid-page. Excluding them undercounts by at most one
+ *     page's worth of ties, which is the safe direction for a signal that pages.
+ *
+ * Fails loud: a count that errored and came back as 0 would say "nothing is behind
+ * the cursor", which reads exactly like a healthy mirror (#1165).
+ */
+async function countBehindCursor(
+  db: ReconDb,
+  table: string,
+  watermark: string,
+  cursorTs: string,
+): Promise<number> {
+  // cap-safe: head:true is a server-side count, no rows returned.
+  const q = applySkipRedacted(table, db.from(table).select("*", { count: "exact", head: true })).lt(
+    watermark,
+    cursorTs,
+  );
+  const { count, error } = await q;
+  if (error) throw new Error(`reconcile behind-cursor count ${table}: ${error.message}`);
   return count ?? 0;
 }
 
@@ -155,7 +187,9 @@ export async function reconcileSnowflakeMirror(): Promise<ReconOutcome> {
   for (const spec of MIRROR_TABLES) {
     const supabase = await countSupabase(db, spec.table);
     const snowflake = await countSnowflake(config, spec.table);
-    tables.push({ table: spec.table, supabase, snowflake, drift: supabase - snowflake });
+    const cursorTs = lags.find((l) => l.table === spec.table)?.cursorTs ?? null;
+    const behindCursor = cursorTs === null ? null : await countBehindCursor(db, spec.table, spec.watermark, cursorTs);
+    tables.push({ table: spec.table, supabase, snowflake, drift: supabase - snowflake, behindCursor });
   }
   const controls: ControlCheck[] = [];
   for (const c of CONTROL_TABLES) {

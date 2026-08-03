@@ -369,6 +369,29 @@ When you write the opt-out, say which way it fails. `hasBlockingBusy` fails
 rests entirely on its `Math.max` / `Math.min` and `os >= oe` ordering, which is
 why a test pins it. Do not restructure that comparison without rechecking it.
 
+# Backfilling a mirrored table (the `export-cursor-ok:` convention)
+
+The Snowflake export walks each mirrored table on a **strictly forward** keyset over
+its watermark (`export_cursor`), so a row committed with a watermark EARLIER than
+the cursor is never fetched again and the mirror never gets it. A backfill or
+correction is exactly when someone writes rows with old timestamps: on 2026-08-03 a
+269 row OOO audit backfill stranded 251 rows this way, and the only symptom was a
+drift page hours later (#1231).
+
+**A backfill owns its own reachability: rewind that table's `export_cursor` in the
+same change as the write.** Re-exporting is safe (the load is a MERGE on `id` with
+no DELETE). `scripts/sql/backfill-ooo-audit-1220.sql` is the worked example and
+`docs/migrations-runbook.md` has the statement plus the temporary retention pause it
+causes.
+
+`scripts/test-mirror-backfill-cursor.ts` fails a migration or script that writes a
+mirrored table's watermark column with no rewind in the same file. DML inside a
+`$tag$ ... $tag$` function body is out of scope (it runs with a current watermark),
+as is `src/` runtime code. The escape hatch is `-- export-cursor-ok: <why>` (`//` in
+TS) on or above the write. Hand-run SQL is out of reach of any repo scan, so the
+6-hourly reconcile lane also counts rows strictly behind the cursor against the
+warehouse count, which pages on a single stranded row with no tolerance.
+
 # Read alert copy before it ships (`pnpm preview:alerts`, #1153)
 
 Alert copy is a contract with a person holding a phone mid-incident, and it was

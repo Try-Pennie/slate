@@ -134,4 +134,35 @@ where r.legacy_request_id is null
       and a.details->>'ooo_request_id' = r.id::text
   );
 
+-- 5. Make the rebuilt rows reachable to the Snowflake export (#1231).
+--
+-- The export walks audit_log on a strictly forward keyset over created_at
+-- (src/lib/snowflake/export.ts, position in export_cursor), so a row inserted
+-- BEHIND the cursor is never fetched again. Every row above carries a historical
+-- created_at, which is exactly that case: on 2026-08-03 it stranded 251 of 278
+-- rows, the only symptom was a drift page hours later, and the cursor had to be
+-- rewound by hand. A backfill owns its own reachability, so the rewind belongs
+-- here.
+--
+-- Clearing last_id makes the next export tick walk the table from the start (the
+-- keyset is only applied when both halves are set). Re-exporting is safe: the
+-- warehouse load is a MERGE on id with UPDATE and INSERT and no DELETE
+-- (src/lib/snowflake/merge.ts), so it cannot duplicate or destroy a warehouse row.
+--
+-- The `exists` makes this a no-op once the export has caught up, so re-running the
+-- file does not restart a full export. Side effect while the cursor sits behind:
+-- export-lag reads audit_log as lagging and the retention lanes refuse to delete
+-- (the safe direction), clearing on a later export tick.
+update export_cursor c
+set last_ts = (select min(created_at) from audit_log),
+    last_id = null
+where c.key = 'audit_log'
+  and exists (
+    select 1
+    from audit_log a
+    where a.details->>'reconstructed' = 'true'
+      and c.last_ts is not null
+      and a.created_at < c.last_ts
+  );
+
 commit;
