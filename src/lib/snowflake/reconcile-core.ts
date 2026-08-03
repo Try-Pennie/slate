@@ -31,6 +31,14 @@ export interface TableRecon {
   snowflake: number;
   /** Supabase minus Snowflake: positive = Snowflake is behind. */
   drift: number;
+  /**
+   * Exportable rows strictly BEHIND the export cursor (#1231), or null when the
+   * table has no cursor yet, in which case no row can be behind one.
+   *
+   * Never 0 to mean "the read failed": a failed count throws, because a zero here
+   * is indistinguishable from a healthy mirror.
+   */
+  behindCursor: number | null;
 }
 
 export interface ControlCheck {
@@ -114,6 +122,32 @@ export function evaluateRecon(
     );
   }
   for (const t of tables) {
+    // The EXACT reading first (#1231), and it is authoritative: a row strictly
+    // behind the cursor was already walked past, so the warehouse should hold it.
+    // Every legitimate difference goes the other way (rows AT the cursor, rows
+    // retention later deleted from Supabase, redacted rows the warehouse still
+    // holds), which is why this needs no tolerance and can see a single stranded
+    // row where the total-count comparison below needs 25 or 2%.
+    //
+    // Two facts this rests on, both worth rechecking before changing it: the
+    // cursor advances ONLY after a confirmed terminal MERGE (#1099), so a row
+    // behind it was demonstrably written; and nothing ever DELETEs from the
+    // warehouse (the erasure purge updates in place, purge-sql.ts), so its count
+    // cannot shrink and make this fire spuriously.
+    //
+    // "At least", because a warehouse holding those legitimate extras understates
+    // the gap. The count is a floor, and the reason says so.
+    if (t.behindCursor !== null && t.behindCursor > t.snowflake) {
+      const missing = t.behindCursor - t.snowflake;
+      reasons.push(
+        `${t.table}: at least ${missing} ${missing === 1 ? "row that sits" : "rows that sit"} behind the export ` +
+          `watermark ${missing === 1 ? "is" : "are"} missing from the warehouse (${t.behindCursor} rows sit ` +
+          `behind the cursor, ${t.snowflake} are in Snowflake), so ${missing === 1 ? "it was" : "they were"} ` +
+          `written behind the cursor and will never export on ${missing === 1 ? "its" : "their"} own until ` +
+          `re-exported (src/lib/snowflake/reexport.ts)`,
+      );
+      continue; // one missing-rows reason per table: a count beats an estimate
+    }
     // Only "Snowflake is BEHIND" is a fault (the mirror is losing/lagging rows).
     // "Snowflake ahead" (more rows than Supabase) is EXPECTED once export-gated
     // retention (#1102) prunes aged rows from Supabase while the warehouse keeps

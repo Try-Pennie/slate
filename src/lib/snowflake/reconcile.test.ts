@@ -21,6 +21,10 @@ const t = (table: string, supabase: number, snowflake: number): TableRecon => ({
   supabase,
   snowflake,
   drift: supabase - snowflake,
+  // Unmeasured by default, so these cases exercise the total-count path; the
+  // exact behind-the-watermark reading (#1231) is set explicitly where it is
+  // under test.
+  behindCursor: null,
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -141,6 +145,77 @@ describe("evaluateRecon drift cause (#1230)", () => {
     expect(r.reasons[0]).not.toMatch(/Infinity/);
   });
 
+  /**
+   * #1231: the EXACT reading. Every row strictly behind the cursor should already
+   * be in the warehouse, and every legitimate difference (rows at the cursor, rows
+   * retention later deleted from Supabase, redacted rows the warehouse still
+   * holds) makes the warehouse BIGGER. So `behindCursor > snowflake` needs no
+   * tolerance and catches a single stranded row, where the total-count drift needs
+   * 25 rows or 2% before it can speak.
+   */
+  it("flags rows behind the watermark that the warehouse lacks, even under the drift tolerance", () => {
+    const r = evaluateRecon(
+      [{ table: "audit_log", supabase: 300, snowflake: 295, drift: 5, behindCursor: 299 }],
+      [],
+      [lag("audit_log")],
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons[0]).toMatch(/at least 4 rows/);
+    expect(r.reasons[0]).toMatch(/behind the export watermark/);
+    expect(r.reasons[0]).toMatch(/reexport\.ts/);
+  });
+
+  it("catches a single stranded row", () => {
+    const r = evaluateRecon(
+      [{ table: "booking_events", supabase: 1086, snowflake: 1084, drift: 2, behindCursor: 1085 }],
+      [],
+      [lag("booking_events")],
+    );
+    expect(r.reasons[0]).toMatch(/at least 1 row that sits behind the export watermark is missing/);
+  });
+
+  it("reads as plain English in the plural too", () => {
+    const r = evaluateRecon(
+      [{ table: "audit_log", supabase: 300, snowflake: 295, drift: 5, behindCursor: 299 }],
+      [],
+      [lag("audit_log")],
+    );
+    expect(r.reasons[0]).toMatch(/at least 4 rows that sit behind the export watermark are missing/);
+  });
+
+  it("is quiet when the warehouse holds MORE than the rows behind the cursor", () => {
+    // The normal state once retention prunes Supabase and redaction skips rows.
+    const r = evaluateRecon(
+      [{ table: "routing_decisions", supabase: 100, snowflake: 400, drift: -300, behindCursor: 99 }],
+      [],
+      [lag("routing_decisions")],
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("says nothing about stranding when nothing has been exported yet", () => {
+    // No cursor means no rows are behind it; the lag path is what speaks here.
+    const r = evaluateRecon(
+      [{ table: "audit_log", supabase: 278, snowflake: 0, drift: 278, behindCursor: null }],
+      [],
+      [lag("audit_log", { cursorTs: null, lagMs: Number.POSITIVE_INFINITY, backlog: 278 })],
+    );
+    expect(r.reasons[0]).toMatch(/nothing has ever been exported/);
+    expect(r.reasons.filter((x) => /behind the export watermark/.test(x))).toHaveLength(0);
+  });
+
+  it("reports one missing-rows reason per table, not two", () => {
+    // The exact reading and the tolerance drift would both fire here; the exact
+    // one is authoritative, so the reader gets a count and not an estimate twice.
+    const r = evaluateRecon(
+      [{ table: "audit_log", supabase: 278, snowflake: 27, drift: 251, behindCursor: 277 }],
+      [],
+      [lag("audit_log")],
+    );
+    expect(r.reasons).toHaveLength(1);
+    expect(r.reasons[0]).toMatch(/at least 250 rows/);
+  });
+
   it("does not attach a cause to a positive-control failure (it is not about lag)", () => {
     const r = evaluateRecon([t("bookings", 5, 5)], [{ table: "bookings", id: "oldest", foundInSnowflake: false }], []);
     expect(r.reasons[0]).toMatch(/positive control failed/);
@@ -251,7 +326,7 @@ describe("reconcileSnowflakeMirror", () => {
   const dbWithCount = (count: number) => ({
     from() {
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "order", "limit", "is", "eq"]) b[m] = () => b;
+      for (const m of ["select", "order", "limit", "is", "eq", "lt"]) b[m] = () => b;
       b.maybeSingle = async () => ({ data: { id: "oldest" }, error: null });
       b.then = (resolve: (v: { count: number; data: unknown[]; error: null }) => unknown) =>
         resolve({ count, data: [], error: null });
@@ -259,7 +334,7 @@ describe("reconcileSnowflakeMirror", () => {
     },
   });
 
-  it("feeds the measured export lag into the drift reason (#1230)", async () => {
+  it("feeds the measured export lag into the reason (#1230/#1231)", async () => {
     configured();
     vi.mocked(supabaseAdmin).mockReturnValue(dbWithCount(300) as never);
     // Every mirrored table's lane is current, so a drift can only be rows sitting
@@ -270,9 +345,96 @@ describe("reconcileSnowflakeMirror", () => {
 
     const r = await reconcileSnowflakeMirror();
 
+    // The cursor position only reaches this reason via the lag reading: without it
+    // the table's behindCursor is unmeasured and the copy falls back to the
+    // unknown-cause wording (proved by the failure-path test below).
     const auditReason = r.reasons.find((x) => x.startsWith("audit_log:"));
-    expect(auditReason).toMatch(/295 of these rows sit behind/);
+    expect(auditReason).toMatch(/at least 295 rows that sit behind the export watermark are missing/);
     expect(auditReason).toMatch(/will never export on their own/);
+  });
+
+  it("counts the rows behind the cursor with the skip predicate and the table's own watermark (#1231)", async () => {
+    configured();
+    const invocations: { table: string; methods: { m: string; args: unknown[] }[] }[] = [];
+    const db = {
+      from(table: string) {
+        const methods: { m: string; args: unknown[] }[] = [];
+        invocations.push({ table, methods });
+        const b: Record<string, unknown> = {};
+        for (const m of ["select", "order", "limit", "is", "eq", "lt"]) {
+          b[m] = (...args: unknown[]) => {
+            methods.push({ m, args });
+            return b;
+          };
+        }
+        b.maybeSingle = async () => ({ data: { id: "oldest" }, error: null });
+        b.then = (resolve: (v: { count: number; data: unknown[]; error: null }) => unknown) =>
+          resolve({ count: 300, data: [], error: null });
+        return b;
+      },
+    };
+    vi.mocked(supabaseAdmin).mockReturnValue(db as never);
+    vi.mocked(measureExportLag).mockResolvedValue([
+      { table: "bookings", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+      { table: "audit_log", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+    ] as never);
+
+    const r = await reconcileSnowflakeMirror();
+
+    // bookings is watermarked on updated_at and skips redacted rows; the
+    // behind-cursor read must carry BOTH, or it counts a different set than the
+    // export sent and the comparison is meaningless.
+    const behind = invocations.find(
+      (v) => v.table === "bookings" && v.methods.some((m) => m.m === "lt" && m.args[0] === "updated_at"),
+    );
+    expect(behind).toBeDefined();
+    expect(behind?.methods.some((m) => m.m === "lt" && m.args[1] === "2026-08-03T12:00:00.000Z")).toBe(true);
+    expect(behind?.methods.some((m) => m.m === "is" && m.args[0] === "pii_redacted_at")).toBe(true);
+    // audit_log is watermarked on created_at, not updated_at.
+    const auditBehind = invocations.find(
+      (v) => v.table === "audit_log" && v.methods.some((m) => m.m === "lt" && m.args[0] === "created_at"),
+    );
+    expect(auditBehind).toBeDefined();
+    expect(r.tables.find((x) => x.table === "audit_log")?.behindCursor).toBe(300);
+  });
+
+  it("leaves behindCursor unmeasured when the table has no cursor yet", async () => {
+    configured();
+    vi.mocked(supabaseAdmin).mockReturnValue(dbWithCount(300) as never);
+    vi.mocked(measureExportLag).mockResolvedValue([
+      { table: "audit_log", cursorTs: null, newestTs: "2026-08-03T12:00:00.000Z", lagMs: Infinity, backlog: 300 },
+    ] as never);
+
+    const r = await reconcileSnowflakeMirror();
+
+    expect(r.tables.find((x) => x.table === "audit_log")?.behindCursor).toBeNull();
+  });
+
+  it("throws rather than reporting zero when the behind-cursor count errors", async () => {
+    // A failed count that read as 0 would mean "nothing is behind the cursor",
+    // which is indistinguishable from a healthy mirror (#1165). Fail loud: the
+    // route 500s, the heartbeat is not stamped, and the lane watchdog pages.
+    configured();
+    const db = {
+      from() {
+        const b: Record<string, unknown> = {};
+        for (const m of ["select", "order", "limit", "is", "eq"]) b[m] = () => b;
+        b.lt = () => ({
+          then: (resolve: (v: { count: null; data: null; error: { message: string } }) => unknown) =>
+            resolve({ count: null, data: null, error: { message: "column updated_at does not exist" } }),
+        });
+        b.maybeSingle = async () => ({ data: { id: "oldest" }, error: null });
+        b.then = (resolve: (v: { count: number; data: unknown[]; error: null }) => unknown) =>
+          resolve({ count: 300, data: [], error: null });
+        return b;
+      },
+    };
+    vi.mocked(supabaseAdmin).mockReturnValue(db as never);
+    vi.mocked(measureExportLag).mockResolvedValue([
+      { table: "bookings", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+    ] as never);
+
+    await expect(reconcileSnowflakeMirror()).rejects.toThrow(/does not exist/);
   });
 
   it("still reports the drift when the lag measurement itself fails, with an honest unknown cause", async () => {
