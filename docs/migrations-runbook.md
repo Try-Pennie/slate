@@ -38,6 +38,11 @@ rather than reasoning it out per PR.
    That is expected: the migration is not on prod yet.
 4. **Apply to prod:**
 
+   <!-- runbook-unverified: applies pending migrations to production, so it cannot be run
+        on demand to prove itself (with nothing pending it is a no-op that proves nothing,
+        and with something pending it is the real schema change). Its EFFECT is verified
+        instead, by step 7's read-back below. -->
+
    ```
    supabase db push
    ```
@@ -52,8 +57,26 @@ rather than reasoning it out per PR.
 6. **Merge.** The push to main deploys the code, now that its schema is already in
    place.
 7. **Verify.** On the next monitor tick the `migration-drift` log line should read
-   `status=in-sync`. To confirm the schema directly, the applied set is readable via
+   `status=in-sync`. To confirm the schema directly, read the applied set back via
    the `applied_migration_versions()` RPC (server-only; deny-all to API clients).
+   Run this as an admin in the Supabase SQL editor:
+
+   <!-- runbook-verified: 2026-08-03 (31d188fb) run against production; returned
+        highest_applied 0094 across 94 rows, matching SHIPPED_MIGRATION_VERSION and the
+        highest file supabase/migrations/0094_agent_calendar_watch_health.sql -->
+
+   ```
+   select max(v) as highest_applied, count(*) as applied_count
+   from (select unnest(applied_migration_versions()) as v) t
+   where v ~ '^[0-9]{4}$';
+   ```
+
+   `highest_applied` must equal `SHIPPED_MIGRATION_VERSION` in
+   `src/lib/db/migration-version.ts`. The `^[0-9]{4}$` filter is the same one the
+   prod lag monitor applies, so a migration applied through the Supabase MCP tool
+   (which records a 14-digit timestamp version) is invisible here exactly as it is
+   to the monitor. That is the point: if a migration you just applied does not show
+   up, you applied it the wrong way.
 
 ## Notes
 

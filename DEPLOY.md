@@ -15,6 +15,10 @@ prompts, so values never land in a transcript).
   build time; `NEXT_PUBLIC_APP_URL` is set to `https://slate.trypennie.app`).
 
 ## 1. Authenticate
+<!-- runbook-unverified: an interactive browser OAuth flow, so it cannot be executed
+     non-interactively. Its EFFECT (a working wrangler login) is what every other
+     wrangler step in this file depends on and demonstrates. -->
+
 ```bash
 cd ~/Documents/Slate
 wrangler login
@@ -40,6 +44,14 @@ not read at runtime.
 ### 2b. Runtime secrets (`wrangler secret put`, entered at prompts)
 Sensitive values the Worker reads at runtime. Paste each (from `.env.local`) when
 prompted. The **required** ones each break a core feature when unset:
+
+<!-- runbook-unverified: each line WRITES a live Worker secret, so running them would
+     overwrite production config. The NAMES are checked both directions on every push by
+     scripts/test-deploy-env-coverage.ts: a var the app reads that is missing here fails
+     the build, and a name here that nothing reads fails it too. A `wrangler secret list`
+     on 2026-08-03 additionally confirmed which are SET in production; see the note
+     directly below. -->
+
 ```bash
 wrangler secret put SUPABASE_SECRET_KEY    # required; server DB access (bypasses RLS). Unset = every server route + cron fails.
 wrangler secret put GOOGLE_CLIENT_ID        # required; Google SSO login. Unset = nobody can sign in.
@@ -65,6 +77,25 @@ wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct bo
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
 wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
+
+**Which of these are actually set (measured 2026-08-03, #1200).** A
+`wrangler secret list` against the live Worker returned 20 secrets. Every name in
+this file is either set or deliberately not, and nothing is set that this file
+does not document. The three not set:
+
+1. `BOOKING_API_KEY_2` is correctly absent. It is the commented line above, set
+   only during a key rotation.
+2. `SLACK_INFO_CHANNEL` is unset, so info-only alerts fall back to
+   `SLACK_ALERTS_CHANNEL` as documented. That works, but it means the quieter
+   channel separation (#567) is not actually in effect today.
+3. `BOOKABLE_API_KEY` is unset, so `POST /api/users/bookable` really does return
+   `503 {"error":"bookable api not configured"}` in production right now
+   (measured, not inferred). Its two siblings return `401`, so they are
+   configured and this one is genuinely off. The consequence is narrow: an admin
+   can still promote an agent into the booking pool through the admin UI, which
+   runs the same guarded path (`src/app/admin/actions.ts:555`). What cannot
+   happen is the roster or onboarding automation doing it programmatically. Set
+   the key if that automation is meant to be live.
 
 ### 2c. Runtime vars (`wrangler.jsonc` under `vars`, committed and redeployed)
 Non-secret config + launch flags. They live in `wrangler.jsonc` (version-controlled
@@ -92,14 +123,24 @@ Change one by editing `wrangler.jsonc` and redeploying.
   `booking_settings`) always wins over this.
 - `SNOWFLAKE_ACCOUNT` / `SNOWFLAKE_USER` / `SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA`
   / `SNOWFLAKE_WAREHOUSE` / `SNOWFLAKE_ROLE`: non-secret connection config for the
-  archival mirror export lane (milestone #15). `SNOWFLAKE_ACCOUNT` is the URL prefix
-  (locator plus region, e.g. `ab12345.us-east-1`); the rest default to
+  archival mirror export lane (milestone #15). `SNOWFLAKE_ACCOUNT` is the account
+  URL prefix, the part before `.snowflakecomputing.com`. Slate's is
+  `vrkfjso-rwc54963` (the `orgname-accountname` form). This bullet used to say
+  "locator plus region, e.g. `ab12345.us-east-1`", which is a form Snowflake also
+  accepts but is **not** the one this account uses, so a rebuild-from-scratch
+  deploy following it would set an account that cannot authenticate (#1200).
+  `docs/snowflake-setup.md` step 4 derives the value. The rest default to
   `SLATE_SERVICE` / `SLATE` / `PUBLIC` / `SLATE_WH` / `SLATE_ROLE` as provisioned by
   `docs/snowflake-setup.sql`. The paired secret is `SNOWFLAKE_PRIVATE_KEY` (2b).
   With the private key unset the export lane is a safe no-op. Full setup:
   `docs/snowflake-setup.md`.
 
 ## 3. Build + deploy
+<!-- runbook-verified: 2026-08-03 (e753ab99) this exact command is what CI runs on every
+     push to main (.github/workflows/ci.yml, the deploy job), so it is executed several
+     times a week against the real target. Most recent success 2026-08-03 for PR #1221,
+     followed by a green post-deploy probe. -->
+
 ```bash
 pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm builtin)
 ```
@@ -286,9 +327,23 @@ Both the app and its crons run on the single **main** Worker, so a rollback is o
 command. Redeploys are versioned by Cloudflare; roll back to the previous good
 version when a deploy breaks production.
 
+Find the last-known-good version id:
+
+<!-- runbook-unverified: read-only and safe, but it needs an interactive wrangler login
+     this environment does not hold. Awaiting an operator run. -->
+
 ```bash
-wrangler deployments list        # find the last-known-good version id
-wrangler rollback [<version-id>] # omit the id to roll back to the immediately prior version
+wrangler deployments list
+```
+
+Then roll back to it (omit the id to roll back to the immediately prior version):
+
+<!-- runbook-unverified: re-points production traffic, so it cannot be rehearsed against
+     the live Worker. The paragraph below says to dry-run the whole flow deliberately
+     before you need it in anger; that rehearsal is the only real proof of this step. -->
+
+```bash
+wrangler rollback [<version-id>]
 ```
 
 `wrangler rollback` re-points traffic to an already-uploaded version; it does not

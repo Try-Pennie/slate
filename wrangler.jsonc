@@ -61,9 +61,11 @@
 		// Snowflake archival mirror (milestone #15). Non-secret connection config;
 		// the paired secret is SNOWFLAKE_PRIVATE_KEY (wrangler secret put). The
 		// export lane is a safe no-op until the private key is set, so an empty
-		// account here ships harmlessly. Set SNOWFLAKE_ACCOUNT to the account URL
-		// prefix (locator plus region, e.g. ab12345.us-east-1) per
-		// docs/snowflake-setup.md. The rest match docs/snowflake-setup.sql.
+		// account here ships harmlessly. SNOWFLAKE_ACCOUNT is the account URL
+		// prefix: the part before .snowflakecomputing.com. Slate's is the
+		// orgname-accountname form below, NOT the locator-plus-region form this
+		// comment used to give as an example (#1200). docs/snowflake-setup.md
+		// step 4 derives it. The rest match docs/snowflake-setup.sql.
 		"SNOWFLAKE_ACCOUNT": "vrkfjso-rwc54963",
 		"SNOWFLAKE_USER": "SLATE_SERVICE",
 		"SNOWFLAKE_DATABASE": "SLATE",
