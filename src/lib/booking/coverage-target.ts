@@ -26,6 +26,19 @@ export interface CoverageTargetDeps {
   verifyFree(emails: string[], startIso: string, endIso: string): Promise<VerifyResult>;
   /** One agent's working-hours schedule (timezone + rules), for the cap's local day. */
   agentWorkingHours(userId: string): Promise<{ timezone: string; rules: WorkingRule[] }>;
+  /**
+   * Which of `userIds` have APPROVED time off overlapping [startIso, endIso).
+   *
+   * Authoritative, and deliberately not derived from Google or from `busy_blocks`
+   * (#1236): see the note in `selectCoverageReassignTarget` for why neither can be
+   * trusted for this. Throwing is the correct behavior on a read error; the caller
+   * turns it into a retry rather than guessing.
+   */
+  userIdsOnApprovedTimeOff(
+    userIds: string[],
+    startIso: string,
+    endIso: string,
+  ): Promise<Set<string>>;
   /** One agent's active booking starts (epoch-ms) in [fromIso, toIso), excluding a booking. */
   agentActiveBookingStartsMs(
     userId: string,
@@ -49,6 +62,16 @@ export interface CoverageTargetDeps {
  * each committed move is reflected in the next pick's count (#973's serialization).
  * `anyUnverified` distinguishes a genuine no-coverage miss from a verify outage so
  * the engine can report vs retry (see `selectReassignTarget`).
+ *
+ * Approved time off is checked SEPARATELY from freeness, and it has to be (#1236).
+ * Live Google is the only freeness signal here, so an agent on approved leave is
+ * excluded only because `runPostApproval` managed to put an event on their calendar.
+ * That write is best-effort: when it fails, the OOO flow falls back to a
+ * slate-source `busy_blocks` row, which availability can see and this selection
+ * cannot, by design. Two agents off the same week plus one failed Google write was
+ * therefore enough to place every booking swept off the first onto the second, who
+ * was also away, which is #1219 recreated by the fix for #1219. `ooo_requests` is
+ * the one signal that does not depend on Google having accepted anything.
  */
 export async function selectCoverageReassignTarget(
   ctx: { booking: Booking; bucket: Bucket; eventType: EventType },
@@ -56,7 +79,25 @@ export async function selectCoverageReassignTarget(
 ): Promise<SelectionOutcome> {
   const { booking, bucket, eventType } = ctx;
   const { startIso, endIso } = bookingWindow(booking.starts_at, eventType.duration_min);
-  const candidates = await deps.orderedEligibleIds(bucket);
+  const ordered = await deps.orderedEligibleIds(bucket);
+
+  // The out agent is excluded from the time-off read as well as from selection:
+  // they are the reason this sweep exists, so asking whether they are away is a
+  // wasted row. `selectReassignTarget` still excludes them from placement.
+  const askable = ordered.filter((id) => id !== booking.assigned_user_id);
+  let candidates: string[];
+  try {
+    const away = await deps.userIdsOnApprovedTimeOff(askable, startIso, endIso);
+    candidates = ordered.filter((id) => !away.has(id));
+  } catch {
+    // FAIL CLOSED, and specifically as an OUTAGE rather than as no-coverage. An
+    // `unplaceable` outcome is terminal in the bulk engine, so treating an
+    // unreadable time-off check as "nobody available" would let one database
+    // hiccup strand a customer's booking on an absent agent permanently. Reporting
+    // it unverified reuses the retry path a Google verify outage already takes, and
+    // never places the booking on an agent we could not check.
+    return { assignment: null, anyUnverified: true };
+  }
 
   // Cap is checked ONLY for a confirmed-free candidate (in `selectReassignTarget`),
   // so an uncapped event type or a busy agent never triggers these reads.

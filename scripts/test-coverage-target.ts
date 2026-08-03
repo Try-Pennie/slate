@@ -11,6 +11,11 @@ import type { EventType } from "../src/lib/db/types.ts";
 import { bucket, eventType, makeBooking } from "./lib/booking-fakes.ts";
 import { assert, finish } from "./lib/harness.ts";
 
+// Nobody on approved time off: the baseline for every case that is not about the
+// #1236 filter. Required rather than optional, so a new call site cannot forget to
+// answer "is this agent actually away" and silently fall back to Google alone.
+const noneOnTimeOff = async () => new Set<string>();
+
 const emailOf: Record<string, string> = { a: "a@x.com", b: "b@x.com", c: "c@x.com" };
 const loadEmails = async (ids: string[]) => {
   const m = new Map<string, string>();
@@ -62,6 +67,7 @@ async function run() {
       verifyFree: v.fn,
       agentWorkingHours: cap.agentWorkingHours,
       agentActiveBookingStartsMs: cap.agentActiveBookingStartsMs,
+      userIdsOnApprovedTimeOff: noneOnTimeOff,
     },
   );
   assert(r.assignment?.userId === "b", "the out agent is excluded; the first free other agent wins");
@@ -94,6 +100,7 @@ async function run() {
       verifyFree: v.fn,
       agentWorkingHours: cap.agentWorkingHours,
       agentActiveBookingStartsMs: cap.agentActiveBookingStartsMs,
+      userIdsOnApprovedTimeOff: noneOnTimeOff,
     },
   );
   assert(r.assignment?.userId === "c", "a free-but-at-cap agent is passed over for a free under-cap one");
@@ -118,9 +125,87 @@ async function run() {
       verifyFree: v.fn,
       agentWorkingHours: cap.agentWorkingHours,
       agentActiveBookingStartsMs: cap.agentActiveBookingStartsMs,
+      userIdsOnApprovedTimeOff: noneOnTimeOff,
     },
   );
   assert(r.assignment === null, "no free eligible agent yields an unplaceable (null) target");
+
+  // --- #1236: a candidate on approved time off is never a coverage target -----
+  //
+  // Freeness here is LIVE Google only, and it never reads busy_blocks (see the
+  // header). That is correct for a churning cache, but it means an agent on
+  // approved time off is excluded ONLY because runPostApproval put an event on
+  // their Google calendar. That write is best-effort: when it fails, the OOO flow
+  // falls back to a slate-source busy_block, which availability can see and this
+  // selection cannot. So two agents off the same week plus one failed Google
+  // write placed every booking swept off the first onto the second, who was also
+  // away: #1219 recreated by the fix for #1219. `ooo_requests` is authoritative
+  // because it does not depend on Google having accepted anything.
+  const awayDeps = (
+    onTimeOff: (ids: string[]) => Promise<Set<string>>,
+    ordered: string[] = ["b", "c"],
+  ) => {
+    v = verifier(new Set(["a@x.com", "b@x.com", "c@x.com"])); // Google says everyone is free
+    cap = capDeps();
+    return {
+      orderedEligibleIds: async () => ordered,
+      loadEmails,
+      verifyFree: v.fn,
+      agentWorkingHours: cap.agentWorkingHours,
+      agentActiveBookingStartsMs: cap.agentActiveBookingStartsMs,
+      userIdsOnApprovedTimeOff: onTimeOff,
+    };
+  };
+
+  const timeOffCalls: { ids: string[]; startIso: string; endIso: string }[] = [];
+  r = await selectCoverageReassignTarget({ booking, bucket, eventType }, {
+    ...awayDeps(async () => new Set(["b"])),
+    userIdsOnApprovedTimeOff: async (ids: string[], startIso: string, endIso: string) => {
+      timeOffCalls.push({ ids, startIso, endIso });
+      return new Set(["b"]);
+    },
+  });
+  assert(
+    r.assignment?.userId === "c",
+    "an agent on approved time off is skipped even when Google reports them free",
+  );
+  assert(
+    timeOffCalls[0]?.startIso === "2026-06-08T13:00:00.000Z",
+    "the time-off check is asked about the booking's own window, not the coverage range",
+  );
+
+  // An agent whose approved time off does NOT overlap stays selectable, so the
+  // filter cannot quietly shrink the pool for everyone with any time off booked.
+  r = await selectCoverageReassignTarget(
+    { booking, bucket, eventType },
+    awayDeps(async () => new Set()),
+  );
+  assert(
+    r.assignment?.userId === "b",
+    "an agent with no overlapping time off is still selected first",
+  );
+
+  // The failure path, and the reason it is `unverified` rather than unplaceable:
+  // an unplaceable item is TERMINAL (bulk-reassign.ts), so a transient read error
+  // must never land there or one database hiccup strands the booking for good.
+  // Reporting it as unverified reuses the outage semantics the engine already has,
+  // which retries the item and only then settles it as `failed` (actionable).
+  // It must also never fall through to a placement: the whole point is that we
+  // cannot tell whether these agents are away.
+  r = await selectCoverageReassignTarget(
+    { booking, bucket, eventType },
+    awayDeps(async () => {
+      throw new Error("ooo read failed");
+    }),
+  );
+  assert(
+    r.assignment === null,
+    "a failed time-off read never places the booking (fails closed, not open)",
+  );
+  assert(
+    r.anyUnverified === true,
+    "a failed time-off read reports unverified, so the item retries instead of settling unplaceable",
+  );
 }
 
 await run();
