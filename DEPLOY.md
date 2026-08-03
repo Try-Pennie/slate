@@ -271,6 +271,13 @@ working once verification is done.
 > (`cron-worker/`, now deleted from the repo) double-fired the every-minute and
 > 5-minute jobs and was the only place the unlocked `*/15` Salesforce sync ran.
 > After deploying the main Worker, retire it once with `wrangler delete slate-cron`.
+>
+> **Done, confirmed 2026-08-03 (#1200).** `wrangler deployments list --name
+> slate-cron` returns `This Worker does not exist on your account [code: 10007]`,
+> so the teardown really happened rather than being assumed. Left in place as
+> history: it explains why the repo has no `cron-worker/` and why every trigger
+> lives on the one Worker. Nothing to do here on a fresh deploy, because a
+> rebuild never creates the second Worker in the first place.
 
 ## Verify after deploy
 1. Hit `https://slate.trypennie.app/api/health` → expect HTTP `200` with
@@ -329,8 +336,9 @@ version when a deploy breaks production.
 
 Find the last-known-good version id:
 
-<!-- runbook-unverified: read-only and safe, but it needs an interactive wrangler login
-     this environment does not hold. Awaiting an operator run. -->
+<!-- runbook-verified: 2026-08-03 (b2d44552) run by an operator against the live Worker on
+     wrangler 4.65.0; listed ten uploaded versions with the active one at 100%, so there
+     are real rollback targets rather than an empty list. -->
 
 ```bash
 wrangler deployments list

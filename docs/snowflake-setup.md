@@ -158,10 +158,11 @@ three places in this repo used to give it as the example while production ran on
 the other one (#1200). Take the value this query builds, not one assembled by
 hand:
 
-<!-- runbook-unverified: read-only and safe, but it needs a Snowsight session this
-     environment does not hold. Awaiting an operator run; the value it should return is
-     pinned against the deployed wrangler.jsonc by
-     scripts/test-snowflake-account-docs.ts. -->
+<!-- runbook-verified: 2026-08-03 (42a0225b) run by an operator in Snowsight; returned
+     vrkfjso-rwc54963, character for character the SNOWFLAKE_ACCOUNT the live Worker runs
+     on. That is the whole point of this step, and it is now measured rather than
+     reasoned: the query builds the identifier the Worker needs, in one piece, with no
+     assembly by hand. scripts/test-snowflake-account-docs.ts keeps the two in step. -->
 
 ```sql
 SELECT LOWER(CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME()) AS snowflake_account;
