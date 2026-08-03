@@ -71,7 +71,7 @@ async function requireManageAgent(
   if (!canManageUser(actor.role, targetRole, actor.id === userId)) {
     throw new Error("Not authorized");
   }
-  await recordAudit({ orgId: actor.org_id, actorId: actor.id, action, targetId: userId });
+  await recordAudit({ orgId: actor.org_id, actorId: actor.id, action, targetUserId: userId });
   return actor;
 }
 
@@ -639,7 +639,7 @@ export async function startImpersonation(form: FormData): Promise<void> {
     orgId: admin.org_id,
     actorId: admin.id,
     action: "impersonate.start",
-    targetId: target.id,
+    targetUserId: target.id,
   });
   redirect("/me");
 }
@@ -655,7 +655,7 @@ export async function stopImpersonation(): Promise<void> {
       orgId: real.org_id,
       actorId: real.id,
       action: "impersonate.stop",
-      targetId,
+      targetUserId: targetId,
     });
   }
   redirect("/admin");
@@ -684,7 +684,7 @@ export async function endDroppedImpersonation(
       orgId: real.org_id,
       actorId: real.id,
       action: "impersonate.ended",
-      targetId,
+      targetUserId: targetId,
       details: { reason },
     });
   }
@@ -731,7 +731,7 @@ export async function setOooCalendarId(form: FormData): Promise<void> {
     orgId: admin.org_id,
     actorId: admin.id,
     action: "agent.ooo_calendar",
-    targetId: userId,
+    targetUserId: userId,
     details: { ooo_calendar_id: calendarId || null },
   });
   revalidatePath("/admin");
@@ -790,7 +790,7 @@ export async function setUserRole(form: FormData): Promise<void> {
     orgId: admin.org_id,
     actorId: admin.id,
     action: "role.set",
-    targetId: userId,
+    targetUserId: userId,
     details: { from: current, to: next },
   });
   revalidatePath("/admin");

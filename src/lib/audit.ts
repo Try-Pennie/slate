@@ -62,7 +62,15 @@ export async function recordAudit(entry: {
    *  (the column is nullable, and erase_booking_pii already writes null). */
   actorId: string | null;
   action: AuditAction;
-  targetId?: string | null;
+  /**
+   * The USER this action was about, or null when it was about no one.
+   *
+   * `audit_log.target_id` has a foreign key to `users(id)`, and the admin trail
+   * renders it as a person's name, so nothing else may go here. Passing another
+   * entity's id (an ooo_requests row, #1220) is rejected by the database and the
+   * action goes unrecorded. Put that id in `details` instead.
+   */
+  targetUserId?: string | null;
   details?: Record<string, unknown>;
 }): Promise<void> {
   try {
@@ -70,7 +78,7 @@ export async function recordAudit(entry: {
       org_id: entry.orgId,
       actor_id: entry.actorId ?? null,
       action: entry.action,
-      target_id: entry.targetId ?? null,
+      target_id: entry.targetUserId ?? null,
       details: entry.details ?? {},
     });
     // The shape that actually happens: no exception, just an error nobody read.
@@ -92,7 +100,12 @@ export async function recordAudit(entry: {
  * logged, never swallowed.
  */
 async function reportAuditFailure(
-  entry: { orgId: string; actorId: string | null; action: AuditAction; targetId?: string | null },
+  entry: {
+    orgId: string;
+    actorId: string | null;
+    action: AuditAction;
+    targetUserId?: string | null;
+  },
   reason: string,
 ): Promise<void> {
   log.error("audit", {
@@ -100,7 +113,7 @@ async function reportAuditFailure(
     action: entry.action,
     org_id: entry.orgId,
     actor_id: entry.actorId,
-    target_id: entry.targetId ?? null,
+    target_id: entry.targetUserId ?? null,
     reason,
   });
   // alert-text-ok: `reason` is already shortened to one human line by

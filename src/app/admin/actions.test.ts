@@ -238,7 +238,7 @@ describe("startImpersonation denial branches", () => {
     });
     await expect(stopImpersonation()).rejects.toThrow(/NEXT_REDIRECT:\/admin/);
     expect(recordAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "impersonate.stop", targetId: "agent1" }),
+      expect.objectContaining({ action: "impersonate.stop", targetUserId: "agent1" }),
     );
   });
 });
@@ -257,7 +257,7 @@ describe("endDroppedImpersonation (#652)", () => {
     expect(recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "impersonate.ended",
-        targetId: "agent1",
+        targetUserId: "agent1",
         details: expect.objectContaining({ reason: "expired" }),
       }),
     );
@@ -541,7 +541,7 @@ describe("setUserLifecycle (#278)", () => {
     await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
     expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate");
     expect(recordAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "agent.deactivate", targetId: "u2" }),
+      expect.objectContaining({ action: "agent.deactivate", targetUserId: "u2" }),
     );
   });
 
@@ -550,7 +550,7 @@ describe("setUserLifecycle (#278)", () => {
     await setUserLifecycle(form({ user_id: "u2", action: "reactivate" }));
     expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "reactivate");
     expect(recordAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "agent.reactivate", targetId: "u2" }),
+      expect.objectContaining({ action: "agent.reactivate", targetUserId: "u2" }),
     );
   });
 });

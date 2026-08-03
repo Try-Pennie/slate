@@ -34,7 +34,7 @@ const entry = {
   orgId: "o1",
   actorId: "admin1",
   action: "role.set" as const,
-  targetId: "u2",
+  targetUserId: "u2",
   details: { role: "manager" },
 };
 

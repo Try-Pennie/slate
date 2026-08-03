@@ -20,6 +20,22 @@ import {
 import type { OooRequest, User } from "../src/lib/db/types.ts";
 import { assert, finish } from "./lib/harness.ts";
 
+/**
+ * The audit entry for one action, or null. Every ooo.* audit row records the
+ * agent the request is ABOUT as its target (audit_log.target_id FKs users), and
+ * carries the request id in details instead, where no foreign key applies.
+ */
+function auditFor(w: World, action: string): AuditRecord | null {
+  return w.audits.find((a) => a.action === action) ?? null;
+}
+
+function assertAudited(w: World, action: string, targetUserId: string, requestId: string) {
+  const rec = auditFor(w, action);
+  assert(rec !== null, `${action} audited`);
+  assert(rec!.targetUserId === targetUserId, `${action} targets the agent, not the request`);
+  assert(rec!.requestId === requestId, `${action} records which request it was`);
+}
+
 const baseUser = {
   org_id: "org-1",
   auth_user_id: null,
@@ -73,6 +89,15 @@ const stranger: User = {
   manager_id: null,
 };
 
+interface AuditRecord {
+  action: string;
+  actorId: string;
+  orgId: string;
+  targetUserId: string;
+  requestId: string;
+  details?: Record<string, unknown>;
+}
+
 interface World {
   deps: OooDeps;
   requests: Map<string, OooRequest>;
@@ -83,7 +108,10 @@ interface World {
   createdEvents: { actor: string; calendarId: string; summary: string; id: string }[];
   deletedEvents: { actor: string; calendarId: string; eventId: string }[];
   busyBlocks: Map<string, Record<string, unknown>>;
-  audits: string[];
+  // The WHOLE audit entry, not just the action. Recording only the action is how
+  // #1220 hid for two months: every ooo.* write was failing its target_id
+  // foreign key in prod while this fake happily accepted the request id.
+  audits: AuditRecord[];
   failCalendars: Set<string>;
   failAgentEvent: boolean;
 }
@@ -231,8 +259,24 @@ function makeWorld(): World {
     alertOps: async (key, message) => {
       world.alerts.push({ key, message });
     },
-    recordAudit: async (action) => {
-      world.audits.push(action);
+    // Stands in for the real audit_log insert, INCLUDING its foreign keys:
+    // target_id references users(id), so a target that is not a user in this
+    // world is the exact rejection prod gave us. Fail loud here rather than
+    // recording it, so a repeat of #1220 goes red in this suite.
+    recordAudit: async (entry) => {
+      if (!users.has(entry.targetUserId)) {
+        throw new Error(
+          `audit_log.target_id FKs users(id): "${entry.targetUserId}" is not a user ` +
+            `(action ${entry.action}). A request id is not a user id.`,
+        );
+      }
+      if (!users.has(entry.actorId)) {
+        throw new Error(
+          `audit_log.actor_id FKs users(id): "${entry.actorId}" is not a user ` +
+            `(action ${entry.action}).`,
+        );
+      }
+      world.audits.push(entry);
     },
     appBaseUrl: () => "https://slate.test",
     mainOooCalendarId: () => "main-ooo-cal",
@@ -288,7 +332,8 @@ const input = {
     res.ok && w.requests.get(res.request.id)?.slack_ts === "ts-dm-1",
     "manager message ref stored on the request",
   );
-  assert(w.audits.includes("ooo.submit"), "submit audited");
+  assert(res.ok, "submit succeeded before auditing it");
+  assertAudited(w, "ooo.submit", agent.id, res.ok ? res.request.id : "");
 
   const dup = await submitOoo(agent, input, w.deps);
   assert(
@@ -415,7 +460,7 @@ const input = {
     w.dms.length === 1 && w.dms[0].email === agent.email && w.dms[0].text.includes("approved"),
     "agent DM'd the approval",
   );
-  assert(w.audits.includes("ooo.approve"), "approve audited");
+  assertAudited(w, "ooo.approve", agent.id, r.id);
   assert(
     w.edits.length === 1 && w.edits[0].text.includes("Approved"),
     "manager notification edited to Approved",
@@ -485,6 +530,7 @@ const input = {
   assert(r.rejection_note === "Coverage is too thin that week.", "note stored");
   assert(w.dms[0].text.includes("Coverage is too thin"), "agent DM includes the note");
   assert(w.createdEvents.length === 0, "no calendar events on reject");
+  assertAudited(w, "ooo.reject", agent.id, id);
   assert(
     w.edits.some((e) => e.text.includes("Declined")),
     "manager notification edited to Declined",
@@ -512,6 +558,9 @@ const input = {
   const res = await cancelOoo(id, agent, w.deps);
   assert(res.ok, "requester cancels pending");
   assert(w.requests.get(id)!.status === "cancelled", "status cancelled");
+  // The canceller here is the agent, so actor and target coincide; what matters
+  // is that the target is a user id at all.
+  assertAudited(w, "ooo.cancel", agent.id, id);
   assert(
     w.dms.some((d) => d.email === manager.email && d.text.includes("withdrew")),
     "manager told about the withdrawal",
@@ -605,7 +654,7 @@ const input = {
     w.dms.some((d) => d.email === manager.email && d.text.includes("Changed time off request")),
     "manager re-notified",
   );
-  assert(w.audits.includes("ooo.modify"), "modify audited");
+  assertAudited(w, "ooo.modify", agent.id, id);
 
   // Editing again must not stack a second "[Modified …]" marker — here notes is
   // omitted so baseNotes falls back to the stored notes (which already carry the
@@ -742,7 +791,7 @@ const input = {
     "slate fallback converged to a gcal-linked block on retry",
   );
   assert(w.dms.length === 0, "silent retry sends no DMs");
-  assert(w.audits.includes("ooo.retry"), "retry audited");
+  assertAudited(w, "ooo.retry", agent.id, id);
 }
 
 finish();
