@@ -19,7 +19,8 @@ export type MonitorAlertKey =
   | "agents_without_routing"
   | "migration_version_lag"
   | "sync_staleness"
-  | "inactive_agent_bookings";
+  | "inactive_agent_bookings"
+  | "coverage_needs_human";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -32,6 +33,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "migration_version_lag",
   "sync_staleness",
   "inactive_agent_bookings",
+  "coverage_needs_human",
 ];
 
 /**
@@ -91,6 +93,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     label: "Orphaned-appointment alert cooldown",
     help: "Alert when an agent who has left the booking pool (deactivated or not bookable) still holds future appointments, so those customers are booked with nobody.",
   },
+  {
+    key: "coverage_needs_human",
+    label: "Stranded-appointment alert cooldown",
+    help: "Alert when a coverage sweep could not move an appointment and gave up, so it is still with an agent who will not be there and only a person can place it.",
+  },
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -123,6 +130,10 @@ export const MONITOR_DEFAULTS = {
     // stays wrong until a human reassigns, and it only pages after an hour of the
     // gap standing open, so repeat while it lasts. Hourly, like the two above.
     inactive_agent_bookings: 60 * 60_000,
+    // Stranded appointments (#1242): the sweep has already given up, so the state
+    // is terminal and stays wrong until a human places it. Repeat while it lasts,
+    // hourly, like the orphaned-appointment page it sits beside.
+    coverage_needs_human: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

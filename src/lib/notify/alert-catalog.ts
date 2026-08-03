@@ -153,6 +153,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why: "Customers hold appointments with an agent who has left the pool until someone reassigns them; the monitor lane re-measures every 5 minutes.",
   },
+  {
+    key: "coverage_needs_human",
+    kind: "condition",
+    why: "A coverage sweep gave up on appointments that are still with an absent agent; they stay stranded until a person places them or they pass, and the monitor lane re-measures every 5 minutes.",
+  },
 
   // --- Incidents: a finished event, with no healthy state to announce -------
   //

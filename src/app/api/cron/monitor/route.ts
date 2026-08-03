@@ -55,6 +55,14 @@ import {
   runInactiveAgentBookingsCheck,
   type OutOfPoolAgent,
 } from "@/lib/monitor/inactive-agent-bookings";
+import {
+  runCoverageNeedsHumanCheck,
+  strandedHoldersFromItems,
+  type CoverageOutAgent,
+  type StrandedAppointment,
+  type StrandedStatus,
+} from "@/lib/monitor/coverage-needs-human";
+import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -459,6 +467,72 @@ export async function GET(req: NextRequest) {
       log: (fields) => log.info("inactive-agent-bookings", { msg: "tick", ...fields }),
     });
 
+    // --- Appointments a coverage sweep GAVE UP on (#1242). The complement of the
+    // check above: that one measures agents out of the pool, this one measures the
+    // sweep's own terminal outcomes, so it covers every origin (admin panel, an
+    // approved absence, offboarding) including agents who are still active. Both
+    // reads go through `unwrap`, because an unread worklist comes back empty and an
+    // empty result here is indistinguishable from "nothing is stranded", which
+    // would post an all-clear over a real gap. ---
+    const loadStrandedHolders = async () => {
+      const items = await selectAllPages<{ booking_id: string; status: string; job_id: string }>(
+        "monitor stranded coverage items",
+        (from, to) =>
+          db
+            .from("bulk_reassign_items")
+            .select("booking_id, status, job_id")
+            .in("status", ACTIONABLE_ITEM_STATUSES)
+            .range(from, to),
+      );
+      if (items.length === 0) return [];
+      // Only an UPCOMING appointment needs a person: a stranded one that has passed
+      // is history, and paging about it would never clear.
+      const bookings = (unwrap(
+        await db
+          .from("bookings")
+          // cap-safe: primary-key lookup of the (few) stranded items' bookings.
+          .select("id")
+          .in("id", items.map((it) => it.booking_id))
+          .in("status", ACTIVE_BOOKING_STATUSES)
+          .gte("starts_at", new Date(now).toISOString()),
+        "monitor stranded coverage bookings",
+      ) ?? []) as { id: string }[];
+      const upcoming = new Set(bookings.map((b) => b.id));
+      const live = items.filter((it) => upcoming.has(it.booking_id));
+      if (live.length === 0) return [];
+      // The out agent lives on the job, so resolve the (few) jobs these belong to.
+      const jobs = (unwrap(
+        await db
+          .from("bulk_reassign_jobs")
+          // cap-safe: primary-key lookup of the jobs the stranded items belong to.
+          .select("id, out_user_id")
+          .in("id", [...new Set(live.map((it) => it.job_id))]),
+        "monitor stranded coverage jobs",
+      ) ?? []) as { id: string; out_user_id: string }[];
+      const outByJob = new Map(jobs.map((j) => [j.id, j.out_user_id]));
+      const stranded: StrandedAppointment[] = live.flatMap((it) => {
+        const outUserId = outByJob.get(it.job_id);
+        return outUserId
+          ? [{ bookingId: it.booking_id, outUserId, status: it.status as StrandedStatus }]
+          : [];
+      });
+      if (stranded.length === 0) return [];
+      const agents = (unwrap(
+        await db
+          .from("users")
+          // cap-safe: primary-key lookup of the affected out agents.
+          .select("id, name, email")
+          .in("id", [...new Set(stranded.map((s) => s.outUserId))]),
+        "monitor stranded coverage agents",
+      ) ?? []) as CoverageOutAgent[];
+      return strandedHoldersFromItems(stranded, agents);
+    };
+    const strandedCoverage = await runCoverageNeedsHumanCheck({
+      loadStranded: loadStrandedHolders,
+      cooldownMs: settings.cooldownMs.coverage_needs_human,
+      log: (fields) => log.info("coverage-needs-human", { msg: "tick", ...fields }),
+    });
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -537,6 +611,7 @@ export async function GET(req: NextRequest) {
         worstAgeMs: syncStaleness.worstAgeMs,
       },
       inactiveBookings,
+      strandedCoverage,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       truncated,
       volume,
