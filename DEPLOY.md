@@ -48,7 +48,9 @@ prompted. The **required** ones each break a core feature when unset:
 <!-- runbook-unverified: each line WRITES a live Worker secret, so running them would
      overwrite production config. The NAMES are checked both directions on every push by
      scripts/test-deploy-env-coverage.ts: a var the app reads that is missing here fails
-     the build, and a name here that nothing reads fails it too. -->
+     the build, and a name here that nothing reads fails it too. A `wrangler secret list`
+     on 2026-08-03 additionally confirmed which are SET in production; see the note
+     directly below. -->
 
 ```bash
 wrangler secret put SUPABASE_SECRET_KEY    # required; server DB access (bypasses RLS). Unset = every server route + cron fails.
@@ -75,6 +77,25 @@ wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct bo
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
 wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
+
+**Which of these are actually set (measured 2026-08-03, #1200).** A
+`wrangler secret list` against the live Worker returned 20 secrets. Every name in
+this file is either set or deliberately not, and nothing is set that this file
+does not document. The three not set:
+
+1. `BOOKING_API_KEY_2` is correctly absent. It is the commented line above, set
+   only during a key rotation.
+2. `SLACK_INFO_CHANNEL` is unset, so info-only alerts fall back to
+   `SLACK_ALERTS_CHANNEL` as documented. That works, but it means the quieter
+   channel separation (#567) is not actually in effect today.
+3. `BOOKABLE_API_KEY` is unset, so `POST /api/users/bookable` really does return
+   `503 {"error":"bookable api not configured"}` in production right now
+   (measured, not inferred). Its two siblings return `401`, so they are
+   configured and this one is genuinely off. The consequence is narrow: an admin
+   can still promote an agent into the booking pool through the admin UI, which
+   runs the same guarded path (`src/app/admin/actions.ts:555`). What cannot
+   happen is the roster or onboarding automation doing it programmatically. Set
+   the key if that automation is meant to be live.
 
 ### 2c. Runtime vars (`wrangler.jsonc` under `vars`, committed and redeployed)
 Non-secret config + launch flags. They live in `wrangler.jsonc` (version-controlled

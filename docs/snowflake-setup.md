@@ -222,8 +222,9 @@ rm -rf ~/snowflake-slate-keys
 
 Confirm the vars shipped and the secret is set:
 
-<!-- runbook-unverified: read-only and safe, but it needs an interactive wrangler login
-     this environment does not hold. Awaiting an operator run. -->
+<!-- runbook-verified: 2026-08-03 (c774da0c) run by an operator against the live Worker;
+     listed 20 secrets by name, SNOWFLAKE_PRIVATE_KEY among them, confirming the mirror
+     credential is in place. -->
 
 ```bash
 wrangler secret list
