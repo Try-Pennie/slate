@@ -19,6 +19,7 @@ import {
   inProgressUnprotected,
   runCalcomOverrideSweep,
   selectCandidates,
+  toCandidates,
   type OverrideCandidate,
 } from "../src/lib/monitor/calcom-override-sweep.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -57,6 +58,27 @@ const candidate = (over: Partial<OverrideCandidate> = {}): OverrideCandidate => 
     JSON.stringify(["failed", "never-attempted"]),
     "picks a recorded failure AND one never attempted, and leaves the settled ones alone",
   );
+}
+
+// --- whose absences count at all -------------------------------------------
+
+{
+  // An agent who has LEFT must not drive a retry or a page. Nobody can book someone
+  // who no longer works here, so an override for them protects nothing, and paging
+  // to ask a human to place one would be asking for work with no purpose in it.
+  //
+  // Real case, 2026-08-04: the one remaining skipped absence belonged to an agent who
+  // had left Pennie. Benign there because a skip settles, but a departed agent still
+  // present in cal.com whose write FAILED would have paged.
+  const active = new Map([["u-active", "here@trypennie.com"]]);
+  const rows = [
+    { id: "keep", userId: "u-active", startsAt: "2026-08-09T13:00:00Z", endsAt: "2026-08-09T21:00:00Z", effect: "" },
+    { id: "drop", userId: "u-departed", startsAt: "2026-08-09T13:00:00Z", endsAt: "2026-08-09T21:00:00Z", effect: "" },
+  ];
+  const out = toCandidates(rows, active);
+  eq(out.length, 1, "a request whose agent has left is dropped entirely");
+  eq(out[0].id, "keep", "and the active agent's request survives");
+  eq(out[0].email, "here@trypennie.com", "carrying the email the override is keyed on");
 }
 
 // --- which ones are actually dangerous ------------------------------------
