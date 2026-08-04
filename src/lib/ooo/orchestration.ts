@@ -553,6 +553,19 @@ async function runPostApproval(
   }
 
   // 4. Cal.com dual-write (transition only; "skipped" when the flag is off).
+  //
+  // Three outcomes, kept apart deliberately (#1250/#1249). "ok" means an override
+  // now exists. "skipped" means there was nothing to do, because cal.com is
+  // unconfigured or the agent has no cal.com account at all, so nobody can book
+  // them there: recorded, never paged, because there is no action in it.
+  // "failed" means the integration is broken and the absence is NOT reflected in
+  // the system still taking real bookings, so it pages.
+  //
+  // `calcom_synced` means "an override exists that a cancellation must undo" (it
+  // is what gates calcomRemoveOverrides below), so a skip must NOT set it. A retry
+  // lane (#1253) therefore has to exclude skips by reading side_effects, not by
+  // treating this flag as "settled", or it will re-attempt writes that can never
+  // succeed.
   if (!request.calcom_synced) {
     const outcome = await deps.calcomAddOverrides(
       agent.email,

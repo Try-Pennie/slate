@@ -114,6 +114,9 @@ interface World {
   audits: AuditRecord[];
   failCalendars: Set<string>;
   failAgentEvent: boolean;
+  /** What the cal.com dual-write returns, so a test can drive the skip and the
+   *  failure paths apart (#1249/#1250). */
+  calcomOutcome: string;
 }
 
 function makeWorld(): World {
@@ -132,6 +135,7 @@ function makeWorld(): World {
     audits: [],
     failCalendars: new Set(),
     failAgentEvent: false,
+    calcomOutcome: "skipped",
     deps: null as unknown as OooDeps,
   };
   const users = new Map(
@@ -243,7 +247,7 @@ function makeWorld(): World {
         }
       }
     },
-    calcomAddOverrides: async () => "skipped",
+    calcomAddOverrides: async () => world.calcomOutcome,
     calcomRemoveOverrides: async () => "skipped",
     dmUserByEmail: async (email, text) => {
       world.dms.push({ email, text });
@@ -515,6 +519,45 @@ const input = {
   const r = w.requests.get(id)!;
   assert(r.side_effects.manager_event.startsWith("failed"), "manager_event failed recorded");
   assert(r.busy_block_id !== null, "busy block still written");
+}
+
+// --- approve: an agent who is not in cal.com is a skip, not a page (#1249) ---
+{
+  const w = makeWorld();
+  w.calcomOutcome = "skipped: not in cal.com (agent@trypennie.com)";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const r = w.requests.get(id)!;
+  assert(
+    r.side_effects.calcom.startsWith("skipped"),
+    "the skip is recorded on the request, not hidden",
+  );
+  assert(
+    !w.alerts.some((a) => a.key === "ooo_calcom"),
+    "no ops page for an agent who has no cal.com account to block",
+  );
+  // The flag means "an override exists in cal.com that a cancellation must undo"
+  // (it gates calcomRemoveOverrides). Nothing was written here, so it must stay
+  // false, and #1253's retry lane must exclude skips by reading side_effects
+  // rather than by setting this.
+  assert(r.calcom_synced === false, "a skip does not claim an override exists");
+}
+
+// --- approve: a genuine cal.com failure still pages (control for the case above) ---
+{
+  const w = makeWorld();
+  w.calcomOutcome = "failed: cal.com user lookup returned 401";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const r = w.requests.get(id)!;
+  assert(r.side_effects.calcom.startsWith("failed"), "the failure is recorded");
+  assert(
+    w.alerts.some((a) => a.key === "ooo_calcom"),
+    "a broken integration DOES page, so the skip assertion above means something",
+  );
+  assert(r.calcom_synced === false, "a failure does not claim an override exists");
 }
 
 // --- reject ---
