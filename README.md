@@ -149,6 +149,7 @@ silently did not.
 ```
 src/lib/availability   slot computation (compute.ts) + cache-first loading (service.ts)
 src/lib/booking        create / reschedule / cancel + round-robin + verify-on-book + reservations/outbox (crash-safety)
+src/lib/busy           retention for the cached busy_blocks index (past-row prune)
 src/lib/routing        bucket resolution + equal-share ranking + tier fallback + routing-decision log
 src/lib/google         OAuth, calendar ops, push/incremental sync, freeBusy
 src/lib/monitor        availability-health probe + booking-volume alert + tunable settings

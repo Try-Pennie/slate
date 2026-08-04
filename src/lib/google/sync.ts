@@ -25,6 +25,7 @@ import {
   shouldRerun,
   CALENDAR_CLAIM_TTL_MS,
   MAX_SYNC_PASSES,
+  BOOTSTRAP_LOOKBACK_MS,
 } from "@/lib/google/sync-coalesce";
 import {
   toSyncAgents,
@@ -60,7 +61,6 @@ import { log } from "@/lib/log";
 import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { afterResponse } from "@/lib/after-response";
 
-const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
 // External-double-book detection (#316): only future bookings can be

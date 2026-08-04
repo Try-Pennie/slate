@@ -131,6 +131,7 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
   "prune-routing": 28 * 60 * MIN,
   "prune-webhook-payloads": 28 * 60 * MIN,
   "prune-bookings-pii": 28 * 60 * MIN,
+  "prune-busy-blocks": 28 * 60 * MIN,
 };
 
 /**
