@@ -57,6 +57,33 @@ export function selectCandidates(rows: OverrideCandidate[]): OverrideCandidate[]
 }
 
 /**
+ * Join raw request rows to the agents who are still here, DROPPING any request whose
+ * agent is absent from the map.
+ *
+ * An agent who has left cannot be booked by anyone, so an override for them protects
+ * nothing, and paging to ask a human to place one would be asking for work with no
+ * purpose in it. The caller passes active agents only; a missing entry therefore
+ * means "no longer with us", never "email unknown", so the row is dropped rather
+ * than carried with a placeholder.
+ *
+ * Real case on 2026-08-04: the one remaining skipped absence belonged to someone who
+ * had left Pennie. Benign there only because a skip settles and leaves the set; a
+ * departed agent still present in cal.com whose write failed would have paged.
+ */
+export function toCandidates(
+  rows: { id: string; userId: string; startsAt: string; endsAt: string; effect: string }[],
+  activeEmailById: Map<string, string>,
+): OverrideCandidate[] {
+  const out: OverrideCandidate[] = [];
+  for (const r of rows) {
+    const email = activeEmailById.get(r.userId);
+    if (!email) continue;
+    out.push({ id: r.id, email, startsAt: r.startsAt, endsAt: r.endsAt, effect: r.effect });
+  }
+  return out;
+}
+
+/**
  * Absences already under way whose override is still not in place. This is the
  * reportable condition: from the moment the absence starts, a real customer can
  * book an agent who is not there.

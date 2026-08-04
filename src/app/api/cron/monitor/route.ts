@@ -36,6 +36,7 @@ import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
   runCalcomOverrideSweep,
+  toCandidates,
   type OverrideCandidate,
 } from "@/lib/monitor/calcom-override-sweep";
 import { addOooOverrides } from "@/lib/calcom/client";
@@ -185,10 +186,16 @@ async function loadFailedOverrideCandidates(
   // The agent's email, which is what the override is keyed on in cal.com and what
   // the alert has to name. A separate bounded read rather than an embed, matching
   // the two-reads-joined-in-code convention used elsewhere in this codebase.
+  //
+  // ACTIVE agents only. Someone who has left cannot be booked by anyone, so an
+  // override for them protects nothing and paging to ask for one would be asking for
+  // work with no purpose in it. `toCandidates` drops any request whose agent is
+  // missing from this map, so the filter here is what decides.
   const { data: users, error: userErr } = await db
     .from("users")
     .select("id, email")
-    .in("id", rows.map((r) => r.user_id));
+    .in("id", rows.map((r) => r.user_id))
+    .is("deactivated_at", null);
   if (userErr) {
     log.error("calcom-sweep", { msg: "candidate email read failed" }, userErr);
     return null;
@@ -196,13 +203,16 @@ async function loadFailedOverrideCandidates(
   const emailById = new Map(
     ((users ?? []) as { id: string; email: string }[]).map((u) => [u.id, u.email]),
   );
-  return rows.map((r) => ({
-    id: r.id,
-    email: emailById.get(r.user_id) ?? r.user_id,
-    startsAt: r.starts_at,
-    endsAt: r.ends_at,
-    effect: r.side_effects?.[EFFECTS.calcom] ?? "",
-  }));
+  return toCandidates(
+    rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      startsAt: r.starts_at,
+      endsAt: r.ends_at,
+      effect: r.side_effects?.[EFFECTS.calcom] ?? "",
+    })),
+    emailById,
+  );
 }
 
 /**
