@@ -54,12 +54,17 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   "0 12 * * *": "/api/cron/ooo-approvals",
   // Daily 3am UTC retention lanes (each under its own lock): prune
   // routing_decisions older than 12 months, blank webhook_deliveries payload PII
-  // on terminal deliveries older than the 90-day window (#1073), and redact
-  // consumer PII on bookings whose appointment is past the 24-month window (#1071).
+  // on terminal deliveries older than the 90-day window (#1073), redact
+  // consumer PII on bookings whose appointment is past the 24-month window (#1071),
+  // and delete cached busy_blocks whose end is far enough past to be unreadable
+  // (#1252: that table had no retention at all and reached 403k rows). The prune
+  // sits here rather than on the every-minute trigger deliberately, because that
+  // invocation is the one already short of CPU headroom.
   "0 3 * * *": [
     "/api/cron/prune-routing",
     "/api/cron/prune-webhook-payloads",
     "/api/cron/prune-bookings-pii",
+    "/api/cron/prune-busy-blocks",
   ],
   // Snowflake archival mirror export (#1099): its OWN expression (every 10 min),
   // never co-scheduled, so it gets its own CPU/subrequest budget. Resumable via

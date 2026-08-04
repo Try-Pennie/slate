@@ -41,6 +41,10 @@ export const RETENTION_HEARTBEAT_LANES = new Set([
   "prune-routing",
   "prune-webhook-payloads",
   "prune-bookings-pii",
+  // #1252. Not mirror-gated like the three above (busy_blocks is a rebuildable
+  // cache, not a mirrored table), so it uses only the heartbeat half of this
+  // module: it can never sit in the skip-forever state the skip alert covers.
+  "prune-busy-blocks",
 ]);
 
 /**

@@ -60,6 +60,17 @@ export function shouldRerun(
  */
 export const SYNC_TICK_BUDGET_MS = 25_000;
 
+/**
+ * How far back a BOOTSTRAP (no sync token, or an expired one) asks Google for
+ * events. It lives here, beside the other pacing constants, because it is now read
+ * by two places that must agree: the sync itself, and the `busy_blocks` past-row
+ * prune, whose keep-past window has to stay wider than this. Pruning a row newer
+ * than the lookback would delete something the next bootstrap re-adds, so the two
+ * lanes would churn against each other and never converge
+ * (BUSY_PRUNE_KEEP_PAST_HOURS, asserted in scripts/test-prune-busy-blocks.ts).
+ */
+export const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
 export function pastDeadline(nowMs: number, deadlineMs: number | null): boolean {
   return deadlineMs !== null && nowMs >= deadlineMs;
 }

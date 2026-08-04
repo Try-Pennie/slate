@@ -80,6 +80,7 @@ const healthy = () => ({
   "prune-routing": ago(4 * 60 * MIN),
   "prune-webhook-payloads": ago(4 * 60 * MIN),
   "prune-bookings-pii": ago(4 * 60 * MIN),
+  "prune-busy-blocks": ago(4 * 60 * MIN),
 });
 
 beforeEach(() => {
