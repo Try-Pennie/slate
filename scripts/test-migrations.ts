@@ -247,4 +247,39 @@ assert(
   );
 }
 
+// A routing GATE must default to its OFF value, so that forgetting to set it
+// produces the safe state rather than the live one (#1266). `users.bookable`
+// shipped defaulting to TRUE, so the login provisioning path, which does not name
+// the column, created agents who were immediately live in the round-robin pool and
+// took real consumer leads with no admin approval. Roughly two dozen files touch
+// the users table, so an application-side fix alone leaves the trap armed for the
+// next insert path that omits it.
+//
+// Read in file order, so the LAST statement to set the default is the one that
+// counts, exactly as Postgres applies them.
+{
+  const defaults: { file: string; value: string }[] = [];
+  for (const f of files) {
+    const body = readFileSync(`supabase/migrations/${f}`, "utf8");
+    // `add column bookable ... default <v>` and `alter column bookable set default <v>`
+    const patterns = [
+      /add\s+column\s+bookable\b[^;]*?default\s+(true|false)/gi,
+      /alter\s+column\s+bookable\s+set\s+default\s+(true|false)/gi,
+    ];
+    for (const re of patterns) {
+      for (const m of body.matchAll(re)) defaults.push({ file: f, value: m[1].toLowerCase() });
+    }
+  }
+  assert(
+    defaults.length > 0,
+    "the guard can see the users.bookable default at all (it is set by some migration)",
+  );
+  const effective = defaults.at(-1);
+  assert(
+    effective?.value === "false",
+    `users.bookable defaults to false, so an insert that omits it cannot put an agent ` +
+      `into the live routing pool (effective default is "${effective?.value}" from ${effective?.file})`,
+  );
+}
+
 finish();

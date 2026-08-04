@@ -100,6 +100,13 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
       google_sub: input.googleSub,
       avatar_url: input.avatarUrl,
       role: "agent",
+      // Never bookable on arrival (#1266). Adding an account must not put someone
+      // in the round-robin pool: an agent live before anyone approved them may
+      // have no working hours set, no calendar connected, or not be meant to take
+      // bookings at all, and the booker will still offer their time to real leads.
+      // Stated here as well as defaulted in the schema, so the intent is readable
+      // at the insert rather than inferred from a migration.
+      bookable: false,
     })
     .select("*")
     .single();
