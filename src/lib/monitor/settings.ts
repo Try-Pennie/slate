@@ -20,7 +20,8 @@ export type MonitorAlertKey =
   | "migration_version_lag"
   | "sync_staleness"
   | "inactive_agent_bookings"
-  | "coverage_needs_human";
+  | "coverage_needs_human"
+  | "ooo_calcom_unprotected";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -34,6 +35,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "sync_staleness",
   "inactive_agent_bookings",
   "coverage_needs_human",
+  "ooo_calcom_unprotected",
 ];
 
 /**
@@ -98,6 +100,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     label: "Stranded-appointment alert cooldown",
     help: "Alert when a coverage sweep could not move an appointment and gave up, so it is still with an agent who will not be there and only a person can place it.",
   },
+  {
+    key: "ooo_calcom_unprotected",
+    label: "Time off not blocked in cal.com",
+    help: "Alert when an agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
+  },
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -134,6 +141,11 @@ export const MONITOR_DEFAULTS = {
     // is terminal and stays wrong until a human places it. Repeat while it lasts,
     // hourly, like the orphaned-appointment page it sits beside.
     coverage_needs_human: 60 * 60_000,
+    // Time off not blocked in cal.com (#1253): the agent is away NOW and cal.com can
+    // still book them, and the sweep is already retrying every 5 minutes, so a
+    // shorter repeat than its neighbours. Half an hour keeps it present without
+    // becoming the thing people mute.
+    ooo_calcom_unprotected: 30 * 60_000,
   },
   floor30: 5,
   floor120: 20,

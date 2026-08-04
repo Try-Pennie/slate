@@ -124,6 +124,57 @@ describe("cal.com override outcome: absent versus failed (#1250, #1249)", () => 
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("retries a transient server error and succeeds on the second attempt", async () => {
+    // The failure that actually consumed the protection in June was a 500 on the
+    // patch. A 500 is transient and very likely succeeds seconds later, so the
+    // override should land rather than depend on someone reading a Slack message.
+    replies = [
+      { status: 200, data: [{ id: 7 }] },
+      { status: 200, data: [SCHEDULE] },
+      { status: 500 }, // patch fails
+      { status: 200, data: [{ id: 7 }] },
+      { status: 200, data: [SCHEDULE] },
+      { status: 200, data: {} }, // patch succeeds
+    ];
+    const outcome = await run();
+    expect(outcome).toBe("ok");
+  });
+
+  it("retries a rate limit", async () => {
+    replies = [
+      { status: 429 },
+      { status: 200, data: [{ id: 7 }] },
+      { status: 200, data: [SCHEDULE] },
+      { status: 200, data: {} },
+    ];
+    expect(await run()).toBe("ok");
+  });
+
+  it("does NOT retry a rejected key, because a second attempt cannot succeed", async () => {
+    replies = [{ status: 401 }, { status: 200, data: [{ id: 7 }] }];
+    const outcome = await run();
+    expect(outcome).toMatch(/^failed/);
+    expect(outcome).toContain("401");
+    // One attempt only: burning retries on a permanent failure just delays the
+    // report and hammers a system that is already refusing us.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry a genuinely absent user", async () => {
+    replies = [{ status: 200, data: [] }];
+    expect(await run()).toMatch(/^skipped/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after a bounded number of attempts and reports the last cause", async () => {
+    replies = Array.from({ length: 20 }, () => ({ status: 503 }));
+    const outcome = await run();
+    expect(outcome).toMatch(/^failed/);
+    expect(outcome).toContain("503");
+    // Bounded: the approval is a person waiting on a click, not a background job.
+    expect((fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
   it("returns ok when the override patch succeeds", async () => {
     replies = [
       { status: 200, data: [{ id: 7 }] },

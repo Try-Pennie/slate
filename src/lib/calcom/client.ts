@@ -55,12 +55,31 @@ async function calcomFetch(
 type Lookup<T> =
   | { kind: "found"; value: T }
   | { kind: "absent" }
-  | { kind: "error"; detail: string };
+  | { kind: "error"; detail: string; retryable: boolean };
+
+/**
+ * Which failures a second attempt could plausibly fix (#1253). A 5xx or a 429 is
+ * transient: the incident this retry exists for was a single 500 on the patch that
+ * permanently consumed an absence's protection. A 401, 403 or 404 cannot succeed on
+ * a retry, so retrying only delays the report and hammers a system already refusing
+ * us. An unexpected body shape is a contract change, not a blip.
+ */
+export function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
 
 /** Non-2xx, or a 2xx whose body is not the array the API contract promises. */
-function httpProblem(what: string, status: number, data: unknown): string | null {
-  if (status < 200 || status >= 300) return `cal.com ${what} returned ${status}`;
-  if (!Array.isArray(data)) return `cal.com ${what} returned an unexpected shape`;
+function httpProblem(
+  what: string,
+  status: number,
+  data: unknown,
+): { detail: string; retryable: boolean } | null {
+  if (status < 200 || status >= 300) {
+    return { detail: `cal.com ${what} returned ${status}`, retryable: isRetryableStatus(status) };
+  }
+  if (!Array.isArray(data)) {
+    return { detail: `cal.com ${what} returned an unexpected shape`, retryable: false };
+  }
   return null;
 }
 
@@ -69,7 +88,7 @@ async function getUserIdByEmail(email: string): Promise<Lookup<number>> {
     `/organizations/${calcomOrgId()}/users?emails[]=${encodeURIComponent(email)}`,
   );
   const problem = httpProblem("user lookup", status, data);
-  if (problem) return { kind: "error", detail: problem };
+  if (problem) return { kind: "error", ...problem };
   const user = (data as unknown[])[0] as { id?: number } | undefined;
   // cal.com answered and matched nobody: genuinely absent, not a failure.
   return user?.id ? { kind: "found", value: user.id } : { kind: "absent" };
@@ -80,7 +99,7 @@ async function getDefaultSchedule(userId: number): Promise<Lookup<CalcomSchedule
   const base = `/organizations/${calcomOrgId()}/users/${userId}/schedules`;
   const { status, data } = await calcomFetch(base);
   const problem = httpProblem("schedule lookup", status, data);
-  if (problem) return { kind: "error", detail: problem };
+  if (problem) return { kind: "error", ...problem };
   const list = data as CalcomSchedule[];
   let schedule = list.find((s) => s.isDefault) ?? list[0];
   // The user exists in cal.com but has no schedule to patch. Someone can fix
@@ -99,7 +118,7 @@ async function patchOverrides(
   userId: number,
   schedule: CalcomSchedule,
   overrides: DateOverride[],
-): Promise<string> {
+): Promise<Attempt> {
   const { status } = await calcomFetch(
     `/organizations/${calcomOrgId()}/users/${userId}/schedules/${schedule.id}`,
     {
@@ -113,12 +132,34 @@ async function patchOverrides(
       }),
     },
   );
-  return status >= 200 && status < 300
-    ? "ok"
-    : `failed: schedule patch returned ${status}`;
+  if (status >= 200 && status < 300) return done("ok");
+  return {
+    outcome: `failed: schedule patch returned ${status}`,
+    retryable: isRetryableStatus(status),
+  };
 }
 
 type OverrideMode = "add" | "remove";
+
+/** One pass at the dual-write, and whether trying again could change the answer. */
+interface Attempt {
+  outcome: string;
+  retryable: boolean;
+}
+
+/** A settled answer: correct, or wrong in a way a retry cannot fix. */
+const done = (outcome: string): Attempt => ({ outcome, retryable: false });
+
+/**
+ * Attempts per dual-write, and the waits between them (#1253).
+ *
+ * Deliberately small and quick, because this runs inside an approval a manager is
+ * waiting on, not a background job. Two extra tries at under a second in total
+ * covers the transient blip that consumed a real absence's protection in June,
+ * while the 5-minute sweep is what covers a failure that outlives them.
+ */
+const RETRY_WAITS_MS = [200, 600];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function applyOoo(
   mode: OverrideMode,
@@ -126,24 +167,47 @@ async function applyOoo(
   startIso: string,
   endIso: string,
 ): Promise<string> {
+  let last: Attempt = { outcome: "failed: cal.com never attempted", retryable: false };
+  for (let attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(RETRY_WAITS_MS[attempt - 1]);
+    last = await attemptOoo(mode, agentEmail, startIso, endIso);
+    if (!last.retryable) return last.outcome;
+  }
+  // Out of attempts: report the LAST cause seen, so the message says what is
+  // actually happening now rather than what happened first.
+  return last.outcome;
+}
+
+async function attemptOoo(
+  mode: OverrideMode,
+  agentEmail: string,
+  startIso: string,
+  endIso: string,
+): Promise<Attempt> {
   try {
     // Not a failure: cal.com is being wound down, so an unconfigured integration
     // is a deliberate state with nothing for anyone to do. Alerting on it would
     // page on every single approval.
-    if (!calcomConfigured()) return "skipped: cal.com not configured";
+    if (!calcomConfigured()) return done("skipped: cal.com not configured");
     const user = await getUserIdByEmail(agentEmail);
-    if (user.kind === "error") return `failed: ${user.detail}`;
+    if (user.kind === "error") {
+      return { outcome: `failed: ${user.detail}`, retryable: user.retryable };
+    }
     // Nobody can book an agent who does not exist in cal.com, so there is no
     // availability to block and no action for a human: a skip, not a failure
     // (#1249). Expected to become more common as new hires land in Slate only.
-    if (user.kind === "absent") return `skipped: not in cal.com (${agentEmail})`;
+    if (user.kind === "absent") return done(`skipped: not in cal.com (${agentEmail})`);
     const userId = user.value;
     const found = await getDefaultSchedule(userId);
-    if (found.kind === "error") return `failed: ${found.detail}`;
-    if (found.kind === "absent") return `failed: no schedule for cal.com user ${userId}`;
+    if (found.kind === "error") {
+      return { outcome: `failed: ${found.detail}`, retryable: found.retryable };
+    }
+    if (found.kind === "absent") {
+      return done(`failed: no schedule for cal.com user ${userId}`);
+    }
     const schedule = found.value;
     if (!schedule.timeZone) {
-      return `failed: no timezone on cal.com schedule ${schedule.id}`;
+      return done(`failed: no timezone on cal.com schedule ${schedule.id}`);
     }
     const built = buildDateOverrides(
       startIso,
@@ -160,7 +224,9 @@ async function applyOoo(
         : filterOutOverrides(existing, built);
     return await patchOverrides(userId, schedule, next);
   } catch (e) {
-    return `failed: ${String(e).slice(0, 200)}`;
+    // A thrown fetch is a transport problem (DNS, a dropped connection), which is
+    // the same class as a 5xx: worth one more try.
+    return { outcome: `failed: ${String(e).slice(0, 200)}`, retryable: true };
   }
 }
 

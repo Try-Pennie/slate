@@ -102,6 +102,10 @@ import {
   formatCoverageNeedsHumanRecovery,
 } from "@/lib/monitor/coverage-needs-human";
 import {
+  formatUnprotectedAlert,
+  formatUnprotectedRecovery,
+} from "@/lib/monitor/calcom-override-sweep";
+import {
   formatSaturationAlert,
   formatSaturationRecovery,
   formatCompletionSaturationAlert,
@@ -337,6 +341,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // Four states, because the wording changes shape in each: the singular, the two
   // outcomes side by side on one agent (nobody free vs the move erroring), a list
   // wide enough to truncate, and the all-clear.
+  // #1253: the sentence a person reads when cal.com can still book someone who is
+  // away. Singular and plural read differently, and the all-clear has to say the
+  // thing that is now true rather than that an alert stopped.
+  {
+    key: "ooo_calcom_unprotected",
+    state: "one agent away and bookable",
+    channel: "alert",
+    text: formatUnprotectedAlert(
+      [
+        {
+          id: "r1",
+          email: "dana.ruiz@example.com",
+          startsAt: "2026-08-07T13:00:00Z",
+          endsAt: "2026-08-08T02:00:00Z",
+          effect: "failed: schedule patch returned 500",
+        },
+      ],
+      Date.UTC(2026, 7, 7, 15),
+    ),
+  },
+  {
+    key: "ooo_calcom_unprotected",
+    state: "several agents away and bookable",
+    channel: "alert",
+    text: formatUnprotectedAlert(
+      ["dana.ruiz@example.com", "sam.okafor@example.com", "lee.chen@example.com", "ada.blake@example.com"].map(
+        (email, n) => ({
+          id: `r${n}`,
+          email,
+          startsAt: "2026-08-07T13:00:00Z",
+          endsAt: "2026-08-08T02:00:00Z",
+          effect: "failed: schedule patch returned 500",
+        }),
+      ),
+      Date.UTC(2026, 7, 7, 15),
+    ),
+  },
+  {
+    key: "ooo_calcom_unprotected",
+    state: "every absence blocked again",
+    channel: "recovery",
+    text: formatUnprotectedRecovery(),
+  },
   {
     key: "coverage_needs_human",
     state: "one appointment nobody was free for",

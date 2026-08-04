@@ -35,6 +35,13 @@ import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
+  runCalcomOverrideSweep,
+  type OverrideCandidate,
+} from "@/lib/monitor/calcom-override-sweep";
+import { addOooOverrides } from "@/lib/calcom/client";
+import { EFFECTS } from "@/lib/ooo/orchestration";
+import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
+import {
   missingScheduleAgents,
   runScheduleCoverageCheck,
   type ScheduleLessAgent,
@@ -138,6 +145,111 @@ async function bookingsCreatedSince(
     return null;
   }
   return count ?? 0;
+}
+
+/**
+ * Approved absences whose cal.com override FAILED and whose absence has not ended
+ * (#1253), or null when the read failed (which the sweep treats as unmeasured
+ * rather than as nothing to do).
+ *
+ * Keyed on the recorded failure, not on `calcom_synced`: 631 approved requests
+ * predate the dual-write and carry no cal.com outcome, so the flag alone selects
+ * hundreds of rows whose absences are long past.
+ */
+async function loadFailedOverrideCandidates(
+  db: ReturnType<typeof supabaseAdmin>,
+): Promise<OverrideCandidate[] | null> {
+  const { data, error } = await db
+    .from("ooo_requests")
+    .select("id, user_id, starts_at, ends_at, side_effects")
+    .eq("status", "approved")
+    .gt("ends_at", new Date().toISOString())
+    .like("side_effects->>calcom", "failed%")
+    .limit(ID_BATCH_ROWS);
+  if (error) {
+    log.error("calcom-sweep", { msg: "candidate read failed" }, error);
+    return null;
+  }
+  const rows = (data ?? []) as {
+    id: string;
+    user_id: string;
+    starts_at: string;
+    ends_at: string;
+    side_effects: Record<string, string> | null;
+  }[];
+  if (rows.length === 0) return [];
+
+  // The agent's email, which is what the override is keyed on in cal.com and what
+  // the alert has to name. A separate bounded read rather than an embed, matching
+  // the two-reads-joined-in-code convention used elsewhere in this codebase.
+  const { data: users, error: userErr } = await db
+    .from("users")
+    .select("id, email")
+    .in("id", rows.map((r) => r.user_id));
+  if (userErr) {
+    log.error("calcom-sweep", { msg: "candidate email read failed" }, userErr);
+    return null;
+  }
+  const emailById = new Map(
+    ((users ?? []) as { id: string; email: string }[]).map((u) => [u.id, u.email]),
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    email: emailById.get(r.user_id) ?? r.user_id,
+    startsAt: r.starts_at,
+    endsAt: r.ends_at,
+    effect: r.side_effects?.[EFFECTS.calcom] ?? "",
+  }));
+}
+
+/**
+ * Re-attempt one request's cal.com override and record what happened, returning the
+ * new outcome. Writing the outcome back is what makes the sweep self-clearing: an
+ * "ok" or "skipped" no longer matches the failure predicate, so the row leaves the
+ * candidate set without any extra bookkeeping.
+ *
+ * `calcom_synced` is set only on "ok", because it means "an override exists that a
+ * cancellation must undo" and a skip wrote nothing.
+ */
+async function retryOverrideForRequest(
+  db: ReturnType<typeof supabaseAdmin>,
+  requestId: string,
+): Promise<string> {
+  const { data, error } = await db
+    .from("ooo_requests")
+    .select("id, user_id, starts_at, ends_at, side_effects")
+    .eq("id", requestId)
+    .maybeSingle();
+  if (error || !data) return "failed: could not re-read the request";
+  const row = data as {
+    user_id: string;
+    starts_at: string;
+    ends_at: string;
+    side_effects: Record<string, string> | null;
+  };
+  const { data: user } = await db
+    .from("users")
+    .select("email")
+    .eq("id", row.user_id)
+    .maybeSingle();
+  const email = (user as { email?: string } | null)?.email;
+  if (!email) return "failed: agent has no email";
+
+  const outcome = await addOooOverrides(email, row.starts_at, row.ends_at);
+  const { error: writeErr } = await db
+    .from("ooo_requests")
+    .update({
+      side_effects: { ...(row.side_effects ?? {}), [EFFECTS.calcom]: outcome },
+      ...(outcome === "ok" ? { calcom_synced: true } : {}),
+    })
+    .eq("id", requestId);
+  if (writeErr) {
+    // The override may well have landed; what failed is recording it. Say so,
+    // rather than reporting the cal.com outcome as if it were persisted.
+    log.error("calcom-sweep", { msg: "outcome write failed", request_id: requestId }, writeErr);
+    return "failed: outcome not recorded";
+  }
+  return outcome;
 }
 
 /**
@@ -593,6 +705,36 @@ export async function GET(req: NextRequest) {
       onError: (msg, err) => log.error("canary-trigger", { msg }, err),
     }).catch((err) => log.error("canary-trigger", { msg: "gap-fill threw" }, err));
 
+    // --- cal.com override sweep (#1253) -------------------------------------
+    //
+    // Retry an approved absence whose cal.com override FAILED, while it still
+    // matters, and page once the absence is actually under way with no block in
+    // place (from that moment a real customer can book someone who is away).
+    //
+    // Keyed on a recorded failure, never on `calcom_synced`: 631 approved requests
+    // predate the dual-write and carry no cal.com outcome, so a flag-keyed sweep
+    // would fire hundreds of writes for absences long past.
+    //
+    // It lives on this lane rather than a new one because this lane already both
+    // heals and alerts (it recomputes caches and fills missing schedules), and
+    // because the every-minute invocation is short of CPU headroom (#1245).
+    const overrideSweep = await runCalcomOverrideSweep({
+      nowMs: now,
+      loadCandidates: () => loadFailedOverrideCandidates(db),
+      retry: (requestId) => retryOverrideForRequest(db, requestId),
+      alert: async (key, text) => {
+        // alert-key: ooo_calcom_unprotected
+        // alert-text-ok: our own copy from calcom-override-sweep.ts, never a raw error.
+        await sendThrottledAlert(key, settings.cooldownMs.ooo_calcom_unprotected, text);
+      },
+      // alert-key: ooo_calcom_unprotected
+      resolve: (key, text) => resolveAlert(key, text),
+      log: (msg) => log.info("calcom-sweep", { msg }),
+    }).catch((err) => {
+      log.error("calcom-sweep", { msg: "sweep threw" }, err);
+      return null;
+    });
+
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort — must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
@@ -610,6 +752,7 @@ export async function GET(req: NextRequest) {
         worstNeverSynced: syncStaleness.worstNeverSynced,
         worstAgeMs: syncStaleness.worstAgeMs,
       },
+      overrideSweep,
       inactiveBookings,
       strandedCoverage,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
