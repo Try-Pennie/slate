@@ -45,32 +45,54 @@ async function calcomFetch(
   return { status: res.status, data: body.data };
 }
 
-async function getUserIdByEmail(email: string): Promise<number | null> {
+/**
+ * A lookup answer that keeps the three cases apart (#1250). Collapsing them into
+ * `null` made a rotated key, a 500 and a changed response shape all report as "no
+ * cal.com user for <email>": a cause the code never measured, which sends the
+ * reader after a missing person instead of a broken integration, and which any
+ * retry would then re-attempt forever.
+ */
+type Lookup<T> =
+  | { kind: "found"; value: T }
+  | { kind: "absent" }
+  | { kind: "error"; detail: string };
+
+/** Non-2xx, or a 2xx whose body is not the array the API contract promises. */
+function httpProblem(what: string, status: number, data: unknown): string | null {
+  if (status < 200 || status >= 300) return `cal.com ${what} returned ${status}`;
+  if (!Array.isArray(data)) return `cal.com ${what} returned an unexpected shape`;
+  return null;
+}
+
+async function getUserIdByEmail(email: string): Promise<Lookup<number>> {
   const { status, data } = await calcomFetch(
     `/organizations/${calcomOrgId()}/users?emails[]=${encodeURIComponent(email)}`,
   );
-  if (status < 200 || status >= 300 || !Array.isArray(data)) return null;
-  const user = data[0] as { id?: number } | undefined;
-  return user?.id ?? null;
+  const problem = httpProblem("user lookup", status, data);
+  if (problem) return { kind: "error", detail: problem };
+  const user = (data as unknown[])[0] as { id?: number } | undefined;
+  // cal.com answered and matched nobody: genuinely absent, not a failure.
+  return user?.id ? { kind: "found", value: user.id } : { kind: "absent" };
 }
 
 /** Prefer the default schedule, falling back to the first; hydrate if thin. */
-async function getDefaultSchedule(
-  userId: number,
-): Promise<CalcomSchedule | null> {
+async function getDefaultSchedule(userId: number): Promise<Lookup<CalcomSchedule>> {
   const base = `/organizations/${calcomOrgId()}/users/${userId}/schedules`;
   const { status, data } = await calcomFetch(base);
-  if (status < 200 || status >= 300 || !Array.isArray(data)) return null;
+  const problem = httpProblem("schedule lookup", status, data);
+  if (problem) return { kind: "error", detail: problem };
   const list = data as CalcomSchedule[];
   let schedule = list.find((s) => s.isDefault) ?? list[0];
-  if (!schedule) return null;
+  // The user exists in cal.com but has no schedule to patch. Someone can fix
+  // that, so it stays a reportable problem rather than a skip.
+  if (!schedule) return { kind: "absent" };
   if (!schedule.availability || !schedule.timeZone) {
     const one = await calcomFetch(`${base}/${schedule.id}`);
     if (one.status >= 200 && one.status < 300 && one.data) {
       schedule = one.data as CalcomSchedule;
     }
   }
-  return schedule;
+  return { kind: "found", value: schedule };
 }
 
 async function patchOverrides(
@@ -105,12 +127,23 @@ async function applyOoo(
   endIso: string,
 ): Promise<string> {
   try {
-    if (!calcomConfigured()) return "failed: calcom not configured";
-    const userId = await getUserIdByEmail(agentEmail);
-    if (!userId) return `failed: no cal.com user for ${agentEmail}`;
-    const schedule = await getDefaultSchedule(userId);
-    if (!schedule?.timeZone) {
-      return `failed: no schedule for cal.com user ${userId}`;
+    // Not a failure: cal.com is being wound down, so an unconfigured integration
+    // is a deliberate state with nothing for anyone to do. Alerting on it would
+    // page on every single approval.
+    if (!calcomConfigured()) return "skipped: cal.com not configured";
+    const user = await getUserIdByEmail(agentEmail);
+    if (user.kind === "error") return `failed: ${user.detail}`;
+    // Nobody can book an agent who does not exist in cal.com, so there is no
+    // availability to block and no action for a human: a skip, not a failure
+    // (#1249). Expected to become more common as new hires land in Slate only.
+    if (user.kind === "absent") return `skipped: not in cal.com (${agentEmail})`;
+    const userId = user.value;
+    const found = await getDefaultSchedule(userId);
+    if (found.kind === "error") return `failed: ${found.detail}`;
+    if (found.kind === "absent") return `failed: no schedule for cal.com user ${userId}`;
+    const schedule = found.value;
+    if (!schedule.timeZone) {
+      return `failed: no timezone on cal.com schedule ${schedule.id}`;
     }
     const built = buildDateOverrides(
       startIso,
