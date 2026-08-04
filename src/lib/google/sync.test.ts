@@ -74,6 +74,7 @@ import {
 } from "./sync-coalesce";
 import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
+import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -84,9 +85,12 @@ import { GoogleHttpError } from "@/lib/google/http-error";
  */
 function pagingDb(
   tables: Record<string, Record<string, unknown>[]>,
-  opts: { error?: { message: string } } = {},
+  opts: { error?: { message: string }; deleteError?: { message: string } } = {},
 ) {
   const deleted: unknown[] = [];
+  // Each `.delete().in(...)` call as its own array, so a test can prove the ids were
+  // sent in BOUNDED batches rather than one request PostgREST would reject on length.
+  const deleteBatches: unknown[][] = [];
   const from = (table: string) => {
     const rows = tables[table] ?? [];
     let range: [number, number] | null = null;
@@ -107,7 +111,8 @@ function pagingDb(
       in: (_col: string, vals: unknown[]) => {
         if (mode === "delete") {
           deleted.push(...vals);
-          return Promise.resolve({ error: null });
+          deleteBatches.push([...vals]);
+          return Promise.resolve({ error: opts.deleteError ?? null, count: opts.deleteError ? null : vals.length });
         }
         return b;
       },
@@ -119,7 +124,7 @@ function pagingDb(
     };
     return b;
   };
-  return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, deleted };
+  return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, deleted, deleteBatches };
 }
 
 /**
@@ -132,6 +137,10 @@ function syncFlowDb(opts: {
   email?: string | null;
   calendars?: Record<string, unknown>[];
   timezone?: string;
+  /** Cached gcal blocks, so a test can prove a reconcile that SHOULD be skipped had
+   *  something to delete and still deleted nothing. Without these the assertion is
+   *  vacuous: an empty table deletes nothing whether the guard exists or not. */
+  busyBlocks?: Record<string, unknown>[];
 }) {
   const deletes: string[] = [];
   const inserts: { table: string; rows: unknown }[] = [];
@@ -177,6 +186,7 @@ function syncFlowDb(opts: {
         }
         let data: unknown[] = [];
         if (table === "agent_calendars") data = opts.calendars ?? [];
+        if (table === "busy_blocks") data = opts.busyBlocks ?? [];
         if (table === "availability_schedules")
           data = [{ timezone: opts.timezone ?? "America/New_York" }];
         return Promise.resolve({ data, error: null }).then(resolve);
@@ -354,6 +364,78 @@ describe("purgeVanished (#834)", () => {
     await expect(purgeVanished("agent-1", "primary", [], new Set())).rejects.toThrow(
       /read timeout/,
     );
+  });
+});
+
+describe("purgeVanished sends its delete in bounded batches (#1259)", () => {
+  it("never puts more than one URL-safe batch of ids in a single delete", async () => {
+    // The ids travel in the query string, so a large stale set is not just slow, it
+    // is REFUSED: measured against prod PostgREST, 350 uuids (13,028 bytes) is
+    // accepted and 400 (14,878) is not. A bootstrap routinely produces a big stale
+    // set, because the fetch's timeMin excludes every block that ended more than a
+    // day ago, so all of them come back as "vanished".
+    const blocks = Array.from({ length: 1001 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+      gcal_event_id: `evt-${i}`,
+    }));
+    const { db, deleted, deleteBatches } = pagingDb({ busy_blocks: blocks });
+    admin.current = db;
+
+    await purgeVanished("agent-1", "primary", [], new Set());
+
+    expect(deleted).toHaveLength(1001);
+    for (const batch of deleteBatches) {
+      expect(batch.length).toBeLessThanOrEqual(ID_BATCH_ROWS);
+    }
+    // And it really did chunk rather than sending one oversized request.
+    expect(deleteBatches.length).toBeGreaterThan(1);
+  });
+
+  it("throws when a delete fails, rather than reporting a clean reconcile", async () => {
+    // An unchecked delete error leaves the stale blocks in place while the sync
+    // reports success and advances its token, so the agent stays falsely busy with
+    // nothing anywhere saying the cleanup failed.
+    const blocks = [{ id: "b-1", gcal_event_id: "evt-1" }];
+    const { db } = pagingDb({ busy_blocks: blocks }, { deleteError: { message: "permission denied" } });
+    admin.current = db;
+
+    await expect(purgeVanished("agent-1", "primary", [], new Set())).rejects.toThrow(
+      /permission denied/,
+    );
+  });
+});
+
+describe("a truncated BOOTSTRAP must not reconcile (#1259)", () => {
+  it("deletes nothing when the first full pass only read some of the pages", async () => {
+    // The dangerous shape the existing #171 test does not cover: no stored token, so
+    // this is a full sync and the reconcile is armed, AND the events pass hit the page
+    // cap. Reconciling against a partial event set judges every event on the unread
+    // pages as vanished and deletes its cached busy time.
+    const { db, deletes } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [
+        {
+          id: "cal-1",
+          user_id: "agent-1",
+          calendar_id: "primary",
+          sync_token: null,
+          consecutive_failures: 0,
+          last_success_at: null,
+          last_sync_error: null,
+        },
+      ],
+      // Real cached busy time, so an unguarded reconcile WOULD delete it. Without
+      // these rows the assertion below passes whether the guard exists or not.
+      busyBlocks: [
+        { id: "b-1", gcal_event_id: "evt-on-an-unread-page" },
+        { id: "b-2", gcal_event_id: "evt-also-unread" },
+      ],
+    });
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    expect(deletes).not.toContain("busy_blocks");
   });
 });
 
