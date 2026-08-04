@@ -148,13 +148,17 @@ async function bookingsCreatedSince(
 }
 
 /**
- * Approved absences whose cal.com override FAILED and whose absence has not ended
- * (#1253), or null when the read failed (which the sweep treats as unmeasured
- * rather than as nothing to do).
+ * Every approved absence that has not ended, or null when the read failed (which the
+ * sweep treats as unmeasured rather than as nothing to do). The sweep itself decides
+ * which of them still need an attempt, in tested code rather than in this query.
  *
- * Keyed on the recorded failure, not on `calcom_synced`: 631 approved requests
- * predate the dual-write and carry no cal.com outcome, so the flag alone selects
- * hundreds of rows whose absences are long past.
+ * Bounded by "has not ended" rather than by the outcome, which is what lets a row
+ * with NO recorded outcome be seen at all (#1275): nine such absences were approved
+ * before the dual-write existed, so they are neither failures nor done, and a query
+ * keyed on either word skipped them while those agents stayed bookable in cal.com.
+ * Never keyed on `calcom_synced`: 631 approved requests carry no outcome and are long
+ * past, so the flag alone selects hundreds of pointless writes. On prod 2026-08-04
+ * this predicate returned 44 rows, 35 of them already done.
  */
 async function loadFailedOverrideCandidates(
   db: ReturnType<typeof supabaseAdmin>,
@@ -164,7 +168,6 @@ async function loadFailedOverrideCandidates(
     .select("id, user_id, starts_at, ends_at, side_effects")
     .eq("status", "approved")
     .gt("ends_at", new Date().toISOString())
-    .like("side_effects->>calcom", "failed%")
     .limit(ID_BATCH_ROWS);
   if (error) {
     log.error("calcom-sweep", { msg: "candidate read failed" }, error);
