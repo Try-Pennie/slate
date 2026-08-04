@@ -39,6 +39,24 @@ export function isSettled(outcome: string): boolean {
 }
 
 /**
+ * Which loaded rows still need an attempt. The caller hands over every approved
+ * absence that has not ended; this decides, in code rather than in a query.
+ *
+ * Deciding here rather than in the SQL is what makes the interesting case
+ * expressible at all (#1275). Nine approved FUTURE absences carry NO cal.com
+ * outcome, because they were approved before the dual-write existed: they are not
+ * failures, and they are certainly not done, so a filter keyed on either word
+ * misses them and those agents stay bookable in cal.com right through their time
+ * off. "Not settled" covers a recorded failure and a blank alike.
+ *
+ * It stays cheap because the caller's set is bounded by absences that have not
+ * ended: 44 rows on prod 2026-08-04, of which 35 were already done.
+ */
+export function selectCandidates(rows: OverrideCandidate[]): OverrideCandidate[] {
+  return rows.filter((r) => !isSettled(r.effect));
+}
+
+/**
  * Absences already under way whose override is still not in place. This is the
  * reportable condition: from the moment the absence starts, a real customer can
  * book an agent who is not there.
@@ -108,8 +126,11 @@ export async function runCalcomOverrideSweep(deps: {
     deferred: 0,
     measured: false,
   };
-  const rows = await deps.loadCandidates();
-  if (rows === null) return empty;
+  const loaded = await deps.loadCandidates();
+  if (loaded === null) return empty;
+  // Applied here rather than trusted to the loader, so a caller cannot forget the
+  // rule and quietly narrow what gets retried.
+  const rows = selectCandidates(loaded);
 
   const max = deps.max ?? MAX_RETRIES_PER_TICK;
   const attempt = rows.slice(0, max);

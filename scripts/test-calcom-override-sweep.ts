@@ -18,6 +18,7 @@ import {
   formatUnprotectedAlert,
   inProgressUnprotected,
   runCalcomOverrideSweep,
+  selectCandidates,
   type OverrideCandidate,
 } from "../src/lib/monitor/calcom-override-sweep.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -33,6 +34,30 @@ const candidate = (over: Partial<OverrideCandidate> = {}): OverrideCandidate => 
   effect: "failed: schedule patch returned 500",
   ...over,
 });
+
+// --- which rows need another attempt at all --------------------------------
+
+{
+  // The selection rule, in code rather than buried in a query, because the
+  // interesting case is the one a "recorded failure" filter cannot express.
+  //
+  // #1275: nine approved FUTURE absences carry no cal.com outcome at all, because
+  // they were approved before the dual-write existed. They are not failures and
+  // they are certainly not done, so a filter keyed on either word misses them and
+  // those agents stay bookable in cal.com throughout their time off.
+  const rows: OverrideCandidate[] = [
+    candidate({ id: "failed", effect: "failed: schedule patch returned 500" }),
+    candidate({ id: "never-attempted", effect: "" }),
+    candidate({ id: "done", effect: "ok" }),
+    candidate({ id: "nothing-to-do", effect: "skipped: not in cal.com (a@b.com)" }),
+  ];
+  const picked = selectCandidates(rows).map((r) => r.id).sort();
+  eq(
+    JSON.stringify(picked),
+    JSON.stringify(["failed", "never-attempted"]),
+    "picks a recorded failure AND one never attempted, and leaves the settled ones alone",
+  );
+}
 
 // --- which ones are actually dangerous ------------------------------------
 
