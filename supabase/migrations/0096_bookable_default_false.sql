@@ -1,0 +1,19 @@
+-- A routing gate must default to its OFF value (#1266).
+--
+-- 0003 added users.bookable with `default true` to keep the then-current roster
+-- routing. The consequence outlived the reason: the login provisioning path
+-- (src/lib/provision.ts) does not name the column, so a first-time sign-in landed
+-- bookable = true and that agent entered every matching bucket's round-robin pool
+-- immediately, with no admin approval. It failed OPEN: the result of forgetting the
+-- column was "takes real consumer bookings", not "takes none".
+--
+-- Flipping the default makes forgetting safe. Roughly two dozen files touch the
+-- users table, so naming the column at one insert site fixes today's leak while
+-- leaving the trap armed for the next writer; this closes it for all of them.
+-- scripts/test-migrations.ts asserts the effective default stays false.
+--
+-- Existing rows are UNAFFECTED: a default applies only to new inserts, so nobody's
+-- current flag changes and no one is removed from the pool by this migration.
+-- Whether any specific agent who went live through the old default should stay
+-- bookable is a roster decision, made in the admin UI, not here.
+alter table users alter column bookable set default false;
