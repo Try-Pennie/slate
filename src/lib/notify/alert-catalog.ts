@@ -158,6 +158,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why: "A coverage sweep gave up on appointments that are still with an absent agent; they stay stranded until a person places them or they pass, and the monitor lane re-measures every 5 minutes.",
   },
+  {
+    key: "ooo_calcom_unprotected",
+    kind: "condition",
+    why: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away; it stays true until a retry lands the override or the absence ends, and the monitor lane re-measures every 5 minutes.",
+  },
 
   // --- Incidents: a finished event, with no healthy state to announce -------
   //
