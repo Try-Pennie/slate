@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
 
 /**
  * Pure core of the `busy_blocks` past-row prune (#1252). Kept dependency-free so
@@ -32,22 +33,34 @@ import { DateTime } from "luxon";
 export const BUSY_PRUNE_KEEP_PAST_HOURS = 36;
 
 /**
- * Ids per select/delete round. 500 is the size the rest of the codebase has
- * already proven safe for an `.in(...)` filter (WRITE_CHUNK in google/sync.ts,
- * MAX_VERIFY_BATCH in snowflake/verify-archived.ts): the ids travel in the query
- * string, so a much larger batch risks a URL too long for PostgREST rather than a
- * faster prune.
+ * Ids per select/delete round, from the one shared budget (#1259).
+ *
+ * This shipped as 500 and was WRONG: 500 uuids is an 18,578-byte request URL, which
+ * prod PostgREST refuses outright, so the lane would have thrown on every run and
+ * pruned nothing. It was justified by pointing at `WRITE_CHUNK` (500) in
+ * google/sync.ts, but that carries ~27-character Google event ids rather than
+ * 36-character uuids, so the precedent did not transfer. `ID_BATCH_ROWS` is measured
+ * against the real limit and shared, so the two cannot drift again.
  */
-export const BUSY_PRUNE_BATCH_ROWS = 500;
+export const BUSY_PRUNE_BATCH_ROWS = ID_BATCH_ROWS;
 
 /**
- * Ceiling on rows removed per run, so the lane's cost is bounded no matter how
- * large the backlog is. At 60 rounds that is 120 subrequests, comfortably inside
- * the daily 03:00 invocation this lane shares with the three retention lanes. The
- * 68,805-row backlog measured on 2026-08-04 therefore clears over about three
- * nightly runs, after which the daily volume is a few hundred rows.
+ * Ceiling on rows removed per run, so the lane's cost is bounded no matter how large
+ * the backlog is.
+ *
+ * The binding constraint is the SUBREQUEST budget of the daily 03:00 invocation, which
+ * this lane shares with the three retention lanes. Each round costs two subrequests (a
+ * candidate read and a delete), so at 200 ids per round this cap is 100 rounds and 200
+ * subrequests, leaving the rest of the shared budget alone. Wall clock is roughly 9
+ * seconds (the candidate read measured ~70 ms per batch), well inside the lane's own
+ * 40-second budget.
+ *
+ * The 68,805-row backlog measured on 2026-08-04 therefore clears over about four
+ * nightly runs, after which the daily volume is a few hundred rows. Lowered from
+ * 30,000 when the round size dropped to a URL-safe 200 (#1259): keeping the row cap
+ * while tripling the round count would have tripled the subrequest cost instead.
  */
-export const BUSY_PRUNE_MAX_ROWS_PER_RUN = 30_000;
+export const BUSY_PRUNE_MAX_ROWS_PER_RUN = 20_000;
 
 /** ISO cutoff: blocks that ended before this are prunable. */
 export function busyPruneCutoffIso(

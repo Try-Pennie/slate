@@ -57,6 +57,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
+import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { afterResponse } from "@/lib/after-response";
@@ -464,8 +465,23 @@ export async function purgeVanished(
         .range(from, to),
   );
   const stale = staleBlockIds(blocks, seen);
-  if (stale.length) {
-    await db.from("busy_blocks").delete().in("id", stale);
+  // Chunked, because the ids travel in the query string and an oversized batch is
+  // REFUSED, not merely slow (#1259: 350 uuids measured accepted, 400 refused). A
+  // bootstrap routinely produces a big stale set: the fetch's timeMin excludes every
+  // block that ended more than a day ago, so all of those come back as vanished, and
+  // one agent holds 22,137 blocks.
+  //
+  // unwrapCount, not a bare await: an unchecked delete error leaves the stale blocks
+  // in place while the sync reports success and advances its token, so the agent stays
+  // falsely busy with nothing anywhere saying the cleanup failed.
+  for (let i = 0; i < stale.length; i += ID_BATCH_ROWS) {
+    unwrapCount(
+      await db
+        .from("busy_blocks")
+        .delete({ count: "exact" })
+        .in("id", stale.slice(i, i + ID_BATCH_ROWS)),
+      "purgeVanished stale busy_blocks",
+    );
   }
 }
 
@@ -567,7 +583,12 @@ async function syncCalendar(
         ? await loadSlateBookingEventIds(cal.user_id)
         : new Set<string>();
     await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
-    if (full)
+    // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
+    // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
+    // looks vanished and its cached busy time would be deleted, leaving the agent
+    // looking free during real meetings. The stored token is retained above, so the
+    // next pass re-reads the same delta and the reconcile happens once it is complete.
+    if (full && !result.truncated)
       await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds);
 
     // A sync that wrote events may have just mirrored an external Google booking
