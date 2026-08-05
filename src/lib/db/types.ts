@@ -226,6 +226,20 @@ export interface BookingSettings {
   updated_by: string | null;
 }
 
+/** One weekday of the org's business hours (#1294, migration 0098): gate 1 of the
+ *  three booking gates. Exactly seven rows, keyed on the Luxon weekday (1 = Monday).
+ *  Minutes from local midnight, in the coded org zone (never stored per row).
+ *  `is_open` false closes that day, which is different from the row being absent:
+ *  an EMPTY table is unconfigured and falls back to the seeded week. */
+export interface BusinessHoursRow {
+  weekday: number;
+  is_open: boolean;
+  start_minute: number;
+  end_minute: number;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 /** Cross-request lock row (#30); a claim is stale after its TTL. */
 export interface SyncLock {
   key: string;
