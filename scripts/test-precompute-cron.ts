@@ -4,6 +4,7 @@ import {
   bucketsDueForRecompute,
   recomputeHeadroom,
   recomputeDueBuckets,
+  staleBucketPage,
 } from "../src/lib/availability/precompute-cron.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -129,5 +130,59 @@ await (async () => {
   );
   assert(recomputed === 2, `a failing bucket is isolated; others still recompute (got ${recomputed})`);
 })();
+
+// --- staleBucketPage: a deliberate invalidation is not a fall-behind (#1301) ---
+//
+// Saving a booking setting marks EVERY bucket's slots stale on purpose, so the
+// next recompute rebuilds them over the new window. The stale alarm then sees 60+
+// buckets past its 6 minute threshold and pages about a condition the save itself
+// created, and the lane cannot drain 60 buckets in the ~2 minutes between the
+// freshness window and the alarm. That page has never fired only because no
+// booking setting has ever been saved in production.
+//
+// The fix is a BOUNDED grace, not a suppression: staleness attributable to a
+// recent deliberate invalidation does not page, and the same staleness DOES page
+// once the grace expires, because a drain that has not finished by then is the
+// genuine fall-behind the alarm exists for.
+{
+  const GRACE = 15 * 60_000;
+  const now = 1_800_000_000_000;
+
+  // No invalidation in flight: unchanged behaviour, stale pages immediately.
+  const organic = staleBucketPage(62, null, now, GRACE);
+  assert(organic.page === true, "stale buckets page when no invalidation explains them");
+
+  // A save 30 seconds ago: the drain is in flight, so no page.
+  const draining = staleBucketPage(62, now - 30_000, now, GRACE);
+  assert(draining.page === false, "a deliberate invalidation 30s ago does not page");
+  assert(
+    /invalidation|deliberate|save/i.test(draining.reason),
+    "the no-page decision says WHY it is not paging, for the log",
+  );
+
+  // Same staleness, past the grace: the drain genuinely failed, so it pages.
+  const stuck = staleBucketPage(62, now - GRACE - 1, now, GRACE);
+  assert(stuck.page === true, "still stale past the grace window pages for real");
+
+  // Nothing stale: nothing to say either way, and the grace is irrelevant.
+  assert(staleBucketPage(0, now - 30_000, now, GRACE).page === false, "no stale buckets, no page");
+  assert(staleBucketPage(0, null, now, GRACE).page === false, "no stale buckets and no marker, no page");
+
+  // Exactly at the boundary counts as expired: the grace is the budget, and a
+  // drain that used all of it and is still behind has not met it.
+  assert(staleBucketPage(1, now - GRACE, now, GRACE).page === true, "at the grace boundary it pages");
+
+  // An unreadable marker must not become an open-ended silence. NaN is what a
+  // corrupt stored stamp parses to, and every comparison against it is false, so
+  // it has to land on the PAGE side rather than the quiet side (the #1169 class).
+  assert(staleBucketPage(62, Number.NaN, now, GRACE).page === true, "an unreadable marker pages");
+
+  // A marker stamped in the FUTURE (a clock skew, or a bad write) must not buy
+  // unlimited grace either.
+  assert(
+    staleBucketPage(62, now + 60_000, now, GRACE).page === true,
+    "a marker in the future does not grant grace",
+  );
+}
 
 finish();

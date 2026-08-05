@@ -21,6 +21,9 @@ const pace = vi.hoisted(() => ({ withinBudget: vi.fn(() => true) }));
 const precompute = vi.hoisted(() => ({
   listAllBucketCodes: vi.fn(async () => []),
   listKnownBucketSlotRows: vi.fn(async () => []),
+  // #1301: the deliberate-invalidation marker. null = nothing explains staleness.
+  readMassInvalidationMs: vi.fn(async (): Promise<number | null> => null),
+  clearMassInvalidation: vi.fn(async () => {}),
 }));
 const precomputeCron = vi.hoisted(() => ({
   bucketsDueForRecompute: vi.fn(() => []),
@@ -30,7 +33,7 @@ const precomputeCron = vi.hoisted(() => ({
 }));
 const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async () => {}) }));
 const dispatch = vi.hoisted(() => ({
-  sendThrottledAlert: vi.fn(async () => {}),
+  sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
   resolveRecovered: vi.fn(async (_r: { key: string; text: string }[]) => [] as string[]),
 }));
 const alerts = vi.hoisted(() => ({ isConsecutiveFailure: vi.fn(() => false) }));
@@ -42,7 +45,12 @@ vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/google/sync-pace", () => pace);
 vi.mock("@/lib/google/sync-coalesce", () => ({ RECOMPUTE_LOCK_TTL_MS: 1000 }));
 vi.mock("@/lib/availability/precompute", () => precompute);
-vi.mock("@/lib/availability/precompute-cron", () => precomputeCron);
+// Spread the REAL module so `staleBucketPage` stays real: the grace decision is
+// what these tests are about, and a mocked verdict would only prove the mock.
+vi.mock("@/lib/availability/precompute-cron", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/availability/precompute-cron")>()),
+  ...precomputeCron,
+}));
 vi.mock("@/lib/availability/slot-cache", () => slotCache);
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/alerts", () => alerts);
@@ -113,5 +121,73 @@ describe("GET /api/cron/recompute", () => {
     heartbeat.recordHeartbeat.mockRejectedValueOnce(new Error("db down"));
     const res = await GET(req());
     expect(res.status).toBe(200);
+  });
+});
+
+// #1301: saving a booking setting marks EVERY bucket stale on purpose, and this
+// lane cannot drain the whole roster inside the ~2 minutes between the freshness
+// window and the stale alarm, so the save used to page about a condition it had
+// just created. The real decision runs here (only the marker read is faked), so
+// these pin the shipping path rather than a mocked verdict.
+describe("the stale alarm during a deliberate invalidation", () => {
+  const stalePages = () =>
+    dispatch.sendThrottledAlert.mock.calls.filter(([key]) => key === "bucket_slots_stale");
+
+  it("does not page while a recent invalidation is still draining", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411", "412", "511"] as never);
+    precompute.readMassInvalidationMs.mockResolvedValueOnce(Date.now() - 30_000);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(stalePages()).toHaveLength(0);
+  });
+
+  it("pages anyway once the drain has had its grace and is still behind", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411", "412"] as never);
+    // 20 minutes, past the 15 minute grace: this is no longer a draining save, it
+    // is the fall-behind the alarm exists for.
+    precompute.readMassInvalidationMs.mockResolvedValueOnce(Date.now() - 20 * 60_000);
+    await GET(req());
+    expect(stalePages()).toHaveLength(1);
+  });
+
+  it("still pages immediately when nothing explains the staleness", async () => {
+    // The regression guard: the grace must not have quietly become a blanket delay
+    // on every stale alarm.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
+    precompute.readMassInvalidationMs.mockResolvedValueOnce(null);
+    await GET(req());
+    expect(stalePages()).toHaveLength(1);
+  });
+
+  it("pages when the marker cannot be read, rather than staying quiet", async () => {
+    // A read failure returns null and an unreadable stamp returns NaN; neither may
+    // buy silence, because a withheld page means the booker serves stale times with
+    // nothing saying so.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
+    precompute.readMassInvalidationMs.mockResolvedValueOnce(Number.NaN);
+    await GET(req());
+    expect(stalePages()).toHaveLength(1);
+  });
+
+  it("drops the marker once the drain has finished, so the next staleness pages at once", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce([] as never);
+    precompute.readMassInvalidationMs.mockResolvedValueOnce(Date.now() - 30_000);
+    await GET(req());
+    expect(precompute.clearMassInvalidation).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not touch the marker on an ordinary healthy tick", async () => {
+    // No marker on record, so no delete: this lane runs every minute and shares a
+    // subrequest budget with three others.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.staleBuckets.mockReturnValueOnce([] as never);
+    precompute.readMassInvalidationMs.mockResolvedValueOnce(null);
+    await GET(req());
+    expect(precompute.clearMassInvalidation).not.toHaveBeenCalled();
   });
 });
