@@ -49,6 +49,9 @@ const SAFE_TABLES = new Set([
   "monitor_settings",
   "monitor_alert_config",
   "alert_state",
+  // Org business hours (#1294): exactly one row per weekday, a fixed 1..7 primary
+  // key space, so it holds seven rows forever.
+  "business_hours",
   // Precomputed availability cache: upserted onConflict bucket_code, so exactly
   // one row per bucket (~60). Bounded by the bucket count, never by volume.
   "bucket_slots",
