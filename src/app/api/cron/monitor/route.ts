@@ -19,6 +19,7 @@ import {
   type BusinessHoursConfig,
   type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
+import { countCustomerBookingsSince } from "@/lib/monitor/customer-bookings";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
@@ -130,23 +131,9 @@ const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
 // `lowVolumeArmed` with precedence store > env (BOOKING_VOLUME_ALERT_ARMED) >
 // disarmed default, so the cutover flip no longer needs a redeploy.
 
-/** Count bookings created at or after `sinceIso` (head-only, no rows), or null
- *  when the read failed: runLowVolumeCheck treats null as unverified rather
- *  than paging a false "0 bookings" off a query that never ran (#1158). */
-async function bookingsCreatedSince(
-  db: ReturnType<typeof supabaseAdmin>,
-  sinceIso: string,
-): Promise<number | null> {
-  const { count, error } = await db
-    .from("bookings")
-    .select("*", { count: "exact", head: true })
-    .gte("created_at", sinceIso);
-  if (error) {
-    log.error("monitor", { msg: "booking volume count read failed", since: sinceIso }, error);
-    return null;
-  }
-  return count ?? 0;
-}
+// The count itself lives in @/lib/monitor/customer-bookings, with its own test:
+// it excludes the smoke canary's bookings (#1258), which is the difference between
+// measuring customer demand and measuring Slate booking against itself.
 
 /**
  * Every approved absence that has not ended, or null when the read failed (which the
@@ -406,7 +393,7 @@ export async function GET(req: NextRequest) {
     const volume: LowVolumeResult = await runLowVolumeCheck({
       nowMs: now,
       businessHours: VOLUME_BUSINESS_HOURS,
-      countSince: (sinceIso) => bookingsCreatedSince(db, sinceIso),
+      countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
       floors: settings.floors,
       armed: settings.lowVolumeArmed,
       cooldownMs: settings.cooldownMs.low_booking_volume,

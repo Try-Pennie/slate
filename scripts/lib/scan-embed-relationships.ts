@@ -27,8 +27,13 @@ export function findEmbeds(src: string, file?: string): Embed[] {
   const selectRe = /\.select\(\s*"((?:[^"\\]|\\.)*)"/g;
   for (const m of src.matchAll(selectRe)) {
     const content = m[1];
-    // A nested relation is an identifier immediately followed by `(`.
-    const relNames = [...content.matchAll(/\b([a-z_][a-z0-9_]*)\s*\(/gi)].map((r) => r[1]);
+    // A nested relation is an identifier immediately followed by `(`, optionally
+    // carrying PostgREST's join hint (`buckets!inner(...)`, `buckets!left(...)`).
+    // The hint is not a table, so the identifier BEFORE it is the embedded relation;
+    // reading "inner" as the relation would make the embed impossible to cover.
+    const relNames = [...content.matchAll(/\b([a-z_][a-z0-9_]*)(?:!(?:inner|left))?\s*\(/gi)].map(
+      (r) => r[1],
+    );
     if (relNames.length === 0) continue;
     // Walk back to the nearest `.from("<table>")` that opened this chain.
     const before = src.slice(0, m.index);
