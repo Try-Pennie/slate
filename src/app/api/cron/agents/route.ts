@@ -41,7 +41,10 @@ export async function GET(req: NextRequest) {
     const hoursApplied = await ensureDefaultSchedules(org.id);
     // After the roster settles, flag any bucket that now routes to nobody (#327).
     // Best-effort: a monitoring miss must never fail the roster reconcile.
-    const coverage = await alertOnEmptyBuckets().catch(() => ({ empty: [] }));
+    const coverage = await alertOnEmptyBuckets().catch(() => ({
+      empty: [] as string[],
+      aggregated: false,
+    }));
     // Clean pass: reset the streak so a later isolated failure starts from zero.
     await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
     // #1151: a failing roster sync is a CONDITION, and this successful run IS the
@@ -54,7 +57,15 @@ export async function GET(req: NextRequest) {
       agentSyncRecovery(),
     ).catch(() => false);
     if (clearedSync) log.info("agents", { msg: "sync failure alert cleared" });
-    return NextResponse.json({ ...sync, hoursApplied, emptyBuckets: coverage.empty });
+    return NextResponse.json({
+      ...sync,
+      hoursApplied,
+      emptyBuckets: coverage.empty,
+      // Whether those buckets paged once for the set instead of once each, so the
+      // response says which of the two happened rather than leaving it to be
+      // inferred from Slack.
+      emptyBucketsAggregated: coverage.aggregated,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("agents", { msg: "cron failed", error: message });

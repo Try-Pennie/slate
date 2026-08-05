@@ -25,6 +25,20 @@ describe("alert keys", () => {
     expect(resolveCooldownMs([]).migration_version_lag).toBe(60 * 60_000);
   });
 
+  it("makes the empty-bucket page tunable, at the six-hourly default it already had", () => {
+    // Its cooldown used to be a constant inside the availability service, so when a
+    // deliberately dark roster (#1272) turned it into sixty messages a wave there
+    // was no way to quiet it short of a deploy. Moving it here must not change what
+    // it does by default.
+    expect(ALERT_KEYS).toContain("empty_buckets");
+    expect(MONITOR_DEFAULTS.cooldownMs.empty_buckets).toBe(6 * 60 * 60_000);
+    expect(resolveCooldownMs([]).empty_buckets).toBe(6 * 60 * 60_000);
+    // And a stored value wins, which is the point of moving it.
+    expect(resolveCooldownMs([{ key: "empty_buckets", cooldown_min: 10080 }]).empty_buckets).toBe(
+      10080 * 60_000,
+    );
+  });
+
   it("gives every alert key an admin field, and every field a real key", () => {
     // A key with no field is a cooldown nobody can tune; a field with no key is a
     // control that silently does nothing. Both have to be impossible.

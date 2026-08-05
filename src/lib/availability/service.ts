@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import { unwrap } from "@/lib/db/result";
+import { unwrap, unwrapCount } from "@/lib/db/result";
 import {
   computeBucketSlots,
   freeMembersForSlot,
@@ -16,14 +16,19 @@ import {
   orderByBucketShare,
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
-import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert, settleAlertsSilently } from "@/lib/notify/dispatch";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import {
   emptyBucketMessage,
   recoveredBucketMessage,
   emptyBuckets,
+  planEmptyBucketAlerts,
+  emptyBucketsAggregateMessage,
+  emptyBucketsAggregateRecoveredMessage,
+  AGGREGATE_BUCKET_CODE,
   type BucketCoverage,
 } from "@/lib/availability/bucket-coverage";
+import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
 // Lazy circular-safe import: eligible-cache.ts imports eligibleAgentIds from
@@ -35,7 +40,6 @@ import { log } from "@/lib/log";
 export { agentIdsFromPool } from "@/lib/availability/pool";
 
 const EMPTY_BUCKETS_ALERT_KEY = "empty_buckets";
-const EMPTY_BUCKETS_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 // Bounded fan-out for the per-bucket eligibility resolves (each hits the DB).
 const COVERAGE_CONCURRENCY = 6;
 
@@ -137,28 +141,58 @@ export interface EmptyBucketDeps {
   sendAlert(code: string, message: string): Promise<void>;
   /** The all-clear for a bucket that has agents again (#1151), same key. */
   clearAlert(code: string, message: string): Promise<void>;
+  /** Drop superseded per-bucket pages without posting an all-clear for each. */
+  settleSilently(codes: string[]): Promise<void>;
+  /**
+   * Bookable agents in the roster, for naming the shared cause on the aggregate
+   * page. `null` means the count could NOT be read, which the copy states rather
+   * than presenting as zero.
+   */
+  countBookableAgents(): Promise<number | null>;
 }
 
-const realEmptyBucketDeps: EmptyBucketDeps = {
-  loadBuckets: async () =>
-    ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
-  // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
-  // one eligibility read per bucket rather than each re-querying the DB.
-  countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
-  sendAlert: (code, message) =>
-    // alert-key: empty_buckets:*
-    sendThrottledAlert(
-      `${EMPTY_BUCKETS_ALERT_KEY}:${code}`,
-      EMPTY_BUCKETS_ALERT_COOLDOWN_MS,
-      message,
-    ).then(() => {}),
-  // all-clear-proof: src/lib/availability/empty-buckets.test.ts - drives this module
-  // against the real dispatch boundary with a failing bucket read, and pins that a
-  // sweep that measured no pool announces no recovery.
-  clearAlert: (code, message) =>
-    // alert-key: empty_buckets:*
-    resolveAlert(`${EMPTY_BUCKETS_ALERT_KEY}:${code}`, message).then(() => {}),
-};
+/**
+ * The real IO, built per sweep so the cooldown comes from the store (#571) rather
+ * than a constant nobody can reach. It is a factory, not a const, because the
+ * cooldown has to be resolved once per run instead of once per process.
+ */
+async function realEmptyBucketDeps(): Promise<EmptyBucketDeps> {
+  // Never throws: a config read failure falls through to the coded default rather
+  // than taking the monitor down with it.
+  const { cooldownMs } = await loadMonitorSettings();
+  const cooldown = cooldownMs.empty_buckets;
+  return {
+    loadBuckets: async () =>
+      ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
+    // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
+    // one eligibility read per bucket rather than each re-querying the DB.
+    countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
+    sendAlert: (code, message) =>
+      // alert-key: empty_buckets:*
+      sendThrottledAlert(`${EMPTY_BUCKETS_ALERT_KEY}:${code}`, cooldown, message).then(() => {}),
+    // all-clear-proof: src/lib/availability/empty-buckets.test.ts - drives this module
+    // against the real dispatch boundary with a failing bucket read, and pins that a
+    // sweep that measured no pool announces no recovery.
+    clearAlert: (code, message) =>
+      // alert-key: empty_buckets:*
+      resolveAlert(`${EMPTY_BUCKETS_ALERT_KEY}:${code}`, message).then(() => {}),
+    settleSilently: (codes) =>
+      settleAlertsSilently(codes.map((c) => `${EMPTY_BUCKETS_ALERT_KEY}:${c}`)),
+    // Test agents are excluded on purpose: the two SMOKE fixtures are bookable so
+    // the canary keeps proving the funnel, and counting them would answer "is the
+    // roster switched on" with a yes while no real lead can be routed.
+    countBookableAgents: async () =>
+      unwrapCount(
+        await supabaseAdmin()
+          .from("users")
+          .select("id", { count: "exact", head: true })
+          .eq("bookable", true)
+          .eq("is_test", false)
+          .is("deactivated_at", null),
+        "empty-buckets bookable count",
+      ),
+  };
+}
 
 /**
  * Proactive routing dead-zone monitor (#327): resolve every bucket's eligible
@@ -169,25 +203,42 @@ const realEmptyBucketDeps: EmptyBucketDeps = {
  * the decision-and-fan-out is unit-tested without DB/Slack.
  */
 export async function alertOnEmptyBuckets(
-  deps: EmptyBucketDeps = realEmptyBucketDeps,
-): Promise<{ empty: string[] }> {
-  const buckets = await deps.loadBuckets();
-  if (buckets.length === 0) return { empty: [] };
+  deps?: EmptyBucketDeps,
+): Promise<{ empty: string[]; aggregated: boolean }> {
+  const d = deps ?? (await realEmptyBucketDeps());
+  const buckets = await d.loadBuckets();
+  if (buckets.length === 0) return { empty: [], aggregated: false };
 
   const coverage: BucketCoverage[] = await mapWithConcurrency(
     buckets,
     COVERAGE_CONCURRENCY,
     async (bucket) => ({
       code: bucket.code,
-      eligibleCount: await deps.countEligible(bucket),
+      eligibleCount: await d.countEligible(bucket),
     }),
   );
 
+  const plan = planEmptyBucketAlerts(coverage);
   const empty = emptyBuckets(coverage);
   const emptySet = new Set(empty);
-  for (const code of empty) {
-    await deps.sendAlert(code, emptyBucketMessage(code)).catch(() => {});
+
+  if (plan.aggregated) {
+    // One page for the set, naming the count and the cause. The cause lookup is
+    // best-effort: a failed read becomes an explicit "could not be read" in the
+    // copy, and must never swallow the page itself.
+    const agents = await d.countBookableAgents().catch(() => null);
+    await d
+      .sendAlert(
+        AGGREGATE_BUCKET_CODE,
+        emptyBucketsAggregateMessage(empty.length, coverage.length, agents),
+      )
+      .catch(() => {});
+  } else {
+    for (const code of plan.pageCodes) {
+      await d.sendAlert(code, emptyBucketMessage(code)).catch(() => {});
+    }
   }
+
   // #1151: "this bucket routes to nobody" is a CONDITION that ends when someone
   // is staffed onto it, and this monitor is the only thing that re-measures it.
   // Driven by the MEASURED coverage, not by "we did not alert this run": a bucket
@@ -195,11 +246,36 @@ export async function alertOnEmptyBuckets(
   // could not load any bucket returned earlier and clears nothing.
   for (const c of coverage) {
     if (emptySet.has(c.code)) continue;
-    await deps
-      .clearAlert(c.code, recoveredBucketMessage(c.code, c.eligibleCount))
+    await d.clearAlert(c.code, recoveredBucketMessage(c.code, c.eligibleCount)).catch(() => {});
+  }
+
+  // The aggregate is a condition of its own and owes the same two answers. While
+  // it holds, the per-bucket pages it replaced are settled WITHOUT a notice each
+  // (the aggregate page is the notice). When it ends, ONE all-clear that says
+  // whether anything is still dead, since some buckets may still be paging.
+  if (plan.aggregated) {
+    if (plan.settleCodes.length > 0) {
+      // Not swallowed: a marker left behind is this flood again on the next wave,
+      // as sixty all-clears, so the failure has to be visible somewhere.
+      await d
+        .settleSilently(plan.settleCodes)
+        .catch((err) =>
+          log.error(
+            "empty-buckets",
+            { msg: "settling superseded per-bucket pages failed", codes: plan.settleCodes.length },
+            err,
+          ),
+        );
+    }
+  } else {
+    await d
+      .clearAlert(
+        AGGREGATE_BUCKET_CODE,
+        emptyBucketsAggregateRecoveredMessage(empty.length, coverage.length),
+      )
       .catch(() => {});
   }
-  return { empty };
+  return { empty, aggregated: plan.aggregated };
 }
 
 export interface ResolvedBucket {

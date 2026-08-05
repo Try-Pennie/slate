@@ -21,7 +21,8 @@ export type MonitorAlertKey =
   | "sync_staleness"
   | "inactive_agent_bookings"
   | "coverage_needs_human"
-  | "ooo_calcom_unprotected";
+  | "ooo_calcom_unprotected"
+  | "empty_buckets";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -36,6 +37,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "inactive_agent_bookings",
   "coverage_needs_human",
   "ooo_calcom_unprotected",
+  "empty_buckets",
 ];
 
 /**
@@ -105,6 +107,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     label: "Time off not blocked in cal.com",
     help: "Alert when an agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
   },
+  {
+    key: "empty_buckets",
+    label: "Bucket with nobody to route to",
+    help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
+  },
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -146,6 +153,11 @@ export const MONITOR_DEFAULTS = {
     // shorter repeat than its neighbours. Half an hour keeps it present without
     // becoming the thing people mute.
     ooo_calcom_unprotected: 30 * 60_000,
+    // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
+    // with nobody stays wrong until someone is staffed onto it, so it repeats while
+    // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
+    // it into sixty messages a wave with no way to quiet it.
+    empty_buckets: 6 * 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

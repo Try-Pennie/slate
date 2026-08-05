@@ -136,6 +136,8 @@ import {
   emptyBucketMessage,
   recoveredBucketMessage,
   noEligibleAgentsAlert,
+  emptyBucketsAggregateMessage,
+  emptyBucketsAggregateRecoveredMessage,
 } from "@/lib/availability/bucket-coverage";
 
 /** One rendered state of one alert. */
@@ -233,6 +235,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "recovered with several agents",
     channel: "recovery",
     text: recoveredBucketMessage("411", 6),
+  },
+  {
+    key: "empty_buckets:*",
+    state: "the whole roster is dark (one page for sixty buckets)",
+    channel: "alert",
+    text: emptyBucketsAggregateMessage(60, 60, 0),
+  },
+  {
+    key: "empty_buckets:*",
+    state: "many buckets dead while agents ARE bookable",
+    channel: "alert",
+    text: emptyBucketsAggregateMessage(12, 60, 40),
+  },
+  {
+    key: "empty_buckets:*",
+    state: "many buckets dead, agent count unreadable",
+    channel: "alert",
+    text: emptyBucketsAggregateMessage(60, 60, null),
+  },
+  {
+    key: "empty_buckets:*",
+    state: "the broad outage cleared completely",
+    channel: "recovery",
+    text: emptyBucketsAggregateRecoveredMessage(0, 60),
+  },
+  {
+    key: "empty_buckets:*",
+    state: "the broad outage cleared with buckets still dead",
+    channel: "recovery",
+    text: emptyBucketsAggregateRecoveredMessage(3, 60),
   },
   {
     key: "no_eligible_agents:*",

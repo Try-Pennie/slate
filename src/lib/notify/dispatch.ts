@@ -236,6 +236,45 @@ export async function resolveAlert(
 }
 
 /**
+ * Drop the state behind several pages WITHOUT posting an all-clear for each one.
+ *
+ * For the ONE case where the notice a reader needs has already been sent by
+ * something else: a set of narrow pages superseded by a single broader page that
+ * covers them (the empty-bucket sweep folding sixty per-bucket pages into one).
+ * Resolving them the normal way would post sixty all-clears to announce that
+ * sixty pages became one, which is the flood it is trying to stop.
+ *
+ * This is NOT a way to make an unwanted page go away. A condition still true, with
+ * its marker deleted, pages again on the next tick and its eventual recovery
+ * notice is lost, so the reader is told it broke twice and never that it ended.
+ * Use it only when the replacement notice is going out in the same breath.
+ *
+ * Best-effort and never throws, but a failure is LOGGED rather than swallowed: a
+ * marker left behind is exactly the flood this prevents, one tick later.
+ */
+export async function settleAlertsSilently(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  const db = supabaseAdmin();
+  // Both rows per key: the firing marker (so no recovery notice fires later) and
+  // the cooldown row (so a genuinely new page is not muted by the old cooldown),
+  // matching what resolveAlert deletes after a delivered notice.
+  const rows = [...keys.map(firingKey), ...keys];
+  // Chunked: the ids ride in the request URL, which PostgREST refuses past a few
+  // hundred entries (a 500-id batch shipped broken once, PR#1251).
+  for (let i = 0; i < rows.length; i += 200) {
+    const batch = rows.slice(i, i + 200);
+    const { error } = await db.from("alert_state").delete().in("key", batch);
+    if (error) {
+      log.warn("slack-alert", {
+        msg: "silent settle failed",
+        keys: batch.length,
+        error: error.message,
+      });
+    }
+  }
+}
+
+/**
  * Low-priority, visibility-only variant (#567): same throttle, but posts to the
  * info channel so it never pages the alerts channel. The info channel is now
  * UI-tunable (#571): store > env, falling back to the resolved alerts channel so
