@@ -51,6 +51,7 @@ import { parseDefaultBucketForm, parseHorizonForm } from "@/lib/booking/settings
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
 import { log } from "@/lib/log";
 import { __clearChannelCache } from "@/lib/notify/channels";
+import { planScheduleReplacement } from "@/lib/schedule-replacement";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
 /**
@@ -75,7 +76,20 @@ async function requireManageAgent(
   return actor;
 }
 
-/** Replaces a user's weekly schedule (one schedule row + its rules). */
+/**
+ * Replaces a user's weekly schedule (one schedule row + its rules), atomically
+ * (#1293).
+ *
+ * Three things this must never do, because each one silently removes an agent from
+ * every bucket's availability while reporting a successful save:
+ *
+ *   1. Apply an input that cannot produce a real week. Refused BEFORE anything is
+ *      written, with a message for the person who pressed save.
+ *   2. Leave the schedule half written. The delete and the insert are one
+ *      transaction inside `replace_availability_rules` (migration 0097), so a
+ *      failure keeps the previous rules rather than clearing them.
+ *   3. Swallow the write's error. It throws, which the server action surfaces.
+ */
 async function replaceUserSchedule(
   userId: string,
   timezone: string,
@@ -83,17 +97,25 @@ async function replaceUserSchedule(
   startMinute: number,
   endMinute: number,
 ): Promise<void> {
+  const plan = planScheduleReplacement(weekdays, startMinute, endMinute);
+  if (!plan.ok) throw new Error(plan.error);
+
   const db = supabaseAdmin();
   const scheduleId = await upsertUserSchedule(userId, timezone);
-  await db.from("availability_rules").delete().eq("schedule_id", scheduleId);
-  if (weekdays.length && endMinute > startMinute) {
-    await db.from("availability_rules").insert(
-      weekdays.map((weekday) => ({
-        schedule_id: scheduleId,
-        weekday,
-        start_minute: startMinute,
-        end_minute: endMinute,
-      })),
+  const { data, error } = await db.rpc("replace_availability_rules", {
+    p_schedule_id: scheduleId,
+    p_rules: plan.rules,
+  });
+  if (error) {
+    throw new Error(`Your hours could not be saved: ${error.message}`);
+  }
+  // Claim success only on the count the database reports, never on the absence of
+  // an error: a write that landed a different number of rules than asked for is a
+  // silently wrong schedule, and this is the last place that can tell.
+  const written = typeof data === "number" ? data : Number.NaN;
+  if (written !== plan.rules.length) {
+    throw new Error(
+      `Your hours could not be saved: expected ${plan.rules.length} days, the database recorded ${Number.isFinite(written) ? written : "an unreadable count"}.`,
     );
   }
 }

@@ -227,6 +227,18 @@ export interface Database {
           updated: boolean;
         }[];
       };
+      /** Replaces a schedule's weekly rules in ONE transaction (#1293, migration
+       *  0097), so a failure cannot leave an agent with no rules and therefore no
+       *  availability. Refuses an empty set in the database, not just in the
+       *  caller. Returns how many rules landed, so the caller can refuse to claim
+       *  success on a count it did not ask for. */
+      replace_availability_rules: {
+        Args: {
+          p_schedule_id: string;
+          p_rules: { weekday: number; start_minute: number; end_minute: number }[];
+        };
+        Returns: number;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
