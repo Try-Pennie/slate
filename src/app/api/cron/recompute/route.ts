@@ -13,6 +13,8 @@ import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import {
   listAllBucketCodes,
   listKnownBucketSlotRows,
+  readMassInvalidationMs,
+  clearMassInvalidation,
 } from "@/lib/availability/precompute";
 import { log } from "@/lib/log";
 import {
@@ -24,6 +26,7 @@ import {
 import {
   bucketsDueForRecompute,
   staleBuckets,
+  staleBucketPage,
   recomputeHeadroom,
   recomputeDueBuckets,
 } from "@/lib/availability/precompute-cron";
@@ -38,6 +41,13 @@ const RECOMPUTE_FRESH_MS = 4 * 60_000;
 // Alarm only if a bucket is STILL stale beyond this after the run — i.e. the
 // lane genuinely can't keep up (a wedged writer), not just normal aging.
 const STALE_ALARM_MS = 6 * 60_000;
+// How long a DELIBERATE mass invalidation (an admin saving a booking setting, which
+// marks every bucket stale on purpose) may still be draining before its staleness
+// pages anyway (#1301). Generous next to the ~1 minute a full-roster drain takes,
+// because the cost of waiting is a late page while the cost of being too strict is
+// the false page this whole mechanism exists to remove. Bounded on purpose: a drain
+// unfinished after this IS the fall-behind the alarm is for.
+const INVALIDATION_DRAIN_GRACE_MS = 15 * 60_000;
 // Hard per-tick cap so a slow run can't overrun the lock TTL.
 const RECOMPUTE_BUDGET_MS = 50_000;
 // Recompute buckets in bounded-concurrency waves (the recompute is DB-only) so
@@ -155,7 +165,28 @@ export async function GET(req: NextRequest) {
     // refreshed don't count): that's a genuine fall-behind, not normal aging.
     const after = await listKnownBucketSlotRows();
     const stale = staleBuckets(after, allCodes, Date.now(), STALE_ALARM_MS);
+    // #1301: an admin saving a booking setting marks EVERY bucket stale on purpose,
+    // and the lane cannot drain the whole roster inside the ~2 minutes between the
+    // freshness window and this alarm. Staleness a recent deliberate invalidation
+    // explains gets a bounded grace; the same staleness pages once that grace
+    // expires, because a drain still unfinished by then IS the fall-behind this
+    // alarm is for. The decision is pure and node-tested; the marker read fails
+    // towards paging.
+    // Read unconditionally, not only when stale: knowing whether a marker exists on
+    // a HEALTHY tick is what lets the drain's end clear it, and without that a
+    // genuine fall-behind minutes later would inherit a grace it never earned. One
+    // indexed single-row read a minute on a lane that already does several.
+    const invalidatedAtMs = await readMassInvalidationMs();
+    const verdict = staleBucketPage(
+      stale.length,
+      invalidatedAtMs,
+      Date.now(),
+      INVALIDATION_DRAIN_GRACE_MS,
+    );
     if (stale.length) {
+      log.info("recompute", { msg: "stale check", stale: stale.length, page: verdict.page, why: verdict.reason });
+    }
+    if (verdict.page) {
       await sendThrottledAlert(
         "bucket_slots_stale",
         STALE_ALERT_COOLDOWN_MS,
@@ -183,6 +214,9 @@ export async function GET(req: NextRequest) {
         text:
           bucketSlotsStaleRecovery(),
       });
+      // The drain is finished, so drop the grace marker: the NEXT staleness must
+      // page at once rather than inheriting a grace it did not earn (#1301).
+      if (invalidatedAtMs !== null) await clearMassInvalidation();
     }
     if (recovered.length > 0) {
       // alert-key: recompute_headroom

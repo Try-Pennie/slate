@@ -91,6 +91,11 @@ const STALE_STAMP = "1970-01-01T00:00:00.000Z";
  * epoch stamp, so `gt` excludes them).
  */
 export async function markAllBucketSlotsStale(): Promise<number> {
+  // Record the INTENT before causing the staleness (#1301, and the L33 ordering).
+  // A marker with no staleness grants a grace nothing needs, which is harmless;
+  // staleness with no marker is the false page this exists to prevent, so the
+  // write that can strand us must not be the second one.
+  await recordMassInvalidation();
   const data = unwrap(
     await supabaseAdmin()
       .from("bucket_slots")
@@ -100,6 +105,71 @@ export async function markAllBucketSlotsStale(): Promise<number> {
     "markAllBucketSlotsStale",
   );
   return (data ?? []).length;
+}
+
+/**
+ * The "a deliberate mass invalidation is draining" marker (#1301).
+ *
+ * Stored in `alert_state`, already a generic key-to-timestamp table with deny-all
+ * RLS, so this needs no migration (the same trick as the #1102 lane watchdog). The
+ * key is namespaced away from the `bucket_slots_stale` cooldown key so the two
+ * cannot collide.
+ *
+ * All three helpers are best-effort and never throw: they ride a cron lane and an
+ * admin save, and neither should fail over a monitoring marker. The failure
+ * directions are chosen so a marker problem can never buy silence: a failed READ
+ * returns null, which `staleBucketPage` treats as "nothing explains this
+ * staleness", so it PAGES.
+ */
+const MASS_INVALIDATION_KEY = "bucket_slots_invalidated_at";
+
+async function recordMassInvalidation(): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin()
+      .from("alert_state")
+      .upsert(
+        { key: MASS_INVALIDATION_KEY, last_sent_at: new Date().toISOString() },
+        { onConflict: "key" },
+      );
+    if (error) {
+      log.warn("precompute", { msg: "invalidation marker write failed", error: error.message });
+    }
+  } catch (err) {
+    log.error("precompute", { msg: "invalidation marker write threw" }, err);
+  }
+}
+
+/** When the last deliberate mass invalidation happened, or null if none is on
+ *  record. NaN when the stored stamp is unreadable, which pages rather than
+ *  granting an open-ended grace (#1169). */
+export async function readMassInvalidationMs(): Promise<number | null> {
+  try {
+    // error-ok: a read error returns null, which PAGES (it never withholds a page),
+    // and the marker survives for the next tick.
+    const { data } = await supabaseAdmin()
+      .from("alert_state")
+      .select("last_sent_at")
+      .eq("key", MASS_INVALIDATION_KEY)
+      .maybeSingle();
+    const at = (data as { last_sent_at: string } | null)?.last_sent_at;
+    if (!at) return null;
+    return parseStampMs(at) ?? Number.NaN;
+  } catch (err) {
+    log.warn("precompute", { msg: "invalidation marker read failed" });
+    void err;
+    return null;
+  }
+}
+
+/** Drop the marker once the drain has finished, so the NEXT staleness pages at
+ *  once instead of inheriting a grace it did not earn. */
+export async function clearMassInvalidation(): Promise<void> {
+  try {
+    await supabaseAdmin().from("alert_state").delete().eq("key", MASS_INVALIDATION_KEY);
+  } catch (err) {
+    log.warn("precompute", { msg: "invalidation marker clear failed" });
+    void err;
+  }
 }
 
 /** Upsert a freshly computed blob for a bucket. */

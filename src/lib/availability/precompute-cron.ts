@@ -46,6 +46,57 @@ export function staleBuckets(
 }
 
 /**
+ * Whether stale buckets should PAGE, given that a deliberate invalidation may be
+ * draining (#1301).
+ *
+ * Saving a booking setting marks every bucket's slots stale on purpose, so the next
+ * recompute rebuilds them over the new window. The stale alarm then sees the whole
+ * roster past its threshold and pages about a condition the save itself created,
+ * and the lane cannot drain 60+ buckets in the ~2 minutes between the freshness
+ * window and the alarm. Nobody has seen it because no booking setting has ever been
+ * saved in production; the first one pages.
+ *
+ * This is a BOUNDED grace, deliberately not a suppression. Staleness attributable
+ * to a recent invalidation does not page, and the SAME staleness pages once the
+ * grace expires, because a drain that has not finished by then is exactly the
+ * fall-behind the alarm exists for. So the alarm keeps its meaning instead of
+ * learning to ignore a class of real staleness (L36).
+ *
+ * Fails towards PAGING on anything it cannot trust: an unreadable marker (NaN, the
+ * #1169 class, where every comparison is false) and a marker stamped in the future
+ * both grant no grace. A wrong page costs a look; a wrongly withheld one costs the
+ * booker serving stale availability with nothing saying so.
+ */
+export function staleBucketPage(
+  staleCount: number,
+  invalidatedAtMs: number | null,
+  nowMs: number,
+  graceMs: number,
+): { page: boolean; reason: string } {
+  if (staleCount === 0) return { page: false, reason: "nothing stale" };
+  if (invalidatedAtMs === null) {
+    return { page: true, reason: "stale with no deliberate invalidation to explain it" };
+  }
+  if (!Number.isFinite(invalidatedAtMs)) {
+    return { page: true, reason: "invalidation marker unreadable, so it grants no grace" };
+  }
+  const age = nowMs - invalidatedAtMs;
+  if (age < 0) {
+    return { page: true, reason: "invalidation marker is in the future, so it grants no grace" };
+  }
+  if (age >= graceMs) {
+    return {
+      page: true,
+      reason: `deliberate invalidation ${Math.round(age / 60_000)}min ago has not drained within its grace`,
+    };
+  }
+  return {
+    page: false,
+    reason: `deliberate invalidation ${Math.round(age / 1000)}s ago is still draining`,
+  };
+}
+
+/**
  * Buckets the cron should recompute this run (#294): only those never-computed
  * or older than `freshMs`, oldest-first (never-computed sorts first). The cron
  * no longer force-recomputes every bucket every minute — real-time push/booking
