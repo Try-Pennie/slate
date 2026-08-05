@@ -97,7 +97,21 @@ export interface Database {
         ]
       >;
       busy_blocks: Table<BusyBlock>;
-      bookings: Table<Booking>;
+      // The low-volume monitor embeds the bucket to exclude the smoke canary's
+      // bookings (#1258); a booking is a test booking when its bucket is one, so
+      // that count is an inner join rather than a column predicate.
+      bookings: Table<
+        Booking,
+        [
+          {
+            foreignKeyName: "bookings_bucket_id_fkey";
+            columns: ["bucket_id"];
+            isOneToOne: false;
+            referencedRelation: "buckets";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       booking_events: Table<BookingEvent>;
       ooo_requests: Table<OooRequest>;
       webhook_endpoints: Table<WebhookEndpoint>;

@@ -27,6 +27,24 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "findEmbeds: multi-line embed, nested columns not mistaken for relations",
   );
 
+  // PostgREST's join-hint syntax (`table!inner(...)`, also `!left`) names the
+  // EMBEDDED TABLE before the hint. Reading the hint as the relation name would make
+  // the embed impossible to cover, since no relationship is ever declared against a
+  // table called "inner", so the guard would report a missing relationship that had
+  // in fact been declared correctly (#1258 is the repo's first such embed).
+  const hinted = `db.from("bookings").select("*, buckets!inner(is_test)", { count: "exact" })`;
+  eq(
+    JSON.stringify(findEmbeds(hinted)),
+    JSON.stringify([{ table: "bookings", relation: "buckets" }]),
+    "findEmbeds: a !inner join hint resolves to the embedded table, not the hint",
+  );
+  const left = `db.from("bookings").select("id, buckets!left(is_test)")`;
+  eq(
+    JSON.stringify(findEmbeds(left)),
+    JSON.stringify([{ table: "bookings", relation: "buckets" }]),
+    "findEmbeds: a !left join hint resolves the same way",
+  );
+
   // A plain column list (no `identifier(`) is not an embed.
   assert(findEmbeds(`db.from("users").select("id, role")`).length === 0, "findEmbeds: plain column list yields nothing");
 
