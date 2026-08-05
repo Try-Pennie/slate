@@ -162,8 +162,14 @@ async function realEmptyBucketDeps(): Promise<EmptyBucketDeps> {
   const { cooldownMs } = await loadMonitorSettings();
   const cooldown = cooldownMs.empty_buckets;
   return {
+    // Real lead routes only. The SMOKE fixtures (#396) are deliberately staffed by
+    // the two test agents so the canary keeps proving the funnel, and the canary is
+    // what watches them: counting them here would put a fixture in a number someone
+    // reconciles against the roster ("60 of 62" when they have 60), and paging about
+    // one would be noise to whoever is deciding whether real leads can be routed.
     loadBuckets: async () =>
-      ((await supabaseAdmin().from("buckets").select("*")).data ?? []) as Bucket[],
+      ((await supabaseAdmin().from("buckets").select("*").eq("is_test", false)).data ??
+        []) as Bucket[],
     // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
     // one eligibility read per bucket rather than each re-querying the DB.
     countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
