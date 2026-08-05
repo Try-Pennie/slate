@@ -5,10 +5,15 @@
  * The write path deletes every rule for the schedule and reinserts, so a REFUSED
  * input is not a cosmetic validation matter: clearing the rules removes that agent
  * from every bucket's availability, silently, while the form reports a successful
- * save. An agent who unchecks every day has almost certainly not asked to be
- * unbookable, and if they had, the way to say so is the bookable flag, not an empty
- * week. So an input that cannot produce a real week is refused before anything is
+ * save. So an input that cannot produce a real week is refused before anything is
  * deleted, with a message aimed at the person who pressed save.
+ *
+ * The empty-week message names both routes that DO exist, because someone clearing
+ * their week wants one of them and a refusal that only says no is a dead end:
+ * approved time off keeps them out of availability for a dated absence (it writes an
+ * event their calendar makes busy), and `users.bookable` is the roster-level switch
+ * for anything longer. Both leave a trace an admin can see, which an empty schedule
+ * does not.
  *
  * Minutes are from local midnight, and 1440 (midnight at the end of the day) is a
  * legitimate end bound the compute already handles, so the range is inclusive there.
@@ -37,7 +42,7 @@ export function planScheduleReplacement(
   if (weekdays.length === 0) {
     return {
       ok: false,
-      error: "Pick at least one day you are available. To stop taking bookings entirely, ask an admin to take you out of the booking pool.",
+      error: "Pick at least one day you are available. If you are away, submit a time off request instead, and if you should not be taking bookings for longer than that, ask an admin to take you out of the booking pool.",
     };
   }
   if (weekdays.some((d) => !isWholeNumber(d) || d < 1 || d > 7)) {

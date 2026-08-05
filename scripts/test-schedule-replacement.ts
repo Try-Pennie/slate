@@ -36,6 +36,11 @@ import { assert, finish } from "./lib/harness.ts";
     // The message is read by the person who just pressed save, so it has to say
     // what to do, not what went wrong internally.
     assert(/pick|choose|select/i.test(noDays.error), "the refusal says what to do next");
+    // Both real routes are named, because someone clearing their week wants one of
+    // them: time off for an absence, or the booking pool for a longer term change.
+    // A refusal that only says no is a dead end for the person reading it.
+    assert(/time off/i.test(noDays.error), "the refusal names time off for an absence");
+    assert(/pool|admin/i.test(noDays.error), "the refusal names the booking pool route too");
   }
 
   const inverted = planScheduleReplacement([1], 1020, 480);
