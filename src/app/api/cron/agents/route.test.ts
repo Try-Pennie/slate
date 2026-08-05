@@ -18,7 +18,7 @@ const provision = vi.hoisted(() => ({
 }));
 const schedule = vi.hoisted(() => ({ ensureDefaultSchedules: vi.fn(async () => 0) }));
 const availability = vi.hoisted(() => ({
-  alertOnEmptyBuckets: vi.fn(async () => ({ empty: [] })),
+  alertOnEmptyBuckets: vi.fn(async () => ({ empty: [], aggregated: false })),
 }));
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(

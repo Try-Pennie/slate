@@ -27,6 +27,11 @@ const del = vi.hoisted(() => vi.fn());
 // #1134: lets a test make every read error, to prove the bulk firing read fails
 // closed rather than inventing an answer.
 const failReads = vi.hoisted(() => ({ value: false }));
+// The bulk delete behind settleAlertsSilently: the batch sizes it was asked for
+// (the ids ride in the URL, so an unchunked 60-key delete is the PR#1251 defect),
+// plus a switch to make the delete itself fail.
+const delIn = vi.hoisted(() => vi.fn());
+const failDeletes = vi.hoisted(() => ({ value: false }));
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: (_table: string) => ({
@@ -53,6 +58,12 @@ vi.mock("@/lib/supabase/admin", () => ({
           rows.delete(key);
           return {};
         },
+        in: async (_col: string, keys: string[]) => {
+          delIn(keys);
+          if (failDeletes.value) return { error: { message: "delete timeout" } };
+          for (const k of keys) rows.delete(k);
+          return { error: null };
+        },
       }),
     }),
   }),
@@ -69,6 +80,7 @@ import {
   isAlertFiring,
   firingAlertKeys,
   firingKey,
+  settleAlertsSilently,
 } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
 import { __clearChannelCache } from "@/lib/notify/channels";
@@ -78,6 +90,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   rows.clear();
   failReads.value = false;
+  failDeletes.value = false;
   process.env = { ...ENV };
   // #571: the info channel now comes from a store-aware, briefly-cached resolver;
   // clear it so each test's env is honored (the mocked config table is empty).
@@ -318,5 +331,61 @@ describe("resolveAlert recovery notice (#1133)", () => {
     expect(slack.postSlack).not.toHaveBeenCalled();
     // The marker survives, so the notice still goes out once Slack is configured.
     expect(rows.has(firingKey("sync_failures"))).toBe(true);
+  });
+});
+
+// settleAlertsSilently: drop several superseded pages WITHOUT a notice each.
+// Built for the empty-bucket sweep folding sixty per-bucket pages into one
+// aggregate page: resolving them normally would post sixty all-clears to announce
+// that sixty pages became one, which is the flood it exists to stop.
+describe("settleAlertsSilently", () => {
+  it("drops both the firing marker and the cooldown row, and posts nothing", async () => {
+    rows.set(firingKey("empty_buckets:411"), "2026-08-05T00:00:00.000Z");
+    rows.set("empty_buckets:411", "2026-08-05T00:00:00.000Z");
+    rows.set(firingKey("empty_buckets:412"), "2026-08-05T00:00:00.000Z");
+
+    await settleAlertsSilently(["empty_buckets:411", "empty_buckets:412"]);
+
+    // The marker has to go, or a later recovery notice fires for a page the reader
+    // was never left holding. The cooldown row too, so a genuinely new page is not
+    // muted by the old one's remaining cooldown.
+    expect(rows.has(firingKey("empty_buckets:411"))).toBe(false);
+    expect(rows.has("empty_buckets:411")).toBe(false);
+    expect(rows.has(firingKey("empty_buckets:412"))).toBe(false);
+    // Silent is the whole point: the replacement page is the notice.
+    expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+
+  it("touches nothing when given no keys", async () => {
+    await settleAlertsSilently([]);
+    expect(delIn).not.toHaveBeenCalled();
+  });
+
+  it("chunks the delete so no request carries an unsendable number of keys", async () => {
+    // The keys ride in the request URL, which PostgREST refuses past a few hundred
+    // entries; a 500-id batch shipped broken once (PR#1251). 300 keys become 600
+    // rows (marker plus cooldown), so an unchunked delete would be caught here.
+    const keys = Array.from({ length: 300 }, (_, i) => `empty_buckets:b${i}`);
+    await settleAlertsSilently(keys);
+    const sizes = delIn.mock.calls.map(([batch]) => (batch as string[]).length);
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(200);
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(600);
+  });
+
+  it("logs and keeps going when the delete fails, rather than failing silently", async () => {
+    // A marker left behind is the flood again on the next sweep, so the failure has
+    // to be visible somewhere. It still must not throw: this rides a monitoring
+    // path that must never fail the lane it runs on.
+    failDeletes.value = true;
+    rows.set(firingKey("empty_buckets:411"), "2026-08-05T00:00:00.000Z");
+
+    await expect(settleAlertsSilently(["empty_buckets:411"])).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalled();
+    const fields = warn.mock.calls[0][1] as { msg: string };
+    expect(fields.msg).toMatch(/settle/i);
+    // Nothing was deleted, so the next sweep sees the marker and tries again.
+    expect(rows.has(firingKey("empty_buckets:411"))).toBe(true);
   });
 });
