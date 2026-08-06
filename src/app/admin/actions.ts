@@ -29,6 +29,7 @@ import {
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { upsertUserSchedule } from "@/lib/schedule";
+import { SEED_START_TIME, SEED_END_TIME } from "@/lib/schedule-core";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
@@ -515,9 +516,11 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
     .from("organizations")
     .update({
       default_timezone: String(form.get("default_timezone") ?? "America/New_York"),
-      default_start_minute: toMinutes(String(form.get("default_start") ?? "09:00")),
+      // The fallbacks come from the seeded day (#1299), never a literal: a blank
+      // field must not be able to write 09:00 back over the backfilled roster.
+      default_start_minute: toMinutes(String(form.get("default_start") ?? SEED_START_TIME)),
       default_end_minute: toMinutes(
-        roundUpToQuarterHour(String(form.get("default_end") ?? "17:00")),
+        roundUpToQuarterHour(String(form.get("default_end") ?? SEED_END_TIME)),
       ),
       default_weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
     })

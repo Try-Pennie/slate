@@ -8,6 +8,7 @@
 // Salesforce). The buckets carry EMPTY criteria so the lone member always
 // matches, keeping the smoke test off the production round-robin and its
 // fairness data. Ids are deterministic so re-seeding upserts in place.
+import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 
 export interface SmokeSeedParams {
   orgId: string;
@@ -92,13 +93,18 @@ const REASSIGN_TARGET_ID = "c0000000-0000-4000-8000-000000000002";
 // it needs working hours for round-robin to offer it.
 const REASSIGN_TARGET_SCHEDULE_ID = "d0000000-0000-4000-8000-000000000002";
 
-/** Mon-Fri 9:00-17:00 (minutes 540-1020) working-hours rules for one schedule. */
+/**
+ * Mon-Fri working-hours rules for one schedule, on the SAME seeded day the real
+ * roster runs (#1299). Read from `schedule-core` rather than written out here: the
+ * smoke agents book against the same org window every real agent does, so a stale
+ * literal here would make the canary exercise a day nobody else works.
+ */
 function weekdayRules(scheduleId: string): SmokeSeedRule[] {
   return [1, 2, 3, 4, 5].map((weekday) => ({
     schedule_id: scheduleId,
     weekday,
-    start_minute: 540,
-    end_minute: 1020,
+    start_minute: SEED_START_MINUTE,
+    end_minute: SEED_END_MINUTE,
   }));
 }
 
