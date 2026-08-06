@@ -7,6 +7,7 @@
 // Run: node --experimental-strip-types scripts/test-smoke-seed.ts
 import { buildSmokeSeed } from "./smoke-seed.ts";
 import { assert, finish } from "./lib/harness.ts";
+import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 
 const params = {
   orgId: "org-smoke",
@@ -40,8 +41,14 @@ assert(
   "primary rules cover weekdays Mon(1)..Fri(5)",
 );
 assert(
-  seed.rules.every((r) => r.start_minute === 540 && r.end_minute === 1020),
-  "rules are 9:00-17:00 (minutes 540-1020), like default working hours",
+  seed.rules.every(
+    (r) => r.start_minute === SEED_START_MINUTE && r.end_minute === SEED_END_MINUTE,
+  ),
+  "rules run the shared seeded working day, so the canary exercises the day the real roster works",
+);
+assert(
+  seed.rules.every((r) => r.start_minute === 480 && r.end_minute === 1020),
+  "and that day is 08:00 to 17:00 (#1299), pinned here so a change to it is deliberate",
 );
 assert(
   seed.rules.every((r) => seed.schedules.some((s) => s.id === r.schedule_id)),
@@ -106,7 +113,7 @@ if (target) {
   assert(!!targetSchedule, "reassign target has its own schedule (bookable as a SMOKE fallback)");
   assert(
     seed.rules.filter((r) => r.schedule_id === targetSchedule?.id).length === 5,
-    "reassign target has five Mon-Fri rules (9:00-17:00)",
+    "reassign target has five Mon-Fri rules on the seeded working day",
   );
 
   // It joins SMOKE (the first bucket) only — a bookable fallback there, but

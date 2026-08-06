@@ -177,6 +177,48 @@ Two things enforce this rather than trusting memory:
   warehouse bigger, so a single stranded row pages with no tolerance. That is the
   net under **hand-run** SQL, which no repo scan can see.
 
+## Backfilling a roster-wide value: watch the assertion fail first (#1299)
+
+A backfill against a table nobody is currently reading needs its own detection,
+because the product will not provide any. On 2026-08-06 the roster's working day
+moved from a 09:00 start to 08:00: 630 rules across 126 schedules, in an org with
+**zero real bookings**. Nothing would have flagged a wrong row count. No agent
+would have said their diary looked odd, no conversion would have dipped.
+
+`scripts/sql/backfill-agent-hours-1299.sql` is the worked example. The shape:
+
+1. **Snapshot the whole table first**, not only the rows about to move, with
+   `create table as` so a second run fails rather than overwriting the record of
+   the first. The snapshot is a restore point, not a diff.
+2. **Qualify all-or-nothing per parent row**, so an already-edited schedule is left
+   alone: a backfill corrects a bad default, it does not overwrite a choice.
+3. **Prove the shape, not the count.** `count(*) = 5` plus a `min`/`max` weekday
+   range does NOT prove five distinct days: five rules that are all Monday pass it.
+   `count(distinct weekday) = 5` is the clause that means what the guard intends,
+   and several windows on one weekday is a real capability here (0097 deliberately
+   declined a unique index on `(schedule_id, weekday)`), so that shape is possible
+   rather than hypothetical.
+4. **Assert the post-state inside the transaction and `raise exception` on a
+   mismatch**, so a surprise rolls back rather than reporting a warning nobody
+   reads. Assert the quantity itself, including that the snapshot holds the
+   PRE-change rows, since a backup written after the update is not a restore point.
+5. **Run the whole thing once with the expected count deliberately wrong and
+   `rollback` instead of `commit`.** A count assertion nobody has watched fail is
+   not an assertion. The dry run doubles as the measurement: the control raised
+   `expected 999 ... found 630`, which confirmed the real number before a single
+   row was committed. Then verify the result with a read-back that is not the
+   script's own assertion.
+
+Move any second-order copies of the value in the same change. Here the start time
+was written by hand in three places (the org default a new agent inherits, the
+admin form's blank fallback, and the smoke seed), so it now has one home,
+`SEED_START_MINUTE` in `src/lib/schedule-core.ts`. A backfill whose value is
+re-typed elsewhere reverts one record at a time, silently.
+
+A table created by a backfill script is outside `scripts/test-migrations.ts`'s RLS
+scan, so check it by hand: `availability_rules_backup_1255` came out with RLS
+enabled and no policies, which is default-deny and correct.
+
 ## Roll-forward only, and what the migration tests cover (#607)
 
 Slate deliberately uses **roll-forward-only** migrations. There are no
