@@ -18,6 +18,7 @@ import {
   reportAvailabilityHealth,
   DATA_ANOMALY_ALERT_KEY,
   type WorkingRule,
+  type AgentShift,
   type DeadEndCause,
 } from "../src/lib/monitor/availability-health.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -55,18 +56,23 @@ const NINE_TO_FIVE: WorkingRule[] = [
 // --- anyOnShift ---
 {
   const onMidday = Date.UTC(2026, 5, 23, 18, 0, 0); // Tue 14:00 ET
+  // The org open around the clock, so these stay about the AGENTS' shifts.
+  const ORG_OPEN: AgentShift = {
+    timezone: "America/New_York",
+    rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+  };
   assert(
     anyOnShift(onMidday, [
       { timezone: "America/New_York", rules: [] }, // off (no rules)
       { timezone: "America/New_York", rules: NINE_TO_FIVE }, // on
-    ]),
+    ], ORG_OPEN),
     "true when at least one eligible agent is on shift",
   );
   assert(
     !anyOnShift(onMidday, [
       { timezone: "America/New_York", rules: [] },
       { timezone: "America/New_York", rules: [{ weekday: 6, start_minute: 540, end_minute: 1020 }] }, // Sat only
-    ]),
+    ], ORG_OPEN),
     "false when no eligible agent is on shift",
   );
 }
@@ -384,6 +390,42 @@ const ladder = (code: string) => {
   assert(
     thrower.cleared === false,
     "a failed recovery notice reports not-cleared instead of throwing into the lane",
+  );
+}
+
+// --- #1296: the org's own hours are part of "should this be showing times" --------
+//
+// `failingBuckets` pages on "an agent is working but the booker shows nothing", and
+// the read path now filters cached slots to the org's hours. Those two must agree,
+// or closing the org becomes indistinguishable from a wedged cache: the count drops
+// to zero for a real reason, an agent is still on shift, and the probe pages about
+// a bucket that is behaving exactly as configured.
+{
+  const AGENT_ALL_WEEK: AgentShift[] = [
+    { timezone: "America/New_York", rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })) },
+  ];
+  // Monday 2026-06-08, 21:00 New York. The agent is on shift; the org shut at 20:00.
+  const nowMs = Date.parse("2026-06-09T01:00:00.000Z");
+  const orgOpen8to8: AgentShift = {
+    timezone: "America/New_York",
+    rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
+  };
+  const orgAllDay: AgentShift = {
+    timezone: "America/New_York",
+    rules: [{ weekday: 1, start_minute: 0, end_minute: 1440 }],
+  };
+
+  assert(
+    anyOnShift(nowMs, AGENT_ALL_WEEK, orgOpen8to8) === false,
+    "an agent working past the org's close does not count as on shift: the org is shut",
+  );
+  assert(
+    anyOnShift(nowMs, AGENT_ALL_WEEK, orgAllDay) === true,
+    "the same agent at the same instant IS on shift once the org is open then",
+  );
+  assert(
+    anyOnShift(nowMs, [], orgAllDay) === false,
+    "an open org with nobody rostered is still not on shift",
   );
 }
 

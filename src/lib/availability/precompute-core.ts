@@ -1,5 +1,6 @@
 import { slotCacheKey } from "./cache-key.ts";
 import { shapePrecomputedRow } from "./precompute-shape.ts";
+import { slotsWithinBusinessHours, type BusinessHoursRules } from "./compute.ts";
 import type { BucketSlots } from "./service";
 
 /**
@@ -33,6 +34,14 @@ export interface ReadDeps {
   compute(code: string, fromIso: string, toIso: string): Promise<BucketSlots | null>;
   /** Self-heal: persist a freshly computed blob; returns its computed_at stamp. */
   writeRow(code: string, val: BucketSlots): Promise<string>;
+  /**
+   * The org's CURRENT opening hours (#1296), read through a short per-isolate
+   * cache. Gate 1 runs at compute time, which leaves one hole: a slot computed
+   * under a wider window and still sitting in the cache after a narrowing. Every
+   * tier below filters against this on the way out, so a narrowing takes effect on
+   * the next request instead of the next recompute.
+   */
+  businessHours(): Promise<BusinessHoursRules>;
 }
 
 /**
@@ -49,15 +58,40 @@ export async function resolveBucketSlots(
 ): Promise<ResolvedBucketSlots | null> {
   const { key, fromIso: nf, toIso: nt } = slotCacheKey(code, fromIso, horizonDays);
 
+  /**
+   * The single exit (#1296). Every tier leaves through here, so no tier can return
+   * a list the org's CURRENT hours would not allow.
+   *
+   * Note what is NOT filtered: whatever goes into `cachePut` and `writeRow` stays
+   * the full computed payload. Caching the filtered list would bake one moment's
+   * hours into the cache, and re-opening a day would then take a whole recompute
+   * cycle to show up while closing one took effect at once. Filtering per read
+   * makes both directions equally immediate.
+   *
+   * The cost of the extra hours read is one PostgREST round trip per isolate per
+   * `SLOT_TTL_SECONDS`, not one per request; see `business-hours-cache.ts`.
+   */
+  const served = async (
+    val: CachedBucketSlots,
+    source: SlotSource,
+  ): Promise<ResolvedBucketSlots> => {
+    const hours = await deps.businessHours();
+    return {
+      ...val,
+      slots: slotsWithinBusinessHours(val.slots, val.eventType.duration_min, hours),
+      source,
+    };
+  };
+
   const hit = await deps.cacheGet(key);
-  if (hit) return { ...hit, source: "hit" };
+  if (hit) return served(hit, "hit");
 
   const raw = await deps.readRow(code);
   const row = shapePrecomputedRow(raw);
   if (row) {
     const cached: CachedBucketSlots = { ...row, computedAt: raw!.computed_at };
     await deps.cachePut(key, cached);
-    return { ...cached, source: "row" };
+    return served(cached, "row");
   }
 
   // Never-computed / malformed row: compute live once and self-heal.
@@ -66,5 +100,5 @@ export async function resolveBucketSlots(
   const computedAt = await deps.writeRow(code, fresh);
   const cached: CachedBucketSlots = { ...fresh, computedAt };
   await deps.cachePut(key, cached);
-  return { ...cached, source: "compute" };
+  return served(cached, "compute");
 }

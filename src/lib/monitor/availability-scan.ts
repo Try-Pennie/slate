@@ -44,11 +44,14 @@ export interface AvailabilityScanDeps {
   probeConcurrency: number;
   deadlineMs: number;
   buckets: ScanBucket[];
-  slotByCode: Map<string, { slotCount: number; computedAtMs: number }>;
+  slotByCode: Map<string, { slotCount: number | null; computedAtMs: number }>;
   ladder: (code: string) => string[];
   nameOf: (code: string) => string;
   eligibleIds: (code: string) => Promise<string[]>;
   shiftFor: (userId: string) => AgentShift;
+  /** The ORG's opening hours (#1296). A bucket whose org is shut right now is
+   *  legitimately closed, not an outage, so it is not "should be showing times". */
+  businessHours: AgentShift;
   /** Live recompute slot count for a dead-end code, or null when it failed. */
   recomputeSlots: (code: string) => Promise<number | null>;
   claimHeal: (code: string) => Promise<boolean>;
@@ -102,9 +105,12 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
       return {
         code: bucket.code,
         eligibleCount: ids.length,
-        slotCount: slot?.slotCount ?? 0,
+        // A bucket with NO cached row at all is a genuine zero (nothing has ever
+        // been computed); a row whose count could not be measured stays null so it
+        // is excluded from the conclusions rather than paging as an empty bucket.
+        slotCount: slot ? slot.slotCount : 0,
         computedAtMs: slot?.computedAtMs ?? null,
-        onShiftNow: anyOnShift(deps.nowMs, ids.map(deps.shiftFor)),
+        onShiftNow: anyOnShift(deps.nowMs, ids.map(deps.shiftFor), deps.businessHours),
       };
     },
     { deadlineMs: deps.deadlineMs },
@@ -116,6 +122,8 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
   const bucketInfo = new Map(
     deps.buckets.map((b) => [
       b.code,
+      // Same rule for the ladder walk: `null > 0` is false, so an unmeasured rung
+      // never claims to cover a tier it might not.
       { slotCount: deps.slotByCode.get(b.code)?.slotCount ?? 0, isTest: b.isTest },
     ]),
   );

@@ -1,6 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { makeCachedHoursReader } from "@/lib/booking/business-hours-cache";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import {
   resolveBusinessHours,
   BUSINESS_ZONE,
@@ -55,3 +57,41 @@ export async function loadBusinessHours(): Promise<BusinessHours> {
   }
   return { zone: BUSINESS_ZONE, rules: resolved.rules, source: resolved.source };
 }
+
+/**
+ * How long a successful hours read stays fresh in one isolate (#1296).
+ *
+ * Aligned to `SLOT_TTL_SECONDS` in `src/lib/availability/slot-cache.ts`: the read
+ * path already tolerates 5 seconds of slot staleness, so the hours that FILTER
+ * those slots must not be staler than the slots themselves. It is duplicated
+ * rather than imported because importing slot-cache here would close a cycle
+ * (slot-cache imports the availability service, which imports this module).
+ * `scripts/test-business-hours-ttl.ts` fails the build if the two drift apart.
+ */
+export const BUSINESS_HOURS_TTL_MS = 5_000;
+
+/**
+ * The read the hot path uses. Same answer as `loadBusinessHours`, at one round trip
+ * per isolate per TTL instead of one per request.
+ *
+ * On a failed refresh it serves the LAST KNOWN week rather than failing the request
+ * (Dan, 2026-08-06), so a blip cannot stop leads booking. That stays honest because
+ * a sustained failure is loud on the WRITE side: `getBucketSlots` throws, no row is
+ * written, and `bucket_slots_stale` pages after six minutes. Each stale serve is
+ * logged with its age, so the window is visible rather than inferred.
+ *
+ * A cold isolate whose FIRST read fails still throws: there is no last known week,
+ * and inventing one could silently re-open hours an admin had narrowed.
+ */
+export const loadBusinessHoursCached = makeCachedHoursReader({
+  load: loadBusinessHours,
+  ttlMs: BUSINESS_HOURS_TTL_MS,
+  now: () => Date.now(),
+  // log.warn cannot carry an Error yet (#1188), so the reason rides as a field.
+  onStale: (ageMs, err) =>
+    log.warn("business-hours", {
+      msg: "serving the last known week; refresh failed",
+      age_ms: ageMs,
+      reason: shortErrorReason(err),
+    }),
+});
