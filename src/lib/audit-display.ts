@@ -42,6 +42,7 @@ const ACTION_LABEL: Record<string, string> = {
   "reason.options": "changed reason options",
   "booking.settings": "changed booking settings",
   "pii.erasure": "erased contact data",
+  "org.business_hours": "changed when Pennie is open",
   "pii.warehouse_purge": "purged contact data from the warehouse",
 };
 

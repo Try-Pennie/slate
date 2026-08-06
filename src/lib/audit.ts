@@ -4,31 +4,47 @@ import { shortFailureReason, shortErrorReason } from "@/lib/notify/error-text";
 import { auditWriteFailedAlert } from "@/lib/notify/misc-alert-copy";
 import { log } from "@/lib/log";
 
-export type AuditAction =
-  | "role.set"
-  | "agent.hours"
-  | "agent.use_default_hours"
-  | "agent.bookable"
-  | "agent.deactivate"
-  | "agent.reactivate"
-  | "agent.attributes"
-  | "agent.manager"
-  | "agent.ooo_calendar"
-  | "ooo.submit"
-  | "ooo.approve"
-  | "ooo.reject"
-  | "ooo.cancel"
-  | "ooo.modify"
-  | "ooo.retry"
-  | "impersonate.start"
-  | "impersonate.stop"
-  | "impersonate.ended"
-  | "monitor.settings"
-  | "reason.options"
-  | "booking.settings"
+/**
+ * Every action the trail can record, as a runtime list so the type is DERIVED from
+ * it rather than maintained beside it.
+ *
+ * A union alone cannot be enumerated at runtime, so the display-label map could only
+ * be checked against a second hand-written list, and a new action missing from BOTH
+ * was invisible: the label falls back to the raw key and the row renders as
+ * "org.business_hours" to whoever reads the trail. Deriving the type from the array
+ * lets `scripts/test-audit-display.ts` walk the real vocabulary instead.
+ */
+export const AUDIT_ACTIONS = [
+  "role.set",
+  "agent.hours",
+  "agent.use_default_hours",
+  "agent.bookable",
+  "agent.deactivate",
+  "agent.reactivate",
+  "agent.attributes",
+  "agent.manager",
+  "agent.ooo_calendar",
+  "ooo.submit",
+  "ooo.approve",
+  "ooo.reject",
+  "ooo.cancel",
+  "ooo.modify",
+  "ooo.retry",
+  "impersonate.start",
+  "impersonate.stop",
+  "impersonate.ended",
+  "monitor.settings",
+  "reason.options",
+  "booking.settings",
+  // When Pennie is open (#1297). Distinct from booking.settings because it changes
+  // what every lead can book, not how the booker is configured.
+  "org.business_hours",
   // The warehouse half of a data-subject erasure (#1128). Its Supabase half is
   // audited by the erase_booking_pii function itself, as `pii.erasure`.
-  | "pii.warehouse_purge";
+  "pii.warehouse_purge",
+] as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** One key for the whole trail: if audit writes are broken they are broken for
  *  every action, so a per-action key would page N times for one cause. */

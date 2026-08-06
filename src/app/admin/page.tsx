@@ -19,7 +19,6 @@ import {
   createEventType,
   replayFailedWebhooks,
   resendWebhookDelivery,
-  setOrgDefaultHours,
   startImpersonation,
   setWebhookEndpoint,
   syncSalesforceNow,
@@ -52,8 +51,6 @@ import { auditActionLabel, auditActorText, auditDetailText } from "@/lib/audit-d
 import { AutoSubmitSelect } from "@/components/ui/AutoSubmitSelect";
 import { FilterForm } from "@/components/ui/FilterForm";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
-import { TimeField } from "@/components/ui/TimeField";
-import { DayToggles } from "@/components/ui/DayToggles";
 import { SyncButton } from "@/components/SyncButton";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import BookingLookup from "@/components/BookingLookup";
@@ -636,60 +633,10 @@ export default async function AdminPage({
       </section>
       )}
 
-      {/* Org default working hours (super admin only) */}
-      {canEditDefaults && (
-      <section className={cardCls}>
-        <h2 className="mb-2 text-sm font-semibold">Default working hours</h2>
-        <p className="mb-3 text-xs text-fg-muted">
-          Applied when you click <strong>Use default hours</strong> on an agent.
-          Each agent keeps their own home timezone; leads always see times in
-          their own timezone.
-        </p>
-        <form action={setOrgDefaultHours} className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className={labelCls}>Timezone</label>
-            <input
-              name="default_timezone"
-              aria-label="Timezone"
-              defaultValue={org.default_timezone}
-              className={`${inputCls} w-44`}
-            />
-          </div>
-          <div>
-            <span className={labelCls}>Days</span>
-            <div className="mt-1">
-              <DayToggles
-                namePrefix="dday_"
-                isOn={(d) => org.default_weekdays.includes(d)}
-              />
-            </div>
-          </div>
-          <div>
-            <label className={labelCls}>Start</label>
-            <TimeField
-              name="default_start"
-              ariaLabel="Start"
-              defaultValue={minutesToTime(org.default_start_minute)}
-              className="mt-1"
-            />
-          </div>
-          <div>
-            <label className={labelCls}>End</label>
-            <TimeField
-              name="default_end"
-              ariaLabel="End"
-              round="up"
-              defaultValue={minutesToTime(org.default_end_minute)}
-              className="mt-1"
-            />
-          </div>
-          <SubmitButton className={btnCls} pendingLabel="Saving…">
-            Save default
-          </SubmitButton>
-        </form>
-      </section>
-      )}
-
+      {/* The org's default working hours and the business hours now live together on
+          /admin/settings (#1297): both look like "hours in a settings screen", and
+          confusing them silently moves the whole roster's bookability, so they are
+          named apart and placed adjacent rather than a page apart. */}
       {/* Booker calendar layout (super admin only) */}
       {canEditDefaults && (
       <section className={cardCls}>
@@ -1351,12 +1298,6 @@ function attrToText(v: unknown): string {
   if (Array.isArray(v)) return v.join(", ");
   if (v === undefined || v === null) return "";
   return String(v);
-}
-
-function minutesToTime(m: number): string {
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
 function Field({

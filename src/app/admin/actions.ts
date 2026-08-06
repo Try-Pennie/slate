@@ -30,6 +30,13 @@ import {
 import { roundUpToQuarterHour } from "@/lib/date/parse";
 import { upsertUserSchedule } from "@/lib/schedule";
 import { SEED_START_TIME, SEED_END_TIME } from "@/lib/schedule-core";
+import {
+  parseBusinessHoursForm,
+  countBookingsOnWeekdays,
+} from "@/lib/booking/business-hours-form";
+import { loadBusinessHoursRows } from "@/lib/booking/business-hours-load";
+import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
@@ -952,4 +959,112 @@ function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
   const total = (h || 0) * 60 + (m || 0);
   return Math.floor(total / 15) * 15;
+}
+
+
+const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+export type BusinessHoursFormState = {
+  error: string | null;
+  /**
+   * Set when the save is being HELD for confirmation: the week is valid, but it
+   * closes a day that already holds appointments. Re-submitting with `confirm_close`
+   * goes through. Distinct from `error` because nothing is wrong; the person just
+   * has to see the consequence first.
+   */
+  confirm?: { message: string } | null;
+  ok?: boolean;
+};
+
+/**
+ * Save the org's business hours (#1297).
+ *
+ * Returns state rather than redirecting so a refusal keeps the typed week on screen
+ * (the same reason `submitMyOoo` does), which matters here because the form is
+ * twenty-one fields and re-entering them after a bounce would be miserable.
+ *
+ * Two deliberate behaviours:
+ *
+ *  * CLOSING A DAY THAT HOLDS APPOINTMENTS WARNS, THEN SAVES. Per Dan's decision the
+ *    existing appointments stand and nothing is moved automatically; the person is
+ *    told how many there are and confirms. So the first submit comes back as
+ *    `confirm`, and the second (carrying `confirm_close`) writes.
+ *
+ *  * NO MASS INVALIDATION. Unlike the booking-horizon save next door, this does NOT
+ *    call `markAllBucketSlotsStale`. Gate 1 filters cached slots against the current
+ *    hours at READ time (#1296), so a narrowing takes effect on the next request
+ *    without touching a single row. Marking 60+ buckets stale would additionally risk
+ *    a false `bucket_slots_stale` page, which is the finding that shaped #1296.
+ */
+export async function setBusinessHours(
+  _prev: BusinessHoursFormState,
+  form: FormData,
+): Promise<BusinessHoursFormState> {
+  const admin = await requireAdmin();
+  const db = supabaseAdmin();
+
+  const current = await loadBusinessHoursRows();
+  const currentlyOpen = current.filter((r) => r.is_open).map((r) => r.weekday);
+
+  const raw: Record<string, string> = {};
+  for (const [k, v] of form.entries()) if (typeof v === "string") raw[k] = v;
+
+  const parsed = parseBusinessHoursForm(raw, { currentlyOpen });
+  if (parsed.errors.length) return { error: parsed.errors.join(" ") };
+
+  if (parsed.newlyClosed.length > 0 && !form.get("confirm_close")) {
+    // Every future active booking, paged: bookings is a growth table, and a
+    // truncated read would under-count and let someone close a day believing it
+    // was empty. The count is taken in the org's zone (see countBookingsOnWeekdays).
+    const nowIso = new Date().toISOString();
+    const rows = await selectAllPages<{ starts_at: string }>(
+      "business hours closure check",
+      (from, to) =>
+        db
+          .from("bookings")
+          .select("starts_at")
+          .in("status", ["confirmed", "rescheduled"])
+          .gte("starts_at", nowIso)
+          .range(from, to),
+    );
+    const affected = countBookingsOnWeekdays(
+      rows.map((r) => r.starts_at),
+      BUSINESS_ZONE,
+      parsed.newlyClosed,
+    );
+    if (affected > 0) {
+      const days = parsed.newlyClosed.map((d) => DAY_NAMES[d]).join(" and ");
+      const appts = affected === 1 ? "1 appointment" : `${affected} appointments`;
+      return {
+        error: null,
+        confirm: {
+          message: `Closing ${days} leaves ${appts} already booked. They stay in the diary and nobody is moved. Save again to close ${parsed.newlyClosed.length === 1 ? "the day" : "those days"} anyway.`,
+        },
+      };
+    }
+  }
+
+  // Seven rows in one upsert, so the week can never be left half-saved.
+  const { error } = await db
+    .from("business_hours")
+    .upsert(parsed.rows, { onConflict: "weekday" });
+  if (error) return { error: `Could not save the hours: ${error.message}` };
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "org.business_hours",
+    details: {
+      week: parsed.rows.map((r) => ({
+        weekday: r.weekday,
+        is_open: r.is_open,
+        start_minute: r.start_minute,
+        end_minute: r.end_minute,
+      })),
+      newly_closed: parsed.newlyClosed,
+    },
+  });
+
+  revalidatePath("/admin/settings");
+  return { error: null, ok: true };
 }
