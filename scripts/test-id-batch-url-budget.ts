@@ -26,6 +26,8 @@ import {
   ID_BATCH_ROWS,
   MAX_IN_FILTER_BYTES,
   inFilterBytes,
+  idFilterBytes,
+  chunkIdsByUrlBudget,
 } from "../src/lib/db/id-batch.ts";
 import { BUSY_PRUNE_BATCH_ROWS } from "../src/lib/busy/prune-core.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -77,5 +79,88 @@ assert(
   inFilterBytes(200) >= 7_000 && inFilterBytes(200) <= 8_000,
   `the estimate for 200 ids (${inFilterBytes(200)}) matches the 7,478 bytes measured`,
 );
+
+// --- #1268: keys that are NOT uuids -------------------------------------------------
+//
+// `inFilterBytes` above assumes 36-character uuids. Google event ids are not uuids
+// and are not one length: measured in production, `bookings.gcal_event_id` averages
+// 67 characters, and #1268 measured `busy_blocks.gcal_event_id` at 43 on average
+// reaching 181. A batch SIZE calibrated on one of those numbers is wrong for the
+// others, and the 181-character outliers make any average optimistic exactly when a
+// calendar is unusual.
+//
+// So the chunker measures the ids it is actually given rather than assuming a length.
+// Nothing has to be recalibrated when a key type changes, which is the whole failure
+// this file already records: 500 was copied from a 27-character precedent onto
+// 36-character uuids and shipped broken.
+{
+  const ids = (n: number, len: number) =>
+    Array.from({ length: n }, (_, i) => String(i).padStart(len, "a"));
+
+  const fits = (chunk: string[]) => idFilterBytes(chunk) <= MAX_IN_FILTER_BYTES;
+
+  // Google event ids at the average measured in busy_blocks (#1268).
+  {
+    const chunks = chunkIdsByUrlBudget(ids(1000, 43));
+    assert(chunks.every(fits), "every chunk of 43-character ids fits the byte ceiling");
+    eq(chunks.flat().length, 1000, "no id is dropped");
+    eq(new Set(chunks.flat()).size, 1000, "and none is duplicated");
+    assert(
+      chunks[0].length < 500,
+      `a chunk of 43-character ids is smaller than the 500 that fails (got ${chunks[0].length})`,
+    );
+  }
+
+  // The worst case measured in production: 181 characters. A count tuned for the
+  // average would send roughly four times too many bytes here.
+  {
+    const chunks = chunkIdsByUrlBudget(ids(500, 181));
+    assert(chunks.every(fits), "every chunk of 181-character ids fits too, without retuning");
+    assert(
+      chunks[0].length < chunkIdsByUrlBudget(ids(500, 43))[0].length,
+      "a longer id yields a SMALLER chunk, because bytes are what is being budgeted",
+    );
+  }
+
+  // Slate's own event ids, measured at 67 characters on bookings.
+  assert(
+    chunkIdsByUrlBudget(ids(1000, 67)).every(fits),
+    "every chunk of 67-character Slate event ids fits the byte ceiling",
+  );
+
+  // Degenerate inputs. A single id past the whole budget must still be ATTEMPTED in a
+  // chunk of its own: dropping it would silently leave a stale block behind, and
+  // refusing to emit it would loop forever.
+  {
+    eq(chunkIdsByUrlBudget([]).length, 0, "no ids means no requests");
+    const huge = "x".repeat(MAX_IN_FILTER_BYTES * 2);
+    const chunks = chunkIdsByUrlBudget([huge, "short"]);
+    assert(
+      chunks.some((c) => c.length === 1 && c[0] === huge),
+      "an id larger than the entire budget gets its own chunk rather than being dropped",
+    );
+    eq(chunks.flat().length, 2, "and the ids around it are still sent");
+  }
+
+  // Positive control: the guard has to CATCH the shape that fails. A 500-id batch of
+  // real-length Google event ids must be over the ceiling, or none of the above means
+  // anything.
+  assert(
+    idFilterBytes(ids(500, 43)) > MAX_IN_FILTER_BYTES,
+    `500 ids at the measured 43-character average (${idFilterBytes(ids(500, 43))} bytes) is over the ceiling`,
+  );
+  assert(
+    idFilterBytes(ids(500, 43)) >= MEASURED_REFUSED_BYTES,
+    "and it is past the size production actually refused, so the control matches reality",
+  );
+
+  // The two estimators must agree on uuids, or the uuid callers and the byte-aware
+  // ones are budgeting against different rulers.
+  {
+    const uuids = ids(200, 36);
+    const drift = Math.abs(idFilterBytes(uuids) - inFilterBytes(200));
+    assert(drift <= 10, `both estimators size 200 uuids the same (drift ${drift} bytes)`);
+  }
+}
 
 finish();

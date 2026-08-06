@@ -74,7 +74,7 @@ import {
 } from "./sync-coalesce";
 import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
-import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
+import { ID_BATCH_ROWS, idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -292,6 +292,76 @@ describe("applyEvents keys + deletes per calendar (#619)", () => {
       calendar_id: "cal-A",
       gcal_event_id: ["gone-evt"],
     });
+  });
+
+  // #1268: the delete ids ride in the QUERY STRING, where an oversized batch is
+  // refused at the transport rather than merely slow. And the refusal is expensive
+  // out of proportion to itself: applyEvents throws, so syncCalendar never advances
+  // this calendar's sync token, the same pass retries forever, and the agent's cached
+  // availability silently stops updating with nothing saying so.
+  //
+  // Google event ids are neither uuids nor one length (measured in this table: 43
+  // characters on average, reaching 181), so the batch is sized by BYTES rather than
+  // by a row count that only holds while every id is the same size.
+  it("splits a large cancellation batch by URL bytes, not by a row count", async () => {
+    const { db, deletes } = busyWriteDb();
+    admin.current = db;
+
+    // 600 cancelled events at the average id length measured in production. At the
+    // old 500-row batch this went out as one filter of roughly 21,500 bytes and was
+    // refused; production accepted 13,028 and refused 14,878.
+    const ID_LEN = 43;
+    const cancelled = Array.from({ length: 600 }, (_, i) => ({
+      id: `evt${String(i).padStart(ID_LEN - 3, "0")}`,
+      status: "cancelled",
+    }));
+
+    await applyEvents("u1", "cal-A", cancelled, new Set(), "UTC");
+
+    expect(deletes.length).toBeGreaterThan(1);
+
+    // Every batch fits the shared ceiling, and the ceiling is the one every other
+    // batching caller reads: a second copy of the number is how they drift apart.
+    for (const d of deletes) {
+      const ids = d.filters.gcal_event_id as string[];
+      expect(idFilterBytes(ids)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+    }
+
+    // Nothing is dropped or duplicated: a lost cancellation leaves a stale block that
+    // over-blocks the agent, which is the failure this whole path exists to prevent.
+    const sent = deletes.flatMap((d) => d.filters.gcal_event_id as string[]);
+    expect(sent).toHaveLength(600);
+    expect(new Set(sent).size).toBe(600);
+    expect(new Set(sent)).toEqual(new Set(cancelled.map((e) => e.id)));
+
+    // Positive control: the batch size that shipped really is over the ceiling, so
+    // this test is measuring something rather than restating an easy pass.
+    expect(idFilterBytes(sent.slice(0, 500))).toBeGreaterThan(MAX_IN_FILTER_BYTES);
+  });
+
+  // A longer id must yield a SMALLER batch. This is what a row count cannot do, and
+  // 181 characters is the worst case measured in this table.
+  it("sends fewer ids per request when the ids are longer", async () => {
+    const batchesFor = async (idLen: number) => {
+      const { db, deletes } = busyWriteDb();
+      admin.current = db;
+      await applyEvents(
+        "u1",
+        "cal-A",
+        Array.from({ length: 400 }, (_, i) => ({
+          id: `e${String(i).padStart(idLen - 1, "0")}`,
+          status: "cancelled",
+        })),
+        new Set(),
+        "UTC",
+      );
+      return deletes.map((d) => (d.filters.gcal_event_id as string[]).length);
+    };
+
+    const short = await batchesFor(43);
+    const long = await batchesFor(181);
+
+    expect(long[0]).toBeLessThan(short[0]);
   });
 });
 
