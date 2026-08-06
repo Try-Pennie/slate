@@ -18,6 +18,13 @@ const FRESH_WINDOW_MS = 6 * 60_000;
 /** A rule set that has an agent on shift at NOW in America/New_York. */
 const ON_SHIFT = { timezone: "America/New_York", rules: [{ weekday: 2, start_minute: 8 * 60, end_minute: 20 * 60 }] };
 const OFF_SHIFT = { timezone: "America/New_York", rules: [] };
+// The ORG open around the clock (#1296), so every assertion in this file stays about
+// the AGENTS' shifts and the cache. The org's own effect on "should be showing times"
+// is pinned in scripts/test-monitor-availability-health.ts.
+const ORG_ALWAYS_OPEN = {
+  timezone: "America/New_York",
+  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+};
 
 /** One configurable fake world. Each bucket config declares its slot count,
  *  eligible agents, whether they are on shift, and what a live recompute finds. */
@@ -103,6 +110,7 @@ function harness(config: {
         const n = config.buckets[code].eligible ?? 1;
         return Array.from({ length: n }, (_, i) => `${code}-agent-${i}`);
       },
+      businessHours: ORG_ALWAYS_OPEN,
       shiftFor: (userId) => {
         const code = userId.split("-agent-")[0];
         return (config.buckets[code].onShift ?? true) ? ON_SHIFT : OFF_SHIFT;

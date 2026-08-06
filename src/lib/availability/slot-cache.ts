@@ -14,6 +14,7 @@ import {
 } from "./precompute";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
 import { tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
@@ -79,6 +80,10 @@ export async function getCachedBucketSlots(
     readRow: (c) => readBucketSlotsRow(c),
     compute: (c, from, to) => getBucketSlots(c, from, to),
     writeRow: (c, val) => writeBucketSlotsRow(c, val),
+    // #1296: the CURRENT org hours, so a narrowing filters the cached slots on the
+    // very next request rather than waiting for a recompute. One read per isolate
+    // per SLOT_TTL_SECONDS; a failed refresh serves the last known week.
+    businessHours: loadBusinessHoursCached,
   };
   return resolveBucketSlots(code, fromIso, horizonDays, deps);
 }

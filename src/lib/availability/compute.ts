@@ -306,6 +306,34 @@ export function isBookableSlotForAgent(
   return bookableSlotReason(m, rules, startMs, nowMs, opts) === null;
 }
 
+/**
+ * Keep only the slot instants the ORG is open for (#1296), judged by the SAME
+ * predicate gate 1 uses at compute time, so the read-time filter and the
+ * compute-time gate can never give different answers.
+ *
+ * This exists because gate 1 alone leaves one hole: a slot computed under a wider
+ * window and then served from the slot cache after someone narrows the day. The
+ * read filters it out immediately, so correctness does not wait for a recompute.
+ *
+ * An instant that cannot be read is DROPPED, not served. A slot list is not a
+ * trustworthy input the moment one of its entries is unparseable, and dropping is
+ * the direction that can only ever offer less.
+ */
+export function slotsWithinBusinessHours(
+  slots: string[],
+  durationMin: number,
+  hours: BusinessHoursRules,
+): string[] {
+  const durMs = durationMin * MIN;
+  return slots.filter((iso) => {
+    // parse-ok: an unreadable instant fails this check and is dropped from the
+    // offered list, so NaN can only ever remove a slot, never admit one.
+    const startMs = Date.parse(iso);
+    if (!Number.isFinite(startMs)) return false;
+    return isWithinWorkingHours(hours.rules, hours.zone, startMs, startMs + durMs);
+  });
+}
+
 /** Open start instants for a single member within the window. */
 function memberOpenStarts(
   m: MemberAvailability,

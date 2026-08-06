@@ -33,15 +33,37 @@ export interface AgentShift {
   rules: WorkingRule[];
 }
 
-/** True when at least one of the bucket's eligible agents is on shift now. */
-export function anyOnShift(nowMs: number, agents: AgentShift[]): boolean {
+/**
+ * True when the bucket SHOULD be showing times right now: the org is open, and at
+ * least one of its eligible agents is on shift.
+ *
+ * The org's own hours belong here (#1296) because `failingBuckets` below pages on
+ * "an agent is working but the booker shows nothing", and the read path now filters
+ * cached slots to the org's hours. Without this, closing the org would be
+ * indistinguishable from a wedged cache: the count drops to zero for an entirely
+ * intended reason, an agent is still rostered, and the probe pages about a bucket
+ * behaving exactly as configured.
+ *
+ * Each side is judged in its OWN zone, matching the gate: the org's window in the
+ * org's clock, each agent's in theirs.
+ */
+export function anyOnShift(
+  nowMs: number,
+  agents: AgentShift[],
+  businessHours: AgentShift,
+): boolean {
+  if (!isWorkingNow(nowMs, businessHours.timezone, businessHours.rules)) return false;
   return agents.some((a) => isWorkingNow(nowMs, a.timezone, a.rules));
 }
 
 export interface BucketHealth {
   code: string;
   eligibleCount: number;
-  slotCount: number;
+  /** How many slots a lead is being OFFERED, after the org-hours filter (#1296).
+   *  `null` means the count could not be measured, which is NOT zero: an
+   *  unmeasured bucket is excluded from every conclusion below rather than
+   *  contributing a number nobody earned. */
+  slotCount: number | null;
   /** When the cached bucket_slots row was last computed (epoch ms), or null if
    *  the bucket has no cached row at all. */
   computedAtMs: number | null;
@@ -67,6 +89,8 @@ export function failingBuckets(
       (r) =>
         r.eligibleCount > 0 &&
         r.onShiftNow &&
+        // Strict equality, so an UNMEASURED bucket (null) is never read as a
+        // confident zero and can never page (#1296).
         r.slotCount === 0 &&
         r.computedAtMs !== null &&
         opts.nowMs - r.computedAtMs <= opts.freshWindowMs,
@@ -119,7 +143,7 @@ export function classifyEmptyBuckets(
     nowMs: number;
     freshWindowMs: number;
     ladder: (code: string) => string[];
-    bucketInfo: Map<string, { slotCount: number; isTest: boolean }>;
+    bucketInfo: Map<string, { slotCount: number | null; isTest: boolean }>;
   },
 ): EmptyBucketClassification {
   const failing = failingBuckets(rows, { nowMs: opts.nowMs, freshWindowMs: opts.freshWindowMs });
@@ -134,7 +158,9 @@ export function classifyEmptyBuckets(
       // Skip missing rows and synthetic test buckets (the booker cascade skips
       // them too), so a test bucket's slots never masquerade as real coverage.
       if (!info || info.isTest) continue;
-      if (info.slotCount > 0) {
+      // An unmeasured rung (null) must not claim to cover a tier it might not, so
+      // it is skipped rather than counted either way (#1296).
+      if (info.slotCount !== null && info.slotCount > 0) {
         via = rung;
         break;
       }

@@ -31,6 +31,22 @@ v4 · Luxon. Package manager: pnpm.
   is Eastern, so no production data can tell the two apart.
   `businessHours` is REQUIRED on `SlotRules` / `SlotComputeInput` so `tsc`
   enumerates every construction site.
+- **The org window is ALSO applied at read time** (#1296), because a slot computed
+  under a wider window can still be sitting in the slot cache after a narrowing.
+  `resolveBucketSlots` filters every tier (cache hit, stored row, cold compute)
+  through `slotsWithinBusinessHours`, so an edit lands on the next request rather
+  than the next recompute. The cache keeps the UNFILTERED payload so re-opening a
+  day is just as immediate as closing one. The hours come from
+  `loadBusinessHoursCached`, one read per isolate per `BUSINESS_HOURS_TTL_MS`
+  (pinned equal to `SLOT_TTL_SECONDS` by `scripts/test-business-hours-ttl.ts`); a
+  failed refresh serves the LAST KNOWN week rather than failing the request, which
+  stays honest because a sustained failure stops recompute writing and
+  `bucket_slots_stale` pages. Consequence: the stored row and the served response
+  may disagree for up to one recompute cycle, deliberately. Mass invalidation was
+  rejected because marking 60+ buckets stale can page a false stale alarm.
+  Anything counting cached slots must use the same filter, which is why
+  `slotHealthByCode` takes the hours and returns `null` (not 0) for a count it
+  could not measure.
 - **Server code uses the secret-key client** (`supabaseAdmin`, bypasses RLS; the
   new-style `sb_secret_…` key — anon/service_role JWTs are legacy).
   RLS is default-deny; the only client-readable row is a user reading itself.

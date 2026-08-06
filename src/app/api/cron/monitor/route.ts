@@ -10,6 +10,8 @@ import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health";
+import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availability-tick";
+import { loadBusinessHours, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
 import { type WorkingRule } from "@/lib/monitor/availability-health";
@@ -289,7 +291,21 @@ export async function GET(req: NextRequest) {
     // canary alerts), never NaN (reads as fresh, canary silent). Extracted in
     // #1171 so that direction is pinned by scripts/test-monitor-slot-health.ts
     // instead of living untested inside the route.
-    const slotByCode = slotHealthByCode(slotRows);
+    // #1296: count what the booker SERVES, not what is stored. The read path
+    // filters cached slots to the org's current hours, so for up to one recompute
+    // cycle the stored payload holds slots no lead is being offered; counting those
+    // would be measuring a list nobody sees. An unreadable week is not something to
+    // guess at either, so the availability scan sits this tick out entirely (below)
+    // rather than judging with the wrong window.
+    let businessHours: BusinessHours | null = null;
+    try {
+      businessHours = await loadBusinessHours();
+    } catch (err) {
+      log.error("monitor", { msg: "availability scan skipped: business hours unreadable" }, err);
+    }
+    // null means DO NOT SCAN. Deliberately not an empty map: that would read as
+    // zero slots for every bucket and page the whole ladder off a failed config read.
+    const slotByCode = slotHealthForTick(slotRows, businessHours);
 
     // Per-agent working hours, for the on-shift gate. Two whole-table reads
     // joined in JS; both are paged past PostgREST's 1,000-row cap (#828): the
@@ -319,7 +335,13 @@ export async function GET(req: NextRequest) {
     // reused by the self-heal.
     const horizonDays = await loadBookingHorizonDays();
     const bucketByCode = new Map(buckets.map((b) => [b.code, b]));
-    const scan = await runAvailabilityScan({
+    // Skipped entirely when the week could not be read (#1296). An empty slot map
+    // would make every bucket read as zero and page the whole ladder, and clearing
+    // an alert off a tick that measured nothing is the #1152 defect: a run that
+    // could not read its signal must conclude nothing, in either direction.
+    const scan = slotByCode === null
+      ? null
+      : await runAvailabilityScan({
       nowMs: now,
       freshWindowMs: FRESH_WINDOW_MS,
       probeConcurrency: PROBE_CONCURRENCY,
@@ -335,6 +357,10 @@ export async function GET(req: NextRequest) {
         return ids;
       },
       shiftFor,
+      // #1296: an agent rostered past the org's close is not "should be showing
+      // times". Without this, closing the org would page as if the cache were
+      // wedged. Non-null here because the scan is skipped when the week is unreadable.
+      businessHours: { timezone: businessHours!.zone, rules: businessHours!.rules },
       // Live recompute from the DB (busy_blocks/bookings/schedules, no Google);
       // a falsy result or a throw is null (unverified), never a fake zero.
       recomputeSlots: async (code) => {
@@ -362,7 +388,8 @@ export async function GET(req: NextRequest) {
           // the verifier treats null as inconclusive and keeps the finding.
           if (error) return null;
           if (!data) return 0;
-          return slotHealthByCode([data as SlotHealthRow]).get(code)?.slotCount ?? 0;
+          // businessHours is non-null here: the scan only runs when it read (below).
+          return slotHealthByCode([data as SlotHealthRow], businessHours!).get(code)?.slotCount ?? null;
         },
         wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       },
@@ -383,8 +410,10 @@ export async function GET(req: NextRequest) {
       },
       log: (fields) => log.info("monitor", { msg: "availability scan", ...fields }),
     });
-    if (scan.cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
-    const { page, covered, truncated } = scan;
+    if (scan?.cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
+    const page = scan?.page ?? [];
+    const covered = scan?.covered ?? [];
+    const truncated = scan?.truncated ?? false;
 
     // --- Low booking volume (#370): only during business hours; disarmed until
     // cutover (counts + logs but does not alert) so the ramp can't cry wolf.
@@ -741,7 +770,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       buckets: buckets.length,
-      failing: page.length,
+      // A skipped scan must not read like a clean one (#1296): it reports null and
+      // names itself, rather than the `failing: 0` that means "checked, all well".
+      ...availabilityScanReport(scan),
       codes: page,
       fallbackCovered: covered,
       thinTiers: thinTierCount,
