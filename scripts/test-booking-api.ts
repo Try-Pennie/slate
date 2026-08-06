@@ -231,6 +231,68 @@ async function run() {
     );
   }
   {
+    // #1295 gate 1: the ORG is shut at T. Before this, every agent failed the gate,
+    // the tier ladder reported itself exhausted and the caller was told `slot_taken`
+    // (that the times had gone) about times nobody was ever offered. A distinct
+    // cause gets a distinct answer.
+    //
+    // The agent here is FREE, so `slot_taken` is not merely a worse label: it would
+    // be false. Only the org's own hours make this unbookable.
+    const mondayAfternoonOnly = {
+      zone: "America/New_York",
+      rules: [{ weekday: 1, start_minute: 14 * 60, end_minute: 18 * 60 }],
+    };
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      businessHours: mondayAfternoonOnly,
+    });
+    // input.startIso is Monday 09:00 America/New_York, hours before the org opens.
+    const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    assert(
+      r.bookable === false && r.reason === "closed",
+      `checkBookable: org shut at T -> closed, not slot_taken (got ${r.reason})`,
+    );
+    assert(r.wouldAssign === null, "checkBookable: no agent named when the org is closed");
+    assert(
+      calls.roundRobinPreview.length === 0,
+      "checkBookable: a closed org short-circuits before the routing pass runs at all",
+    );
+  }
+  {
+    // The same closed hour, but inside the org's day, still answers normally: the
+    // gate must not swallow the busy-ladder case it sits in front of.
+    const { deps } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(),
+      businessHours: {
+        zone: "America/New_York",
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
+      },
+    });
+    const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    assert(
+      r.bookable === false && r.reason === "slot_taken",
+      "checkBookable: open org with a busy ladder still answers slot_taken",
+    );
+  }
+  {
+    // An UNREADABLE stored week must throw, never answer. A confident "the org is
+    // open" (or a confident "closed") off a read that never ran is exactly the
+    // failure the loader's throw-don't-degrade rule exists to prevent.
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]), businessHoursReadFails: true });
+    let err: unknown;
+    try {
+      await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof Error && /unusable|connection reset/i.test(err.message),
+      "checkBookable: an unreadable business week throws rather than guessing bookable",
+    );
+  }
+  {
     // Unknown bucket -> UnknownBucketError (the route maps this to 422).
     const { deps } = makeDeps({ unknownBucket: true });
     let err: unknown;

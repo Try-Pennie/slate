@@ -16,6 +16,17 @@ const base = {
   minNoticeMin: 0,
   dailyCap: null as number | null,
   slotIntervalMin: 30,
+  // Gate 1 (#1295) open all day, every day: this file is about the AGENT's window
+  // crossing a DST boundary, so the org's must not narrow anything here. The org
+  // window's own DST behaviour is pinned in test-business-hours-gate.ts.
+  businessHours: {
+    zone: tz,
+    rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+      weekday,
+      start_minute: 0,
+      end_minute: 1440,
+    })),
+  },
   nowMs: Date.parse("2026-01-01T00:00:00.000Z"), // well before every window
 };
 

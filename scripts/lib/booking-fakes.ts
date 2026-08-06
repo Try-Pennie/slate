@@ -99,6 +99,10 @@ export function makeBooking(over: Partial<Booking>): Booking {
 export interface FakeOpts {
   candidates?: string[];
   freeEmails?: Set<string>;
+  /** #1295: override the org's opening hours (defaults to open all week). */
+  businessHours?: { zone: string; rules: WorkingRule[] };
+  /** #1295: model an unreadable stored week, which must THROW rather than serve. */
+  businessHoursReadFails?: boolean;
   // #884: when set, the deps carry a send scheduler (as a user-facing request
   // does), so fire() records the emission as deferred. Cron drains leave it unset.
   deferSend?: (work: () => Promise<void>) => void;
@@ -171,6 +175,22 @@ export const DEFAULT_WORKING_HOURS: { timezone: string; rules: WorkingRule[] } =
   rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 9 * 60, end_minute: 17 * 60 })),
 };
 
+/**
+ * Default fake ORG hours (#1295, gate 1): open every day, all day. Deliberately
+ * PERMISSIVE so every pre-existing test keeps asserting whatever it was written to
+ * assert, rather than silently starting to fail on the org's clock. The gate's own
+ * behaviour is pinned in `scripts/test-business-hours-gate.ts`, and the tests that
+ * care override this via `opts.businessHours`.
+ */
+export const DEFAULT_BUSINESS_HOURS: { zone: string; rules: WorkingRule[] } = {
+  zone: "America/New_York",
+  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+    weekday,
+    start_minute: 0,
+    end_minute: 1440,
+  })),
+};
+
 export function makeDeps(opts: FakeOpts) {
   // Cursor into opts.pastDueBatches for the completion drain loop (#871).
   let pastBatchIdx = 0;
@@ -179,6 +199,7 @@ export function makeDeps(opts: FakeOpts) {
     busyIntervalsForAgent: [] as string[],
     agentActiveBookingStartsMs: [] as { userId: string; excludeBookingId: string }[],
     agentWorkingHours: [] as string[],
+    businessHours: 0,
     verifyFree: [] as string[][],
     createEvent: [] as { email: string; clientId?: string }[],
     deleteEvent: [] as { id: string }[],
@@ -309,6 +330,13 @@ export function makeDeps(opts: FakeOpts) {
     roundRobinCandidates: async (_b, _e, _ms, preview) => {
       calls.roundRobinPreview.push(preview);
       return opts.candidates ?? ["a"];
+    },
+    businessHours: async () => {
+      calls.businessHours++;
+      if (opts.businessHoursReadFails) {
+        throw new Error("business hours are unusable: connection reset");
+      }
+      return opts.businessHours ?? DEFAULT_BUSINESS_HOURS;
     },
     agentWorkingHours: async (userId) => {
       calls.agentWorkingHours.push(userId);

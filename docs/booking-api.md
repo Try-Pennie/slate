@@ -41,6 +41,57 @@ Response:
 > re-querying and picking another slot. This is expected, not an error in your
 > integration.
 
+### The org's own opening hours (#1295)
+
+Every slot passes three gates: the **org's business hours**, then the **agent's**
+own working hours, then their calendar. The first is org-wide (Monday to Saturday
+08:00 to 20:00 America/New_York as seeded, admin-editable), so a time outside it
+is never offered and can never be booked, however the roster is configured.
+
+The window is judged in the org's zone and the agent's in theirs; they are never
+intersected, so an agent outside Eastern is treated correctly in both directions.
+
+---
+
+## 1b. Check one time: `GET /api/bookings/bookable` (key-authed)
+
+Ask whether a specific bucket and time **could** be booked, before collecting the
+lead's details, so a caller never offers a slot that then fails at confirm. It runs
+the real routing pass (round-robin plus verify-on-book, cascading the debt-tier
+ladder) with writes disabled, so the answer cannot disagree with an actual book.
+
+```
+GET /api/bookings/bookable?bucketCode=411&startIso=<ISO>&timezone=<IANA>
+```
+
+- `startIso` (required): the instant to test.
+- `bucketCode` (optional): falls back to the admin-configured default bucket;
+  with neither, `400 NO_DEFAULT_BUCKET`.
+
+Response `200`:
+
+```jsonc
+{ "bookable": true, "reason": "available",
+  "effectiveBucketCode": "411", "tierFallback": false, "rungsDropped": 0,
+  "wouldAssign": { "id": "…", "name": "…", "email": "…" } }
+```
+
+`reason` says **why**, and the causes are deliberately distinct:
+
+| `reason` | `bookable` | Meaning |
+|---|---|---|
+| `available` | `true` | An agent would take it; `wouldAssign` names who. |
+| `closed` | `false` | The **org** is not open at that time. No roster change makes this bookable; the hours themselves have to change. |
+| `slot_taken` | `false` | The org is open and the pool is staffed, but every agent down the tier ladder is busy at that instant. Try another time. |
+| `no_eligible_agents` | `false` | No agent is eligible for that bucket at all, all the way down the ladder. A configuration problem, not a busy diary. |
+
+`closed` was added in #1295. Before it, a closed hour answered `slot_taken` (that
+the times had gone) about times nobody was ever offered.
+
+Other codes: `422` unknown or hidden bucket, `429` over the per-key ceiling
+(~200/hr, since each call is a full routing pass), `503` a transient calendar
+outage. A `503` is never downgraded to a confident `bookable: false`.
+
 ---
 
 ## 2. Book a slot — `POST /api/bookings`

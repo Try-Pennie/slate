@@ -99,6 +99,11 @@ function makeTierDropDeps(): BookingDeps {
     // Empty pool on "511" → NoEligibleAgentsError → cascade to "411"
     roundRobinCandidates: async (bucket) =>
       bucket.code === "511" ? [] : ["a"],
+    // Gate 1 (#1295) open all week, so these stay about the tier cascade.
+    businessHours: async () => ({
+      zone: "America/New_York",
+      rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+    }),
     busyIntervalsForAgent: async () => [],
     agentActiveBookingStartsMs: async () => [],
     agentWorkingHours: async () => ({ timezone: "America/New_York", rules: [] }),

@@ -15,6 +15,12 @@ import {
 import { assert, finish } from "./lib/harness.ts";
 
 const tz = "America/New_York";
+/** Gate 1 (#1295) wide open, so it never interferes with what this file measures. */
+const ALL_DAY_EVERY_DAY: WorkingRule[] = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+  weekday,
+  start_minute: 0,
+  end_minute: 1440,
+}));
 // Monday 2026-06-08 .. Tuesday, NY time. Mon-Fri 09:00-17:00.
 const from = "2026-06-08T04:00:00.000Z"; // 00:00 NY
 const to = "2026-06-09T04:00:00.000Z";
@@ -26,6 +32,10 @@ const base = {
   minNoticeMin: 0,
   dailyCap: null as number | null,
   slotIntervalMin: 30,
+  // Gate 1 (#1295) held open all week, so every assertion in this file stays about
+  // the rule it was written for. The org gate has its own suite:
+  // scripts/test-business-hours-gate.ts.
+  businessHours: { zone: tz, rules: ALL_DAY_EVERY_DAY },
   nowMs: Date.parse("2026-06-01T00:00:00.000Z"), // well before window
 };
 
@@ -183,6 +193,7 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
     bufferAfterMin: 0,
     minNoticeMin: 0,
     dailyCap: null,
+    businessHours: { zone: tz, rules: ALL_DAY_EVERY_DAY },
   };
   const earlyNow = ms("2026-06-01T00:00:00.000Z"); // well before the window
   // Mon 2026-06-08 09:00 NY = 13:00 UTC.
