@@ -77,6 +77,9 @@ export interface SlotComputeInput {
   minNoticeMin: number;
   dailyCap: number | null;
   slotIntervalMin: number;
+  /** The org's opening hours (#1295). Required for the same reason as on
+   *  `SlotRules`: a new caller must not be able to omit gate 1. */
+  businessHours: BusinessHoursRules;
   from: string; // ISO window start
   to: string; // ISO window end
   nowMs: number;
@@ -127,6 +130,23 @@ export function isWithinWorkingHours(
   return false;
 }
 
+/**
+ * The ORG's own opening hours, in the org's own zone (#1295, gate 1 of three).
+ * Structurally the same as an agent's `WorkingRule[]`, deliberately, so the gate is
+ * a second call to `isWithinWorkingHours` rather than a parallel implementation of
+ * the same idea. The windows are resolved and validated in
+ * `@/lib/booking/business-hours`; this module stays import-free of it so the pure
+ * slot core keeps running node-native.
+ *
+ * An EMPTY `rules` list means the org is shut every day, which is a legitimate
+ * stored answer. It is also why the loader throws rather than degrading: a read
+ * error must never be able to say "shut".
+ */
+export interface BusinessHoursRules {
+  zone: string;
+  rules: WorkingRule[];
+}
+
 /** The per-agent slot rules a single slot is judged against (#536). */
 export interface SlotRules {
   durationMin: number;
@@ -134,6 +154,12 @@ export interface SlotRules {
   bufferAfterMin: number;
   minNoticeMin: number;
   dailyCap: number | null;
+  /**
+   * REQUIRED (#1295) so `tsc` enumerates every construction site, now and forever.
+   * A slot the org is closed for must never be offered by any path, and an optional
+   * field would let a new caller silently skip the gate.
+   */
+  businessHours: BusinessHoursRules;
 }
 
 /** Bucket booking start instants by the agent's LOCAL calendar date. */
@@ -183,10 +209,20 @@ export function isUnderDailyCap(
  */
 /**
  * The specific slot rule an agent fails, in the order the predicate checks them:
- * `min_notice` -> `working_hours` -> `daily_cap` -> `buffer` (a busy block inside
- * the buffered window, i.e. a calendar conflict). `null` means bookable.
+ * `min_notice` -> `business_hours` -> `working_hours` -> `daily_cap` -> `buffer` (a
+ * busy block inside the buffered window, i.e. a calendar conflict). `null` means
+ * bookable.
+ *
+ * `business_hours` is the ORG being shut (#1295); `working_hours` is this agent
+ * being off shift. They are separate answers because they are separate fixes: one
+ * is an admin widening the org's day, the other is a roster change.
  */
-export type UnbookableReason = "min_notice" | "working_hours" | "daily_cap" | "buffer";
+export type UnbookableReason =
+  | "min_notice"
+  | "business_hours"
+  | "working_hours"
+  | "daily_cap"
+  | "buffer";
 
 /**
  * Like `isBookableSlotForAgent` but returns WHICH rule failed (or `null` when
@@ -204,10 +240,35 @@ export function bookableSlotReason(
     ignoreBusy?: { start: number; end: number };
     dayCounts?: Map<string, number>;
     enforceDailyCap?: boolean;
+    businessOpen?: Map<number, boolean>;
   },
 ): UnbookableReason | null {
   const endMs = startMs + rules.durationMin * MIN;
   if (startMs < nowMs + rules.minNoticeMin * MIN) return "min_notice";
+  // Gate 1 (#1295): the org's own day, judged in the ORG's zone. This is a second,
+  // independent call to the same predicate the agent's shift uses. The two windows
+  // are never intersected. Clipping the agent's minutes against the org's would be
+  // correct only for an agent in the business zone: for anyone else it refuses a
+  // morning that is really inside the org's day and admits an evening that is really
+  // past its close. Every live agent is Eastern today, so nothing in production
+  // could tell the two implementations apart; `scripts/test-business-hours-gate.ts`
+  // exists because of that.
+  //
+  // The org's answer does NOT depend on the member, so the booker's hot loop asks
+  // the same question once per instant per agent: 200 identical answers at 200
+  // agents. `opts.businessOpen` lets the caller memoize it across the pass, the same
+  // seam `opts.dayCounts` uses. The verdict is identical either way; skipping the
+  // memo just pays Luxon again (measured: +47% CPU over the whole slot loop at 200
+  // agents on a 4-day horizon, which matters on the shared every-minute invocation).
+  // Keying on `startMs` alone is safe because `durationMin` is fixed for one pass.
+  const bh = rules.businessHours;
+  const memo = opts?.businessOpen;
+  let orgOpen = memo?.get(startMs);
+  if (orgOpen === undefined) {
+    orgOpen = isWithinWorkingHours(bh.rules, bh.zone, startMs, endMs);
+    memo?.set(startMs, orgOpen);
+  }
+  if (!orgOpen) return "business_hours";
   if (!isWithinWorkingHours(m.rules, m.timezone, startMs, endMs)) return "working_hours";
   if (
     (opts?.enforceDailyCap ?? true) &&
@@ -239,6 +300,7 @@ export function isBookableSlotForAgent(
     ignoreBusy?: { start: number; end: number };
     dayCounts?: Map<string, number>;
     enforceDailyCap?: boolean;
+    businessOpen?: Map<number, boolean>;
   },
 ): boolean {
   return bookableSlotReason(m, rules, startMs, nowMs, opts) === null;
@@ -248,6 +310,7 @@ export function isBookableSlotForAgent(
 function memberOpenStarts(
   m: MemberAvailability,
   input: SlotComputeInput,
+  businessOpen?: Map<number, boolean>,
 ): Set<number> {
   const open = new Set<number>();
   const fromMs = Date.parse(input.from);
@@ -260,6 +323,7 @@ function memberOpenStarts(
     bufferAfterMin: input.bufferAfterMin,
     minNoticeMin: input.minNoticeMin,
     dailyCap: input.dailyCap,
+    businessHours: input.businessHours,
   };
 
   const rulesByDay = new Map<number, WorkingRule[]>();
@@ -299,7 +363,10 @@ function memberOpenStarts(
           const endMs = startMs + durMs;
 
           const inWindow = startMs >= fromMs && endMs <= toMs;
-          if (inWindow && isBookableSlotForAgent(m, rules, startMs, input.nowMs, { dayCounts })) {
+          if (
+            inWindow &&
+            isBookableSlotForAgent(m, rules, startMs, input.nowMs, { dayCounts, businessOpen })
+          ) {
             open.add(startMs);
           }
           slot = slot.plus({ milliseconds: stepMs });
@@ -319,8 +386,12 @@ function memberOpenStarts(
  */
 export function computeBucketSlots(input: SlotComputeInput): string[] {
   const union = new Set<number>();
+  // One org-hours verdict per instant, shared across every member (#1295): the org
+  // is open or shut regardless of whose diary we are looking at. Scoped to this call
+  // so it can never outlive a change to the stored hours.
+  const businessOpen = new Map<number, boolean>();
   for (const m of input.members) {
-    for (const ms of memberOpenStarts(m, input)) union.add(ms);
+    for (const ms of memberOpenStarts(m, input, businessOpen)) union.add(ms);
   }
   return [...union].sort((a, b) => a - b).map((ms) => new Date(ms).toISOString());
 }

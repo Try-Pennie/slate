@@ -12,6 +12,7 @@ import {
   getBucketSlotsWithFallback,
   getCachedBucketSlots,
 } from "@/lib/availability/slot-cache";
+import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { recordRoutingDecision } from "@/lib/routing/record";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
@@ -613,6 +614,9 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     deferSend,
     resolveBucketByCode,
     roundRobinCandidates,
+    // The org's opening hours (#1295). Throws on an unreadable week rather than
+    // degrading, so a narrowing can never be silently re-opened by a failed read.
+    businessHours: loadBusinessHours,
     // Live busy intervals for the in-place reschedule guard (#536): checks ALL the
     // agent's calendars; a read failure returns null -> the guard re-routes. The
     // guard runs the SAME isBookableSlotForAgent predicate the booker does, so a

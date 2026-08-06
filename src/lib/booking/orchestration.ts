@@ -8,6 +8,7 @@ import {
   bookableSlotReason,
   isUnderDailyCap,
   isWithinWorkingHours,
+  type BusinessHoursRules,
   type SlotRules,
   type WorkingRule,
   type UnbookableReason,
@@ -433,6 +434,16 @@ export interface BookingDeps {
     startMs: number,
     preview?: boolean,
   ): Promise<string[]>;
+  /**
+   * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
+   * that judge a slot themselves: the in-place reschedule guard, and `checkBookable`,
+   * which has to answer `closed` rather than let a shut org read as a busy ladder.
+   * The booker's own display gets them inside `roundRobinCandidates`'s implementation.
+   *
+   * THROWS on an unreadable week rather than degrading, deliberately: the whole
+   * point of the gate is that a narrowing cannot be silently re-opened.
+   */
+  businessHours(): Promise<BusinessHoursRules>;
   // google calendar
   /**
    * The agent's working-hours schedule (#527): timezone + shift rules, read from
@@ -2154,11 +2165,17 @@ export interface BookableInput {
 }
 
 /** Why a slot is / is not bookable. `available` = an agent would take it;
- *  `slot_taken` = the whole tier ladder is busy at T; `no_eligible_agents` = the
- *  pool is empty/misconfigured all the way down. A transient verify outage is NOT
- *  a reason here: it throws VerifyUnavailableError so the caller never gets a
- *  false "no". */
-export type BookableReason = "available" | "slot_taken" | "no_eligible_agents";
+ *  `closed` = the ORG is not open at T, so no agent could take it whatever the
+ *  roster looks like (#1295); `slot_taken` = the whole tier ladder is busy at T;
+ *  `no_eligible_agents` = the pool is empty/misconfigured all the way down. A
+ *  transient verify outage is NOT a reason here: it throws VerifyUnavailableError
+ *  so the caller never gets a false "no".
+ *
+ *  `closed` exists because without it a shut org answered `slot_taken`, a claim the
+ *  check never measured: every agent fails gate 1, the ladder reports itself
+ *  exhausted, and the caller is told the times were taken when nobody was ever
+ *  offered them. Distinct causes get distinct messages. */
+export type BookableReason = "available" | "closed" | "slot_taken" | "no_eligible_agents";
 
 export interface BookableResult {
   bookable: boolean;
@@ -2195,6 +2212,18 @@ export async function checkBookable(
   // A hidden smoke-test bucket is invisible unless the caller opts in, exactly as
   // the real book treats it (createBooking), so it can never be probed here.
   if (resolved.bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+
+  // Gate 1 up front (#1295). The routing pass below would also refuse a closed hour,
+  // every agent failing the same gate, but it would surface as `slot_taken`: the
+  // ladder cannot tell "everyone is busy" from "nobody was ever offered this". An
+  // unreadable week throws out of here rather than answering, so a read failure can
+  // never present as a confident "the org is open".
+  const businessHours = await deps.businessHours();
+  const startMs = Date.parse(input.startIso);
+  const endMs = startMs + resolved.eventType.duration_min * 60_000;
+  if (!isWithinWorkingHours(businessHours.rules, businessHours.zone, startMs, endMs)) {
+    return notBookable("closed");
+  }
 
   try {
     const tier = await assignAgentWithTierFallback(
@@ -2611,12 +2640,14 @@ async function applyReschedule(
     //    excluding the booking being moved (so a same-day nudge isn't self-counted).
     // A schedule-less agent has no shift windows -> off-shift -> re-route.
     const ownEvent = { start: Date.parse(booking.starts_at), end: Date.parse(booking.ends_at) };
+    const businessHours = await deps.businessHours();
     const slotRules: SlotRules = {
       durationMin: eventType.duration_min,
       bufferBeforeMin: eventType.buffer_before_min,
       bufferAfterMin: eventType.buffer_after_min,
       minNoticeMin: eventType.min_notice_min,
       dailyCap: eventType.daily_cap,
+      businessHours,
     };
     const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
@@ -2628,9 +2659,16 @@ async function applyReschedule(
       // Folded into the context load (#538); the fallback covers a context loaded
       // without the fold (it re-reads rather than crash on a missing schedule).
       const wh = ctx.agentWorkingHours ?? (await deps.agentWorkingHours(booking.assigned_user_id));
-      // Cheap rules-only on-shift gate first, so an off-shift reschedule re-routes
-      // without a needless live Google read (the common #527 case).
-      if (!isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {
+      // Cheap rules-only gates first, so a refused reschedule re-routes without a
+      // needless live Google read. The ORG's day (#1295) is checked ahead of this
+      // agent's shift, matching the shared predicate's order, so a move into a
+      // closed hour reports the org rather than blaming the agent's roster. Both
+      // windows are judged in their OWN zone; they are never intersected.
+      if (
+        !isWithinWorkingHours(businessHours.rules, businessHours.zone, startMs, endMs)
+      ) {
+        inPlaceDeclineReason = "business_hours";
+      } else if (!isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {
         inPlaceDeclineReason = "working_hours";
       } else {
         const busy = await deps.busyIntervalsForAgent(

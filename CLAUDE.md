@@ -20,6 +20,17 @@ v4 · Luxon. Package manager: pnpm.
   Google call on the hot path is verify-on-book at confirm time
   (`src/lib/booking/service.ts`): it checks the round-robin candidates in batched
   waves (one Google call per wave, #167) and takes the first actually-free agent.
+- **A bookable time passes three gates, in one shared predicate.**
+  `bookableSlotReason` (`src/lib/availability/compute.ts`) is the only judge: the
+  ORG's business hours (#1295), then the AGENT's working hours, then their
+  calendar. The org window comes from `business_hours` via `loadBusinessHours`,
+  which THROWS on an unreadable week rather than degrading, because serving
+  unfiltered hours would silently re-open a narrowing and look like a healthy day.
+  The two hour windows are each judged in their OWN zone and never intersected:
+  clipping is correct only for an agent in the business zone, and every live agent
+  is Eastern, so no production data can tell the two apart.
+  `businessHours` is REQUIRED on `SlotRules` / `SlotComputeInput` so `tsc`
+  enumerates every construction site.
 - **Server code uses the secret-key client** (`supabaseAdmin`, bypasses RLS; the
   new-style `sb_secret_…` key — anon/service_role JWTs are legacy).
   RLS is default-deny; the only client-readable row is a user reading itself.

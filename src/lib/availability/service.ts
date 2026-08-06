@@ -8,6 +8,7 @@ import {
   capCountWindow,
   type MemberAvailability,
 } from "@/lib/availability/compute";
+import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { agentIdsFromPool } from "@/lib/availability/pool";
 import {
   applyFallback,
@@ -439,15 +440,21 @@ export async function getBucketSlots(
   if (!resolved) return null;
   const { bucket, eventType } = resolved;
 
-  // The org-name read doesn't depend on member availability, so overlap them
-  // instead of running the org lookup as its own sequential hop.
-  const [orgRes, members] = await Promise.all([
+  // Neither the org name nor the business hours depend on member availability, so
+  // overlap all three instead of running them as sequential hops. `loadBusinessHours`
+  // THROWS on an unreadable week (#1294), which propagates out of here on purpose:
+  // `recomputeBucketSlots` catches it and leaves the previous good row standing
+  // rather than writing an empty one, and the stale-bucket alarm surfaces it. The
+  // alternative, serving an unfiltered list, would silently re-open hours an admin
+  // had narrowed and nobody would see it.
+  const [orgRes, members, businessHours] = await Promise.all([
     supabaseAdmin()
       .from("organizations")
       .select("name")
       .eq("id", bucket.org_id)
       .maybeSingle(),
     loadMembersAvailability(bucket, from, to, resolveEligible),
+    loadBusinessHours(),
   ]);
   const org = orgRes.data;
   const slots = computeBucketSlots({
@@ -458,6 +465,7 @@ export async function getBucketSlots(
     minNoticeMin: eventType.min_notice_min,
     dailyCap: eventType.daily_cap,
     slotIntervalMin: eventType.slot_interval_min,
+    businessHours,
     from,
     to,
     nowMs: Date.now(),
@@ -487,11 +495,13 @@ export async function roundRobinCandidates(
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
   ).toISOString();
-  const members = await loadMembersAvailability(
-    bucket,
-    new Date(startMs).toISOString(),
-    endIso,
-  );
+  // The candidate list runs the SAME predicate the booker's display does, so it must
+  // see the same org window (#1295): otherwise a direct-API book at a closed hour
+  // would find candidates the booker would never have offered.
+  const [members, businessHours] = await Promise.all([
+    loadMembersAvailability(bucket, new Date(startMs).toISOString(), endIso),
+    loadBusinessHours(),
+  ]);
 
   const free = freeMembersForSlot(
     members,
@@ -502,6 +512,7 @@ export async function roundRobinCandidates(
       minNoticeMin: eventType.min_notice_min,
       dailyCap: eventType.daily_cap,
       slotIntervalMin: eventType.slot_interval_min,
+      businessHours,
       nowMs: Date.now(),
     },
     startMs,

@@ -412,6 +412,125 @@ async function run() {
     );
   }
 
+  // --- #1295 gate 1: a move into an hour the ORG is closed must be refused even
+  // when the agent is on shift and their calendar is free.
+  //
+  // Note the fake's `candidates` is set by hand, so this isolates the IN-PLACE guard
+  // specifically. In production the reroute is covered too, by the same gate living
+  // inside `roundRobinCandidates` (an empty pool, the case below). Here a working
+  // agent B is offered, so an ungated guard would keep the booking on A in place and
+  // the reassignment is the proof the guard fired. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        assigned_user_id: "b",
+        agent_name: "Agent B",
+        agent_email: "b@x.com",
+        starts_at: "2026-06-09T01:00:00.000Z",
+        ends_at: "2026-06-09T01:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      candidates: ["b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      // A works late and is free; only the ORG's day stands in the way.
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 22 * 60 }] }],
+      ]),
+      // The org shuts at 20:00 America/New_York; the target time is 21:00 there.
+      businessHours: {
+        zone: "America/New_York",
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
+      },
+    });
+    // 2026-06-09T01:00Z = 21:00 NY Monday: inside A's shift, past the org's close.
+    const res = await rescheduleBooking("tok1", "2026-06-09T01:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      res.booking.assigned_user_id === "b" && calls.updateEventTime.length === 0,
+      "reschedule(org closed): declines the in-place move even though the agent is on shift and free",
+    );
+    // The cheap rules-only gates run BEFORE the live Google read, so a closed hour
+    // costs no calendar call for the in-place candidate: the same reason the agent's
+    // own shift is checked first. Only the NEW agent's verify read remains.
+    assert(
+      !calls.busyIntervalsForAgent.includes("a@x.com"),
+      "reschedule(org closed): declines before spending a live calendar read on the current agent",
+    );
+  }
+
+  // --- the whole path, as production sees it: gate 1 empties the candidate pool too,
+  //     so there is nobody to reroute to and the reschedule fails rather than parking
+  //     a meeting outside the org's day. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      candidates: [],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 22 * 60 }] }],
+      ]),
+      businessHours: {
+        zone: "America/New_York",
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
+      },
+    });
+    let threw = false;
+    try {
+      await rescheduleBooking("tok1", "2026-06-09T01:00:00.000Z", RR, "customer", deps, NOW);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "reschedule(org closed, empty pool): refuses rather than booking outside the org's day");
+    assert(
+      calls.updateEventTime.length === 0 && calls.createEvent.length === 0,
+      "reschedule(org closed, empty pool): nothing is moved or created",
+    );
+  }
+
+  // --- the same move two hours earlier is INSIDE the org's day, so it still stays
+  //     in place: the gate must refuse the closed hour without refusing the open one. ---
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-08T23:00:00.000Z",
+        ends_at: "2026-06-08T23:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: rescheduled,
+      candidates: ["a", "b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      workingHoursByUser: new Map([
+        ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 22 * 60 }] }],
+      ]),
+      businessHours: {
+        zone: "America/New_York",
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
+      },
+    });
+    // 2026-06-08T23:00Z = 19:00 NY Monday, ending 19:30, inside the org's day.
+    const res = await rescheduleBooking("tok1", "2026-06-08T23:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      res.booking.assigned_user_id === "a" && calls.updateEventTime.length === 1,
+      "reschedule(org open): an on-shift move inside the org's day still stays in place",
+    );
+  }
+
   // --- #(reassign-cap) reschedule keeping the SAME agent is NOT blocked by the daily
   // cap, even onto a day already full of the agent's OTHER meetings (a reschedule moves
   // an existing meeting, it's not a net-new booking). ---

@@ -20,6 +20,8 @@ function inputFor(members: ReturnType<typeof assembleMemberAvailability>): SlotC
     minNoticeMin: 0,
     dailyCap: 1,
     slotIntervalMin: 60,
+    // Gate 1 (#1295) held wide open, so these assertions stay about the daily cap.
+    businessHours: { zone: "America/New_York", rules: [{ weekday: 1, start_minute: 0, end_minute: 1440 }] },
     from: "2026-07-13T00:00:00.000Z",
     to: "2026-07-14T00:00:00.000Z",
     nowMs: Date.parse("2026-07-13T00:00:00.000Z"),
