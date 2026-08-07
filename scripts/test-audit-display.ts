@@ -13,6 +13,7 @@ import {
   auditDetailText,
   isReconstructed,
 } from "../src/lib/audit-display.ts";
+import { AUDIT_ACTIONS } from "../src/lib/audit.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
@@ -33,6 +34,24 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
   // The fallback still has to be the raw action: an unlabelled row must remain
   // readable rather than rendering blank.
   assert(auditActionLabel("some.future") === "some.future", "unknown action falls back to its key");
+
+  // Completeness, enumerated from the ACTUAL vocabulary rather than a second hand
+  // list. The assertions above are a hand list sitting beside the label map, and a
+  // hand list cannot see an action missing from BOTH itself and the map: that action
+  // just falls back to its raw key and renders as "org.business_hours" to whoever
+  // reads the trail, with nothing failing. Walking AUDIT_ACTIONS closes that.
+  for (const action of AUDIT_ACTIONS) {
+    assert(
+      auditActionLabel(action) !== action,
+      `every action Slate can write has a readable label (${action} does not)`,
+    );
+  }
+  // Positive control: the loop must be able to fail, i.e. it really enumerated the
+  // vocabulary rather than walking an empty list.
+  assert(
+    AUDIT_ACTIONS.length > 15,
+    `the vocabulary really was enumerated (${AUDIT_ACTIONS.length} actions)`,
+  );
 }
 
 // --- actor: a reconstructed row whose actor was never stored says so ---

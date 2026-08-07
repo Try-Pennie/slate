@@ -33,6 +33,30 @@ export interface BusinessHours {
   source: "stored" | "seeded";
 }
 
+/**
+ * The RAW seven rows, including closed days and their (unused) windows (#1297).
+ *
+ * `loadBusinessHours` above returns only the OPEN windows, because that is all the
+ * gate needs. The editor needs more: which days are currently open, so it can tell a
+ * day being newly closed from one already shut, and a closed day's stored window, so
+ * re-opening it restores the hours it had rather than inventing new ones.
+ *
+ * Returns an empty array for an unconfigured table; the caller renders the seeded
+ * week. Throws on a read error, like its sibling.
+ */
+export async function loadBusinessHoursRows(): Promise<BusinessHoursRow[]> {
+  const db = supabaseAdmin();
+  // cap-safe: business_hours holds exactly one row per weekday, a fixed 1..7 key
+  // space, so it can never exceed a page.
+  return (unwrap(
+    await db
+      .from("business_hours")
+      .select("weekday, is_open, start_minute, end_minute")
+      .order("weekday"),
+    "business_hours",
+  ) ?? []) as BusinessHoursRow[];
+}
+
 export async function loadBusinessHours(): Promise<BusinessHours> {
   const db = supabaseAdmin();
   // cap-safe: business_hours holds exactly one row per weekday, a fixed 1..7 key

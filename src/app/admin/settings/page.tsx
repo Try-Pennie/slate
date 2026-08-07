@@ -3,7 +3,23 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setMonitorSettings, setDefaultBucket, setBookingHorizon } from "@/app/admin/actions";
+import {
+  setMonitorSettings,
+  setDefaultBucket,
+  setBookingHorizon,
+  setBusinessHours,
+  setOrgDefaultHours,
+} from "@/app/admin/actions";
+import { loadBusinessHoursRows } from "@/lib/booking/business-hours-load";
+import { BUSINESS_ZONE, SEEDED_BUSINESS_HOURS } from "@/lib/booking/business-hours";
+import { coverageForWeek, type CoverageReadout } from "@/lib/booking/business-hours-coverage";
+import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
+import { minutesToTime } from "@/lib/schedule-core";
+import { humanizeZone } from "@/lib/booking/timezones";
+import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/BusinessHoursForm";
+import { DayToggles } from "@/components/ui/DayToggles";
+import { TimeField } from "@/components/ui/TimeField";
+import { DateTime } from "luxon";
 import { HORIZON_DEFAULT, HORIZON_MIN, HORIZON_MAX } from "@/lib/booking/settings";
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
@@ -111,6 +127,101 @@ export default async function MonitorSettingsPage({
     // Fall through to no default / empty options.
   }
 
+  // --- Business hours (#1297) -------------------------------------------------
+  // The raw week (including closed days and their kept windows), the org's own
+  // seeding defaults, and who is actually rostered inside the open hours.
+  //
+  // The roster read THROWS on failure rather than returning empty, and that has to
+  // survive to the screen: rendering an unreadable roster as "nobody covers this"
+  // reads as a staffing problem someone would go and fix. So a failure becomes the
+  // could-not-check state, never a zero.
+  let businessDays: BusinessHoursDay[] = [];
+  let coverage: CoverageReadout = { ok: false };
+  type OrgDefaults = {
+    default_timezone: string;
+    default_start_minute: number;
+    default_end_minute: number;
+    default_weekdays: number[];
+  };
+  let org: OrgDefaults | null = null;
+  try {
+    const db = supabaseAdmin();
+    const [rowsRaw, orgRes] = await Promise.all([
+      loadBusinessHoursRows(),
+      db
+        .from("organizations")
+        .select("default_timezone, default_start_minute, default_end_minute, default_weekdays")
+        .eq("id", me.org_id)
+        .maybeSingle(),
+    ]);
+    // An unconfigured table resolves to the seeded week, matching what the gate
+    // itself would use, so the editor never shows a blank week that saving would
+    // then make real.
+    const week =
+      rowsRaw.length === 7
+        ? rowsRaw
+        : SEEDED_BUSINESS_HOURS.map((r) => ({ ...r, is_open: true })).concat(
+            [7].map((weekday) => ({ weekday, is_open: false, start_minute: 480, end_minute: 1200 })),
+          );
+    businessDays = [...week]
+      .sort((a, b) => a.weekday - b.weekday)
+      .map((r) => ({
+        weekday: r.weekday,
+        is_open: r.is_open,
+        start: minutesToTime(r.start_minute),
+        end: minutesToTime(r.end_minute),
+      }));
+    if (!orgRes.error && orgRes.data) {
+      org = orgRes.data as OrgDefaults;
+    }
+
+    // Only agents who can ACTUALLY take a booking: active AND bookable. Measured
+    // 2026-08-06, 13 users carry the flag but 11 are deactivated leavers whose flag
+    // was never cleared, so counting the flag alone would overstate the pool by 11.
+    const { data: pool } = await db
+      .from("users")
+      .select("id")
+      .eq("bookable", true)
+      .is("deactivated_at", null)
+      .eq("is_test", false);
+    const poolIds = new Set(((pool ?? []) as { id: string }[]).map((u) => u.id));
+
+    const { schedules, rules } = await loadAllWorkingHours(db);
+    const rulesBySchedule = new Map<string, { weekday: number; start_minute: number; end_minute: number }[]>();
+    for (const r of rules) {
+      const list = rulesBySchedule.get(r.schedule_id) ?? [];
+      list.push({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute });
+      rulesBySchedule.set(r.schedule_id, list);
+    }
+    const agents = schedules
+      .filter((sch) => poolIds.has(sch.user_id))
+      .map((sch) => ({
+        timezone: sch.timezone,
+        rules: rulesBySchedule.get(sch.id) ?? [],
+      }));
+    // Agents with no schedule row at all still count toward the denominator: they
+    // are in the pool, they just cover nothing.
+    const scheduleless = poolIds.size - agents.length;
+    for (let i = 0; i < Math.max(0, scheduleless); i++) agents.push({ timezone: BUSINESS_ZONE, rules: [] });
+
+    coverage = coverageForWeek({
+      businessHours: businessDays.map((d) => ({
+        weekday: d.weekday,
+        is_open: d.is_open,
+        start_minute: Number(d.start.slice(0, 2)) * 60 + Number(d.start.slice(3, 5)),
+        end_minute: Number(d.end.slice(0, 2)) * 60 + Number(d.end.slice(3, 5)),
+      })),
+      zone: BUSINESS_ZONE,
+      agents,
+      weekStartIso:
+        DateTime.now().setZone(BUSINESS_ZONE).startOf("week").toISODate() ?? "2026-01-05",
+    });
+  } catch {
+    // Any of those reads failing leaves coverage in its could-not-check state and
+    // the week on the seeded default, which is what the gate would serve anyway.
+    coverage = { ok: false };
+  }
+
   const armed = process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
   const envAlerts = process.env.SLACK_ALERTS_CHANNEL ?? "";
   const envInfo = process.env.SLACK_INFO_CHANNEL ?? "";
@@ -130,11 +241,11 @@ export default async function MonitorSettingsPage({
       <main className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
-          <h1 className="text-2xl font-semibold text-white dark:text-fg">Alert settings</h1>
+          <h1 className="text-2xl font-semibold text-white dark:text-fg">Booking and alert settings</h1>
           <p className="mt-2 max-w-prose text-sm text-white/80 dark:text-fg-muted">
-            Tune how often the monitor alerts fire and where they post, without a
-            deploy. Leave a field blank to use its built-in default. Cooldowns are
-            in minutes; floors are booking counts.
+            When Pennie is open, how far ahead leads can book, and how the monitor
+            alerts behave, all without a deploy. Leave an alert field blank to use its
+            built-in default. Cooldowns are in minutes; floors are booking counts.
           </p>
           <p className="mt-3 text-xs text-white/70 dark:text-fg-muted">{lastChanged}</p>
         </section>
@@ -316,6 +427,81 @@ export default async function MonitorSettingsPage({
             </SubmitButton>
           </form>
         </section>
+
+        {/* When Pennie is OPEN, and (below) the hours a NEW agent starts on.
+            Adjacent and named apart on purpose: they both look like "hours in a
+            settings screen", and confusing them silently moves the whole roster's
+            bookability (#1297). */}
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Business hours</h2>
+          <p className="mb-4 max-w-prose text-xs text-fg-muted">
+            When Pennie is open. No lead is offered a time outside these hours, on any
+            bucket, whatever an agent&apos;s own schedule says. A change applies to
+            everyone straight away.
+          </p>
+          <BusinessHoursForm
+            action={setBusinessHours}
+            days={businessDays}
+            zoneLabel={humanizeZone(BUSINESS_ZONE)}
+            coverage={coverage}
+          />
+        </section>
+
+        {org && (
+          <section className={cardCls}>
+            <h2 className="mb-1 text-sm font-semibold">Starting hours for a new agent</h2>
+            <p className="mb-4 max-w-prose text-xs text-fg-muted">
+              Only the hours a newly added agent begins with, and what the{" "}
+              <strong>Use default hours</strong>{" "}button applies on an agent&apos;s page.
+              Changing this moves nobody who is already set up, and it never widens the
+              business hours above.
+            </p>
+            <form action={setOrgDefaultHours} className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className={labelCls} htmlFor="default_timezone">
+                  Timezone
+                </label>
+                <input
+                  id="default_timezone"
+                  name="default_timezone"
+                  defaultValue={org.default_timezone}
+                  className={`${inputCls} w-44`}
+                />
+              </div>
+              <div>
+                <span className={labelCls}>Days</span>
+                <div className="mt-1">
+                  <DayToggles
+                    namePrefix="dday_"
+                    isOn={(d) => org.default_weekdays.includes(d)}
+                  />
+                </div>
+              </div>
+              <div>
+                <span className={labelCls}>Start</span>
+                <TimeField
+                  name="default_start"
+                  ariaLabel="New agent start time"
+                  defaultValue={minutesToTime(org.default_start_minute)}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <span className={labelCls}>End</span>
+                <TimeField
+                  name="default_end"
+                  ariaLabel="New agent end time"
+                  round="up"
+                  defaultValue={minutesToTime(org.default_end_minute)}
+                  className="mt-1"
+                />
+              </div>
+              <SubmitButton className={btnCls} pendingLabel="Saving…">
+                Save starting hours
+              </SubmitButton>
+            </form>
+          </section>
+        )}
 
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Booking horizon</h2>
