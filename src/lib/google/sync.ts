@@ -57,7 +57,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
-import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
+import { ID_BATCH_ROWS, chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { afterResponse } from "@/lib/after-response";
@@ -343,10 +343,17 @@ export async function loadFailingAgents(
   return applyBlastRadiusHold(dedupeFailingAgents(rows), Date.now(), policy);
 }
 
-// Cap rows per DB call so even a huge calendar's bootstrap stays well under the
-// Worker's per-request subrequest ceiling (the old one-write-per-event loop did
-// 1,000+ serial calls and got killed mid-sync; see partitionBusyWrites).
-const WRITE_CHUNK = 500;
+/**
+ * Rows per UPSERT call, so even a huge calendar's bootstrap stays well under the
+ * Worker's per-request subrequest ceiling (the old one-write-per-event loop did
+ * 1,000+ serial calls and got killed mid-sync; see partitionBusyWrites).
+ *
+ * An upsert sends its rows in the request BODY, which has no comparable size limit,
+ * so a row count is the right unit here. The DELETE below is a different problem
+ * with a different unit and deliberately does NOT share this constant: its ids
+ * travel in the query string (#1268).
+ */
+const UPSERT_CHUNK = 500;
 
 /**
  * Event ids of this agent's active Slate bookings (#166) — the Google events
@@ -403,23 +410,34 @@ export async function applyEvents(
   // Keyed on (user_id, calendar_id, gcal_event_id) so the same event id invited
   // to two of an agent's watched calendars keeps a distinct block per calendar,
   // instead of one calendar's sync overwriting the other's row (#619).
-  for (let i = 0; i < upserts.length; i += WRITE_CHUNK) {
+  for (let i = 0; i < upserts.length; i += UPSERT_CHUNK) {
     const { error } = await db
       .from("busy_blocks")
-      .upsert(upserts.slice(i, i + WRITE_CHUNK), {
+      .upsert(upserts.slice(i, i + UPSERT_CHUNK), {
         onConflict: "user_id,calendar_id,gcal_event_id",
       });
     if (error) throw new Error(`busy_blocks bulk upsert failed: ${error.message}`);
   }
   // Scope deletes to THIS calendar (#619): a cancellation delta from one calendar
   // must not remove the block for the same event still present on another.
-  for (let i = 0; i < deletes.length; i += WRITE_CHUNK) {
+  //
+  // Batched by BYTES, not by a row count (#1268). These ids ride in the query string,
+  // where an oversized batch is REFUSED at the transport rather than merely slow, and
+  // Google event ids are neither uuids nor one length (measured: 43 characters on
+  // average in this very table, reaching 181). Sharing the upsert's 500 sent roughly
+  // 21,500 bytes at the average against a limit measured between 13,028 accepted and
+  // 14,878 refused, so any delete past roughly 230 average-length ids failed.
+  //
+  // The consequence of that failure is why it matters more than a retry: `applyEvents`
+  // throws, `syncCalendar` never advances this calendar's sync token, and the same
+  // pass retries forever, so the agent's cached availability silently stops updating.
+  for (const chunk of chunkIdsByUrlBudget(deletes)) {
     const { error } = await db
       .from("busy_blocks")
       .delete()
       .eq("user_id", userId)
       .eq("calendar_id", calendarId)
-      .in("gcal_event_id", deletes.slice(i, i + WRITE_CHUNK));
+      .in("gcal_event_id", chunk);
     if (error) throw new Error(`busy_blocks bulk delete failed: ${error.message}`);
   }
 }
