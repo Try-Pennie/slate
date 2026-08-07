@@ -38,6 +38,16 @@ function mockFetch(routes: { cancel?: FetchResult; reschedule?: FetchResult; ava
   return fn;
 }
 
+/** #1336: the reschedule panel runs on the shared picker, so a day is chosen
+ *  before any time is offered. The chips read "SUN 21 JUN": never a clock face,
+ *  so the /:\d{2}/ slot query stays unambiguous. */
+const dayChips = () =>
+  screen.findAllByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
+const dayChip = async () => (await dayChips())[0];
+async function pickDay() {
+  await userEvent.click(await dayChip());
+}
+
 /** Parse the JSON body the component POSTed to a path containing `match`. */
 function bodyFor(fn: ReturnType<typeof mockFetch>, match: string): Record<string, unknown> {
   const call = fn.mock.calls.find(([u]) => String(u).includes(match));
@@ -110,6 +120,7 @@ describe("ManageBooking", () => {
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     // A reason is mandatory before a slot can be picked.
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    await pickDay();
     const slot = await screen.findByRole("button", { name: /:\d{2}/ });
     await userEvent.click(slot);
 
@@ -132,6 +143,7 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    await pickDay();
     const slot = await screen.findByRole("button", { name: /:\d{2}/ });
     await userEvent.click(slot);
 
@@ -150,6 +162,7 @@ describe("ManageBooking", () => {
     render(<ManageBooking {...baseProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await pickDay();
     // Slots are visible but disabled until a reason is chosen.
     const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     expect(slot.disabled).toBe(true);
@@ -194,6 +207,7 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    await pickDay();
     const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     await userEvent.click(slot);
 
@@ -207,15 +221,18 @@ describe("ManageBooking", () => {
   // #627: opening Reschedule must not flash "No times left" while the
   // availability fetch is in flight, nor show it on a failed fetch. Loading,
   // error, and empty are three distinct states (mirrors the Booker).
-  it("shows loading skeletons, not the empty copy, while availability is in flight", async () => {
-    // Availability fetch never resolves: the slot list stays in its loading state.
+  it("shows the working signal, not the empty copy, while availability is in flight", async () => {
+    // Availability fetch never resolves: the panel stays in its loading state.
     global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
     render(<ManageBooking {...baseProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
-    expect(screen.queryByText(/no times left/i)).toBeNull();
+    // The visible line and the sr-only polite region carry the same sentence.
+    await waitFor(() =>
+      expect(screen.getAllByText("Finding the days you can book.").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText(/all times are taken/i)).toBeNull();
   });
 
   it("shows an error with Try again when the availability fetch fails, then recovers on retry", async () => {
@@ -234,11 +251,12 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
+    expect(await screen.findByText("Could not load available times.")).toBeTruthy();
     // Not conflated with the empty state.
-    expect(screen.queryByText(/no times left/i)).toBeNull();
+    expect(screen.queryByText(/all times are taken/i)).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await pickDay();
     expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
   });
 
@@ -253,8 +271,8 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
-    expect(screen.queryByText(/no times left/i)).toBeNull();
+    expect(await screen.findByText("Could not load available times.")).toBeTruthy();
+    expect(screen.queryByText(/all times are taken/i)).toBeNull();
   });
 
   it("shows the empty copy only after a confirmed empty availability response", async () => {
@@ -268,10 +286,8 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    // The visible empty copy carries the trailing "pick another"; the sr-only
-    // status region says just "No times left", so target the visible line.
-    expect(await screen.findByText(/no times left, pick another/i)).toBeTruthy();
-    expect(screen.getByRole("status").textContent).not.toMatch(/loading/i);
+    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    expect(screen.queryByText("Finding the days you can book.")).toBeNull();
   });
 
   it("shows a still-working cue when a cancel POST hangs (#626)", async () => {
@@ -320,6 +336,7 @@ describe("ManageBooking", () => {
     render(<ManageBooking {...baseProps} />);
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /schedule conflict/i }));
+    fireEvent.click(await dayChip());
     const slot = await screen.findByRole("button", { name: /:\d{2}/ });
 
     vi.useFakeTimers();
@@ -345,8 +362,9 @@ describe("ManageBooking", () => {
     render(<ManageBooking {...baseProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await pickDay();
     const status = await screen.findByRole("status");
-    await waitFor(() => expect(status.textContent).toMatch(/2 times available/i));
+    await waitFor(() => expect(status.textContent).toMatch(/2 times available on/i));
   });
 
   it("announces the empty message via role=status when no reschedule times (#633)", async () => {
@@ -354,8 +372,56 @@ describe("ManageBooking", () => {
     render(<ManageBooking {...baseProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
-    expect(await screen.findByText(/no times left, pick another/i)).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toMatch(/no times/i);
+    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    // Nothing is bookable, so the strip draws nothing at all (#261).
+    expect(screen.queryByRole("group", { name: "Available days" })).toBeNull();
+  });
+
+  // #1336: the rule the shared picker exists to hold, on this surface. The lead
+  // reschedule panel used to render EVERY offered day's times in one flat list,
+  // so a lead scrolling it could tap a clock face without ever registering which
+  // day it belonged to.
+  it("offers no time until a day is chosen (#1336)", async () => {
+    mockFetch({
+      availability: {
+        ok: true,
+        body: { slots: ["2026-06-21T15:00:00.000Z", "2026-06-22T15:00:00.000Z"] },
+      },
+    });
+    render(<ManageBooking {...baseProps} />);
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    // Both days are offered, so the load is settled and this is not a spinner.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /^(MON|TUE|SUN)/ })).toHaveLength(2),
+    );
+    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
+    expect(
+      screen.getAllByText("Pick a day above to see the times available.").length,
+    ).toBeGreaterThan(0);
+
+    await pickDay();
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
+  });
+
+  // #1336: cancelling must not sit beside the times a lead is reading, so while
+  // the reschedule panel is open the only way back is "Keep my current time".
+  it("hides Cancel booking while rescheduling, and backs out without moving anything", async () => {
+    const fn = mockFetch({
+      availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },
+    });
+    render(<ManageBooking {...baseProps} />);
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+
+    expect(screen.queryByRole("button", { name: /cancel booking/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^close$/i })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Keep my current time" }));
+
+    // Back to the two actions, and nothing was rescheduled on the way out.
+    expect(screen.getByRole("button", { name: /^reschedule$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cancel booking/i })).toBeTruthy();
+    expect(fn.mock.calls.some(([u]) => String(u).includes("/reschedule"))).toBe(false);
   });
 
   // #634: a cancelled booking must not dead-end the lead. The terminal state

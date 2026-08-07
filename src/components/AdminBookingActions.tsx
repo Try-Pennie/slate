@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { DateTime } from "luxon";
 
 import {
   validateReason,
@@ -11,14 +12,16 @@ import {
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
+import { BookerStrip } from "@/components/BookerStrip";
+import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
+import { useSlotPicker } from "@/components/use-slot-picker";
+import { deviceTimeZone } from "@/lib/booking/timezones";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
-import { formatSlotTime, groupSlotsByDay } from "@/lib/booking/slot-label";
+import { formatSlotTime } from "@/lib/booking/slot-label";
 
 type Mode = null | "cancel" | "reschedule" | "reassign";
 
-const extractSlots = (json: unknown): string[] =>
-  (json as { slots?: string[] } | null)?.slots ?? [];
 const extractAgents = (json: unknown): ReassignAgent[] =>
   (json as { agents?: ReassignAgent[] } | null)?.agents ?? [];
 
@@ -53,19 +56,23 @@ export default function AdminBookingActions({
   const [error, setError] = useState<string | null>(null);
   const [reasonCode, setReasonCode] = useState("");
   const [reasonDetail, setReasonDetail] = useState("");
-  // Reschedule + reassign lists share one fetch+state hook (#627): loading and
-  // error are distinct from empty, so neither panel shows "no times"/"no agents"
-  // while its fetch is still in flight or after it failed.
-  const {
-    items: slots,
-    loading: slotsLoading,
-    error: slotsError,
-    retry: retrySlots,
-  } = useFetchList(
-    bucketCode ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}` : null,
-    mode === "reschedule",
-    extractSlots,
-  );
+  // The reschedule panel runs on the SAME picker as the booker and the lead
+  // reschedule panel (#1336), so an admin sees the days and times a lead would,
+  // and a fix to any of the states reaches all three. Null url while the panel is
+  // shut, so nothing is fetched. The admin surface deliberately shows times in the
+  // MACHINE zone, which is what staff read the rest of the row in.
+  const adminZone = useMemo(() => deviceTimeZone(), []);
+  const today = useMemo(() => DateTime.now().setZone(adminZone).startOf("day"), [adminZone]);
+  const picker = useSlotPicker({
+    url:
+      mode === "reschedule" && bucketCode
+        ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}`
+        : null,
+    zone: adminZone,
+  });
+  // The reassign agent list keeps the shared fetch+state hook (#627): loading and
+  // error stay distinct from empty, so the panel never shows "no agents" while its
+  // fetch is in flight or after it failed.
   const {
     items: agents,
     loading: agentsLoading,
@@ -256,43 +263,32 @@ export default function AdminBookingActions({
           <p className="mb-2 text-xs font-semibold text-fg">
             {reasonValid ? "Pick a new time" : "Choose a reason above, then pick a new time"}
           </p>
-          <AsyncListStates
-            loading={slotsLoading}
-            error={slotsError}
-            isEmpty={slots.length === 0}
-            onRetry={retrySlots}
-            loadingLabel="Loading available times"
-            resultLabel={`${slots.length} time${slots.length === 1 ? "" : "s"} available`}
-            emptyLabel="No open times"
-            skeletonCount={6}
-            skeletonClassName="h-9"
-            containerClassName="grid grid-cols-2 gap-1"
-            emptyNode={<p className="text-xs text-fg-muted">No open times.</p>}
-          >
-            {/* Grouped by dated day heading (#635): times read unambiguously and
-                the full horizon shows with no silent slice(0,12) cap. */}
-            <div className="space-y-3">
-              {groupSlotsByDay(slots).map((day) => (
-                <div key={day.key}>
-                  <p className="mb-1 text-xs font-semibold tabular-nums text-fg">
-                    {day.heading}
-                  </p>
-                  <div className="grid grid-cols-2 gap-1">
-                    {day.slots.map((iso) => (
-                      <button
-                        key={iso}
-                        disabled={busy || !reasonValid}
-                        onClick={() => doReschedule(iso)}
-                        className="min-h-9 rounded-md border border-border bg-surface px-1 py-1 text-xs tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
-                      >
-                        {formatSlotTime(iso)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </AsyncListStates>
+          <div className="mb-3">
+            <BookerStrip
+              today={today}
+              days={picker.days}
+              activeDay={picker.selectedDay}
+              zone={adminZone}
+              onSelect={picker.selectDay}
+            />
+          </div>
+          <SlotTimes
+            view={picker.view}
+            timeZone={adminZone}
+            onRetry={picker.retry}
+            classes={SLOT_TIMES_CLASSES.panel}
+            noDaysNode={<p className="text-xs text-fg-muted">No open times.</p>}
+            renderSlot={(iso) => (
+              <button
+                key={iso}
+                disabled={busy || !reasonValid}
+                onClick={() => doReschedule(iso)}
+                className="min-h-9 rounded-md border border-border bg-surface px-1 py-1 text-xs tabular-nums text-fg hover:border-fg/45 disabled:opacity-60"
+              >
+                {formatSlotTime(iso, adminZone)}
+              </button>
+            )}
+          />
           <button onClick={reset} disabled={busy} className="mt-2 min-h-9 rounded-md border border-border px-3 py-1 text-xs text-fg">
             Back
           </button>

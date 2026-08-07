@@ -56,6 +56,15 @@ function bodyFor(fn: ReturnType<typeof mockFetch>, match: string): Record<string
 
 beforeEach(() => vi.clearAllMocks());
 
+/** #1336: the admin reschedule panel runs on the shared picker, so a day is
+ *  chosen before any time is offered. */
+const dayChips = () =>
+  screen.findAllByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
+const dayChip = async () => (await dayChips())[0];
+async function pickDay() {
+  await userEvent.click(await dayChip());
+}
+
 describe("AdminBookingActions", () => {
   it("shows no actions for a terminal booking", () => {
     mockFetch();
@@ -84,6 +93,7 @@ describe("AdminBookingActions", () => {
     render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await pickDay();
     const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     expect(slot.disabled).toBe(true);
 
@@ -283,6 +293,7 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
+    await pickDay();
     const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
     await userEvent.click(slot);
 
@@ -320,7 +331,9 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
+    await waitFor(() =>
+      expect(screen.getAllByText("Finding the days you can book.").length).toBeGreaterThan(0),
+    );
     expect(screen.queryByText(/no open times/i)).toBeNull();
   });
 
@@ -339,10 +352,11 @@ describe("AdminBookingActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
-    expect(await screen.findByText(/couldn.t load/i)).toBeTruthy();
+    expect(await screen.findByText("Could not load available times.")).toBeTruthy();
     expect(screen.queryByText(/no open times/i)).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await pickDay();
     expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
   });
 
@@ -444,6 +458,7 @@ describe("AdminBookingActions", () => {
     render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /found a better time/i }));
+    fireEvent.click(await dayChip());
     const slot = await screen.findByRole("button", { name: /:\d{2}/ });
 
     vi.useFakeTimers();
@@ -489,6 +504,34 @@ describe("AdminBookingActions", () => {
     vi.useRealTimers();
   });
 
+  // #1336: the rule the shared picker exists to hold, on this surface. The admin
+  // panel used to render every offered day's times in one flat list, grouped in
+  // the MACHINE zone while the lead's panel grouped in theirs.
+  it("offers no time until a day is chosen (#1336)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/availability")) {
+        return {
+          ok: true,
+          json: async () => ({
+            slots: ["2026-06-21T15:00:00.000Z", "2026-06-22T15:00:00.000Z"],
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    // Both days are offered, so the load is settled and this is not a spinner.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /^(MON|TUE|SUN)/ })).toHaveLength(2),
+    );
+    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
+
+    await pickDay();
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
+  });
+
   // #633: announce the reschedule grid's settled state via a polite role=status,
   // not just the loading skeletons.
   it("announces the reschedule slot count via role=status (#633)", async () => {
@@ -496,8 +539,9 @@ describe("AdminBookingActions", () => {
     render(<AdminBookingActions bookingId="bk1" bucketCode="411" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await pickDay();
     const status = await screen.findByRole("status");
-    await waitFor(() => expect(status.textContent).toMatch(/1 time available/i));
+    await waitFor(() => expect(status.textContent).toMatch(/1 time available on/i));
   });
 });
 

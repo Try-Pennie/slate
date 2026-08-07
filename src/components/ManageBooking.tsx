@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { DateTime } from "luxon";
 
 import {
   deviceTimeZone,
@@ -12,14 +13,13 @@ import {
 } from "@/lib/booking/timezones";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
-import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { AlertIcon } from "@/components/icons";
+import { BookerStrip } from "@/components/BookerStrip";
+import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
+import { useSlotPicker } from "@/components/use-slot-picker";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
-import { formatSlotTime, groupSlotsByDay } from "@/lib/booking/slot-label";
-
-const extractSlots = (json: unknown): string[] =>
-  (json as { slots?: string[] } | null)?.slots ?? [];
+import { formatSlotTime } from "@/lib/booking/slot-label";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1000,
 // mirroring the Booker's #219 picker); a real zone id can never collide with it.
@@ -86,16 +86,16 @@ export default function ManageBooking({
   const [start, setStart] = useState(startsAt);
   const [status, setStatus] = useState(initialStatus);
   const [rescheduling, setRescheduling] = useState(false);
-  const {
-    items: slots,
-    loading: slotsLoading,
-    error: slotsError,
-    retry: retrySlots,
-  } = useFetchList(
-    `/api/availability?bucket=${encodeURIComponent(bucketCode)}`,
-    rescheduling,
-    extractSlots,
+  const today = useMemo(
+    () => DateTime.now().setZone(timeZone).startOf("day"),
+    [timeZone],
   );
+  // Null while the panel is shut: nothing is fetched, and the picker settles as
+  // "no days" rather than sitting in a load that never runs.
+  const picker = useSlotPicker({
+    url: rescheduling ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}` : null,
+    zone: timeZone,
+  });
   const [busy, setBusy] = useState(false);
   // Still-alive cue if a cancel/reschedule POST hasn't returned by ~10s; the
   // REQUEST_TIMEOUT_MS abort then converts a true hang into the error below (#626).
@@ -119,6 +119,16 @@ export default function ManageBooking({
   ).ok;
 
   const done = status === "cancelled" || status === "completed";
+
+  /** Leave the reschedule panel without moving anything, clearing the reason and
+   *  the chosen day so reopening it starts clean. */
+  function closeReschedule() {
+    setRescheduling(false);
+    setReschedReason("");
+    setReschedDetail("");
+    picker.selectDay(null);
+    setError(null);
+  }
 
   async function reschedule(newStart: string) {
     setBusy(true);
@@ -264,17 +274,21 @@ export default function ManageBooking({
           </div>
         )}
 
-        {!done && !confirmingCancel && (
+        {/* #1336: while the reschedule panel is open, Close and Cancel booking are
+            both hidden and the panel's own "Keep my current time" link is the only
+            way back, so an irreversible action is not sitting beside the times a
+            lead is reading. */}
+        {!done && !confirmingCancel && !rescheduling && (
           <div className="mt-6 flex flex-wrap gap-3">
             <button
               onClick={() => {
-                setRescheduling((v) => !v);
+                setRescheduling(true);
                 setReschedReason("");
                 setReschedDetail("");
               }}
               className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm"
             >
-              {rescheduling ? "Close" : "Reschedule"}
+              Reschedule
             </button>
             <button
               onClick={() => {
@@ -365,48 +379,53 @@ export default function ManageBooking({
                 ? "Pick a new time"
                 : "Choose a reason above, then pick a new time"}
             </p>
-            <AsyncListStates
-              loading={slotsLoading}
-              error={slotsError}
-              isEmpty={slots.length === 0}
-              onRetry={retrySlots}
-              loadingLabel="Loading available times"
-              resultLabel={`${slots.length} time${slots.length === 1 ? "" : "s"} available`}
-              emptyLabel="No times left"
-              skeletonCount={6}
-              skeletonClassName="h-11"
-              containerClassName="grid grid-cols-2 gap-2 sm:grid-cols-3"
-              emptyNode={<p className="text-sm text-fg-muted">No times left, pick another.</p>}
+            {/* The same day strip and times panel the booker runs on (#1336), so
+                a lead moving a call meets the surface they booked on and a fix to
+                either reaches both. No time renders until a day is chosen. */}
+            <div className="mb-4">
+              <BookerStrip
+                today={today}
+                days={picker.days}
+                activeDay={picker.selectedDay}
+                zone={timeZone}
+                onSelect={picker.selectDay}
+              />
+            </div>
+            <SlotTimes
+              view={picker.view}
+              timeZone={timeZone}
+              onRetry={picker.retry}
+              classes={SLOT_TIMES_CLASSES.panel}
+              noDaysNode={
+                <p className="text-sm text-fg-muted">
+                  All times are taken right now. Check back soon.
+                </p>
+              }
+              renderSlot={(iso) => (
+                <button
+                  key={iso}
+                  disabled={busy || !reschedReasonValid}
+                  aria-busy={pendingIso === iso}
+                  onClick={() => reschedule(iso)}
+                  className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
+                    pendingIso === iso
+                      ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
+                      : "border-border bg-surface text-fg hover:border-fg/45"
+                  }`}
+                >
+                  {pendingIso === iso ? "Moving…" : formatSlotTime(iso, timeZone)}
+                </button>
+              )}
+            />
+            {/* The only way back out while the panel is open (#1336). Cancel
+                booking is hidden above, so an irreversible action is not sitting
+                beside the times a lead is reading. */}
+            <button
+              onClick={closeReschedule}
+              className="mt-5 inline-flex min-h-11 items-center text-sm text-fg-muted underline underline-offset-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
             >
-              {/* Grouped by dated day heading (#635): every time reads unambiguously
-                  and the whole horizon renders with no silent slice(0,30) cap. */}
-              <div className="space-y-4">
-                {groupSlotsByDay(slots, timeZone).map((day) => (
-                  <div key={day.key}>
-                    <p className="mb-2 text-sm font-semibold tabular-nums text-fg">
-                      {day.heading}
-                    </p>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {day.slots.map((iso) => (
-                        <button
-                          key={iso}
-                          disabled={busy || !reschedReasonValid}
-                          aria-busy={pendingIso === iso}
-                          onClick={() => reschedule(iso)}
-                          className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
-                            pendingIso === iso
-                              ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
-                              : "border-border bg-surface text-fg hover:border-fg/45"
-                          }`}
-                        >
-                          {pendingIso === iso ? "Moving…" : formatSlotTime(iso, timeZone)}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </AsyncListStates>
+              Keep my current time
+            </button>
           </div>
         )}
       </div>
