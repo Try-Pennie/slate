@@ -10,6 +10,15 @@ const service = vi.hoisted(() => {
   class SlotUnavailableError extends Error {}
   class VerifyUnavailableError extends Error {}
   class NoEligibleAgentsError extends Error {}
+  // #1337: the route declines rather than creating when the person already has
+  // an active call. The class must exist on the mock for the instanceof branch.
+  class ExistingCallError extends Error {
+    existingCall: unknown;
+    constructor(existingCall: unknown) {
+      super("already has a call");
+      this.existingCall = existingCall;
+    }
+  }
   return {
     createBooking: vi.fn(),
     // Mirrors DuplicateWarning in src/lib/booking/orchestration.ts: a weak
@@ -24,6 +33,7 @@ const service = vi.hoisted(() => {
     SlotUnavailableError,
     VerifyUnavailableError,
     NoEligibleAgentsError,
+    ExistingCallError,
   };
 });
 const rateLimit = vi.hoisted(() => ({
@@ -262,6 +272,58 @@ describe("POST /booking (embed) error mapping", () => {
     expect(service.findDuplicateBookingWarning).toHaveBeenCalledWith(
       expect.objectContaining({ excludeBookingId: "bk-2" }),
     );
+  });
+
+  // #1337: one call per person is enforced here. The route opts in (the direct
+  // booking API must not, since its cross-bucket rebook creates before it
+  // cancels, #364), and a decline reaches the client as a 409 carrying the call
+  // they already have, with nothing created.
+  it("opts into refusing a second booking for someone who already has a call (#1337)", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-9", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post(VALID_BODY);
+    expect(service.createBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ refuseIfPersonHasCall: true }),
+    );
+  });
+
+  it("declines with a 409 naming the existing call, and refunds the rate limit (#1337)", async () => {
+    service.createBooking.mockRejectedValue(
+      new service.ExistingCallError({
+        disclose: true,
+        startsAt: "2026-07-02T18:00:00.000Z",
+        advisorName: "Aisha Bello",
+        manageToken: "tok-old",
+      }),
+    );
+    const res = await post(VALID_BODY);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      existingCall: {
+        disclose: true,
+        startsAt: "2026-07-02T18:00:00.000Z",
+        advisorName: "Aisha Bello",
+        manageToken: "tok-old",
+      },
+    });
+    // Being declined is not an attempt the lead should pay for, and the Move they
+    // are about to make is a separate request.
+    expect(rateLimit.refundRequest).toHaveBeenCalled();
+  });
+
+  it("passes a withheld existing call through carrying no details (#1337/#1340)", async () => {
+    service.createBooking.mockRejectedValue(
+      new service.ExistingCallError({ disclose: false }),
+    );
+    const res = await post(VALID_BODY);
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body.existingCall).toEqual({ disclose: false });
+    expect(JSON.stringify(body)).not.toContain("tok-old");
   });
 
   // #1340: the route is the wire between the strict disclosure decision and the

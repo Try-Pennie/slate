@@ -3,6 +3,7 @@ import StandaloneTheme from "@/components/StandaloneTheme";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -69,6 +70,10 @@ export default async function BookEntry({
     : { data: null };
   const layout = normalizeBookerLayout(orgRow?.booker_layout);
   const horizonDays = await loadBookingHorizonDays();
+  // #1337: when a lead already has a call, the booker offers to MOVE it, and a
+  // reschedule records a mandatory reason (Dan, 2026-08-07: ask the lead), so the
+  // live option set has to reach the client the same way the manage page gets it.
+  const reasonOptions = await loadReasonOptions();
 
   const phone =
     first(sp, "phone") ||
@@ -103,6 +108,7 @@ export default async function BookEntry({
         layout={layout}
         parentOrigin={first(sp, "parentOrigin") || undefined}
         horizonDays={horizonDays}
+        rescheduleReasons={reasonOptions.reschedule.active}
       />
     </main>
   );

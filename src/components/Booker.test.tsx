@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
+import { RESCHEDULE_REASONS } from "@/lib/booking/core";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
 // the request rejects at the network layer (flaky mobile). It surfaces an error
@@ -26,6 +27,10 @@ const baseProps = {
   salesforceId: null,
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
+  // #1337: the Move offered to a lead who already has a call records a mandatory
+  // reschedule reason, so the live option set is a prop. Coded defaults keep the
+  // reason-label assertions valid.
+  rescheduleReasons: RESCHEDULE_REASONS,
   // The suite's fixtures assume a 4-day window (see the horizon comments below).
   horizonDays: 4,
 };
@@ -328,6 +333,134 @@ describe("Booker confirm", () => {
       // The placeholder is no longer the sole (or a redundant) label.
       expect(input.getAttribute("placeholder")).toBeNull();
     }
+  });
+});
+
+// #1337: a lead who already has an active call is DECLINED at confirm, before
+// anything is created, and offered the choice of moving the call they have into
+// the slot they just picked.
+describe("Booker refuses a second booking (#1337)", () => {
+  const existingIso = new Date(Date.now() + 9 * 24 * 60 * 60 * 1000).toISOString();
+
+  /** /api/availability succeeds; the confirm is declined with `existingCall`. */
+  function declineWith(existingCall: unknown, reschedule?: { ok: boolean; status: number; body?: unknown }) {
+    return vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      if (u.includes("/reschedule")) {
+        return {
+          ok: reschedule?.ok ?? true,
+          status: reschedule?.status ?? 200,
+          json: async () => reschedule?.body ?? { startsAt: slotIso },
+        } as Response;
+      }
+      return { ok: false, status: 409, json: async () => ({ existingCall }) } as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  it("names the existing call and offers to move it, creating nothing", async () => {
+    global.fetch = declineWith({
+      disclose: true,
+      startsAt: existingIso,
+      advisorName: "Aisha Bello",
+      manageToken: "tok-old",
+    });
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText("You already have a call booked")).toBeTruthy();
+    expect(screen.getByText(/with Aisha Bello\./)).toBeTruthy();
+    // Not the success screen: nothing was created.
+    expect(screen.queryByText("You're all set")).toBeNull();
+    // No policy voice: the rule is never explained back to the lead.
+    expect(document.body.textContent).not.toMatch(/one call per (person|lead)/i);
+    expect(document.body.textContent).not.toMatch(/we have not booked/i);
+  });
+
+  it("asks for a reason before the Move is allowed, then moves the existing call", async () => {
+    const fetchMock = declineWith({
+      disclose: true,
+      startsAt: existingIso,
+      advisorName: "Aisha Bello",
+      manageToken: "tok-old",
+    });
+    global.fetch = fetchMock;
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText("You already have a call booked");
+
+    const move = () => screen.getByRole("button", { name: /^move my call/i }) as HTMLButtonElement;
+    expect(move().disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    expect(move().disabled).toBe(false);
+    await userEvent.click(move());
+
+    // The move goes through the lead reschedule endpoint the emailed manage link
+    // uses, carrying the chosen reason, so the audit trail matches.
+    const call = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls.find(([u]) =>
+      String(u).includes("/reschedule"),
+    );
+    expect(String(call![0])).toContain("/api/bookings/tok-old/reschedule");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      start: slotIso,
+      reason: "schedule_conflict",
+    });
+    expect(await screen.findByText("You're all set")).toBeTruthy();
+  });
+
+  it("keeps the existing call and returns to the picker on Keep my time", async () => {
+    global.fetch = declineWith({
+      disclose: true,
+      startsAt: existingIso,
+      advisorName: "Aisha Bello",
+      manageToken: "tok-old",
+    });
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText("You already have a call booked");
+
+    await userEvent.click(screen.getByRole("button", { name: /^keep my /i }));
+    // Back in the picker with no day chosen, and nothing was moved.
+    expect(await dayChip()).toBeTruthy();
+    expect(screen.queryByText("You already have a call booked")).toBeNull();
+  });
+
+  // The failure path #1337 requires: nobody holds the slot during the decision,
+  // so it can be taken. The lead must be told and returned to the picker, never
+  // left with neither call moved nor a new one booked.
+  it("tells the lead and returns them to the picker when the slot goes before the Move", async () => {
+    global.fetch = declineWith(
+      { disclose: true, startsAt: existingIso, advisorName: "Aisha Bello", manageToken: "tok-old" },
+      { ok: false, status: 409, body: { error: "That time is no longer available." } },
+    );
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText("You already have a call booked");
+
+    await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^move my call/i }));
+
+    expect(await screen.findByText("That time was just taken. Please pick another.")).toBeTruthy();
+    // Not stuck on the refusal screen, and not falsely confirmed.
+    expect(screen.queryByText("You already have a call booked")).toBeNull();
+    expect(screen.queryByText("You're all set")).toBeNull();
+    expect(await dayChip()).toBeTruthy();
+  });
+
+  // #1340: a weak one-signal match may be a housemate, so the call is declined
+  // but nothing about it is shown and there is nothing to move from here.
+  it("shows no time, no advisor and no Move on a match too weak to disclose", async () => {
+    global.fetch = declineWith({ disclose: false });
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText("You already have a call booked")).toBeTruthy();
+    expect(screen.getByText(/confirmation email/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^move my call/i })).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
   });
 });
 
