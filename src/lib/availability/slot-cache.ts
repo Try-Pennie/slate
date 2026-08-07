@@ -123,7 +123,9 @@ export async function recomputeBucketSlotsForToday(
   const { fromIso, toIso } = slotCacheKey(code, nowIso, horizon);
   // L1 key on the fixed namespace so read/invalidate always agree.
   const { key } = slotCacheKey(code, nowIso, HORIZON_DAYS);
-  await recomputeBucketSlots(code, fromIso, toIso, resolveEligible);
+  // The horizon is a count of BOOKABLE days (#1326), so it is passed through as the
+  // trim target rather than being implied by the window, which is deliberately wider.
+  await recomputeBucketSlots(code, fromIso, toIso, resolveEligible, horizon);
   const cache = slotCache();
   if (cache) {
     try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }

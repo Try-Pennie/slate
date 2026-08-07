@@ -3,6 +3,8 @@ import { unwrap } from "@/lib/db/result";
 import { parseStampMs } from "@/lib/date/stamp";
 import { getBucketSlots, type BucketSlots, type EligibleResolver } from "./service";
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
+import { trimToBookableDays } from "./bookable-days";
+import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import type { Attributes, Criteria } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
@@ -198,10 +200,25 @@ export async function recomputeBucketSlots(
   fromIso: string,
   toIso: string,
   resolveEligible?: EligibleResolver,
+  bookableDays?: number,
 ): Promise<BucketSlots | null> {
   let fresh: BucketSlots | null = null;
   try {
     fresh = await getBucketSlots(code, fromIso, toIso, resolveEligible);
+    // #1326: [fromIso, toIso) is a SEARCH window, deliberately wider than the number
+    // of days we intend to offer, so a closed day inside it cannot eat one of them.
+    // Trim to the first `bookableDays` days that actually produced times before the
+    // row is stored, so what is persisted is exactly what a lead is offered.
+    //
+    // Trimmed at COMPUTE time rather than on read, so the read path stays free of a
+    // settings lookup. A horizon change therefore lands on the next recompute, which
+    // is already how it works: the admin save marks every bucket stale.
+    if (fresh && bookableDays !== undefined) {
+      fresh = {
+        ...fresh,
+        slots: trimToBookableDays(fresh.slots, BUSINESS_ZONE, bookableDays),
+      };
+    }
   } catch (err) {
     // A failed availability read (#277) must NOT write an empty slot row — that
     // is the silent "no availability" degrade. Skip the write so the prior row

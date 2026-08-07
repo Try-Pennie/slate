@@ -504,16 +504,18 @@ export default async function MonitorSettingsPage({
         )}
 
         <section className={cardCls}>
-          <h2 className="mb-1 text-sm font-semibold">Booking horizon</h2>
-          <p className="mb-4 text-xs text-fg-muted">
-            How many days ahead a lead can book. Applies to every bucket. Leave blank
-            to use the default ({HORIZON_DEFAULT} days). A change refreshes availability
-            across all buckets within a minute or two.
+          <h2 className="mb-1 text-sm font-semibold">Days offered</h2>
+          <p className="mb-4 max-w-prose text-xs text-fg-muted">
+            How many days a lead is offered to choose from. Counted in days that
+            actually have times, so a closed day does not use one up: with Sundays
+            closed, four days can reach into the following week. Applies to every
+            bucket. Leave blank to use the default ({HORIZON_DEFAULT}). A change
+            refreshes availability across all buckets within a minute or two.
           </p>
           <form action={setBookingHorizon} className="space-y-4">
             <div>
               <label className={labelCls} htmlFor="horizon_days">
-                Days ahead ({HORIZON_MIN} to {HORIZON_MAX})
+                Days offered ({HORIZON_MIN} to {HORIZON_MAX})
               </label>
               <input
                 type="number"
