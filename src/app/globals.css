@@ -398,6 +398,32 @@ html {
   animation: pn-loadbar-slide 1.1s ease-in-out infinite;
 }
 
+/* ---------------- Bobbing dots: the slot picker's working signal ----------------
+   Three dots travelling in sequence while availability loads (#1336). They
+   replaced a pulse on the placeholder chips: a pulse fades in and out, so a
+   glance away can land on the dim half and read as nothing happening, while
+   dots that bob read as working even out of the corner of an eye.
+
+   POSITION ONLY, never opacity. Fading them as they bob would reintroduce the
+   exact problem the pulse had. transform also keeps the embed's ResizeObserver
+   (which posts scrollHeight) from seeing a height change and jittering the
+   iframe. Staggered ~0.12s apart over a 1s cycle so they travel in sequence
+   rather than together. The reduced-motion guard below stops them, and the line
+   of text beside them carries the message on its own. */
+@keyframes pn-bob {
+  0%, 70%, 100% { transform: translateY(0); }
+  35% { transform: translateY(-6px); }
+}
+.pn-bob {
+  animation: pn-bob 1s ease-in-out infinite;
+}
+.pn-bob:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.pn-bob:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
 /* ---------------- Reduced-motion guard (S9) ----------------
    After the base/.pn-* styles so it wins the cascade. */
 @media (prefers-reduced-motion: reduce) {

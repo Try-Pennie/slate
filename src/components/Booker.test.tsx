@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
 
@@ -30,7 +30,18 @@ const baseProps = {
   horizonDays: 4,
 };
 
+/** The strip's day chips read "TODAY 13 AUG" / "FRI 14 AUG": digits, but never a
+ *  clock face, so the /:\d{2}/ query below still matches only times. */
+const dayChip = () => screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
+
+/** #1336: no time renders until a day is chosen, on every surface. Every flow
+ *  that reaches a time therefore goes through the strip first. */
+async function pickFirstDay() {
+  await userEvent.click(await dayChip());
+}
+
 async function fillAndConfirm() {
+  await pickFirstDay();
   const slot = await screen.findByRole("button", { name: /:\d{2}/ });
   await userEvent.click(slot);
   await userEvent.type(screen.getByLabelText("Name"), "Dana Lead");
@@ -114,6 +125,7 @@ describe("Booker confirm", () => {
     render(<Booker {...baseProps} />);
     await act(async () => {}); // settle the availability load
 
+    fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
     fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dana Lead" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "dana@example.com" } });
@@ -286,9 +298,10 @@ describe("Booker confirm", () => {
     }) as unknown as typeof fetch;
 
     render(<Booker {...baseProps} />);
-    await screen.findByRole("button", { name: /:\d{2}/ });
-    const status = screen.getByRole("status");
-    expect(status.textContent).toMatch(/1 time available/i);
+    // Before a day is chosen the region asks for one; after, it names the count.
+    expect((await screen.findByRole("status")).textContent).toMatch(/pick a day/i);
+    await pickFirstDay();
+    expect(screen.getByRole("status").textContent).toMatch(/1 time available on/i);
   });
 
   // #632: the attendee step used sr-only labels + a placeholder as the only
@@ -303,6 +316,7 @@ describe("Booker confirm", () => {
     }) as unknown as typeof fetch;
 
     render(<Booker {...baseProps} />);
+    await pickFirstDay();
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
     for (const fieldName of ["Name", "Email", "Phone"]) {
@@ -314,6 +328,54 @@ describe("Booker confirm", () => {
       // The placeholder is no longer the sole (or a redundant) label.
       expect(input.getAttribute("placeholder")).toBeNull();
     }
+  });
+});
+
+// #1336: the rule the shared picker exists to hold. The booker used to derive
+// its active day from the first available one, so a lead landed on a list of
+// bare clock faces with a day already chosen for them. A time carries no date,
+// so that let someone pick 10:00 on a day they never looked at. These two are
+// the regression guards, one per layout, since each has its own day control.
+describe("Booker offers no time until a day is chosen (#1336)", () => {
+  const okFetch = () =>
+    vi.fn(async () => ({ ok: true, json: async () => availability })) as unknown as typeof fetch;
+
+  it("asks for a day, and renders no time, on the day-strip layout", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} />);
+
+    // The strip has arrived, so the load is settled: this is not a loading state.
+    await dayChip();
+    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
+    expect(
+      screen.getAllByText("Pick a day above to see the times available.").length,
+    ).toBeGreaterThan(0);
+
+    await pickFirstDay();
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
+  });
+
+  it("asks for a day, and renders no time, on the month-calendar layout", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} layout="month" />);
+
+    const day = new Date(slotIso);
+    const label = new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(day);
+    // Wait for the date to become PRESSABLE, not merely present: the calendar
+    // draws every date of the month either way, so waiting on the label alone
+    // would assert against a still-loading panel and could never go red.
+    await waitFor(() =>
+      expect(screen.getByLabelText(label).getAttribute("aria-disabled")).toBeNull(),
+    );
+    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
+
+    await userEvent.click(screen.getByLabelText(label));
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
   });
 });
 
@@ -346,10 +408,13 @@ describe("Booker availability race on month change (#629)", () => {
 
     render(<Booker {...baseProps} layout="month" />);
 
-    // Settle the initial Jan load → two Jan slots on screen.
+    // Settle the initial Jan load, then choose the Jan day: two Jan slots.
     await act(async () => {
       pending[0]!.settle();
       await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Friday, January 30, 2026"));
     });
     expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
 
@@ -373,7 +438,12 @@ describe("Booker availability race on month change (#629)", () => {
       await Promise.resolve();
     });
 
-    // Still the Jan month the user landed on: two slots, not Feb's single slot.
+    // Still the Jan month the user landed on. Paging cleared the chosen day, so
+    // choose it again: had the stale Feb response won, Jan 30 would be unbookable
+    // and this click would offer nothing.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Friday, January 30, 2026"));
+    });
     expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
     vi.useRealTimers();
   });
@@ -396,7 +466,7 @@ describe("Booker embed postMessage origin (#593)", () => {
 
     render(<Booker {...baseProps} embedded parentOrigin="https://host.test" />);
     // Let the availability load + resize effect run.
-    await screen.findByRole("button", { name: /:\d{2}/ });
+    await dayChip();
 
     const resizes = postSpy.mock.calls.filter(
       (c) => (c[0] as { type?: string })?.type === "slate:resize",
@@ -463,14 +533,18 @@ describe("Booker availability states (#215)", () => {
 
     // The failed load surfaces the retry affordance, not a slot list or a
     // permanent empty message.
-    expect(await screen.findByText(/couldn.t load available times/i)).toBeTruthy();
+    // #1336 copy: two sentences, each on its own line, so match the first alone.
+    expect(await screen.findByText("Could not load available times.")).toBeTruthy();
+    expect(screen.getByText("Check your connection.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /:\d{2}/ })).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
 
-    // The retry refetches, so the real slot appears and the error clears.
+    // The retry refetches, so the days come back and the error clears.
+    expect(await dayChip()).toBeTruthy();
+    expect(screen.queryByText("Could not load available times.")).toBeNull();
+    await pickFirstDay();
     expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
-    expect(screen.queryByText(/couldn.t load available times/i)).toBeNull();
   });
 
   it("shows the empty-month message and disables paging past an empty future month (canNext cap)", async () => {
@@ -494,7 +568,7 @@ describe("Booker availability states (#215)", () => {
     render(<Booker {...baseProps} layout="month" />);
 
     // January loaded with a slot, so paging forward is allowed.
-    await screen.findByRole("button", { name: /:\d{2}/ });
+    await screen.findByLabelText("Friday, January 16, 2026");
     const nextInJan = screen.getByRole("button", { name: /next month/i }) as HTMLButtonElement;
     expect(nextInJan.disabled).toBe(false);
 
