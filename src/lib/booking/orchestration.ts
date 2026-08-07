@@ -36,6 +36,7 @@ import {
   decidePersonBooking,
   bookingBelongsToPerson,
   type PersonIdentity,
+  type MatchStrength,
 } from "./person-dedupe.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
@@ -1476,19 +1477,45 @@ function manageUrl(deps: Pick<BookingDeps, "appBaseUrl">, token: string): string
   return `${deps.appBaseUrl()}/booking/manage/${token}`;
 }
 
-export interface DuplicateWarning {
-  /** Start of the lead's OTHER active booking (ISO instant). */
-  startsAt: string;
-  /** Manage link for that booking, so they can view or cancel it. */
-  manageUrl: string;
-}
+/**
+ * The lead's OTHER active booking, as much of it as we may show them.
+ *
+ * #1340: the match answers two questions that must be graded differently.
+ * "Is this likely the same person, so don't double-book them" stays LOOSE: a
+ * weak, one-signal match still counts, so the dedupe / refusal path is
+ * unchanged. "May we show this person that booking and hand over its manage
+ * token" is STRICT, because the manage token is the ONLY thing protecting that
+ * booking and it can reschedule or cancel it. A shared household phone or a
+ * couple on one email address grades `weak` (findPersonMatch), so a weak match
+ * gets `disclose: false` and carries no start time and no link.
+ */
+export type DuplicateWarning =
+  | {
+      /** Identity is solid enough (strong / medium) to name the booking. */
+      disclose: true;
+      /** Start of the lead's OTHER active booking (ISO instant). */
+      startsAt: string;
+      /** Manage link for that booking, so they can view or cancel it. */
+      manageUrl: string;
+    }
+  | {
+      /** Same person by ONE signal only. Reveals nothing about the booking. */
+      disclose: false;
+    };
+
+/** Match strengths that may be shown the matched booking's details + token. */
+const DISCLOSABLE_MATCH: ReadonlySet<MatchStrength> = new Set<MatchStrength>([
+  "strong",
+  "medium",
+]);
 
 /**
  * After a booking succeeds, find the lead's OTHER active booking so the
  * confirmation screen can warn them (#626). Guards the case a timed-out confirm
  * that silently succeeded then got rebooked at a new time. Reuses the same
  * identity grading (findPersonMatch) and candidate lookup as the dedupe path;
- * this wrapper only drops the just-created row and maps the match to a link.
+ * this wrapper only drops the just-created row and decides how much of the
+ * match may be disclosed (#1340).
  */
 export async function findDuplicateWarning(
   input: {
@@ -1509,7 +1536,9 @@ export async function findDuplicateWarning(
   ).filter((b) => b.id !== input.excludeBookingId);
   const match = findPersonMatch(identity, candidates);
   if (!match) return null;
+  if (!DISCLOSABLE_MATCH.has(match.strength)) return { disclose: false };
   return {
+    disclose: true,
     startsAt: match.booking.starts_at,
     manageUrl: manageUrl(deps, match.booking.manage_token),
   };

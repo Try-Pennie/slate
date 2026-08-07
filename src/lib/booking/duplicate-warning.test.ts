@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { findDuplicateWarning } from "./orchestration";
 import type { BookingDeps } from "./orchestration";
+import { findPersonMatch } from "./person-dedupe";
 import type { Booking } from "@/lib/db/types";
 
 // #626: after a booking succeeds, warn the lead on the confirmation screen if
@@ -9,6 +10,14 @@ import type { Booking } from "@/lib/db/types";
 // time). Reuses findPersonMatch (same identity grading as the dedupe path) and
 // findActiveBookingsForPerson; this wrapper only excludes the just-created row
 // and maps the match to a manage link.
+//
+// #1340 splits the two questions the match used to answer at once. "Is this
+// likely the same person, so don't double-book them" stays LOOSE (a weak,
+// one-signal match still counts). "May we show this person that booking and
+// hand over its manage token" is now STRICT: medium (email AND phone) or strong
+// (salesforce / external id) only. A shared household phone or a couple on one
+// email is a weak match, and the manage token is the only thing protecting that
+// booking, so a weak match discloses nothing and offers no link.
 
 const booking = (over: Partial<Booking>): Booking =>
   ({
@@ -40,22 +49,6 @@ const input = {
 };
 
 describe("findDuplicateWarning", () => {
-  it("returns the other active booking's time + manage url when the lead already has one", async () => {
-    const other = booking({
-      id: "b-old",
-      starts_at: "2026-07-09T18:00:00.000Z",
-      manage_token: "tok-old",
-    });
-    const deps = makeDeps([booking({ id: "b-new" }), other]);
-
-    const warning = await findDuplicateWarning(input, deps as BookingDeps);
-
-    expect(warning).toEqual({
-      startsAt: "2026-07-09T18:00:00.000Z",
-      manageUrl: "https://slate.test/booking/manage/tok-old",
-    });
-  });
-
   it("returns null when the only active booking is the just-created one", async () => {
     const deps = makeDeps([booking({ id: "b-new" })]);
     const warning = await findDuplicateWarning(input, deps as BookingDeps);
@@ -70,5 +63,126 @@ describe("findDuplicateWarning", () => {
     const deps = makeDeps([booking({ id: "b-new" }), stranger]);
     const warning = await findDuplicateWarning(input, deps as BookingDeps);
     expect(warning).toBeNull();
+  });
+
+  describe("a strong or medium match may be disclosed", () => {
+    it("discloses the time + manage url on a salesforce id match (strong)", async () => {
+      const other = booking({
+        id: "b-old",
+        salesforce_id: "sf-1",
+        attendee_email: "housemate@example.com",
+        starts_at: "2026-07-09T18:00:00.000Z",
+        manage_token: "tok-old",
+      });
+      const deps = makeDeps([booking({ id: "b-new" }), other]);
+
+      const warning = await findDuplicateWarning(
+        { ...input, salesforceId: "sf-1", attendee: { email: undefined, phone: undefined } },
+        deps as BookingDeps,
+      );
+
+      expect(warning).toEqual({
+        disclose: true,
+        startsAt: "2026-07-09T18:00:00.000Z",
+        manageUrl: "https://slate.test/booking/manage/tok-old",
+      });
+    });
+
+    it("discloses the time + manage url when BOTH email and phone match (medium)", async () => {
+      const other = booking({
+        id: "b-old",
+        attendee_email: "lead@example.com",
+        attendee_phone: "+12155550100",
+        starts_at: "2026-07-09T18:00:00.000Z",
+        manage_token: "tok-old",
+      });
+      const deps = makeDeps([booking({ id: "b-new" }), other]);
+
+      const warning = await findDuplicateWarning(
+        {
+          ...input,
+          attendee: { email: "lead@example.com", phone: "(215) 555-0100" },
+        },
+        deps as BookingDeps,
+      );
+
+      expect(warning).toEqual({
+        disclose: true,
+        startsAt: "2026-07-09T18:00:00.000Z",
+        manageUrl: "https://slate.test/booking/manage/tok-old",
+      });
+    });
+  });
+
+  describe("a weak match discloses nothing (#1340)", () => {
+    it("returns no start time and no manage url on a phone-only match", async () => {
+      // A shared household phone: the other booking belongs to someone else.
+      const other = booking({
+        id: "b-old",
+        attendee_email: "housemate@example.com",
+        attendee_phone: "+12155550100",
+        starts_at: "2026-07-09T18:00:00.000Z",
+        manage_token: "tok-old",
+      });
+      const deps = makeDeps([booking({ id: "b-new" }), other]);
+
+      const warning = await findDuplicateWarning(
+        {
+          ...input,
+          attendee: { email: "lead@example.com", phone: "(215) 555-0100" },
+        },
+        deps as BookingDeps,
+      );
+
+      expect(warning).toEqual({ disclose: false });
+      expect(JSON.stringify(warning)).not.toContain("tok-old");
+      expect(JSON.stringify(warning)).not.toContain("2026-07-09");
+    });
+
+    it("returns no start time and no manage url on an email-only match", async () => {
+      // A couple sharing one email address.
+      const other = booking({
+        id: "b-old",
+        attendee_email: "lead@example.com",
+        attendee_phone: "+12155559999",
+        starts_at: "2026-07-09T18:00:00.000Z",
+        manage_token: "tok-old",
+      });
+      const deps = makeDeps([booking({ id: "b-new" }), other]);
+
+      const warning = await findDuplicateWarning(
+        {
+          ...input,
+          attendee: { email: "lead@example.com", phone: "(215) 555-0100" },
+        },
+        deps as BookingDeps,
+      );
+
+      expect(warning).toEqual({ disclose: false });
+      expect(JSON.stringify(warning)).not.toContain("tok-old");
+      expect(JSON.stringify(warning)).not.toContain("2026-07-09");
+    });
+  });
+
+  // The privacy fix must not quietly undo the dedupe: the SAME weak match that
+  // is refused disclosure above must still be recognised as the same person, or
+  // #1337's refusal of a second booking silently stops firing.
+  it("still recognises a phone-only match as the same person, so dedupe is unaffected", () => {
+    const other = booking({
+      id: "b-old",
+      attendee_email: "housemate@example.com",
+      attendee_phone: "+12155550100",
+    });
+    const match = findPersonMatch(
+      {
+        externalId: null,
+        salesforceId: null,
+        email: "lead@example.com",
+        phone: "(215) 555-0100",
+      },
+      [other],
+    );
+    expect(match?.strength).toBe("weak");
+    expect(match?.booking.id).toBe("b-old");
   });
 });

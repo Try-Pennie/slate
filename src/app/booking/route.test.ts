@@ -12,8 +12,14 @@ const service = vi.hoisted(() => {
   class NoEligibleAgentsError extends Error {}
   return {
     createBooking: vi.fn(),
+    // Mirrors DuplicateWarning in src/lib/booking/orchestration.ts: a weak
+    // one-signal identity match arrives as the bare `disclose: false` (#1340).
     findDuplicateBookingWarning: vi.fn(
-      async (): Promise<{ startsAt: string; manageUrl: string } | null> => null,
+      async (): Promise<
+        | { disclose: true; startsAt: string; manageUrl: string }
+        | { disclose: false }
+        | null
+      > => null,
     ),
     SlotUnavailableError,
     VerifyUnavailableError,
@@ -238,6 +244,7 @@ describe("POST /booking (embed) error mapping", () => {
       manageUrl: "https://slate.test/booking/manage/tok",
     });
     service.findDuplicateBookingWarning.mockResolvedValue({
+      disclose: true,
       startsAt: "2026-07-02T18:00:00.000Z",
       manageUrl: "https://slate.test/booking/manage/tok-old",
     });
@@ -246,6 +253,7 @@ describe("POST /booking (embed) error mapping", () => {
     expect(await res.json()).toMatchObject({
       id: "bk-2",
       duplicateWarning: {
+        disclose: true,
         startsAt: "2026-07-02T18:00:00.000Z",
         manageUrl: "https://slate.test/booking/manage/tok-old",
       },
@@ -254,5 +262,22 @@ describe("POST /booking (embed) error mapping", () => {
     expect(service.findDuplicateBookingWarning).toHaveBeenCalledWith(
       expect.objectContaining({ excludeBookingId: "bk-2" }),
     );
+  });
+
+  // #1340: the route is the wire between the strict disclosure decision and the
+  // booker. A withheld match must reach the client as the bare refusal, with no
+  // start time and no manage url reconstructed anywhere along the way.
+  it("passes a withheld match through carrying no booking details (#1340)", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-3", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok-new",
+    });
+    service.findDuplicateBookingWarning.mockResolvedValue({ disclose: false });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.duplicateWarning).toEqual({ disclose: false });
+    // The only manage url in the response is the lead's own new booking.
+    expect(JSON.stringify(body)).not.toContain("tok-old");
   });
 });

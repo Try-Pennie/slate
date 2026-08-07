@@ -144,6 +144,7 @@ describe("Booker confirm", () => {
         json: async () => ({
           startsAt: slotIso,
           duplicateWarning: {
+            disclose: true,
             startsAt: otherIso,
             manageUrl: "https://slate.test/booking/manage/tok-old",
           },
@@ -158,6 +159,45 @@ describe("Booker confirm", () => {
     expect(screen.getByText(/already have (a|another) call booked/i)).toBeTruthy();
     const link = screen.getByRole("link", { name: /view or cancel/i }) as HTMLAnchorElement;
     expect(link.href).toBe("https://slate.test/booking/manage/tok-old");
+  });
+
+  // #1340: a weak (one-signal) identity match may be a housemate on a shared
+  // phone or a couple on one email. The lead is still told they have another
+  // call, so a genuine duplicate is not hidden, but NOTHING about that booking
+  // reaches the screen: no time, and above all no manage link, since the manage
+  // token can reschedule or cancel it.
+  it("names no time and offers no manage link when the match is too weak to disclose (#1340)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          startsAt: slotIso,
+          manageUrl: "https://slate.test/booking/manage/tok-new",
+          duplicateWarning: { disclose: false },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText("You're all set")).toBeTruthy();
+    // The heads-up itself still shows.
+    expect(screen.getByText(/already have another call booked/i)).toBeTruthy();
+    // But it points at the email they already hold, not at the other booking.
+    expect(screen.getByText(/confirmation email/i)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /view or cancel/i })).toBeNull();
+    // No link anywhere on the screen points at another booking's manage token.
+    const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
+    expect(hrefs.filter((h) => h?.includes("/booking/manage/"))).toEqual([
+      // Only the lead's OWN new booking may be linked.
+      "https://slate.test/booking/manage/tok-new",
+    ]);
+    expect(screen.queryByText(/It.s set for/i)).toBeNull();
   });
 
   // #637: the embed is the primary lead surface, but its confirmation used to
