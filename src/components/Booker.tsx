@@ -29,11 +29,18 @@ interface Attendee {
 }
 
 /** The lead's OTHER active booking, surfaced by /booking so the confirmation
- *  screen can offer to view or cancel it (#626). */
-interface DuplicateWarning {
-  startsAt: string;
-  manageUrl: string;
-}
+ *  screen can offer to view or cancel it (#626).
+ *
+ *  #1340: only a strong (salesforce / external id) or medium (email AND phone)
+ *  identity match carries the booking's details. A weak one-signal match (a
+ *  shared household phone, a couple on one email) arrives as `disclose: false`
+ *  and carries nothing, because that booking may belong to someone else and its
+ *  manage token can reschedule or cancel it. Mirrors `DuplicateWarning` in
+ *  `src/lib/booking/orchestration.ts`; the union is what stops a surface
+ *  rendering a start time the server deliberately withheld. */
+type DuplicateWarning =
+  | { disclose: true; startsAt: string; manageUrl: string }
+  | { disclose: false };
 
 interface BookerProps {
   bucketCode: string;
@@ -526,23 +533,37 @@ export default function Booker({
               <p className={`text-sm font-semibold ${c.title}`}>
                 Heads up: you already have another call booked
               </p>
-              <p className={`mt-1 text-sm ${c.muted}`}>
-                It&apos;s set for{" "}
-                <span className="tabular-nums">
-                  {DateTime.fromISO(confirmed.duplicateWarning.startsAt)
-                    .setZone(zone)
-                    .toFormat("cccc, LLL d")}{" "}
-                  at {fmtTime(confirmed.duplicateWarning.startsAt)}
-                </span>
-                . If you only need one, you can view or cancel it.
-              </p>
-              <a
-                href={confirmed.duplicateWarning.manageUrl}
-                className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-              >
-                View or cancel that booking
-                <span aria-hidden="true">→</span>
-              </a>
+              {confirmed.duplicateWarning.disclose ? (
+                <>
+                  <p className={`mt-1 text-sm ${c.muted}`}>
+                    It&apos;s set for{" "}
+                    <span className="tabular-nums">
+                      {DateTime.fromISO(confirmed.duplicateWarning.startsAt)
+                        .setZone(zone)
+                        .toFormat("cccc, LLL d")}{" "}
+                      at {fmtTime(confirmed.duplicateWarning.startsAt)}
+                    </span>
+                    . If you only need one, you can view or cancel it.
+                  </p>
+                  <a
+                    href={confirmed.duplicateWarning.manageUrl}
+                    className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    View or cancel that booking
+                    <span aria-hidden="true">→</span>
+                  </a>
+                </>
+              ) : (
+                /* #1340: the match was one signal only (a shared phone or a
+                   shared email), so that booking may belong to someone else.
+                   Its time and its manage link are withheld: the token is the
+                   only thing protecting it. The lead is pointed at the
+                   confirmation email they already hold instead. */
+                <p className={`mt-1 text-sm ${c.muted}`}>
+                  Check the confirmation email we sent you if you need to view or
+                  change it.
+                </p>
+              )}
             </div>
           )}
         </div>
