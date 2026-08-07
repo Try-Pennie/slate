@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   createBooking,
   findDuplicateBookingWarning,
+  ExistingCallError,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -127,6 +128,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const { booking, manageUrl } = await createBooking({
+      // One call per person, enforced here and only here (#1337): the direct
+      // booking API owns its own richer decision and must keep creating on a
+      // cross-bucket rebook (#364).
+      refuseIfPersonHasCall: true,
       bucketCode: parsed.data.bucketCode,
       startIso: parsed.data.start,
       timezone: parsed.data.timezone,
@@ -138,9 +143,11 @@ export async function POST(req: NextRequest) {
       },
       prefill: parsed.data.prefill,
     });
-    // A successful confirm that timed out client-side then got rebooked at a new
-    // time leaves the lead with two active calls (#626). Surface their other
-    // active booking so the confirmation screen can offer to view/cancel it.
+    // Backstop, not the ordinary path (#1337): a second booking is normally
+    // DECLINED above before anything is created. This still fires for the window
+    // refusal cannot cover, namely a failed existing-call lookup (which books
+    // rather than refusing) and two simultaneous confirms that both pass the
+    // check. When a duplicate does reach here, the lead is told about it (#626).
     const duplicateWarning = await findDuplicateBookingWarning({
       excludeBookingId: booking.id,
       salesforceId: parsed.data.salesforceId ?? null,
@@ -158,6 +165,13 @@ export async function POST(req: NextRequest) {
       duplicateWarning,
     });
   } catch (err) {
+    // The lead already has an active call, so nothing was created (#1337). Refund
+    // the rate-limit hit: being declined is not an attempt they should pay for,
+    // and the Move they are about to make is a separate request.
+    if (err instanceof ExistingCallError) {
+      await refundAll();
+      return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
+    }
     // Couldn't verify any candidate (likely a Google/DB outage), not a full
     // slot — tell the lead it's temporary and let them retry (#319). Refund the
     // rate-limit hit: a server-side outage must not burn their booking budget.

@@ -130,6 +130,13 @@ export interface FakeOpts {
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
+  /** findActiveBookingsForPerson throws (#1337 fails open, loudly). */
+  personBookingsThrows?: boolean;
+  /** loadAgentDisplayName result, keyed by user id (#1337 / #1338). Absent id
+   *  resolves to null, which is how an unresolvable advisor must present. */
+  agentNames?: Record<string, string>;
+  /** loadAgentDisplayName throws (must degrade to no name, never a placeholder). */
+  agentNameThrows?: boolean;
   unknownBucket?: boolean; // resolveBucketByCode returns null (#358)
   testBucket?: boolean; // resolveBucketByCode returns an is_test bucket (#396)
   listResult?: { rows: Booking[]; buckets: Bucket[] }; // queryBookings result (#392)
@@ -663,7 +670,14 @@ export function makeDeps(opts: FakeOpts) {
       calls.reservationBumps.push({ id, attempts, lastError });
     },
     deleteExpiredReservations: async () => {},
-    findActiveBookingsForPerson: async () => opts.personBookings ?? [],
+    findActiveBookingsForPerson: async () => {
+      if (opts.personBookingsThrows) throw new Error("bookings read down");
+      return opts.personBookings ?? [];
+    },
+    loadAgentDisplayName: async (userId: string | null) => {
+      if (opts.agentNameThrows) throw new Error("users read down");
+      return (userId && opts.agentNames?.[userId]) || null;
+    },
     queryBookings: async (filter) => {
       calls.queryBookings.push(filter);
       return opts.listResult ?? { rows: [], buckets: [] };

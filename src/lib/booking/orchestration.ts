@@ -36,6 +36,7 @@ import {
   decidePersonBooking,
   bookingBelongsToPerson,
   type PersonIdentity,
+  type PersonMatch,
   type MatchStrength,
 } from "./person-dedupe.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
@@ -247,6 +248,51 @@ export class UnknownBucketError extends Error {
   }
 }
 
+/**
+ * The call this person already has, as much of it as they may be shown.
+ *
+ * Disclosure is graded exactly as the confirmation-screen warning is (#1340):
+ * only a strong (salesforce / external id) or medium (email AND phone) match
+ * carries the booking's details and its manage token. A weak one-signal match
+ * (a shared household phone, a couple on one email) carries nothing, because
+ * that call may belong to somebody else and the token can reschedule or cancel
+ * it. The refusal itself is deliberately looser than the disclosure: ANY of the
+ * three signals is enough to decline a second booking (Dan, 2026-08-07).
+ */
+export type ExistingCall =
+  | {
+      disclose: true;
+      /** Start of the call they already have (ISO instant). */
+      startsAt: string;
+      /** The advisor it is with, or null when it cannot be resolved. NEVER a
+       *  placeholder: naming the wrong person is worse than naming nobody
+       *  (L75), and the assignee is read live because coverage reassignment and
+       *  bulk reassign both move a booking to a different agent. */
+      advisorName: string | null;
+      /** Lets the lead move THIS call into the slot they just picked. */
+      manageToken: string;
+    }
+  | { disclose: false };
+
+/**
+ * Thrown instead of creating a second booking for someone who already has an
+ * active call (#1337). Nothing is created: the lead is shown the call they have
+ * and offered the choice of moving it into the slot they just picked.
+ *
+ * Only the public booker opts in (`refuseIfPersonHasCall`). The direct booking
+ * API keeps its own richer decision (`bookViaApi` / `decidePersonBooking`), which
+ * deliberately DOES create when a cross-bucket rebook must land in a new bucket
+ * before the old one is cancelled (#364).
+ */
+export class ExistingCallError extends Error {
+  readonly existingCall: ExistingCall;
+  constructor(existingCall: ExistingCall) {
+    super("This person already has an active call booked.");
+    this.name = "ExistingCallError";
+    this.existingCall = existingCall;
+  }
+}
+
 /** Thrown when a lookup/cancel can't resolve an owned booking by id (#386). */
 export class BookingNotFoundError extends Error {
   constructor() {
@@ -334,6 +380,14 @@ export interface CreateBookingInput {
    *  booking API sets this; the public /booking path leaves it falsy, so real
    *  leads can never book a test bucket. */
   allowTestBuckets?: boolean;
+  /**
+   * Refuse, rather than create, when this person already has an active call
+   * (#1337). Set ONLY by the public booker: the direct booking API owns its own
+   * decision (`decidePersonBooking`), which deliberately creates in a new bucket
+   * before cancelling the old one on a cross-bucket rebook (#364), and would
+   * break if the create underneath it started declining.
+   */
+  refuseIfPersonHasCall?: boolean;
 }
 
 export interface BookingResult {
@@ -761,6 +815,14 @@ export interface BookingDeps {
    * rows; `findPersonMatch` then grades each candidate's confidence.
    */
   findActiveBookingsForPerson(identity: PersonIdentity): Promise<Booking[]>;
+  /**
+   * The display name of the agent a booking is assigned to, read LIVE (#1337,
+   * #1338). Null when the id is null or resolves to nothing, so a caller shows
+   * no name rather than a stale or borrowed one: coverage reassignment and bulk
+   * reassign both move a booking to a different agent, so a name captured at
+   * booking time would promise a lead one person and send another (L75).
+   */
+  loadAgentDisplayName(userId: string | null): Promise<string | null>;
   /** #392 list: filtered, ordered, offset-paginated booking page + the buckets
    *  referenced by that page (for bucketCode), resolved in one .in() query. */
   queryBookings(filter: ListFilter): Promise<{ rows: Booking[]; buckets: Bucket[] }>;
@@ -1511,11 +1573,18 @@ const DISCLOSABLE_MATCH: ReadonlySet<MatchStrength> = new Set<MatchStrength>([
 
 /**
  * After a booking succeeds, find the lead's OTHER active booking so the
- * confirmation screen can warn them (#626). Guards the case a timed-out confirm
- * that silently succeeded then got rebooked at a new time. Reuses the same
- * identity grading (findPersonMatch) and candidate lookup as the dedupe path;
- * this wrapper only drops the just-created row and decides how much of the
- * match may be disclosed (#1340).
+ * confirmation screen can warn them (#626).
+ *
+ * Since #1337 the public booker DECLINES a second booking before creating it, so
+ * this is no longer the ordinary path: it is the BACKSTOP for the window that
+ * refusal cannot cover. `findExistingCall` fails open on a lookup error (refusing
+ * a booking because a read hiccuped would cost the lead their call), and two
+ * simultaneous confirms can both pass the check, so a duplicate can still reach
+ * the confirmation screen. When it does, the lead is told.
+ *
+ * Reuses the same identity grading (findPersonMatch) and candidate lookup as the
+ * dedupe path; this wrapper only drops the just-created row and decides how much
+ * of the match may be disclosed (#1340).
  */
 export async function findDuplicateWarning(
   input: {
@@ -1552,6 +1621,52 @@ const COMPLETION_WEBHOOK_CONCURRENCY = 6;
  *  per-row create/webhook calls under the same subrequest ceiling. */
 const RESERVATION_DRAIN_CONCURRENCY = 6;
 
+/**
+ * The active call this person already has, or null to go ahead and book.
+ *
+ * Fails OPEN, loudly. If the lookup itself errors we create the booking and log
+ * it: a swallowed failure that lets a duplicate through costs an advisor one
+ * reconciliation, while refusing on a database hiccup costs the lead their call
+ * entirely and looks to them like the product is broken. `findDuplicateWarning`
+ * on the confirmation screen is the backstop for exactly this window, which is
+ * why it survives the move to refuse-before-create.
+ */
+async function findExistingCall(
+  input: CreateBookingInput,
+  deps: BookingDeps,
+): Promise<ExistingCall | null> {
+  const identity: PersonIdentity = {
+    externalId: input.externalId ?? null,
+    salesforceId: input.salesforceId ?? null,
+    email: input.attendee.email ?? null,
+    phone: input.attendee.phone ?? null,
+  };
+  let match: PersonMatch | null;
+  try {
+    match = findPersonMatch(identity, await deps.findActiveBookingsForPerson(identity));
+  } catch (err) {
+    // Loud, not silent: the duplicate that slips through is visible in the logs
+    // and the confirmation screen still warns the lead about it.
+    log.error(
+      "booking",
+      { msg: "existing-call check failed; booking anyway" },
+      err,
+    );
+    return null;
+  }
+  if (!match) return null;
+  if (!DISCLOSABLE_MATCH.has(match.strength)) return { disclose: false };
+  return {
+    disclose: true,
+    startsAt: match.booking.starts_at,
+    // Read live, and left null rather than guessed when unresolvable.
+    advisorName: await deps
+      .loadAgentDisplayName(match.booking.assigned_user_id ?? null)
+      .catch(() => null),
+    manageToken: match.booking.manage_token,
+  };
+}
+
 export async function createBooking(
   input: CreateBookingInput,
   deps: BookingDeps,
@@ -1578,6 +1693,15 @@ export async function createBooking(
     if (existing) {
       return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
     }
+  }
+
+  // One call per person, ENFORCED (#1337), not reported after the fact. Runs
+  // AFTER the idempotency fast path above on purpose: a double-click's second
+  // request would otherwise find the booking its own first request just made and
+  // decline it, turning a successful confirm into "you already have a call".
+  if (input.refuseIfPersonHasCall) {
+    const existingCall = await findExistingCall(input, deps);
+    if (existingCall) throw new ExistingCallError(existingCall);
   }
 
   const resolved = await deps.resolveBucketByCode(input.bucketCode);

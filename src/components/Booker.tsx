@@ -23,6 +23,8 @@ import {
   humanizeZone,
 } from "@/lib/booking/timezones";
 import { embedParentOrigin } from "@/lib/embed/parent-origin";
+import ReasonPicker from "@/components/ReasonPicker";
+import { validateReason, type ReasonOption } from "@/lib/booking/core";
 
 interface Attendee {
   name: string;
@@ -44,6 +46,14 @@ type DuplicateWarning =
   | { disclose: true; startsAt: string; manageUrl: string }
   | { disclose: false };
 
+/** The call this lead already has, returned by /booking instead of creating a
+ *  second one (#1337). Graded exactly as the warning above: a weak one-signal
+ *  match carries nothing, so there is no time to show and no token to move
+ *  with. Mirrors `ExistingCall` in `src/lib/booking/orchestration.ts`. */
+type ExistingCall =
+  | { disclose: true; startsAt: string; advisorName: string | null; manageToken: string }
+  | { disclose: false };
+
 interface BookerProps {
   bucketCode: string;
   salesforceId: string | null;
@@ -60,6 +70,11 @@ interface BookerProps {
   /** Host page origin (from widget.js), used as the postMessage target so the
    *  booking-success payload is never broadcast to "*" (#593). */
   parentOrigin?: string;
+  /** Active reschedule reason options, resolved from the store server-side
+   *  (#346), for the Move offered when a lead already has a call (#1337). A
+   *  reschedule records a mandatory reason and the lead is asked for it here
+   *  (Dan, 2026-08-07), so the UI and the server share one live set. */
+  rescheduleReasons: ReasonOption[];
   /** Org-wide booking horizon in days (#216), resolved server-side and passed in.
    *  REQUIRED on purpose: a required prop makes tsc flag any construction site that
    *  forgets it, so the old hardcoded HORIZON_DAYS=4 divergence (AUD-076) can't come
@@ -184,6 +199,7 @@ export default function Booker({
   layout = "strip",
   parentOrigin,
   horizonDays,
+  rescheduleReasons,
 }: BookerProps) {
   // Options derive from the *detected* zone (fixed) so a traveling lead's own
   // zone stays in the list even after they switch the selection to a curated one.
@@ -214,6 +230,13 @@ export default function Booker({
   // onMonthChange (DateTime<boolean>) can't set.
   const [month, setMonth] = useState<DateTime>(() => today.startOf("month"));
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  // #1337: the confirm was DECLINED because this person already has an active
+  // call. Nothing was created. The screen offers to move that call into the slot
+  // they just picked; `disclose: false` means the match was one signal only, so
+  // nothing about it may be shown and there is nothing to move from here (#1340).
+  const [existingCall, setExistingCall] = useState<ExistingCall | null>(null);
+  const [moveReason, setMoveReason] = useState("");
+  const [moveDetail, setMoveDetail] = useState("");
   const [hour12, setHour12] = useState(true);
   const [attendee, setAttendee] = useState<Attendee>(initialAttendee);
   // Honeypot (#1033): a real user never sees or fills the hidden decoy below, so
@@ -343,6 +366,7 @@ export default function Booker({
         error?: string;
         fieldErrors?: AttendeeErrors;
         duplicateWarning?: DuplicateWarning | null;
+        existingCall?: ExistingCall | null;
       }>(
         "/booking",
         {
@@ -377,6 +401,11 @@ export default function Booker({
             data: { booking: data, salesforceId },
           });
         }
+      } else if (status === 409 && data.existingCall) {
+        // Declined, not failed: this person already has an active call and
+        // nothing was created (#1337). The slot they picked is kept so the offer
+        // to move the existing call into it can name it.
+        setExistingCall(data.existingCall);
       } else if (status === 409) {
         setError("That time was just taken. Please pick another.");
         setSelectedSlot(null);
@@ -392,7 +421,147 @@ export default function Booker({
     }
   }
 
+  const moveReasonValid = validateReason(
+    { code: moveReason, detail: moveDetail },
+    rescheduleReasons,
+  ).ok;
+
+  /** Move the call this lead already has into the slot they just picked (#1337).
+   *  Goes through the same lead reschedule endpoint their emailed manage link
+   *  uses, so the reason, the audit trail and the webhook are identical. */
+  async function moveExistingCall() {
+    if (!existingCall?.disclose || !selectedSlot) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { ok, status, data } = await postJson<{ startsAt?: string; error?: string }>(
+        `/api/bookings/${encodeURIComponent(existingCall.manageToken)}/reschedule`,
+        { start: selectedSlot, reason: moveReason, reasonDetail: moveDetail || undefined },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
+      );
+      if (ok) {
+        setExistingCall(null);
+        setConfirmed({ start: data.startsAt ?? selectedSlot, manageUrl: null });
+        return;
+      }
+      // Nobody was holding that slot during the decision, so it can go. Say so
+      // and put them back in the picker rather than failing silently or leaving
+      // them with neither call moved nor a new one booked.
+      setExistingCall(null);
+      setSelectedSlot(null);
+      setError(
+        status === 409
+          ? "That time was just taken. Please pick another."
+          : (data.error ?? "Could not move your call. Please try again."),
+      );
+      picker.retry();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const shell = `mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
+
+  // #1337: declined because this person already has an active call. Nothing was
+  // created. No policy voice: the rule is not explained (that makes the panel
+  // about us and draws attention to something the lead never asked about), the
+  // call they have is simply put in front of them with the obvious thing to do.
+  if (existingCall) {
+    const longDay = (iso: string) =>
+      DateTime.fromISO(iso).setZone(zone).toFormat("cccc, LLLL d");
+    const shortDay = (iso: string) =>
+      DateTime.fromISO(iso).setZone(zone).toFormat("ccc, LLL d");
+    const newWhen = selectedSlot
+      ? `${shortDay(selectedSlot)} at ${fmtTime(selectedSlot)}`
+      : null;
+    return (
+      <div ref={rootRef} data-theme={theme} className={shell}>
+        <div className="mx-auto max-w-md p-8">
+          <h2 className={`text-xl font-semibold ${c.title}`}>
+            You already have a call booked
+          </h2>
+          {existingCall.disclose ? (
+            <>
+              <p className={`mt-3 text-sm tabular-nums ${c.body}`}>
+                {longDay(existingCall.startsAt)} at {fmtTime(existingCall.startsAt)}
+                {/* No name rather than a wrong one when the advisor cannot be
+                    resolved (L75): a booking can be reassigned, so the name is
+                    read live and simply left out when it is unavailable. */}
+                {existingCall.advisorName ? `, with ${existingCall.advisorName}.` : "."}
+              </p>
+              {newWhen && (
+                <p className={`mt-4 text-sm ${c.body}`}>
+                  Would you like to move it to <span className="tabular-nums">{newWhen}</span>{" "}
+                  instead?
+                </p>
+              )}
+              <div className="mt-5">
+                <ReasonPicker
+                  legend="Why are you rescheduling?"
+                  options={rescheduleReasons}
+                  code={moveReason}
+                  detail={moveDetail}
+                  onCode={setMoveReason}
+                  onDetail={setMoveDetail}
+                  idPrefix="booker-move-reason"
+                />
+              </div>
+              {error && (
+                <p
+                  role="alert"
+                  className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]"
+                >
+                  <span className="mt-0.5 shrink-0">
+                    <AlertIcon />
+                  </span>
+                  {error}
+                </p>
+              )}
+              <div className="mt-6 flex flex-col gap-3">
+                <button
+                  onClick={() => void moveExistingCall()}
+                  disabled={submitting || !moveReasonValid || !selectedSlot}
+                  className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${c.confirm}`}
+                  style={confirmStyle}
+                >
+                  {submitting
+                    ? "Moving your call…"
+                    : newWhen
+                      ? `Move my call to ${newWhen}`
+                      : "Move my call"}
+                </button>
+                <button
+                  onClick={() => {
+                    setExistingCall(null);
+                    setSelectedSlot(null);
+                    setMoveReason("");
+                    setMoveDetail("");
+                  }}
+                  disabled={submitting}
+                  className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
+                >
+                  Keep my {shortDay(existingCall.startsAt)} time
+                </button>
+              </div>
+              {submitting && stalled && (
+                <p role="status" className={`mt-4 text-center text-xs ${c.muted}`}>
+                  Still working… this is taking longer than usual.
+                </p>
+              )}
+            </>
+          ) : (
+            // The match was one signal only, so that call may belong to someone
+            // else: it is not named and its manage token is not handed over, which
+            // also means there is nothing to move from here (#1340).
+            <p className={`mt-3 text-sm ${c.muted}`}>
+              Check the confirmation email we sent you if you need to view or change
+              it.
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (confirmed) {
     const confirmedDay = DateTime.fromISO(confirmed.start)

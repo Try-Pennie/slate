@@ -318,6 +318,7 @@ async function agentBusyIntervals(
 
 export {
   SlotUnavailableError,
+  ExistingCallError,
   RescheduleConflictError,
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
@@ -331,6 +332,7 @@ export {
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
 export type { BookingResult, CreateBookingInput };
+export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
 
 /**
@@ -1611,6 +1613,20 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         bucket: bucket as Bucket,
         eventType: eventType as EventType,
       };
+    },
+
+    loadAgentDisplayName: async (userId) => {
+      if (!userId) return null;
+      // error-ok: naming the advisor is presentational. A null (including a read
+      // error) drops the name, which is the correct fail-safe: the surfaces that
+      // show it must render no name rather than a wrong or stale one (L75).
+      const { data } = await supabaseAdmin()
+        .from("users")
+        .select("name")
+        .eq("id", userId)
+        .maybeSingle();
+      const name = (data as { name: string | null } | null)?.name?.trim();
+      return name && name.length > 0 ? name : null;
     },
 
     getAgentByEmail: async (email) => {

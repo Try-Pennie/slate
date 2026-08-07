@@ -1,6 +1,7 @@
 import Booker from "@/components/Booker";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { loadReasonOptions } from "@/lib/booking/reason-options";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -56,6 +57,9 @@ export default async function BookingPage({
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
   const horizonDays = await loadBookingHorizonDays();
+  // #1337: a lead who already has a call is offered the Move, which records a
+  // mandatory reschedule reason chosen right there.
+  const reasonOptions = await loadReasonOptions();
 
   return (
     <main>
@@ -75,6 +79,7 @@ export default async function BookingPage({
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
         horizonDays={horizonDays}
+        rescheduleReasons={reasonOptions.reschedule.active}
       />
     </main>
   );
