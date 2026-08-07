@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightIcon } from "@/components/icons";
 import { BookerCalendar } from "@/components/BookerCalendar";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
+import { SlotTimes } from "@/components/SlotTimes";
+import { useSlotPicker } from "@/components/use-slot-picker";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
@@ -211,10 +213,6 @@ export default function Booker({
   // @types/luxon's generic validity would otherwise infer a narrower type that
   // onMonthChange (DateTime<boolean>) can't set.
   const [month, setMonth] = useState<DateTime>(() => today.startOf("month"));
-  const [meta, setMeta] = useState<AvailabilityResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [hour12, setHour12] = useState(true);
   const [attendee, setAttendee] = useState<Attendee>(initialAttendee);
@@ -234,12 +232,6 @@ export default function Booker({
   const stalled = useStalledAfter(submitting);
   const rootRef = useRef<HTMLDivElement>(null);
   const confirmedHeadingRef = useRef<HTMLHeadingElement>(null);
-  // Race guard for availability loads (#629): rapid month changes issue
-  // overlapping fetches. `reqSeq` is a monotonic id (only the latest call may
-  // write state), so a slow older month can't overwrite the newer one. `abortRef`
-  // holds the in-flight controller so a re-run or unmount aborts it.
-  const reqSeq = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
 
   // a11y: move focus to the confirmation heading so the success is announced.
   useEffect(() => {
@@ -253,89 +245,29 @@ export default function Booker({
     if (selectedSlot) document.getElementById("booker-name")?.focus();
   }, [selectedSlot]);
 
-  const loadSlots = useCallback(async () => {
-    // Supersede any in-flight load: abort its fetch and claim the next seq id so
-    // its late response is ignored below (#629).
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const seq = ++reqSeq.current;
-    // Set loading here too (not just on month change) so the post-409 refetch
-    // swaps the stale slot list for skeletons instead of leaving it tappable.
-    setLoading(true);
-    setLoadError(false);
-    // Only request the precomputed window [today, today+horizonDays]. The horizon
-    // is the org-wide setting (#216), resolved server-side and passed in as a prop
-    // (single source of truth, AUD-076) rather than duplicated as a client constant.
-    // A month entirely beyond the horizon has no bookable slots, so render it
-    // unavailable WITHOUT a fetch that would otherwise anchor a cold compute
-    // outside the warmed window.
+  // Only request the precomputed window [today, today+horizonDays]. The horizon
+  // is the org-wide setting (#216), resolved server-side and passed in as a prop
+  // (single source of truth, AUD-076) rather than duplicated as a client constant.
+  // A month entirely beyond the horizon has no bookable slots, so it loads
+  // NOTHING (url null) rather than anchoring a cold compute outside the warmed
+  // window; the picker settles that as "no days" instead of a stuck spinner.
+  const availabilityUrl = useMemo(() => {
     const horizonEnd = today.plus({ days: horizonDays });
-    const monthStart = month.startOf("month");
-    const fromDt = DateTime.max(monthStart, today);
-    if (fromDt > horizonEnd) {
-      setMeta((prev) => (prev ? { ...prev, slots: [] } : prev));
-      setLoading(false);
-      return;
-    }
+    const fromDt = DateTime.max(month.startOf("month"), today);
+    if (fromDt > horizonEnd) return null;
     const from = fromDt.toUTC().toISO();
     const to = DateTime.min(month.endOf("month"), horizonEnd).toUTC().toISO();
-    try {
-      const res = await fetch(
-        `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`,
-        { cache: "no-store", signal: controller.signal },
-      );
-      const body = res.ok
-        ? ((await res.json()) as AvailabilityResponse)
-        : null;
-      // A newer load started while this awaited: drop this stale result untouched.
-      if (seq !== reqSeq.current) return;
-      if (body) {
-        setMeta(body);
-      } else {
-        // Distinguish a failed fetch from a genuinely empty month, so the user
-        // sees "couldn't load" + retry rather than a permanent "no availability".
-        setLoadError(true);
-      }
-    } catch {
-      // Aborts (supersession/unmount) and stale rejections leave state to the
-      // newer load; only a live failure surfaces the retry affordance.
-      if (controller.signal.aborted || seq !== reqSeq.current) return;
-      setLoadError(true);
-    }
-    setLoading(false);
+    return `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`;
   }, [bucketCode, month, today, horizonDays]);
 
-  useEffect(() => {
-    // IIFE defers loadSlots' synchronous setState out of the effect body.
-    void (async () => {
-      await loadSlots();
-    })();
-    // Abort the in-flight availability fetch on unmount (or before the next
-    // load), so a resolved response can't touch an unmounted tree (#629).
-    return () => abortRef.current?.abort();
-  }, [loadSlots]);
-
-  const slotsByDay = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const iso of meta?.slots ?? []) {
-      const key = DateTime.fromISO(iso).setZone(zone).toISODate();
-      if (!key) continue;
-      const list = map.get(key) ?? [];
-      list.push(iso);
-      map.set(key, list);
-    }
-    return map;
-  }, [meta, zone]);
-
-  // Derive the active day (don't sync via effect): the chosen day if it still
-  // has slots, else the first available day in the loaded month.
-  const firstAvailable = useMemo(
-    () => [...slotsByDay.keys()].sort()[0] ?? null,
-    [slotsByDay],
-  );
-  const activeDay =
-    selectedDay && slotsByDay.has(selectedDay) ? selectedDay : firstAvailable;
+  // The shared picker (#1336) owns the fetch, the abort + supersession guard
+  // (#629), the day grouping in the viewer's zone, the chosen day and the
+  // loading / failed / empty states, so the booker and the reschedule surfaces
+  // cannot drift apart again. No day is chosen until the lead chooses one.
+  const picker = useSlotPicker({ url: availabilityUrl, zone });
+  const meta = picker.payload as AvailabilityResponse | null;
+  const activeDay = picker.selectedDay;
+  const loading = picker.view.kind === "loading";
 
   // The single origin every outbound embed message targets. Never "*": the
   // success payload carries lead PII, so a wildcard could hand it to whatever
@@ -383,8 +315,6 @@ export default function Booker({
     document.addEventListener("keydown", onKeydown);
     return () => document.removeEventListener("keydown", onKeydown);
   }, [embedded, postToParent]);
-
-  const daySlots = activeDay ? (slotsByDay.get(activeDay) ?? []) : [];
 
   function fmtTime(iso: string) {
     const dt = DateTime.fromISO(iso).setZone(zone);
@@ -450,7 +380,9 @@ export default function Booker({
       } else if (status === 409) {
         setError("That time was just taken. Please pick another.");
         setSelectedSlot(null);
-        await loadSlots();
+        // Re-run the load so the stale list is swapped for the loading state
+        // rather than left tappable with a time that has gone.
+        picker.retry();
       } else {
         if (data.fieldErrors) setFieldErrors(data.fieldErrors);
         setError(data.error ?? "Something went wrong. Please try again.");
@@ -571,9 +503,9 @@ export default function Booker({
     );
   }
 
-  // `activeDay` is a bare date keyed in `zone` (see slotsByDay), so parse it back
-  // in that zone — `.setZone` on a machine-zone midnight would slide the label a
-  // day when the picked zone differs from the device's.
+  // `activeDay` is a bare date keyed in `zone`, so parse it back in that zone:
+  // `.setZone` on a machine-zone midnight would slide the label a day when the
+  // picked zone differs from the device's.
   const selectedDate = activeDay ? DateTime.fromISO(activeDay, { zone }) : null;
 
   // Rose error notice; rendered in whichever right-column branch is active
@@ -591,20 +523,6 @@ export default function Booker({
       {error}
     </p>
   ) : null;
-
-  // a11y (#633): announce the slot list's settled state to screen readers, so a
-  // lead selecting a day hears the count (or the empty message) instead of
-  // silence. A load failure is announced by the role=alert above, so the polite
-  // region stays quiet there to avoid a double read.
-  const slotAnnouncement = loading
-    ? "Loading available times"
-    : loadError
-      ? ""
-      : slotsByDay.size === 0
-        ? "All times are taken right now. Check back soon."
-        : daySlots.length === 0
-          ? "No times available on the selected day"
-          : `${daySlots.length} time${daySlots.length === 1 ? "" : "s"} available`;
 
   // Times / booking form — rendered once and shared by both layouts (the 420px
   // cap is for the scrolling slot list only).
@@ -709,22 +627,11 @@ export default function Booker({
         </div>
       ) : (
         <>
-          {/* Persistent polite region: stays mounted across the skeleton→slots
-              swap so the settled count / empty message is announced (#633). */}
-          <p role="status" aria-live="polite" className="sr-only">
-            {slotAnnouncement}
-          </p>
-          <div className="mb-1 flex items-center justify-between">
-            <p className={`text-sm font-semibold tabular-nums ${c.title}`}>
-              {selectedDate ? (
-                <>
-                  {selectedDate.toFormat("ccc")}{" "}
-                  <span className={c.faint}>{selectedDate.toFormat("dd")}</span>
-                </>
-              ) : (
-                "Pick a day"
-              )}
-            </p>
+          {/* The day the times belong to is headed inside SlotTimes ("Times on
+              Sat, Aug 15"), so this row carries only the clock format toggle.
+              The polite announcement lives there too, mounted across every state
+              swap so a settled count is heard rather than silence (#633). */}
+          <div className="mb-1 flex items-center justify-end">
             <div className={`inline-flex rounded-md border text-xs ${c.toggleBorder}`}>
               {[true, false].map((is12) => (
                 <button
@@ -801,32 +708,26 @@ export default function Booker({
             </div>
           )}
           {errorAlert && <div className="mb-3">{errorAlert}</div>}
-          <div className="-mx-2 -my-1 flex-1 space-y-2 overflow-y-auto px-2 py-1">
-            {loading ? (
-              Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className={`h-11 animate-pulse rounded-md motion-reduce:animate-none ${c.skeleton}`} />
-              ))
-            ) : loadError ? (
-              <div className="space-y-2">
-                <p className={`flex items-start gap-2 text-sm text-[var(--error)]`} role="alert">
-                  <span className="mt-0.5 shrink-0">
-                    <AlertIcon />
-                  </span>
-                  Couldn&apos;t load available times. Check your connection.
+          <div className="-mx-2 -my-1 flex-1 overflow-y-auto px-2 py-1">
+            {/* The shared times panel (#1336) owns every state here, including
+                the rule that no time renders until a day is chosen. The booker
+                keeps its own slot chrome (the accent dot, the 12/24h label). */}
+            <SlotTimes
+              view={picker.view}
+              timeZone={zone}
+              onRetry={picker.retry}
+              classes={{
+                muted: `text-sm ${c.faint}`,
+                heading: `text-sm font-semibold tabular-nums ${c.title}`,
+                retry: `inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`,
+                grid: "space-y-2",
+              }}
+              noDaysNode={
+                <p className={`text-sm ${c.faint}`}>
+                  All times are taken right now. Check back soon.
                 </p>
-                <button
-                  onClick={() => void loadSlots()}
-                  className={`inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`}
-                >
-                  Try again
-                </button>
-              </div>
-            ) : slotsByDay.size === 0 ? (
-              <p className={`text-sm ${c.faint}`}>All times are taken right now. Check back soon.</p>
-            ) : daySlots.length === 0 ? (
-              <p className={`text-sm ${c.faint}`}>No times left that day, pick another.</p>
-            ) : (
-              daySlots.map((iso) => (
+              }
+              renderSlot={(iso) => (
                 <button
                   key={iso}
                   onClick={() => setSelectedSlot(iso)}
@@ -838,8 +739,8 @@ export default function Booker({
                   />
                   {fmtTime(iso)}
                 </button>
-              ))
-            )}
+              )}
+            />
           </div>
         </>
       )}
@@ -894,17 +795,17 @@ export default function Booker({
         // Availability is cache-limited; once a loaded month comes back
         // empty there's nothing further to page into. Stay optimistic while
         // a month is still loading.
-        canNext={loading || (meta?.slots.length ?? 0) > 0}
+        canNext={loading || picker.days.length > 0}
         onMonthChange={(m) => {
-          setLoading(true);
           setMonth(m);
-          setSelectedDay(null);
+          // A day chosen in the old month must not survive into the new one.
+          picker.selectDay(null);
           setSelectedSlot(null);
         }}
         isSelected={(d) => d.toISODate() === activeDay}
-        isDisabled={(d) => !slotsByDay.has(d.toISODate()!)}
+        isDisabled={(d) => !picker.days.includes(d.toISODate()!)}
         onSelect={(d) => {
-          setSelectedDay(d.toISODate()!);
+          picker.selectDay(d.toISODate()!);
           setSelectedSlot(null);
         }}
         selectedStyle={confirmStyle}
@@ -928,15 +829,17 @@ export default function Booker({
             {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
             <div className="px-6 pt-6">
               {loading ? (
-                <BookerStripSkeleton skeletonClass={c.skeleton} />
+                // As many placeholder chips as days are about to arrive, so the
+                // row does not change width as content lands.
+                <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
               ) : (
                 <BookerStrip
                   today={today}
-                  availableDays={[...slotsByDay.keys()].sort()}
+                  days={picker.days}
                   activeDay={activeDay}
                   zone={zone}
                   onSelect={(iso) => {
-                    setSelectedDay(iso);
+                    picker.selectDay(iso);
                     setSelectedSlot(null);
                   }}
                 />

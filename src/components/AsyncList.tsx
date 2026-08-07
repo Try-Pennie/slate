@@ -16,11 +16,27 @@ export function useFetchList<T>(
   url: string | null,
   active: boolean,
   extract: (json: unknown) => T[],
-): { items: T[]; loading: boolean; error: boolean; retry: () => void } {
-  const [state, setState] = useState<{ key: string; items: T[]; error: boolean }>({
+): {
+  items: T[];
+  loading: boolean;
+  error: boolean;
+  retry: () => void;
+  /** The last body that parsed, kept across a later load or failure (#1336).
+   *  The booker reads the org name, event name and duration out of the same
+   *  availability response its slots come from; clearing it while the next
+   *  month loads would blank the event panel for the length of the fetch. */
+  payload: unknown;
+} {
+  const [state, setState] = useState<{
+    key: string;
+    items: T[];
+    error: boolean;
+    payload: unknown;
+  }>({
     key: "",
     items: [],
     error: false,
+    payload: null,
   });
   const [nonce, setNonce] = useState(0);
 
@@ -44,14 +60,14 @@ export function useFetchList<T>(
         if (cancelled) return;
         if (res.ok) {
           const json = (await res.json().catch(() => null)) as unknown;
-          if (!cancelled) setState({ key, items: extract(json), error: false });
+          if (!cancelled) setState({ key, items: extract(json), error: false, payload: json });
         } else if (!cancelled) {
-          setState({ key, items: [], error: true });
+          setState((prev) => ({ key, items: [], error: true, payload: prev.payload }));
         }
       } catch {
         // Aborts (supersession/unmount) leave state to the newer/next run; only
         // a live failure surfaces the retry affordance.
-        if (!cancelled) setState({ key, items: [], error: true });
+        if (!cancelled) setState((prev) => ({ key, items: [], error: true, payload: prev.payload }));
       }
     })();
     return () => {
@@ -68,6 +84,7 @@ export function useFetchList<T>(
     loading: key !== "" && !settled,
     error: settled && state.error,
     retry,
+    payload: state.payload,
   };
 }
 
