@@ -204,4 +204,52 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   }
 }
 
+// 6) #1326: the fail-open compute trims to the bookable-day count before it is
+// stored or served.
+//
+// [nf, nt) is a SEARCH window, deliberately wider than the days we intend to offer,
+// so a closed day inside it cannot eat one. Without the trim here the ONE bucket
+// that takes the cold-compute branch would quietly offer a longer strip than every
+// other bucket, and nothing about it would look wrong.
+{
+  const calls: Record<string, number> = {};
+  // Six days of times with Sunday 2026-08-16 absent, which is what the wider window
+  // produces. Four bookable days must reach Monday, not stop at the fourth calendar day.
+  const wide: BucketSlots = {
+    ...sampleSlots(),
+    slots: [
+      "2026-08-13T13:00:00.000Z",
+      "2026-08-14T13:00:00.000Z",
+      "2026-08-15T13:00:00.000Z",
+      "2026-08-17T13:00:00.000Z",
+      "2026-08-18T13:00:00.000Z",
+    ],
+  };
+  let written: BucketSlots | null = null;
+  const d = deps({
+    calls,
+    compute: async () => wide,
+    writeRow: async (_c, v) => { written = v; return WROTE_AT; },
+    businessHours: async () => OPEN_ALL_WEEK,
+  });
+  const r = await resolveBucketSlots("411", "2026-08-13T04:00:00.000Z", 4, d);
+
+  eq(
+    r!.slots.map((s) => s.slice(0, 10)).join(","),
+    "2026-08-13,2026-08-14,2026-08-15,2026-08-17",
+    "the cold compute serves four BOOKABLE days, walking past the empty Sunday",
+  );
+  assert(
+    !r!.slots.some((s) => s.startsWith("2026-08-18")),
+    "and stops at four rather than serving everything the wider window found",
+  );
+  // The row must match what is served, or the next reader of the row disagrees with
+  // the customer who was just shown the trimmed list.
+  eq(
+    (written as unknown as BucketSlots).slots.length,
+    4,
+    "and the row it self-heals with holds the same four days, not the wider set",
+  );
+}
+
 finish();

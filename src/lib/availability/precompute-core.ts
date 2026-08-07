@@ -1,6 +1,7 @@
 import { slotCacheKey } from "./cache-key.ts";
 import { shapePrecomputedRow } from "./precompute-shape.ts";
 import { slotsWithinBusinessHours, type BusinessHoursRules } from "./compute.ts";
+import { trimToBookableDays } from "./bookable-days.ts";
 import type { BucketSlots } from "./service";
 
 /**
@@ -94,9 +95,21 @@ export async function resolveBucketSlots(
     return served(cached, "row");
   }
 
-  // Never-computed / malformed row: compute live once and self-heal.
-  const fresh = await deps.compute(code, nf, nt);
-  if (!fresh) return null;
+  // Never-computed / malformed row: compute live once and self-heal. The window is
+  // the SEARCH range (#1326), so trim to the bookable-day count before it is written
+  // or served, exactly as the recompute path does. Without this the fail-open path
+  // would store more days than the setting asks for, and the one bucket that took
+  // this branch would quietly offer a longer strip than every other.
+  const computed = await deps.compute(code, nf, nt);
+  if (!computed) return null;
+  // Days are grouped in the ORG's zone, the same clock the hours are judged in: a
+  // 21:00 slot is stored as the next day in UTC, and grouping in UTC would spend one
+  // of the days on a day the customer does not have.
+  const { zone } = await deps.businessHours();
+  const fresh: BucketSlots = {
+    ...computed,
+    slots: trimToBookableDays(computed.slots, zone, horizonDays),
+  };
   const computedAt = await deps.writeRow(code, fresh);
   const cached: CachedBucketSlots = { ...fresh, computedAt };
   await deps.cachePut(key, cached);

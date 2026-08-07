@@ -4,11 +4,22 @@ import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
 
 /**
- * Org-wide booking horizon (#216, folds in audit AUD-076): how many days ahead a
- * lead may book. Precedence store > env > coded default, mirroring
- * loadMonitorSettings. The cap is 7 for now; 14 is deferred pending a 200-agent
- * load-soak, because per-bucket recompute cost is ~super-linear in the horizon and
- * the recompute lane is tuned for a 4-day window.
+ * Org-wide booking horizon (#216, folds in audit AUD-076). Precedence store > env >
+ * coded default, mirroring loadMonitorSettings.
+ *
+ * Counts BOOKABLE days, not calendar days (#1326): how many days a lead is offered
+ * to choose from. A closed day inside the run does not use one up, so the furthest
+ * date reaches beyond this number, and the window actually computed is
+ * `searchWindowDays(horizon)` in `availability/bookable-days.ts`.
+ *
+ * Nothing enforces this as a booking LIMIT. There is no horizon check on the write
+ * path, so a key-authed caller can book past it; this only shapes what is computed
+ * and offered. Widening it therefore cannot let anyone book something they could
+ * not book before.
+ *
+ * The cap is 7 for now; 14 is deferred pending a 200-agent load-soak, because
+ * per-bucket recompute cost is ~super-linear in the window and the recompute lane
+ * is tuned for a small one. The search allowance is small for the same reason.
  */
 export const HORIZON_DEFAULT = 4;
 export const HORIZON_MIN = 1;
