@@ -6,7 +6,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // reactivate, and be a no-op when the row is already in the target state.
 // Supabase is mocked; the pure planLifecycleChange is exercised for real.
 
-const updates: Array<{ col: string; val: string; patch: { deactivated_at: string | null } }> = [];
+const updates: Array<{
+  col: string;
+  val: string;
+  patch: { deactivated_at: string | null; bookable?: boolean };
+}> = [];
 let row: { id: string; deactivated_at: string | null } | null = null;
 let lastLookup: { col: string; val: string } | null = null;
 let selectError: { message: string } | null = null;
@@ -23,7 +27,7 @@ vi.mock("@/lib/supabase/admin", () => ({
           };
         },
       }),
-      update: (patch: { deactivated_at: string | null }) => ({
+      update: (patch: { deactivated_at: string | null; bookable?: boolean }) => ({
         eq: async (col: string, val: string) => {
           updates.push({ col, val, patch });
           return { error: updateError };
@@ -52,6 +56,36 @@ describe("applyLifecycleByUserId", () => {
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ col: "id", val: "u1" });
     expect(typeof updates[0].patch.deactivated_at).toBe("string");
+  });
+
+  // #1324: offboarding set deactivated_at and nothing else, so a leaver kept
+  // users.bookable = true indefinitely. Harmless to routing, which already
+  // requires deactivated_at is null, but it makes every COUNT of the bookable pool
+  // wrong unless each reader remembers to filter on both columns, and #1297's
+  // coverage readout already had to work around it. Measured 2026-08-06: 11 of the
+  // 13 flagged rows were leavers, overstating the pool by 11 people.
+  it("clears the bookable flag in the same write that deactivates", async () => {
+    row = { id: "u1", deactivated_at: null };
+    await applyLifecycleByUserId("u1", "deactivate");
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch.bookable).toBe(false);
+    // One write, not two: a second statement could fail on its own and leave the
+    // row half-changed.
+    expect(typeof updates[0].patch.deactivated_at).toBe("string");
+  });
+
+  // Reactivation deliberately does NOT restore it. Re-admitting somebody to the
+  // routing pool is the decision users.bookable exists to make deliberately, and
+  // the roster sync already brings new agents in as bookable=false and never
+  // re-activates anyone.
+  it("leaves the bookable flag alone when reactivating", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z" };
+    await applyLifecycleByUserId("u1", "reactivate");
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch.deactivated_at).toBeNull();
+    expect("bookable" in updates[0].patch).toBe(false);
   });
 
   it("reactivates a deactivated user (clears the timestamp)", async () => {
