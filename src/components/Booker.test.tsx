@@ -822,8 +822,11 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect(panel).not.toBeNull();
     expect(panel!.textContent).not.toMatch(/\(215\)/);
     expect(panel!.textContent).not.toMatch(/attendee phone/i);
-    // Duration and timezone stay.
+    // Duration and timezone stay. The zone is the VIEWER's, so it must not be
+    // pinned to a name: CI runs in UTC and a developer's machine does not, and a
+    // test that reads the host clock is the #1039 class of flake.
     expect(panel!.textContent).toMatch(/30m/);
-    expect(panel!.textContent).toMatch(/America\/New York/);
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, " ");
+    expect(panel!.textContent).toContain(zone);
   });
 });
