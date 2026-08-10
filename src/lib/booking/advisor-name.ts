@@ -1,0 +1,54 @@
+/**
+ * Resolving the advisor a booking is currently with (#1337, #1338).
+ *
+ * Read LIVE from the assignee, never a copy captured when the booking was made:
+ * coverage reassignment (#1219) and the bulk reassign path both move a booking to
+ * a different agent, so a stamped name would promise a lead one person and send
+ * another.
+ *
+ * Every failure resolves to `null`, which the surfaces treat as "render no name".
+ * That is the fail-safe direction: naming nobody is a visible absence, while
+ * naming the wrong person looks exactly like success and is what L75 is about.
+ * The client is injected so this is testable with a hand written fake rather than
+ * module mocking.
+ */
+
+/** The narrow slice of the Supabase client this needs. */
+export interface AdvisorNameReader {
+  from(table: "users"): {
+    select(cols: "name"): {
+      eq(
+        col: "id",
+        value: string,
+      ): {
+        maybeSingle(): Promise<{
+          data: { name: string | null } | null;
+          error: unknown;
+        }>;
+      };
+    };
+  };
+}
+
+/**
+ * The agent's display name, or null when there is nothing usable to show:
+ * no id, no row, a blank name, or a read that failed.
+ */
+export async function resolveAdvisorName(
+  db: AdvisorNameReader,
+  userId: string | null,
+): Promise<string | null> {
+  if (!userId) return null;
+  try {
+    // error-ok: naming the advisor is presentational, and a read error must drop
+    // the name rather than substitute one. The `error` branch below is the whole
+    // reason this is not an `unwrap`: an empty result here is SAFE (the surface
+    // shows no name), it is never mistaken for an answer.
+    const { data, error } = await db.from("users").select("name").eq("id", userId).maybeSingle();
+    if (error) return null;
+    const name = data?.name?.trim();
+    return name && name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
+}

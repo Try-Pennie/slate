@@ -1,0 +1,116 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// #1338: the manage page names the advisor the call is with. The booking row
+// ALSO carries `agent_name`, stamped when the booking was made, and reading that
+// instead of the live assignee is a one-line mistake nobody would catch in
+// review: coverage reassignment (#1219) and bulk reassign both move a booking, so
+// the stamped name would promise a lead one person and send another (L75).
+//
+// These assertions are about the WIRING, which no component test can see: which
+// id the lookup is asked for, and that the name handed to the page is the
+// resolved one rather than the stamped column.
+
+const service = vi.hoisted(() => ({
+  getBookingByToken: vi.fn(),
+  getBookingAdvisorName: vi.fn(async () => null as string | null),
+}));
+const loadReasonOptions = vi.hoisted(() =>
+  vi.fn(async () => ({
+    reschedule: { active: [{ code: "schedule_conflict", label: "Schedule conflict" }] },
+    cancel: { active: [{ code: "booked_by_mistake", label: "Booked by mistake" }] },
+  })),
+);
+
+vi.mock("@/lib/booking/service", () => service);
+vi.mock("@/lib/booking/reason-options", () => ({ loadReasonOptions }));
+
+import ManagePage from "./page";
+
+const found = {
+  booking: {
+    id: "bk1",
+    starts_at: "2026-08-17T14:00:00.000Z",
+    status: "confirmed",
+    assigned_user_id: "user-current",
+    // The stamped copy, deliberately different from the live one below.
+    agent_name: "Stale Stamped Agent",
+    attendee_phone: "(215) 555-0100",
+    attendee_email: "dana@example.com",
+  },
+  bucket: { code: "411" },
+  eventType: { name: "Senior Loan Advisor Call", duration_min: 20 },
+};
+
+/** Walk the returned tree for the ManageBooking element's props. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function findManageProps(node: any): Record<string, unknown> | null {
+  if (!node || typeof node !== "object") return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findManageProps(child);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (node.props && typeof node.props.advisorName !== "undefined") return node.props;
+  return findManageProps(node.props?.children ?? null);
+}
+
+async function renderPage() {
+  const tree = await ManagePage({
+    params: Promise.resolve({ token: "tok1" }),
+    searchParams: Promise.resolve({}),
+  });
+  return findManageProps(tree);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  service.getBookingByToken.mockResolvedValue(found);
+  service.getBookingAdvisorName.mockResolvedValue("Aisha Bello");
+});
+
+describe("manage page advisor wiring (#1338)", () => {
+  it("resolves the advisor from the booking's CURRENT assignee", async () => {
+    await renderPage();
+    expect(service.getBookingAdvisorName).toHaveBeenCalledWith("user-current");
+  });
+
+  it("hands the page the live name, never the name stamped on the booking", async () => {
+    const props = await renderPage();
+    expect(props?.advisorName).toBe("Aisha Bello");
+    expect(props?.advisorName).not.toBe("Stale Stamped Agent");
+    // The role line is lead-facing copy, so it must be present to render.
+    expect(props?.advisorRole).toBe("Senior Loan Advisor");
+  });
+
+  it("passes no name through when the advisor cannot be resolved", async () => {
+    service.getBookingAdvisorName.mockResolvedValue(null);
+    const props = await renderPage();
+    // Null, not the stamped fallback: no name at all is the fail-safe.
+    expect(props?.advisorName).toBeNull();
+  });
+
+  it("asks for no advisor at all when the booking has no assignee", async () => {
+    service.getBookingByToken.mockResolvedValue({
+      ...found,
+      booking: { ...found.booking, assigned_user_id: null },
+    });
+    const props = await renderPage();
+    expect(service.getBookingAdvisorName).toHaveBeenCalledWith(null);
+    expect(props?.advisorName).toBe("Aisha Bello");
+  });
+
+  it("carries the duration and the lead's own contact details through", async () => {
+    const props = await renderPage();
+    expect(props?.durationMin).toBe(20);
+    expect(props?.attendeePhone).toBe("(215) 555-0100");
+    expect(props?.attendeeEmail).toBe("dana@example.com");
+  });
+
+  it("does not look up an advisor for a token that resolves to nothing", async () => {
+    service.getBookingByToken.mockResolvedValue(null);
+    await renderPage();
+    expect(service.getBookingAdvisorName).not.toHaveBeenCalled();
+  });
+});

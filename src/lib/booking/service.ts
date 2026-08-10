@@ -331,6 +331,7 @@ export {
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
+import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -1615,19 +1616,11 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       };
     },
 
-    loadAgentDisplayName: async (userId) => {
-      if (!userId) return null;
-      // error-ok: naming the advisor is presentational. A null (including a read
-      // error) drops the name, which is the correct fail-safe: the surfaces that
-      // show it must render no name rather than a wrong or stale one (L75).
-      const { data } = await supabaseAdmin()
-        .from("users")
-        .select("name")
-        .eq("id", userId)
-        .maybeSingle();
-      const name = (data as { name: string | null } | null)?.name?.trim();
-      return name && name.length > 0 ? name : null;
-    },
+    // One implementation, tested with a hand written fake in
+    // scripts/test-advisor-name.ts: every failure resolves to null so the
+    // surfaces render no name rather than a wrong one (L75).
+    loadAgentDisplayName: (userId) =>
+      resolveAdvisorName(supabaseAdmin() as unknown as AdvisorNameReader, userId),
 
     getAgentByEmail: async (email) => {
       // error-ok: agent lookup by email; a null (incl. a read error) returns null and the caller handles the missing agent.
@@ -2185,7 +2178,10 @@ export function getBookingByToken(token: string): Promise<BookingContext | null>
 export function getBookingAdvisorName(
   assignedUserId: string | null,
 ): Promise<string | null> {
-  return realDeps().loadAgentDisplayName(assignedUserId);
+  return resolveAdvisorName(
+    supabaseAdmin() as unknown as AdvisorNameReader,
+    assignedUserId,
+  );
 }
 
 const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";
