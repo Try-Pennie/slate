@@ -181,6 +181,74 @@ export function resolveCooldownMs(
   return out;
 }
 
+/**
+ * A cooldown in minutes as a person would say it: "30 minutes", "6 hours",
+ * "7 days". The stored numbers run from single minutes to 10080, and a reader
+ * comparing 10080 against 360 has to do arithmetic to see that one is a week and
+ * the other six hours, which is the whole thing #1289 is trying to make obvious.
+ * Falls back to minutes for anything that does not divide cleanly, so the number
+ * is never rounded into a different value.
+ */
+export function formatMinutes(minutes: number): string {
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (minutes >= 1440 && minutes % 1440 === 0) return unit(minutes / 1440, "day");
+  if (minutes >= 60 && minutes % 60 === 0) return unit(minutes / 60, "hour");
+  return unit(minutes, "minute");
+}
+
+/** One alarm whose stored cooldown is longer than its coded default (#1289). */
+export interface QuietedAlarm {
+  key: MonitorAlertKey;
+  /** The same label the settings screen shows, so the two never diverge. */
+  label: string;
+  /** The stored cooldown, in minutes. Always greater than `defaultMinutes`. */
+  storedMinutes: number;
+  defaultMinutes: number;
+  /** When the stored value last changed, so the reason can be traced. */
+  updatedAt: string | null;
+}
+
+/**
+ * Every alarm currently QUIETER than its coded default, worst first (#1289).
+ *
+ * Two cooldowns were stretched to a weekly repeat on purpose while the routing
+ * pool is off (#1272, #1283) and nothing in the product said so. An alarm quieted
+ * for a good reason is indistinguishable from an alarm that was always quiet.
+ *
+ * Derived from `MONITOR_DEFAULTS` and the SAME validity rule `resolveCooldownMs`
+ * applies, never a second copy of either. That matters because a stored 0, a
+ * negative, or a fraction is IGNORED by the resolver, which falls back to the
+ * default: such a row quiets nothing, and reporting it would send somebody to fix
+ * a setting that is already correct. A row for a key the code no longer sends is
+ * ignored for the same reason.
+ */
+export function quietedAlarms(
+  rows: Pick<MonitorSettings, "key" | "cooldown_min" | "updated_at">[],
+): QuietedAlarm[] {
+  const labels = new Map(ALERT_FIELDS.map((f) => [f.key, f.label]));
+  const effective = resolveCooldownMs(rows);
+  const out: QuietedAlarm[] = [];
+  for (const row of rows) {
+    const key = row.key as MonitorAlertKey;
+    if (!labels.has(key)) continue;
+    const defaultMinutes = MONITOR_DEFAULTS.cooldownMs[key] / 60_000;
+    // Compare the EFFECTIVE cooldown, which is what the alerts actually use, so
+    // a value the resolver discarded can never be reported as quieting anything.
+    const storedMinutes = effective[key] / 60_000;
+    if (storedMinutes <= defaultMinutes) continue;
+    out.push({
+      key,
+      label: labels.get(key)!,
+      storedMinutes,
+      defaultMinutes,
+      updatedAt: row.updated_at ?? null,
+    });
+  }
+  return out.sort(
+    (a, b) => b.storedMinutes / b.defaultMinutes - a.storedMinutes / a.defaultMinutes,
+  );
+}
+
 /** Low-volume floors: store (valid, incl. 0) > env (valid) > coded default. */
 export function resolveFloors(
   config: Pick<MonitorAlertConfig, "floor_30" | "floor_120"> | null,

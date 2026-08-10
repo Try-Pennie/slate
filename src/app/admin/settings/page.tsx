@@ -24,6 +24,8 @@ import { HORIZON_DEFAULT, HORIZON_MIN, HORIZON_MAX } from "@/lib/booking/setting
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
   MONITOR_DEFAULTS,
+  quietedAlarms,
+  formatMinutes,
   resolveLowVolumeArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
@@ -34,6 +36,13 @@ import { labelCls, inputCls, cardCls, btnCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
+
+/** A short "changed" date for the quieted-alarm list, e.g. "Aug 5". */
+function shortStamp(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "at an unknown time";
+  return new Date(ms).toLocaleString("en-US", { month: "short", day: "numeric" });
+}
 
 /** Formats a stored/updated pair into "changed by X at Y", or a default note. */
 function lastChangedLine(
@@ -88,6 +97,10 @@ export default async function MonitorSettingsPage({
   const lowVolumeArmed = resolveLowVolumeArmed(config, envLowVolumeArmed());
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
+  // #1289: every alarm currently quieter than its coded default. Read through the
+  // same resolver the alerts use, so a stored value the resolver discards (a 0, a
+  // negative) is never reported as quieting anything.
+  const quieted = quietedAlarms(rows);
 
   // Resolve updated_by ids to names for the "last changed" line.
   const editorIds = [...new Set([...rows.map((r) => r.updated_by), config?.updated_by ?? null].filter(Boolean))] as string[];
@@ -258,6 +271,42 @@ export default async function MonitorSettingsPage({
           </div>
         )}
 
+        {/* #1289: an alarm quieted for a good reason is indistinguishable from an
+            alarm that was always quiet, and the stored number alone does not say
+            which it is. This names every one that repeats less often than the code
+            intends, with the default beside it and when it changed. */}
+        {/* Same neutral card as the disarmed-alarm notice above it: the design
+            system keeps yellow and peach for illustration and rose for errors, and
+            this is neither, so it reads in the same voice as its neighbour rather
+            than inventing a warning colour the system does not have. */}
+        {quieted.length > 0 && (
+          <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4">
+            <p className="text-sm font-semibold text-fg">
+              {quieted.length === 1
+                ? "1 alarm is set to repeat less often than its default"
+                : `${quieted.length} alarms are set to repeat less often than their defaults`}
+            </p>
+            <p className="mt-1 text-xs text-fg-muted">
+              Deliberate while the routing pool is off. Each one needs putting back
+              before real booking traffic arrives: clear the field below to fall back
+              to the default.
+            </p>
+            <ul className="mt-3 space-y-2">
+              {quieted.map((q) => (
+                <li key={q.key} data-quieted-alarm={q.key} className="text-xs text-fg">
+                  <span className="font-semibold">{q.label}</span>
+                  <span className="tabular-nums text-fg-muted">
+                    {" "}
+                    is set to {formatMinutes(q.storedMinutes)}, against a default of{" "}
+                    {formatMinutes(q.defaultMinutes)}
+                    {q.updatedAt ? `, changed ${shortStamp(q.updatedAt)}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <form action={setMonitorSettings} className="space-y-8">
           <section className={cardCls}>
             <h2 className="mb-1 text-sm font-semibold">Alert cooldowns (minutes)</h2>
@@ -283,7 +332,15 @@ export default async function MonitorSettingsPage({
                       placeholder={`default ${defMin} min`}
                       className={`${inputCls} w-48 tabular-nums`}
                     />
-                    <p className="mt-1 text-xs text-fg-muted">{f.help}</p>
+                    <p className="mt-1 text-xs text-fg-muted">
+                      {f.help}{" "}
+                      <span className="tabular-nums">
+                        Default {formatMinutes(defMin)}
+                        {stored != null && stored > defMin
+                          ? `; currently ${formatMinutes(stored)}, so it repeats less often than intended.`
+                          : "."}
+                      </span>
+                    </p>
                   </div>
                 );
               })}
