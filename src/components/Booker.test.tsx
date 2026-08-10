@@ -906,3 +906,128 @@ describe("Booker empty-state honesty (#1328)", () => {
     expect(await screen.findByText("We are closed right now.")).toBeTruthy();
   });
 });
+
+// #1329 / #1339: during a genuine closure, "check back soon" gives a lead nothing
+// to act on and no idea when soon is, so they leave. The panel names the reason and
+// offers the way through, and the longer search runs only when the button is
+// pressed so the cost falls on the few who arrive during a shutdown.
+describe("Booker closure state (#1329, #1339)", () => {
+  const far = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 20);
+    d.setHours(10, 0, 0, 0);
+    return d;
+  };
+
+  /** Empty near window with a closure reason; /next answers as told. */
+  function closedWith(next: { ok: boolean; slots?: string[] }) {
+    return vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability/next")) {
+        return {
+          ok: next.ok,
+          status: next.ok ? 200 : 500,
+          json: async () => ({ slots: next.slots ?? [] }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ...availability,
+          slots: [],
+          emptyBecause: { kind: "closed", reopensOn: "2026-08-17" },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  it("offers the way through, and looks no further until asked", async () => {
+    const fetchMock = closedWith({ ok: true, slots: [far().toISOString()] });
+    global.fetch = fetchMock;
+    render(<Booker {...baseProps} />);
+
+    expect(await screen.findByText("We are closed until Monday, August 17.")).toBeTruthy();
+    const button = screen.getByRole("button", { name: "See our next available days" });
+    // The expensive search has NOT run: that is the whole point of the button.
+    const calls = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.some(([u]) => String(u).includes("/next"))).toBe(false);
+
+    await userEvent.click(button);
+
+    // The days arrive, said to start where they actually start, because these are
+    // not the next few days and a bare strip would read as though they were.
+    expect(await screen.findByText(/Our next available days, from /)).toBeTruthy();
+    expect(await dayChip()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "See our next available days" })).toBeNull();
+  });
+
+  it("still shows no time until one of the revealed days is picked", async () => {
+    global.fetch = closedWith({ ok: true, slots: [far().toISOString()] });
+    render(<Booker {...baseProps} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "See our next available days" }),
+    );
+    await dayChip();
+
+    // The far side of a closure must not quietly become the one place times appear
+    // without being asked for (#1336).
+    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
+    await pickFirstDay();
+    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
+  });
+
+  it("moves focus to the first revealed day, since the button is gone", async () => {
+    global.fetch = closedWith({ ok: true, slots: [far().toISOString()] });
+    render(<Booker {...baseProps} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "See our next available days" }),
+    );
+
+    const chip = await dayChip();
+    // Otherwise focus drops to <body> and a keyboard user has to walk the whole
+    // page again to reach the days they just asked for.
+    await waitFor(() => expect(document.activeElement).toBe(chip));
+  });
+
+  it("says we looked and found nothing, rather than offering the button again", async () => {
+    global.fetch = closedWith({ ok: true, slots: [] });
+    render(<Booker {...baseProps} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "See our next available days" }),
+    );
+
+    expect(await screen.findByText(/could not find a day to offer yet/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "See our next available days" })).toBeNull();
+  });
+
+  // An error state and an empty state are different screens: "we looked and there
+  // is nothing" must never be shown for "we could not look".
+  it("says it could not look when the search fails, and offers a retry", async () => {
+    global.fetch = closedWith({ ok: false });
+    render(<Booker {...baseProps} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "See our next available days" }),
+    );
+
+    expect(await screen.findByText(/could not look further ahead/i)).toBeTruthy();
+    expect(screen.queryByText(/could not find a day to offer yet/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  // The button appears whenever the near window came back empty, closure or not
+  // (#1329). A fully booked window is arguably the strongest case for it: the lead
+  // has nothing to book either way, and the next free day is the one useful fact.
+  // The copy above it still differs, because the REASON differs.
+  it("offers the way through for a busy window too, under the busy copy", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ...availability, slots: [], emptyBecause: { kind: "busy" } }),
+    })) as unknown as typeof fetch;
+    render(<Booker {...baseProps} />);
+
+    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "See our next available days" })).toBeTruthy();
+    // And it does not claim a closure it cannot support.
+    expect(screen.queryByText(/we are closed/i)).toBeNull();
+  });
+});

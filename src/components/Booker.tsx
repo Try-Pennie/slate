@@ -244,6 +244,13 @@ export default function Booker({
   const [existingCall, setExistingCall] = useState<ExistingCall | null>(null);
   const [moveReason, setMoveReason] = useState("");
   const [moveDetail, setMoveDetail] = useState("");
+  // #1329 / #1339: the first bookable days on the far side of a closure, fetched
+  // only when a lead presses the button, so the longer search is paid for by the
+  // few who arrive during a shutdown rather than by every recompute pass. Null
+  // until asked for; an empty array means we looked and there is genuinely nothing.
+  const [nextDaySlots, setNextDaySlots] = useState<string[] | null>(null);
+  const [loadingNext, setLoadingNext] = useState(false);
+  const [nextFailed, setNextFailed] = useState(false);
   const [hour12, setHour12] = useState(true);
   // #1332: a prefilled number is what the advisor ends up calling, and most real
   // leads arrive with one from the landing page, so it reads the same as a typed
@@ -283,6 +290,16 @@ export default function Booker({
     if (selectedSlot) document.getElementById("booker-name")?.focus();
   }, [selectedSlot]);
 
+  // #1339: the button that revealed the far-side days is gone once they are on
+  // screen, so focus would drop to <body> and a keyboard user would have to walk
+  // the whole page again to reach the days they just asked for.
+  useEffect(() => {
+    if (!nextDaySlots || nextDaySlots.length === 0) return;
+    rootRef.current
+      ?.querySelector<HTMLButtonElement>("[role='group'][aria-label='Available days'] button")
+      ?.focus();
+  }, [nextDaySlots]);
+
   // Only request the precomputed window [today, today+horizonDays]. The horizon
   // is the org-wide setting (#216), resolved server-side and passed in as a prop
   // (single source of truth, AUD-076) rather than duplicated as a client constant.
@@ -302,7 +319,7 @@ export default function Booker({
   // (#629), the day grouping in the viewer's zone, the chosen day and the
   // loading / failed / empty states, so the booker and the reschedule surfaces
   // cannot drift apart again. No day is chosen until the lead chooses one.
-  const picker = useSlotPicker({ url: availabilityUrl, zone });
+  const picker = useSlotPicker({ url: availabilityUrl, zone, slotsOverride: nextDaySlots });
   const meta = picker.payload as AvailabilityResponse | null;
   const activeDay = picker.selectedDay;
   const loading = picker.view.kind === "loading";
@@ -721,6 +738,69 @@ export default function Booker({
         : "We are closed right now."
       : "All times are taken right now. Check back soon.";
 
+  /** Look past the bounded window for the first days we can actually offer. */
+  async function revealNextDays() {
+    setLoadingNext(true);
+    setNextFailed(false);
+    try {
+      const res = await fetch(
+        `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      const body = (await res.json()) as { slots?: string[] };
+      setNextDaySlots(body.slots ?? []);
+    } catch {
+      // An error state and an empty state are different screens: "we looked and
+      // there is nothing" must never be shown for "we could not look".
+      setNextFailed(true);
+    } finally {
+      setLoadingNext(false);
+    }
+  }
+
+  /** The first revealed day, in words, or null when nothing has been revealed. */
+  const revealedFrom =
+    nextDaySlots && nextDaySlots.length > 0 && picker.days[0]
+      ? DateTime.fromISO(picker.days[0], { zone }).toFormat("cccc, LLLL d")
+      : null;
+
+  // #1329 / #1339: with nothing bookable nearby, "check back soon" gives a lead
+  // nothing to act on and no idea when soon is, so they leave. This names the
+  // reason, and offers the way through. The longer search runs only when the button
+  // is pressed. `nextDaySlots === []` means we looked and there is genuinely
+  // nothing, which is a different screen from having failed to look.
+  const closurePanel = (
+    <div className="space-y-3 text-center">
+      <p className={`text-sm ${c.faint}`}>{emptyMessage}</p>
+      {nextDaySlots === null && (
+        <>
+          {nextFailed && (
+            <p role="alert" className="text-sm text-[var(--error)]">
+              Could not look further ahead. Check your connection.
+            </p>
+          )}
+          <button
+            onClick={() => void revealNextDays()}
+            disabled={loadingNext}
+            className={`inline-flex min-h-11 items-center justify-center rounded-lg border px-4 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
+          >
+            {loadingNext
+              ? "Looking…"
+              : nextFailed
+                ? "Try again"
+                : "See our next available days"}
+          </button>
+        </>
+      )}
+      {nextDaySlots !== null && nextDaySlots.length === 0 && (
+        <p className={`text-sm ${c.faint}`}>
+          We could not find a day to offer yet. Please check back.
+        </p>
+      )}
+    </div>
+  );
+
   // Times / booking form — rendered once and shared by both layouts (the 420px
   // cap is for the scrolling slot list only).
   const timesPanel = (
@@ -926,7 +1006,7 @@ export default function Booker({
                 retry: `inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`,
                 grid: "space-y-2",
               }}
-              noDaysNode={<p className={`text-sm ${c.faint}`}>{emptyMessage}</p>}
+              noDaysNode={closurePanel}
               renderSlot={(iso) => (
                 <button
                   key={iso}
@@ -1050,16 +1130,30 @@ export default function Booker({
                 // row does not change width as content lands.
                 <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
               ) : (
-                <BookerStrip
-                  today={today}
-                  days={picker.days}
-                  activeDay={activeDay}
-                  zone={zone}
-                  onSelect={(iso) => {
-                    picker.selectDay(iso);
-                    setSelectedSlot(null);
-                  }}
-                />
+                <>
+                  {/* #1339: the revealed block says where it starts, because these
+                      days are NOT the next few days and a bare strip out here would
+                      read as though they were. Announced politely and given focus,
+                      since the button that revealed it is gone. */}
+                  {revealedFrom && (
+                    <p
+                      role="status"
+                      className={`mb-3 text-sm ${c.muted}`}
+                    >
+                      Our next available days, from {revealedFrom}.
+                    </p>
+                  )}
+                  <BookerStrip
+                    today={today}
+                    days={picker.days}
+                    activeDay={activeDay}
+                    zone={zone}
+                    onSelect={(iso) => {
+                      picker.selectDay(iso);
+                      setSelectedSlot(null);
+                    }}
+                  />
+                </>
               )}
             </div>
             {timesPanel}

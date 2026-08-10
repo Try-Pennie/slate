@@ -11,8 +11,14 @@ import { useSlotPicker } from "@/components/use-slot-picker";
 const ZONE = "America/New_York";
 
 /** A harness that prints the hook's decisions so they can be asserted as text. */
-function Harness({ url }: { url: string | null }) {
-  const picker = useSlotPicker({ url, zone: ZONE });
+function Harness({
+  url,
+  slotsOverride = null,
+}: {
+  url: string | null;
+  slotsOverride?: string[] | null;
+}) {
+  const picker = useSlotPicker({ url, zone: ZONE, slotsOverride });
   return (
     <div>
       <p data-testid="kind">{picker.view.kind}</p>
@@ -158,5 +164,46 @@ describe("useSlotPicker", () => {
     // Not "day-empty": that would name a day the strip no longer draws.
     expect(screen.getByTestId("kind").textContent).toBe("pick-a-day");
     expect(screen.getByTestId("days").textContent).toBe("2026-08-15");
+  });
+
+  // #1329: the far side of a closure comes from a different, on-demand search, and
+  // it is routed through THIS hook rather than a second strip and times panel, so
+  // the chosen day, the grouping and the no-times-before-a-day rule stay in one
+  // place. A private copy for the closure state is the divergence #1336 removed.
+  describe("slotsOverride", () => {
+    it("shows the supplied days instead of the fetched ones, with no fetch at all", async () => {
+      global.fetch = vi.fn(async () => okResponse(SLOTS)) as unknown as typeof fetch;
+
+      render(<Harness url={null} slotsOverride={["2026-09-14T13:00:00.000Z"]} />);
+      await act(async () => {});
+
+      expect(screen.getByTestId("days").textContent).toBe("2026-09-14");
+      // Still no times until a day is chosen, out here as everywhere else.
+      expect(screen.getByTestId("kind").textContent).toBe("pick-a-day");
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("treats an empty override as a settled answer, not a load", async () => {
+      render(<Harness url={null} slotsOverride={[]} />);
+      await act(async () => {});
+
+      // The caller looked and found nothing. A loading state here would show a
+      // working signal forever over a question already answered.
+      expect(screen.getByTestId("kind").textContent).toBe("no-days");
+    });
+
+    it("settles a failed fetch when an override arrives", async () => {
+      global.fetch = vi.fn(async () => ({ ok: false }) as Response) as unknown as typeof fetch;
+
+      const { rerender } = render(<Harness url="/api/availability?bucket=411" />);
+      await act(async () => {});
+      expect(screen.getByTestId("kind").textContent).toBe("failed");
+
+      rerender(
+        <Harness url="/api/availability?bucket=411" slotsOverride={["2026-09-14T13:00:00.000Z"]} />,
+      );
+      // The days are on screen, so a stale failure must not still be claimed.
+      expect(screen.getByTestId("kind").textContent).toBe("pick-a-day");
+    });
   });
 });
