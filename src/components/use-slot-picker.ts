@@ -53,6 +53,7 @@ export interface SlotPicker {
 export function useSlotPicker({
   url,
   zone,
+  slotsOverride = null,
 }: {
   /** The availability URL, or null to load nothing (an unopened panel, or a
    *  month entirely beyond the booking horizon: both settle as `no-days`
@@ -61,13 +62,33 @@ export function useSlotPicker({
   /** The viewer's zone. Days are grouped in it, so a late-evening slot lands on
    *  the day they see it on. */
   zone: string;
+  /**
+   * Slots to show INSTEAD of the fetched ones, for a caller that obtained them
+   * elsewhere: the far side of a closure comes from `/api/availability/next`
+   * (#1329), which is a different, on-demand search.
+   *
+   * Routed through this hook rather than rendered by a second strip and times
+   * panel, so the chosen day, the grouping and the no-times-before-a-day rule stay
+   * in ONE place. A private copy for the closure state is exactly the divergence
+   * #1336 removed. Null means "use the fetched slots"; an empty array means the
+   * caller looked and found nothing, which is a settled answer, not a load.
+   */
+  slotsOverride?: string[] | null;
 }): SlotPicker {
-  const { items: slots, loading, error, retry, payload } = useFetchList(
+  const { items: fetched, loading: fetching, error, retry, payload } = useFetchList(
     url,
     url !== null,
     extractSlots,
   );
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+
+  // An override is a settled answer the caller already has, so it also settles the
+  // loading and failed states: leaving `loading` true would show a working signal
+  // over days that are already on screen.
+  const overridden = slotsOverride !== null;
+  const slots = overridden ? slotsOverride : fetched;
+  const loading = overridden ? false : fetching;
+  const failed = overridden ? false : error;
 
   const slotsByDay = useMemo(() => slotsByViewerDay(slots, zone), [slots, zone]);
 
@@ -75,7 +96,7 @@ export function useSlotPicker({
 
   const view = slotPickerView({
     loading,
-    failed: error,
+    failed,
     days,
     selectedDay,
     slotsForDay: selectedDay ? (slotsByDay.get(selectedDay) ?? []) : [],
