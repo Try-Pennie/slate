@@ -861,3 +861,48 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect(panel.textContent).toContain("(215) 555-0100");
   });
 });
+
+// #1328: the empty state must not say times are taken when the office is shut.
+// Both halves of "All times are taken right now. Check back soon." are untrue
+// then: nothing is taken, we are shut, and soon may be a week.
+describe("Booker empty-state honesty (#1328)", () => {
+  const emptyWith = (emptyBecause: unknown) =>
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ...availability, slots: [], emptyBecause }),
+    })) as unknown as typeof fetch;
+
+  it("names the day we are back when the reason is a closure", async () => {
+    global.fetch = emptyWith({ kind: "closed", reopensOn: "2026-08-17" });
+    render(<Booker {...baseProps} />);
+
+    expect(await screen.findByText("We are closed until Monday, August 17.")).toBeTruthy();
+    expect(screen.queryByText(/all times are taken/i)).toBeNull();
+  });
+
+  it("keeps the busy copy when the office is open and nothing is free", async () => {
+    global.fetch = emptyWith({ kind: "busy" });
+    render(<Booker {...baseProps} />);
+
+    // An open day with nobody free is genuinely about supply. Claiming a closure
+    // here would be the same lie in the other direction.
+    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    expect(screen.queryByText(/we are closed/i)).toBeNull();
+  });
+
+  it("falls back to the vaguer copy when the server cannot tell why", async () => {
+    global.fetch = emptyWith(null);
+    render(<Booker {...baseProps} />);
+
+    // Vague is merely unhelpful; a wrongly claimed closure names a date the lead
+    // would act on, so this is the safe direction for an unknown.
+    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+  });
+
+  it("says we are closed without a date when there is no reopening day to give", async () => {
+    global.fetch = emptyWith({ kind: "closed", reopensOn: null });
+    render(<Booker {...baseProps} />);
+
+    expect(await screen.findByText("We are closed right now.")).toBeTruthy();
+  });
+});
