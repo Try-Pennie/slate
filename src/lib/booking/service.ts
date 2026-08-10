@@ -2172,6 +2172,22 @@ export function getBookingByToken(token: string): Promise<BookingContext | null>
   return orchestration.getBookingByToken(token, realDeps());
 }
 
+/**
+ * The name of the advisor a booking is currently with, for the manage page
+ * (#1338), or null when it cannot be resolved.
+ *
+ * Read LIVE from the assignee, never a copy captured when the booking was made:
+ * coverage reassignment (#1219) and the bulk reassign path both move a booking to
+ * a different agent, so a stamped name would promise a lead one person and send
+ * another. Null means the page renders no name at all rather than substituting
+ * anything (L75).
+ */
+export function getBookingAdvisorName(
+  assignedUserId: string | null,
+): Promise<string | null> {
+  return realDeps().loadAgentDisplayName(assignedUserId);
+}
+
 const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";
 const PENDING_DELETION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 

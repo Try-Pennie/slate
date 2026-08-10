@@ -20,6 +20,13 @@ const baseProps = {
   rescheduleReasons: RESCHEDULE_REASONS,
   cancelReasons: CANCEL_REASONS,
   theme: "light" as const,
+  durationMin: 20,
+  attendeePhone: "(215) 555-0100",
+  attendeeEmail: "dana@example.com",
+  // #1338: the advisor is resolved live server-side and passed in; null means
+  // unresolvable, and then no name is rendered anywhere.
+  advisorName: "Aisha Bello",
+  advisorRole: "Senior Loan Advisor",
 };
 
 type FetchResult = { ok: boolean; body?: unknown };
@@ -68,7 +75,7 @@ describe("ManageBooking", () => {
     // A reason is mandatory: pick one to enable the confirm button.
     await userEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
     await userEvent.click(screen.getByRole("button", { name: /yes, cancel/i }));
-    expect(await screen.findByText("This booking is cancelled.")).toBeTruthy();
+    expect(await screen.findByText("This booking is cancelled")).toBeTruthy();
     expect(bodyFor(fn, "/cancel").reason).toBe("booked_by_mistake");
   });
 
@@ -97,7 +104,7 @@ describe("ManageBooking", () => {
 
     expect(await screen.findByText(/could not cancel/i)).toBeTruthy();
     // The booking is NOT shown as cancelled when the POST failed.
-    expect(screen.queryByText("This booking is cancelled.")).toBeNull();
+    expect(screen.queryByText("This booking is cancelled")).toBeNull();
   });
 
   it("backs out of the cancel confirm with Keep it", async () => {
@@ -105,7 +112,7 @@ describe("ManageBooking", () => {
     render(<ManageBooking {...baseProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /cancel booking/i }));
-    await userEvent.click(screen.getByRole("button", { name: /keep it/i }));
+    await userEvent.click(screen.getByRole("button", { name: /keep my booking/i }));
     await waitFor(() => expect(screen.queryByText("Cancel this booking?")).toBeNull());
     expect(screen.getByRole("button", { name: /cancel booking/i })).toBeTruthy();
   });
@@ -139,7 +146,8 @@ describe("ManageBooking", () => {
       },
     });
     const { container } = render(<ManageBooking {...baseProps} />);
-    const headerTimeBefore = container.querySelector("p span.tabular-nums")?.textContent;
+    const heroTime = () => container.querySelector("[data-hero-time]")?.textContent;
+    const headerTimeBefore = heroTime();
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
@@ -150,8 +158,8 @@ describe("ManageBooking", () => {
     expect(
       await screen.findByText("This booking was just changed. Refresh and try again."),
     ).toBeTruthy();
-    // Success NOT entered: the header time is unchanged (no setStart to the new slot).
-    expect(container.querySelector("p span.tabular-nums")?.textContent).toBe(headerTimeBefore);
+    // Success NOT entered: the hero time is unchanged (no setStart to the new slot).
+    expect(heroTime()).toBe(headerTimeBefore);
   });
 
   it("requires a reason before a reschedule slot can be picked, and sends it", async () => {
@@ -191,7 +199,7 @@ describe("ManageBooking", () => {
     // Button is back to its idle label (not stuck on "Cancelling…") and enabled.
     const yesCancel = screen.getByRole("button", { name: /yes, cancel/i }) as HTMLButtonElement;
     expect(yesCancel.disabled).toBe(false);
-    expect(screen.queryByText("This booking is cancelled.")).toBeNull();
+    expect(screen.queryByText("This booking is cancelled")).toBeNull();
   });
 
   it("surfaces an error and re-enables the slots when the reschedule POST rejects", async () => {
@@ -424,6 +432,134 @@ describe("ManageBooking", () => {
     expect(fn.mock.calls.some(([u]) => String(u).includes("/reschedule"))).toBe(false);
   });
 
+  // #1338: the page is what someone opens days later from a calendar reminder,
+  // so the time is the hero and the heading says how far off the call is.
+  describe("the rebuilt page (#1338)", () => {
+    const inDays = (n: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() + n);
+      d.setHours(14, 0, 0, 0);
+      return d.toISOString();
+    };
+
+    it("computes the countdown from the booking time rather than a fixed value", () => {
+      mockFetch({});
+      const { unmount } = render(
+        <ManageBooking {...baseProps} startsAt={inDays(0)} />,
+      );
+      expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Aisha, today");
+      unmount();
+
+      render(<ManageBooking {...baseProps} startsAt={inDays(3)} />);
+      expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Aisha, in three days");
+    });
+
+    // Coverage reassignment and bulk reassign both move a booking, so the name is
+    // whoever holds it NOW. The page renders what the server resolved live, so a
+    // reassigned booking shows the current advisor and never the original.
+    it("shows the advisor it is currently with", () => {
+      mockFetch({});
+      render(<ManageBooking {...baseProps} startsAt={inDays(2)} advisorName="Bea Cover" />);
+      expect(screen.getByText("Bea Cover")).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 2 }).textContent).toMatch(/^Bea, /);
+      expect(screen.queryByText("Aisha Bello")).toBeNull();
+    });
+
+    it("renders no name at all when the advisor cannot be resolved", () => {
+      mockFetch({});
+      render(
+        <ManageBooking {...baseProps} startsAt={inDays(2)} advisorName={null} advisorRole={null} />,
+      );
+      // No placeholder standing in for the missing name, and no stray comma left
+      // behind in the heading where it would have gone.
+      // "Your advisor will call you at ..." is the intended impersonal line and is
+      // asserted below; what must never appear is a stand-in for the NAME.
+      expect(screen.queryByText(/\b(unknown|not set|unassigned|n\/a|tbc|advisor name)\b/i)).toBeNull();
+      const heading = screen.getByRole("heading", { level: 2 }).textContent ?? "";
+      expect(heading.startsWith(",")).toBe(false);
+      expect(heading).toMatch(/^(today|tomorrow|in \w+ days)$/);
+      // The rest of the page still works: the phone line never names anybody.
+      expect(screen.getByText(/Your advisor will call you at/)).toBeTruthy();
+    });
+
+    // Nothing on the agent record says how a person wants to be referred to, a
+    // name does not tell you, and a guess misgenders a colleague in front of a
+    // customer. So no rendered state of this page may carry one.
+    it("uses no gendered pronoun in any state", async () => {
+      const pronouns = /\b(he|him|his|she|her|hers)\b/i;
+      mockFetch({ availability: { ok: true, body: { slots: [] } } });
+      const { container } = render(<ManageBooking {...baseProps} />);
+      expect(container.textContent).not.toMatch(pronouns);
+
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      expect(container.textContent).not.toMatch(pronouns);
+      await userEvent.click(screen.getByRole("button", { name: "Keep my current time" }));
+
+      await userEvent.click(screen.getByRole("button", { name: /cancel booking/i }));
+      expect(container.textContent).not.toMatch(pronouns);
+
+      const { container: cancelled } = render(
+        <ManageBooking {...baseProps} status="cancelled" />,
+      );
+      expect(cancelled.textContent).not.toMatch(pronouns);
+    });
+
+    // A completed call is terminal too: nothing to reschedule or cancel, and no
+    // prep note for a call that already happened.
+    it("offers no live actions on a completed booking", () => {
+      mockFetch({});
+      render(<ManageBooking {...baseProps} status="completed" />);
+      expect(screen.queryByRole("button", { name: /^reschedule$/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /cancel booking/i })).toBeNull();
+      expect(screen.queryByText("Before the call")).toBeNull();
+      expect(screen.getByText("This call has happened")).toBeTruthy();
+    });
+
+    it("marks the time cancelled rather than dropping it, and offers a way back", () => {
+      mockFetch({});
+      const { container } = render(<ManageBooking {...baseProps} status="cancelled" />);
+      const hero = container.querySelector("[data-hero-time]");
+      expect(hero?.className).toContain("line-through");
+      expect(screen.getByText("Cancelled")).toBeTruthy();
+      expect(screen.getByRole("link", { name: /book a new time/i })).toBeTruthy();
+    });
+
+    // Cancel is not a peer of Reschedule: an accidental cancel costs far more
+    // than an accidental reschedule click. Still a real control at rest (L49)
+    // and still a 44px target, just not equal weight.
+    it("gives Cancel booking less weight than Reschedule while staying a real control", () => {
+      mockFetch({});
+      render(<ManageBooking {...baseProps} />);
+      const reschedule = screen.getByRole("button", { name: /^reschedule$/i });
+      const cancel = screen.getByRole("button", { name: /cancel booking/i });
+      expect(reschedule.className).toContain("pn-btn");
+      // Underlined rose text, not a bordered button.
+      expect(cancel.className).toContain("underline");
+      expect(cancel.className).not.toContain("border-[var(--error)]");
+      // Both keep a 44px target.
+      expect(reschedule.className).toContain("min-h-[44px]");
+      expect(cancel.className).toContain("min-h-[44px]");
+    });
+
+    it("states the outcome of a completed reschedule", async () => {
+      mockFetch({
+        availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },
+        reschedule: { ok: true, body: { startsAt: "2026-06-21T15:00:00.000Z" } },
+      });
+      render(<ManageBooking {...baseProps} />);
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+      await pickDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+      // The new time, that a fresh invite is coming, and that the old time is gone.
+      expect(await screen.findByText("Your call is moved")).toBeTruthy();
+      const body = screen.getByText(/A new invite is on its way/);
+      expect(body.textContent).toContain("dana@example.com");
+      expect(body.textContent).toMatch(/released/);
+    });
+  });
+
   // #634: a cancelled booking must not dead-end the lead. The terminal state
   // offers a warm "Book a new time" link back into the same bucket.
   it("offers a rebook link into the same bucket after cancelling", async () => {
@@ -434,7 +570,7 @@ describe("ManageBooking", () => {
     await userEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
     await userEvent.click(screen.getByRole("button", { name: /yes, cancel/i }));
 
-    expect(await screen.findByText("This booking is cancelled.")).toBeTruthy();
+    expect(await screen.findByText("This booking is cancelled")).toBeTruthy();
     const rebook = screen.getByRole("link", { name: /book a new time/i });
     expect(rebook.getAttribute("href")).toBe("/book?xbc=411");
   });
