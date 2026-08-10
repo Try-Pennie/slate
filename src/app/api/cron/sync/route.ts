@@ -1,5 +1,4 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { shortErrorReason } from "@/lib/notify/error-text";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import {
@@ -202,11 +201,9 @@ export async function GET(req: NextRequest) {
         await recomputeBucketSlotsForToday(code, true, undefined, horizonDays).catch((err) =>
           // Best-effort: the recompute lane reconverges. Logged so a bucket that
           // never recomputes after a sync is findable.
-          log.warn("sync", {
-            msg: "post-sync recompute failed",
-            bucket: code,
-            reason: shortErrorReason(err),
-          }),
+          // #1188: the Error goes through so its stack survives, at warn rather
+          // than error because the every-minute recompute lane is the backstop.
+          log.warn("sync", { msg: "post-sync recompute failed", bucket: code }, err),
         );
       }
     }
