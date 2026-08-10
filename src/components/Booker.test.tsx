@@ -811,16 +811,21 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect((postedBody!.attendee as { phone: string }).phone).toBe("(203) 561-5295");
   });
 
-  // #1333: agents are assigned round robin at confirm time and call from their own
-  // lines, so any number on the booking screen is a promise we cannot keep.
-  it("shows no phone number in the event panel", async () => {
+  // #1333 / #1357: the panel's number is the LEAD's own, read back as a check on
+  // what they typed, and the copy carries the direction. The number that used to
+  // sit here was the main Pennie line, which read as a promise about who would
+  // call, and agents are assigned round robin at confirm time from their own lines.
+  it("reads the lead's own number back, stating the direction", async () => {
     global.fetch = okFetch();
     render(<Booker {...baseProps} attendee={{ name: "", email: "", phone: "(215) 555-0100" }} />);
     await dayChip();
 
     const panel = document.querySelector("aside");
     expect(panel).not.toBeNull();
-    expect(panel!.textContent).not.toMatch(/\(215\)/);
+    // The direction is in the words, so it cannot be read as the number we dial
+    // FROM. A bare number in a row of facts would reintroduce exactly that.
+    expect(panel!.textContent).toContain("We will call you on");
+    expect(panel!.textContent).toContain("(215) 555-0100");
     expect(panel!.textContent).not.toMatch(/attendee phone/i);
     // Duration and timezone stay. The zone is the VIEWER's, so it must not be
     // pinned to a name: CI runs in UTC and a developer's machine does not, and a
@@ -828,5 +833,31 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect(panel!.textContent).toMatch(/30m/);
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, " ");
     expect(panel!.textContent).toContain(zone);
+  });
+
+  it("shows no phone row at all until there is a number to read back", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} />);
+    await dayChip();
+
+    const panel = document.querySelector("aside")!;
+    // No placeholder standing in for a value the lead has not given: a row reading
+    // "Attendee phone number" is a label pretending to be a number, which is what
+    // this panel got wrong in the first place.
+    expect(panel.textContent).not.toMatch(/call you on/i);
+    expect(panel.textContent).not.toMatch(/attendee phone|phone number/i);
+  });
+
+  it("reads back the number as the lead types it, in the shape the field shows", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await userEvent.type(screen.getByLabelText("Phone"), "2155550100");
+
+    // The panel and the field never disagree about the same number (#1332).
+    const panel = document.querySelector("aside")!;
+    expect(panel.textContent).toContain("We will call you on");
+    expect(panel.textContent).toContain("(215) 555-0100");
   });
 });
