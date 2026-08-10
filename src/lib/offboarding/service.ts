@@ -77,9 +77,24 @@ async function flipLifecycle(
   if (plan.status === "not_found") return { status: "not_found" };
   if (plan.status === "noop") return { status: "noop", userId: user!.id };
 
+  // #1324: clear `bookable` in the SAME write that deactivates, not a second
+  // statement, so the row can never end up half-changed by one of them failing.
+  // Routing already requires `deactivated_at is null`, so this is not a routing
+  // fix: it is so every COUNT of the bookable pool is right without each reader
+  // remembering to filter on both columns, which is a workaround #1297's coverage
+  // readout already had to carry.
+  //
+  // Reactivation deliberately does NOT restore it. Re-admitting somebody to the
+  // routing pool is the decision `users.bookable` exists to make deliberately, and
+  // the roster sync already brings new agents in as bookable=false and never
+  // re-activates anyone.
   const { error } = await supabaseAdmin()
     .from("users")
-    .update({ deactivated_at: plan.deactivate ? new Date().toISOString() : null })
+    .update(
+      plan.deactivate
+        ? { deactivated_at: new Date().toISOString(), bookable: false }
+        : { deactivated_at: null },
+    )
     .eq("id", user!.id);
   if (error) {
     throw new Error(
