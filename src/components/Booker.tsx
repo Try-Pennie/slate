@@ -9,6 +9,7 @@ import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
+import { formatPhoneAsTyped, formatPhoneIfUsShaped } from "@/lib/phone-format";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
@@ -160,13 +161,6 @@ function ClockIcon() {
     </svg>
   );
 }
-function PhoneIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M5 4h3l2 5-2 1a12 12 0 005 5l1-2 5 2v3a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z" strokeLinejoin="round" />
-    </svg>
-  );
-}
 function AlertIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -238,7 +232,15 @@ export default function Booker({
   const [moveReason, setMoveReason] = useState("");
   const [moveDetail, setMoveDetail] = useState("");
   const [hour12, setHour12] = useState(true);
-  const [attendee, setAttendee] = useState<Attendee>(initialAttendee);
+  // #1332: a prefilled number is what the advisor ends up calling, and most real
+  // leads arrive with one from the landing page, so it reads the same as a typed
+  // one. Normalised HERE rather than in each page that builds the props, so a new
+  // construction site cannot forget. Only a US-shaped number is touched: anything
+  // longer is left exactly as given rather than truncated by the ten digit cap.
+  const [attendee, setAttendee] = useState<Attendee>(() => ({
+    ...initialAttendee,
+    phone: formatPhoneIfUsShaped(initialAttendee.phone),
+  }));
   // Honeypot (#1033): a real user never sees or fills the hidden decoy below, so
   // it stays empty; a bot that fills every field trips the server-side check.
   const [honeypot, setHoneypot] = useState("");
@@ -736,7 +738,14 @@ export default function Booker({
                 }
                 value={attendee[field]}
                 onChange={(e) => {
-                  setAttendee((a) => ({ ...a, [field]: e.target.value }));
+                  // #1332: the phone number is how the advisor reaches the lead,
+                  // so it is shaped and capped as they type rather than rejected
+                  // at submit, which is the worst moment to send them back.
+                  const next =
+                    field === "phone"
+                      ? formatPhoneAsTyped(e.target.value)
+                      : e.target.value;
+                  setAttendee((a) => ({ ...a, [field]: next }));
                   setFieldErrors((f) =>
                     f[field] ? { ...f, [field]: undefined } : f,
                   );
@@ -939,12 +948,11 @@ export default function Booker({
           </span>
           {meta ? `${meta.eventType.durationMin}m` : ""}
         </div>
-        <div className="flex items-center gap-2">
-          <span className={c.faint}>
-            <PhoneIcon />
-          </span>
-          {attendee.phone || "Attendee phone number"}
-        </div>
+        {/* #1333: no phone number here. Agents are assigned round robin at confirm
+            time and call from their own lines, so any number shown on the booking
+            screen is a promise we cannot keep, and a lead screening unknown
+            numbers may miss the real call while waiting for that one. Duration and
+            timezone stay. */}
         <div className="flex items-center gap-2">
           <span className={c.faint}>
             <GlobeIcon />
