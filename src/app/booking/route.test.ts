@@ -55,8 +55,10 @@ const rateLimit = vi.hoisted(() => ({
   },
 }));
 
+const recordApiOutcome = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/rate-limit", () => rateLimit);
+vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 
 import { POST } from "./route";
 
@@ -341,5 +343,63 @@ describe("POST /booking (embed) error mapping", () => {
     expect(body.duplicateWarning).toEqual({ disclose: false });
     // The only manage url in the response is the lead's own new booking.
     expect(JSON.stringify(body)).not.toContain("tok-old");
+  });
+});
+
+// #1313: the embed booker is the surface most customers actually book through,
+// and its outcomes were not counted at all, so the tally the admin panel reads
+// (and any rate signal built on it) was blind to the busiest route. Every branch
+// records, including the refusals, because the failure MIX is the thing worth
+// watching: one customer losing a race is ordinary contention, and fifty refused
+// in two hours is the cal.com failure of 2026-08-06, which nothing could tell
+// apart without a count.
+describe("POST /booking outcome tally (#1313)", () => {
+  beforeEach(() => recordApiOutcome.mockClear());
+  const outcomes = () => recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);
+
+  it("counts a successful booking", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["created", null]]);
+    // Always with the bucket, so a failure confined to one bucket is visible.
+    expect(recordApiOutcome.mock.calls[0][1]).toBe(VALID_BODY.bucketCode);
+  });
+
+  it("counts a slot refused at confirm under its own code", async () => {
+    service.createBooking.mockRejectedValue(new service.SlotUnavailableError("taken"));
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["error", "slot_unavailable"]]);
+  });
+
+  it("counts an empty pool apart from a lost slot race", async () => {
+    service.createBooking.mockRejectedValue(new service.NoEligibleAgentsError("none"));
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["error", "no_eligible_agents"]]);
+  });
+
+  it("counts a verify outage apart from both", async () => {
+    service.createBooking.mockRejectedValue(new service.VerifyUnavailableError("down"));
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["error", "verify_unavailable"]]);
+  });
+
+  it("counts a refused second booking as a dedupe, not an error", async () => {
+    service.createBooking.mockRejectedValue(
+      new service.ExistingCallError({ disclose: false }),
+    );
+    await post(VALID_BODY);
+    // Declining a duplicate is the product working, so it must not inflate the
+    // failure share the rate signal will watch.
+    expect(outcomes()).toEqual([["deduped", "existing_call"]]);
+  });
+
+  it("counts an unexpected failure rather than losing it", async () => {
+    service.createBooking.mockRejectedValue(new Error("something else"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(500);
+    expect(outcomes()).toEqual([["error", "internal"]]);
   });
 });
