@@ -759,3 +759,74 @@ describe("Booker timezone fallback", () => {
 });
 
 afterEach(() => vi.useRealTimers());
+
+// #1332 / #1333: the two things the booker's attendee step and event panel got
+// wrong about phone numbers.
+describe("Booker phone handling (#1332, #1333)", () => {
+  const okFetch = () =>
+    vi.fn(async () => ({ ok: true, json: async () => availability })) as unknown as typeof fetch;
+
+  it("shapes and caps the number as the lead types it", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    const phone = screen.getByLabelText("Phone") as HTMLInputElement;
+    await userEvent.type(phone, "215");
+    expect(phone.value).toBe("(215");
+    await userEvent.type(phone, "5550100");
+    expect(phone.value).toBe("(215) 555-0100");
+    // Digits past the tenth never make it in, so the lead is not told at submit.
+    await userEvent.type(phone, "999");
+    expect(phone.value).toBe("(215) 555-0100");
+  });
+
+  it("strips a pasted country code instead of shifting every digit", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    const phone = screen.getByLabelText("Phone") as HTMLInputElement;
+    await userEvent.click(phone);
+    await userEvent.paste("+1 (215) 555-0100");
+    // Not "(121) 555-5010", which is a different number that looks just as valid.
+    expect(phone.value).toBe("(215) 555-0100");
+  });
+
+  it("sends the formatted number, which validation still accepts", async () => {
+    let postedBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      postedBody = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+    expect((postedBody!.attendee as { phone: string }).phone).toBe("(203) 561-5295");
+  });
+
+  // #1333: agents are assigned round robin at confirm time and call from their own
+  // lines, so any number on the booking screen is a promise we cannot keep.
+  it("shows no phone number in the event panel", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...baseProps} attendee={{ name: "", email: "", phone: "(215) 555-0100" }} />);
+    await dayChip();
+
+    const panel = document.querySelector("aside");
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).not.toMatch(/\(215\)/);
+    expect(panel!.textContent).not.toMatch(/attendee phone/i);
+    // Duration and timezone stay. The zone is the VIEWER's, so it must not be
+    // pinned to a name: CI runs in UTC and a developer's machine does not, and a
+    // test that reads the host clock is the #1039 class of flake.
+    expect(panel!.textContent).toMatch(/30m/);
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, " ");
+    expect(panel!.textContent).toContain(zone);
+  });
+});
