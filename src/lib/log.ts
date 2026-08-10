@@ -19,9 +19,13 @@
  *
  *   slate tag=recompute msg="refreshed 3/5 due" util=42 drained=true
  *
- * Errors are passed THROUGH to `console.error` as a second argument rather than
- * flattened into the string, because Cloudflare serializes a real Error object
- * (verified in #708) and that is how the stack survives to the logs.
+ * Errors are passed THROUGH as a second argument rather than flattened into the
+ * string, because Cloudflare serializes a real Error object (verified in #708) and
+ * that is how the stack survives to the logs. All three levels take it (#1188), so
+ * a call site never has to choose between the right SEVERITY and keeping the
+ * stack: warn is correct for a failure with a documented backstop, which is most
+ * best-effort work, and promoting those to error to carry an error would overstate
+ * severity on paths that self-heal and pollute error-level queries.
  */
 
 /** The subsystem a line belongs to. Kept as a plain string: a union would need
@@ -50,15 +54,24 @@ export function formatLine(tag: LogTag, fields: LogFields): string {
   return parts.join(" ");
 }
 
+// `undefined` is never passed as a second argument: Cloudflare would record the
+// line with a trailing `undefined`. Each level spells that out rather than sharing
+// a writer, because a shared one has to take the console method as a closure and
+// these are hot paths (an every-minute lane logs on every tick).
 export const log = {
   /** Routine operational line: a cron cycle summary, an API call's outcome. */
-  info(tag: LogTag, fields: LogFields): void {
-    console.info(formatLine(tag, fields));
+  info(tag: LogTag, fields: LogFields, err?: unknown): void {
+    const line = formatLine(tag, fields);
+    if (err === undefined) console.info(line);
+    else console.info(line, err);
   },
 
-  /** Something is wrong but handled: a degraded path, a fallback, a stale lane. */
-  warn(tag: LogTag, fields: LogFields): void {
-    console.warn(formatLine(tag, fields));
+  /** Something is wrong but handled: a degraded path, a fallback, a stale lane.
+   *  Pass the `Error` so the stack survives while the severity stays honest. */
+  warn(tag: LogTag, fields: LogFields, err?: unknown): void {
+    const line = formatLine(tag, fields);
+    if (err === undefined) console.warn(line);
+    else console.warn(line, err);
   },
 
   /**
@@ -67,10 +80,7 @@ export const log = {
    */
   error(tag: LogTag, fields: LogFields, err?: unknown): void {
     const line = formatLine(tag, fields);
-    if (err === undefined) {
-      console.error(line);
-      return;
-    }
-    console.error(line, err);
+    if (err === undefined) console.error(line);
+    else console.error(line, err);
   },
 };

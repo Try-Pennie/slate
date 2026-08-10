@@ -85,4 +85,34 @@ describe("log", () => {
     log.error("booking", { msg: "insert failed" });
     expect(error.mock.calls[0]).toHaveLength(1);
   });
+
+  // #1188: warn is the correct severity for a failure with a documented backstop,
+  // which is most best-effort work. Without a third parameter those sites had to
+  // flatten the error to one line, which keeps it searchable but discards the
+  // stack, the part that says WHERE it broke. Promoting them to error instead
+  // would overstate severity on paths that genuinely self-heal and would pollute
+  // error-level queries, so warn carries the Error the same way.
+  it("passes an Error object through to console.warn so its stack is serialized", () => {
+    const err = new Error("google 503");
+    log.warn("sync", { msg: "channel stop failed" }, err);
+    expect(warn).toHaveBeenCalledWith('slate tag=sync msg="channel stop failed"', err);
+  });
+
+  it("omits warn's second argument entirely when there is no Error", () => {
+    log.warn("sync", { msg: "stale lane" });
+    expect(warn.mock.calls[0]).toHaveLength(1);
+  });
+
+  // The same for info, so the three levels have one signature between them and a
+  // call site does not have to remember which of them can carry an error.
+  it("passes an Error object through to console.info too, for symmetry", () => {
+    const err = new Error("partial");
+    log.info("recompute", { msg: "skipped a bucket" }, err);
+    expect(info).toHaveBeenCalledWith('slate tag=recompute msg="skipped a bucket"', err);
+  });
+
+  it("omits info's second argument entirely when there is no Error", () => {
+    log.info("recompute", { msg: "cycle" });
+    expect(info.mock.calls[0]).toHaveLength(1);
+  });
 });

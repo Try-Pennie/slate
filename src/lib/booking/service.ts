@@ -766,11 +766,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       void recomputeBucketSlotsForToday(bucketCode).catch((err) =>
         // Best-effort freshness nudge; the recompute lane reconverges this bucket
         // regardless. Logged so a lane that is failing EVERY time is findable.
-        log.warn("booking", {
-          msg: "post-confirm recompute failed",
-          bucket: bucketCode,
-          reason: shortErrorReason(err),
-        }),
+        log.warn("booking", { msg: "post-confirm recompute failed", bucket: bucketCode }, err),
       );
       return Promise.resolve();
     },

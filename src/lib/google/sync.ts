@@ -1,5 +1,4 @@
 import { nanoid } from "nanoid";
-import { shortErrorReason } from "@/lib/notify/error-text";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import {
@@ -836,11 +835,7 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
         await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch((err) =>
         // An un-stopped channel keeps Google notifying us about a calendar we
         // have dropped, so this is worth a trace even though teardown continues.
-        log.warn("sync", {
-          msg: "stopChannel failed",
-          channel_id: c.watch_channel_id,
-          reason: shortErrorReason(err),
-        }),
+        log.warn("sync", { msg: "stopChannel failed", channel_id: c.watch_channel_id }, err),
       );
       }
       // Drop cached busy blocks for a calendar the agent no longer has, so a
@@ -865,11 +860,11 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       try {
         if (cal.watch_channel_id && cal.watch_resource_id) {
           await stopChannel(email, cal.watch_channel_id, cal.watch_resource_id).catch((err) =>
-            log.warn("sync", {
-              msg: "stopChannel failed",
-              channel_id: cal.watch_channel_id,
-              reason: shortErrorReason(err),
-            }),
+            log.warn(
+              "sync",
+              { msg: "stopChannel failed", channel_id: cal.watch_channel_id },
+              err,
+            ),
           );
         }
         const channelId = nanoid();
@@ -932,11 +927,7 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
       await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch((err) =>
         // An un-stopped channel keeps Google notifying us about a calendar we
         // have dropped, so this is worth a trace even though teardown continues.
-        log.warn("sync", {
-          msg: "stopChannel failed",
-          channel_id: c.watch_channel_id,
-          reason: shortErrorReason(err),
-        }),
+        log.warn("sync", { msg: "stopChannel failed", channel_id: c.watch_channel_id }, err),
       );
       watchesStopped++;
     }

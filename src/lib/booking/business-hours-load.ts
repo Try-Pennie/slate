@@ -2,7 +2,6 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { makeCachedHoursReader } from "@/lib/booking/business-hours-cache";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
-import { shortErrorReason } from "@/lib/notify/error-text";
 import {
   resolveBusinessHours,
   BUSINESS_ZONE,
@@ -111,11 +110,13 @@ export const loadBusinessHoursCached = makeCachedHoursReader({
   load: loadBusinessHours,
   ttlMs: BUSINESS_HOURS_TTL_MS,
   now: () => Date.now(),
-  // log.warn cannot carry an Error yet (#1188), so the reason rides as a field.
+  // Warn, not error: a failed refresh serves the last known week and a sustained
+  // failure stops recompute writing, which pages separately. The Error goes
+  // through (#1188) so the stack says WHERE the read broke.
   onStale: (ageMs, err) =>
-    log.warn("business-hours", {
-      msg: "serving the last known week; refresh failed",
-      age_ms: ageMs,
-      reason: shortErrorReason(err),
-    }),
+    log.warn(
+      "business-hours",
+      { msg: "serving the last known week; refresh failed", age_ms: ageMs },
+      err,
+    ),
 });
