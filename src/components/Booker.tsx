@@ -161,6 +161,13 @@ function ClockIcon() {
     </svg>
   );
 }
+function PhoneIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M5 4h3l2 5-2 1a12 12 0 005 5l1-2 5 2v3a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z" strokeLinejoin="round" />
+    </svg>
+  );
+}
 function AlertIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -948,11 +955,29 @@ export default function Booker({
           </span>
           {meta ? `${meta.eventType.durationMin}m` : ""}
         </div>
-        {/* #1333: no phone number here. Agents are assigned round robin at confirm
-            time and call from their own lines, so any number shown on the booking
-            screen is a promise we cannot keep, and a lead screening unknown
-            numbers may miss the real call while waiting for that one. Duration and
-            timezone stay. */}
+        {/* #1333 / #1357: the number here is the LEAD's own, read back to them as a
+            check on what they typed, and the copy carries the direction. The number
+            that used to sit here was the main Pennie line, which read as a promise
+            about who would call: agents are assigned round robin at confirm time and
+            call from their own lines, so a lead screening unknown numbers could have
+            missed the real call while waiting for the one they were shown.
+            "We will call you on" cannot be read that way round.
+
+            Rendered only once there IS a number, rather than as a placeholder row:
+            a row that says "Attendee phone number" is a label pretending to be a
+            value, and inventing one for a field the lead has not filled in is the
+            thing this panel got wrong in the first place. */}
+        {attendee.phone && (
+          <div className="flex items-start gap-2">
+            <span className={`mt-0.5 shrink-0 ${c.faint}`}>
+              <PhoneIcon />
+            </span>
+            <span>
+              We will call you on{" "}
+              <span className="tabular-nums">{attendee.phone}</span>
+            </span>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <span className={c.faint}>
             <GlobeIcon />
