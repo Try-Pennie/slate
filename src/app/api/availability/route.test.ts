@@ -42,6 +42,21 @@ const sendThrottledAlert = vi.hoisted(() =>
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
+// #1328: the empty-state reason. The pure decision lives in
+// scripts/test-empty-reason.ts; what these mocks exist for is the ROUTE's part:
+// that it asks only when the result is empty, and that a failed hours or horizon
+// read degrades to null rather than failing the booker's hot path.
+const hours = vi.hoisted(() => ({
+  loadBusinessHoursCached: vi.fn(async () => ({
+    zone: "America/New_York",
+    rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+    source: "stored" as const,
+  })),
+}));
+const settings = vi.hoisted(() => ({ loadBookingHorizonDays: vi.fn(async () => 4) }));
+vi.mock("@/lib/booking/business-hours-load", () => hours);
+vi.mock("@/lib/booking/settings", () => settings);
+
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
 import { GET } from "./route";
@@ -229,5 +244,84 @@ describe("GET /api/availability unexpected faults", () => {
 
     expect(res.status).toBe(429);
     expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+});
+
+// #1328: "All times are taken right now. Check back soon." is untrue in both
+// halves when the reason is a closure. The route tells the booker which it is.
+describe("GET /api/availability empty-state reason (#1328)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rateLimit.availabilityWithinLimit.mockResolvedValue(true);
+    compute.filterSlotsFromNow.mockImplementation((s: string[]) => s);
+    hours.loadBusinessHoursCached.mockResolvedValue({
+      zone: "America/New_York",
+      rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+      source: "stored" as const,
+    });
+    settings.loadBookingHorizonDays.mockResolvedValue(4);
+  });
+
+  const emptyResult = {
+    slots: [],
+    orgName: "Pennie",
+    eventType: { name: "Call", description: null, duration_min: 20, min_notice_min: 120 },
+    routing: { requested_code: "411" },
+    source: "hit" as const,
+    computedAt: null,
+  };
+
+  it("says nothing about emptiness, and asks nothing, when there ARE times", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({
+      ...emptyResult,
+      slots: ["2026-08-11T14:00:00.000Z"],
+    });
+    const body = await (await get("411")).json();
+
+    expect(body.emptyBecause).toBeNull();
+    // The ordinary hot path must not pay for a question it does not need to ask.
+    expect(hours.loadBusinessHoursCached).not.toHaveBeenCalled();
+  });
+
+  it("reports busy when the org is open and nothing is free", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyResult);
+    const body = await (await get("411")).json();
+    expect(body.emptyBecause).toEqual({ kind: "busy" });
+  });
+
+  it("reports a closure with the reopening day when every searched day is shut", async () => {
+    // No open weekday at all, so every searched day is shut whatever today is.
+    hours.loadBusinessHoursCached.mockResolvedValue({
+      zone: "America/New_York",
+      rules: [],
+      source: "stored" as const,
+    });
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyResult);
+    const body = await (await get("411")).json();
+    expect(body.emptyBecause).toEqual({ kind: "closed", reopensOn: null });
+  });
+
+  // The failure path. This is the booker's hot path, and its worst failure mode is
+  // showing a lead nothing at all, so a presentational reason must never be able to
+  // take the request down: it degrades to null and the booker keeps the vaguer copy.
+  it("degrades to no reason, still 200, when the hours read fails", async () => {
+    hours.loadBusinessHoursCached.mockRejectedValue(new Error("business_hours is gone"));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyResult);
+    const res = await get("411");
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.emptyBecause).toBeNull();
+    // The slots themselves are unaffected: the reason is an extra, not a gate.
+    expect(body.slots).toEqual([]);
+  });
+
+  it("degrades to no reason when the horizon read fails", async () => {
+    settings.loadBookingHorizonDays.mockRejectedValue(new Error("booking_settings is gone"));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyResult);
+    const res = await get("411");
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).emptyBecause).toBeNull();
   });
 });

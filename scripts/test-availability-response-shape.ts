@@ -3,12 +3,21 @@
 // The cal.com drop-in embed reads this endpoint and depends on its EXACT
 // response shape staying stable:
 //
-//   { bucket: { code }, orgName, eventType: { name, description, durationMin }, slots }
+//   { bucket: { code }, orgName, eventType: { name, description, durationMin },
+//     slots, emptyBecause }
 //
 // A future refactor of the route could silently add, drop, or rename a field and
 // break every embedded booker without any test noticing. This locks the contract
 // two ways, both node-native with hand written fakes (no vi.mock), per the
 // scripts/test-*.ts harness convention:
+//
+// On ADDING a field (emptyBecause arrived with #1328): the readers of this payload
+// are Slate's own components, which ignore keys they do not know. widget.js only
+// WARMS this endpoint (`mode: "no-cors"`, result discarded), so it never parses the
+// body at all. An added field is therefore safe, while a rename or a removal still
+// breaks a reader, and this guard is still the thing that makes the difference
+// visible: the golden has to be edited deliberately, in the same change, with the
+// reasoning attached.
 //
 //   Part A (runtime golden): builds the response from a faked slot-cache result
 //   using the real filterSlotsFromNow, then deep-compares it to a frozen golden
@@ -32,7 +41,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // The frozen contract. Keys are exact and ordered by level; the embed reads all
 // of these and nothing else.
 const GOLDEN_SHAPE = {
-  top: ["bucket", "eventType", "orgName", "slots"],
+  top: ["bucket", "emptyBecause", "eventType", "orgName", "slots"],
   bucket: ["code"],
   eventType: ["description", "durationMin", "name"],
 };
@@ -106,6 +115,11 @@ function buildResponseBody(result: typeof fakeResult, nowMs: number) {
       durationMin: result.eventType.duration_min,
     },
     slots,
+    // #1328: null whenever there ARE slots, which is this fixture's case. The
+    // reason itself is computed by emptyReason and tested in
+    // scripts/test-empty-reason.ts; what belongs here is that the key exists and
+    // that a populated response says nothing about emptiness.
+    emptyBecause: slots.length === 0 ? { kind: "busy" as const } : null,
   };
 }
 
@@ -120,6 +134,7 @@ const GOLDEN_RESPONSE = {
     durationMin: 30,
   },
   slots: ["2026-06-10T14:00:00.000Z", "2026-06-10T15:00:00.000Z"],
+  emptyBecause: null,
 };
 
 const body = buildResponseBody(fakeResult, NOW_MS);
@@ -127,7 +142,10 @@ const body = buildResponseBody(fakeResult, NOW_MS);
 eq(JSON.stringify(body), JSON.stringify(GOLDEN_RESPONSE), "response body matches the frozen golden snapshot");
 
 // Field set/shape, asserted level by level so an add/remove/rename is named.
-eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, eventType, orgName, slots");
+eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, slots");
+// A response WITH times must never carry a reason for emptiness: the booker keys
+// its copy off this, and a stale "closed" beside a list of times would be absurd.
+eq(body.emptyBecause, null, "a populated response says nothing about why it might be empty");
 eq(Object.keys(body.bucket).sort().join(","), GOLDEN_SHAPE.bucket.join(","), "bucket has exactly { code }");
 eq(Object.keys(body.eventType).sort().join(","), GOLDEN_SHAPE.eventType.join(","), "eventType has exactly { name, description, durationMin }");
 

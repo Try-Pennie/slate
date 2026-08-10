@@ -5,6 +5,12 @@ import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { emptyReason, type EmptyReason } from "@/lib/availability/empty-reason";
+import { searchWindowDays } from "@/lib/availability/bookable-days";
+import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
+import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { DateTime } from "luxon";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +86,14 @@ async function handle(req: NextRequest) {
   };
   if (result.computedAt) headers["x-slots-computed-at"] = result.computedAt;
 
+  // #1328: with nothing to offer, the booker needs to know WHY. "All times are
+  // taken right now" is untrue in both halves when the reason is a closure, and a
+  // lead reads it as a busy week and comes back tomorrow to the same screen.
+  // Computed only when the result is actually empty, so the ordinary hot path pays
+  // nothing extra, and best-effort: if the reason cannot be worked out the client
+  // falls back to the vaguer copy rather than the request failing.
+  const emptyBecause = slots.length === 0 ? await whyEmpty(now) : null;
+
   // Rule #259: leads must never see routing internals, even in the network
   // payload. Tier-drop is intentionally invisible: we report the REQUESTED
   // bucket code (what the lead asked for) and serve the EFFECTIVE tier's slots,
@@ -94,7 +108,38 @@ async function handle(req: NextRequest) {
         durationMin: result.eventType.duration_min,
       },
       slots,
+      emptyBecause,
     },
     { headers },
   );
+}
+
+/**
+ * Why an empty result is empty (#1328), or null when it cannot be told.
+ *
+ * Null rather than a guess: the client then shows the vaguer existing copy, which
+ * is merely unhelpful, whereas a wrongly claimed closure names a date the lead
+ * will act on. Reads the same cached hours the gate uses, so no extra round trip
+ * on a warm isolate.
+ */
+async function whyEmpty(nowMs: number): Promise<EmptyReason | null> {
+  try {
+    const [hours, horizonDays] = await Promise.all([
+      loadBusinessHoursCached(),
+      loadBookingHorizonDays(),
+    ]);
+    const fromDay = DateTime.fromMillis(nowMs).setZone(hours.zone).toISODate();
+    if (!fromDay) return null;
+    return emptyReason({
+      businessHours: hours.rules,
+      fromDay,
+      // The same window the slots were searched over, so "every day we looked at
+      // was shut" means exactly that rather than some other span.
+      searchedDays: searchWindowDays(horizonDays),
+      zone: hours.zone,
+    });
+  } catch (err) {
+    log.warn("availability", { msg: "could not tell why availability is empty" }, err);
+    return null;
+  }
 }

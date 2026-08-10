@@ -89,6 +89,12 @@ interface AvailabilityResponse {
   orgName: string;
   eventType: { name: string; description: string | null; durationMin: number };
   slots: string[];
+  /** Why there is nothing to offer (#1328), when there is nothing. Null when the
+   *  server could not tell, in which case the vaguer copy is the honest one. */
+  emptyBecause?:
+    | { kind: "closed"; reopensOn: string | null }
+    | { kind: "busy" }
+    | null;
 }
 
 /** Avatar initials from the org name: "Pennie" -> "PE", "Acme Co" -> "AC". */
@@ -702,6 +708,19 @@ export default function Booker({
     </p>
   ) : null;
 
+  // #1328: "All times are taken right now. Check back soon." is untrue in both
+  // halves when the reason is a closure: nothing is taken, we are shut, and soon
+  // may be a week. A lead reads it as a busy week, comes back tomorrow to the same
+  // screen, and is never told anything. The server says which it is; when it cannot
+  // tell, the vaguer line is the honest one, because a wrongly claimed closure
+  // names a date the lead would act on.
+  const emptyMessage =
+    meta?.emptyBecause?.kind === "closed"
+      ? meta.emptyBecause.reopensOn
+        ? `We are closed until ${DateTime.fromISO(meta.emptyBecause.reopensOn, { zone }).toFormat("cccc, LLLL d")}.`
+        : "We are closed right now."
+      : "All times are taken right now. Check back soon.";
+
   // Times / booking form — rendered once and shared by both layouts (the 420px
   // cap is for the scrolling slot list only).
   const timesPanel = (
@@ -907,11 +926,7 @@ export default function Booker({
                 retry: `inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`,
                 grid: "space-y-2",
               }}
-              noDaysNode={
-                <p className={`text-sm ${c.faint}`}>
-                  All times are taken right now. Check back soon.
-                </p>
-              }
+              noDaysNode={<p className={`text-sm ${c.faint}`}>{emptyMessage}</p>}
               renderSlot={(iso) => (
                 <button
                   key={iso}
