@@ -27,6 +27,7 @@ import {
   BOOKING_CONTACT_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -157,6 +158,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    recordApiOutcome("created", parsed.data.bucketCode, null);
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,
@@ -170,6 +172,7 @@ export async function POST(req: NextRequest) {
     // and the Move they are about to make is a separate request.
     if (err instanceof ExistingCallError) {
       await refundAll();
+      recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call");
       return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
     }
     // Couldn't verify any candidate (likely a Google/DB outage), not a full
@@ -178,6 +181,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof VerifyUnavailableError) {
       // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
       await refundAll();
+      recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable");
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // A genuinely-full slot: someone else took it a moment earlier. Not the lead's
@@ -185,14 +189,21 @@ export async function POST(req: NextRequest) {
     // back (#1089) before surfacing "no times" (409).
     if (err instanceof SlotUnavailableError) {
       await refundAll();
+      // The headline case (#1313 / #1315): a customer refused at confirm on a slot
+      // WE ADVERTISED. One lost race is ordinary contention, which is why this
+      // does not page on its own; fifty in two hours is the cal.com failure of
+      // 2026-08-06, and it is indistinguishable from the one without a count.
+      recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable");
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     // An empty/misconfigured pool ALSO surfaces as "no times" (409) to the consumer
     // (the API route #358 distinguishes them), but it is a config problem, not a
     // slot race: a retry won't help, so we deliberately do NOT refund here.
     if (err instanceof NoEligibleAgentsError) {
+      recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents");
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
+    recordApiOutcome("error", parsed.data.bucketCode, "internal");
     return internalErrorResponse(err, "booking");
   }
 }
