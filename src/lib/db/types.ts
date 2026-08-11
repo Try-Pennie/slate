@@ -212,6 +212,9 @@ export interface MonitorAlertConfig {
   /** #1313: UI arm/disarm for the booking-failure-rate page. Null = unset (fall
    *  through to env then the disarmed default, per L56's observe-first rule). */
   failure_rate_armed: boolean | null;
+  /** #1315: UI arm/disarm for the availability-truth page. Null = unset (fall
+   *  through to the disarmed default, per L56's observe-first rule). */
+  availability_drift_armed: boolean | null;
   updated_at: string;
   updated_by: string | null;
 }

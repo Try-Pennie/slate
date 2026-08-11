@@ -32,6 +32,17 @@ import {
   saveRateState,
   readTodayOutcomes,
 } from "@/lib/monitor/booking-failure-rate-store";
+import {
+  runAvailabilityTruthCheck,
+  type TruthResult,
+  type TruthThresholds,
+} from "@/lib/monitor/availability-truth";
+import {
+  nextTruthBucket,
+  offeredSlots,
+  eligibleEmailsForBucket,
+  verifySlotLive,
+} from "@/lib/monitor/availability-truth-store";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
@@ -138,6 +149,28 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = {
   windowMs: 60 * 60_000,
   minAttempts: 20,
   failPct: 20,
+};
+
+// --- Are the times we offer actually free (#1315) ---
+// One bucket per tick on a rotating cursor, so the whole ladder is covered a few
+// times a day while the probe costs about one Google call per tick: a slot is
+// offered because SOME eligible agent was believed free, so finding one really
+// free agent settles it in the first batched read.
+//
+// `leadMs` skips the very next slots: those are minutes from being verified on
+// book anyway, and a booking landing on one mid-probe would read as drift.
+// `minVerified` is what stops a tick that could only read two calendars from
+// reaching a verdict at all.
+//
+// As with #1313, these are a starting point rather than a calibration (there is
+// no real customer traffic yet to fit them to), which is why the probe ships
+// DISARMED and logs its measured share; #1371 arms it once a real cycle has
+// been read.
+const TRUTH_THRESHOLDS: TruthThresholds = {
+  sampleSize: 5,
+  leadMs: 10 * 60_000,
+  minVerified: 3,
+  driftPct: 40,
 };
 
 /** Default zone for an agent with no schedule row, matching how the availability
@@ -496,6 +529,53 @@ export async function GET(req: NextRequest) {
       });
     } catch (err) {
       log.error("monitor", { msg: "booking failure rate check failed" }, err);
+    }
+
+    // --- Are the times we offer actually free (#1315) ---
+    // The LEADING half of the pair with #1313. That one sees customers already
+    // being turned away; this one asks whether the availability we publish is
+    // true before anyone books into it.
+    //
+    // Nothing measured that before. The data-anomaly probe above compares the
+    // cached slot ROW against a live recompute, and the recompute reads
+    // busy_blocks too, so it can only catch the row lagging the index, never the
+    // index having drifted from Google.
+    //
+    // Its own failure boundary (L73), like its sibling.
+    let availabilityTruth: TruthResult | { status: "errored" } = { status: "errored" };
+    try {
+      availabilityTruth = await runAvailabilityTruthCheck({
+        nowMs: now,
+        thresholds: TRUTH_THRESHOLDS,
+        nextBucket: nextTruthBucket,
+        cachedSlots: (code) =>
+          offeredSlots(
+            code,
+            new Date(now).toISOString(),
+            new Date(now + horizonDays * 24 * 60 * 60_000).toISOString(),
+          ),
+        eligibleEmails: eligibleEmailsForBucket,
+        verifySlot: verifySlotLive,
+        armed: settings.availabilityDriftArmed,
+        cooldownMs: settings.cooldownMs.availability_drift,
+        notify: (key, cooldownMs, text) => {
+          // alert-key: availability_drift:*
+          // alert-text-ok: our own copy from availability-truth.ts, built from
+          // measured counts; no error text can reach it.
+          return sendThrottledAlert(key, cooldownMs, text);
+        },
+        // alert-key: availability_drift:*
+        // all-clear-proof: scripts/test-monitor-availability-truth.ts - pins that a
+        // skipped tick, an unreadable slot payload, an unstaffed bucket, a Google
+        // failure and a sample too small to judge each send NOTHING. The all-clear
+        // hangs only off a sample that was measured clean.
+        resolve: (key, text) => resolveAlert(key, text),
+        log: (fields) => log.info("monitor", { ...fields }),
+        onError: (context, err) =>
+          log.error("monitor", { msg: "availability truth step failed", step: context }, err),
+      });
+    } catch (err) {
+      log.error("monitor", { msg: "availability truth check failed" }, err);
     }
 
     // --- Thin-tier staffing early warning (#569): a slow, low-priority whisper
@@ -858,6 +938,7 @@ export async function GET(req: NextRequest) {
       truncated,
       volume,
       failureRate,
+      availabilityTruth,
     });
   } finally {
     await releaseLock("cron_monitor", lock);

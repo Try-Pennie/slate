@@ -28,6 +28,7 @@ import {
   formatMinutes,
   resolveLowVolumeArmed,
   resolveFailureRateArmed,
+  resolveAvailabilityDriftArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
@@ -97,6 +98,7 @@ export default async function MonitorSettingsPage({
   // changes can't silently disarm the alert by leaving a falsely-unchecked box.
   const lowVolumeArmed = resolveLowVolumeArmed(config, envLowVolumeArmed());
   const failureRateArmed = resolveFailureRateArmed(config);
+  const availabilityDriftArmed = resolveAvailabilityDriftArmed(config);
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -419,6 +421,23 @@ export default async function MonitorSettingsPage({
               attempts fail over the last hour, and a follow up once bookings are
               completing again. Leave this off until real booking traffic has run for a
               while, so the threshold is set against numbers someone has seen.
+            </p>
+            <label className="mt-4 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="availability_drift_armed"
+                value="on"
+                defaultChecked={availabilityDriftArmed}
+                className="h-4 w-4"
+              />
+              Send a Slack alert when we offer times that are not really free
+            </label>
+            <p className="mt-1 text-xs text-fg-muted">
+              Off: Slate still samples the times each bucket is offering and checks them
+              against the real calendars every 5 minutes, recording what it finds in the
+              logs, but nobody is notified. On: Slack gets an alert naming the bucket when
+              too many of the times it offers turn out to be already busy, and a follow up
+              once they are free again.
             </p>
           </section>
 

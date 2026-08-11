@@ -220,6 +220,9 @@ describe("MonitorSettingsPage alert toggles", () => {
     expect(
       screen.getByRole("checkbox", { name: /send a slack alert when customers are failing to book/i }),
     ).toBeTruthy();
+    expect(
+      screen.getByRole("checkbox", { name: /send a slack alert when we offer times that are not really free/i }),
+    ).toBeTruthy();
   });
 
   it("says what is still happening while a toggle is OFF, so 'off' is not read as 'not running'", async () => {
@@ -230,6 +233,9 @@ describe("MonitorSettingsPage alert toggles", () => {
     expect(screen.getByText(/Slate still counts bookings, but nobody is notified/i)).toBeTruthy();
     expect(
       screen.getByText(/Slate still checks every 5 minutes and records what it finds in the logs, but nobody is notified/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/samples the times each bucket is offering and checks them against the real calendars/i),
     ).toBeTruthy();
   });
 

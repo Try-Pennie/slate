@@ -19,6 +19,7 @@ const blank = {
   infoChannel: "",
   lowVolumeArmed: "",
   failureRateArmed: "",
+  availabilityDriftArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -34,6 +35,7 @@ describe("parseMonitorSettingsForm", () => {
       // A blank/absent toggle is an explicit disarm (the checkbox is on/off, not tri-state).
       low_volume_armed: false,
       failure_rate_armed: false,
+      availability_drift_armed: false,
     });
   });
 
@@ -84,13 +86,20 @@ describe("parseMonitorSettingsForm", () => {
     expect(out.errors.length).toBeGreaterThan(0);
   });
 
-  it("arms each switch independently, so saving the form cannot arm the other one", () => {
+  it("arms each switch independently, so saving the form cannot arm another one", () => {
     const onlyRate = parseMonitorSettingsForm({ ...blank, failureRateArmed: "on" });
     expect(onlyRate.config.failure_rate_armed).toBe(true);
     expect(onlyRate.config.low_volume_armed).toBe(false);
+    expect(onlyRate.config.availability_drift_armed).toBe(false);
 
     const onlyVolume = parseMonitorSettingsForm({ ...blank, lowVolumeArmed: "on" });
     expect(onlyVolume.config.low_volume_armed).toBe(true);
     expect(onlyVolume.config.failure_rate_armed).toBe(false);
+    expect(onlyVolume.config.availability_drift_armed).toBe(false);
+
+    const onlyDrift = parseMonitorSettingsForm({ ...blank, availabilityDriftArmed: "on" });
+    expect(onlyDrift.config.availability_drift_armed).toBe(true);
+    expect(onlyDrift.config.low_volume_armed).toBe(false);
+    expect(onlyDrift.config.failure_rate_armed).toBe(false);
   });
 });
