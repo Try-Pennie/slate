@@ -134,6 +134,18 @@ export const BOOKABLE_CHECK_HOURLY_RATE_RULES: RateLimitRule[] = [
  * per-minute burst window (20/min) moved to the edge limiter (ROUTING_RATE_LIMITER,
  * #961).
  */
+/**
+ * Client error beacon ceiling (#1368), per IP. Deliberately generous per hour
+ * (a genuinely broken page can throw on several interactions before the person
+ * gives up) but low enough that one caller cannot drive the endpoint. Unlike the
+ * booking rules this one fails CLOSED at the call site: dropping a beacon report
+ * costs a log line, while an unmetered public path to Slack costs the pager.
+ */
+export const CLIENT_ERROR_RATE_RULES: RateLimitRule[] = [
+  { prefix: "clienterr:m", windowSeconds: 60, max: 10 },
+  { prefix: "clienterr:h", windowSeconds: 3600, max: 60 },
+];
+
 export const ROUTING_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "routing:h", windowSeconds: 3600, max: 200 },
 ];

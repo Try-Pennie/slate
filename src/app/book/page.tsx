@@ -1,5 +1,6 @@
 import Booker from "@/components/Booker";
 import StandaloneTheme from "@/components/StandaloneTheme";
+import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
@@ -93,6 +94,11 @@ export default async function BookEntry({
       {/* #706: standalone renders paint the theme at the document root so a dark
           booker has no beige gutter. The embed leaves the host in control. */}
       {!embedded && <StandaloneTheme theme={theme} />}
+      {/* #1368: a bundle that throws before the customer can submit produces no
+          request at all, so every server side detector stays green while nobody
+          can book. This is the only signal for that. It mounts inside Slate's own
+          document, which covers the standalone page and the embed iframe alike. */}
+      <ClientErrorBeacon page="/book" bucketCode={bucketCode} />
       <Booker
         bucketCode={bucketCode}
         salesforceId={first(sp, "external_id") || null}
