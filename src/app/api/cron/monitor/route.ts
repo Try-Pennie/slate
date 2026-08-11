@@ -51,6 +51,7 @@ import {
   markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { createStepRunner } from "@/lib/monitor/step-runner";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
   runCanaryGapFills,
@@ -172,6 +173,16 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = {
 // no real customer traffic yet to fit them to), which is why the probe ships
 // DISARMED and logs its measured share; #1371 arms it once a real cycle has
 // been read.
+/**
+ * What a step's result is when the step itself failed (#1281).
+ *
+ * Each one is an EXISTING "could not measure" state rather than a zero, because a
+ * contained failure must not present as a measurement: `volume: 0` reads as no
+ * bookings and `staleCount: 0` reads as every calendar fresh, which is the exact
+ * shape of the false-healthy defect the containment is meant not to introduce.
+ */
+const UNMEASURED_VOLUME: LowVolumeResult = { status: "unverified" };
+
 const TRUTH_THRESHOLDS: TruthThresholds = {
   leadMs: 10 * 60_000,
   // Not a sample size (#1381). The calendars are read ONCE over the whole horizon
@@ -356,6 +367,20 @@ export async function GET(req: NextRequest) {
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
 
   try {
+    // Every check below runs inside its OWN boundary and is timed on its own
+    // (#1281 + #1277). Thirteen checks used to share one try block with four
+    // catches between them, so an unexpected throw in any unguarded step skipped
+    // every step under it: a broken migration check disabled the availability
+    // probe and the cal.com override sweep, both of which exist to catch
+    // customer-visible problems. And no step recorded its cost, so a degrading
+    // shared budget surfaced in whichever check was most sensitive rather than in
+    // the one spending it (#1245 took three days to notice for that reason).
+    // Knowing which step failed and knowing what each cost want the same
+    // structure, so there is one runner.
+    const steps = createStepRunner({
+      now: () => performance.now(),
+      onError: (name, err) => log.error("monitor", { msg: "step failed", step: name }, err),
+    });
     const db = supabaseAdmin();
     // UI-tunable cooldowns + low-volume floors (#571); never throws (falls back
     // to env/coded defaults) so config can't take down the monitor tick.
@@ -422,77 +447,79 @@ export async function GET(req: NextRequest) {
     // would make every bucket read as zero and page the whole ladder, and clearing
     // an alert off a tick that measured nothing is the #1152 defect: a run that
     // could not read its signal must conclude nothing, in either direction.
-    const scan = slotByCode === null
-      ? null
-      : await runAvailabilityScan({
-      nowMs: now,
-      freshWindowMs: FRESH_WINDOW_MS,
-      probeConcurrency: PROBE_CONCURRENCY,
-      deadlineMs: now + MONITOR_LOCK_TTL_MS,
-      buckets: buckets.map((b) => ({ code: b.code, isTest: b.is_test ?? false })),
-      slotByCode,
-      ladder: tierLadder,
-      nameOf: (code) => bucketSpecForXbc(code)?.name ?? code,
-      eligibleIds: async (code) => {
-        const bucket = bucketByCode.get(code);
-        if (!bucket) return [];
-        const { ids } = await eligibleAgentIdsCached(bucket);
-        return ids;
-      },
-      shiftFor,
-      // #1296: an agent rostered past the org's close is not "should be showing
-      // times". Without this, closing the org would page as if the cache were
-      // wedged. Non-null here because the scan is skipped when the week is unreadable.
-      businessHours: { timezone: businessHours!.zone, rules: businessHours!.rules },
-      // Live recompute from the DB (busy_blocks/bookings/schedules, no Google);
-      // a falsy result or a throw is null (unverified), never a fake zero.
-      recomputeSlots: async (code) => {
-        const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
-        const res = await getBucketSlots(code, fromIso, toIso);
-        return res ? res.slots.length : null;
-      },
-      // #1167: re-check a suspected anomaly before paging. `cachedSlots` must be a
-      // FRESH single-row read, not the slotByCode map above: that map is the side
-      // of the comparison suspected of being wrong, so re-reading it would just
-      // repeat the same answer. Routed through slotHealthByCode so an unreadable
-      // computed_at fails the same way here as in the scan (#1171).
-      verify: {
-        attempts: ANOMALY_VERIFY_ATTEMPTS,
-        delayMs: ANOMALY_VERIFY_DELAY_MS,
-        maxBuckets: ANOMALY_VERIFY_MAX_BUCKETS,
-        cachedSlots: async (code) => {
-          // cap-safe: bucket_code is unique in bucket_slots, so this is one row.
-          const { data, error } = await db
-            .from("bucket_slots")
-            .select("bucket_code, payload, computed_at")
-            .eq("bucket_code", code)
-            .maybeSingle();
-          // A read we could not do must read as unknown, never as a healthy zero:
-          // the verifier treats null as inconclusive and keeps the finding.
-          if (error) return null;
-          if (!data) return 0;
-          // businessHours is non-null here: the scan only runs when it read (below).
-          return slotHealthByCode([data as SlotHealthRow], businessHours!).get(code)?.slotCount ?? null;
-        },
-        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      },
-      claimHeal: async (code) =>
-        (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
-      heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
-      onHealError: (code, err) =>
-        log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
-      notify: sendThrottledAlert,
-      info: sendThrottledInfo,
-      // all-clear-proof: scripts/test-monitor-availability-scan.ts - a truncated
-      // scan sends no all-clear and a paging tick does not also all-clear.
-      resolve: resolveAlert,
-      cooldownMs: {
-        dataAnomaly: settings.cooldownMs.availability_data_anomaly,
-        bookedSolid: settings.cooldownMs.availability_booked_solid,
-        fallbackCovered: settings.cooldownMs.fallback_covered_availability,
-      },
-      log: (fields) => log.info("monitor", { msg: "availability scan", ...fields }),
-    });
+    const scan = await steps.run("avail_scan", null, async () =>
+      slotByCode === null
+        ? null
+        : runAvailabilityScan({
+          nowMs: now,
+          freshWindowMs: FRESH_WINDOW_MS,
+          probeConcurrency: PROBE_CONCURRENCY,
+          deadlineMs: now + MONITOR_LOCK_TTL_MS,
+          buckets: buckets.map((b) => ({ code: b.code, isTest: b.is_test ?? false })),
+          slotByCode,
+          ladder: tierLadder,
+          nameOf: (code) => bucketSpecForXbc(code)?.name ?? code,
+          eligibleIds: async (code) => {
+            const bucket = bucketByCode.get(code);
+            if (!bucket) return [];
+            const { ids } = await eligibleAgentIdsCached(bucket);
+            return ids;
+          },
+          shiftFor,
+          // #1296: an agent rostered past the org's close is not "should be showing
+          // times". Without this, closing the org would page as if the cache were
+          // wedged. Non-null here because the scan is skipped when the week is unreadable.
+          businessHours: { timezone: businessHours!.zone, rules: businessHours!.rules },
+          // Live recompute from the DB (busy_blocks/bookings/schedules, no Google);
+          // a falsy result or a throw is null (unverified), never a fake zero.
+          recomputeSlots: async (code) => {
+            const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
+            const res = await getBucketSlots(code, fromIso, toIso);
+            return res ? res.slots.length : null;
+          },
+          // #1167: re-check a suspected anomaly before paging. `cachedSlots` must be a
+          // FRESH single-row read, not the slotByCode map above: that map is the side
+          // of the comparison suspected of being wrong, so re-reading it would just
+          // repeat the same answer. Routed through slotHealthByCode so an unreadable
+          // computed_at fails the same way here as in the scan (#1171).
+          verify: {
+            attempts: ANOMALY_VERIFY_ATTEMPTS,
+            delayMs: ANOMALY_VERIFY_DELAY_MS,
+            maxBuckets: ANOMALY_VERIFY_MAX_BUCKETS,
+            cachedSlots: async (code) => {
+              // cap-safe: bucket_code is unique in bucket_slots, so this is one row.
+              const { data, error } = await db
+                .from("bucket_slots")
+                .select("bucket_code, payload, computed_at")
+                .eq("bucket_code", code)
+                .maybeSingle();
+              // A read we could not do must read as unknown, never as a healthy zero:
+              // the verifier treats null as inconclusive and keeps the finding.
+              if (error) return null;
+              if (!data) return 0;
+              // businessHours is non-null here: the scan only runs when it read (below).
+              return slotHealthByCode([data as SlotHealthRow], businessHours!).get(code)?.slotCount ?? null;
+            },
+            wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          },
+          claimHeal: async (code) =>
+            (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
+          heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
+          onHealError: (code, err) =>
+            log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
+          notify: sendThrottledAlert,
+          info: sendThrottledInfo,
+          // all-clear-proof: scripts/test-monitor-availability-scan.ts - a truncated
+          // scan sends no all-clear and a paging tick does not also all-clear.
+          resolve: resolveAlert,
+          cooldownMs: {
+            dataAnomaly: settings.cooldownMs.availability_data_anomaly,
+            bookedSolid: settings.cooldownMs.availability_booked_solid,
+            fallbackCovered: settings.cooldownMs.fallback_covered_availability,
+          },
+          log: (fields) => log.info("monitor", { msg: "availability scan", ...fields }),
+        }),
+    );
     if (scan?.cleared) log.info("monitor", { msg: "availability anomaly alert cleared" });
     const page = scan?.page ?? [];
     const covered = scan?.covered ?? [];
@@ -502,16 +529,18 @@ export async function GET(req: NextRequest) {
     // cutover (counts + logs but does not alert) so the ramp can't cry wolf.
     // Extracted and tested (#1158): a failed count read reports unverified
     // rather than paging a false zero. ---
-    const volume: LowVolumeResult = await runLowVolumeCheck({
-      nowMs: now,
-      businessHours: VOLUME_BUSINESS_HOURS,
-      countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
-      floors: settings.floors,
-      armed: settings.lowVolumeArmed,
-      cooldownMs: settings.cooldownMs.low_booking_volume,
-      notify: sendThrottledAlert,
-      log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
-    });
+    const volume: LowVolumeResult = await steps.run("volume", UNMEASURED_VOLUME, () =>
+      runLowVolumeCheck({
+        nowMs: now,
+        businessHours: VOLUME_BUSINESS_HOURS,
+        countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
+        floors: settings.floors,
+        armed: settings.lowVolumeArmed,
+        cooldownMs: settings.cooldownMs.low_booking_volume,
+        notify: sendThrottledAlert,
+        log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
+      }),
+    );
 
     // --- Customers failing to complete a booking (#1313) ---
     // The lagging half of the pair with #1315: this one sees customers already
@@ -529,31 +558,31 @@ export async function GET(req: NextRequest) {
     // unreadable tally, an unreadable state row, and a window too small to judge
     // each send NOTHING, in either direction. The all-clear hangs only off a
     // measured healthy verdict.
-    let failureRate: FailureRateResult | { status: "errored" } = { status: "errored" };
-    try {
-      failureRate = await runBookingFailureRateCheck({
-        nowMs: now,
-        loadState: loadRateState,
-        saveState: saveRateState,
-        readToday: () => readTodayOutcomes(now),
-        thresholds: FAILURE_RATE_THRESHOLDS,
-        armed: settings.failureRateArmed,
-        cooldownMs: settings.cooldownMs.booking_failure_rate,
-        notify: (key, cooldownMs, text) => {
+    const failureRate = await steps.run<FailureRateResult | { status: "errored" }>(
+      "failure_rate",
+      { status: "errored" },
+      () =>
+        runBookingFailureRateCheck({
+          nowMs: now,
+          loadState: loadRateState,
+          saveState: saveRateState,
+          readToday: () => readTodayOutcomes(now),
+          thresholds: FAILURE_RATE_THRESHOLDS,
+          armed: settings.failureRateArmed,
+          cooldownMs: settings.cooldownMs.booking_failure_rate,
+          notify: (key, cooldownMs, text) => {
+            // alert-key: booking_failure_rate
+            // alert-text-ok: our own copy from booking-failure-rate.ts, built from
+            // measured counts; no error text can reach it.
+            return sendThrottledAlert(key, cooldownMs, text);
+          },
           // alert-key: booking_failure_rate
-          // alert-text-ok: our own copy from booking-failure-rate.ts, built from
-          // measured counts; no error text can reach it.
-          return sendThrottledAlert(key, cooldownMs, text);
-        },
-        // alert-key: booking_failure_rate
-        resolve: (key, text) => resolveAlert(key, text),
-        log: (fields) => log.info("monitor", { ...fields }),
-        onError: (context, err) =>
-          log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
-      });
-    } catch (err) {
-      log.error("monitor", { msg: "booking failure rate check failed" }, err);
-    }
+          resolve: (key, text) => resolveAlert(key, text),
+          log: (fields) => log.info("monitor", { ...fields }),
+          onError: (context, err) =>
+            log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
+        }),
+    );
 
     // --- Are the times we offer actually free (#1315) ---
     // The LEADING half of the pair with #1313. That one sees customers already
@@ -566,44 +595,44 @@ export async function GET(req: NextRequest) {
     // index having drifted from Google.
     //
     // Its own failure boundary (L73), like its sibling.
-    let availabilityTruth: TruthResult | { status: "errored" } = { status: "errored" };
-    try {
-      availabilityTruth = await runAvailabilityTruthCheck({
-        nowMs: now,
-        thresholds: TRUTH_THRESHOLDS,
-        nextBucket: nextTruthBucket,
-        cachedSlots: (code) =>
-          offeredSlots(
-            code,
-            new Date(now).toISOString(),
-            new Date(now + horizonDays * 24 * 60 * 60_000).toISOString(),
-          ),
-        eligibleEmails: eligibleEmailsForBucket,
-        verifyWindows: verifyWindowsLive,
-        alertContext: () => driftAlertContext(),
-        markDrifting: markBucketDrifting,
-        settleSilently: settleAlertsSilently,
-        armed: settings.availabilityDriftArmed,
-        cooldownMs: settings.cooldownMs.availability_drift,
-        notify: (key, cooldownMs, text) => {
+    const availabilityTruth = await steps.run<TruthResult | { status: "errored" }>(
+      "avail_truth",
+      { status: "errored" },
+      () =>
+        runAvailabilityTruthCheck({
+          nowMs: now,
+          thresholds: TRUTH_THRESHOLDS,
+          nextBucket: nextTruthBucket,
+          cachedSlots: (code) =>
+            offeredSlots(
+              code,
+              new Date(now).toISOString(),
+              new Date(now + horizonDays * 24 * 60 * 60_000).toISOString(),
+            ),
+          eligibleEmails: eligibleEmailsForBucket,
+          verifyWindows: verifyWindowsLive,
+          alertContext: () => driftAlertContext(),
+          markDrifting: markBucketDrifting,
+          settleSilently: settleAlertsSilently,
+          armed: settings.availabilityDriftArmed,
+          cooldownMs: settings.cooldownMs.availability_drift,
+          notify: (key, cooldownMs, text) => {
+            // alert-key: availability_drift:*
+            // alert-text-ok: our own copy from availability-truth.ts, built from
+            // measured counts; no error text can reach it.
+            return sendThrottledAlert(key, cooldownMs, text);
+          },
           // alert-key: availability_drift:*
-          // alert-text-ok: our own copy from availability-truth.ts, built from
-          // measured counts; no error text can reach it.
-          return sendThrottledAlert(key, cooldownMs, text);
-        },
-        // alert-key: availability_drift:*
-        // all-clear-proof: scripts/test-monitor-availability-truth.ts - pins that a
-        // skipped tick, an unreadable slot payload, an unstaffed bucket, a Google
-        // failure and a sample too small to judge each send NOTHING. The all-clear
-        // hangs only off a sample that was measured clean.
-        resolve: (key, text) => resolveAlert(key, text),
-        log: (fields) => log.info("monitor", { ...fields }),
-        onError: (context, err) =>
-          log.error("monitor", { msg: "availability truth step failed", step: context }, err),
-      });
-    } catch (err) {
-      log.error("monitor", { msg: "availability truth check failed" }, err);
-    }
+          // all-clear-proof: scripts/test-monitor-availability-truth.ts - pins that a
+          // skipped tick, an unreadable slot payload, an unstaffed bucket, a Google
+          // failure and a sample too small to judge each send NOTHING. The all-clear
+          // hangs only off a sample that was measured clean.
+          resolve: (key, text) => resolveAlert(key, text),
+          log: (fields) => log.info("monitor", { ...fields }),
+          onError: (context, err) =>
+            log.error("monitor", { msg: "availability truth step failed", step: context }, err),
+        }),
+    );
 
     // --- Thin-tier staffing early warning (#569): a slow, low-priority whisper
     // of tiers resting on 1-2 bookable agents, reusing the #584 depth helper
@@ -611,12 +640,14 @@ export async function GET(req: NextRequest) {
     // staffing can add coverage before a thin tier saturates and trips the
     // reactive availability signals above. depth-0 dead-ends are those signals'
     // job and are excluded; the info-channel post self-throttles to ~daily. ---
-    const thinTierCount = await runThinTierStaffingCheck({
-      loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
-      notify: sendThrottledInfo,
-      cooldownMs: settings.cooldownMs.thin_tier_staffing,
-      log: (m) => log.info("thin-tier", { msg: m }),
-    });
+    const thinTierCount = await steps.run("thin_tier", null, () =>
+      runThinTierStaffingCheck({
+        loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
+        notify: sendThrottledInfo,
+        cooldownMs: settings.cooldownMs.thin_tier_staffing,
+        log: (m) => log.info("thin-tier", { msg: m }),
+      }),
+    );
 
     // --- Schedule coverage (#838): a bookable agent with no availability_schedules
     // row silently shows zero availability and takes no bookings. The row should
@@ -645,21 +676,23 @@ export async function GET(req: NextRequest) {
       ]);
       return missingScheduleAgents(agents, new Set(scheds.map((s) => s.user_id)));
     };
-    const scheduleCoverage = await runScheduleCoverageCheck({
-      loadMissingAgents,
-      heal: async (orgIds) => {
-        // Per-org so one org's failed fill can't skip the others; a throw is
-        // logged and left for the recheck to surface as the alert.
-        for (const orgId of orgIds) {
-          await ensureDefaultSchedules(orgId).catch(() =>
-            log.warn("schedule-coverage", { msg: "self-heal fill failed", org_id: orgId }),
-          );
-        }
-      },
-      notify: sendThrottledInfo,
-      cooldownMs: settings.cooldownMs.agents_without_schedule,
-      log: (m) => log.info("schedule-coverage", { msg: m }),
-    });
+    const scheduleCoverage = await steps.run("schedule_coverage", null, () =>
+      runScheduleCoverageCheck({
+        loadMissingAgents,
+        heal: async (orgIds) => {
+          // Per-org so one org's failed fill can't skip the others; a throw is
+          // logged and left for the recheck to surface as the alert.
+          for (const orgId of orgIds) {
+            await ensureDefaultSchedules(orgId).catch(() =>
+              log.warn("schedule-coverage", { msg: "self-heal fill failed", org_id: orgId }),
+            );
+          }
+        },
+        notify: sendThrottledInfo,
+        cooldownMs: settings.cooldownMs.agents_without_schedule,
+        log: (m) => log.info("schedule-coverage", { msg: m }),
+      }),
+    );
 
     // --- Routing-attribute coverage (#226): a bookable agent with no routing
     // attributes matches no bucket criteria, so unless someone added them as a
@@ -692,12 +725,14 @@ export async function GET(req: NextRequest) {
       ]);
       return findUnroutableAgents(agents, new Set(members.map((m) => m.user_id)));
     };
-    const attributeCoverage = await runAttributeCoverageCheck({
-      loadUnroutableAgents,
-      notify: sendThrottledInfo,
-      cooldownMs: settings.cooldownMs.agents_without_routing,
-      log: (m) => log.info("attribute-coverage", { msg: m }),
-    });
+    const attributeCoverage = await steps.run("attribute_coverage", null, () =>
+      runAttributeCoverageCheck({
+        loadUnroutableAgents,
+        notify: sendThrottledInfo,
+        cooldownMs: settings.cooldownMs.agents_without_routing,
+        log: (m) => log.info("attribute-coverage", { msg: m }),
+      }),
+    );
 
     // --- Sync-staleness gauge (#241): after #238 the backstop sync rotates
     // least-recently-synced first, so nothing surfaced an agent silently dropping
@@ -727,13 +762,15 @@ export async function GET(req: NextRequest) {
       ]);
       return syncRotationCandidates(agents, new Set(cals.map((c) => c.user_id)));
     };
-    const syncStaleness = await runSyncStalenessCheck({
-      loadAgents: loadStaleCandidates,
-      nowMs: now,
-      notify: sendThrottledAlert,
-      cooldownMs: settings.cooldownMs.sync_staleness,
-      log: (m) => log.info("sync-staleness", { msg: m }),
-    });
+    const syncStaleness = await steps.run("sync_staleness", null, () =>
+      runSyncStalenessCheck({
+        loadAgents: loadStaleCandidates,
+        nowMs: now,
+        notify: sendThrottledAlert,
+        cooldownMs: settings.cooldownMs.sync_staleness,
+        log: (m) => log.info("sync-staleness", { msg: m }),
+      }),
+    );
 
     // --- Appointments held by an agent who has left the pool (#1215): a customer
     // booked with a departed advisor. Deactivating and reassigning are independent
@@ -777,11 +814,13 @@ export async function GET(req: NextRequest) {
       );
       return inactiveHoldersFromBookings(outOfPool, bookings);
     };
-    const inactiveBookings = await runInactiveAgentBookingsCheck({
-      loadHolders: loadInactiveHolders,
-      cooldownMs: settings.cooldownMs.inactive_agent_bookings,
-      log: (fields) => log.info("inactive-agent-bookings", { msg: "tick", ...fields }),
-    });
+    const inactiveBookings = await steps.run("inactive_bookings", null, () =>
+      runInactiveAgentBookingsCheck({
+        loadHolders: loadInactiveHolders,
+        cooldownMs: settings.cooldownMs.inactive_agent_bookings,
+        log: (fields) => log.info("inactive-agent-bookings", { msg: "tick", ...fields }),
+      }),
+    );
 
     // --- Appointments a coverage sweep GAVE UP on (#1242). The complement of the
     // check above: that one measures agents out of the pool, this one measures the
@@ -843,44 +882,48 @@ export async function GET(req: NextRequest) {
       ) ?? []) as CoverageOutAgent[];
       return strandedHoldersFromItems(stranded, agents);
     };
-    const strandedCoverage = await runCoverageNeedsHumanCheck({
-      loadStranded: loadStrandedHolders,
-      cooldownMs: settings.cooldownMs.coverage_needs_human,
-      log: (fields) => log.info("coverage-needs-human", { msg: "tick", ...fields }),
-    });
+    const strandedCoverage = await steps.run("stranded_coverage", null, () =>
+      runCoverageNeedsHumanCheck({
+        loadStranded: loadStrandedHolders,
+        cooldownMs: settings.cooldownMs.coverage_needs_human,
+        log: (fields) => log.info("coverage-needs-human", { msg: "tick", ...fields }),
+      }),
+    );
 
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
     // whole session). CI guards merge time, this guards PROD. Cheap: one RPC.
     // A read that fails pages as "unverified" rather than passing as healthy.
-    const migrationStatus = await runMigrationDriftCheck({
-      shippedVersion: SHIPPED_MIGRATION_VERSION,
-      readAppliedVersions: readAppliedMigrationVersions,
-      notify: sendThrottledAlert,
-      // #1134: say so when the schema catches up. This page is cleared by a human
-      // running a migration, so silence afterwards is ambiguous: it looks the same
-      // as the cooldown still running.
-      // all-clear-proof: scripts/test-migration-drift.ts - an unreadable applied
-      // set is classified unverified and never announces recovery.
-      resolve: resolveAlert,
-      cooldownMs: settings.cooldownMs.migration_version_lag,
-      log: (msg, status, applied) =>
-        log.info("migration-drift", {
-          msg,
-          status,
-          shipped: SHIPPED_MIGRATION_VERSION,
-          // A full set of ~70+ versions per tick is log noise; the count is enough
-          // for forensics and the alert itself names any missing versions.
-          appliedCount: applied?.length ?? null,
-        }),
-    });
+    const migrationStatus = await steps.run("migration_drift", "unknown" as const, () =>
+      runMigrationDriftCheck({
+        shippedVersion: SHIPPED_MIGRATION_VERSION,
+        readAppliedVersions: readAppliedMigrationVersions,
+        notify: sendThrottledAlert,
+        // #1134: say so when the schema catches up. This page is cleared by a human
+        // running a migration, so silence afterwards is ambiguous: it looks the same
+        // as the cooldown still running.
+        // all-clear-proof: scripts/test-migration-drift.ts - an unreadable applied
+        // set is classified unverified and never announces recovery.
+        resolve: resolveAlert,
+        cooldownMs: settings.cooldownMs.migration_version_lag,
+        log: (msg, status, applied) =>
+          log.info("migration-drift", {
+            msg,
+            status,
+            shipped: SHIPPED_MIGRATION_VERSION,
+            // A full set of ~70+ versions per tick is log noise; the count is enough
+            // for forensics and the alert itself names any missing versions.
+            appliedCount: applied?.length ?? null,
+          }),
+      }),
+    );
 
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
     // per-lane alert cooldown dedupes the overlap. Never throws.
-    await alertOnStaleLanes();
+    await steps.run("lane_watchdog", undefined, () => alertOnStaleLanes());
 
     // Reliable trigger for the booking smoke canary (#525 follow-up). GitHub
     // scheduled runs are best-effort and get dropped under load (2-3h gaps against
@@ -899,15 +942,17 @@ export async function GET(req: NextRequest) {
     // lane-watchdog backstop still pages if both GitHub AND the gap-fill fail it.
     // Quiet no-op until GITHUB_CANARY_TOKEN is set. Never throws.
     const canaryToken = githubCanaryToken();
-    await runCanaryGapFills({
-      now,
-      token: canaryToken,
-      readHeartbeatMs,
-      acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
-      dispatch: (mode) => postCanaryWorkflowDispatch(canaryToken, mode),
-      onInfo: (msg) => log.info("canary-trigger", { msg }),
-      onError: (msg, err) => log.error("canary-trigger", { msg }, err),
-    }).catch((err) => log.error("canary-trigger", { msg: "gap-fill threw" }, err));
+    await steps.run("canary_gapfill", undefined, () =>
+      runCanaryGapFills({
+        now,
+        token: canaryToken,
+        readHeartbeatMs,
+        acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
+        dispatch: (mode) => postCanaryWorkflowDispatch(canaryToken, mode),
+        onInfo: (msg) => log.info("canary-trigger", { msg }),
+        onError: (msg, err) => log.error("canary-trigger", { msg }, err),
+      }),
+    );
 
     // --- cal.com override sweep (#1253) -------------------------------------
     //
@@ -922,25 +967,30 @@ export async function GET(req: NextRequest) {
     // It lives on this lane rather than a new one because this lane already both
     // heals and alerts (it recomputes caches and fills missing schedules), and
     // because the every-minute invocation is short of CPU headroom (#1245).
-    const overrideSweep = await runCalcomOverrideSweep({
-      nowMs: now,
-      loadCandidates: () => loadFailedOverrideCandidates(db),
-      retry: (requestId) => retryOverrideForRequest(db, requestId),
-      alert: async (key, text) => {
+    const overrideSweep = await steps.run("override_sweep", null, () =>
+      runCalcomOverrideSweep({
+        nowMs: now,
+        loadCandidates: () => loadFailedOverrideCandidates(db),
+        retry: (requestId) => retryOverrideForRequest(db, requestId),
+        alert: async (key, text) => {
+          // alert-key: ooo_calcom_unprotected
+          // alert-text-ok: our own copy from calcom-override-sweep.ts, never a raw error.
+          await sendThrottledAlert(key, settings.cooldownMs.ooo_calcom_unprotected, text);
+        },
         // alert-key: ooo_calcom_unprotected
-        // alert-text-ok: our own copy from calcom-override-sweep.ts, never a raw error.
-        await sendThrottledAlert(key, settings.cooldownMs.ooo_calcom_unprotected, text);
-      },
-      // alert-key: ooo_calcom_unprotected
-      resolve: (key, text) => resolveAlert(key, text),
-      log: (msg) => log.info("calcom-sweep", { msg }),
-    }).catch((err) => {
-      log.error("calcom-sweep", { msg: "sweep threw" }, err);
-      return null;
-    });
+        resolve: (key, text) => resolveAlert(key, text),
+        log: (msg) => log.info("calcom-sweep", { msg }),
+      }),
+    );
+
+    // One line per tick carrying every step's own cost and, when something broke,
+    // WHICH steps did not run (#1281 + #1277). Named rather than only counted: "two
+    // checks failed" sends the reader to the logs, "override_sweep,migration_drift
+    // failed" tells them which customer-visible checks were skipped this tick.
+    log.info("monitor", { msg: "cycle", ...steps.fields() });
 
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
-    // Best-effort — must never affect the monitor's own response.
+    // Best-effort, and must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
 
     return NextResponse.json({
@@ -953,11 +1003,16 @@ export async function GET(req: NextRequest) {
       thinTiers: thinTierCount,
       scheduleCoverage,
       attributeCoverage,
-      syncStaleness: {
-        stale: syncStaleness.staleCount,
-        worstNeverSynced: syncStaleness.worstNeverSynced,
-        worstAgeMs: syncStaleness.worstAgeMs,
-      },
+      // null, never a zeroed shape: `stale: 0` reads as every calendar fresh, which
+      // is exactly the false-healthy reading a contained failure must not produce.
+      syncStaleness:
+        syncStaleness === null
+          ? null
+          : {
+              stale: syncStaleness.staleCount,
+              worstNeverSynced: syncStaleness.worstNeverSynced,
+              worstAgeMs: syncStaleness.worstAgeMs,
+            },
       overrideSweep,
       inactiveBookings,
       strandedCoverage,
@@ -966,6 +1021,9 @@ export async function GET(req: NextRequest) {
       volume,
       failureRate,
       availabilityTruth,
+      // Which steps failed, so a caller (and the smoke check) sees a degraded tick
+      // rather than a 200 that looks identical to a clean one.
+      steps: steps.outcomes().filter((o) => !o.ok).map((o) => o.name),
     });
   } finally {
     await releaseLock("cron_monitor", lock);
