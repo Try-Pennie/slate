@@ -13,7 +13,7 @@
 // not a slot we checked and found fine. Google refusing a calendar has to leave
 // the sample smaller, never cleaner.
 import {
-  sampleSlotStarts,
+  slotsToCheck,
   classifySlotVerdict,
   summarizeSample,
   judgeAvailabilityTruth,
@@ -41,92 +41,66 @@ const NOW = Date.UTC(2026, 7, 11, 14, 0, 0);
 const iso = (offsetMin: number) => new Date(NOW + offsetMin * MIN).toISOString();
 
 const THRESHOLDS: TruthThresholds = {
-  sampleSize: 5,
-  nearCount: 2,
   leadMs: 10 * MIN,
+  maxSlots: 1000,
   minVerified: 3,
   driftPct: 40,
 };
-/** Spec-only view, so a test can vary the sample shape without a full threshold set. */
-const spec = (sampleSize: number, nearCount: number, leadMs = THRESHOLDS.leadMs) => ({
-  sampleSize,
-  nearCount,
-  leadMs,
-});
+/** Spec-only view, so a test can vary the window without a full threshold set. */
+const spec = (leadMs = THRESHOLDS.leadMs, maxSlots = THRESHOLDS.maxSlots) => ({ leadMs, maxSlots });
 
-// --- sampleSlotStarts: near slots AND the rest of the horizon (#1376) ---
+// --- slotsToCheck: EVERY time the bucket is advertising (#1381) ---
 //
-// The soonest times are where a stale cache costs a customer first, so they stay
-// weighted. But Slate advertises several DAYS, and a sample that only ever reads
-// the head of the list leaves everything past the next hour unchecked while the
-// probe reports on "availability". Both halves are asserted below, because a
-// sample that quietly slid back to head-only would still pass every near-slot
-// assertion on its own.
+// A sample of the offered times leaves the rest unchecked while the probe
+// reports on "availability" as though it had looked at all of it. Google's
+// freeBusy is a RANGE query, so covering everything is one read per calendar
+// chunk rather than one per slot, which is fewer calls than any sample needed.
+// What is left here is the two filters that are still real: the lead window,
+// and an unreadable start.
+{
+  const day = 24 * 60;
+  const starts: string[] = [];
+  for (let d = 0; d < 4; d += 1) for (let h = 0; h < 24; h += 1) starts.push(iso(d * day + h * 60));
+  const picked = slotsToCheck(starts, NOW, spec());
+  eq(picked.length, starts.length - 1, "every offered time is checked except the one inside the lead window");
+  eq(picked[0], iso(60), "starting at the soonest bookable one");
+  eq(picked[picked.length - 1], iso(3 * day + 23 * 60), "and running to the far end of the horizon");
+}
 {
   const starts = [iso(120), iso(30), iso(600), iso(45), iso(20)];
-  const picked = sampleSlotStarts(starts, NOW, spec(3, 3));
-  eq(picked, [iso(20), iso(30), iso(45)], "an all-near sample is still the soonest slots, in time order");
+  eq(
+    slotsToCheck(starts, NOW, spec()),
+    [iso(20), iso(30), iso(45), iso(120), iso(600)],
+    "the list comes back in time order, whatever order the payload was in",
+  );
 }
 {
   // A slot inside the lead time is about to be checked by verify-on-book anyway,
   // and a booking landing on it mid-probe would read as drift. Skip it.
   const starts = [iso(1), iso(5), iso(30), iso(60)];
-  const picked = sampleSlotStarts(starts, NOW, spec(5, 2));
-  eq(picked, [iso(30), iso(60)], "skips slots closer than the lead time");
+  eq(slotsToCheck(starts, NOW, spec()), [iso(30), iso(60)], "skips slots closer than the lead time");
 }
 {
-  eq(sampleSlotStarts([iso(-60), iso(-5)], NOW, spec(5, 2, 0)), [], "a payload of only past slots samples nothing");
-  eq(sampleSlotStarts([], NOW, spec(5, 2, 0)), [], "an empty payload samples nothing");
+  eq(slotsToCheck([iso(-60), iso(-5)], NOW, spec(0)), [], "a payload of only past slots checks nothing");
+  eq(slotsToCheck([], NOW, spec(0)), [], "an empty payload checks nothing");
 }
 {
   const starts = [iso(30), "not-a-timestamp", iso(60)];
-  const picked = sampleSlotStarts(starts, NOW, spec(5, 2));
-  eq(picked, [iso(30), iso(60)], "an unreadable start is dropped, never sorted as epoch 0 or NaN");
-}
-{
-  // The headline case: four days of offered times, the shape production has.
-  // A head-only sample reads the first 5 of 96 and calls it availability.
-  const day = 24 * 60;
-  const starts: string[] = [];
-  for (let d = 0; d < 4; d += 1) for (let h = 0; h < 24; h += 1) starts.push(iso(d * day + h * 60));
-  const picked = sampleSlotStarts(starts, NOW, spec(5, 2));
-  eq(picked.length, 5, "the sample size is the COST ceiling and is not exceeded by spreading");
-  eq(picked[0], iso(60), "the two soonest bookable slots lead the sample");
-  eq(picked[1], iso(120), "and the second");
-  const lastMs = Date.parse(picked[picked.length - 1]);
-  assert(
-    lastMs > NOW + 2 * day * MIN,
-    "the sample reaches past the halfway point of the horizon, not just the next hour",
+  eq(
+    slotsToCheck(starts, NOW, spec()),
+    [iso(30), iso(60)],
+    "an unreadable start is dropped, never sorted as epoch 0 or NaN",
   );
-  const spanMin = (lastMs - Date.parse(picked[0])) / MIN;
-  assert(spanMin > 2 * day, `the sample spans days, not minutes (spanned ${spanMin} minutes)`);
-  eq(new Set(picked).size, 5, "and never checks the same slot twice");
-  eq([...picked].sort(), [...picked].sort(), "sanity: comparable");
-  const ordered = [...picked].every((v, i, a) => i === 0 || Date.parse(a[i - 1]) < Date.parse(v));
-  assert(ordered, "the sample is returned in time order");
 }
 {
-  // Fewer offered slots than the sample size: take them all rather than
-  // leaving a checkable slot unchecked to preserve a spacing rule.
-  const starts = [iso(30), iso(60), iso(90)];
-  eq(sampleSlotStarts(starts, NOW, spec(5, 2)), starts, "a short payload is sampled whole");
-}
-{
-  // nearCount larger than what is on offer must not eat into the spread budget
-  // or produce a short sample.
-  const starts = [iso(30), iso(60), iso(90), iso(120), iso(150), iso(180)];
-  const picked = sampleSlotStarts(starts, NOW, spec(4, 10));
-  eq(picked.length, 4, "nearCount above the sample size still yields exactly sampleSize");
-  eq(picked, [iso(30), iso(60), iso(90), iso(120)], "and falls back to the soonest slots");
-}
-{
-  // A spread that lands on the same index twice must not silently shrink the
-  // sample: a probe checking 3 slots while reporting 5 would judge a drift
-  // share against a denominator it did not measure.
-  const starts = [iso(30), iso(60), iso(90), iso(120)];
-  const picked = sampleSlotStarts(starts, NOW, spec(4, 1));
-  eq(picked.length, 4, "collisions in the spread are backfilled, not dropped");
-  eq(new Set(picked).size, 4, "and the backfill never repeats a slot");
+  // The defensive ceiling. It must take the SOONEST ones (where a stale cache
+  // costs a customer first) and, above all, must be visible: a silently
+  // truncated check reads as full coverage.
+  const starts = Array.from({ length: 40 }, (_, i) => iso(30 + i * 30));
+  const picked = slotsToCheck(starts, NOW, spec(THRESHOLDS.leadMs, 10));
+  eq(picked.length, 10, "the ceiling bounds the work");
+  eq(picked[0], iso(30), "and keeps the soonest times");
+  eq(picked[9], iso(300), "dropping the far end rather than thinning the near end");
 }
 
 // --- planDriftAlert: one page for a widespread drift, not one per bucket (#1373) ---
@@ -366,6 +340,7 @@ function harness(overrides: {
   emails?: string[] | null;
   verdicts?: SlotVerdict[];
   verifyThrows?: boolean;
+  rangeUnreadable?: boolean;
   armed?: boolean;
   seenDrifting?: string[];
   perBucketFiring?: string[];
@@ -416,11 +391,12 @@ function harness(overrides: {
             : overrides.slots,
         eligibleEmails: async () =>
           overrides.emails === undefined ? ["a@x", "b@x"] : overrides.emails,
-        verifySlot: async (emails, startIso, endIso) => {
+        verifyWindows: async (emails, wins) => {
           if (overrides.verifyThrows) throw new Error("google down");
+          if (overrides.rangeUnreadable) return null;
           checked.push(emails);
-          windows.push({ startIso, endIso });
-          return verdicts[i++] ?? "unverified";
+          for (const w of wins) windows.push(w);
+          return wins.map(() => verdicts[i++] ?? "unverified");
         },
         armed: overrides.armed ?? true,
         cooldownMs: 30 * MIN,
@@ -509,7 +485,7 @@ function harness(overrides: {
 {
   const h = harness({});
   await h.run();
-  eq(h.checked.length, 5, "every sampled slot is checked");
+  eq(h.checked.length, 1, "the whole eligible set's calendars are read ONCE, not once per slot");
   eq(
     h.windows[0],
     { startIso: iso(20), endIso: iso(50) },
@@ -517,8 +493,19 @@ function harness(overrides: {
   );
   assert(
     h.checked.every((emails) => emails.length === 2),
-    "each slot is checked against the bucket's whole eligible set, not one agent",
+    "against the bucket's whole eligible set, not one agent",
   );
+  eq(h.windows.length, 5, "and every offered time is judged from that one read");
+}
+{
+  // A range read that failed entirely tells us nothing about the cache, in
+  // either direction, so it must not present as a sample of clean slots.
+  const h = harness({ rangeUnreadable: true });
+  const out = await h.run();
+  assert(out.status === "unverified", "a failed range read is unverified, never a clean sample");
+  eq(h.notified.length, 0, "and pages nothing");
+  eq(h.resolved.length, 0, "and all-clears nothing");
+  eq(h.marked.length, 0, "and touches no drift marker");
 }
 
 // --- the aggregation, end to end through the tick (#1373) ---

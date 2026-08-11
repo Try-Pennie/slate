@@ -46,7 +46,7 @@ import {
   nextTruthBucket,
   offeredSlots,
   eligibleEmailsForBucket,
-  verifySlotLive,
+  verifyWindowsLive,
   driftAlertContext,
   markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
@@ -174,12 +174,15 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = {
 // DISARMED and logs its measured share; #1371 arms it once a real cycle has
 // been read.
 const TRUTH_THRESHOLDS: TruthThresholds = {
-  // 5 distinct time windows is 5 live Google calls, on a budget four cron lanes
-  // share. Spreading them across the horizon (#1376) changes WHICH slots are
-  // checked, never how many, so the coverage widened at no cost.
-  sampleSize: 5,
-  nearCount: 2,
   leadMs: 10 * 60_000,
+  // Not a sample size (#1381). The calendars are read ONCE over the whole horizon
+  // whatever this is, and each offered time then costs a local interval
+  // comparison, so this is only a runaway guard. Measured 2026-08-11 against 20
+  // real agents over 4 days: one Google call, 342 busy intervals back, and 16ms
+  // of CPU to judge all 96 offered times (0.16ms each). 1000 is therefore far
+  // above any realistic horizon, and the tick logs `offered` beside `checked` so
+  // a truncation is visible rather than reading as full coverage.
+  maxSlots: 1000,
   minVerified: 3,
   driftPct: 40,
 };
@@ -566,7 +569,7 @@ export async function GET(req: NextRequest) {
             new Date(now + horizonDays * 24 * 60 * 60_000).toISOString(),
           ),
         eligibleEmails: eligibleEmailsForBucket,
-        verifySlot: verifySlotLive,
+        verifyWindows: verifyWindowsLive,
         alertContext: () => driftAlertContext(),
         markDrifting: markBucketDrifting,
         settleSilently: settleAlertsSilently,

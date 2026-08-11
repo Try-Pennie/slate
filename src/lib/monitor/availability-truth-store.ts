@@ -45,57 +45,170 @@ const CURSOR_KEY = "availability_truth";
  * throwing call. The unread agent may well be free, and scoring Google's own
  * errors as drift would page about our cache every time Google had a bad minute.
  */
+/** How many distinct delegated identities to try before declaring the range
+ *  unreadable. Three: enough to get past a couple of accounts that cannot use
+ *  Calendar, few enough that a real outage is discovered cheaply. */
+const MAX_SUBJECT_ATTEMPTS = 3;
+
+export interface AgentBusyRange {
+  agents: { email: string; calendarIds: string[] }[];
+  busyByCalendar: Map<string, CalendarBusy>;
+  /** Agents that could not be mapped or read at all, so they can only ever hold
+   *  back a drift call, never confirm one. */
+  unreadable: number;
+}
+
+/**
+ * ONE live read of the eligible set's calendars over a whole range (#1381).
+ *
+ * `freeBusy` is a RANGE query: given a window and a set of calendar ids it
+ * returns every busy interval inside it. So checking a bucket's whole horizon
+ * costs one call per chunk of calendars, not one per offered time. The per slot
+ * loop this replaces was a shape we chose, and it made coverage look expensive
+ * enough to be worth sampling away.
+ *
+ * Null when nothing could be read at all: no agent mapped to a calendar, or the
+ * call threw. Null is not an empty busy map, which would read as everyone free.
+ */
+export async function readAgentBusyRange(
+  emails: string[],
+  fromIso: string,
+  toIso: string,
+): Promise<AgentBusyRange | null> {
+  if (emails.length === 0) return null;
+  try {
+    const { byEmail, readFailed } = await calendarsForEmails(emails);
+    const agents = emails
+      .filter((e) => !readFailed.has(e))
+      .map((e) => ({ email: e, calendarIds: byEmail.get(e) ?? [] }));
+    if (agents.length === 0) return null;
+
+    // Read as ONE agent's identity: within the Workspace domain free/busy is
+    // cross-visible, which is what makes the batched read possible at all.
+    //
+    // But the subject is a single point of failure for the WHOLE call. An agent
+    // whose own account cannot use Calendar makes Google refuse every chunk with
+    // 403 notACalendarUser, not just their own calendar, so one such agent in a
+    // bucket's eligible set would report every offered time unverified and leave
+    // the probe silent, which is indistinguishable from finding nothing wrong.
+    // On 2026-08-11 the alphabetically FIRST agent in the real roster was exactly
+    // that, so taking agents[0] picked the one account guaranteed to fail.
+    //
+    // So try a few distinct subjects before giving up. Bounded, because a genuine
+    // Google outage refuses every one of them and walking the whole roster to
+    // discover that would spend the lane's budget on it.
+    // Chunked by CALENDAR, which is the unit freeBusy's 20-item cap is expressed
+    // in. Chunking by AGENT sends 20 times however many calendars each of them
+    // has, so a roster where anyone keeps a second calendar silently overflows
+    // the cap and Google answers for only part of the set (L81). Today every
+    // agent has one calendar, which is exactly why an agent-shaped batch looked
+    // correct.
+    const allCalIds = [...new Set(agents.flatMap((a) => a.calendarIds))];
+    const chunks: string[][] = [];
+    for (let i = 0; i < allCalIds.length; i += FREEBUSY_MAX_ITEMS) {
+      chunks.push(allCalIds.slice(i, i + FREEBUSY_MAX_ITEMS));
+    }
+    if (chunks.length === 0) return null;
+
+    const subjects = agents.slice(0, MAX_SUBJECT_ATTEMPTS).map((a) => a.email);
+    let lastErr: unknown = null;
+    for (const subject of subjects) {
+      try {
+        const busyByCalendar: Map<string, CalendarBusy> = new Map();
+        // Every chunk is read, with no escalation. Over a range there is no first
+        // free agent to stop at: a later offered time may need the very chunk an
+        // earlier one would have let us skip.
+        for (const calIds of chunks) {
+          const read = await freeBusyMany(subject, fromIso, toIso, calIds);
+          for (const [id, busy] of read) busyByCalendar.set(id, busy);
+        }
+        return { agents, busyByCalendar, unreadable: readFailed.size };
+      } catch (err) {
+        lastErr = err;
+        log.warn("availability-truth", { msg: "range read refused for subject", subject }, err);
+      }
+    }
+    // Every candidate refused. Still fails safe: a range nobody could read says
+    // nothing about the cache, in either direction.
+    log.warn(
+      "availability-truth",
+      { msg: "live range read failed", from: fromIso, subjects_tried: subjects.length },
+      lastErr,
+    );
+    return null;
+  } catch (err) {
+    // A Google outage proves nothing about the cache, in either direction.
+    log.warn("availability-truth", { msg: "live range read failed", from: fromIso }, err);
+    return null;
+  }
+}
+
+/**
+ * One offered window's verdict, from a range already read.
+ *
+ * Judged by `freeAgentsFromBusy`, the SAME function the booking path uses, which
+ * is the point: a probe answering "is this slot really free" through a second,
+ * slightly different implementation would eventually disagree with the real
+ * booking path and page about the difference between the two.
+ *
+ * DIRECTION OF FAILURE. Every unknown lands on `unverified`, never `drift`: a
+ * calendar Google refused, an agent whose calendar list could not be read. The
+ * unread agent may well be free, and scoring Google's own errors as drift would
+ * page about our cache every time Google had a bad minute.
+ */
+export function verdictFromRange(range: AgentBusyRange, startIso: string, endIso: string): SlotVerdict {
+  // An unreadable bound would make every busy interval fail the overlap test, so
+  // every agent would read FREE and the probe would quietly report no drift: the
+  // guard silently passing, which is the worst outcome available to it (#1169).
+  const startMs = parseStampMs(startIso);
+  const endMs = parseStampMs(endIso);
+  if (startMs === null || endMs === null) return "unverified";
+  const res = freeAgentsFromBusy(range.agents, range.busyByCalendar, startMs, endMs);
+  return classifySlotVerdict(res.free.size, range.unreadable + res.needsFallback.size);
+}
+
+/**
+ * Every offered window judged from ONE range read, in the order given (#1381).
+ *
+ * The probe's verify step. Null when the range could not be read at all, which
+ * the caller reports as its own outcome rather than letting a total Google
+ * outage read as a sample of unverified slots.
+ */
+export async function verifyWindowsLive(
+  emails: string[],
+  windows: { startIso: string; endIso: string }[],
+): Promise<SlotVerdict[] | null> {
+  if (windows.length === 0) return [];
+  // The range spans the first window's start to the last one's end. The caller
+  // hands them in time order, but taking the min and max rather than the ends
+  // means a caller that stops doing so cannot silently shrink the read.
+  const starts = windows.map((w) => parseStampMs(w.startIso)).filter((m): m is number => m !== null);
+  const ends = windows.map((w) => parseStampMs(w.endIso)).filter((m): m is number => m !== null);
+  if (starts.length === 0 || ends.length === 0) return null;
+  const range = await readAgentBusyRange(
+    emails,
+    new Date(Math.min(...starts)).toISOString(),
+    new Date(Math.max(...ends)).toISOString(),
+  );
+  if (range === null) return null;
+  return windows.map((w) => verdictFromRange(range, w.startIso, w.endIso));
+}
+
+/**
+ * Live verdict for ONE window, reading the range it needs.
+ *
+ * Kept as the single-window entry point for `pnpm verify:availability-truth`
+ * (#1377), and deliberately built ON the same two pieces the probe uses rather
+ * than beside them, so the control cannot vouch for a code path the probe does
+ * not take.
+ */
 export async function verifySlotLive(
   emails: string[],
   startIso: string,
   endIso: string,
 ): Promise<SlotVerdict> {
-  if (emails.length === 0) return "unverified";
-  // An unreadable bound would make every busy interval fail the overlap test, so
-  // every agent would read FREE and the probe would quietly report no drift: the
-  // guard silently passing, which is the worst outcome available to it. Both
-  // bounds are parsed ONCE here and the slot is refused outright if either is
-  // unreadable (#1169's rule, on the side that cannot hide a finding).
-  const startMs = parseStampMs(startIso);
-  const endMs = parseStampMs(endIso);
-  if (startMs === null || endMs === null) return "unverified";
-
-  try {
-    const { byEmail, readFailed } = await calendarsForEmails(emails);
-    // An agent we could not map to calendars is one we cannot judge. Counted as
-    // unverified from the start, so it can only ever hold back a drift call.
-    let unverified = readFailed.size;
-
-    const agents = emails
-      .filter((e) => !readFailed.has(e))
-      .map((e) => ({ email: e, calendarIds: byEmail.get(e) ?? [] }));
-    if (agents.length === 0) return classifySlotVerdict(0, unverified || 1);
-
-    // Read as one agent's identity: within the Workspace domain free/busy is
-    // cross-visible, which is what makes the batched read possible at all.
-    const subject = agents[0].email;
-    const chunks: { email: string; calendarIds: string[] }[][] = [];
-    for (let i = 0; i < agents.length; i += FREEBUSY_MAX_ITEMS) {
-      chunks.push(agents.slice(i, i + FREEBUSY_MAX_ITEMS));
-    }
-
-    for (const chunk of chunks) {
-      const calIds = [...new Set(chunk.flatMap((a) => a.calendarIds))];
-      const busyByCalendar: Map<string, CalendarBusy> = calIds.length
-        ? await freeBusyMany(subject, startIso, endIso, calIds)
-        : new Map();
-      const res = freeAgentsFromBusy(chunk, busyByCalendar, startMs, endMs);
-      // One free agent vindicates the slot; stop here rather than paying for
-      // chunks whose answer cannot change the verdict.
-      if (res.free.size > 0) return "free";
-      unverified += res.needsFallback.size;
-    }
-    return classifySlotVerdict(0, unverified);
-  } catch (err) {
-    // A Google outage proves nothing about the cache, in either direction.
-    log.warn("availability-truth", { msg: "live slot check failed", start: startIso }, err);
-    return "unverified";
-  }
+  const verdicts = await verifyWindowsLive(emails, [{ startIso, endIso }]);
+  return verdicts?.[0] ?? "unverified";
 }
 
 /**
