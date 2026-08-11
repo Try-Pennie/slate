@@ -44,11 +44,20 @@ export const FIELD_LIMITS = {
 const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
 
 /**
- * A phone number in the shapes a US lead actually types, plus E.164. Anchored on
- * a 7+ digit total so it cannot eat a stack frame's line and column numbers,
- * which is the failure that would strip the beacon of its only diagnostic value.
+ * A phone number in the shapes a US lead actually types, plus E.164.
+ *
+ * Matched by GROUPING, not by "a long enough run of digits and separators". The
+ * loose version ate dates: `2026-08-11` is digits and dashes too, and every
+ * error the booker can throw mentions a slot time, so the filter stripped the
+ * diagnosis out of exactly the messages this exists to catch. A minified stack
+ * frame (`main-9f3c21.js:1:203458`) has the same problem.
+ *
+ * So each alternative pins a real phone shape: E.164 with its leading plus, the
+ * 3+3+4 grouping a US number is written in, or a bare ten digit run. A date is
+ * 4+2+2 and matches none of them.
  */
-const PHONE = /\+?\d[\d\s().-]{7,}\d/g;
+const PHONE =
+  /(?:\+\d{10,15}\b)|(?:\(?\b\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b)|(?:\b\d{10}\b)/g;
 
 /** Any remaining long digit run: a card number, an account number, an SSN.
  *  Treated as identifying whether or not we can name what it is. */
@@ -65,14 +74,8 @@ const LONG_DIGITS = /\d{7,}/g;
 export function scrubContactData(text: string): string {
   return text
     .replace(EMAIL, "[email]")
-    .replace(PHONE, (m) => (countDigits(m) >= 7 ? "[phone]" : m))
+    .replace(PHONE, "[phone]")
     .replace(LONG_DIGITS, "[number]");
-}
-
-function countDigits(s: string): number {
-  let n = 0;
-  for (const c of s) if (c >= "0" && c <= "9") n++;
-  return n;
 }
 
 export type ClientErrorKind = "error" | "unhandledrejection";
