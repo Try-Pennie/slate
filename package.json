@@ -15,7 +15,8 @@
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "prepare": "git config core.hooksPath .githooks || true",
-    "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts"
+    "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
+    "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

@@ -169,6 +169,49 @@ pre merge (browser CI). If you are tempted to add a Playwright CI job, read this
 section and #611 first: the decision is deliberate, and the compensating canary is
 the thing to keep healthy instead.
 
+# A detector the roster cannot exercise (`pnpm verify:availability-truth`)
+
+The availability-truth probe (#1315) asks whether the times Slate is OFFERING are
+really free on the live calendars. It is built to fail safe: a calendar it cannot
+read is scored `unverified` and it stays silent, because scoring Google's own
+errors as drift would page about our cache every time Google had a bad minute.
+
+That correct choice has a cost. **A probe whose calendar reads never succeed is
+indistinguishable from a probe finding nothing wrong**, and production confirmed
+the sharper version of that on 2026-08-11 (#1377): every tick since deploy
+skipped with `why="bucket is offering no times to check"`, because 2 of 126 users
+are bookable while the roster is dark before cutover (#1272), and the rotation
+excludes the two test buckets that do have slots. The live half had never
+executed once.
+
+So the probe cannot prove itself from production traffic, and mocks cannot either
+(L52: a fake agrees with our assumption about Google's interface by
+construction). **`pnpm verify:availability-truth` is the proof.** It reads one
+agent's calendar live and, from GOOGLE'S OWN ANSWER rather than from
+`busy_blocks` (which is written by the very reads under test, L58), builds two
+windows: one Google reports as occupied, one it reports as clear. It then asks
+the probe's own `verifySlotLive` about each. Busy must come back `drift`, free
+must come back `free`. **Both directions, or it proves nothing**: a one-sided
+control is satisfied by a probe hard-wired to a single answer (L1).
+
+It writes nothing and is deliberately NOT named `test-*.ts`, because that glob is
+the offline unit suite and this one needs live Google plus the Supabase secret
+key from `.env.local` / `.dev.vars`. Point it at an agent who has real meetings:
+
+```
+TRUTH_CONTROL_EMAIL=someagent@trypennie.com pnpm verify:availability-truth
+```
+
+Every way it can fail to build a control (an empty calendar, a calendar busy for
+the whole horizon, an unreadable bound, a refused calendar) exits **non-zero**
+with the reason. Finding nothing to check is never a pass (L98). Its decision
+logic is pinned offline by `scripts/test-availability-truth-live-control.ts`.
+
+**Re-run it before arming the probe (#1371), and after any change to the Google
+read path or the delegated identity.** As of 2026-08-11 it passes against real
+agents (37 and 38 live busy periods read, both directions correct), so
+domain-wide delegation and cross-agent free/busy are confirmed working.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
