@@ -114,6 +114,14 @@ export async function nextTruthBucket(): Promise<{ code: string } | null> {
 
   const offset = await loadScanOffset(CURSOR_KEY);
   const index = offset % codes.length;
+  // Advance BEFORE the probe runs, which is the opposite of what
+  // rotateSelfhealScan does on purpose. That one holds its cursor on a failed
+  // sweep so the page it could not read is retried next tick; here, holding would
+  // WEDGE the whole rotation on one bucket whose slots or calendars cannot be
+  // read, and every other bucket would then go unchecked for as long as that
+  // lasted. Deferring one bucket for a rotation is the smaller loss than blinding
+  // the probe on all sixty, and a bucket that persistently fails to probe shows up
+  // as a run of `status=unverified` for its code in the lane's log line.
   await saveScanOffset(CURSOR_KEY, (index + 1) % codes.length);
   return { code: codes[index] };
 }
