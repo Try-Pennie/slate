@@ -18,7 +18,14 @@ import { loadScanOffset, saveScanOffset } from "@/lib/booking/selfheal-cursor";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
-import { classifySlotVerdict, type SlotVerdict } from "@/lib/monitor/availability-truth";
+import {
+  classifySlotVerdict,
+  AVAILABILITY_TRUTH_ALERT_KEY,
+  AVAILABILITY_TRUTH_SEEN_KEY,
+  AGGREGATE_DRIFT_CODE,
+  type SlotVerdict,
+} from "@/lib/monitor/availability-truth";
+import { firingKey } from "@/lib/notify/dispatch";
 import { parseStampMs } from "@/lib/date/stamp";
 
 /** The rotation cursor's own row in the shared scan-cursor table. */
@@ -98,7 +105,7 @@ export async function verifySlotLive(
  * the ladder so every bucket is covered in turn. Test buckets are excluded: they
  * route to the isolated SMOKE agents and their availability is not a customer's.
  */
-export async function nextTruthBucket(): Promise<{ code: string } | null> {
+export async function rotationCodes(): Promise<string[]> {
   // cap-safe: buckets is roster-bounded (~60 rows) and ordered for a stable
   // rotation, so a single page always holds the whole ladder.
   const rows = unwrap(
@@ -109,7 +116,11 @@ export async function nextTruthBucket(): Promise<{ code: string } | null> {
       .order("code", { ascending: true }),
     "buckets for availability-truth rotation",
   ) as { code: string }[] | null;
-  const codes = (rows ?? []).map((r) => r.code);
+  return (rows ?? []).map((r) => r.code);
+}
+
+export async function nextTruthBucket(): Promise<{ code: string } | null> {
+  const codes = await rotationCodes();
   if (codes.length === 0) return null;
 
   const offset = await loadScanOffset(CURSOR_KEY);
@@ -168,4 +179,92 @@ export async function eligibleEmailsForBucket(code: string): Promise<string[] | 
     log.warn("availability-truth", { msg: "eligible set unreadable", bucket: code }, err);
     return null;
   }
+}
+
+/** The durable "this bucket was last measured drifting" marker (#1373). Not an
+ *  alert: namespaced away from the cooldown keys so the two can never collide. */
+const seenKey = (code: string) => `${AVAILABILITY_TRUTH_SEEN_KEY}:${code}`;
+
+/**
+ * Who else is drifting, and what is already firing, in three reads (#1373).
+ *
+ * Returns null when ANY of them fails, and null is deliberately not an empty
+ * set: an empty set is the claim "nothing else is drifting", which would let one
+ * unreadable tick both suppress the aggregate and post a recovery notice for a
+ * condition still true. The caller treats null as "cannot judge how widespread
+ * this is", pages per bucket, and all-clears nothing.
+ */
+export async function driftAlertContext(): Promise<{
+  seenDrifting: string[];
+  perBucketFiring: string[];
+  aggregateFiring: boolean;
+  totalBuckets: number;
+} | null> {
+  try {
+    const codes = await rotationCodes();
+    if (codes.length === 0) return null;
+    // Read STRICTLY, not through existingAlertStateKeys / firingAlertKeys.
+    // Those two degrade a failed read to an EMPTY set on purpose, which is right
+    // for their callers (an empty set defers work one tick and can never invent a
+    // recovery) and exactly wrong here: an empty set is the positive claim
+    // "nothing else is drifting", which would suppress the aggregate and, on a
+    // healthy verdict, all-clear a condition still true off a read that never
+    // happened (L10/L11). `unwrap` throws instead, and the catch below turns that
+    // into null, which is the caller's "cannot judge how widespread this is".
+    //
+    // Scoped to the codes on the CURRENT ladder, so a marker left by a bucket
+    // that has since been removed cannot keep the aggregate alive forever.
+    const aggregateKey = `${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`;
+    const pageKey = (c: string) => `${AVAILABILITY_TRUTH_ALERT_KEY}:${c}`;
+    const wanted = [
+      ...codes.map(seenKey),
+      ...codes.map((c) => firingKey(pageKey(c))),
+      firingKey(aggregateKey),
+    ];
+    const present = new Set<string>();
+    // Chunked: the keys ride in the request URL, which PostgREST refuses past a
+    // few hundred entries (a 500-id batch shipped broken once, PR#1251). Two keys
+    // per bucket means the ladder would have to roughly triple before one page
+    // was too many, but the bound belongs here rather than in a comment.
+    for (let i = 0; i < wanted.length; i += 200) {
+      // cap-safe: bounded by the chunk, and `wanted` is derived from the
+      // roster-bounded bucket ladder, never a growth table.
+      const rows = unwrap(
+        await supabaseAdmin().from("alert_state").select("key").in("key", wanted.slice(i, i + 200)),
+        "availability-truth drift alert state",
+      ) as { key: string }[] | null;
+      for (const r of rows ?? []) present.add(r.key);
+    }
+    return {
+      seenDrifting: codes.filter((c) => present.has(seenKey(c))),
+      perBucketFiring: codes.filter((c) => present.has(firingKey(pageKey(c)))),
+      aggregateFiring: present.has(firingKey(aggregateKey)),
+      totalBuckets: codes.length,
+    };
+  } catch (err) {
+    log.warn("availability-truth", { msg: "drift alert context unreadable" }, err);
+    return null;
+  }
+}
+
+/**
+ * Record or drop one bucket's drift marker.
+ *
+ * THROWS on failure rather than swallowing, because both directions of a lost
+ * write are wrong in a way nothing downstream can notice: a missed set leaves a
+ * drifting bucket out of the aggregate's count, and a missed clear keeps the
+ * aggregate alive after everything recovered. The caller logs it through
+ * `onError` and the next rotation re-measures the bucket either way.
+ */
+export async function markBucketDrifting(code: string, drifting: boolean): Promise<void> {
+  const db = supabaseAdmin();
+  if (drifting) {
+    const { error } = await db
+      .from("alert_state")
+      .upsert({ key: seenKey(code), last_sent_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) throw new Error(`drift marker write failed for ${code}: ${error.message}`);
+    return;
+  }
+  const { error } = await db.from("alert_state").delete().eq("key", seenKey(code));
+  if (error) throw new Error(`drift marker clear failed for ${code}: ${error.message}`);
 }

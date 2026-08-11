@@ -37,6 +37,8 @@ import {
 import {
   formatAvailabilityDriftAlert,
   formatAvailabilityDriftAllClear,
+  formatAvailabilityDriftAggregateAlert,
+  formatAvailabilityDriftAggregateAllClear,
 } from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
 import {
@@ -245,6 +247,40 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the bucket is offering true times again",
     channel: "recovery",
     text: formatAvailabilityDriftAllClear({ code: "411", verified: 5 }),
+  },
+  {
+    // #1373. The realistic cause of several at once is calendar sync or the push
+    // channels falling behind, which is one fault, so it gets one message.
+    key: "availability_drift:*",
+    state: "several buckets drifting at once, folded into one page",
+    channel: "alert",
+    text: formatAvailabilityDriftAggregateAlert({ codes: ["101", "202", "411"], totalBuckets: 60 }),
+  },
+  {
+    // The shape #1272 produced for the empty-bucket alert: the whole ladder at
+    // once. The named list truncates and SAYS it did, so a cut list is never
+    // read as the whole set.
+    key: "availability_drift:*",
+    state: "the whole ladder drifting, so the named list truncates",
+    channel: "alert",
+    text: formatAvailabilityDriftAggregateAlert({
+      codes: Array.from({ length: 60 }, (_, i) => String(101 + i)),
+      totalBuckets: 60,
+    }),
+  },
+  {
+    key: "availability_drift:*",
+    state: "every bucket is offering true times again",
+    channel: "recovery",
+    text: formatAvailabilityDriftAggregateAllClear({ stillDrifting: 0, totalBuckets: 60 }),
+  },
+  {
+    // The partial ending must not read like the full one: two buckets are still
+    // wrong and about to page on their own.
+    key: "availability_drift:*",
+    state: "no longer widespread, but two buckets are still wrong",
+    channel: "recovery",
+    text: formatAvailabilityDriftAggregateAllClear({ stillDrifting: 2, totalBuckets: 60 }),
   },
   {
     // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers

@@ -30,6 +30,47 @@
  *  bucket is not silenced by the first one's cooldown. */
 export const AVAILABILITY_TRUTH_ALERT_KEY = "availability_drift";
 
+/**
+ * The code the ONE aggregate page rides on (`availability_drift:all`), so it
+ * lives in the same throttled-alert family as the per-bucket pages and needs no
+ * new catalog entry. Bucket codes are the 3-digit XBC codes, so this can never
+ * collide with a real bucket or clear one's page by accident. Same trick, and
+ * deliberately the same spelling, as the empty-bucket sweep's `AGGREGATE_BUCKET_CODE`.
+ */
+export const AGGREGATE_DRIFT_CODE = "all";
+
+/**
+ * How many buckets drifting at once stops being several faults and becomes one.
+ *
+ * Three, not the empty-bucket sweep's five, because the two conditions have
+ * different base rates. A bucket can be empty for its own staffing reason, so
+ * four at once is plausibly four causes. A drifted CACHE has essentially one
+ * cause available to it: calendar sync or the push channels falling behind,
+ * which hits every bucket at once. So the flood arrives sooner and carries less
+ * per-bucket information when it does.
+ */
+export const AGGREGATE_DRIFT_THRESHOLD = 3;
+
+/**
+ * alert_state key PREFIX for the durable "this bucket was last measured
+ * drifting" marker (#1373).
+ *
+ * The probe checks ONE bucket per tick, so unlike the empty-bucket sweep it
+ * never sees the whole picture in one pass and cannot decide "is this
+ * widespread" from what it just measured. The marker carries that across ticks.
+ * It is NOT an alert: namespaced away from the cooldown keys so the two can
+ * never collide, exactly as the lane watchdog's "first noticed missing" marker
+ * is (#1102), and it needs no migration because `alert_state` is already a
+ * generic key-to-timestamp table with deny-all RLS.
+ *
+ * Its freshness window IS the rotation: every bucket is re-measured once per
+ * pass of the ladder, a measured healthy verdict deletes its marker, and only a
+ * measured verdict touches one at all. So a marker can be at most one rotation
+ * stale, and a tick that skipped or could not verify leaves the set untouched
+ * rather than quietly emptying it.
+ */
+export const AVAILABILITY_TRUTH_SEEN_KEY = "availability_drift_seen";
+
 /** What one sampled slot turned out to be. */
 export type SlotVerdict =
   /** At least one eligible agent really is free: the offer is honest. */
@@ -223,6 +264,153 @@ export function formatAvailabilityDriftAllClear(input: { code: string; verified:
   );
 }
 
+/** What one tick should send, once its bucket has a measured verdict (#1373). */
+export interface DriftAlertPlan {
+  /** Every bucket believed to be drifting after this tick, in code order. */
+  drifting: string[];
+  /** True when the set is wide enough that one page replaces the per-bucket ones. */
+  aggregated: boolean;
+  /** Page this bucket on its own key, or null. */
+  pageCode: string | null;
+  /** Send the one aggregate page naming `drifting`. */
+  aggregatePage: boolean;
+  /** Per-bucket keys to drop with NO all-clear, superseded by the aggregate. */
+  settleCodes: string[];
+  /** Per-bucket key to all-clear normally, or null. */
+  clearCode: string | null;
+  /** Clear the aggregate page. */
+  clearAggregate: boolean;
+}
+
+/**
+ * Decide what one measured tick says, given who else is drifting (#1373).
+ *
+ * Dan asked for "one combined alert naming both buckets", and Slate already made
+ * this call once for the same shape of problem: the empty-bucket sweep
+ * aggregates deliberately, and its settings help says so. Two alerts on one
+ * channel disagreeing about how to report a broad outage is one vocabulary to
+ * the person reading them, whatever the code thinks (L89).
+ *
+ * The reason it aggregates at all: a drifted cache does not realistically go
+ * wrong one bucket at a time. The cause is calendar sync or the push channels
+ * falling behind, which hits every bucket at once, so the common case for this
+ * alert IS the flood, and sixty identical lines carry no more information than
+ * one naming the set.
+ *
+ * Two rules the branches exist to keep:
+ *
+ *  - A tick pages EITHER on its own key or through the aggregate, never both.
+ *  - Every all-clear hangs off a MEASURED result. Only the bucket this tick
+ *    actually checked leaves the set; a tick that skipped or could not verify
+ *    never reaches here at all, so an unreadable rotation cannot empty the set
+ *    and announce a recovery nobody measured (#1134).
+ */
+export function planDriftAlert(input: {
+  /** The bucket this tick measured. */
+  code: string;
+  /** Its measured verdict: true = drifted, false = measured healthy. */
+  drifted: boolean;
+  /** Codes carrying a live drift marker BEFORE this tick's result. */
+  seenDrifting: string[];
+  /** Is the aggregate page currently firing? */
+  aggregateFiring: boolean;
+  /** Which per-bucket pages are currently firing. */
+  perBucketFiring: string[];
+  threshold: number;
+}): DriftAlertPlan {
+  const set = new Set(input.seenDrifting);
+  if (input.drifted) set.add(input.code);
+  else set.delete(input.code);
+  const drifting = [...set].sort();
+  const aggregated = drifting.length >= input.threshold;
+
+  if (input.drifted) {
+    return {
+      drifting,
+      aggregated,
+      pageCode: aggregated ? null : input.code,
+      aggregatePage: aggregated,
+      // Only fold in pages that are actually firing. Settling a key that is not
+      // firing would delete a cooldown row for nothing.
+      settleCodes: aggregated ? [...input.perBucketFiring].sort() : [],
+      clearCode: null,
+      clearAggregate: false,
+    };
+  }
+
+  // Measured healthy. The aggregate ends when the drift stops being widespread,
+  // not only when it stops entirely: below the threshold the survivors go back
+  // to paging individually, which is what the partial all-clear tells the reader.
+  const clearAggregate = input.aggregateFiring && !aggregated;
+  return {
+    drifting,
+    aggregated,
+    pageCode: null,
+    aggregatePage: false,
+    settleCodes: [],
+    // While the aggregate is firing this bucket's own page was folded in and is
+    // not firing, so there is nothing to clear and saying so would be noise.
+    clearCode: input.aggregateFiring ? null : input.code,
+    clearAggregate,
+  };
+}
+
+/** Cap on how many bucket codes an aggregate names. Sixty codes is a wall of
+ *  text on the one screen where a reader is least patient with it. */
+const MAX_NAMED_CODES = 8;
+
+/**
+ * The one page that replaces the per-bucket flood.
+ *
+ * It answers what a dozen identical lines could not: how widespread this is, and
+ * therefore where to look. A truncated list SAYS it is truncated, because a
+ * silently cut list reads as the whole set, and the count is always the true one
+ * (L11: a message may claim only what its check measured).
+ */
+export function formatAvailabilityDriftAggregateAlert(input: {
+  codes: string[];
+  totalBuckets: number;
+}): string {
+  const named = input.codes.slice(0, MAX_NAMED_CODES).join(", ");
+  const rest = input.codes.length - MAX_NAMED_CODES;
+  const list = rest > 0 ? `${named} and ${rest} more` : named;
+  return (
+    `${input.codes.length} of ${input.totalBuckets} booking buckets are offering times ` +
+    `that are not free: ${list}. Customers picking those times will be refused at the ` +
+    `last step. This many at once points at calendar sync or the push channels falling ` +
+    `behind rather than at any one bucket. Each bucket's own page is folded into this one.`
+  );
+}
+
+/**
+ * The all-clear for the aggregate (#1151: a condition owes the reader an end).
+ *
+ * Two genuinely different endings, and they must not read alike: every bucket is
+ * honest again, or the drift is no longer widespread while some buckets are
+ * still wrong and about to page on their own. Calling the second one "all clear"
+ * would be the false-recovery defect (#1134).
+ */
+export function formatAvailabilityDriftAggregateAllClear(input: {
+  stillDrifting: number;
+  totalBuckets: number;
+}): string {
+  if (input.stillDrifting === 0) {
+    return (
+      `All ${input.totalBuckets} booking buckets are offering times that really are free ` +
+      `again. The earlier page about drifted availability is cleared. No action is needed.`
+    );
+  }
+  const what =
+    input.stillDrifting === 1
+      ? `1 of ${input.totalBuckets} buckets is`
+      : `${input.stillDrifting} of ${input.totalBuckets} buckets are`;
+  return (
+    `The drifted availability across the booking buckets is no longer widespread, but ` +
+    `${what} still offering times that are not free and will page individually from here. ` +
+    `Customers picking those times are still refused at the last step.`
+  );
+}
+
 export type TruthResult =
   /** Nothing to probe, or the inputs could not be read. Claims nothing. */
   | { status: "skipped"; why: string }
@@ -260,12 +448,27 @@ export async function runAvailabilityTruthCheck(deps: {
   eligibleEmails: (code: string) => Promise<string[] | null>;
   /** Live verdict for one slot window across the whole eligible set. */
   verifySlot: (emails: string[], startIso: string, endIso: string) => Promise<SlotVerdict>;
+  /**
+   * Who else is drifting and what is already firing (#1373), or null when the
+   * alert state could not be read. Null is NOT an empty set: an unread state
+   * means this tick has measured nothing about how widespread the drift is.
+   */
+  alertContext: (code: string) => Promise<{
+    seenDrifting: string[];
+    perBucketFiring: string[];
+    aggregateFiring: boolean;
+    totalBuckets: number;
+  } | null>;
+  /** Record or drop this bucket's durable "measured drifting" marker. */
+  markDrifting: (code: string, drifting: boolean) => Promise<void>;
+  /** Drop the per-bucket pages the aggregate supersedes, with no all-clear each. */
+  settleSilently: (codes: string[]) => Promise<void>;
   armed: boolean;
   cooldownMs: number;
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
   resolve: (key: string, text: string) => Promise<boolean>;
   log?: (fields: Record<string, string | number | boolean | null | undefined>) => void;
-  onError?: (context: "notify" | "resolve", err: unknown) => void;
+  onError?: (context: "notify" | "resolve" | "mark" | "settle", err: unknown) => void;
 }): Promise<TruthResult> {
   const skip = (why: string): TruthResult => {
     deps.log?.({ msg: "availability truth skipped", why });
@@ -332,15 +535,83 @@ export async function runAvailabilityTruthCheck(deps: {
     return { status: "unverified", code: bucket.code };
   }
 
-  if (deps.armed && verdict.status === "drifted") {
-    await deps
-      .notify(key, deps.cooldownMs, formatAvailabilityDriftAlert({ code: bucket.code, ...verdict }))
-      .catch((err) => deps.onError?.("notify", err));
+  // An `unverified` verdict measured nothing, so it leaves the drifting set
+  // exactly as it found it. Only the two MEASURED outcomes below touch a marker
+  // or say anything, which is what stops an unreadable rotation from quietly
+  // emptying the set and announcing a recovery nobody observed (#1134).
+  if (verdict.status === "unverified") {
+    return { status: "checked", code: bucket.code, armed: deps.armed, verdict };
   }
-  if (deps.armed && verdict.status === "healthy") {
-    await deps
-      .resolve(key, formatAvailabilityDriftAllClear({ code: bucket.code, verified: verdict.verified }))
-      .catch((err) => deps.onError?.("resolve", err));
+  const drifted = verdict.status === "drifted";
+
+  // The marker is state, not an alert, so it is kept current even while the page
+  // is disarmed (#1371). Arming a probe whose set started empty would under
+  // report how widespread the drift already was.
+  await deps.markDrifting(bucket.code, drifted).catch((err) => deps.onError?.("mark", err));
+
+  const context = await deps.alertContext(bucket.code).catch(() => null);
+  const plan = planDriftAlert({
+    code: bucket.code,
+    drifted,
+    seenDrifting: context?.seenDrifting ?? [],
+    aggregateFiring: context?.aggregateFiring ?? false,
+    perBucketFiring: context?.perBucketFiring ?? [],
+    // An unread state cannot support the aggregate call, so it is forced past the
+    // threshold's reach. The tick then pages per bucket, which is the safe way to
+    // be wrong: a flood beats silence while something is genuinely broken.
+    threshold: context === null ? Number.POSITIVE_INFINITY : AGGREGATE_DRIFT_THRESHOLD,
+  });
+
+  deps.log?.({
+    msg: "availability drift alerting",
+    bucket: bucket.code,
+    aggregated: plan.aggregated,
+    drifting: plan.drifting.length,
+    state_read: context !== null,
+  });
+
+  if (deps.armed) {
+    if (plan.settleCodes.length > 0) {
+      await deps
+        .settleSilently(plan.settleCodes.map((c) => `${AVAILABILITY_TRUTH_ALERT_KEY}:${c}`))
+        .catch((err) => deps.onError?.("settle", err));
+    }
+    if (plan.aggregatePage) {
+      await deps
+        .notify(
+          `${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`,
+          deps.cooldownMs,
+          formatAvailabilityDriftAggregateAlert({
+            codes: plan.drifting,
+            totalBuckets: context?.totalBuckets ?? plan.drifting.length,
+          }),
+        )
+        .catch((err) => deps.onError?.("notify", err));
+    }
+    if (plan.pageCode !== null && verdict.status === "drifted") {
+      await deps
+        .notify(key, deps.cooldownMs, formatAvailabilityDriftAlert({ code: plan.pageCode, ...verdict }))
+        .catch((err) => deps.onError?.("notify", err));
+    }
+    // Both all-clears hang off a MEASURED healthy sample AND a state we could
+    // read. `context === null` means we do not know what is still drifting, and
+    // a recovery notice is exactly the claim that must not be made on a guess.
+    if (context !== null && plan.clearAggregate) {
+      await deps
+        .resolve(
+          `${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`,
+          formatAvailabilityDriftAggregateAllClear({
+            stillDrifting: plan.drifting.length,
+            totalBuckets: context.totalBuckets,
+          }),
+        )
+        .catch((err) => deps.onError?.("resolve", err));
+    }
+    if (context !== null && plan.clearCode !== null && verdict.status === "healthy") {
+      await deps
+        .resolve(key, formatAvailabilityDriftAllClear({ code: plan.clearCode, verified: verdict.verified }))
+        .catch((err) => deps.onError?.("resolve", err));
+    }
   }
   return { status: "checked", code: bucket.code, armed: deps.armed, verdict };
 }

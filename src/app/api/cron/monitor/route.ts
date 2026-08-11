@@ -1,7 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
-import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
+import {
+  sendThrottledAlert,
+  sendThrottledInfo,
+  resolveAlert,
+  settleAlertsSilently,
+} from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
@@ -42,6 +47,8 @@ import {
   offeredSlots,
   eligibleEmailsForBucket,
   verifySlotLive,
+  driftAlertContext,
+  markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
@@ -560,6 +567,9 @@ export async function GET(req: NextRequest) {
           ),
         eligibleEmails: eligibleEmailsForBucket,
         verifySlot: verifySlotLive,
+        alertContext: () => driftAlertContext(),
+        markDrifting: markBucketDrifting,
+        settleSilently: settleAlertsSilently,
         armed: settings.availabilityDriftArmed,
         cooldownMs: settings.cooldownMs.availability_drift,
         notify: (key, cooldownMs, text) => {

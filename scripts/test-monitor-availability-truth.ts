@@ -19,8 +19,13 @@ import {
   judgeAvailabilityTruth,
   formatAvailabilityDriftAlert,
   formatAvailabilityDriftAllClear,
+  formatAvailabilityDriftAggregateAlert,
+  formatAvailabilityDriftAggregateAllClear,
+  planDriftAlert,
   runAvailabilityTruthCheck,
   AVAILABILITY_TRUTH_ALERT_KEY,
+  AGGREGATE_DRIFT_CODE,
+  AGGREGATE_DRIFT_THRESHOLD,
   type SlotVerdict,
   type TruthThresholds,
   type TruthResult,
@@ -124,6 +129,131 @@ const spec = (sampleSize: number, nearCount: number, leadMs = THRESHOLDS.leadMs)
   eq(new Set(picked).size, 4, "and the backfill never repeats a slot");
 }
 
+// --- planDriftAlert: one page for a widespread drift, not one per bucket (#1373) ---
+//
+// The probe checks ONE bucket per tick, so unlike the empty-bucket sweep it never
+// sees the whole picture at once. The drifting set is therefore carried in
+// durable per-bucket markers and handed in; every assertion below is about what
+// the tick DOES with that set, and the two cases that must never happen are a
+// tick that pages twice for one fault and a tick that all-clears something it
+// did not measure.
+const plan = (over: Partial<Parameters<typeof planDriftAlert>[0]> = {}) =>
+  planDriftAlert({
+    code: "101",
+    drifted: true,
+    seenDrifting: [],
+    aggregateFiring: false,
+    perBucketFiring: [],
+    threshold: AGGREGATE_DRIFT_THRESHOLD,
+    ...over,
+  });
+{
+  const p = plan();
+  eq(p.aggregated, false, "one drifting bucket is not a flood");
+  eq(p.pageCode, "101", "so it pages on its own key, naming the bucket to look at");
+  eq(p.aggregatePage, false, "and the aggregate stays quiet");
+  eq(p.settleCodes, [], "nothing is folded in");
+}
+{
+  const p = plan({ drifted: true, seenDrifting: ["101", "202"] });
+  eq(p.aggregated, false, "two below the threshold still page individually");
+  eq(p.pageCode, "101", "and this tick's bucket is the one named");
+}
+{
+  // The threshold case. The realistic cause of several at once is calendar sync
+  // or the push channels falling behind, which is ONE fault, so it gets one page.
+  const p = plan({ drifted: true, seenDrifting: ["202", "303"], perBucketFiring: ["202", "303"] });
+  eq(p.aggregated, true, "the threshold turns the flood into one page");
+  eq(p.drifting, ["101", "202", "303"], "which names the whole set, this tick's bucket included");
+  eq(p.aggregatePage, true, "the aggregate page goes out");
+  eq(p.pageCode, null, "and this bucket does NOT also page on its own key");
+  eq(p.settleCodes, ["202", "303"], "the pages it supersedes are folded in");
+}
+{
+  // Folding in must not post an all-clear per bucket: sixty notices announcing
+  // that sixty pages became one is the same flood wearing a hat.
+  const p = plan({ drifted: true, seenDrifting: ["202", "303"], perBucketFiring: ["202", "303"] });
+  eq(p.clearCode, null, "no per-bucket all-clear rides along with the aggregate");
+  eq(p.clearAggregate, false, "and a page is never also a recovery");
+}
+{
+  // Already aggregated, a fourth bucket joins. It must not page on its own, and
+  // it must not re-page the aggregate outside its cooldown either: that is the
+  // aggregate key's own throttle to decide, not this planner's.
+  const p = plan({ drifted: true, seenDrifting: ["202", "303", "404"], aggregateFiring: true });
+  eq(p.aggregated, true, "a fourth drifting bucket stays aggregated");
+  eq(p.pageCode, null, "and never pages on its own");
+  eq(p.drifting.length, 4, "the set carries all four");
+}
+
+// --- the recovery side, which has to aggregate the same way or the flood moves ---
+{
+  const p = plan({ drifted: false, seenDrifting: ["101"] });
+  eq(p.drifting, [], "a measured healthy verdict takes this bucket out of the set");
+  eq(p.clearCode, "101", "and clears its own page");
+  eq(p.aggregatePage, false, "with nothing aggregate to say");
+  eq(p.pageCode, null, "a healthy bucket never pages");
+}
+{
+  const p = plan({ drifted: false, seenDrifting: ["101", "202", "303"], aggregateFiring: true });
+  eq(p.aggregated, false, "with this bucket healthy the remaining two are below the threshold");
+  eq(p.clearAggregate, true, "so the aggregate is cleared rather than left firing forever");
+  eq(p.drifting, ["202", "303"], "and the two still drifting are named, since they page individually next");
+  eq(p.clearCode, null, "this bucket's own page was folded in, so there is none to clear");
+}
+{
+  const p = plan({ drifted: false, seenDrifting: ["101"], aggregateFiring: true });
+  eq(p.drifting, [], "the last drifting bucket recovering empties the set");
+  eq(p.clearAggregate, true, "and clears the aggregate");
+}
+{
+  const p = plan({ drifted: false, seenDrifting: [], aggregateFiring: false });
+  eq(p.clearAggregate, false, "a healthy bucket with no aggregate firing clears no aggregate");
+}
+{
+  // The false-recovery defect (#1134): an all-clear may only ever hang off a
+  // MEASURED healthy result. A bucket that is still drifting must not clear the
+  // aggregate just because this tick happened to look at a different bucket.
+  const p = plan({ code: "999", drifted: false, seenDrifting: ["101", "202", "303"], aggregateFiring: true });
+  eq(p.drifting, ["101", "202", "303"], "a bucket outside the set leaves the set alone");
+  eq(p.aggregated, true, "three still drifting is still a flood");
+  eq(p.clearAggregate, false, "so the aggregate stays firing");
+}
+
+// --- the aggregate copy ---
+{
+  const text = formatAvailabilityDriftAggregateAlert({ codes: ["101", "202", "303"], totalBuckets: 60 });
+  assert(text.includes("3 of 60"), "the aggregate names how widespread it is");
+  assert(text.includes("101") && text.includes("303"), "and names the buckets");
+  assert(/sync|push/i.test(text), "and points at the realistic cause rather than the buckets");
+  assert(!DASHES.test(text), "no dashes in alert copy");
+  assert(!text.startsWith("Slate"), "an alert never opens with the word Slate");
+}
+{
+  // Sixty codes is a wall of text on a phone mid-incident. It must truncate AND
+  // say that it did, because a silently cut list reads as the whole set.
+  const many = Array.from({ length: 60 }, (_, i) => String(100 + i));
+  const text = formatAvailabilityDriftAggregateAlert({ codes: many, totalBuckets: 60 });
+  assert(text.includes("60 of 60"), "the COUNT is always the true one");
+  assert(/more/i.test(text), "a truncated list says there are more");
+  assert(text.length < 600, "and the message stays readable on a phone");
+}
+{
+  const text = formatAvailabilityDriftAggregateAllClear({ stillDrifting: 0, totalBuckets: 60 });
+  assert(/no action/i.test(text), "a full recovery says nothing needs doing");
+  assert(!DASHES.test(text), "no dashes in the all-clear either");
+}
+{
+  const text = formatAvailabilityDriftAggregateAllClear({ stillDrifting: 2, totalBuckets: 60 });
+  assert(/2 of 60/.test(text), "a partial recovery says how many are still wrong");
+  assert(/individual/i.test(text), "and that those will page on their own from here");
+  assert(!/no action/i.test(text), "and never claims nothing needs doing while two are still wrong");
+}
+{
+  eq(AGGREGATE_DRIFT_CODE, "all", "the aggregate rides in the same key family as the per-bucket pages");
+  assert(AGGREGATE_DRIFT_THRESHOLD >= 2, "a threshold below 2 would aggregate a single bucket");
+}
+
 // --- classifySlotVerdict: the three outcomes, and which way each one fails ---
 {
   eq(classifySlotVerdict(2, 0), "free", "an offered slot with a genuinely free agent is fine");
@@ -225,6 +355,8 @@ interface Harness {
   resolved: string[];
   checked: string[][];
   windows: { startIso: string; endIso: string }[];
+  settled: string[][];
+  marked: { code: string; drifting: boolean }[];
 }
 
 function harness(overrides: {
@@ -235,11 +367,17 @@ function harness(overrides: {
   verdicts?: SlotVerdict[];
   verifyThrows?: boolean;
   armed?: boolean;
+  seenDrifting?: string[];
+  perBucketFiring?: string[];
+  aggregateFiring?: boolean;
+  contextUnreadable?: boolean;
 }): Harness {
   const notified: { key: string; text: string }[] = [];
   const resolved: string[] = [];
   const checked: string[][] = [];
   const windows: { startIso: string; endIso: string }[] = [];
+  const settled: string[][] = [];
+  const marked: { code: string; drifting: boolean }[] = [];
   const verdicts = overrides.verdicts ?? ["free", "free", "free", "free", "free"];
   let i = 0;
   return {
@@ -247,10 +385,27 @@ function harness(overrides: {
     resolved,
     checked,
     windows,
+    settled,
+    marked,
     run: () =>
       runAvailabilityTruthCheck({
         nowMs: NOW,
         thresholds: THRESHOLDS,
+        alertContext: async () =>
+          overrides.contextUnreadable
+            ? null
+            : {
+                seenDrifting: overrides.seenDrifting ?? [],
+                perBucketFiring: overrides.perBucketFiring ?? [],
+                aggregateFiring: overrides.aggregateFiring ?? false,
+                totalBuckets: 60,
+              },
+        markDrifting: async (code, drifting) => {
+          marked.push({ code, drifting });
+        },
+        settleSilently: async (codes) => {
+          settled.push(codes);
+        },
         nextBucket: async () => {
           if (overrides.bucketThrows) throw new Error("cursor unreadable");
           return overrides.bucket === undefined ? { code: "411" } : overrides.bucket;
@@ -364,6 +519,95 @@ function harness(overrides: {
     h.checked.every((emails) => emails.length === 2),
     "each slot is checked against the bucket's whole eligible set, not one agent",
   );
+}
+
+// --- the aggregation, end to end through the tick (#1373) ---
+const DRIFTED: SlotVerdict[] = ["drift", "drift", "drift", "drift", "drift"];
+{
+  const h = harness({ verdicts: DRIFTED, seenDrifting: [] });
+  const out = await h.run();
+  assert(out.status === "checked", "a drifting bucket is a real verdict");
+  eq(h.notified.length, 1, "one drifting bucket sends exactly one page");
+  eq(h.notified[0].key, `${AVAILABILITY_TRUTH_ALERT_KEY}:411`, "on its own key");
+  eq(h.marked, [{ code: "411", drifting: true }], "and records that this bucket is drifting");
+  eq(h.settled.length, 0, "with nothing to fold in");
+}
+{
+  const h = harness({
+    verdicts: DRIFTED,
+    seenDrifting: ["101", "202"],
+    perBucketFiring: ["101", "202"],
+  });
+  await h.run();
+  eq(h.notified.length, 1, "a widespread drift still sends exactly ONE message");
+  eq(
+    h.notified[0].key,
+    `${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`,
+    "and it is the aggregate, not this bucket's own page",
+  );
+  assert(h.notified[0].text.includes("101"), "which names the other drifting buckets");
+  assert(h.notified[0].text.includes("411"), "and this one");
+  eq(
+    h.settled,
+    [[`${AVAILABILITY_TRUTH_ALERT_KEY}:101`, `${AVAILABILITY_TRUTH_ALERT_KEY}:202`]],
+    "the superseded per-bucket pages are folded in silently, by their real alert keys",
+  );
+  eq(h.resolved.length, 0, "folding in posts no all-clears: that is the same flood wearing a hat");
+}
+{
+  const h = harness({ verdicts: ["free", "free", "free", "free", "free"], seenDrifting: ["411"] });
+  await h.run();
+  eq(h.marked, [{ code: "411", drifting: false }], "a measured healthy verdict drops the marker");
+  eq(h.resolved, [`${AVAILABILITY_TRUTH_ALERT_KEY}:411`], "and clears that bucket's own page");
+}
+{
+  const h = harness({
+    verdicts: ["free", "free", "free", "free", "free"],
+    seenDrifting: ["411"],
+    aggregateFiring: true,
+  });
+  await h.run();
+  eq(
+    h.resolved,
+    [`${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`],
+    "the last drifting bucket recovering clears the AGGREGATE, not sixty per-bucket notices",
+  );
+}
+{
+  // A tick that could not read the alert state has measured nothing about how
+  // widespread this is. It may still PAGE (a flood beats silence when something
+  // is genuinely wrong) but it must never all-clear on an unread state.
+  const h = harness({ verdicts: DRIFTED, contextUnreadable: true });
+  await h.run();
+  eq(h.notified.length, 1, "an unreadable alert state still pages");
+  eq(h.notified[0].key, `${AVAILABILITY_TRUTH_ALERT_KEY}:411`, "on the per-bucket key, never the aggregate");
+}
+{
+  const h = harness({ verdicts: ["free", "free", "free", "free", "free"], contextUnreadable: true });
+  await h.run();
+  eq(h.resolved.length, 0, "an unreadable alert state sends NO all-clear");
+}
+{
+  // Marker upkeep must not depend on the page being armed, or arming #1371 would
+  // start from an empty set and under-report how widespread the drift already is.
+  const h = harness({ verdicts: DRIFTED, armed: false });
+  await h.run();
+  eq(h.notified.length, 0, "a disarmed probe still sends nothing");
+  eq(h.marked, [{ code: "411", drifting: true }], "but still records the drift for when it is armed");
+}
+{
+  // The unverified path: measured NOTHING, so it must leave the set exactly as
+  // it found it, in both directions.
+  const h = harness({ verifyThrows: true, seenDrifting: ["411"] });
+  await h.run();
+  eq(h.marked.length, 0, "a tick that could not verify touches no marker");
+  eq(h.resolved.length, 0, "and clears nothing");
+  eq(h.notified.length, 0, "and pages nothing");
+}
+{
+  const h = harness({ bucket: null, seenDrifting: ["411"] });
+  await h.run();
+  eq(h.marked.length, 0, "a skipped tick touches no marker either");
 }
 
 finish();
