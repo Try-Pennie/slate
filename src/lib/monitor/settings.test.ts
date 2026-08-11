@@ -168,6 +168,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     infoChannel: "",
     lowVolumeArmed: "",
     failureRateArmed: "",
+  availabilityDriftArmed: "",
   };
 
   it("parses a checked toggle as armed=true", () => {

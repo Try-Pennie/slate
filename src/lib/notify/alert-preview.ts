@@ -34,6 +34,10 @@ import {
   formatFailureRateAlert,
   formatFailureRateAllClear,
 } from "@/lib/monitor/booking-failure-rate";
+import {
+  formatAvailabilityDriftAlert,
+  formatAvailabilityDriftAllClear,
+} from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
 import {
   oooAgentCalendarAlert,
@@ -222,6 +226,26 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
 
   // --- routing dead zones ----------------------------------------------------
+  {
+    // #1315. The fixture is the leading form of the 2026-08-06 cal.com shape:
+    // the cache is still advertising times the calendars say are taken.
+    key: "availability_drift:*",
+    state: "most of a bucket's offered times are really busy",
+    channel: "alert",
+    text: formatAvailabilityDriftAlert({ code: "411", drifted: 4, verified: 5, driftPct: 80 }),
+  },
+  {
+    key: "availability_drift:*",
+    state: "a single bad time (the sentence has to read in the singular too)",
+    channel: "alert",
+    text: formatAvailabilityDriftAlert({ code: "411", drifted: 1, verified: 3, driftPct: 33 }),
+  },
+  {
+    key: "availability_drift:*",
+    state: "the bucket is offering true times again",
+    channel: "recovery",
+    text: formatAvailabilityDriftAllClear({ code: "411", verified: 5 }),
+  },
   {
     // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers
     // refused on times that were offered to them.

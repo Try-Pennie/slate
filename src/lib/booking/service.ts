@@ -162,7 +162,7 @@ const RESCHEDULE_LOCK_OUTAGE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
 // Google caps a freeBusy query at 20 calendar `items` (verified live against the
 // production domain — 20 → 0 errors, 21 → tooManyCalendarsRequested), so the
 // bulk verifier chunks calendar ids at 20 per call.
-const FREEBUSY_MAX_ITEMS = 20;
+export const FREEBUSY_MAX_ITEMS = 20;
 // Max simultaneous freeBusy calls (Cloudflare's simultaneous-connection ceiling,
 // same bound the completion-sweep webhook fan-out uses).
 const VERIFY_CONCURRENCY = 6;
@@ -204,7 +204,7 @@ async function calendarIdsForEmail(
  * CONCRETE (the agent's email / real calendar id) — never the literal "primary",
  * which would resolve to the impersonator's own calendar.
  */
-async function calendarsForEmails(
+export async function calendarsForEmails(
   emails: string[],
 ): Promise<{ byEmail: Map<string, string[]>; readFailed: Set<string> }> {
   const byEmail = new Map<string, string[]>();

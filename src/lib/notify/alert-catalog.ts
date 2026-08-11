@@ -104,6 +104,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The Salesforce roster sync is failing on consecutive runs; a successful run ends it.",
   },
   {
+    key: "availability_drift:*",
+    kind: "condition",
+    why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
+  },
+  {
     key: "booking_failure_rate",
     kind: "condition",
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",

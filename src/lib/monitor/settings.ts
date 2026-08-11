@@ -23,7 +23,8 @@ export type MonitorAlertKey =
   | "coverage_needs_human"
   | "ooo_calcom_unprotected"
   | "empty_buckets"
-  | "booking_failure_rate";
+  | "booking_failure_rate"
+  | "availability_drift";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -40,6 +41,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "ooo_calcom_unprotected",
   "empty_buckets",
   "booking_failure_rate",
+  "availability_drift",
 ];
 
 /**
@@ -110,6 +112,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Alert when an agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
   },
   {
+    key: "availability_drift",
+    label: "Offered times that are not really free",
+    help: "Page when the times a bucket is offering turn out to be already busy on every eligible agent's real calendar, so customers would be refused at the last step.",
+  },
+  {
     key: "booking_failure_rate",
     label: "Customers failing to book",
     help: "Page when the share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
@@ -170,6 +177,11 @@ export const MONITOR_DEFAULTS = {
     // long enough not to spam a live incident, short enough that a page missed at
     // the start of a wave comes back while it is still happening.
     booking_failure_rate: 30 * 60_000,
+    // A drifted cache (#1315) keeps mis-selling times until the sync lane
+    // reconverges, and the probe re-measures that bucket only once per rotation
+    // (a few hours), so a fast repeat would say nothing new. Hourly, matching the
+    // other conditions that persist until something is fixed.
+    availability_drift: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,
@@ -316,6 +328,14 @@ export function resolveFailureRateArmed(
   return resolveArmed(config?.failure_rate_armed);
 }
 
+/** Availability-truth ARMED switch (#1315): store > disarmed, same shape and
+ *  same observe-first reasoning as its sibling above. */
+export function resolveAvailabilityDriftArmed(
+  config: Pick<MonitorAlertConfig, "availability_drift_armed"> | null,
+): boolean {
+  return resolveArmed(config?.availability_drift_armed);
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -332,6 +352,8 @@ export interface MonitorSettingsFormInput {
   lowVolumeArmed: string;
   /** Raw value of the arm-failure-rate checkbox (#1313), same encoding. */
   failureRateArmed: string;
+  /** Raw value of the arm-availability-drift checkbox (#1315), same encoding. */
+  availabilityDriftArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -343,6 +365,7 @@ export interface MonitorSettingsPayload {
     info_channel: string | null;
     low_volume_armed: boolean;
     failure_rate_armed: boolean;
+    availability_drift_armed: boolean;
   };
   errors: string[];
 }
@@ -397,6 +420,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       info_channel: channel(input.infoChannel),
       low_volume_armed: checked(input.lowVolumeArmed),
       failure_rate_armed: checked(input.failureRateArmed),
+      availability_drift_armed: checked(input.availabilityDriftArmed),
     },
     errors,
   };
@@ -415,6 +439,8 @@ export interface ResolvedMonitorSettings {
   lowVolumeArmed: boolean;
   /** #1313: is the booking-failure-rate page armed (store > disarmed)? */
   failureRateArmed: boolean;
+  /** #1315: is the availability-truth page armed (store > disarmed)? */
+  availabilityDriftArmed: boolean;
 }
 
 /**
@@ -425,7 +451,14 @@ export interface ResolvedMonitorSettings {
 export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
   let rows: Pick<MonitorSettings, "key" | "cooldown_min">[] = [];
   let config:
-    | Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "low_volume_armed" | "failure_rate_armed">
+    | Pick<
+        MonitorAlertConfig,
+        | "floor_30"
+        | "floor_120"
+        | "low_volume_armed"
+        | "failure_rate_armed"
+        | "availability_drift_armed"
+      >
     | null = null;
   try {
     const db = supabaseAdmin();
@@ -433,7 +466,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       db.from("monitor_settings").select("key, cooldown_min"),
       db
         .from("monitor_alert_config")
-        .select("floor_30, floor_120, low_volume_armed, failure_rate_armed")
+        .select("floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed")
         .eq("id", 1)
         .maybeSingle(),
     ]);
@@ -443,7 +476,11 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     if (!cfg.error && cfg.data) {
       config = cfg.data as Pick<
         MonitorAlertConfig,
-        "floor_30" | "floor_120" | "low_volume_armed" | "failure_rate_armed"
+        | "floor_30"
+        | "floor_120"
+        | "low_volume_armed"
+        | "failure_rate_armed"
+        | "availability_drift_armed"
       >;
     }
   } catch {
@@ -457,6 +494,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     }),
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
     failureRateArmed: resolveFailureRateArmed(config),
+    availabilityDriftArmed: resolveAvailabilityDriftArmed(config),
   };
 }
 
