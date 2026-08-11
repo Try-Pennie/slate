@@ -25,7 +25,7 @@ import {
   AGGREGATE_DRIFT_CODE,
   type SlotVerdict,
 } from "@/lib/monitor/availability-truth";
-import { firingAlertKeys, existingAlertStateKeys } from "@/lib/notify/dispatch";
+import { firingKey } from "@/lib/notify/dispatch";
 import { parseStampMs } from "@/lib/date/stamp";
 
 /** The rotation cursor's own row in the shared scan-cursor table. */
@@ -203,18 +203,42 @@ export async function driftAlertContext(): Promise<{
   try {
     const codes = await rotationCodes();
     if (codes.length === 0) return null;
+    // Read STRICTLY, not through existingAlertStateKeys / firingAlertKeys.
+    // Those two degrade a failed read to an EMPTY set on purpose, which is right
+    // for their callers (an empty set defers work one tick and can never invent a
+    // recovery) and exactly wrong here: an empty set is the positive claim
+    // "nothing else is drifting", which would suppress the aggregate and, on a
+    // healthy verdict, all-clear a condition still true off a read that never
+    // happened (L10/L11). `unwrap` throws instead, and the catch below turns that
+    // into null, which is the caller's "cannot judge how widespread this is".
+    //
     // Scoped to the codes on the CURRENT ladder, so a marker left by a bucket
     // that has since been removed cannot keep the aggregate alive forever.
-    const seenRows = await existingAlertStateKeys(codes.map(seenKey));
-    const perBucketKeys = codes.map((c) => `${AVAILABILITY_TRUTH_ALERT_KEY}:${c}`);
-    const firing = await firingAlertKeys([
-      ...perBucketKeys,
-      `${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`,
-    ]);
+    const aggregateKey = `${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`;
+    const pageKey = (c: string) => `${AVAILABILITY_TRUTH_ALERT_KEY}:${c}`;
+    const wanted = [
+      ...codes.map(seenKey),
+      ...codes.map((c) => firingKey(pageKey(c))),
+      firingKey(aggregateKey),
+    ];
+    const present = new Set<string>();
+    // Chunked: the keys ride in the request URL, which PostgREST refuses past a
+    // few hundred entries (a 500-id batch shipped broken once, PR#1251). Two keys
+    // per bucket means the ladder would have to roughly triple before one page
+    // was too many, but the bound belongs here rather than in a comment.
+    for (let i = 0; i < wanted.length; i += 200) {
+      // cap-safe: bounded by the chunk, and `wanted` is derived from the
+      // roster-bounded bucket ladder, never a growth table.
+      const rows = unwrap(
+        await supabaseAdmin().from("alert_state").select("key").in("key", wanted.slice(i, i + 200)),
+        "availability-truth drift alert state",
+      ) as { key: string }[] | null;
+      for (const r of rows ?? []) present.add(r.key);
+    }
     return {
-      seenDrifting: codes.filter((c) => seenRows.has(seenKey(c))),
-      perBucketFiring: codes.filter((c) => firing.has(`${AVAILABILITY_TRUTH_ALERT_KEY}:${c}`)),
-      aggregateFiring: firing.has(`${AVAILABILITY_TRUTH_ALERT_KEY}:${AGGREGATE_DRIFT_CODE}`),
+      seenDrifting: codes.filter((c) => present.has(seenKey(c))),
+      perBucketFiring: codes.filter((c) => present.has(firingKey(pageKey(c)))),
+      aggregateFiring: present.has(firingKey(aggregateKey)),
       totalBuckets: codes.length,
     };
   } catch (err) {
