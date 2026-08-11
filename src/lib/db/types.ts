@@ -209,6 +209,9 @@ export interface MonitorAlertConfig {
   /** #575: UI arm/disarm for the low-booking-volume alert. Null = unset (fall
    *  through to env then the disarmed default). */
   low_volume_armed: boolean | null;
+  /** #1313: UI arm/disarm for the booking-failure-rate page. Null = unset (fall
+   *  through to env then the disarmed default, per L56's observe-first rule). */
+  failure_rate_armed: boolean | null;
   updated_at: string;
   updated_by: string | null;
 }
@@ -683,6 +686,20 @@ export type BookingReservationInsert = {
 export interface LaneHeartbeat {
   lane: string;
   last_ran_at: string;
+}
+
+/** The rolling failure-rate window (#1313, migration 0099). ONE row: the last
+ *  reading of the daily tally (the baseline the next delta is measured against,
+ *  carrying its ET `day` so the midnight counter reset is detectable) plus
+ *  `samples`, the window of per-interval deltas the page is judged on. */
+export interface BookingFailureRateState {
+  key: string;
+  day: string;
+  attempts: number;
+  failures: number;
+  by_code: Record<string, number>;
+  samples: { atMs: number; attempts: number; failures: number; byCode: Record<string, number> }[];
+  updated_at: string;
 }
 
 /** Rotating scan offset for a bounded self-heal sweep (#512): one row per sweep,

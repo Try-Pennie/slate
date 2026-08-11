@@ -99,6 +99,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "lane_heartbeats", category: "lock/counter", why: "one heartbeat row per text lane name (PK)" },
   { table: "monitor_settings", category: "lock/counter", why: "single pinned settings row keyed by PK" },
   { table: "selfheal_scan_cursor", category: "lock/counter", why: "single scan-cursor row keyed by PK" },
+  { table: "booking_failure_rate_state", category: "lock/counter", why: "#1313: one rolling-window state row keyed by a fixed text PK; the window lives in a jsonb column, not in extra rows" },
   { table: "export_cursor", category: "lock/counter", why: "one Snowflake-export watermark row per (lane, table) keyed by text PK; ~a dozen rows, #1098" },
   { table: "bucket_slots", category: "lock/counter", why: "one precomputed cache row per bucket_code (PK), ~60 rows" },
   { table: "reason_options", category: "roster/config", why: "a few dozen reason rows keyed by (action, code) PK; config-bounded, #346" },

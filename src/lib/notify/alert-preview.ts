@@ -30,6 +30,10 @@ import {
   type FailingAgent,
 } from "@/lib/notify/alerts";
 import { retentionAlertText, LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import {
+  formatFailureRateAlert,
+  formatFailureRateAllClear,
+} from "@/lib/monitor/booking-failure-rate";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
 import {
   oooAgentCalendarAlert,
@@ -218,6 +222,70 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
 
   // --- routing dead zones ----------------------------------------------------
+  {
+    // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers
+    // refused on times that were offered to them.
+    key: "booking_failure_rate",
+    state: "a wave of customers turned away",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 82,
+      failures: 38,
+      pct: 46,
+      windowMinutes: 60,
+      topCodes: [
+        { code: "slot_unavailable", count: 35 },
+        { code: "internal", count: 3 },
+      ],
+    }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "a single failure (the sentence has to read in the singular too)",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 24,
+      failures: 1,
+      pct: 4,
+      windowMinutes: 60,
+      topCodes: [{ code: "internal", count: 1 }],
+    }),
+  },
+  {
+    // The guidance sentence is conditional (L36), so the not-availability case
+    // reads differently and has to be previewable too.
+    key: "booking_failure_rate",
+    state: "the booker itself is throwing (no availability advice)",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 60,
+      failures: 30,
+      pct: 50,
+      windowMinutes: 60,
+      topCodes: [
+        { code: "internal", count: 28 },
+        { code: "no_eligible_agents", count: 2 },
+      ],
+    }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "failing with no error code recorded",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 40,
+      failures: 12,
+      pct: 30,
+      windowMinutes: 60,
+      topCodes: [],
+    }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "bookings completing again",
+    channel: "recovery",
+    text: formatFailureRateAllClear({ attempts: 90, failures: 2, pct: 2, windowMinutes: 60 }),
+  },
   {
     key: "empty_buckets:*",
     state: "a bucket with nobody to route to",

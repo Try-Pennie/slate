@@ -6,6 +6,7 @@ import {
   resolveCooldownMs,
   resolveFloors,
   resolveLowVolumeArmed,
+  resolveFailureRateArmed,
   parseMonitorSettingsForm,
   type MonitorSettingsFormInput,
 } from "./settings";
@@ -123,6 +124,21 @@ describe("resolveFloors", () => {
 
 // #575: the low-volume ARMED switch moves into the store, precedence store > env >
 // coded default (disarmed), so it can be flipped from the settings UI without a deploy.
+describe("resolveFailureRateArmed", () => {
+  // #1313 ships DISARMED (L56): a new detector observes one real cycle before it
+  // is allowed to page, so a genuine first finding cannot page off a threshold
+  // nobody has yet seen against real traffic.
+  it("defaults to disarmed when the store has not been set", () => {
+    expect(resolveFailureRateArmed(null)).toBe(false);
+    expect(resolveFailureRateArmed({ failure_rate_armed: null })).toBe(false);
+  });
+
+  it("obeys an explicit stored decision in both directions", () => {
+    expect(resolveFailureRateArmed({ failure_rate_armed: true })).toBe(true);
+    expect(resolveFailureRateArmed({ failure_rate_armed: false })).toBe(false);
+  });
+});
+
 describe("resolveLowVolumeArmed", () => {
   it("is DISARMED by default when neither store nor env is set", () => {
     expect(resolveLowVolumeArmed(null, undefined)).toBe(false);
@@ -151,6 +167,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     alertsChannel: "",
     infoChannel: "",
     lowVolumeArmed: "",
+    failureRateArmed: "",
   };
 
   it("parses a checked toggle as armed=true", () => {

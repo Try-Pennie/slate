@@ -60,6 +60,8 @@ const SAFE_TABLES = new Set([
   "reschedule_locks",
   "lane_heartbeats",
   "selfheal_scan_cursor",
+  // #1313: one rolling-window state row on a fixed key space; can never grow.
+  "booking_failure_rate_state",
   // Snowflake export watermark (#1098): one row per (lane, mirrored table), so
   // roughly a dozen rows total. Bounded by the table count, never by volume.
   "export_cursor",

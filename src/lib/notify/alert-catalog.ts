@@ -104,6 +104,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The Salesforce roster sync is failing on consecutive runs; a successful run ends it.",
   },
   {
+    key: "booking_failure_rate",
+    kind: "condition",
+    why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",
+  },
+  {
     key: "recompute_headroom",
     kind: "condition",
     why: "Recompute is falling behind its budget; a cycle that keeps up ends it.",

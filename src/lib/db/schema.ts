@@ -25,6 +25,7 @@ import type {
   EventType,
   LaneHeartbeat,
   SelfhealScanCursor,
+  BookingFailureRateState,
   ExportCursor,
   MonitorAlertConfig,
   MonitorSettings,
@@ -129,6 +130,7 @@ export interface Database {
       booking_outbox: Table<BookingOutbox>;
       booking_reservations: Table<BookingReservation>;
       booking_api_outcome_daily: Table<BookingApiOutcomeDaily>;
+      booking_failure_rate_state: Table<BookingFailureRateState>;
       routing_decisions: Table<RoutingDecision>;
       lane_heartbeats: Table<LaneHeartbeat>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
