@@ -33,13 +33,27 @@ export const NOTIFIER_CALLS = [
   "recordHeartbeat",
   "reportCompletionSaturation",
   "reportDeletionSaturation",
-  // Injected notifier seams on the monitor lanes' dependency objects.
-  ".notify(",
-  ".info(",
-  ".clearAlert(",
-  ".sendAlert(",
-  ".resolve(",
 ];
+
+/**
+ * Injected notifier seams on the monitor lanes' dependency objects.
+ *
+ * A PATTERN rather than a list of exact names, because a list can only recognise
+ * the seams someone remembered to add, and the one that is missing is exactly the
+ * one whose swallowed failure nobody notices (L96). Naming a dep `notifyX` or
+ * `resolveX` is the existing convention on every one of these lanes, so deriving
+ * from the convention covers the next one by construction. #1288's
+ * `notifyCountUnreadable` / `resolveCountUnreadable` were the instance that showed
+ * an enumeration was the wrong shape.
+ *
+ * The suffix must start with a CAPITAL, so `resolveCountUnreadable` matches while
+ * `resolverForAgent` does not. A shape filter has to be tested against what it
+ * must PRESERVE, not only against what it must catch (L104), and a bare
+ * `[A-Za-z]*` here would have excused any real-work dep whose name happens to
+ * begin with one of these words.
+ */
+export const NOTIFIER_SEAM_RE =
+  /\.(?:notify|info|resolve|clearAlert|sendAlert)(?:[A-Z][A-Za-z]*)?\(/;
 
 export const OPT_OUT = "swallow-ok:";
 
@@ -170,7 +184,8 @@ export function scanBareCatches(source: string): BareCatchFinding[] {
       .replace(/\s+/g, " ")
       .trim();
 
-    const isNotifier = NOTIFIER_CALLS.some((n) => statement.includes(n));
+    const isNotifier =
+      NOTIFIER_CALLS.some((n) => statement.includes(n)) || NOTIFIER_SEAM_RE.test(statement);
     const optedOut =
       rawLine.includes(OPT_OUT) || commentBlockAbove(lines, lineIdx).includes(OPT_OUT);
 

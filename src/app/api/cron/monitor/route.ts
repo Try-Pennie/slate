@@ -538,6 +538,17 @@ export async function GET(req: NextRequest) {
         armed: settings.lowVolumeArmed,
         cooldownMs: settings.cooldownMs.low_booking_volume,
         notify: sendThrottledAlert,
+        notifyCountUnreadable: (key, cooldownMs, text) => {
+          // alert-key: volume_count_unreadable
+          // alert-text-ok: our own copy from booking-volume.ts, with no error
+          // interpolated: the detail belongs in the lane's logs.
+          return sendThrottledAlert(key, cooldownMs, text);
+        },
+        // alert-key: volume_count_unreadable
+        // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a tick
+        // which could not read the count, and a tick outside business hours that
+        // read nothing at all, each clear NOTHING.
+        resolveCountUnreadable: (key, text) => resolveAlert(key, text),
         log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
       }),
     );

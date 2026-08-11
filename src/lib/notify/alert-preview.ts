@@ -35,6 +35,10 @@ import {
   formatFailureRateAllClear,
 } from "@/lib/monitor/booking-failure-rate";
 import {
+  formatVolumeCountUnreadableAlert,
+  formatVolumeCountReadableNotice,
+} from "@/lib/monitor/booking-volume";
+import {
   formatAvailabilityDriftAlert,
   formatAvailabilityDriftAllClear,
   formatAvailabilityDriftAggregateAlert,
@@ -281,6 +285,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "no longer widespread, but two buckets are still wrong",
     channel: "recovery",
     text: formatAvailabilityDriftAggregateAllClear({ stillDrifting: 2, totalBuckets: 60 }),
+  },
+  {
+    // #1288. Distinct from the low-volume page on purpose: this one sends the
+    // reader to the QUERY, because a reader told "volume is low" checks the
+    // booker, the embed and the cache and finds nothing wrong with any of them.
+    key: "volume_count_unreadable",
+    state: "the monitor cannot read its own booking count",
+    channel: "alert",
+    text: formatVolumeCountUnreadableAlert(),
+  },
+  {
+    key: "volume_count_unreadable",
+    state: "the count reads again",
+    channel: "recovery",
+    text: formatVolumeCountReadableNotice(),
   },
   {
     // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers
