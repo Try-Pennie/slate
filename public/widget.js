@@ -426,16 +426,55 @@
     close.focus();
   }
 
+  // --- error beacon (#1368) --------------------------------------------------
+  // If this script throws while opening the modal, the customer taps the button
+  // and nothing happens: no request reaches Slate, so every server-side detector
+  // stays green while the booking is lost. This is the only signal for that.
+  //
+  // Deliberately NOT a window.onerror. This file runs in the HOST page, so a
+  // global handler would collect the host site's own errors, which are both noise
+  // and not ours to collect. Only Slate's own entry points are wrapped.
+  //
+  // sendBeacon with a text/plain body is a "simple" cross-origin request: no
+  // preflight, no response to read, and nothing for the host page to wait on. The
+  // report is scrubbed of contact data SERVER side (a booking URL this file builds
+  // can carry a lead's prefill), so no scrubber is duplicated here.
+  var reported = 0;
+  function reportWidgetError(err, ns) {
+    try {
+      if (reported >= 3) return; // a broken page must not become a flood
+      var origin = originFor(ns);
+      if (!origin || !navigator.sendBeacon) return;
+      reported++;
+      var body = JSON.stringify({
+        kind: "error",
+        message: String((err && err.message) || err || "unknown widget error"),
+        stack: err && err.stack ? String(err.stack) : null,
+        source: "widget.js",
+        page: "/widget",
+      });
+      navigator.sendBeacon(
+        origin + "/api/client-errors",
+        new Blob([body], { type: "text/plain" }),
+      );
+    } catch (_e) {
+      // The reporter must never be the thing that breaks the host page.
+    }
+  }
+
   // Delegated so dynamically-added triggers work too.
   document.addEventListener("click", function (e) {
     var el = e.target && e.target.closest && e.target.closest("[data-cal-link]");
     if (!el) return;
     e.preventDefault();
-    openModal(
-      el.getAttribute("data-cal-link") || "",
-      el.getAttribute("data-cal-namespace") || "",
-      el,
-    );
+    var ns = el.getAttribute("data-cal-namespace") || "";
+    try {
+      openModal(el.getAttribute("data-cal-link") || "", ns, el);
+    } catch (err) {
+      // Report and swallow: a throw here would otherwise surface as an error in
+      // the HOST page's console and leave the customer with a dead button.
+      reportWidgetError(err, ns);
+    }
   });
 
   // --- availability prefetch (#251) -----------------------------------------

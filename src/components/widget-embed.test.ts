@@ -188,3 +188,55 @@ describe("widget.js availability prefetch (#251)", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("widget.js error beacon (#1368)", () => {
+  // If widget.js throws while opening the modal, the customer taps the button and
+  // nothing happens. No request reaches Slate, so every server side detector stays
+  // green while the booking is lost. This is the only signal for that.
+  //
+  // Deliberately NOT a window.onerror: widget.js runs in the HOST page, where a
+  // global handler would collect trypennie's own errors rather than Slate's.
+
+  function withBrokenModal(run: () => void): void {
+    // Break something openModal touches, so the delegated handler throws.
+    const original = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation(((tag: string) => {
+      if (tag === "iframe") throw new Error("iframe blocked by host CSP");
+      return original(tag);
+    }) as typeof document.createElement);
+    try {
+      run();
+    } finally {
+      vi.mocked(document.createElement).mockRestore();
+    }
+  }
+
+  it("reports a throw from the modal trigger instead of failing silently", () => {
+    const beacon = vi.fn((_url: string, _body?: BodyInit) => true);
+    vi.stubGlobal("navigator", { ...navigator, sendBeacon: beacon });
+    (window as unknown as { Cal: (...a: unknown[]) => void }).Cal("init", "", {
+      origin: "https://slate.example",
+    });
+
+    withBrokenModal(() => {
+      const trigger = document.createElement("button");
+      trigger.setAttribute("data-cal-link", "router?xbc=411");
+      document.body.appendChild(trigger);
+      // The host page must not see the throw either.
+      expect(() => trigger.click()).not.toThrow();
+    });
+
+    expect(beacon).toHaveBeenCalled();
+    const [url] = beacon.mock.calls[0];
+    expect(String(url)).toBe("https://slate.example/api/client-errors");
+    vi.unstubAllGlobals();
+  });
+
+  it("does not report anything while the modal opens normally", () => {
+    const beacon = vi.fn(() => true);
+    vi.stubGlobal("navigator", { ...navigator, sendBeacon: beacon });
+    openModal();
+    expect(beacon).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});

@@ -10,6 +10,7 @@ export {
   BOOKING_CONTACT_HOURLY_RATE_RULES,
   contactRateKeys,
   ROUTING_HOURLY_RATE_RULES,
+  CLIENT_ERROR_RATE_RULES,
 } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 import {
