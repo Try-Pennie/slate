@@ -67,19 +67,85 @@ export function staleBuckets(
  * both grant no grace. A wrong page costs a look; a wrongly withheld one costs the
  * booker serving stale availability with nothing saying so.
  */
+/**
+ * What the deliberate-invalidation marker read came back with (#1304).
+ *
+ * Three states, because the first two used to share `null` and they call for
+ * opposite handling. ABSENT is the NORMAL state: nobody invalidated anything, so
+ * staleness has nothing explaining it and pages at once. UNREADABLE means the
+ * read itself failed, or the stored stamp could not be parsed, and one blip of
+ * that is not worth waking anyone for.
+ */
+export type InvalidationMarker =
+  | { state: "absent" }
+  | { state: "unreadable" }
+  | { state: "at"; atMs: number };
+
+/**
+ * How many CONSECUTIVE unreadable ticks before the staleness pages anyway.
+ *
+ * Dan (2026-08-05): "retry and page only after three consecutive failures".
+ * #1301 chose to page on the first tick so the alarm never went quiet on a value
+ * it could not check, which is the right instinct; what it lacked was the
+ * difference between one database blip and a marker that has been unreadable for
+ * three minutes running.
+ */
+export const INVALIDATION_UNREADABLE_TOLERANCE = 3;
+
+/**
+ * Window the consecutive-unreadable streak is counted over.
+ *
+ * It MUST outlast the ticks it has to span. The streak lives in a rate-limit
+ * window, so a window shorter than the run of ticks would put three genuinely
+ * consecutive failures in different windows, count the third as a first, and the
+ * alarm would never fire while looking exactly like a marker that kept
+ * recovering. The recompute lane is every minute, so three ticks span two
+ * minutes; 300s leaves generous room for a late or dropped tick, and the margin
+ * is asserted in scripts/test-precompute-cron.ts rather than left to this comment.
+ */
+export const INVALIDATION_UNREADABLE_WINDOW_S = 300;
+
 export function staleBucketPage(
   staleCount: number,
-  invalidatedAtMs: number | null,
+  marker: InvalidationMarker,
   nowMs: number,
   graceMs: number,
+  /**
+   * Has the marker now been unreadable on `tolerance` CONSECUTIVE ticks?
+   *
+   * A boolean rather than a count, because that is exactly what the repo's streak
+   * primitive answers (`recordConsecutiveStreak` returns whether the threshold was
+   * reached). Asking for a count would mean a second read every minute on a lane
+   * that shares its subrequest budget with three others, to say "4 ticks" instead
+   * of "at least 3", which no reader acts on differently.
+   */
+  unreadableToleranceReached: boolean,
+  tolerance: number = INVALIDATION_UNREADABLE_TOLERANCE,
 ): { page: boolean; reason: string } {
   if (staleCount === 0) return { page: false, reason: "nothing stale" };
-  if (invalidatedAtMs === null) {
+  if (marker.state === "absent") {
     return { page: true, reason: "stale with no deliberate invalidation to explain it" };
   }
-  if (!Number.isFinite(invalidatedAtMs)) {
-    return { page: true, reason: "invalidation marker unreadable, so it grants no grace" };
+  if (marker.state === "unreadable") {
+    // The tolerance applies HERE ONLY. An absent marker above is the normal state
+    // and must never inherit this delay, or the alarm this whole lane exists for
+    // would be three minutes late every time it mattered.
+    if (!unreadableToleranceReached) {
+      return {
+        page: false,
+        reason:
+          "invalidation marker unreadable on this tick; waiting for " +
+          `${tolerance} consecutive failures before paging`,
+      };
+    }
+    return {
+      page: true,
+      reason:
+        `invalidation marker could not be read on at least ${tolerance} consecutive ticks, ` +
+        "so nothing can explain the staleness",
+    };
   }
+  const invalidatedAtMs = marker.atMs;
   const age = nowMs - invalidatedAtMs;
   if (age < 0) {
     return { page: true, reason: "invalidation marker is in the future, so it grants no grace" };

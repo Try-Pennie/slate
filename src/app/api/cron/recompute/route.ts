@@ -13,13 +13,14 @@ import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import {
   listAllBucketCodes,
   listKnownBucketSlotRows,
-  readMassInvalidationMs,
+  readMassInvalidationMarker,
   clearMassInvalidation,
 } from "@/lib/availability/precompute";
 import { log } from "@/lib/log";
 import {
   bucketSlotsStaleAlert,
   bucketSlotsStaleRecovery,
+  bucketSlotsStaleUnreadableMarkerAlert,
   recomputeHeadroomAlert,
   recomputeHeadroomRecovery,
 } from "@/lib/monitor/cron-alert-copy";
@@ -27,9 +28,12 @@ import {
   bucketsDueForRecompute,
   staleBuckets,
   staleBucketPage,
+  INVALIDATION_UNREADABLE_TOLERANCE,
+  INVALIDATION_UNREADABLE_WINDOW_S,
   recomputeHeadroom,
   recomputeDueBuckets,
 } from "@/lib/availability/precompute-cron";
+import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +52,10 @@ const STALE_ALARM_MS = 6 * 60_000;
 // the false page this whole mechanism exists to remove. Bounded on purpose: a drain
 // unfinished after this IS the fall-behind the alarm is for.
 const INVALIDATION_DRAIN_GRACE_MS = 15 * 60_000;
+
+/** Streak key for consecutive unreadable-marker ticks (#1304). Its own key, so it
+ *  cannot be reset by any other streak on this lane. */
+const INVALIDATION_UNREADABLE_STREAK_KEY = "invalidation_marker_unreadable";
 // Hard per-tick cap so a slow run can't overrun the lock TTL.
 const RECOMPUTE_BUDGET_MS = 50_000;
 // Recompute buckets in bounded-concurrency waves (the recompute is DB-only) so
@@ -176,22 +184,50 @@ export async function GET(req: NextRequest) {
     // a HEALTHY tick is what lets the drain's end clear it, and without that a
     // genuine fall-behind minutes later would inherit a grace it never earned. One
     // indexed single-row read a minute on a lane that already does several.
-    const invalidatedAtMs = await readMassInvalidationMs();
+    const marker = await readMassInvalidationMarker();
+    // Count consecutive UNREADABLE ticks, and clear the count the moment the read
+    // works again (#1304), so "three in a row" means three in a row rather than
+    // three ever. The streak is only consulted for the unreadable case; an absent
+    // marker still pages on the first tick.
+    let unreadableToleranceReached = false;
+    if (marker.state === "unreadable") {
+      unreadableToleranceReached = await recordConsecutiveStreak(
+        INVALIDATION_UNREADABLE_STREAK_KEY,
+        INVALIDATION_UNREADABLE_WINDOW_S,
+        INVALIDATION_UNREADABLE_TOLERANCE,
+      );
+    } else {
+      // Cleared on ANY readable tick, including an absent marker, so "three in a
+      // row" means three in a row rather than three ever. Without this a marker
+      // that failed once a day for three days would page as though it had been
+      // unreadable for three minutes.
+      await clearFailureStreak(INVALIDATION_UNREADABLE_STREAK_KEY);
+    }
     const verdict = staleBucketPage(
       stale.length,
-      invalidatedAtMs,
+      marker,
       Date.now(),
       INVALIDATION_DRAIN_GRACE_MS,
+      unreadableToleranceReached,
     );
     if (stale.length) {
       log.info("recompute", { msg: "stale check", stale: stale.length, page: verdict.page, why: verdict.reason });
     }
     if (verdict.page) {
-      await sendThrottledAlert(
-        "bucket_slots_stale",
-        STALE_ALERT_COOLDOWN_MS,
-        bucketSlotsStaleAlert(stale.length, STALE_ALARM_MS / 60_000, stale.slice(0, 5)),
-      ).catch(() => {});
+      // Two different pages on one key (#1304). A staleness we could not EXPLAIN
+      // is not the same finding as one we measured, and the ordinary wording would
+      // send the reader to the precompute writers when the thing to look at is the
+      // marker read.
+      const text =
+        marker.state === "unreadable"
+          ? bucketSlotsStaleUnreadableMarkerAlert(
+              stale.length,
+              STALE_ALARM_MS / 60_000,
+              stale.slice(0, 5),
+              INVALIDATION_UNREADABLE_TOLERANCE,
+            )
+          : bucketSlotsStaleAlert(stale.length, STALE_ALARM_MS / 60_000, stale.slice(0, 5));
+      await sendThrottledAlert("bucket_slots_stale", STALE_ALERT_COOLDOWN_MS, text).catch(() => {});
     }
 
     // #1151: both of this lane's alerts describe CONDITIONS that end, so say when
@@ -216,7 +252,12 @@ export async function GET(req: NextRequest) {
       });
       // The drain is finished, so drop the grace marker: the NEXT staleness must
       // page at once rather than inheriting a grace it did not earn (#1301).
-      if (invalidatedAtMs !== null) await clearMassInvalidation();
+      //
+      // Also cleared when the marker was UNREADABLE (#1304). The delete is
+      // idempotent, so at worst it removes nothing, and that is the safer side:
+      // leaving a marker we could not read would hand a grace to a genuine
+      // fall-behind minutes later, which is the exact failure #1301 was about.
+      if (marker.state !== "absent") await clearMassInvalidation();
     }
     if (recovered.length > 0) {
       // alert-key: recompute_headroom
