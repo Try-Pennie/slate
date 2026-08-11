@@ -81,83 +81,62 @@ export type SlotVerdict =
   | "unverified";
 
 export interface TruthThresholds {
-  /** How many slots to check per tick. This is the COST ceiling: each slot is a
-   *  distinct time window and so its own live Google call, which no amount of
-   *  batching can share, on a subrequest budget four cron lanes divide. */
-  sampleSize: number;
-  /** How many of those come off the head of the list (#1376). The rest are
-   *  spread across the remaining horizon, so widening coverage costs nothing. */
-  nearCount: number;
   /** Skip slots closer than this: they are about to be verified on book anyway,
    *  and a booking landing mid-probe would read as drift. */
   leadMs: number;
+  /**
+   * Defensive ceiling on how many offered times one tick judges (#1381).
+   *
+   * NOT a sampling knob. Google's freeBusy is a range query, so the calendars
+   * are read once per chunk however many slots there are, and the cost of a slot
+   * is a local interval comparison. This exists only so a pathological payload
+   * cannot run away with the CPU budget four cron lanes share, and it is set far
+   * above any realistic horizon. When it does bite, the tick LOGS what it
+   * dropped, because a silently truncated check reads as full coverage.
+   */
+  maxSlots: number;
   /** Below this many slots actually checked, there is no honest verdict. */
   minVerified: number;
   /** Drift share (percent of CHECKED slots) that must be EXCEEDED to page. */
   driftPct: number;
 }
 
-/** The part of `TruthThresholds` that decides WHICH slots get checked. Taken as
- *  one object rather than three positional numbers, because three same-typed
- *  numbers in a row is how a caller silently swaps two of them. */
-export type SlotSampleSpec = Pick<TruthThresholds, "sampleSize" | "nearCount" | "leadMs">;
+/** The part of `TruthThresholds` that decides which offered times get checked. */
+export type SlotSampleSpec = Pick<TruthThresholds, "leadMs" | "maxSlots">;
 
 /**
- * Which of a bucket's offered times to check this tick: the soonest few, plus a
- * spread across everything else it is advertising (#1376).
+ * Every time the bucket is advertising that is worth checking, in time order.
  *
- * The near slots are weighted because a stale cache costs a customer there
- * first. But Slate offers several DAYS, and sampling only the head of the list
- * means a slot three days out is unchecked until it becomes the nearest one,
- * while the probe reports on "availability" as though it had looked. The spread
- * fixes that for free: `sampleSize` is the cost ceiling either way, since each
- * distinct window is its own Google call regardless of when it falls.
+ * Not a sample (#1381). Google's freeBusy is a RANGE query, so reading the whole
+ * horizon costs one call per calendar chunk whether we then judge five offered
+ * times or five hundred; the per slot loop that made coverage look expensive was
+ * a shape we chose, not one Google imposed. Checking a subset while reporting on
+ * "availability" claimed more than it measured.
  *
- * The spread takes the MIDPOINT of each equal segment of what is left, rather
- * than the endpoints, so no pick is wasted next to the near block and the far
- * end of the horizon is always represented. It is deterministic (no sampling
- * randomness) so a surprising verdict can be reproduced from the same payload.
+ * Two filters survive, and both are real:
  *
- * An unreadable start is DROPPED rather than sorted: `Date.parse` yields NaN,
- * and a NaN sort key would shuffle the sample arbitrarily while looking like a
- * normal result (#1169).
+ *  - the lead window, because a slot about to be verified on book anyway would
+ *    read as drift if a booking landed on it mid probe;
+ *  - an unreadable start, DROPPED rather than sorted, because `Date.parse` yields
+ *    NaN and a NaN sort key would shuffle the list arbitrarily while looking like
+ *    a normal result (#1169).
+ *
+ * The ceiling truncates from the FAR end, keeping the soonest times, since that
+ * is where a stale cache costs a customer first.
  */
-export function sampleSlotStarts(
-  startsIso: string[],
-  nowMs: number,
-  spec: SlotSampleSpec,
-): string[] {
+export function slotsToCheck(startsIso: string[], nowMs: number, spec: SlotSampleSpec): string[] {
   const floor = nowMs + spec.leadMs;
-  const eligible = startsIso
-    // parse-ok: this is the site that REMOVES unreadable starts rather than
-    // comparing them. The very next line drops every non-finite ms, which is why
-    // an unreadable slot can never reach the sample, the sort, or the live check.
-    .map((iso) => ({ iso, ms: Date.parse(iso) }))
-    .filter((s) => Number.isFinite(s.ms) && s.ms >= floor)
-    .sort((a, b) => a.ms - b.ms)
-    .map((s) => s.iso);
-
-  const total = Math.max(0, spec.sampleSize);
-  if (eligible.length <= total) return eligible;
-
-  // nearCount is clamped to the budget: a spec asking for more near slots than
-  // the whole sample must not overspend, and must not yield a SHORT sample
-  // either, because the drift share is judged against what was checked.
-  const near = Math.min(Math.max(0, spec.nearCount), total);
-  const rest = eligible.slice(near);
-  const want = total - near;
-
-  const chosen = new Set<number>();
-  for (let i = 0; i < want; i += 1) {
-    chosen.add(Math.min(rest.length - 1, Math.floor(((i + 0.5) * rest.length) / want)));
-  }
-  // Two segments can land on one index when `rest` is short. Backfilling keeps
-  // the sample at full size: a probe checking 3 slots while reporting 5 would
-  // judge the drift share against a denominator it never measured.
-  for (let i = 0; chosen.size < want && i < rest.length; i += 1) chosen.add(i);
-
-  const spread = [...chosen].sort((a, b) => a - b).map((i) => rest[i]);
-  return [...eligible.slice(0, near), ...spread];
+  return (
+    startsIso
+      // parse-ok: this is the site that REMOVES unreadable starts rather than
+      // comparing them. The very next line drops every non-finite ms, which is why
+      // an unreadable slot can never reach the list, the sort, or the live check.
+      .map((iso) => ({ iso, ms: Date.parse(iso) }))
+      .filter((s) => Number.isFinite(s.ms) && s.ms >= floor)
+      .sort((a, b) => a.ms - b.ms)
+      .slice(0, Math.max(0, spec.maxSlots))
+      .map((s) => s.iso)
+  );
 }
 
 /**
@@ -446,8 +425,19 @@ export async function runAvailabilityTruthCheck(deps: {
   cachedSlots: (code: string) => Promise<{ starts: string[]; durationMin: number } | null>;
   /** Emails of the bucket's eligible agents, or null when unreadable. */
   eligibleEmails: (code: string) => Promise<string[] | null>;
-  /** Live verdict for one slot window across the whole eligible set. */
-  verifySlot: (emails: string[], startIso: string, endIso: string) => Promise<SlotVerdict>;
+  /**
+   * Live verdict for EVERY offered window, from ONE read of the eligible set's
+   * calendars over the whole horizon (#1381), in the order given.
+   *
+   * Null when the read failed outright, which is different from a list of
+   * `unverified`: null means nothing was compared at all. A short list is a
+   * programming error rather than a partial answer, and is treated as a total
+   * failure below rather than silently re-aligned with the wrong windows.
+   */
+  verifyWindows: (
+    emails: string[],
+    windows: { startIso: string; endIso: string }[],
+  ) => Promise<SlotVerdict[] | null>;
   /**
    * Who else is drifting and what is already firing (#1373), or null when the
    * alert state could not be read. Null is NOT an empty set: an unread state
@@ -485,7 +475,7 @@ export async function runAvailabilityTruthCheck(deps: {
 
   const offered = await deps.cachedSlots(bucket.code).catch(() => null);
   if (offered === null) return skip("slot payload unreadable");
-  const sample = sampleSlotStarts(offered.starts, deps.nowMs, deps.thresholds);
+  const sample = slotsToCheck(offered.starts, deps.nowMs, deps.thresholds);
   // Zero offered times is the empty-bucket condition, not a cache-integrity
   // fault, and the availability scan already pages on it.
   if (sample.length === 0) return skip("bucket is offering no times to check");
@@ -497,20 +487,29 @@ export async function runAvailabilityTruthCheck(deps: {
   if (emails.length === 0) return skip("bucket has no eligible agent");
 
   const durationMs = offered.durationMin * 60_000;
-  const verdicts: SlotVerdict[] = [];
-  for (const startIso of sample) {
-    try {
-      // parse-ok: fails CLOSED, twice over. sampleSlotStarts has already dropped
-      // every start Date.parse could not read, so this cannot be NaN; and if one
-      // ever did get through, NaN would make toISOString throw RangeError, which
-      // the catch below records as "unverified" (the safe side) rather than as a
-      // slot checked and found fine.
-      const endIso = new Date(Date.parse(startIso) + durationMs).toISOString();
-      verdicts.push(await deps.verifySlot(emails, startIso, endIso));
-    } catch {
-      // A Google failure tells us nothing about the cache, in either direction.
-      verdicts.push("unverified");
-    }
+  const windows = sample.map((startIso) => ({
+    startIso,
+    // parse-ok: slotsToCheck has already dropped every start Date.parse could
+    // not read, so this cannot be NaN. If one ever did get through, NaN would
+    // make toISOString throw RangeError, which the catch below turns into a
+    // total failure (the safe side) rather than a slot checked and found fine.
+    endIso: new Date(Date.parse(startIso) + durationMs).toISOString(),
+  }));
+
+  const verdicts = await deps.verifyWindows(emails, windows).catch(() => null);
+  // A read that failed outright, or came back the wrong length, has compared
+  // NOTHING. Padding it out to the right size would put a real verdict against
+  // the wrong window, which is worse than admitting we do not know.
+  if (verdicts === null || verdicts.length !== windows.length) {
+    deps.log?.({
+      msg: "availability truth",
+      bucket: bucket.code,
+      status: "unverified",
+      armed: deps.armed,
+      offered: offered.starts.length,
+      checked: 0,
+    });
+    return { status: "unverified", code: bucket.code };
   }
 
   const summary = summarizeSample(verdicts);
@@ -522,7 +521,11 @@ export async function runAvailabilityTruthCheck(deps: {
     bucket: bucket.code,
     status: verdict.status,
     armed: deps.armed,
-    sampled: sample.length,
+    // `offered` beside `checked` so a truncated tick is visible rather than
+    // reading as full coverage. They differ only by the lead window, an
+    // unreadable start, or the defensive ceiling biting.
+    offered: offered.starts.length,
+    checked: sample.length,
     verified: summary.verified,
     drifted: summary.drifted,
     unverified: summary.unverified,
