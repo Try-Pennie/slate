@@ -109,6 +109,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
   },
   {
+    key: "volume_count_unreadable",
+    kind: "condition",
+    why:
+      "The volume monitor cannot read its own count, so it is measuring nothing; " +
+      "the read succeeds again and the same lane sees it on the next tick.",
+  },
+  {
     key: "booking_failure_rate",
     kind: "condition",
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",

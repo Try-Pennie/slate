@@ -42,9 +42,21 @@ export function lowVolumeBreaches(windows: VolumeWindow[]): VolumeWindow[] {
  *  the settings screen refer to the one constant. */
 export const VOLUME_ALERT_KEY = "low_booking_volume";
 
+/**
+ * alert_state key for a bookings count that could not be read twice (#1288).
+ *
+ * Deliberately NOT `VOLUME_ALERT_KEY`. A read failure is a database problem, and
+ * dressing it as a booking drought sends the reader to the funnel instead of to
+ * the query, which is the same reasoning that made a failed read `unverified`
+ * rather than zero in the first place (#1158).
+ */
+export const VOLUME_COUNT_UNREADABLE_KEY = "volume_count_unreadable";
+
 export type LowVolumeResult =
   | { status: "outside-hours" }
   | { status: "unverified" }
+  /** Both attempts at the count failed, so nothing about volume was measured. */
+  | { status: "count-unreadable" }
   | { status: "checked"; armed: boolean; windows: VolumeWindow[]; breaches: VolumeWindow[] };
 
 /**
@@ -71,13 +83,27 @@ export async function runLowVolumeCheck(deps: {
   armed: boolean;
   cooldownMs: number;
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  /** Page for a count that could not be read TWICE (#1288). Its own key, because
+   *  a broken query is not a booking drought. */
+  notifyCountUnreadable: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  /** Clear that page once a count reads again. */
+  resolveCountUnreadable: (key: string, text: string) => Promise<boolean>;
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<LowVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
 
   const read = (minutes: number) =>
     deps.countSince(new Date(deps.nowMs - minutes * 60_000).toISOString()).catch(() => null);
-  const [count30, count120] = await Promise.all([read(30), read(120)]);
+  let [count30, count120] = await Promise.all([read(30), read(120)]);
+
+  // ONE retry, and only for the window that actually failed (#1288). Dan's
+  // expectation was to "retry at once and page if the retry fails", so a
+  // persistently broken count surfaces inside the tick rather than waiting on the
+  // next one. Scoped to the error path and to the failed window because the extra
+  // query lands on a subrequest budget four cron lanes share: a healthy tick must
+  // cost exactly what it did before.
+  if (count30 === null) count30 = await read(30);
+  if (count120 === null) count120 = await read(120);
 
   if (count30 === null || count120 === null) {
     deps.log?.({
@@ -86,8 +112,18 @@ export async function runLowVolumeCheck(deps: {
       below_floor: null,
       armed: deps.armed,
       unverified: true,
+      retried: true,
     });
-    return { status: "unverified" };
+    // Pages regardless of `armed`. That switch exists so the ramp cannot cry wolf
+    // about VOLUME, and an unreadable query makes no claim about volume at all.
+    await deps
+      .notifyCountUnreadable(
+        VOLUME_COUNT_UNREADABLE_KEY,
+        deps.cooldownMs,
+        formatVolumeCountUnreadableAlert(),
+      )
+      .catch(() => {});
+    return { status: "count-unreadable" };
   }
 
   const windows: VolumeWindow[] = [
@@ -104,7 +140,38 @@ export async function runLowVolumeCheck(deps: {
     below_floor: breaches.length,
     armed: deps.armed,
   });
+  // The all-clear hangs off a count we actually READ, never off "we did not page
+  // this run" (#1152). Every path above that could not measure returns before
+  // here, so an unreadable tick can never announce a recovery.
+  await deps
+    .resolveCountUnreadable(VOLUME_COUNT_UNREADABLE_KEY, formatVolumeCountReadableNotice())
+    .catch(() => {});
   return { status: "checked", armed: deps.armed, windows, breaches };
+}
+
+/**
+ * The page for a count that failed twice in one tick.
+ *
+ * It names the QUERY as the thing to look at, because that is what is broken. A
+ * reader who is told "booking volume is low" goes and checks the booker, the
+ * embed and the availability cache, and finds nothing wrong with any of them.
+ */
+export function formatVolumeCountUnreadableAlert(): string {
+  return (
+    "The booking volume monitor cannot read its own count: two attempts in the same " +
+    "minute both failed, so nothing is being measured about whether customers are " +
+    "booking. This is a database read problem, not a booking drought. Check the " +
+    "bookings table and the monitor lane's logs; the low volume alarm is blind " +
+    "until it clears."
+  );
+}
+
+/** The all-clear, hung off a count that actually came back. */
+export function formatVolumeCountReadableNotice(): string {
+  return (
+    "The booking volume monitor can read its count again, so it is measuring " +
+    "whether customers are booking. No action is needed."
+  );
 }
 
 /** Slack body for a low-volume breach. No em/en dashes (the copy lint forbids

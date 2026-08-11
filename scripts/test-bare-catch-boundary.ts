@@ -189,4 +189,36 @@ if (offenders.length) {
 }
 eq(offenders.length, 0, "no bare catch in src/ discards a real-work failure");
 
+// --- the injected-seam pattern, derived from the convention rather than listed ---
+//
+// An enumeration of exact dep names can only recognise the seams someone
+// remembered, and the missing one is exactly the seam whose swallowed failure
+// nobody notices (L96). #1288 added `notifyCountUnreadable` and
+// `resolveCountUnreadable` and the list did not know them, which is how this
+// became a pattern.
+{
+  for (const seam of [
+    "await deps.notify(k, c, t).catch(() => {});",
+    "await deps.notifyCountUnreadable(k, c, t).catch(() => {});",
+    "await deps.resolveCountUnreadable(k, t).catch(() => {});",
+    "await deps.resolveRecoveredForLane(k, t).catch(() => {});",
+    "await deps.sendAlertToManager(id).catch(() => {});",
+  ]) {
+    const found = offendingBareCatches(seam);
+    eq(found.length, 0, `allowed as a notifier seam: ${seam.trim()}`);
+  }
+}
+{
+  // The pattern must not become a way to excuse real work. A dep that merely
+  // starts with a similar word is not a notifier.
+  for (const real of [
+    "await deps.recomputeSlots(code).catch(() => {});",
+    "await deps.notarizeBooking(id).catch(() => {});",
+    "await deps.resolverForAgent(id).catch(() => {});",
+  ]) {
+    const found = offendingBareCatches(real);
+    assert(found.length === 1, `still flagged as real work: ${real.trim()}`);
+  }
+}
+
 finish();

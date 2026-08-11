@@ -8,10 +8,15 @@ import {
   formatLowVolumeAlert,
   runLowVolumeCheck,
   VOLUME_ALERT_KEY,
+  VOLUME_COUNT_UNREADABLE_KEY,
   type BusinessHoursConfig,
   type VolumeWindow,
 } from "../src/lib/monitor/booking-volume.ts";
 import { assert, finish } from "./lib/harness.ts";
+
+/** Em/en dash detector built from escapes: writing the characters themselves
+ *  would trip the repo's own copy lint on this very file. */
+const DASHES = new RegExp("[\\u2013\\u2014]");
 
 const CFG: BusinessHoursConfig = {
   zone: "America/New_York",
@@ -59,15 +64,20 @@ const WEEKEND_NOW = Date.UTC(2026, 5, 20, 18, 0, 0);
 
 function harness(overrides: {
   counts?: Record<string, number | null>;
+  /** Counts for the RETRY, when it should answer differently from the first go. */
+  retryCounts?: Record<string, number | null>;
   countThrows?: boolean;
   notifyThrows?: boolean;
   nowMs?: number;
   armed?: boolean;
   floors?: { floor30: number; floor120: number };
+  unreadableFiring?: boolean;
 }) {
   const notified: { key: string; cooldownMs: number; text: string }[] = [];
+  const resolved: { key: string; text: string }[] = [];
   const logged: Record<string, unknown>[] = [];
   const countCalls: string[] = [];
+  const attempts = new Map<string, number>();
   const run = () =>
     runLowVolumeCheck({
       nowMs: overrides.nowMs ?? BUSINESS_NOW,
@@ -78,9 +88,11 @@ function harness(overrides: {
         const minutes = String(
           Math.round(((overrides.nowMs ?? BUSINESS_NOW) - Date.parse(sinceIso)) / 60_000),
         );
+        const nth = (attempts.get(minutes) ?? 0) + 1;
+        attempts.set(minutes, nth);
         // `in` rather than `??`: a configured null means "read failed" and must
         // reach the check as null, not collapse to 0.
-        const counts = overrides.counts ?? {};
+        const counts = nth > 1 && overrides.retryCounts ? overrides.retryCounts : overrides.counts ?? {};
         return minutes in counts ? counts[minutes] : 0;
       },
       floors: overrides.floors ?? { floor30: 5, floor120: 20 },
@@ -90,9 +102,17 @@ function harness(overrides: {
         if (overrides.notifyThrows) throw new Error("slack down");
         notified.push({ key, cooldownMs, text });
       },
+      notifyCountUnreadable: async (key: string, cooldownMs: number, text: string) => {
+        if (overrides.notifyThrows) throw new Error("slack down");
+        notified.push({ key, cooldownMs, text });
+      },
+      resolveCountUnreadable: async (key: string, text: string) => {
+        resolved.push({ key, text });
+        return overrides.unreadableFiring ?? false;
+      },
       log: (fields: Record<string, unknown>) => logged.push(fields),
     });
-  return { run, notified, logged, countCalls };
+  return { run, notified, resolved, logged, countCalls };
 }
 
 // Outside business hours: no reads, no alert, explicit status.
@@ -141,13 +161,70 @@ function harness(overrides: {
 // unreadable bookings table would have paged "0 bookings" off a query that never
 // ran (the #1134/#1152 class, on the paging side).
 {
+  // Dan (2026-08-05): a failed count should "retry at once and page if the retry
+  // fails". A read failure is a DATABASE problem, so the page must never be the
+  // low-volume one: dressing it as a booking drought sends the reader to the
+  // funnel instead of the query (#1158's reasoning).
+  const h = harness({ counts: { "30": null, "120": 40 }, retryCounts: { "30": 7, "120": 40 } });
+  const res = await h.run();
+  assert(res.status === "checked", "a retry that succeeds gives the tick a real verdict");
+  assert(h.notified.length === 0, "and pages nothing, because nothing was actually wrong");
+  assert(
+    h.countCalls.filter((c) => c.includes("T17:30")).length === 2,
+    "the failed window is re-read exactly once",
+  );
+  assert(
+    h.countCalls.filter((c) => c.includes("T16:00")).length === 1,
+    "and the window that SUCCEEDED is not re-read: the retry lands on a subrequest budget four cron lanes share",
+  );
+}
+{
   const h = harness({ counts: { "30": null, "120": 40 } });
   const res = await h.run();
-  assert(res.status === "unverified", "a failed count read is unverified, not zero");
-  assert(h.notified.length === 0, "a failed count read never pages a false zero");
+  assert(res.status === "count-unreadable", "two failed attempts is its own outcome, not a low volume reading");
+  assert(h.notified.length === 1, "and pages, so a persistently broken count surfaces inside the tick");
   assert(
-    h.logged.some((f) => f.unverified === true),
-    "the log line says the counts could not be read, distinct from a real zero",
+    h.notified[0].key === VOLUME_COUNT_UNREADABLE_KEY,
+    "on its OWN key, never the low-volume one",
+  );
+  assert(
+    /count|read|quer/i.test(h.notified[0].text),
+    "and the copy sends the reader to the query rather than to the funnel",
+  );
+  assert(!DASHES.test(h.notified[0].text), "no dashes in alert copy");
+  assert(!h.notified[0].text.startsWith("Slate"), "an alert never opens with the word Slate");
+}
+{
+  // The arm switch exists so the ramp cannot cry wolf about VOLUME. An unreadable
+  // query is not a volume claim, so it pages either way.
+  const h = harness({ counts: { "30": null, "120": null }, armed: false });
+  const res = await h.run();
+  assert(res.status === "count-unreadable", "a disarmed probe still reports the unreadable count");
+  assert(h.notified.length === 1, "and still pages: a broken query is not a volume claim");
+}
+{
+  // The condition owes the reader an end (#1151), hung off a MEASURED read.
+  const h = harness({ counts: { "30": 9, "120": 40 }, unreadableFiring: true });
+  const res = await h.run();
+  assert(res.status === "checked", "a clean tick is checked");
+  assert(h.resolved.length === 1, "and clears the unreadable-count page");
+  assert(h.resolved[0].key === VOLUME_COUNT_UNREADABLE_KEY, "on the same key it paged on");
+  assert(!DASHES.test(h.resolved[0].text), "no dashes in the all-clear either");
+}
+{
+  const h = harness({ counts: { "30": null, "120": 40 } });
+  await h.run();
+  assert(
+    h.resolved.length === 0,
+    "a tick that could not read the count clears nothing: an all-clear may only hang off a measured result",
+  );
+}
+{
+  const h = harness({ nowMs: WEEKEND_NOW, unreadableFiring: true });
+  await h.run();
+  assert(
+    h.resolved.length === 0,
+    "outside business hours nothing is read, so nothing is cleared either",
   );
 }
 
@@ -155,8 +232,19 @@ function harness(overrides: {
 {
   const h = harness({ countThrows: true });
   const res = await h.run();
-  assert(res.status === "unverified", "a throwing count read degrades to unverified");
-  assert(h.notified.length === 0, "a throwing count read never pages");
+  assert(res.status === "count-unreadable", "a throwing count read is unreadable, after its retry");
+  assert(
+    h.notified.length === 1 && h.notified[0].key === VOLUME_COUNT_UNREADABLE_KEY,
+    "and pages on the unreadable key, never as a false zero",
+  );
+}
+{
+  const h = harness({ counts: { "30": null, "120": 40 }, notifyThrows: true });
+  const res = await h.run();
+  assert(
+    res.status === "count-unreadable",
+    "a throwing notify is swallowed and the check still reports the unreadable count",
+  );
 }
 
 // A flaky Slack must never fail the monitor tick (matches the other checks).
