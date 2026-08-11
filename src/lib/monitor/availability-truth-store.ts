@@ -26,6 +26,7 @@ import {
   type SlotVerdict,
 } from "@/lib/monitor/availability-truth";
 import { firingKey } from "@/lib/notify/dispatch";
+import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { parseStampMs } from "@/lib/date/stamp";
 
 /** The rotation cursor's own row in the shared scan-cursor table. */
@@ -335,15 +336,15 @@ export async function driftAlertContext(): Promise<{
       firingKey(aggregateKey),
     ];
     const present = new Set<string>();
-    // Chunked: the keys ride in the request URL, which PostgREST refuses past a
-    // few hundred entries (a 500-id batch shipped broken once, PR#1251). Two keys
-    // per bucket means the ladder would have to roughly triple before one page
-    // was too many, but the bound belongs here rather than in a comment.
-    for (let i = 0; i < wanted.length; i += 200) {
+    // Chunked by measured BYTES, not by a row count (#1321). The keys ride in the
+    // request URL and an oversized `in` filter is REFUSED at the transport. These
+    // keys are composed rather than fixed-width, so their length follows the
+    // bucket code and the prefix, which is exactly the case a count gets wrong.
+    for (const batch of chunkIdsByUrlBudget(wanted)) {
       // cap-safe: bounded by the chunk, and `wanted` is derived from the
       // roster-bounded bucket ladder, never a growth table.
       const rows = unwrap(
-        await supabaseAdmin().from("alert_state").select("key").in("key", wanted.slice(i, i + 200)),
+        await supabaseAdmin().from("alert_state").select("key").in("key", batch),
         "availability-truth drift alert state",
       ) as { key: string }[] | null;
       for (const r of rows ?? []) present.add(r.key);

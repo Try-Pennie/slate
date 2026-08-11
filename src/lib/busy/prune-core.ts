@@ -1,5 +1,4 @@
 import { DateTime } from "luxon";
-import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
 
 /**
  * Pure core of the `busy_blocks` past-row prune (#1252). Kept dependency-free so
@@ -33,16 +32,21 @@ import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
 export const BUSY_PRUNE_KEEP_PAST_HOURS = 36;
 
 /**
- * Ids per select/delete round, from the one shared budget (#1259).
+ * Candidate rows to READ per round. A genuine row limit, and nothing more (#1321).
  *
- * This shipped as 500 and was WRONG: 500 uuids is an 18,578-byte request URL, which
+ * It used to double as the delete's URL budget, which is what made it dangerous:
+ * a number that has to satisfy both a subrequest budget and a request-URL ceiling
+ * gets tuned for one and silently breaks the other. It shipped as 500 for exactly
+ * that reason, carried over from `WRITE_CHUNK` in google/sync.ts, whose ~27
+ * character Google event ids made 500 fine there and an 18,578-byte URL here that
  * prod PostgREST refuses outright, so the lane would have thrown on every run and
- * pruned nothing. It was justified by pointing at `WRITE_CHUNK` (500) in
- * google/sync.ts, but that carries ~27-character Google event ids rather than
- * 36-character uuids, so the precedent did not transfer. `ID_BATCH_ROWS` is measured
- * against the real limit and shared, so the two cannot drift again.
+ * pruned nothing (#1259).
+ *
+ * The delete now chunks by measured BYTES through `chunkIdsByUrlBudget`, so this
+ * number can only ever cost subrequests and wall clock, never a refused request.
+ * 200 keeps each round's read cheap on a budget four retention lanes share.
  */
-export const BUSY_PRUNE_BATCH_ROWS = ID_BATCH_ROWS;
+export const BUSY_PRUNE_BATCH_ROWS = 200;
 
 /**
  * Ceiling on rows removed per run, so the lane's cost is bounded no matter how large
@@ -91,7 +95,9 @@ export interface PruneReport {
 export interface PruneDeps {
   /** Oldest prunable ids, at most `limit` of them. Throws on a read error. */
   selectIds: (limit: number) => Promise<string[]>;
-  /** Delete exactly these ids, returning how many rows went. Throws on error. */
+  /** Delete exactly these ids, returning how many rows went. Throws on error.
+   *  Chunks by measured URL bytes internally, so the caller's round size is free
+   *  to be a plain row count (#1321). */
   deleteIds: (ids: string[]) => Promise<number>;
   /** Checked BEFORE each round, so the loop never overruns by more than one. */
   withinBudget: () => boolean;

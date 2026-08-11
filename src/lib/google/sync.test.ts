@@ -74,7 +74,7 @@ import {
 } from "./sync-coalesce";
 import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
-import { ID_BATCH_ROWS, idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
+import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -454,8 +454,12 @@ describe("purgeVanished sends its delete in bounded batches (#1259)", () => {
     await purgeVanished("agent-1", "primary", [], new Set());
 
     expect(deleted).toHaveLength(1001);
+    // Asserted in BYTES, which is the quantity PostgREST actually refuses on
+    // (#1321). A row-count assertion passes for any count, including one carried
+    // over from a call site whose ids were shorter, which is how this class of
+    // defect shipped three times.
     for (const batch of deleteBatches) {
-      expect(batch.length).toBeLessThanOrEqual(ID_BATCH_ROWS);
+      expect(idFilterBytes(batch as string[])).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
     }
     // And it really did chunk rather than sending one oversized request.
     expect(deleteBatches.length).toBeGreaterThan(1);

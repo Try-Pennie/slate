@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
 import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
 import { parseStampMs } from "@/lib/date/stamp";
@@ -259,10 +260,13 @@ export async function settleAlertsSilently(keys: string[]): Promise<void> {
   // the cooldown row (so a genuinely new page is not muted by the old cooldown),
   // matching what resolveAlert deletes after a delivered notice.
   const rows = [...keys.map(firingKey), ...keys];
-  // Chunked: the ids ride in the request URL, which PostgREST refuses past a few
-  // hundred entries (a 500-id batch shipped broken once, PR#1251).
-  for (let i = 0; i < rows.length; i += 200) {
-    const batch = rows.slice(i, i + 200);
+  // Chunked by measured BYTES, not by a row count (#1321). The keys ride in the
+  // request URL and an oversized `in` filter is REFUSED at the transport rather
+  // than merely slow. A count would be the more dangerous choice here than most:
+  // these are not fixed-width uuids but composed keys whose length depends on the
+  // feature that raised them (`alert_firing:availability_drift:411`), so any count
+  // is calibrated against whichever caller was in mind when it was written.
+  for (const batch of chunkIdsByUrlBudget(rows)) {
     const { error } = await db.from("alert_state").delete().in("key", batch);
     if (error) {
       log.warn("slack-alert", {

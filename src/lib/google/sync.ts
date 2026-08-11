@@ -56,7 +56,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
-import { ID_BATCH_ROWS, chunkIdsByUrlBudget } from "@/lib/db/id-batch";
+import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { afterResponse } from "@/lib/after-response";
@@ -482,8 +482,11 @@ export async function purgeVanished(
         .range(from, to),
   );
   const stale = staleBlockIds(blocks, seen);
-  // Chunked, because the ids travel in the query string and an oversized batch is
-  // REFUSED, not merely slow (#1259: 350 uuids measured accepted, 400 refused). A
+  // Chunked by BYTES, not by a row count (#1321), because the ids travel in the
+  // query string and an oversized batch is REFUSED, not merely slow (#1259: 350
+  // uuids measured accepted, 400 refused). A count only holds while every id is
+  // the same length, and carrying one over from a call site with shorter keys is
+  // the mistake that shipped three times. A
   // bootstrap routinely produces a big stale set: the fetch's timeMin excludes every
   // block that ended more than a day ago, so all of those come back as vanished, and
   // one agent holds 22,137 blocks.
@@ -491,12 +494,9 @@ export async function purgeVanished(
   // unwrapCount, not a bare await: an unchecked delete error leaves the stale blocks
   // in place while the sync reports success and advances its token, so the agent stays
   // falsely busy with nothing anywhere saying the cleanup failed.
-  for (let i = 0; i < stale.length; i += ID_BATCH_ROWS) {
+  for (const chunk of chunkIdsByUrlBudget(stale)) {
     unwrapCount(
-      await db
-        .from("busy_blocks")
-        .delete({ count: "exact" })
-        .in("id", stale.slice(i, i + ID_BATCH_ROWS)),
+      await db.from("busy_blocks").delete({ count: "exact" }).in("id", chunk),
       "purgeVanished stale busy_blocks",
     );
   }
