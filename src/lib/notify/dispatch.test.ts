@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 
 // #567: the low-priority info path. sendThrottledInfo must post to the info
 // channel (never the alerts channel) and no-op when no channel is configured;
@@ -361,16 +362,31 @@ describe("settleAlertsSilently", () => {
     expect(delIn).not.toHaveBeenCalled();
   });
 
-  it("chunks the delete so no request carries an unsendable number of keys", async () => {
-    // The keys ride in the request URL, which PostgREST refuses past a few hundred
-    // entries; a 500-id batch shipped broken once (PR#1251). 300 keys become 600
-    // rows (marker plus cooldown), so an unchunked delete would be caught here.
+  it("chunks the delete so no request exceeds the URL budget", async () => {
+    // Asserted in BYTES, which is what PostgREST actually refuses on (#1321). A
+    // row-count assertion is satisfied by any count, including one carried over
+    // from a call site whose keys were shorter, which is how this class shipped
+    // broken three times. 300 keys become 600 rows (marker plus cooldown).
     const keys = Array.from({ length: 300 }, (_, i) => `empty_buckets:b${i}`);
     await settleAlertsSilently(keys);
-    const sizes = delIn.mock.calls.map(([batch]) => (batch as string[]).length);
-    expect(sizes.length).toBeGreaterThan(1);
-    expect(Math.max(...sizes)).toBeLessThanOrEqual(200);
-    expect(sizes.reduce((a, b) => a + b, 0)).toBe(600);
+    const batches = delIn.mock.calls.map(([batch]) => batch as string[]);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(idFilterBytes(batch)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+    }
+    expect(batches.reduce((a, b) => a + b.length, 0)).toBe(600);
+  });
+
+  it("packs fewer long keys per request than short ones, since bytes are what count", async () => {
+    // The property that made a shared row count wrong: the same count is legal for
+    // short keys and illegal for long ones.
+    const short = Array.from({ length: 300 }, (_, i) => `s:${i}`);
+    await settleAlertsSilently(short);
+    const shortBatches = delIn.mock.calls.length;
+    delIn.mockClear();
+    const long = Array.from({ length: 300 }, (_, i) => `s:${i}:${"x".repeat(160)}`);
+    await settleAlertsSilently(long);
+    expect(delIn.mock.calls.length).toBeGreaterThan(shortBatches);
   });
 
   it("logs and keeps going when the delete fails, rather than failing silently", async () => {

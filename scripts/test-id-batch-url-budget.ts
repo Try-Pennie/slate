@@ -23,7 +23,7 @@
 // not 36-character uuids, so the precedent did not transfer. This asserts BYTES, the
 // quantity that actually decides, rather than a count that looks similar.
 import {
-  ID_BATCH_ROWS,
+  SAFE_UUID_BATCH_FOR_MEASUREMENT,
   MAX_IN_FILTER_BYTES,
   inFilterBytes,
   idFilterBytes,
@@ -49,8 +49,8 @@ assert(
 
 // The shipped batch size has to fit under it.
 assert(
-  inFilterBytes(ID_BATCH_ROWS) <= MAX_IN_FILTER_BYTES,
-  `a full batch of ${ID_BATCH_ROWS} uuids (${inFilterBytes(ID_BATCH_ROWS)} bytes) fits the ceiling`,
+  inFilterBytes(SAFE_UUID_BATCH_FOR_MEASUREMENT) <= MAX_IN_FILTER_BYTES,
+  `a full batch of ${SAFE_UUID_BATCH_FOR_MEASUREMENT} uuids (${inFilterBytes(SAFE_UUID_BATCH_FOR_MEASUREMENT)} bytes) fits the ceiling`,
 );
 
 // Positive control: the guard must actually CATCH the value that shipped broken.
@@ -68,8 +68,8 @@ assert(
 // Every batching caller shares one ceiling. A second copy of this number is how the
 // two drift apart, and the prune lane is the one that already got it wrong.
 assert(
-  BUSY_PRUNE_BATCH_ROWS <= ID_BATCH_ROWS,
-  `the prune lane's batch (${BUSY_PRUNE_BATCH_ROWS}) does not exceed the shared safe size (${ID_BATCH_ROWS})`,
+  BUSY_PRUNE_BATCH_ROWS > 0,
+  `the prune lane reads a positive number of candidates per round (${BUSY_PRUNE_BATCH_ROWS})`,
 );
 
 // The estimator itself: a uuid plus its separator, inside the filter envelope. Pinned
@@ -161,6 +161,46 @@ assert(
     const drift = Math.abs(idFilterBytes(uuids) - inFilterBytes(200));
     assert(drift <= 10, `both estimators size 200 uuids the same (drift ${drift} bytes)`);
   }
+}
+
+// --- #1321: nothing left that batches an `in` filter by a row count ---
+//
+// This class shipped broken three times, every time because a count was carried
+// over from a call site whose ids were a different length. The fix was to remove
+// the reason to reach for a count at all, so what is asserted here is the
+// PROPERTY that made a count wrong: the same count produces a legal request for
+// short ids and an illegal one for long ids, while the chunker does not.
+{
+  const uuids = Array.from({ length: 400 }, (_, i) => `${String(i).padStart(8, "0")}-1111-2222-3333-444455556666`);
+  // busy_blocks.gcal_event_id measured 43 characters average and reached 181 in
+  // production (#1268), which is the shape that broke a uuid-calibrated count.
+  const longIds = Array.from({ length: 400 }, (_, i) => `${String(i).padStart(4, "0")}${"e".repeat(177)}`);
+
+  for (const [label, ids] of [["uuid", uuids], ["long", longIds]] as const) {
+    const chunks = chunkIdsByUrlBudget(ids);
+    assert(
+      chunks.every((c) => idFilterBytes(c) <= MAX_IN_FILTER_BYTES),
+      `every ${label} chunk fits the URL ceiling`,
+    );
+    eq(chunks.flat().length, ids.length, `no ${label} id is dropped`);
+    eq(new Set(chunks.flat()).size, ids.length, `and none is sent twice`);
+  }
+  // The point: measuring gives the long ids MORE batches for the same count, which
+  // is precisely the adjustment a shared count cannot make.
+  assert(
+    chunkIdsByUrlBudget(longIds).length > chunkIdsByUrlBudget(uuids).length,
+    "longer ids are split into more batches for the same id count",
+  );
+  // And a single id over the whole budget still travels, rather than being
+  // silently dropped and leaving a row behind forever.
+  const monster = ["z".repeat(MAX_IN_FILTER_BYTES * 2)];
+  const monsterChunks = chunkIdsByUrlBudget(monster);
+  eq(monsterChunks.length, 1, "an id larger than the whole budget still gets a batch of its own");
+  eq(monsterChunks[0]?.length, 1, "carrying exactly that one id");
+  // Dropping it would silently leave a row behind (for a delete caller, a stale
+  // busy block that over-blocks an agent forever) and emitting nothing would loop.
+  // Sending it and letting the transport refuse is the loud failure.
+  eq(monsterChunks[0]?.[0]?.length, monster[0].length, "and it is the whole id, not a truncation");
 }
 
 finish();

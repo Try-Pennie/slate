@@ -37,11 +37,22 @@ export function inFilterBytes(count: number): number {
 }
 
 /**
- * Ids per batched read or write against a uuid key. 200 is 7,478 bytes, measured
- * accepted, and less than half the smallest size measured refused, so there is room
- * for a longer base URL or an extra filter without going near the edge.
+ * A safe number of uuids to put in one `in` filter: 7,478 bytes, measured accepted,
+ * and less than half the smallest size measured refused.
+ *
+ * Exported for the BYTE assertions in scripts/test-id-batch-url-budget.ts and for
+ * nothing else. It is deliberately no longer a batching constant (#1321): batching
+ * a set of ids by a row count shipped broken three times, every time because the
+ * count was carried over from a call site whose ids were a different length, and an
+ * oversized `in` filter is refused at the transport rather than merely slow. Since
+ * `chunkIdsByUrlBudget` measures the ids it is actually given, there is no reason
+ * left to reach for a count, so the name is no longer offered as one.
+ *
+ * Use `chunkIdsByUrlBudget` to split ids. Use a plain local number for a row
+ * `.limit()`, where the constraint is subrequests and wall clock rather than URL
+ * bytes, so the two can never be tuned against each other again.
  */
-export const ID_BATCH_ROWS = 200;
+export const SAFE_UUID_BATCH_FOR_MEASUREMENT = 200;
 
 /**
  * Bytes ONE id contributes to the filter: its URL-encoded length plus the comma that

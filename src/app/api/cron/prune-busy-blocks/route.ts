@@ -6,6 +6,7 @@ import { unwrap, unwrapCount } from "@/lib/db/result";
 import { withinBudget } from "@/lib/google/sync-pace";
 import { laneCompleted } from "@/lib/snowflake/retention-lane";
 import { busyPruneCutoffIso, pruneInBatches } from "@/lib/busy/prune-core";
+import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -66,11 +67,21 @@ export async function GET(req: NextRequest) {
       // unwrapCount, not `count ?? 0` (#1165): a delete that failed reports a null
       // count, and scoring that as zero is indistinguishable from having had
       // nothing to clean.
-      deleteIds: async (ids) =>
-        unwrapCount(
-          await db.from("busy_blocks").delete({ count: "exact" }).in("id", ids),
-          "busy_blocks prune delete",
-        ),
+      // Chunked by measured BYTES (#1321), not by the round size above. The ids
+      // ride in the request URL, so an oversized `in` filter is REFUSED at the
+      // transport rather than merely slow, and a row count only holds while every
+      // id is the same length. Chunking here means the round size is free to be a
+      // plain row count without the two constraints fighting each other.
+      deleteIds: async (ids) => {
+        let deleted = 0;
+        for (const chunk of chunkIdsByUrlBudget(ids)) {
+          deleted += unwrapCount(
+            await db.from("busy_blocks").delete({ count: "exact" }).in("id", chunk),
+            "busy_blocks prune delete",
+          );
+        }
+        return deleted;
+      },
       withinBudget: () => withinBudget(Date.now(), deadlineMs),
     });
     // `capped` is logged, not just returned: a run that stopped on its cap and a

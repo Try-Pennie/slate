@@ -72,7 +72,6 @@ import {
 } from "@/lib/monitor/calcom-override-sweep";
 import { addOooOverrides } from "@/lib/calcom/client";
 import { EFFECTS } from "@/lib/ooo/orchestration";
-import { ID_BATCH_ROWS } from "@/lib/db/id-batch";
 import {
   missingScheduleAgents,
   runScheduleCoverageCheck,
@@ -223,6 +222,17 @@ const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
  * past, so the flag alone selects hundreds of pointless writes. On prod 2026-08-04
  * this predicate returned 44 rows, 35 of them already done.
  */
+/**
+ * Ceiling on candidates the cal.com override sweep considers per tick.
+ *
+ * A plain ROW limit, whose constraint is the sweep's own subrequest and CPU share
+ * of the 5-minute lane, and deliberately a local number rather than the shared id
+ * batching constant it used to borrow (#1321). Nothing here puts ids in a URL, so
+ * tying this to the request-URL budget only invited the two to be tuned against
+ * each other.
+ */
+const OVERRIDE_CANDIDATE_ROWS = 200;
+
 async function loadFailedOverrideCandidates(
   db: ReturnType<typeof supabaseAdmin>,
 ): Promise<OverrideCandidate[] | null> {
@@ -231,7 +241,7 @@ async function loadFailedOverrideCandidates(
     .select("id, user_id, starts_at, ends_at, side_effects")
     .eq("status", "approved")
     .gt("ends_at", new Date().toISOString())
-    .limit(ID_BATCH_ROWS);
+    .limit(OVERRIDE_CANDIDATE_ROWS);
   if (error) {
     log.error("calcom-sweep", { msg: "candidate read failed" }, error);
     return null;
