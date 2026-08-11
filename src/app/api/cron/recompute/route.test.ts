@@ -21,8 +21,12 @@ const pace = vi.hoisted(() => ({ withinBudget: vi.fn(() => true) }));
 const precompute = vi.hoisted(() => ({
   listAllBucketCodes: vi.fn(async () => []),
   listKnownBucketSlotRows: vi.fn(async () => []),
-  // #1301: the deliberate-invalidation marker. null = nothing explains staleness.
-  readMassInvalidationMs: vi.fn(async (): Promise<number | null> => null),
+  // #1301/#1304: the deliberate-invalidation marker. `absent` is the NORMAL state
+  // (nobody invalidated anything), and it is deliberately distinct from
+  // `unreadable`, which is a failed read and gets a few ticks of tolerance.
+  readMassInvalidationMarker: vi.fn(async (): Promise<{ state: string; atMs?: number }> => ({
+    state: "absent",
+  })),
   clearMassInvalidation: vi.fn(async () => {}),
 }));
 const precomputeCron = vi.hoisted(() => ({
@@ -136,7 +140,7 @@ describe("the stale alarm during a deliberate invalidation", () => {
   it("does not page while a recent invalidation is still draining", async () => {
     cron.isAuthorizedCron.mockReturnValue(true);
     precomputeCron.staleBuckets.mockReturnValueOnce(["411", "412", "511"] as never);
-    precompute.readMassInvalidationMs.mockResolvedValueOnce(Date.now() - 30_000);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "at", atMs: Date.now() - 30_000 });
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(stalePages()).toHaveLength(0);
@@ -147,7 +151,7 @@ describe("the stale alarm during a deliberate invalidation", () => {
     precomputeCron.staleBuckets.mockReturnValueOnce(["411", "412"] as never);
     // 20 minutes, past the 15 minute grace: this is no longer a draining save, it
     // is the fall-behind the alarm exists for.
-    precompute.readMassInvalidationMs.mockResolvedValueOnce(Date.now() - 20 * 60_000);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "at", atMs: Date.now() - 20 * 60_000 });
     await GET(req());
     expect(stalePages()).toHaveLength(1);
   });
@@ -157,18 +161,56 @@ describe("the stale alarm during a deliberate invalidation", () => {
     // on every stale alarm.
     cron.isAuthorizedCron.mockReturnValue(true);
     precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
-    precompute.readMassInvalidationMs.mockResolvedValueOnce(null);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "absent" });
     await GET(req());
     expect(stalePages()).toHaveLength(1);
   });
 
-  it("pages when the marker cannot be read, rather than staying quiet", async () => {
-    // A read failure returns null and an unreadable stamp returns NaN; neither may
-    // buy silence, because a withheld page means the booker serves stale times with
+  it("rides out an unreadable marker for a few ticks, then pages (#1304)", async () => {
+    // Dan: "retry and page only after three consecutive failures", so a transient
+    // database blip does not wake anyone. The streak lives in `rate_limit_hit`,
+    // which the admin double answers, so `data: true` here means UNDER the
+    // threshold and the tick must stay quiet.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async () => ({ data: true, error: null }),
+    } as never);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "unreadable" });
+    await GET(req());
+    expect(stalePages()).toHaveLength(0);
+  });
+
+  it("pages once the marker has been unreadable on enough consecutive ticks", async () => {
+    // `data: false` is over the threshold: the streak reached its tolerance. A
+    // withheld page past that point means the booker serves stale times with
     // nothing saying so.
     cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async () => ({ data: false, error: null }),
+    } as never);
     precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
-    precompute.readMassInvalidationMs.mockResolvedValueOnce(Number.NaN);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "unreadable" });
+    await GET(req());
+    expect(stalePages()).toHaveLength(1);
+    // And the copy must not claim a measured fall-behind: nothing about the drain
+    // was measured, because the value that would have explained it is unavailable.
+    expect(String(stalePages()[0][2])).toMatch(/unreadable/i);
+  });
+
+  it("still pages immediately for an ABSENT marker, whatever the unreadable streak says", async () => {
+    // The tolerance must apply ONLY to a failed read. Absent is the normal state,
+    // so letting it inherit the delay would make this alarm three minutes late
+    // every time it mattered.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async () => ({ data: true, error: null }),
+    } as never);
+    precomputeCron.staleBuckets.mockReturnValueOnce(["411"] as never);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "absent" });
     await GET(req());
     expect(stalePages()).toHaveLength(1);
   });
@@ -176,7 +218,7 @@ describe("the stale alarm during a deliberate invalidation", () => {
   it("drops the marker once the drain has finished, so the next staleness pages at once", async () => {
     cron.isAuthorizedCron.mockReturnValue(true);
     precomputeCron.staleBuckets.mockReturnValueOnce([] as never);
-    precompute.readMassInvalidationMs.mockResolvedValueOnce(Date.now() - 30_000);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "at", atMs: Date.now() - 30_000 });
     await GET(req());
     expect(precompute.clearMassInvalidation).toHaveBeenCalledTimes(1);
   });
@@ -186,7 +228,7 @@ describe("the stale alarm during a deliberate invalidation", () => {
     // subrequest budget with three others.
     cron.isAuthorizedCron.mockReturnValue(true);
     precomputeCron.staleBuckets.mockReturnValueOnce([] as never);
-    precompute.readMassInvalidationMs.mockResolvedValueOnce(null);
+    precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "absent" });
     await GET(req());
     expect(precompute.clearMassInvalidation).not.toHaveBeenCalled();
   });

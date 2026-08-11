@@ -6,6 +6,7 @@ import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import { trimToBookableDays } from "./bookable-days";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import type { Attributes, Criteria } from "@/lib/db/types";
+import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
 
 /**
@@ -144,22 +145,36 @@ async function recordMassInvalidation(): Promise<void> {
 /** When the last deliberate mass invalidation happened, or null if none is on
  *  record. NaN when the stored stamp is unreadable, which pages rather than
  *  granting an open-ended grace (#1169). */
-export async function readMassInvalidationMs(): Promise<number | null> {
+export async function readMassInvalidationMarker(): Promise<InvalidationMarker> {
   try {
-    // error-ok: a read error returns null, which PAGES (it never withholds a page),
-    // and the marker survives for the next tick.
-    const { data } = await supabaseAdmin()
+    // Reads `error` deliberately (#1304): a failed read and an ABSENT marker used
+    // to share one null, and they call for opposite handling. Absent is the normal
+    // state and pages at once; a failed read is tolerated for a few ticks. Scoring
+    // one as the other means either an alarm three minutes late every time it
+    // matters, or a page for every database blip.
+    const { data, error } = await supabaseAdmin()
       .from("alert_state")
       .select("last_sent_at")
       .eq("key", MASS_INVALIDATION_KEY)
       .maybeSingle();
+    if (error) {
+      log.warn("precompute", { msg: "invalidation marker read failed", error: error.message });
+      return { state: "unreadable" };
+    }
     const at = (data as { last_sent_at: string } | null)?.last_sent_at;
-    if (!at) return null;
-    return parseStampMs(at) ?? Number.NaN;
+    if (!at) return { state: "absent" };
+    const atMs = parseStampMs(at);
+    // A stamp we cannot parse is unreadable, not absent: the marker IS there, we
+    // just cannot tell when it was written, and treating that as "nobody
+    // invalidated anything" would page through a real drain (#1169's direction).
+    if (atMs === null) {
+      log.warn("precompute", { msg: "invalidation marker unparseable", at });
+      return { state: "unreadable" };
+    }
+    return { state: "at", atMs };
   } catch (err) {
-    log.warn("precompute", { msg: "invalidation marker read failed" });
-    void err;
-    return null;
+    log.warn("precompute", { msg: "invalidation marker read threw" }, err);
+    return { state: "unreadable" };
   }
 }
 

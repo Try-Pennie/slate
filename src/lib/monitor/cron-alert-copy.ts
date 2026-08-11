@@ -38,6 +38,30 @@ export function bucketSlotsStaleAlert(count: number, minutes: number, examples: 
   return `${count} bucket_slots row(s) stale >${minutes}m (e.g. ${examples.join(", ")}); a precompute writer may be stuck.`;
 }
 
+/**
+ * The same staleness, but the deliberate-invalidation marker could not be READ
+ * (#1304), on enough consecutive ticks that a blip is ruled out.
+ *
+ * Distinct copy on purpose. The ordinary page says a precompute writer may be
+ * stuck, which is a measured claim about the drain; here nothing about the drain
+ * was measured at all, because the one value that would have explained the
+ * staleness is unavailable. Sending the ordinary wording would point the reader at
+ * the writers when the thing to look at is the read.
+ */
+export function bucketSlotsStaleUnreadableMarkerAlert(
+  count: number,
+  minutes: number,
+  examples: string[],
+  consecutiveTicks: number,
+): string {
+  return (
+    `${count} bucket_slots row(s) stale >${minutes}m (e.g. ${examples.join(", ")}), and the ` +
+    `deliberate invalidation marker has been unreadable for ${consecutiveTicks} minutes running, ` +
+    `so nothing can say whether a booking settings save explains this or a precompute writer is ` +
+    `stuck. Check the alert_state read first, then the writers.`
+  );
+}
+
 /** Nothing is stale any more. */
 export function bucketSlotsStaleRecovery(): string {
   return "No cached availability rows are stale any more. The precompute writers are " +

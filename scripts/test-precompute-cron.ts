@@ -5,6 +5,9 @@ import {
   recomputeHeadroom,
   recomputeDueBuckets,
   staleBucketPage,
+  INVALIDATION_UNREADABLE_TOLERANCE,
+  INVALIDATION_UNREADABLE_WINDOW_S,
+  type InvalidationMarker,
 } from "../src/lib/availability/precompute-cron.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -148,12 +151,16 @@ await (async () => {
   const GRACE = 15 * 60_000;
   const now = 1_800_000_000_000;
 
+  /** The marker as the reader hands it over, absent unless said otherwise. */
+  const marker = (over: Partial<InvalidationMarker> = {}): InvalidationMarker =>
+    ({ state: "absent", ...over }) as InvalidationMarker;
+
   // No invalidation in flight: unchanged behaviour, stale pages immediately.
-  const organic = staleBucketPage(62, null, now, GRACE);
+  const organic = staleBucketPage(62, marker(), now, GRACE, false);
   assert(organic.page === true, "stale buckets page when no invalidation explains them");
 
   // A save 30 seconds ago: the drain is in flight, so no page.
-  const draining = staleBucketPage(62, now - 30_000, now, GRACE);
+  const draining = staleBucketPage(62, marker({ state: "at", atMs: now - 30_000 }), now, GRACE, false);
   assert(draining.page === false, "a deliberate invalidation 30s ago does not page");
   assert(
     /invalidation|deliberate|save/i.test(draining.reason),
@@ -161,27 +168,110 @@ await (async () => {
   );
 
   // Same staleness, past the grace: the drain genuinely failed, so it pages.
-  const stuck = staleBucketPage(62, now - GRACE - 1, now, GRACE);
+  const stuck = staleBucketPage(62, marker({ state: "at", atMs: now - GRACE - 1 }), now, GRACE, false);
   assert(stuck.page === true, "still stale past the grace window pages for real");
 
   // Nothing stale: nothing to say either way, and the grace is irrelevant.
-  assert(staleBucketPage(0, now - 30_000, now, GRACE).page === false, "no stale buckets, no page");
-  assert(staleBucketPage(0, null, now, GRACE).page === false, "no stale buckets and no marker, no page");
+  assert(
+    staleBucketPage(0, marker({ state: "at", atMs: now - 30_000 }), now, GRACE, false).page === false,
+    "no stale buckets, no page",
+  );
+  assert(staleBucketPage(0, marker(), now, GRACE, false).page === false, "no stale buckets and no marker, no page");
 
   // Exactly at the boundary counts as expired: the grace is the budget, and a
   // drain that used all of it and is still behind has not met it.
-  assert(staleBucketPage(1, now - GRACE, now, GRACE).page === true, "at the grace boundary it pages");
-
-  // An unreadable marker must not become an open-ended silence. NaN is what a
-  // corrupt stored stamp parses to, and every comparison against it is false, so
-  // it has to land on the PAGE side rather than the quiet side (the #1169 class).
-  assert(staleBucketPage(62, Number.NaN, now, GRACE).page === true, "an unreadable marker pages");
+  assert(
+    staleBucketPage(1, marker({ state: "at", atMs: now - GRACE }), now, GRACE, false).page === true,
+    "at the grace boundary it pages",
+  );
 
   // A marker stamped in the FUTURE (a clock skew, or a bad write) must not buy
   // unlimited grace either.
   assert(
-    staleBucketPage(62, now + 60_000, now, GRACE).page === true,
+    staleBucketPage(62, marker({ state: "at", atMs: now + 60_000 }), now, GRACE, false).page === true,
     "a marker in the future does not grant grace",
+  );
+}
+
+// --- an UNREADABLE marker rides out a few ticks before paging (#1304) ---
+//
+// Dan (2026-08-05): when the marker cannot be read the alarm should "retry and
+// page only after three consecutive failures", so a transient database blip does
+// not wake anyone. #1301 chose to page at once precisely so the alarm never went
+// quiet on a value it could not check, and that instinct is right; what it lacked
+// was the difference between one blip and a marker that has been unreadable for
+// three minutes running.
+//
+// The distinction every assertion below turns on: UNREADABLE is not ABSENT.
+// Absent is the normal state, meaning nobody invalidated anything, and it must
+// keep paging on the first tick. Only a failed read gets the tolerance.
+{
+  const GRACE = 15 * 60_000;
+  const now = 1_800_000_000_000;
+  const TOLERANCE = 3;
+
+  const unreadable = (toleranceReached: boolean) =>
+    staleBucketPage(62, { state: "unreadable" }, now, GRACE, toleranceReached, TOLERANCE);
+
+  assert(unreadable(false).page === false, "an unreadable tick under the tolerance rides it out");
+  assert(unreadable(true).page === true, "and pages once the tolerance is reached");
+  assert(
+    /read|unreadable/i.test(unreadable(true).reason),
+    "the page says the marker could not be READ, not that a drain fell behind",
+  );
+  assert(
+    /3/.test(unreadable(true).reason),
+    "and how many consecutive ticks, so the reader knows how long it has been blind",
+  );
+  assert(
+    /wait/i.test(unreadable(false).reason),
+    "the quiet decision says it is waiting rather than that all is well, for the log",
+  );
+  assert(
+    /3/.test(unreadable(false).reason),
+    "and how many it is waiting for, so a log reader is not left guessing",
+  );
+
+  // The tolerance is ONLY for the unreadable case. An absent marker is the normal
+  // "nobody invalidated anything" state, so it must never inherit this delay: the
+  // alarm this lane exists for would be three minutes late every time it mattered.
+  assert(
+    staleBucketPage(62, { state: "absent" }, now, GRACE, false, TOLERANCE).page === true,
+    "an ABSENT marker still pages on the first tick, whatever the unreadable streak says",
+  );
+  assert(
+    staleBucketPage(62, { state: "at", atMs: now + 60_000 }, now, GRACE, false, TOLERANCE).page === true,
+    "a future marker still pages on the first tick too",
+  );
+  assert(
+    staleBucketPage(62, { state: "at", atMs: now - GRACE - 1 }, now, GRACE, false, TOLERANCE).page === true,
+    "a drain past its grace still pages on the first tick too",
+  );
+  // And nothing stale still says nothing, even while the marker is unreadable:
+  // there is no condition to report.
+  assert(
+    staleBucketPage(0, { state: "unreadable" }, now, GRACE, true, TOLERANCE).page === false,
+    "no stale buckets means no page however long the marker has been unreadable",
+  );
+}
+
+// --- the streak WINDOW has to outlast the ticks it is counting (#1304) --------
+//
+// The streak is counted in a rate-limit window, so if the window is shorter than
+// the ticks it must span, three genuinely consecutive failures land in different
+// windows and the third is counted as a first. The alarm would then never fire, and
+// it would look exactly like a marker that kept recovering.
+{
+  const lanePeriodMs = 60_000; // the recompute lane is every minute
+  const spanNeeded = (INVALIDATION_UNREADABLE_TOLERANCE - 1) * lanePeriodMs;
+  assert(
+    INVALIDATION_UNREADABLE_WINDOW_S * 1000 > spanNeeded,
+    `the streak window (${INVALIDATION_UNREADABLE_WINDOW_S}s) outlasts the ${INVALIDATION_UNREADABLE_TOLERANCE} ` +
+      `every-minute ticks it must span (${spanNeeded / 1000}s), or consecutive failures land in different windows`,
+  );
+  assert(
+    INVALIDATION_UNREADABLE_TOLERANCE === 3,
+    "three consecutive failures, which is what was asked for",
   );
 }
 
