@@ -76,6 +76,42 @@ export function staleBuckets(
  * read itself failed, or the stored stamp could not be parsed, and one blip of
  * that is not worth waking anyone for.
  */
+/**
+ * How long a bucket's cached slots may age before this lane re-derives them.
+ *
+ * Real-time push and booking keep CHANGED buckets fresh in seconds; this lane
+ * only covers the day-window slide and the missed-push backstop, so it does not
+ * need to touch every bucket every minute. Recomputing all 60 every minute
+ * saturated the lane at about 110 agents (#294).
+ */
+export const RECOMPUTE_FRESH_MS = 4 * 60_000;
+
+/**
+ * Headroom between a bucket aging out and the staleness alarm firing (#1248).
+ *
+ * It must exceed one tick of the every-minute lane, or a bucket that has just
+ * aged out is already alarming before the next cycle has had a chance to refresh
+ * it, and the alarm would be reporting normal aging rather than a lane that
+ * cannot keep up. Asserted in scripts/test-recompute-window-pair.ts rather than
+ * left to this comment.
+ */
+export const STALE_ALARM_MARGIN_MS = 2 * 60_000;
+
+/**
+ * Alarm only if a bucket is STILL stale beyond this after a run, meaning the lane
+ * genuinely cannot keep up (a wedged writer) rather than a bucket aging normally.
+ *
+ * DERIVED from the freshness window, not declared beside it (#1248). The two used
+ * to sit two lines apart with nothing enforcing the gap, while the headroom
+ * alert's own remediation advice was "widen the freshness window". Anyone
+ * following that under pressure past 6 minutes started tripping this page
+ * instead, so the advice manufactured a second alert while they were still
+ * dealing with the first (L36: never embed remediation that can steer a
+ * diagnosis wrong). Deriving it means widening the window moves the alarm with
+ * it, and the advice stays true at any value.
+ */
+export const STALE_ALARM_MS = RECOMPUTE_FRESH_MS + STALE_ALARM_MARGIN_MS;
+
 export type InvalidationMarker =
   | { state: "absent" }
   | { state: "unreadable" }

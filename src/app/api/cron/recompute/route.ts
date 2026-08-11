@@ -28,6 +28,8 @@ import {
   bucketsDueForRecompute,
   staleBuckets,
   staleBucketPage,
+  RECOMPUTE_FRESH_MS,
+  STALE_ALARM_MS,
   INVALIDATION_UNREADABLE_TOLERANCE,
   INVALIDATION_UNREADABLE_WINDOW_S,
   recomputeHeadroom,
@@ -37,14 +39,8 @@ import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak
 
 export const dynamic = "force-dynamic";
 
-// Only re-derive buckets older than this (#294). Real-time push/booking keep
-// CHANGED buckets fresh in seconds; this lane just covers the day-window slide
-// and the missed-push backstop, so it doesn't need to touch every bucket every
-// minute. Recomputing all 60 every minute saturated the lane at ~110 agents.
-const RECOMPUTE_FRESH_MS = 4 * 60_000;
-// Alarm only if a bucket is STILL stale beyond this after the run — i.e. the
-// lane genuinely can't keep up (a wedged writer), not just normal aging.
-const STALE_ALARM_MS = 6 * 60_000;
+// The freshness window and its staleness alarm are ONE PAIR, derived together in
+// precompute-cron.ts (#1248), so widening the window cannot trip the alarm.
 // How long a DELIBERATE mass invalidation (an admin saving a booking setting, which
 // marks every bucket stale on purpose) may still be draining before its staleness
 // pages anyway (#1301). Generous next to the ~1 minute a full-roster drain takes,

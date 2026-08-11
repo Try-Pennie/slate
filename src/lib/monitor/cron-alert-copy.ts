@@ -24,7 +24,13 @@ export function recomputeHeadroomAlert(
   totalBuckets: number,
   utilizationPct: number,
 ): string {
-  return `Bucket recompute is falling behind. Refreshed only ${recomputed} of ${due} due buckets within its time budget on consecutive cycles (${totalBuckets} buckets total, last cycle used ${utilizationPct}%). Availability may start going stale. Scale: widen the freshness window or move to the Durable-Objects design.`;
+  return (
+    `Bucket recompute is falling behind. Refreshed only ${recomputed} of ${due} due buckets ` +
+    `within its time budget on consecutive cycles (${totalBuckets} buckets total, last cycle ` +
+    `used ${utilizationPct}%). Availability may start going stale. To scale: widen the ` +
+    `freshness window, which moves the staleness alarm out with it so this does not just ` +
+    `swap one page for another, or move to the Durable Objects design.`
+  );
 }
 
 /** It caught up. */
