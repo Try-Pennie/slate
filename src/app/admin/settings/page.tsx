@@ -395,11 +395,13 @@ export default async function MonitorSettingsPage({
                 defaultChecked={lowVolumeArmed}
                 className="h-4 w-4"
               />
-              Arm the low-volume alert (page Slack when bookings fall below a floor)
+              Send a Slack alert when bookings drop off
             </label>
             <p className="mt-1 text-xs text-fg-muted">
-              Leave off during the ramp; turn on once Slate owns roughly full booking
-              traffic. Saving applies immediately, no deploy needed.
+              Off: Slate still counts bookings, but nobody is notified. On: Slack gets an
+              alert when bookings fall below the floors set above. Leave this off during
+              the ramp and turn it on once Slate owns roughly full booking traffic.
+              Saving applies immediately, no deploy needed.
             </p>
             <label className="mt-4 flex items-center gap-2 text-sm">
               <input
@@ -409,13 +411,14 @@ export default async function MonitorSettingsPage({
                 defaultChecked={failureRateArmed}
                 className="h-4 w-4"
               />
-              Arm the failing-bookings page (page Slack when too many customers cannot
-              complete a booking)
+              Send a Slack alert when customers are failing to book
             </label>
             <p className="mt-1 text-xs text-fg-muted">
-              Leave off until a real cycle of traffic has been observed, so the threshold
-              is set against numbers someone has actually seen. The check keeps measuring
-              and logging while it is off.
+              Off: Slate still checks every 5 minutes and records what it finds in the
+              logs, but nobody is notified. On: Slack gets an alert when too many booking
+              attempts fail over the last hour, and a follow up once bookings are
+              completing again. Leave this off until real booking traffic has run for a
+              while, so the threshold is set against numbers someone has seen.
             </p>
           </section>
 
