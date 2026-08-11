@@ -167,7 +167,11 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = {
 // DISARMED and logs its measured share; #1371 arms it once a real cycle has
 // been read.
 const TRUTH_THRESHOLDS: TruthThresholds = {
+  // 5 distinct time windows is 5 live Google calls, on a budget four cron lanes
+  // share. Spreading them across the horizon (#1376) changes WHICH slots are
+  // checked, never how many, so the coverage widened at no cost.
   sampleSize: 5,
+  nearCount: 2,
   leadMs: 10 * 60_000,
   minVerified: 3,
   driftPct: 40,

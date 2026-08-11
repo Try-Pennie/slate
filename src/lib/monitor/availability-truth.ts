@@ -40,8 +40,13 @@ export type SlotVerdict =
   | "unverified";
 
 export interface TruthThresholds {
-  /** How many of the soonest slots to check per tick. */
+  /** How many slots to check per tick. This is the COST ceiling: each slot is a
+   *  distinct time window and so its own live Google call, which no amount of
+   *  batching can share, on a subrequest budget four cron lanes divide. */
   sampleSize: number;
+  /** How many of those come off the head of the list (#1376). The rest are
+   *  spread across the remaining horizon, so widening coverage costs nothing. */
+  nearCount: number;
   /** Skip slots closer than this: they are about to be verified on book anyway,
    *  and a booking landing mid-probe would read as drift. */
   leadMs: number;
@@ -51,30 +56,67 @@ export interface TruthThresholds {
   driftPct: number;
 }
 
+/** The part of `TruthThresholds` that decides WHICH slots get checked. Taken as
+ *  one object rather than three positional numbers, because three same-typed
+ *  numbers in a row is how a caller silently swaps two of them. */
+export type SlotSampleSpec = Pick<TruthThresholds, "sampleSize" | "nearCount" | "leadMs">;
+
 /**
- * The soonest `limit` slot starts at or after `nowMs + leadMs`, in time order.
+ * Which of a bucket's offered times to check this tick: the soonest few, plus a
+ * spread across everything else it is advertising (#1376).
  *
- * These are the slots most likely to be booked next, so they are where a stale
- * cache costs a customer soonest. An unreadable start is DROPPED rather than
- * sorted: `Date.parse` yields NaN, and a NaN sort key would shuffle the sample
- * arbitrarily while looking like a normal result (#1169).
+ * The near slots are weighted because a stale cache costs a customer there
+ * first. But Slate offers several DAYS, and sampling only the head of the list
+ * means a slot three days out is unchecked until it becomes the nearest one,
+ * while the probe reports on "availability" as though it had looked. The spread
+ * fixes that for free: `sampleSize` is the cost ceiling either way, since each
+ * distinct window is its own Google call regardless of when it falls.
+ *
+ * The spread takes the MIDPOINT of each equal segment of what is left, rather
+ * than the endpoints, so no pick is wasted next to the near block and the far
+ * end of the horizon is always represented. It is deterministic (no sampling
+ * randomness) so a surprising verdict can be reproduced from the same payload.
+ *
+ * An unreadable start is DROPPED rather than sorted: `Date.parse` yields NaN,
+ * and a NaN sort key would shuffle the sample arbitrarily while looking like a
+ * normal result (#1169).
  */
 export function sampleSlotStarts(
   startsIso: string[],
   nowMs: number,
-  leadMs: number,
-  limit: number,
+  spec: SlotSampleSpec,
 ): string[] {
-  const floor = nowMs + leadMs;
-  return startsIso
+  const floor = nowMs + spec.leadMs;
+  const eligible = startsIso
     // parse-ok: this is the site that REMOVES unreadable starts rather than
     // comparing them. The very next line drops every non-finite ms, which is why
     // an unreadable slot can never reach the sample, the sort, or the live check.
     .map((iso) => ({ iso, ms: Date.parse(iso) }))
     .filter((s) => Number.isFinite(s.ms) && s.ms >= floor)
     .sort((a, b) => a.ms - b.ms)
-    .slice(0, limit)
     .map((s) => s.iso);
+
+  const total = Math.max(0, spec.sampleSize);
+  if (eligible.length <= total) return eligible;
+
+  // nearCount is clamped to the budget: a spec asking for more near slots than
+  // the whole sample must not overspend, and must not yield a SHORT sample
+  // either, because the drift share is judged against what was checked.
+  const near = Math.min(Math.max(0, spec.nearCount), total);
+  const rest = eligible.slice(near);
+  const want = total - near;
+
+  const chosen = new Set<number>();
+  for (let i = 0; i < want; i += 1) {
+    chosen.add(Math.min(rest.length - 1, Math.floor(((i + 0.5) * rest.length) / want)));
+  }
+  // Two segments can land on one index when `rest` is short. Backfilling keeps
+  // the sample at full size: a probe checking 3 slots while reporting 5 would
+  // judge the drift share against a denominator it never measured.
+  for (let i = 0; chosen.size < want && i < rest.length; i += 1) chosen.add(i);
+
+  const spread = [...chosen].sort((a, b) => a - b).map((i) => rest[i]);
+  return [...eligible.slice(0, near), ...spread];
 }
 
 /**
@@ -240,12 +282,7 @@ export async function runAvailabilityTruthCheck(deps: {
 
   const offered = await deps.cachedSlots(bucket.code).catch(() => null);
   if (offered === null) return skip("slot payload unreadable");
-  const sample = sampleSlotStarts(
-    offered.starts,
-    deps.nowMs,
-    deps.thresholds.leadMs,
-    deps.thresholds.sampleSize,
-  );
+  const sample = sampleSlotStarts(offered.starts, deps.nowMs, deps.thresholds);
   // Zero offered times is the empty-bucket condition, not a cache-integrity
   // fault, and the availability scan already pages on it.
   if (sample.length === 0) return skip("bucket is offering no times to check");

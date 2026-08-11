@@ -35,29 +35,93 @@ const MIN = 60_000;
 const NOW = Date.UTC(2026, 7, 11, 14, 0, 0);
 const iso = (offsetMin: number) => new Date(NOW + offsetMin * MIN).toISOString();
 
-const THRESHOLDS: TruthThresholds = { sampleSize: 5, leadMs: 10 * MIN, minVerified: 3, driftPct: 40 };
+const THRESHOLDS: TruthThresholds = {
+  sampleSize: 5,
+  nearCount: 2,
+  leadMs: 10 * MIN,
+  minVerified: 3,
+  driftPct: 40,
+};
+/** Spec-only view, so a test can vary the sample shape without a full threshold set. */
+const spec = (sampleSize: number, nearCount: number, leadMs = THRESHOLDS.leadMs) => ({
+  sampleSize,
+  nearCount,
+  leadMs,
+});
 
-// --- sampleSlotStarts: the soonest slots, which are the ones about to be booked ---
+// --- sampleSlotStarts: near slots AND the rest of the horizon (#1376) ---
+//
+// The soonest times are where a stale cache costs a customer first, so they stay
+// weighted. But Slate advertises several DAYS, and a sample that only ever reads
+// the head of the list leaves everything past the next hour unchecked while the
+// probe reports on "availability". Both halves are asserted below, because a
+// sample that quietly slid back to head-only would still pass every near-slot
+// assertion on its own.
 {
   const starts = [iso(120), iso(30), iso(600), iso(45), iso(20)];
-  const picked = sampleSlotStarts(starts, NOW, THRESHOLDS.leadMs, 3);
-  eq(picked, [iso(20), iso(30), iso(45)], "picks the soonest slots, in time order");
+  const picked = sampleSlotStarts(starts, NOW, spec(3, 3));
+  eq(picked, [iso(20), iso(30), iso(45)], "an all-near sample is still the soonest slots, in time order");
 }
 {
   // A slot inside the lead time is about to be checked by verify-on-book anyway,
   // and a booking landing on it mid-probe would read as drift. Skip it.
   const starts = [iso(1), iso(5), iso(30), iso(60)];
-  const picked = sampleSlotStarts(starts, NOW, THRESHOLDS.leadMs, 5);
+  const picked = sampleSlotStarts(starts, NOW, spec(5, 2));
   eq(picked, [iso(30), iso(60)], "skips slots closer than the lead time");
 }
 {
-  eq(sampleSlotStarts([iso(-60), iso(-5)], NOW, 0, 5), [], "a payload of only past slots samples nothing");
-  eq(sampleSlotStarts([], NOW, 0, 5), [], "an empty payload samples nothing");
+  eq(sampleSlotStarts([iso(-60), iso(-5)], NOW, spec(5, 2, 0)), [], "a payload of only past slots samples nothing");
+  eq(sampleSlotStarts([], NOW, spec(5, 2, 0)), [], "an empty payload samples nothing");
 }
 {
   const starts = [iso(30), "not-a-timestamp", iso(60)];
-  const picked = sampleSlotStarts(starts, NOW, THRESHOLDS.leadMs, 5);
+  const picked = sampleSlotStarts(starts, NOW, spec(5, 2));
   eq(picked, [iso(30), iso(60)], "an unreadable start is dropped, never sorted as epoch 0 or NaN");
+}
+{
+  // The headline case: four days of offered times, the shape production has.
+  // A head-only sample reads the first 5 of 96 and calls it availability.
+  const day = 24 * 60;
+  const starts: string[] = [];
+  for (let d = 0; d < 4; d += 1) for (let h = 0; h < 24; h += 1) starts.push(iso(d * day + h * 60));
+  const picked = sampleSlotStarts(starts, NOW, spec(5, 2));
+  eq(picked.length, 5, "the sample size is the COST ceiling and is not exceeded by spreading");
+  eq(picked[0], iso(60), "the two soonest bookable slots lead the sample");
+  eq(picked[1], iso(120), "and the second");
+  const lastMs = Date.parse(picked[picked.length - 1]);
+  assert(
+    lastMs > NOW + 2 * day * MIN,
+    "the sample reaches past the halfway point of the horizon, not just the next hour",
+  );
+  const spanMin = (lastMs - Date.parse(picked[0])) / MIN;
+  assert(spanMin > 2 * day, `the sample spans days, not minutes (spanned ${spanMin} minutes)`);
+  eq(new Set(picked).size, 5, "and never checks the same slot twice");
+  eq([...picked].sort(), [...picked].sort(), "sanity: comparable");
+  const ordered = [...picked].every((v, i, a) => i === 0 || Date.parse(a[i - 1]) < Date.parse(v));
+  assert(ordered, "the sample is returned in time order");
+}
+{
+  // Fewer offered slots than the sample size: take them all rather than
+  // leaving a checkable slot unchecked to preserve a spacing rule.
+  const starts = [iso(30), iso(60), iso(90)];
+  eq(sampleSlotStarts(starts, NOW, spec(5, 2)), starts, "a short payload is sampled whole");
+}
+{
+  // nearCount larger than what is on offer must not eat into the spread budget
+  // or produce a short sample.
+  const starts = [iso(30), iso(60), iso(90), iso(120), iso(150), iso(180)];
+  const picked = sampleSlotStarts(starts, NOW, spec(4, 10));
+  eq(picked.length, 4, "nearCount above the sample size still yields exactly sampleSize");
+  eq(picked, [iso(30), iso(60), iso(90), iso(120)], "and falls back to the soonest slots");
+}
+{
+  // A spread that lands on the same index twice must not silently shrink the
+  // sample: a probe checking 3 slots while reporting 5 would judge a drift
+  // share against a denominator it did not measure.
+  const starts = [iso(30), iso(60), iso(90), iso(120)];
+  const picked = sampleSlotStarts(starts, NOW, spec(4, 1));
+  eq(picked.length, 4, "collisions in the spread are backfilled, not dropped");
+  eq(new Set(picked).size, 4, "and the backfill never repeats a slot");
 }
 
 // --- classifySlotVerdict: the three outcomes, and which way each one fails ---
