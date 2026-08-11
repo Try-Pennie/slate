@@ -87,6 +87,28 @@ export function staleBuckets(
 export const RECOMPUTE_FRESH_MS = 4 * 60_000;
 
 /**
+ * How much of the freshness window a bucket's deadline may be pulled EARLIER, to
+ * spread the due set across ticks instead of letting it arrive in clumps (#1247).
+ *
+ * A FRACTION, not a duration, so the guarantee scales with whatever the window is
+ * set to: a bucket is never recomputed within the remaining quarter of its window,
+ * and is never held longer than the full window.
+ *
+ * 0.75 measured against the real shape (62 buckets, a 4 minute window, an
+ * every-minute lane, all computed together): the worst tick falls from 62 to 21
+ * and stays there, for about 7% more recomputes in total. Simulated over 30 ticks:
+ *
+ *   plain window     peak 62, steady peak 62, 434 recomputes
+ *   this             peak 21, steady peak 21, 464 recomputes
+ *
+ * That is the right trade for a lane whose failure mode is a single tick exceeding
+ * its budget rather than the total volume. Live timestamps showed 5, 6, 8, 15 then
+ * 22 buckets refreshed in consecutive minutes instead of a steady 15, with the due
+ * set at p50 7, p90 24, max 35.
+ */
+export const RECOMPUTE_JITTER_FRACTION = 0.75;
+
+/**
  * Headroom between a bucket aging out and the staleness alarm firing (#1248).
  *
  * It must exceed one tick of the every-minute lane, or a bucket that has just
@@ -211,14 +233,77 @@ export function bucketsDueForRecompute(
   allCodes: string[],
   nowMs: number,
   freshMs: number,
+  jitterFraction: number = RECOMPUTE_JITTER_FRACTION,
 ): string[] {
   const computedAt = new Map(known.map((k) => [k.code, k.computedAtMs]));
   return allCodes
     .filter((c) => {
       const at = computedAt.get(c);
-      return at === undefined || nowMs - at > freshMs;
+      // A bucket with no row is showing NO availability until it is built, so it
+      // is due at once and there is no timestamp to jitter anyway.
+      if (at === undefined) return true;
+      return nowMs >= bucketDueAtMs(c, at, freshMs, jitterFraction);
     })
     .sort((a, b) => (computedAt.get(a) ?? 0) - (computedAt.get(b) ?? 0));
+}
+
+/**
+ * This bucket's PHASE within the freshness window, from a stable hash of its code.
+ *
+ * Stable, because a phase that moved per tick would reshuffle the rotation instead
+ * of levelling it. Same FNV-1a trick `syncEligible` already uses to spread
+ * calendar retries across minutes; collisions are harmless, they just mean two
+ * buckets share a deadline.
+ */
+export function bucketPhaseMs(code: string, windowMs: number): number {
+  if (windowMs <= 0) return 0;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % windowMs;
+}
+
+/**
+ * When this bucket next falls due: the next point on ITS OWN phase-shifted grid
+ * after it was last computed (#1247).
+ *
+ * A plain `age > freshMs` test makes every bucket refreshed in the same cycle fall
+ * due in the same later cycle, so the due set arrives in clumps. Live timestamps
+ * showed 5, 6, 8, 15 then 22 buckets in consecutive minutes rather than a steady
+ * 15, with the due set at p50 7, p90 24, max 35, and that is what turns a per
+ * bucket cost increase into a cycle that cannot drain within its budget.
+ *
+ * A grid rather than a shortened window, which matters for the cost. Simply
+ * pulling deadlines earlier by a random offset spreads them, but it also shortens
+ * the AVERAGE window and so does permanently more work. On a grid, a bucket
+ * refreshed at its own grid point is next due exactly one window later, so the
+ * steady-state age converges back to `freshMs` while the phases keep the ladder
+ * spread. Only the first transition per bucket is short, and it is self
+ * correcting.
+ *
+ * The gap is always in `(0, freshMs]`, so no bucket is ever held LONGER than the
+ * plain window and the spreading cannot push anything closer to the staleness
+ * alarm.
+ */
+export function bucketDueAtMs(
+  code: string,
+  computedAtMs: number,
+  freshMs: number,
+  jitterFraction: number = RECOMPUTE_JITTER_FRACTION,
+): number {
+  if (jitterFraction <= 0 || freshMs <= 0) return computedAtMs + freshMs;
+  const phase = bucketPhaseMs(code, freshMs);
+  const grid = Math.floor((computedAtMs - phase) / freshMs) + 1;
+  const gridDueAt = phase + grid * freshMs;
+  // FLOORED, so the #294 guarantee survives in a stated form. A grid point can
+  // otherwise fall moments after a bucket was written, and recomputing a bucket
+  // that fresh is exactly the waste #294 removed. The floor turns "never within
+  // the window" into "never within the remaining quarter of it", which is a real
+  // weakening, and is why it is a named fraction rather than a hidden offset.
+  const floorAt = computedAtMs + freshMs * (1 - jitterFraction);
+  return Math.max(gridDueAt, floorAt);
 }
 
 export interface RecomputeHeadroom {
