@@ -2,6 +2,10 @@ import {
   orderBucketsForRecompute,
   staleBuckets,
   bucketsDueForRecompute,
+  bucketDueAtMs,
+  RECOMPUTE_FRESH_MS,
+  RECOMPUTE_JITTER_FRACTION,
+  STALE_ALARM_MS,
   recomputeHeadroom,
   recomputeDueBuckets,
   staleBucketPage,
@@ -34,13 +38,26 @@ const stale = staleBuckets(known, allCodes, now, 90_000).sort();
 assert(JSON.stringify(stale) === JSON.stringify(["100", "200", "400"]),
   `100/200 are >90s old and 400 never computed; 300 is fresh; got ${JSON.stringify(stale)}`);
 
-// bucketsDueForRecompute (#294): only buckets older than the freshness window
-// (or never computed), oldest-first — so the cron stops re-deriving every bucket
-// every minute and just covers the day-window slide + missed-push backstop.
-const due = bucketsDueForRecompute(known, allCodes, now, 90_000);
+// bucketsDueForRecompute (#294): only buckets past their own deadline (or never
+// computed), oldest-first, so the cron stops re-deriving every bucket every minute
+// and just covers the day-window slide plus the missed-push backstop.
+//
+// With the deadlines spread (#1247) the guarantee is stated as a FRACTION rather
+// than the whole window: a bucket is never recomputed within the remaining quarter
+// of its window, and never held longer than the full window. Both bounds are
+// asserted per bucket further down. Here the ORDER is what matters, so the jitter
+// is switched off to keep the fixture about ordering rather than about phases.
+const due = bucketsDueForRecompute(known, allCodes, now, 90_000, 0);
 assert(JSON.stringify(due) === JSON.stringify(["400", "200", "100"]),
   `never-computed (400) first, then oldest-first (200,100); fresh 300 excluded; got ${JSON.stringify(due)}`);
-assert(!due.includes("300"), "a bucket within the freshness window is NOT recomputed");
+assert(!due.includes("300"), "with no jitter, a bucket within the freshness window is NOT recomputed");
+
+// And with the jitter ON, a bucket inside the FLOOR is still never recomputed:
+// that is the part of #294's guarantee the spreading keeps.
+assert(
+  bucketsDueForRecompute([{ code: "300", computedAtMs: now - 10_000 }], ["300"], now, 90_000).length === 0,
+  "a bucket computed 10s ago is inside the floor of a 90s window, so it is not recomputed however its phase falls",
+);
 
 // A wider freshness window leaves nothing due (everything is 'fresh enough').
 assert(
@@ -272,6 +289,117 @@ await (async () => {
   assert(
     INVALIDATION_UNREADABLE_TOLERANCE === 3,
     "three consecutive failures, which is what was asked for",
+  );
+}
+
+// --- jittered deadlines, so the due set stops arriving in clumps (#1247) ------
+//
+// Buckets recomputed in the same cycle all age past a FIXED window in the same
+// later cycle, so the due set bunches instead of spreading. Live timestamps showed
+// 5, 6, 8, 15 then 22 buckets refreshed in consecutive minutes rather than a
+// steady 15, with the due set at p50 7, p90 24, max 35. That was harmless while a
+// bucket took 700ms; it is what converts a per bucket cost increase into a cycle
+// that cannot drain within its budget.
+//
+// The direction of the jitter is the safety property. It only ever makes a bucket
+// due EARLIER, never later, so no bucket can be pushed closer to the staleness
+// alarm and freshness strictly improves. The cost is a shorter average window,
+// which is stated and bounded rather than hidden.
+{
+  const CODES = Array.from({ length: 62 }, (_, i) => String(100 + i));
+  const FRESH = 4 * 60_000;
+  const T0 = 1_800_000_000_000;
+
+  // Stable: the same code must always get the same offset, or the rotation
+  // reshuffles every tick and never levels.
+  const a = bucketsDueForRecompute([{ code: "101", computedAtMs: T0 }], ["101"], T0 + FRESH - 30_000, FRESH);
+  const b = bucketsDueForRecompute([{ code: "101", computedAtMs: T0 }], ["101"], T0 + FRESH - 30_000, FRESH);
+  assert(
+    JSON.stringify(a) === JSON.stringify(b),
+    "the jitter is stable for a given bucket code, so the rotation levels instead of reshuffling",
+  );
+
+  // Never LATER than the plain window: at exactly freshMs every bucket is due,
+  // whatever its offset, so the jitter can never delay a refresh.
+  const allDue = bucketsDueForRecompute(
+    CODES.map((code) => ({ code, computedAtMs: T0 })),
+    CODES,
+    T0 + FRESH + 1,
+    FRESH,
+  );
+  assert(
+    allDue.length === CODES.length,
+    `every bucket is due by the plain freshness window (${allDue.length} of ${CODES.length}); the jitter must only ever pull a deadline EARLIER`,
+  );
+
+  // The headline: all 62 computed in one cycle, then stepped minute by minute.
+  // Without jitter every one of them lands in a single tick.
+  const perTick: number[] = [];
+  const computedAt = new Map(CODES.map((c) => [c, T0]));
+  for (let tick = 1; tick <= 12; tick += 1) {
+    const nowMs = T0 + tick * 60_000;
+    const dueNow = bucketsDueForRecompute(
+      CODES.map((code) => ({ code, computedAtMs: computedAt.get(code)! })),
+      CODES,
+      nowMs,
+      FRESH,
+    );
+    perTick.push(dueNow.length);
+    for (const code of dueNow) computedAt.set(code, nowMs);
+  }
+  const peak = Math.max(...perTick);
+  assert(
+    peak < CODES.length,
+    `the due set never arrives as one clump of all ${CODES.length} (peak was ${peak}, per tick: ${perTick.join(",")})`,
+  );
+  assert(
+    peak <= Math.ceil(CODES.length / 2),
+    `and the peak stays well under half the ladder (peak ${peak} of ${CODES.length}, per tick: ${perTick.join(",")})`,
+  );
+  // The grid, not a shortened window: total work over 12 ticks must stay close to
+  // what a plain 4-minute window would do (62 buckets x 12 min / 4 min = 186), or
+  // the spreading has been bought with permanently more recomputes.
+  const total = perTick.reduce((x, y) => x + y, 0);
+  assert(
+    total <= 186 * 1.25,
+    `spreading does not cost permanently more work (${total} recomputes over 12 ticks against about 186 for a plain window)`,
+  );
+  // Every bucket must still get refreshed: a spread that starves one is worse
+  // than a clump.
+  const oldest = Math.max(...CODES.map((c) => T0 + 12 * 60_000 - computedAt.get(c)!));
+  assert(
+    oldest <= FRESH,
+    `no bucket is starved by the spreading (oldest went ${Math.round(oldest / 1000)}s without a refresh)`,
+  );
+}
+{
+  // A never-computed bucket has no timestamp to jitter and must be due at once:
+  // it is showing NO availability until it is built.
+  const out = bucketsDueForRecompute([], ["101", "202"], 1_800_000_000_000, 4 * 60_000);
+  assert(out.length === 2, "a never-computed bucket is due immediately, jitter or not");
+}
+{
+  // The jitter has to stay clear of the staleness alarm, which is what stops the
+  // spreading from manufacturing the very page the freshness window exists under.
+  // The gap from one due point to the next is always inside the plain window, so
+  // no bucket is ever held longer than it would have been and the spreading cannot
+  // push anything closer to the alarm.
+  const floorMs = RECOMPUTE_FRESH_MS * (1 - RECOMPUTE_JITTER_FRACTION);
+  for (const code of ["100", "411", "999", "612", "205", "318"]) {
+    const at = 1_800_000_000_000 + 12_345;
+    const gap = bucketDueAtMs(code, at, RECOMPUTE_FRESH_MS) - at;
+    assert(
+      gap <= RECOMPUTE_FRESH_MS,
+      `bucket ${code} is never held LONGER than the plain window (gap ${gap}ms), so the spreading cannot push it toward the alarm`,
+    );
+    assert(
+      gap >= floorMs,
+      `and never recomputed within the remaining quarter of its window (bucket ${code} gap ${gap}ms, floor ${floorMs}ms): recomputing a bucket that fresh is the waste #294 removed`,
+    );
+  }
+  assert(
+    RECOMPUTE_FRESH_MS < STALE_ALARM_MS,
+    "and the window still sits below the alarm, since the jitter only pulls deadlines earlier",
   );
 }
 
