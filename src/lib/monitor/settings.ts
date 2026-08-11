@@ -22,7 +22,8 @@ export type MonitorAlertKey =
   | "inactive_agent_bookings"
   | "coverage_needs_human"
   | "ooo_calcom_unprotected"
-  | "empty_buckets";
+  | "empty_buckets"
+  | "booking_failure_rate";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -38,6 +39,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "coverage_needs_human",
   "ooo_calcom_unprotected",
   "empty_buckets",
+  "booking_failure_rate",
 ];
 
 /**
@@ -108,6 +110,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Alert when an agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
   },
   {
+    key: "booking_failure_rate",
+    label: "Customers failing to book",
+    help: "Page when the share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -158,6 +165,11 @@ export const MONITOR_DEFAULTS = {
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
     // it into sixty messages a wave with no way to quiet it.
     empty_buckets: 6 * 60 * 60_000,
+    // Customers being turned away (#1313): an active outage costing bookings by
+    // the minute, so it repeats faster than the staffing nudges. Half an hour is
+    // long enough not to spam a live incident, short enough that a page missed at
+    // the start of a wave comes back while it is still happening.
+    booking_failure_rate: 30 * 60_000,
   },
   floor30: 5,
   floor120: 20,
@@ -263,19 +275,45 @@ export function resolveFloors(
 }
 
 /**
- * Low-volume ARMED switch (#575): store (an explicit boolean) > env > coded
- * default (disarmed). A null store column is "unset" and falls through, exactly
- * like the floors; once the admin saves the settings form an explicit true/false
- * is written and the UI wins over the env in both directions.
+ * The arming precedence, shared by every arm/disarm switch: an explicit stored
+ * boolean > env (where one exists) > the coded default, which is always DISARMED.
+ * A null store column is "unset" and falls through, exactly like the floors; once
+ * the admin saves the settings form an explicit true/false is written and the UI
+ * wins in both directions.
+ *
+ * One implementation on purpose. Two switches resolving "unset" by their own copy
+ * of this rule is how they drift, and the direction they drift in (a flag reading
+ * armed when nobody armed it) is the one that pages off an uncalibrated threshold.
  */
+function resolveArmed(stored: boolean | null | undefined, envArmed?: boolean): boolean {
+  if (typeof stored === "boolean") return stored;
+  if (typeof envArmed === "boolean") return envArmed;
+  return false;
+}
+
+/** Low-volume ARMED switch (#575): store > env (BOOKING_VOLUME_ALERT_ARMED) >
+ *  disarmed. */
 export function resolveLowVolumeArmed(
   config: Pick<MonitorAlertConfig, "low_volume_armed"> | null,
   envArmed: boolean | undefined,
 ): boolean {
-  const stored = config?.low_volume_armed;
-  if (typeof stored === "boolean") return stored;
-  if (typeof envArmed === "boolean") return envArmed;
-  return false;
+  return resolveArmed(config?.low_volume_armed, envArmed);
+}
+
+/**
+ * Booking-failure-rate ARMED switch (#1313): store > disarmed. No env fallback,
+ * unlike its low-volume sibling: that one predates the store and kept its env var
+ * for the cutover, whereas this ships with the admin toggle from day one, and a
+ * second way to arm it would just be a second place for the answer to hide.
+ *
+ * The disarmed default is L56: a new detector must observe one real cycle before
+ * it may page, so its first live run is not also its first enforcing run. The
+ * issue that arms it is filed alongside this one (L65).
+ */
+export function resolveFailureRateArmed(
+  config: Pick<MonitorAlertConfig, "failure_rate_armed"> | null,
+): boolean {
+  return resolveArmed(config?.failure_rate_armed);
 }
 
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
@@ -292,6 +330,8 @@ export interface MonitorSettingsFormInput {
   infoChannel: string;
   /** Raw value of the arm-low-volume checkbox ("on"/"true" when checked, else blank). */
   lowVolumeArmed: string;
+  /** Raw value of the arm-failure-rate checkbox (#1313), same encoding. */
+  failureRateArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -302,6 +342,7 @@ export interface MonitorSettingsPayload {
     alerts_channel: string | null;
     info_channel: string | null;
     low_volume_armed: boolean;
+    failure_rate_armed: boolean;
   };
   errors: string[];
 }
@@ -342,8 +383,10 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
 
   // The checkbox is a definite on/off decision: checked -> armed, absent/blank ->
   // disarmed. Saving therefore always writes an explicit boolean, so the UI wins.
-  const armedRaw = (input.lowVolumeArmed ?? "").trim().toLowerCase();
-  const lowVolumeArmed = armedRaw === "on" || armedRaw === "true";
+  const checked = (raw: string): boolean => {
+    const t = (raw ?? "").trim().toLowerCase();
+    return t === "on" || t === "true";
+  };
 
   return {
     cooldowns,
@@ -352,7 +395,8 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       floor_120: parseBounded(input.floor120, "120-min floor", FLOOR_MIN, FLOOR_MAX),
       alerts_channel: channel(input.alertsChannel),
       info_channel: channel(input.infoChannel),
-      low_volume_armed: lowVolumeArmed,
+      low_volume_armed: checked(input.lowVolumeArmed),
+      failure_rate_armed: checked(input.failureRateArmed),
     },
     errors,
   };
@@ -369,6 +413,8 @@ export interface ResolvedMonitorSettings {
   floors: { floor30: number; floor120: number };
   /** #575: is the low-booking-volume alert armed (store > env > disarmed)? */
   lowVolumeArmed: boolean;
+  /** #1313: is the booking-failure-rate page armed (store > disarmed)? */
+  failureRateArmed: boolean;
 }
 
 /**
@@ -378,14 +424,16 @@ export interface ResolvedMonitorSettings {
  */
 export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
   let rows: Pick<MonitorSettings, "key" | "cooldown_min">[] = [];
-  let config: Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "low_volume_armed"> | null = null;
+  let config:
+    | Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "low_volume_armed" | "failure_rate_armed">
+    | null = null;
   try {
     const db = supabaseAdmin();
     const [cooldowns, cfg] = await Promise.all([
       db.from("monitor_settings").select("key, cooldown_min"),
       db
         .from("monitor_alert_config")
-        .select("floor_30, floor_120, low_volume_armed")
+        .select("floor_30, floor_120, low_volume_armed, failure_rate_armed")
         .eq("id", 1)
         .maybeSingle(),
     ]);
@@ -393,7 +441,10 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       rows = cooldowns.data as Pick<MonitorSettings, "key" | "cooldown_min">[];
     }
     if (!cfg.error && cfg.data) {
-      config = cfg.data as Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "low_volume_armed">;
+      config = cfg.data as Pick<
+        MonitorAlertConfig,
+        "floor_30" | "floor_120" | "low_volume_armed" | "failure_rate_armed"
+      >;
     }
   } catch {
     // Fall through to env/defaults (config must never take down alerting).
@@ -405,6 +456,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       floor120: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_120),
     }),
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
+    failureRateArmed: resolveFailureRateArmed(config),
   };
 }
 

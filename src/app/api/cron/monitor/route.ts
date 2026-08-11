@@ -22,6 +22,16 @@ import {
   type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
 import { countCustomerBookingsSince } from "@/lib/monitor/customer-bookings";
+import {
+  runBookingFailureRateCheck,
+  type FailureRateResult,
+  type RateThresholds,
+} from "@/lib/monitor/booking-failure-rate";
+import {
+  loadRateState,
+  saveRateState,
+  readTodayOutcomes,
+} from "@/lib/monitor/booking-failure-rate-store";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
@@ -113,6 +123,22 @@ const ANOMALY_VERIFY_DELAY_MS = 2_000;
 // rather than a blip, and re-reading every bucket would spend a subrequest budget
 // this lane shares with three others (complete, watch, bulk-reassign).
 const ANOMALY_VERIFY_MAX_BUCKETS = 8;
+
+// --- Customers failing to complete a booking (#1313) ---
+// The rolling window the failure share is judged over, and the two gates that
+// keep it honest. `minAttempts` is the one that stops a quiet hour where 1 of 1
+// attempts failed from paging; `failPct` must be EXCEEDED, not merely met.
+//
+// These numbers are a starting point, not a calibration: Slate has taken no real
+// customer traffic yet (every booking to date is the canary), so there is no live
+// distribution to fit them to. That is exactly why the check ships DISARMED and
+// logs its measured share every tick, per L56: the first real cycle produces the
+// numbers, and #1367 arms it once someone has read them.
+const FAILURE_RATE_THRESHOLDS: RateThresholds = {
+  windowMs: 60 * 60_000,
+  minAttempts: 20,
+  failPct: 20,
+};
 
 /** Default zone for an agent with no schedule row, matching how the availability
  *  compute treats a scheduleless agent (America/New_York, no working rules). */
@@ -429,6 +455,48 @@ export async function GET(req: NextRequest) {
       notify: sendThrottledAlert,
       log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
     });
+
+    // --- Customers failing to complete a booking (#1313) ---
+    // The lagging half of the pair with #1315: this one sees customers already
+    // being turned away. On 2026-08-06 cal.com refused 50+ confirms in about two
+    // hours and reported nothing; the only detector was a complaint monitor.
+    //
+    // Slate counts every attempt (#418) but the tally is bucketed by DAY, where a
+    // wave of fifty is invisible. This diffs consecutive reads of that daily
+    // counter into a rolling window, so the lane's 5-minute cadence gives
+    // 5-minute resolution without re-keying the table.
+    //
+    // Its own failure boundary (L73): thirteen checks share this handler, and an
+    // unguarded throw here would silently cancel every check below it.
+    // all-clear-proof: scripts/test-monitor-booking-failure-rate.ts - pins that an
+    // unreadable tally, an unreadable state row, and a window too small to judge
+    // each send NOTHING, in either direction. The all-clear hangs only off a
+    // measured healthy verdict.
+    let failureRate: FailureRateResult | { status: "errored" } = { status: "errored" };
+    try {
+      failureRate = await runBookingFailureRateCheck({
+        nowMs: now,
+        loadState: loadRateState,
+        saveState: saveRateState,
+        readToday: () => readTodayOutcomes(now),
+        thresholds: FAILURE_RATE_THRESHOLDS,
+        armed: settings.failureRateArmed,
+        cooldownMs: settings.cooldownMs.booking_failure_rate,
+        notify: (key, cooldownMs, text) => {
+          // alert-key: booking_failure_rate
+          // alert-text-ok: our own copy from booking-failure-rate.ts, built from
+          // measured counts; no error text can reach it.
+          return sendThrottledAlert(key, cooldownMs, text);
+        },
+        // alert-key: booking_failure_rate
+        resolve: (key, text) => resolveAlert(key, text),
+        log: (fields) => log.info("monitor", { ...fields }),
+        onError: (context, err) =>
+          log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
+      });
+    } catch (err) {
+      log.error("monitor", { msg: "booking failure rate check failed" }, err);
+    }
 
     // --- Thin-tier staffing early warning (#569): a slow, low-priority whisper
     // of tiers resting on 1-2 bookable agents, reusing the #584 depth helper
@@ -789,6 +857,7 @@ export async function GET(req: NextRequest) {
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       truncated,
       volume,
+      failureRate,
     });
   } finally {
     await releaseLock("cron_monitor", lock);

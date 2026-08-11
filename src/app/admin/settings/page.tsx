@@ -27,6 +27,7 @@ import {
   quietedAlarms,
   formatMinutes,
   resolveLowVolumeArmed,
+  resolveFailureRateArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
@@ -95,6 +96,7 @@ export default async function MonitorSettingsPage({
   // not just the stored column, so an admin on an env-armed deploy who saves other
   // changes can't silently disarm the alert by leaving a falsely-unchecked box.
   const lowVolumeArmed = resolveLowVolumeArmed(config, envLowVolumeArmed());
+  const failureRateArmed = resolveFailureRateArmed(config);
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -398,6 +400,22 @@ export default async function MonitorSettingsPage({
             <p className="mt-1 text-xs text-fg-muted">
               Leave off during the ramp; turn on once Slate owns roughly full booking
               traffic. Saving applies immediately, no deploy needed.
+            </p>
+            <label className="mt-4 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="failure_rate_armed"
+                value="on"
+                defaultChecked={failureRateArmed}
+                className="h-4 w-4"
+              />
+              Arm the failing-bookings page (page Slack when too many customers cannot
+              complete a booking)
+            </label>
+            <p className="mt-1 text-xs text-fg-muted">
+              Leave off until a real cycle of traffic has been observed, so the threshold
+              is set against numbers someone has actually seen. The check keeps measuring
+              and logging while it is off.
             </p>
           </section>
 

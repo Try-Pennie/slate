@@ -352,6 +352,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     alertsChannel: String(form.get("alerts_channel") ?? ""),
     infoChannel: String(form.get("info_channel") ?? ""),
     lowVolumeArmed: String(form.get("low_volume_armed") ?? ""),
+    failureRateArmed: String(form.get("failure_rate_armed") ?? ""),
   });
 
   if (parsed.errors.length) {

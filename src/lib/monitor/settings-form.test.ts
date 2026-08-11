@@ -18,6 +18,7 @@ const blank = {
   alertsChannel: "",
   infoChannel: "",
   lowVolumeArmed: "",
+  failureRateArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -32,6 +33,7 @@ describe("parseMonitorSettingsForm", () => {
       info_channel: null,
       // A blank/absent toggle is an explicit disarm (the checkbox is on/off, not tri-state).
       low_volume_armed: false,
+      failure_rate_armed: false,
     });
   });
 
@@ -80,5 +82,15 @@ describe("parseMonitorSettingsForm", () => {
       cooldownMin: { ...blank.cooldownMin, availability_booked_solid: "999999" },
     });
     expect(out.errors.length).toBeGreaterThan(0);
+  });
+
+  it("arms each switch independently, so saving the form cannot arm the other one", () => {
+    const onlyRate = parseMonitorSettingsForm({ ...blank, failureRateArmed: "on" });
+    expect(onlyRate.config.failure_rate_armed).toBe(true);
+    expect(onlyRate.config.low_volume_armed).toBe(false);
+
+    const onlyVolume = parseMonitorSettingsForm({ ...blank, lowVolumeArmed: "on" });
+    expect(onlyVolume.config.low_volume_armed).toBe(true);
+    expect(onlyVolume.config.failure_rate_armed).toBe(false);
   });
 });
