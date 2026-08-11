@@ -202,3 +202,45 @@ describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
     expect(help).toMatch(/currently 7 days/);
   });
 });
+
+describe("MonitorSettingsPage alert toggles", () => {
+  // The label IS the contract (L21). "Arm the low-volume alert (page Slack when
+  // ...)" told the reader neither what turning it on does nor, more importantly,
+  // what is still happening while it is off, and "page" read as a web page rather
+  // than an alert. Dan could not tell from the screen what the control did.
+  //
+  // Finding each box by its ACCESSIBLE NAME also pins the label to its input, so
+  // a future edit cannot leave a checkbox a screen reader announces as unlabelled.
+
+  it("names each toggle by what it makes happen, in plain words", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.getByRole("checkbox", { name: /send a slack alert when bookings drop off/i })).toBeTruthy();
+    expect(
+      screen.getByRole("checkbox", { name: /send a slack alert when customers are failing to book/i }),
+    ).toBeTruthy();
+  });
+
+  it("says what is still happening while a toggle is OFF, so 'off' is not read as 'not running'", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    // Both checks keep measuring while disarmed; only the notification stops.
+    expect(screen.getByText(/Slate still counts bookings, but nobody is notified/i)).toBeTruthy();
+    expect(
+      screen.getByText(/Slate still checks every 5 minutes and records what it finds in the logs, but nobody is notified/i),
+    ).toBeTruthy();
+  });
+
+  it("uses no alerting jargon in either label", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    for (const box of screen.getAllByRole("checkbox")) {
+      const name = box.getAttribute("aria-label") ?? box.parentElement?.textContent ?? "";
+      expect(name).not.toMatch(/\barm\b/i);
+      expect(name).not.toMatch(/\bpage Slack\b/i);
+    }
+  });
+});
