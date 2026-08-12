@@ -37,6 +37,8 @@ import {
 import {
   formatVolumeCountUnreadableAlert,
   formatVolumeCountReadableNotice,
+  formatLowVolumeAlert,
+  formatLowVolumeRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
 import {
   formatAvailabilityDriftAlert,
@@ -288,6 +290,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "no longer widespread, but two buckets are still wrong",
     channel: "recovery",
     text: formatAvailabilityDriftAggregateAllClear({ stillDrifting: 2, totalBuckets: 60 }),
+  },
+  {
+    // #370, previewable and classified since #1390. The fixture is a real drought
+    // shape: the 30 minute window empty while the 2 hour window is merely thin, so
+    // the message has to carry both numbers rather than one headline.
+    key: "low_booking_volume",
+    state: "bookings have dried up",
+    channel: "alert",
+    text: formatLowVolumeAlert([
+      { label: "30 min", count: 0, floor: 3 },
+      { label: "120 min", count: 4, floor: 12 },
+    ]),
+  },
+  {
+    key: "low_booking_volume",
+    state: "volume is back above the floors",
+    channel: "recovery",
+    text: formatLowVolumeRecoveryNotice([
+      { label: "30 min", count: 5, floor: 3 },
+      { label: "120 min", count: 18, floor: 12 },
+    ]),
   },
   {
     // #1288. Distinct from the low-volume page on purpose: this one sends the

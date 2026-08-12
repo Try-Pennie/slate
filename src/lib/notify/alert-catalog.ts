@@ -109,6 +109,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
   },
   {
+    key: "low_booking_volume",
+    kind: "condition",
+    why:
+      "Customers have stopped getting through; volume comes back and the same " +
+      "lane re-measures it against the floors every 5 minutes.",
+  },
+  {
     key: "volume_count_unreadable",
     kind: "condition",
     why:

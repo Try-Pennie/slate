@@ -72,12 +72,16 @@ function harness(overrides: {
   armed?: boolean;
   floors?: { floor30: number; floor120: number };
   unreadableFiring?: boolean;
+  settleThrows?: boolean;
 }) {
   const notified: { key: string; cooldownMs: number; text: string }[] = [];
   const resolved: { key: string; text: string }[] = [];
   const logged: Record<string, unknown>[] = [];
   const countCalls: string[] = [];
   const attempts = new Map<string, number>();
+  /** How many times the batched all-clear seam was called: it must be at most one
+   *  per tick, because it costs an alert_state read on a shared budget. */
+  let settleCalls = 0;
   const run = () =>
     runLowVolumeCheck({
       nowMs: overrides.nowMs ?? BUSINESS_NOW,
@@ -106,13 +110,15 @@ function harness(overrides: {
         if (overrides.notifyThrows) throw new Error("slack down");
         notified.push({ key, cooldownMs, text });
       },
-      resolveCountUnreadable: async (key: string, text: string) => {
-        resolved.push({ key, text });
-        return overrides.unreadableFiring ?? false;
+      resolveRecovered: async (recovered: { key: string; text: string }[]) => {
+        settleCalls++;
+        if (overrides.settleThrows) throw new Error("alert_state unreachable");
+        resolved.push(...recovered);
+        return overrides.unreadableFiring ? recovered.map((r) => r.key) : [];
       },
       log: (fields: Record<string, unknown>) => logged.push(fields),
     });
-  return { run, notified, resolved, logged, countCalls };
+  return { run, notified, resolved, logged, countCalls, get settleCalls() { return settleCalls; } };
 }
 
 // Outside business hours: no reads, no alert, explicit status.
@@ -207,7 +213,10 @@ function harness(overrides: {
   const h = harness({ counts: { "30": 9, "120": 40 }, unreadableFiring: true });
   const res = await h.run();
   assert(res.status === "checked", "a clean tick is checked");
-  assert(h.resolved.length === 1, "and clears the unreadable-count page");
+  assert(
+    h.resolved.some((r) => r.key === VOLUME_COUNT_UNREADABLE_KEY),
+    "and clears the unreadable-count page",
+  );
   assert(h.resolved[0].key === VOLUME_COUNT_UNREADABLE_KEY, "on the same key it paged on");
   assert(!DASHES.test(h.resolved[0].text), "no dashes in the all-clear either");
 }
@@ -252,6 +261,101 @@ function harness(overrides: {
   const h = harness({ counts: { "30": 0, "120": 0 }, notifyThrows: true });
   const res = await h.run();
   assert(res.status === "checked", "a throwing notify is swallowed and the check still reports");
+}
+
+// --- the low-volume all-clear (#1390) -----------------------------------------
+// `low_booking_volume` was the one paging key with no recovery path at all: a
+// reader woken about a booking drought was never told when it ended. It is a
+// CONDITION (volume comes back, and the same lane re-measures it every 5 minutes),
+// so it owes an ending, and that ending must hang off a count that was actually
+// READ (#1152), never off "we did not page this run".
+{
+  const h = harness({ counts: { "30": 9, "120": 40 } });
+  const res = await h.run();
+  assert(res.status === "checked", "a measured healthy tick reports checked");
+  const keys = h.resolved.map((r) => r.key);
+  assert(keys.includes(VOLUME_ALERT_KEY), "a measured reading above both floors offers the volume all-clear");
+  assert(
+    keys.includes(VOLUME_COUNT_UNREADABLE_KEY),
+    "and still offers the count-readable notice, in the SAME settle call",
+  );
+  const text = h.resolved.find((r) => r.key === VOLUME_ALERT_KEY)?.text ?? "";
+  assert(/no action is needed/i.test(text), "the volume all-clear closes the loop");
+  assert(!DASHES.test(text), "the volume all-clear has no dashes");
+  assert(
+    !/undefined|NaN|\[object Object\]/.test(text),
+    "the volume all-clear renders no placeholder leak",
+  );
+}
+
+// One read, not two. Both all-clears go through a single settle call, because
+// this lane shares a subrequest budget with three others and asking per key is
+// how #1134 got expensive.
+{
+  const h = harness({ counts: { "30": 9, "120": 40 } });
+  await h.run();
+  assert(h.settleCalls === 1, "both keys are settled in ONE call, so the healthy tick costs one read");
+}
+
+// A tick that measured a BREACH must not also clear the very page it is sending.
+{
+  const h = harness({ counts: { "30": 0, "120": 0 } });
+  await h.run();
+  assert(
+    h.notified.some((n) => n.key === VOLUME_ALERT_KEY),
+    "a breach still pages",
+  );
+  assert(
+    !h.resolved.some((r) => r.key === VOLUME_ALERT_KEY),
+    "a breaching tick clears nothing about volume",
+  );
+}
+
+// The failure paths, which are the point. Each of these measured NOTHING about
+// volume, so none may announce that volume recovered.
+{
+  const weekend = harness({ nowMs: WEEKEND_NOW });
+  await weekend.run();
+  assert(
+    !weekend.resolved.some((r) => r.key === VOLUME_ALERT_KEY),
+    "outside business hours nothing is cleared: the tick read no counts at all",
+  );
+
+  const unreadable = harness({ counts: { "30": null, "120": null } });
+  const res = await unreadable.run();
+  assert(res.status === "count-unreadable", "two failed reads report count-unreadable");
+  // Nothing AT ALL, in either key: a tick that could not read its own count has
+  // measured nothing, so it cannot announce that anything recovered (#1152).
+  assert(
+    unreadable.resolved.length === 0,
+    "a count that could not be read clears nothing (it is the false zero #1158 removed)",
+  );
+
+  const threw = harness({ countThrows: true });
+  await threw.run();
+  assert(
+    !threw.resolved.some((r) => r.key === VOLUME_ALERT_KEY),
+    "a reader that threw clears nothing about volume",
+  );
+}
+
+// A disarmed tick still clears an outstanding page. The arming switch (#575)
+// exists so the ramp cannot cry wolf about volume; it is not a reason to leave a
+// page that was delivered while armed hanging forever after someone disarms it.
+{
+  const h = harness({ counts: { "30": 9, "120": 40 }, armed: false });
+  await h.run();
+  assert(
+    h.resolved.some((r) => r.key === VOLUME_ALERT_KEY),
+    "a healthy reading offers the all-clear even while disarmed",
+  );
+}
+
+// A settle that throws must not take down the tick.
+{
+  const h = harness({ counts: { "30": 9, "120": 40 }, settleThrows: true });
+  const res = await h.run();
+  assert(res.status === "checked", "a failed settle still returns the measured result");
 }
 
 finish();
