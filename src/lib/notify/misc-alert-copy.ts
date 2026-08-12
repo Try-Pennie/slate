@@ -11,6 +11,19 @@ export function bookableBlockedAlert(email: string): string {
   return `Blocked making ${email} bookable because their Google calendar is unreachable (account gone from the Workspace, or delegation broken). The agent was NOT added to the booking pool; fix the calendar and retry.`;
 }
 
+/**
+ * Activation refused: the Google account has never been given Calendar (#1396).
+ *
+ * Its own message because the fix is a different person doing a different thing.
+ * The gone copy tells the reader the account is missing from the Workspace or the
+ * delegation is broken, which sends them to check credentials that are fine, and
+ * the transient copy tells them to retry shortly, which can never work: nothing
+ * changes until an admin gives the person Calendar.
+ */
+export function bookableNotProvisionedAlert(email: string): string {
+  return `Blocked making ${email} bookable because their Google account has never been signed up for Google Calendar (Google refuses the account with notACalendarUser). This is not a credential problem and retrying will not fix it: a Workspace admin has to give them Calendar first. The agent was NOT added to the booking pool.`;
+}
+
 /** Activation refused: the calendar could not be verified (transient). */
 export function bookableUnverifiedAlert(email: string): string {
   return `Could NOT verify ${email}'s Google calendar (a transient error persisted through one retry). The agent was NOT added to the booking pool; this is likely a temporary Google issue, so retry shortly.`;

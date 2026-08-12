@@ -79,6 +79,7 @@ import {
 import {
   auditWriteFailedAlert,
   bookableBlockedAlert,
+  bookableNotProvisionedAlert,
   bookableUnverifiedAlert,
   externalDoubleBookAlert,
   internalErrorAlert,
@@ -198,8 +199,24 @@ const AGENT_ONE: FailingAgent[] = [
   },
 ];
 
+/**
+ * The account Google refuses outright (#1396). Definitive like `gone`, but the
+ * fix is a Workspace admin giving them Calendar, so its label and the alert's
+ * instruction have to differ; previewing it is how you can see that they do.
+ */
+const AGENT_NOT_PROVISIONED: FailingAgent[] = [
+  {
+    email: "ariel.nwosu@trypennie.com",
+    consecutiveFailures: 6,
+    lastSuccessAt: null,
+    error: "403 notACalendarUser",
+    failureKind: "not-provisioned",
+  },
+];
+
 const AGENT_MANY: FailingAgent[] = [
   ...AGENT_ONE,
+  ...AGENT_NOT_PROVISIONED,
   {
     email: "sam.oyelaran@trypennie.com",
     consecutiveFailures: 11,
@@ -234,6 +251,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "several agents failing (reads as systemic)",
     channel: "alert",
     text: formatSyncFailureAlert(AGENT_MANY, 97, NOW_MS),
+  },
+  {
+    // #1396: read the instruction. Telling this reader to re-auth would send them
+    // to repair a credential that is fine.
+    key: "sync_failures",
+    state: "an account was never signed up for Calendar",
+    channel: "alert",
+    text: formatSyncFailureAlert(AGENT_NOT_PROVISIONED, 97, NOW_MS),
   },
   {
     key: "sync_failures",
@@ -1175,6 +1200,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: retentionResumedText("prune-bookings-pii") },
   { key: "bookable_blocked:*", state: "calendar definitively gone", channel: "alert",
     text: bookableBlockedAlert("dana.whitfield@trypennie.com") },
+  { key: "bookable_blocked:*", state: "the account was never signed up for Calendar", channel: "alert",
+    text: bookableNotProvisionedAlert("ariel.nwosu@trypennie.com") },
   { key: "bookable_unverified:*", state: "transient error persisted", channel: "alert",
     text: bookableUnverifiedAlert("dana.whitfield@trypennie.com") },
   { key: "ooo_approvals_digest", state: "one approval, one recipient", channel: "alert",

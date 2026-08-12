@@ -6,7 +6,12 @@ import type { Reachability } from "@/lib/google/reachability-classify";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cleanupOnPoolExit } from "@/lib/google/sync";
 import { log } from "@/lib/log";
-import { bookableBlockedAlert, bookableUnverifiedAlert } from "@/lib/notify/misc-alert-copy";
+import {
+  bookableBlockedAlert,
+  bookableNotProvisionedAlert,
+  bookableUnverifiedAlert,
+} from "@/lib/notify/misc-alert-copy";
+import { isDefinitiveFailure } from "@/lib/google/sync-health";
 
 /**
  * Keyed per agent (`bookable_blocked:<userId>`) so a single agent stuck with a
@@ -18,7 +23,13 @@ export const BOOKABLE_BLOCKED_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** google_unreachable = a definitive "account gone" failure; google_unverified
  *  = a transient failure that persisted through one retry (couldn't confirm). */
-export type BlockedReason = "google_unreachable" | "google_unverified";
+export type BlockedReason =
+  | "google_unreachable"
+  /** #1396: the account exists but has never been given Calendar. Definitive like
+   *  google_unreachable, and refused for the same reason, but its own value so the
+   *  admin screen and the alert can name the fix (a Workspace admin, not a re-auth). */
+  | "google_not_provisioned"
+  | "google_unverified";
 
 export type BookableResult =
   | { status: "not_found" }
@@ -66,7 +77,21 @@ async function checkActivationGate(
   let kind = await deps.checkReachable(email);
   if (kind === "transient") kind = await deps.checkReachable(email); // one retry
   if (kind === "reachable") return null;
-  if (kind === "gone") {
+  // #1396: refused for the same reason as gone (nothing about their availability
+  // can be read, ever, until a human acts) but named separately, because the human
+  // and the action are different. Enumerated BEFORE the gone branch so the two
+  // cannot be conflated, and note the fall-through at the bottom is the TRANSIENT
+  // branch: a definitive kind reaching it would be refused with "retry shortly",
+  // which is advice that can never work. isDefinitiveFailure is what keeps that
+  // from happening silently if a fourth kind ever arrives.
+  if (kind === "not-provisioned") {
+    return {
+      reason: "google_not_provisioned",
+      key: `bookable_blocked:${userId}`,
+      message: bookableNotProvisionedAlert(email),
+    };
+  }
+  if (isDefinitiveFailure(kind)) {
     return {
       reason: "google_unreachable",
       key: `bookable_blocked:${userId}`,

@@ -1,3 +1,4 @@
+import { isDefinitiveFailure, type FailureKind } from "@/lib/google/sync-health";
 /**
  * Pure helpers for the DB-backed sync coordination (#30). Cloudflare Workers
  * isolates share no memory, so claims/locks live in Postgres; these compute
@@ -140,12 +141,17 @@ function slotHash(id: string): number {
  * come through here, so neither is ever delayed by this.
  */
 export function syncEligible(
-  cal: { id: string; last_failure_kind: "gone" | "transient" | null; consecutive_failures: number },
+  cal: { id: string; last_failure_kind: FailureKind | null; consecutive_failures: number },
   nowMs: number,
   intervalMin: number = GONE_RETRY_INTERVAL_MIN,
 ): boolean {
+  // isDefinitiveFailure, not `=== "gone"` (#1396). A never-provisioned account is
+  // just as unfixable by retrying, and a comparison against one literal would keep
+  // hammering it every minute on a budget four cron lanes share. Note null is
+  // definitive too, so an unclassified streak backs off exactly as before.
   const established =
-    cal.last_failure_kind === "gone" && cal.consecutive_failures >= GONE_BACKOFF_STREAK;
+    isDefinitiveFailure(cal.last_failure_kind) &&
+    cal.consecutive_failures >= GONE_BACKOFF_STREAK;
   if (!established) return true;
   const minuteOfEpoch = Math.floor(nowMs / 60_000);
   return minuteOfEpoch % intervalMin === slotHash(cal.id) % intervalMin;
@@ -156,7 +162,7 @@ export function eligibleCalendarsForSync<
   T extends {
     id: string;
     sync_token: string | null;
-    last_failure_kind: "gone" | "transient" | null;
+    last_failure_kind: FailureKind | null;
     consecutive_failures: number;
   },
 >(cals: T[], nowMs: number): T[] {

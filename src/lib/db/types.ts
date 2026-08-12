@@ -330,7 +330,7 @@ export interface AgentCalendar {
   last_success_at: string | null;
   /** SYNC diagnostics (#916): classification of the last failure ('gone' |
    *  'transient'), or null when the last attempt succeeded / predates #916. */
-  last_failure_kind: "gone" | "transient" | null;
+  last_failure_kind: "gone" | "not-provisioned" | "transient" | null;
   /** WATCH diagnostics (#1150): the same four facts for the ~5-min push-channel
    *  renewal lane, kept in their OWN columns. Sharing one counter let a
    *  successful sync clear a renewal failure within the minute, so a watch-only
@@ -339,7 +339,7 @@ export interface AgentCalendar {
   watch_consecutive_failures: number;
   watch_last_success_at: string | null;
   watch_last_error: string | null;
-  watch_last_failure_kind: "gone" | "transient" | null;
+  watch_last_failure_kind: "gone" | "not-provisioned" | "transient" | null;
   created_at: string;
 }
 
