@@ -1050,13 +1050,18 @@ export default function Booker({
           </span>
           {meta ? `${meta.eventType.durationMin}m` : ""}
         </div>
-        {/* #1333 / #1357: the number here is the LEAD's own, read back to them as a
-            check on what they typed, and the copy carries the direction. The number
-            that used to sit here was the main Pennie line, which read as a promise
-            about who would call: agents are assigned round robin at confirm time and
-            call from their own lines, so a lead screening unknown numbers could have
-            missed the real call while waiting for the one they were shown.
-            "We will call you on" cannot be read that way round.
+        {/* #1333 / #1357: the number here is the LEAD's own, echoed back so they can
+            check what they typed, and LABELLED as theirs. The number that used to sit
+            here was the main Pennie line, which read as a promise about who would
+            call: agents are assigned round robin at confirm time and call from their
+            own lines, so a lead screening unknown numbers could have missed the real
+            call while waiting for the one they were shown. A bare number in a row of
+            facts would reintroduce exactly that reading.
+
+            Dan's call on #1333 (2026-08-12): "Your number:" rather than a sentence
+            about the call. The panel cannot honestly say anything about the call at
+            all, since the agent is not chosen until confirm, so it claims nothing in
+            either direction and just shows the value back.
 
             Rendered only once there IS a number, rather than as a placeholder row:
             a row that says "Attendee phone number" is a label pretending to be a
@@ -1068,7 +1073,7 @@ export default function Booker({
               <PhoneIcon />
             </span>
             <span>
-              We will call you on{" "}
+              Your number:{" "}
               <span className="tabular-nums">{attendee.phone}</span>
             </span>
           </div>

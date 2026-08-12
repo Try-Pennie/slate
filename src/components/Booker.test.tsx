@@ -811,22 +811,27 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect((postedBody!.attendee as { phone: string }).phone).toBe("(203) 561-5295");
   });
 
-  // #1333 / #1357: the panel's number is the LEAD's own, read back as a check on
-  // what they typed, and the copy carries the direction. The number that used to
-  // sit here was the main Pennie line, which read as a promise about who would
-  // call, and agents are assigned round robin at confirm time from their own lines.
-  it("reads the lead's own number back, stating the direction", async () => {
+  // #1333 / #1357: the panel's number is the LEAD's own, labelled as theirs. The
+  // number that used to sit here was the main Pennie line, which read as a promise
+  // about who would call, and agents are assigned round robin at confirm time from
+  // their own lines. Dan's call on #1333: echo it back as a plain value, with no
+  // sentence about the call at all, so the row cannot be read as either promise.
+  it("reads the lead's own number back, labelled as theirs", async () => {
     global.fetch = okFetch();
     render(<Booker {...baseProps} attendee={{ name: "", email: "", phone: "(215) 555-0100" }} />);
     await dayChip();
 
     const panel = document.querySelector("aside");
     expect(panel).not.toBeNull();
-    // The direction is in the words, so it cannot be read as the number we dial
-    // FROM. A bare number in a row of facts would reintroduce exactly that.
-    expect(panel!.textContent).toContain("We will call you on");
+    // Labelled as the lead's own, so it cannot be read as the number we dial FROM.
+    // A BARE number in a row of facts would reintroduce exactly that.
+    expect(panel!.textContent).toContain("Your number:");
     expect(panel!.textContent).toContain("(215) 555-0100");
     expect(panel!.textContent).not.toMatch(/attendee phone/i);
+    // And it makes no claim about the call itself, in either direction: the agent
+    // is not chosen until confirm, so the panel cannot honestly say anything about
+    // who dials or when.
+    expect(panel!.textContent).not.toMatch(/call you|we will call/i);
     // Duration and timezone stay. The zone is the VIEWER's, so it must not be
     // pinned to a name: CI runs in UTC and a developer's machine does not, and a
     // test that reads the host clock is the #1039 class of flake.
@@ -844,7 +849,7 @@ describe("Booker phone handling (#1332, #1333)", () => {
     // No placeholder standing in for a value the lead has not given: a row reading
     // "Attendee phone number" is a label pretending to be a number, which is what
     // this panel got wrong in the first place.
-    expect(panel.textContent).not.toMatch(/call you on/i);
+    expect(panel.textContent).not.toMatch(/your number/i);
     expect(panel.textContent).not.toMatch(/attendee phone|phone number/i);
   });
 
@@ -857,7 +862,7 @@ describe("Booker phone handling (#1332, #1333)", () => {
 
     // The panel and the field never disagree about the same number (#1332).
     const panel = document.querySelector("aside")!;
-    expect(panel.textContent).toContain("We will call you on");
+    expect(panel.textContent).toContain("Your number:");
     expect(panel.textContent).toContain("(215) 555-0100");
   });
 });
