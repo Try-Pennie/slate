@@ -28,6 +28,7 @@ import {
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
+  VERDICT_STALE_BOUNDS_MS,
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -40,6 +41,11 @@ const BOUNDS: Record<string, Record<string, number>> = {
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
+  // #1394: not a cron lane at all, but the same invariant applies with more force.
+  // These rows record when a DETECTOR last reached a measured verdict, and the
+  // whole feature is the observation that a stamp nobody reads is worse than no
+  // stamp, because its presence reads as coverage.
+  VERDICT_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an
@@ -105,12 +111,12 @@ const { lanes: stamped, opaque } = stampedLanes();
 // pass by default, which is the exact false-confidence shape this file exists to
 // prevent. So require the known-good stamps to still be found.
 assert(
-  stamped.size >= 14,
-  `scan still finds the heartbeat stamp sites (expected at least 14, got ${stamped.size}: ` +
+  stamped.size >= 17,
+  `scan still finds the heartbeat stamp sites (expected at least 17, got ${stamped.size}: ` +
     `${[...stamped.keys()].sort().join(", ")}). A LOW count means the scan regressed, not that ` +
     `the stamps went away`,
 );
-for (const known of ["sync", "monitor", "snowflake-export", "smoke-canary-full"]) {
+for (const known of ["sync", "monitor", "snowflake-export", "smoke-canary-full", "verdict:availability-truth"]) {
   assert(stamped.has(known), `scan finds the ${known} stamp`);
 }
 assert(

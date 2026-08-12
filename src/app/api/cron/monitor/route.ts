@@ -51,6 +51,15 @@ import {
   markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
 import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
+import {
+  AVAILABILITY_TRUTH_VERDICT_LANE,
+  FAILURE_RATE_VERDICT_LANE,
+  LOW_VOLUME_VERDICT_LANE,
+  truthReachedVerdict,
+  failureRateReachedVerdict,
+  lowVolumeReachedVerdict,
+} from "@/lib/monitor/verdict-freshness";
 import { createStepRunner } from "@/lib/monitor/step-runner";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
@@ -1003,6 +1012,27 @@ export async function GET(req: NextRequest) {
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort, and must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
+
+    // The SECOND kind of stamp (#1394): proves these three detectors CONCLUDED
+    // something this tick, which the heartbeat above cannot tell you. The
+    // availability truth probe passed that heartbeat every five minutes for its
+    // whole life while never once comparing a real calendar (#1377).
+    //
+    // Each predicate lives in verdict-freshness.ts and is node tested there, so
+    // the question "does this outcome count" is answered in one place rather than
+    // re-decided here. A tick that measured nothing writes nothing: the ABSENCE is
+    // the signal the lane watchdog reads.
+    await Promise.all([
+      recordDetectorVerdict(AVAILABILITY_TRUTH_VERDICT_LANE, truthReachedVerdict(availabilityTruth)),
+      recordDetectorVerdict(FAILURE_RATE_VERDICT_LANE, failureRateReachedVerdict(failureRate)),
+      recordDetectorVerdict(LOW_VOLUME_VERDICT_LANE, lowVolumeReachedVerdict(volume)),
+    ]).catch((err) =>
+      // recordHeartbeat already swallows its own DB errors, so reaching here means
+      // something unexpected. It must not fail the monitor tick, but a stamp that
+      // silently never lands would make these detectors page as blind while they
+      // are in fact concluding, so it says so.
+      log.warn("monitor", { msg: "detector verdict stamp failed" }, err),
+    );
 
     return NextResponse.json({
       buckets: buckets.length,

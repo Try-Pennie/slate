@@ -7,6 +7,8 @@ import {
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
+  verdictBlindAlertText,
+  verdictRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
   findStaleLanes,
@@ -14,6 +16,7 @@ import {
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
+  VERDICT_STALE_BOUNDS_MS,
   retentionAlertText,
   neverStampedVerdict,
   type StaleLane,
@@ -33,6 +36,17 @@ const staleLaneAlertKey = (lane: string) => `cron_lane_stale:${lane}`;
 
 /** A dead lane stays dead, so re-page hourly rather than every minute. */
 const STALE_LANE_COOLDOWN_MS = 60 * 60_000;
+
+/**
+ * A blind detector (#1394) re-pages DAILY, not hourly.
+ *
+ * It stays blind until a person changes something, and before cutover that can
+ * legitimately be days: the availability truth probe cannot conclude while the
+ * roster is dark (#1272), and that is a true statement about a missing safety
+ * net rather than a fault to fix this morning. An hourly repeat of a condition
+ * nobody can clear today is how an alert trains people to ignore it (L36).
+ */
+const BLIND_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
 
 const minutes = (ms: number) => Math.round(ms / 60_000);
 
@@ -94,6 +108,13 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   // failure. Slack only, like the mirror: stalled retention is a compliance and
   // storage problem, not an app outage, so it must not touch /api/health.
   const retentionStale = findStaleLanes(heartbeats, now, RETENTION_STALE_BOUNDS_MS, true);
+  // The detector verdict stamps (#1394): not "did this lane run" but "did this
+  // detector CONCLUDE anything". `neverIsStale` is ON for a sharper reason than
+  // the retention lanes': a detector that has never once reached a verdict is the
+  // exact state this family exists to notice, and the default leniency would make
+  // it structurally unable to see it. Slack only, like the mirror lanes: a blind
+  // detector is a missing safety net, not an outage.
+  const verdictStale = findStaleLanes(heartbeats, now, VERDICT_STALE_BOUNDS_MS, true);
 
   // #1134: NO early return on the all-healthy tick. There used to be one here, and
   // it would have made the recovery notice below unreachable on the single path
@@ -145,16 +166,64 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     });
   }
 
-  for (const lane of retentionStale) {
-    // A lane that has NEVER stamped gets a grace window before it can page (#1102).
-    // Without it, deploying the heartbeat code paged every daily lane until its
-    // first 03:00 run, with copy claiming it had failed every run. See
-    // neverStampedVerdict.
+  await pageWithGraceWindow(retentionStale, now, "retention lane", (lane) =>
+    sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      STALE_LANE_COOLDOWN_MS,
+      retentionAlertText(lane.lane, lane.ageMs, minutes(lane.maxStaleMs), lane.unreadable),
+    ),
+  );
+
+  await pageWithGraceWindow(verdictStale, now, "detector", (lane) =>
+    sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      BLIND_DETECTOR_COOLDOWN_MS,
+      verdictBlindAlertText(lane),
+    ),
+  );
+
+  await resolveRecoveredLanes(
+    heartbeats,
+    now,
+    new Set(
+      [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...verdictStale].map(
+        (l) => l.lane,
+      ),
+    ),
+  );
+
+  return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...verdictStale];
+}
+
+
+/**
+ * Page every stale lane in a `neverIsStale` family, honouring the grace window a
+ * lane that has NEVER stamped is owed (#1102, generalized for #1394).
+ *
+ * Both families that opt out of the never-stamped leniency need identical
+ * handling of it, and they got it by copy the first time. The window is anchored
+ * on when we FIRST noticed the lane missing rather than on a deploy time we do
+ * not record, so a newly deployed lane has its whole bound to produce a first
+ * stamp and a lane that genuinely never runs still pages, one bound later.
+ *
+ * `what` names the family in the log line only. The alert copy comes from `send`,
+ * because the two families say different things for different readers.
+ */
+async function pageWithGraceWindow(
+  lanes: StaleLane[],
+  now: number,
+  what: string,
+  send: (lane: StaleLane) => Promise<void>,
+): Promise<void> {
+  for (const lane of lanes) {
     if (!Number.isFinite(lane.ageMs)) {
       const verdict = neverStampedVerdict(await readFirstSeenMissingMs(lane.lane), now, lane.maxStaleMs);
       if (verdict === "record-first-sighting") {
         await recordFirstSeenMissing(lane.lane);
-        log.info("lane-watchdog", { msg: "retention lane not yet seen; starting its grace window", lane: lane.lane });
+        log.info("lane-watchdog", {
+          msg: `${what} not yet seen; starting its grace window`,
+          lane: lane.lane,
+        });
         continue;
       }
       if (verdict === "wait") continue;
@@ -164,30 +233,19 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
       await clearFirstSeenMissing(lane.lane);
     }
     log.warn("lane-watchdog", {
-      msg: "retention lane stale",
+      msg: `${what} stale`,
       lane: lane.lane,
       age_min: Number.isFinite(lane.ageMs) ? minutes(lane.ageMs) : -1,
     });
-    await sendThrottledAlert(
-      staleLaneAlertKey(lane.lane),
-      STALE_LANE_COOLDOWN_MS,
-      retentionAlertText(lane.lane, lane.ageMs, minutes(lane.maxStaleMs), lane.unreadable),
-    ).catch((err) => {
+    await send(lane).catch((err) => {
+      // One lane's failed Slack post must not skip the remaining lanes.
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
   }
-
-  await resolveRecoveredLanes(
-    heartbeats,
-    now,
-    new Set([...stale, ...canaryStale, ...mirrorStale, ...retentionStale].map((l) => l.lane)),
-  );
-
-  return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale];
 }
 
 /**
- * The four lane families and the all-clear each one speaks (#1134).
+ * The five lane families and the all-clear each one speaks (#1134, #1394).
  *
  * Kept alongside the four alert-text functions rather than collapsed into one
  * generic "recovered": these lanes fail for different reasons, are recovered by
@@ -195,11 +253,18 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
  * shared message that pointed responders at the wrong lane and lock. An all-clear
  * that names the wrong thing is the same defect facing the other way.
  */
-const LANE_FAMILIES: { bounds: Record<string, number>; recovery: (lane: string) => string }[] = [
+const LANE_FAMILIES: {
+  bounds: Record<string, number>;
+  recovery: (lane: string) => string;
+  /** This family is judged with `neverIsStale`, so a recovered lane may still be
+   *  carrying a first-sighting marker that has to be dropped (see below). */
+  graceWindow?: true;
+}[] = [
   { bounds: LANE_STALE_BOUNDS_MS, recovery: laneRecoveryText },
   { bounds: CANARY_STALE_BOUNDS_MS, recovery: canaryRecoveryText },
   { bounds: MIRROR_STALE_BOUNDS_MS, recovery: mirrorRecoveryText },
-  { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText },
+  { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText, graceWindow: true },
+  { bounds: VERDICT_STALE_BOUNDS_MS, recovery: verdictRecoveryText, graceWindow: true },
 ];
 
 /**
@@ -226,8 +291,8 @@ async function resolveRecoveredLanes(
   now: number,
   staleLanes: Set<string>,
 ): Promise<void> {
-  const recovered: { key: string; lane: string; text: string; retention: boolean }[] = [];
-  for (const { bounds, recovery } of LANE_FAMILIES) {
+  const recovered: { key: string; lane: string; text: string; graceWindow: boolean }[] = [];
+  for (const { bounds, recovery, graceWindow } of LANE_FAMILIES) {
     for (const [lane, maxStaleMs] of Object.entries(bounds)) {
       if (staleLanes.has(lane)) continue;
       const lastRanAtMs = heartbeats[lane];
@@ -237,7 +302,7 @@ async function resolveRecoveredLanes(
         key: staleLaneAlertKey(lane),
         lane,
         text: recovery(lane),
-        retention: bounds === RETENTION_STALE_BOUNDS_MS,
+        graceWindow: graceWindow === true,
       });
     }
   }
@@ -250,7 +315,7 @@ async function resolveRecoveredLanes(
   // rows that almost never exist.
   const present = await existingAlertStateKeys([
     ...recovered.map((r) => firingKey(r.key)),
-    ...recovered.filter((r) => r.retention).map((r) => firstSeenKey(r.lane)),
+    ...recovered.filter((r) => r.graceWindow).map((r) => firstSeenKey(r.lane)),
   ]).catch((err) => {
     log.warn("lane-watchdog", { msg: "alert-state read failed; recovery deferred" });
     void err;
@@ -263,7 +328,7 @@ async function resolveRecoveredLanes(
     // never stamped and then came good kept a marker dated to its original
     // sighting; if it ever vanished again its grace window would already be spent
     // and it would page instantly instead of waiting out a fresh one.
-    if (r.retention && present.has(firstSeenKey(r.lane))) {
+    if (r.graceWindow && present.has(firstSeenKey(r.lane))) {
       await clearFirstSeenMissing(r.lane);
     }
     if (!present.has(firingKey(r.key))) continue;

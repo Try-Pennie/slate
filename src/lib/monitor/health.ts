@@ -135,6 +135,42 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
 };
 
 /**
+ * How long a DETECTOR may go without reaching a measured verdict (#1394).
+ *
+ * A fifth family, kept apart from the four above because it answers a different
+ * question. Those bounds ask whether a cron lane RAN; these ask whether a
+ * detector CONCLUDED anything. The availability truth probe ran faithfully every
+ * five minutes for its whole life while concluding nothing at all (#1377), which
+ * every existing bound here scored as perfect health.
+ *
+ * Judged with `neverIsStale` ON, like the retention lanes and for a sharper
+ * reason: "has never once reached a verdict" is the exact state this feature was
+ * written to notice, and the default leniency (never stamped means fresh deploy,
+ * stay quiet) would make it structurally unable to see it.
+ *
+ * Slack only. A blind detector is a missing safety net, not an outage, so none
+ * of these may flip the external /api/health 503.
+ *
+ * The bounds are set by the longest stretch of LEGITIMATE silence each detector
+ * has, plus slack:
+ *
+ *  - `verdict:availability-truth` checks one bucket per 5 minute tick, so a full
+ *    pass of roughly 60 buckets takes about 5 hours. 24h is nearly five passes:
+ *    long enough that ordinary gaps (a quiet bucket, a bad minute at Google)
+ *    cannot trip it, short enough to catch a probe that is simply not working.
+ *  - `verdict:booking-failure-rate` needs 20 attempts inside a rolling hour, and
+ *    `verdict:low-booking-volume` only judges Mon to Fri 08:00 to 20:00 Eastern.
+ *    Both are legitimately silent from Friday evening to Monday morning, about
+ *    60 hours, and a public holiday Monday stretches that to about 84. 4 days
+ *    clears both, so a weekend is never the cause.
+ */
+export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
+  "verdict:availability-truth": 24 * 60 * MIN,
+  "verdict:booking-failure-rate": 4 * 24 * 60 * MIN,
+  "verdict:low-booking-volume": 4 * 24 * 60 * MIN,
+};
+
+/**
  * The epoch-ms a heartbeat reader stores for a stamp that EXISTS but cannot be
  * parsed (#1169). Epoch 0 is never a real heartbeat, and it is chosen so the
  * lane fails closed: infinitely old reads as stale and pages, where a null would
@@ -247,6 +283,24 @@ export function laneQuietClause(opts: {
     );
   }
   return `has not ${verb} for ${Math.round(opts.ageMs / 60_000)} minutes (bound ${opts.boundMin}m)`;
+}
+
+/**
+ * A duration in the largest unit that still reads honestly (#1394).
+ *
+ * `laneQuietClause` quotes minutes, which is right for lanes whose bounds are
+ * 10 to 28 minutes wide. The detector verdict bounds are 24 hours and 4 days, and
+ * "has not reached a verdict for 5,760 minutes (bound 5,760m)" is arithmetic
+ * shown to somebody reading a phone. Rounds to the unit, so it is a description
+ * rather than a measurement; the exact figure belongs in the logs.
+ */
+export function describeGap(ms: number): string {
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // Days only past 48h: rounding 30 hours to "1 day" would hide most of a gap
+  // that is already past a 24h bound, and the point of the number is the size.
+  if (ms >= 48 * 60 * MIN) return unit(Math.round(ms / (24 * 60 * MIN)), "day");
+  if (ms >= 60 * MIN) return unit(Math.round(ms / (60 * MIN)), "hour");
+  return unit(Math.max(1, Math.round(ms / MIN)), "minute");
 }
 
 export type LaneHealthState = "ok" | "stale" | "never";

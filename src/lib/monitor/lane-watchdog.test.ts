@@ -81,6 +81,12 @@ const healthy = () => ({
   "prune-webhook-payloads": ago(4 * 60 * MIN),
   "prune-bookings-pii": ago(4 * 60 * MIN),
   "prune-busy-blocks": ago(4 * 60 * MIN),
+  // The detector verdict stamps (#1394), also judged with neverIsStale ON: a
+  // detector that has NEVER concluded is the exact state they exist to notice, so
+  // omitting one from a fixture reads as blind and pages.
+  "verdict:availability-truth": ago(60 * MIN),
+  "verdict:booking-failure-rate": ago(6 * 60 * MIN),
+  "verdict:low-booking-volume": ago(6 * 60 * MIN),
 });
 
 beforeEach(() => {
@@ -524,6 +530,104 @@ describe("alertOnStaleLanes (#803)", () => {
         expect(text).toMatch(/cannot be read/i);
         expect(text).not.toMatch(/\d{5,}\s*minutes/);
       }
+    });
+  });
+
+  // #1394: a detector that keeps RUNNING while concluding nothing. The lane
+  // heartbeats above cannot see this by construction, because the lane really did
+  // run; the availability truth probe passed every one of them for its whole life
+  // while never once comparing a real calendar (#1377).
+  describe("detectors that have stopped reaching a verdict (#1394)", () => {
+    const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
+    const TRUTH = "verdict:availability-truth";
+
+    it("pages when a detector has not concluded for longer than its own bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [TRUTH]: ago(30 * 60 * MIN) });
+      marker.firstSeenAt = null;
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).toContain(TRUTH);
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      expect(call).toBeDefined();
+      expect(String(call?.[2])).toMatch(/verdict/i);
+      // The distinction the whole feature rests on: this lane is NOT quiet, so the
+      // copy must not send anyone after a CPU kill or a stuck lock.
+      expect(String(call?.[2])).not.toMatch(/exceededCpu|cron_verdict/i);
+    });
+
+    it("stays silent while every detector concluded inside its bound", async () => {
+      await alertOnStaleLanes();
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    // THE case the issue is named after. A probe deployed months ago that has
+    // produced a real verdict zero times has no stamp at all, so the default
+    // leniency for a never-stamped lane would make this feature structurally
+    // unable to see the one state it exists for.
+    it("pages a detector that has NEVER once concluded, after its grace window", async () => {
+      const { [TRUTH]: _never, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = new Date(ago(30 * 60 * MIN)).toISOString();
+
+      const stale = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).toContain(TRUTH);
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      expect(String(call?.[2])).toMatch(/NEVER/);
+      expect(String(call?.[2])).not.toMatch(/Infinity|NaN/);
+    });
+
+    it("gives a freshly deployed detector its grace window instead of paging on deploy", async () => {
+      const { [TRUTH]: _never, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = null;
+
+      await alertOnStaleLanes();
+
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+      expect(marker.written).toContain(`lane_never_seen:${TRUTH}`);
+    });
+
+    it("re-pages a blind detector daily rather than hourly", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [TRUTH]: ago(30 * 60 * MIN) });
+      await alertOnStaleLanes();
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      // A detector stays blind until somebody changes something, and before cutover
+      // that can legitimately be days. An hourly re-page trains people to ignore it.
+      expect(call?.[1]).toBeGreaterThanOrEqual(24 * 60 * MIN);
+    });
+
+    it("says the record is unreadable rather than quoting an age it never measured", async () => {
+      // #1169 / #1172: an unparseable stamp reads as epoch 0, which is stale (fail
+      // closed) but whose "age" is 56 years of arithmetic, not a measurement.
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [TRUTH]: 0 });
+      await alertOnStaleLanes();
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      expect(String(call?.[2])).toMatch(/cannot be read/i);
+      expect(String(call?.[2])).not.toMatch(/\d{4,}\s*days/);
+    });
+
+    it("all-clears a detector that is concluding again, in its own words", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set([`alert_firing:${laneKey(TRUTH)}`]));
+
+      await alertOnStaleLanes();
+
+      const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/verdict again|measuring/i);
+      expect(String(call?.[1])).toMatch(/no action/i);
+    });
+
+    // L98 / #1134: a tick that could not read the heartbeats measured nothing, so
+    // it must not announce that a detector started concluding again.
+    it("all-clears nothing when the heartbeat read failed", async () => {
+      heartbeat.readAllHeartbeatMs.mockRejectedValue(new Error("supabase unreachable"));
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set([`alert_firing:${laneKey(TRUTH)}`]));
+
+      await alertOnStaleLanes();
+
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
     });
   });
 

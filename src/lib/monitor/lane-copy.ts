@@ -5,12 +5,17 @@
  * calling these, instead of holding a second copy that would drift the first time
  * someone edited one and not the other (L41). The watchdog imports them back.
  *
- * Four lane families, four voices, deliberately: these lanes fail for different
+ * Five lane families, five voices, deliberately: these lanes fail for different
  * reasons and are recovered by different people doing different things, and
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
  */
-import { laneQuietClause, type StaleLane } from "@/lib/monitor/health";
+import { describeGap, laneQuietClause, type StaleLane } from "@/lib/monitor/health";
+import {
+  AVAILABILITY_TRUTH_VERDICT_LANE,
+  FAILURE_RATE_VERDICT_LANE,
+  LOW_VOLUME_VERDICT_LANE,
+} from "@/lib/monitor/verdict-freshness";
 
 /** Minutes, rounded, for the copy. */
 const minutes = (ms: number) => Math.round(ms / 60_000);
@@ -95,6 +100,78 @@ export function retentionRecoveryText(lane: string): string {
     `The ${lane} retention lane is running again, so the scheduled deleting of ` +
     `aged data has resumed and the retention window is being honored. No action is ` +
     `needed.`
+  );
+}
+
+
+/**
+ * What each detector STOPS TELLING US while it is blind (#1394).
+ *
+ * Phrased as the missing answer, not the missing job, because that is what the
+ * reader has to decide about: the detector is fine, the lane is running, and the
+ * thing that is gone is the assurance. Each detector gets its own sentence for
+ * the #1123 reason: a shared "a detector went blind" would send whoever reads it
+ * looking for the wrong thing.
+ */
+const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string }> = {
+  [AVAILABILITY_TRUTH_VERDICT_LANE]: {
+    what: "the check asking whether the times the booker is offering are really free on the agents' calendars",
+    cost: "nothing is confirming that the published availability is true, so a drifted cache would only surface as customers being refused at the last step",
+    look: 'the Worker logs for msg="availability truth" and the reason each tick gives for not concluding',
+  },
+  [FAILURE_RATE_VERDICT_LANE]: {
+    what: "the check watching how often customers fail to complete a booking",
+    cost: "a wave of refused confirms would pass unreported, which is the cal.com failure this check was built after",
+    look: 'the Worker logs for msg="booking failure rate" and whether any hour is reaching its attempt floor',
+  },
+  [LOW_VOLUME_VERDICT_LANE]: {
+    what: "the check watching for bookings drying up",
+    cost: "a funnel that has stopped delivering leads would look like an ordinary quiet day",
+    look: 'the Worker logs for msg="booking volume" and whether the tick is landing inside business hours',
+  },
+};
+
+/**
+ * A detector that has gone blind: it keeps running, and it has stopped (or never
+ * started) reaching a verdict (#1394).
+ *
+ * The distinction from every other message in this file is the whole point, so
+ * the copy has to carry it: the lane is NOT quiet, and telling someone to go
+ * check a stuck lock would send them after a fault that is not there.
+ */
+export function verdictBlindAlertText(lane: StaleLane): string {
+  const subject = VERDICT_SUBJECT[lane.lane];
+  const bound = describeGap(lane.maxStaleMs);
+  // Sentence case: these render as the first line of a Slack message.
+  const opener = `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is running, but `;
+  if (lane.unreadable) {
+    return (
+      `${opener}its last verdict record cannot be read, so it is being treated as blind ` +
+      `(expected at least one verdict every ${bound}). While that holds, ${subject.cost}. ` +
+      `Check ${subject.look}.`
+    );
+  }
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `${opener}it has NEVER once reached a verdict, so it has been reporting nothing for its ` +
+      `entire life while looking healthy (expected at least one verdict every ${bound}). ` +
+      `${subject.cost[0].toUpperCase()}${subject.cost.slice(1)}. Check ${subject.look}.`
+    );
+  }
+  return (
+    `${opener}it has not reached a verdict in ${describeGap(lane.ageMs)} ` +
+    `(expected at least one every ${bound}). While that holds, ${subject.cost}. ` +
+    `Check ${subject.look}.`
+  );
+}
+
+/** All-clear for a detector that is concluding again (#1394). It names what is
+ *  being measured once more, because the page was about a missing answer. */
+export function verdictRecoveryText(lane: string): string {
+  const subject = VERDICT_SUBJECT[lane];
+  return (
+    `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict again, so it ` +
+    `is measuring rather than merely running, and the earlier page is cleared. No action is needed.`
   );
 }
 

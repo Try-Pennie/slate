@@ -212,6 +212,31 @@ read path or the delegated identity.** As of 2026-08-11 it passes against real
 agents (37 and 38 live busy periods read, both directions correct), so
 domain-wide delegation and cross-agent free/busy are confirmed working.
 
+## The general case: a detector that has never once concluded (#1394)
+
+That blindness is not specific to the truth probe. Any fail safe detector, one
+that reports `unverified` / `skipped` / `insufficient` rather than guessing, can
+sit permanently blind while looking healthy, because "nothing to report" and
+"could not check anything" render the same in a dashboard and identically in
+silence. The lane heartbeats cannot see it: they prove a lane RAN, and this lane
+ran faithfully every five minutes for weeks.
+
+So three detectors now carry a SECOND stamp, written only when they reach a
+MEASURED verdict: `verdict:availability-truth`, `verdict:booking-failure-rate`
+and `verdict:low-booking-volume`, in the same `lane_heartbeats` table the lane
+watchdog already reads once per tick (so watching them costs no extra query on
+the budget four cron lanes share). Which outcomes count is decided in one place,
+`src/lib/monitor/verdict-freshness.ts`, and nothing else may stamp: `checked`
+alone is not enough, because a sample too small to judge also reports `checked`.
+
+They are judged by `VERDICT_STALE_BOUNDS_MS` with `neverIsStale` ON, because
+"has never once reached a verdict" is the exact state the family exists to
+notice. Bounds are set by each detector's longest LEGITIMATE silence: 24h for the
+truth probe (about five passes of the bucket rotation), 4 days for the two
+traffic fed checks (which are properly silent from Friday evening to Monday
+morning). A blind detector re-pages daily rather than hourly, since before
+cutover it can legitimately stay blind for days.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
