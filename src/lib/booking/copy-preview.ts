@@ -26,6 +26,7 @@ import {
   DETAILS_COPY,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
+  US_ONLY_PHONE_NOTICE,
   MOVE_COPY,
   NEXT_DAYS_COPY,
   PICKER_COPY,
@@ -137,6 +138,10 @@ export function bookerCopyScreens(): CopyScreen[] {
         {
           state: "their number, echoed back",
           text: phoneEchoLine(PHONE),
+        },
+        {
+          state: "they arrived with a number we cannot call, so the field is empty",
+          text: US_ONLY_PHONE_NOTICE,
         },
         { state: "the bot trap", text: HONEYPOT_LABEL, screenReaderOnly: true },
       ],

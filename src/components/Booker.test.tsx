@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
+import { US_ONLY_PHONE_NOTICE } from "@/lib/booking/booker-copy";
 import { RESCHEDULE_REASONS } from "@/lib/booking/core";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
@@ -865,6 +866,66 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect(panel.textContent).toContain("Your number:");
     expect(panel.textContent).toContain("(215) 555-0100");
   });
+
+  // #1356, Dan's decision: Pennie can only CALL a US number, so a prefill that is
+  // not one is dropped. The two halves have to move together, which is what the
+  // issue was filed to settle: the field caps at ten digits, so a lead whose
+  // number is dropped cannot type it back either.
+  describe("a number we cannot call (#1356)", () => {
+    it("drops it and says why, rather than leaving an unexplained empty field", async () => {
+      global.fetch = okFetch();
+      render(
+        <Booker {...baseProps} attendee={{ name: "", email: "", phone: "+44 20 7946 0958" }} />,
+      );
+      await pickFirstDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+      const phone = screen.getByLabelText("Phone") as HTMLInputElement;
+      expect(phone.value).toBe("");
+      // The explanation is the whole point of dropping it rather than passing it
+      // through: without this they press confirm and are told "enter your phone
+      // number", which is true and useless.
+      expect(screen.getByText(US_ONLY_PHONE_NOTICE)).toBeTruthy();
+    });
+
+    it("stops explaining once they type, because the field is no longer empty", async () => {
+      global.fetch = okFetch();
+      render(
+        <Booker {...baseProps} attendee={{ name: "", email: "", phone: "+44 20 7946 0958" }} />,
+      );
+      await pickFirstDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+      await userEvent.type(screen.getByLabelText("Phone"), "2155550100");
+
+      expect(screen.queryByText(US_ONLY_PHONE_NOTICE)).toBeNull();
+      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("(215) 555-0100");
+    });
+
+    it("says nothing when the lead simply arrived without a number", async () => {
+      global.fetch = okFetch();
+      render(<Booker {...baseProps} />);
+      await pickFirstDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+      // An empty field is the ordinary case. Explaining a rule to somebody who was
+      // never shown a number is noise, and it would read as an accusation.
+      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("");
+      expect(screen.queryByText(US_ONLY_PHONE_NOTICE)).toBeNull();
+    });
+
+    it("keeps a partial US number for them to finish", async () => {
+      global.fetch = okFetch();
+      render(<Booker {...baseProps} attendee={{ name: "", email: "", phone: "215555" }} />);
+      await pickFirstDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+      // Not a number we refuse, an incomplete one. Vanishing it under a message
+      // about country codes would be the wrong explanation for the wrong problem.
+      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("215555");
+      expect(screen.queryByText(US_ONLY_PHONE_NOTICE)).toBeNull();
+    });
+  });
+
 });
 
 // #1328: the empty state must not say times are taken when the office is shut.
@@ -910,6 +971,7 @@ describe("Booker empty-state honesty (#1328)", () => {
 
     expect(await screen.findByText("We are closed right now.")).toBeTruthy();
   });
+
 });
 
 // #1329 / #1339: during a genuine closure, "check back soon" gives a lead nothing

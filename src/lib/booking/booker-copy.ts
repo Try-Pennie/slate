@@ -98,6 +98,20 @@ export const DETAILS_COPY = {
   yourNumber: "Your number:",
 } as const;
 
+/**
+ * Why the phone field is empty when the lead arrived with a number (#1356).
+ *
+ * Dan's decision: Pennie can only CALL a US number, so a prefill that is not one
+ * is dropped. The field caps at ten digits, so they cannot type the dropped number
+ * back either, and an empty field with no explanation sends them to press confirm
+ * and be told "enter your phone number", which is true and useless.
+ *
+ * It offers no alternative route on purpose (Dan, 2026-08-12): there is no Pennie
+ * phone number recorded anywhere in the product, and inventing one to make the
+ * sentence feel more helpful would be worse than being brief and true.
+ */
+export const US_ONLY_PHONE_NOTICE = "We can only call a US number. Please enter one.";
+
 export function phoneEchoLine(phone: string): string {
   return `${DETAILS_COPY.yourNumber} ${phone}`;
 }

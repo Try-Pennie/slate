@@ -20,7 +20,8 @@
  */
 import {
   formatPhoneAsTyped,
-  formatPhoneIfUsShaped,
+  isUsPhone,
+  prefillPhone,
   PHONE_DIGITS,
 } from "../src/lib/phone-format.ts";
 import { eq, finish } from "./lib/harness.ts";
@@ -109,43 +110,48 @@ eq(formatPhoneAsTyped("215-CALL"), "(215", "and are dropped from a mixed value")
 //
 // Most real leads arrive with the phone already filled in from the landing page,
 // so that value is what the advisor calls and it should read like a typed one.
-// The cap makes that unsafe in one direction: running a longer international
-// number through the formatter would silently truncate something nobody asked it
-// to touch, and validateAttendee accepts 10 to 15 digits precisely so unusual
-// formatting cannot block a real lead.
+//
+// #1356, Dan's decision: Pennie can only CALL a US number, so a prefill that is
+// not one is discarded rather than passed through. The two halves have to move
+// together, which is what the issue was filed to settle: the field caps at ten
+// digits, so a lead whose number is discarded cannot retype it either. Discarding
+// without saying so would leave them staring at an empty field with no idea why,
+// so `prefillPhone` reports WHETHER it dropped something and the booker says so.
 
-eq(
-  formatPhoneIfUsShaped("2155550100"),
-  "(215) 555-0100",
-  "a bare ten digit prefill is tidied to match a typed one",
-);
-eq(
-  formatPhoneIfUsShaped("+1 (215) 555-0100"),
-  "(215) 555-0100",
-  "and so is one carrying a US country code",
-);
-eq(
-  formatPhoneIfUsShaped("(215) 555-0100"),
-  "(215) 555-0100",
-  "one already in shape is unchanged",
-);
-eq(formatPhoneIfUsShaped(""), "", "an absent prefill stays absent");
+eq(prefillPhone("2155550100").value, "(215) 555-0100", "a bare ten digit prefill is tidied to match a typed one");
+eq(prefillPhone("+1 (215) 555-0100").value, "(215) 555-0100", "and so is one carrying a US country code");
+eq(prefillPhone("(215) 555-0100").value, "(215) 555-0100", "one already in shape is unchanged");
+eq(prefillPhone("2155550100").discarded, false, "a US number is not discarded");
 
-// The restraint that matters: anything the cap could truncate is left alone.
+eq(prefillPhone("").value, "", "an absent prefill stays absent");
 eq(
-  formatPhoneIfUsShaped("+44 20 7946 0958"),
-  "+44 20 7946 0958",
-  "a longer international number is returned exactly as given, never truncated",
+  prefillPhone("").discarded,
+  false,
+  "and an ABSENT prefill is not a discarded one: an empty field is the ordinary case, and " +
+    "explaining a rule to somebody who was never shown a number would be noise",
 );
-eq(
-  formatPhoneIfUsShaped("215555"),
-  "215555",
-  "and so is a number too short to be a US one, so validation can speak",
-);
-eq(
-  formatPhoneIfUsShaped("+44 7911 123456"),
-  "+44 7911 123456",
-  "a thirteen digit number validateAttendee would accept survives untouched",
-);
+
+// The decision, both halves. Discarded AND reported, because one without the
+// other is the defect the issue describes.
+eq(prefillPhone("+44 20 7946 0958").value, "", "a non-US prefill is discarded, not passed through");
+eq(prefillPhone("+44 20 7946 0958").discarded, true, "and says so, so the booker can explain why the field is empty");
+eq(prefillPhone("+44 7911 123456").value, "", "a thirteen digit number the old validator accepted is discarded too");
+eq(prefillPhone("+44 7911 123456").discarded, true, "and reports it");
+
+// A number too SHORT is not the same case. It is not an international number we
+// refuse, it is an incomplete US one, so it stays in the field for the lead to
+// finish rather than vanishing under a message about country codes (L11).
+eq(prefillPhone("215555").value, "215555", "a partial US number is kept, not discarded");
+eq(prefillPhone("215555").discarded, false, "and is not reported as refused");
+
+// isUsPhone is the ONE rule, so the field, the prefill and the server cannot
+// disagree about what US-shaped means.
+eq(isUsPhone("2155550100"), true, "ten digits is US");
+eq(isUsPhone("12155550100"), true, "eleven beginning with 1 is US");
+eq(isUsPhone("+1 (215) 555-0100"), true, "punctuation and a plus do not change that");
+eq(isUsPhone("442079460958"), false, "twelve digits is not");
+eq(isUsPhone("22155550100"), false, "eleven NOT beginning with 1 is not");
+eq(isUsPhone("215555"), false, "and neither is an incomplete one");
+eq(isUsPhone(""), false, "nor an empty string");
 
 finish();
