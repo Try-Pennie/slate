@@ -86,8 +86,16 @@ export async function runLowVolumeCheck(deps: {
   /** Page for a count that could not be read TWICE (#1288). Its own key, because
    *  a broken query is not a booking drought. */
   notifyCountUnreadable: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  /** Clear that page once a count reads again. */
-  resolveCountUnreadable: (key: string, text: string) => Promise<boolean>;
+  /**
+   * Clear every page this tick MEASURED to be over, in one go (#1390).
+   *
+   * Named for the dispatch helper it is wired to, which is also the seam
+   * convention the bare-catch guard derives from. Batched rather than one resolve
+   * per key because each resolve costs an `alert_state` read, and this lane shares
+   * a subrequest budget with three others. Only conditions actually measured healthy may be passed: clearing a
+   * page because a check did not run is the #1152 defect.
+   */
+  resolveRecovered: (recovered: { key: string; text: string }[]) => Promise<string[]>;
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<LowVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
@@ -140,12 +148,25 @@ export async function runLowVolumeCheck(deps: {
     below_floor: breaches.length,
     armed: deps.armed,
   });
-  // The all-clear hangs off a count we actually READ, never off "we did not page
+  // Both all-clears hang off a count we actually READ, never off "we did not page
   // this run" (#1152). Every path above that could not measure returns before
   // here, so an unreadable tick can never announce a recovery.
-  await deps
-    .resolveCountUnreadable(VOLUME_COUNT_UNREADABLE_KEY, formatVolumeCountReadableNotice())
-    .catch(() => {});
+  //
+  // The volume all-clear is offered whenever the reading sits at or above both
+  // floors, and deliberately NOT gated on `armed` (#1390). The arming switch
+  // exists so the ramp cannot cry wolf about volume; it is not a reason to leave a
+  // page that was delivered while armed hanging forever after someone disarms it.
+  // A key with no outstanding page costs nothing to offer: `settle` reads the
+  // firing markers once and skips whatever is not there.
+  const recovered = [{ key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() }];
+  if (breaches.length === 0) {
+    recovered.push({ key: VOLUME_ALERT_KEY, text: formatLowVolumeRecoveryNotice(windows) });
+  }
+  // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a tick
+  // outside business hours, a count that failed both reads, a reader that threw,
+  // and a tick that is itself PAGING a breach each reach this line with nothing to
+  // clear about volume (the first three never reach it at all).
+  await deps.resolveRecovered(recovered).catch(() => {});
   return { status: "checked", armed: deps.armed, windows, breaches };
 }
 
@@ -171,6 +192,23 @@ export function formatVolumeCountReadableNotice(): string {
   return (
     "The booking volume monitor can read its count again, so it is measuring " +
     "whether customers are booking. No action is needed."
+  );
+}
+
+
+/**
+ * The all-clear for a booking drought (#1390).
+ *
+ * Quotes the measured counts, because the page quoted them too and the reader's
+ * question is "is it back to normal, or just above the line". It names no
+ * remediation: the page sent them to look at the booker, the embed and the sync,
+ * and repeating that here would send them after a fault that is over.
+ */
+export function formatLowVolumeRecoveryNotice(windows: VolumeWindow[]): string {
+  const lines = windows.map((w) => `${w.count} in the last ${w.label}`).join("; ");
+  return (
+    `Booking volume is back above the expected minimum: ${lines}. Customers are ` +
+    `getting through again, so the earlier low volume page is cleared. No action is needed.`
   );
 }
 

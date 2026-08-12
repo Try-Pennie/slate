@@ -5,6 +5,7 @@ import {
   sendThrottledAlert,
   sendThrottledInfo,
   resolveAlert,
+  resolveRecovered,
   settleAlertsSilently,
 } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
@@ -546,7 +547,12 @@ export async function GET(req: NextRequest) {
         floors: settings.floors,
         armed: settings.lowVolumeArmed,
         cooldownMs: settings.cooldownMs.low_booking_volume,
-        notify: sendThrottledAlert,
+        // alert-key: low_booking_volume
+        // The key is passed by the pure check, not written here, so the coverage
+        // scanner cannot read it off this call: it is declared instead (#1390).
+        // alert-text-ok: our own copy from booking-volume.ts, built from measured
+        // counts; no error text can reach it.
+        notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
         notifyCountUnreadable: (key, cooldownMs, text) => {
           // alert-key: volume_count_unreadable
           // alert-text-ok: our own copy from booking-volume.ts, with no error
@@ -554,10 +560,12 @@ export async function GET(req: NextRequest) {
           return sendThrottledAlert(key, cooldownMs, text);
         },
         // alert-key: volume_count_unreadable
+        // alert-key: low_booking_volume
         // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a tick
-        // which could not read the count, and a tick outside business hours that
-        // read nothing at all, each clear NOTHING.
-        resolveCountUnreadable: (key, text) => resolveAlert(key, text),
+        // which could not read the count, a tick outside business hours that read
+        // nothing at all, and a tick that is itself PAGING a breach each clear
+        // NOTHING about volume.
+        resolveRecovered: (recovered) => resolveRecovered(recovered),
         log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
       }),
     );
