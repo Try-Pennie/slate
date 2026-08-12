@@ -25,6 +25,7 @@ import {
   UNCLASSIFIED_EMPTY_NOTICE,
   UNCLASSIFIED_EMPTY_RETRY,
   NEXT_DAYS_COPY,
+  descriptionParagraphs,
   phonePrefillNotice,
   allTimesTaken,
   closedNoReopenDate,
@@ -1146,11 +1147,15 @@ export default function Booker({
       <h1 className={`mt-1 text-xl font-semibold leading-snug ${c.title}`}>
         {meta?.eventType.name ?? "Book a call"}
       </h1>
-      {meta?.eventType.description && (
-        <p className={`mt-3 text-sm leading-relaxed ${c.muted}`}>
-          {meta.eventType.description}
+      {/* #1335: paragraphs, not one block. The copy is a description followed by an
+          ask ("join from somewhere quiet, not while driving"), and the second half is
+          a real instruction that changes how the call goes; run together they read as
+          one paragraph and the ask stops reading as an ask. */}
+      {descriptionParagraphs(meta?.eventType.description).map((para, i) => (
+        <p key={i} className={`mt-3 text-sm leading-relaxed ${c.muted}`}>
+          {para}
         </p>
-      )}
+      ))}
       <div className={`mt-5 space-y-2 text-sm ${c.body}`}>
         <div className="flex items-center gap-2">
           <span className={c.faint}>

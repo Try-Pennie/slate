@@ -7,6 +7,7 @@ import {
   setMonitorSettings,
   setDefaultBucket,
   setBookingHorizon,
+  setEventDescription,
   setBusinessHours,
   setOrgDefaultHours,
 } from "@/app/admin/actions";
@@ -20,7 +21,12 @@ import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/Busine
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
 import { DateTime } from "luxon";
-import { HORIZON_DEFAULT, HORIZON_MIN, HORIZON_MAX } from "@/lib/booking/settings";
+import {
+  HORIZON_DEFAULT,
+  HORIZON_MIN,
+  HORIZON_MAX,
+  EVENT_DESCRIPTION_MAX,
+} from "@/lib/booking/settings";
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
   MONITOR_DEFAULTS,
@@ -126,11 +132,18 @@ export default async function MonitorSettingsPage({
   let defaultBucketCode: string | null = null;
   let horizonDays: number | null = null;
   let bucketOptions: { code: string; name: string }[] = [];
+  // #1335: the event types whose lead-facing description is editable here. Same
+  // guarded read as its neighbours, so a missing table shows an empty editor rather
+  // than 500ing the whole settings page.
+  let eventTypes: { id: string; name: string; description: string | null }[] = [];
   try {
     const db = supabaseAdmin();
-    const [settings, buckets] = await Promise.all([
+    const [settings, buckets, types] = await Promise.all([
       db.from("booking_settings").select("default_bucket_code, horizon_days").eq("id", 1).maybeSingle(),
       db.from("buckets").select("code, name").eq("is_test", false).order("code"),
+      // cap-safe: event_types is roster-bounded config (one per offering), a fixed
+      // handful of rows that can never fill a page.
+      db.from("event_types").select("id, name, description").order("created_at"),
     ]);
     if (!settings.error && settings.data) {
       const row = settings.data as { default_bucket_code: string | null; horizon_days: number | null };
@@ -139,6 +152,9 @@ export default async function MonitorSettingsPage({
     }
     if (!buckets.error && buckets.data) {
       bucketOptions = buckets.data as { code: string; name: string }[];
+    }
+    if (!types.error && types.data) {
+      eventTypes = types.data as { id: string; name: string; description: string | null }[];
     }
   } catch {
     // Fall through to no default / empty options.
@@ -631,6 +647,45 @@ export default async function MonitorSettingsPage({
               Save booking horizon
             </SubmitButton>
           </form>
+        </section>
+
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">What the lead reads before booking</h2>
+          <p className="mb-4 max-w-prose text-xs text-fg-muted">
+            The description on the booking panel. Leave a blank line between
+            paragraphs; they are shown apart, so a description and an ask do not run
+            together. Up to {EVENT_DESCRIPTION_MAX} characters. A change reaches
+            leads within a minute or two.
+          </p>
+          {eventTypes.length === 0 ? (
+            <p className="text-xs text-fg-muted">
+              No event type yet. Add one on the admin page first.
+            </p>
+          ) : (
+            eventTypes.map((e) => (
+              <form
+                key={e.id}
+                action={setEventDescription}
+                className="mb-4 space-y-3 last:mb-0"
+              >
+                <input type="hidden" name="event_type_id" value={e.id} />
+                <label className={labelCls} htmlFor={`description-${e.id}`}>
+                  {e.name}
+                </label>
+                <textarea
+                  id={`description-${e.id}`}
+                  name="description"
+                  rows={6}
+                  maxLength={EVENT_DESCRIPTION_MAX}
+                  defaultValue={e.description ?? ""}
+                  className={`${inputCls} max-w-prose`}
+                />
+                <SubmitButton className={btnCls} pendingLabel="Saving…">
+                  Save description
+                </SubmitButton>
+              </form>
+            ))
+          )}
         </section>
 
         <section className={cardCls}>
