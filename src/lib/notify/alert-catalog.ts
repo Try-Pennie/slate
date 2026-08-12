@@ -212,6 +212,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A coverage sweep gave up on appointments that are still with an absent agent; they stay stranded until a person places them or they pass, and the monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "ooo_calcom",
+    kind: "condition",
+    why:
+      "An approved absence is missing its cal.com block, so that agent stays " +
+      "bookable while away; the retry sweep lands the override and re-measures it " +
+      "every monitor tick (#1280). It was an incident until that sweep existed.",
+  },
+  {
     key: "ooo_calcom_unprotected",
     kind: "condition",
     why: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away; it stays true until a retry lands the override or the absence ends, and the monitor lane re-measures every 5 minutes.",
@@ -367,11 +375,6 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "ooo_busy_block_fallback",
     kind: "incident",
     why: "One approval fell back to a busy-block write; that approval is complete.",
-  },
-  {
-    key: "ooo_calcom",
-    kind: "incident",
-    why: "One cutover dual-write to Cal.com failed; the transition path holds no state to clear.",
   },
   {
     key: "ooo_undo",

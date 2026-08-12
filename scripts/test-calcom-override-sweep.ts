@@ -14,6 +14,7 @@
 // sweep keyed on the flag would have fired 631 writes, nearly all for absences long
 // past. Keyed on a recorded FAILURE it matches 2.
 import {
+  CALCOM_ALERT_KEY,
   CALCOM_UNPROTECTED_KEY,
   formatUnprotectedAlert,
   inProgressUnprotected,
@@ -224,6 +225,72 @@ function runFake(opts: FakeOpts) {
   assert(!/^Slate/.test(text), "does not open with the word Slate (the app name is the header)");
   assert(!text.includes("undefined") && !text.includes("NaN"), "renders no placeholder junk");
   assert(text.length < 400, "short enough to read on a phone mid-incident");
+}
+
+// --- the per approval page also has to end (#1280) ----------------------------
+//
+// `ooo_calcom` fires the moment an approval's cal.com override fails. That is the
+// EARLY signal and worth keeping: `ooo_calcom_unprotected` only speaks once the
+// absence is UNDER WAY, so an override failing a week ahead would page nobody until
+// the day arrived. Keeping it means it needs an ending, which it never had. On
+// 2026-08-04 request 844bdbab paged at 14:42, was genuinely fixed that afternoon,
+// and the firing marker was still set.
+{
+  // The retry settles it, so nothing is failing any more and the page is over.
+  const { state, promise } = runFake({ candidates: [candidate()], outcomes: { "req-1": "ok" } });
+  await promise;
+  assert(
+    state.resolved.includes(CALCOM_ALERT_KEY),
+    "a sweep that settles every failing override clears the per approval page",
+  );
+}
+
+{
+  // Still failing: the condition is still true, so it must not be cleared, even
+  // though the absence has not started and the unprotected page stays silent.
+  const { state, promise } = runFake({ candidates: [candidate()] });
+  await promise;
+  assert(
+    !state.resolved.includes(CALCOM_ALERT_KEY),
+    "a sweep that could not settle it clears nothing",
+  );
+}
+
+{
+  // A row past the per-tick cap was never attempted, so this tick knows nothing
+  // about it. Counting it as settled would let the cap end a page for a request
+  // still failing, which is the cap hiding the condition.
+  const { state, promise } = runFake({
+    candidates: [candidate({ id: "req-1" }), candidate({ id: "req-2" })],
+    outcomes: { "req-1": "ok" },
+    max: 1,
+  });
+  await promise;
+  assert(state.retried.length === 1, "the cap really bit (control)");
+  assert(
+    !state.resolved.includes(CALCOM_ALERT_KEY),
+    "and an unattempted row keeps the page open",
+  );
+}
+
+{
+  // THE failure path. A load that failed measured nothing at all, so it may not
+  // announce that anything recovered (#1152).
+  const { state, promise } = runFake({ candidates: null });
+  const res = await promise;
+  assert(!res.measured, "an unreadable candidate set reports it measured nothing");
+  eq(state.resolved.length, 0, "and clears NOTHING, in either key");
+}
+
+{
+  // Nothing failing at all is a measured healthy sweep, so it clears both.
+  const { state, promise } = runFake({ candidates: [] });
+  await promise;
+  assert(state.resolved.includes(CALCOM_ALERT_KEY), "an empty candidate set clears the per approval page");
+  assert(
+    state.resolved.includes(CALCOM_UNPROTECTED_KEY),
+    "and the unprotected page, which was already true",
+  );
 }
 
 finish();

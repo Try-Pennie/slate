@@ -142,6 +142,7 @@ import {
 } from "@/lib/monitor/coverage-needs-human";
 import {
   formatUnprotectedAlert,
+  formatOverrideRecovery,
   formatUnprotectedRecovery,
 } from "@/lib/monitor/calcom-override-sweep";
 import {
@@ -1268,8 +1269,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: oooAgentCalendarAlert("req_9f2", "503 backendError") },
   { key: "ooo_busy_block_fallback", state: "fell back to a native block", channel: "alert",
     text: oooBusyBlockFallbackAlert("req_9f2") },
-  { key: "ooo_calcom", state: "the cutover dual-write failed", channel: "alert",
+  { key: "ooo_calcom", state: "the override failed at approval", channel: "alert",
     text: oooCalcomAlert("req_9f2", "409 conflict") },
+  // #1280: the ending it never had. It names no request id on purpose: the page is
+  // one key covering every failing approval, and by the time this sends there are
+  // none, so quoting one would suggest the others were left.
+  { key: "ooo_calcom", state: "the retry sweep landed every override", channel: "recovery",
+    text: formatOverrideRecovery() },
   { key: "ooo_agent_dm", state: "the decision DM did not land", channel: "alert",
     text: oooAgentDmAlert("dana.whitfield@trypennie.com", "req_9f2") },
   { key: "ooo_undo", state: "undoing the manager event failed", channel: "alert",
