@@ -393,13 +393,41 @@ export function formatDataAnomalyAlert(cause: DeadEndCause, healed: string[] = [
   return `${parts.join(" ")}`;
 }
 
-/** Low-priority info body: tiers empty because the agents are booked solid. This
- *  is a capacity fact, not an outage, so it whispers on a long cooldown. No
- *  em/en dashes (copy lint). */
-export function formatBookedSolidNotice(bookedSolid: string[]): string {
+/**
+ * Tiers empty because the agents are booked solid (#1412).
+ *
+ * A PAGE. Nothing is broken, and that is the point worth stating plainly in the
+ * message, because the reader has to know within the first line that they are not
+ * looking for a fault: they are looking at leads being turned away while every
+ * calendar behaves correctly. The action is staffing, and it is today's, not
+ * tomorrow's (L106).
+ *
+ * It names the tiers, because "we are full" without saying where is not something
+ * anyone can act on. No em/en dashes (copy lint).
+ */
+export function formatBookedSolidAlert(bookedSolid: string[]): string {
+  // Every clause agrees with the count. Reading it in `pnpm preview:alerts` is what
+  // caught "3 tiers ... because ITS agents" and "1 tier ... on THOSE funnels": both
+  // render perfectly well through a substring assertion.
+  const n = bookedSolid.length;
+  const one = n === 1;
+  const subject = one
+    ? "1 tier is offering no booking times"
+    : `${n} tiers are offering no booking times`;
+  const whose = one ? "its" : "their";
+  const funnel = one ? "that funnel" : "those funnels";
   return (
-    `${bookedSolid.length} tier(s) show no booking times because the ` +
-    `agents are booked solid (${capList(bookedSolid)}). Calendars are full, not ` +
-    `broken; this is a capacity heads up, so check staffing if it persists.`
+    `${subject} because ${whose} agents are booked solid (${capList(bookedSolid)}). ` +
+    `Nothing is broken: the calendars are genuinely full, and every lead landing on ` +
+    `${funnel} right now is being turned away. This needs coverage added today, ` +
+    `not a fix.`
+  );
+}
+
+/** The all-clear, hung off a scan that saw EVERY bucket and found none full. */
+export function formatBookedSolidRecovery(): string {
+  return (
+    `Every booking tier is offering times again, so leads are getting through on ` +
+    `all of them and the earlier booked solid page is cleared. No action is needed.`
   );
 }
