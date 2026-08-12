@@ -1110,7 +1110,11 @@ describe("Booker closure state (#1329, #1339)", () => {
   // (#1329). A fully booked window is arguably the strongest case for it: the lead
   // has nothing to book either way, and the next free day is the one useful fact.
   // The copy above it still differs, because the REASON differs.
-  it("offers the way through for a busy window too, under the busy copy", async () => {
+  // Dan, 2026-08-12: closures only. A week that is merely full is a staffing
+  // problem to fix, not a lead to send weeks into the future, and the far ahead
+  // search is the slowest action in the product. Being told about it is what
+  // #1412 is for; a lead is told to check back.
+  it("does NOT offer the far ahead search when the week is merely full", async () => {
     global.fetch = vi.fn(async () => ({
       ok: true,
       json: async () => ({ ...availability, slots: [], emptyBecause: { kind: "busy" } }),
@@ -1118,9 +1122,40 @@ describe("Booker closure state (#1329, #1339)", () => {
     render(<Booker {...baseProps} />);
 
     expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "See our next available days" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: NEXT_DAYS_COPY.ask })).toBeNull();
     // And it does not claim a closure it cannot support.
     expect(screen.queryByText(/we are closed/i)).toBeNull();
+  });
+
+  // The server not knowing WHY is the case that decides whether this rule is safe.
+  // An unknown cause could be either, and offering the search there would put it
+  // back on every busy week, which is exactly what was just removed.
+  it("does NOT offer it when the server could not say why the window is empty", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ...availability, slots: [] }),
+    })) as unknown as typeof fetch;
+    render(<Booker {...baseProps} />);
+
+    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: NEXT_DAYS_COPY.ask })).toBeNull();
+  });
+
+  it("still offers it for a closure with no reopening date", async () => {
+    // We know we are SHUT, we just cannot date it. That is still a closure, and a
+    // lead facing one has nowhere else to go.
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ...availability,
+        slots: [],
+        emptyBecause: { kind: "closed", reopensOn: null },
+      }),
+    })) as unknown as typeof fetch;
+    render(<Booker {...baseProps} />);
+
+    expect(await screen.findByText(closedNoReopenDate())).toBeTruthy();
+    expect(screen.getByRole("button", { name: NEXT_DAYS_COPY.ask })).toBeTruthy();
   });
 
   // #1364: the three states every time-taking action must keep visibly distinct.
