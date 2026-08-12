@@ -26,6 +26,7 @@ import {
   DETAILS_COPY,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
+  INCOMPLETE_PHONE_NOTICE,
   US_ONLY_PHONE_NOTICE,
   MOVE_COPY,
   NEXT_DAYS_COPY,
@@ -142,6 +143,10 @@ export function bookerCopyScreens(): CopyScreen[] {
         {
           state: "they arrived with a number we cannot call, so the field is empty",
           text: US_ONLY_PHONE_NOTICE,
+        },
+        {
+          state: "they arrived with an unfinished number, so the field is empty",
+          text: INCOMPLETE_PHONE_NOTICE,
         },
         { state: "the bot trap", text: HONEYPOT_LABEL, screenReaderOnly: true },
       ],

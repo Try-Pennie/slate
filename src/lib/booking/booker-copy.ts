@@ -112,6 +112,29 @@ export const DETAILS_COPY = {
  */
 export const US_ONLY_PHONE_NOTICE = "We can only call a US number. Please enter one.";
 
+/**
+ * Why the phone field is empty when the number they arrived with was UNFINISHED
+ * (#1409).
+ *
+ * Its own sentence, because the US-only one would be the wrong explanation: this
+ * lead's number is not foreign, it is short, and telling them about country codes
+ * sends them looking for a problem they do not have (L11).
+ *
+ * It is also the gentler case in consequence, and says so by asking rather than
+ * ruling: the field holds ten digits, so unlike a dropped international number
+ * this one really can be typed straight back in.
+ */
+export const INCOMPLETE_PHONE_NOTICE =
+  "The number we had for you looks incomplete. Please enter your full number.";
+
+/** The sentence for a given drop, so a caller cannot pair the wrong one with the
+ *  right reason. Returns null when nothing was dropped and nothing is owed. */
+export function phonePrefillNotice(dropped: "not-callable" | "incomplete" | null): string | null {
+  if (dropped === "not-callable") return US_ONLY_PHONE_NOTICE;
+  if (dropped === "incomplete") return INCOMPLETE_PHONE_NOTICE;
+  return null;
+}
+
 export function phoneEchoLine(phone: string): string {
   return `${DETAILS_COPY.yourNumber} ${phone}`;
 }

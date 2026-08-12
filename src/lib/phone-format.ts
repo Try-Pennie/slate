@@ -65,30 +65,39 @@ export function isUsPhone(value: string): boolean {
   );
 }
 
+/** Why a prefilled number was dropped, or null when it was kept (#1356, #1409). */
+export type PhonePrefillDrop =
+  /** A real number, and not one Pennie can call. They cannot retype it either,
+   *  because the field caps at ten digits. */
+  | "not-callable"
+  /** Fewer than ten digits: an unfinished US number, which they CAN retype. */
+  | "incomplete";
+
 /**
- * A PREFILLED number, tidied if we can call it and DROPPED if we cannot (#1356).
+ * A PREFILLED number, tidied if we can call it and DROPPED if we cannot (#1356,
+ * #1409).
  *
  * Most real leads arrive with their phone already filled in from the landing page,
  * so that value is what the advisor ends up calling and it should read the same as
  * a typed one.
  *
- * Dan's decision, and the reason `discarded` is returned rather than just a
- * string: the field caps at ten digits, so a lead whose number is dropped cannot
- * type it back either. Dropping it silently would leave them staring at an empty
- * field with no idea why, and pressing confirm to be told "enter your phone
- * number", which is true and useless. The booker uses this flag to say what
- * happened.
+ * The field never holds a number that could not be submitted as it stands, so
+ * anything that is not a complete US number is dropped. But WHY it was dropped is
+ * returned rather than left for the caller to infer from the value, and that is
+ * the whole point of this shape: the two cases need different sentences and
+ * inferring the reason is exactly how a lead whose number is merely unfinished
+ * gets told about country codes (L11).
  *
- * A number too SHORT is a different case and is KEPT: it is not a number we
- * refuse, it is an incomplete US one, and the lead can finish typing it. Vanishing
- * it under a message about country codes would be the wrong explanation for the
- * wrong problem (L11).
+ * The two also differ in consequence, which is worth knowing at the call site. A
+ * dropped international number cannot be retyped, because the field caps at ten
+ * digits; a dropped partial one can be finished in a keystroke.
+ *
+ * An ABSENT prefill is not a drop. An empty field is the ordinary case, and
+ * explaining anything to somebody who was never shown a number would be noise.
  */
-export function prefillPhone(value: string): { value: string; discarded: boolean } {
+export function prefillPhone(value: string): { value: string; dropped: PhonePrefillDrop | null } {
+  if (isUsPhone(value)) return { value: formatPhoneAsTyped(value), dropped: null };
   const digits = value.replace(/\D/g, "");
-  if (isUsPhone(value)) return { value: formatPhoneAsTyped(value), discarded: false };
-  // Nothing given, or a partial US number: leave it exactly as it is. Neither is
-  // a refusal, so neither may be reported as one.
-  if (digits.length < PHONE_DIGITS) return { value, discarded: false };
-  return { value: "", discarded: true };
+  if (digits.length === 0) return { value: "", dropped: null };
+  return { value: "", dropped: digits.length < PHONE_DIGITS ? "incomplete" : "not-callable" };
 }
