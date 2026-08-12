@@ -11,8 +11,9 @@ import { useSlotPicker } from "@/components/use-slot-picker";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { formatPhoneAsTyped, formatPhoneIfUsShaped } from "@/lib/phone-format";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
-import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
+import { BobbingDots } from "@/components/BobbingDots";
 import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import {
@@ -275,6 +276,10 @@ export default function Booker({
   // Three distinct states for the confirm (owner rule): started → this flips the
   // still-alive cue at ~10s → the postJson timeout converts a hang to error.
   const stalled = useStalledAfter(submitting);
+  // #1364: the middle of the three states for the next-available search, which is
+  // a separate action from the confirm and so needs its own watchdog rather than
+  // sharing one flag with it.
+  const lookingStalled = useStalledAfter(loadingNext);
   const rootRef = useRef<HTMLDivElement>(null);
   const confirmedHeadingRef = useRef<HTMLHeadingElement>(null);
 
@@ -742,21 +747,24 @@ export default function Booker({
   async function revealNextDays() {
     setLoadingNext(true);
     setNextFailed(false);
-    try {
-      const res = await fetch(
-        `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
-        { cache: "no-store" },
-      );
-      if (!res.ok) throw new Error(String(res.status));
-      const body = (await res.json()) as { slots?: string[] };
-      setNextDaySlots(body.slots ?? []);
-    } catch {
+    // #1364: through the shared helper, so this read carries the same request
+    // ceiling as every other lead-facing call. It had no timeout at all, and this
+    // is the slowest action in the product (up to eight windows, each doing real
+    // calendar work per bookable agent), so a wedged request left "Looking" on
+    // screen indefinitely with no way for a lead to tell it had died. The abort
+    // arrives here as `ok: false`, which is already the failed screen below.
+    const res = await getJson<{ slots?: string[] }>(
+      `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
+      { timeoutMs: REQUEST_TIMEOUT_MS, cache: "no-store" },
+    );
+    if (res.ok) {
+      setNextDaySlots(res.data.slots ?? []);
+    } else {
       // An error state and an empty state are different screens: "we looked and
       // there is nothing" must never be shown for "we could not look".
       setNextFailed(true);
-    } finally {
-      setLoadingNext(false);
     }
+    setLoadingNext(false);
   }
 
   /** The first revealed day, in words, or null when nothing has been revealed. */
@@ -785,12 +793,30 @@ export default function Booker({
             disabled={loadingNext}
             className={`inline-flex min-h-11 items-center justify-center rounded-lg border px-4 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
           >
-            {loadingNext
-              ? "Looking…"
-              : nextFailed
-                ? "Try again"
-                : "See our next available days"}
+            {loadingNext ? (
+              // Dots AND the word. The dots are what reads as working from the
+              // corner of an eye; the word is what reaches anyone who cannot see
+              // them, and the dots are aria-hidden so it is not announced twice.
+              <span className="inline-flex items-center gap-2">
+                <BobbingDots />
+                Looking…
+              </span>
+            ) : nextFailed ? (
+              "Try again"
+            ) : (
+              "See our next available days"
+            )}
           </button>
+          {/* Still ALIVE, distinct from started: a search this slow needs to say so
+              before a lead concludes it is broken and leaves. Announced, so it
+              reaches somebody who is not watching the button. Gone the instant the
+              search settles, in either direction, because by then the claim that it
+              is still running would be false. */}
+          {loadingNext && lookingStalled && (
+            <p role="status" className={`text-xs ${c.muted}`}>
+              Still looking… this is taking longer than usual.
+            </p>
+          )}
         </>
       )}
       {nextDaySlots !== null && nextDaySlots.length === 0 && (

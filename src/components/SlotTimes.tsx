@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 
+import { BobbingDots } from "@/components/BobbingDots";
 import { AlertIcon } from "@/components/icons";
 import { formatSlotDay } from "@/lib/booking/slot-label";
 import { messageLines, type SlotPickerView } from "@/lib/booking/slot-picker";
@@ -62,31 +63,6 @@ export const SLOT_TIMES_CLASSES: Record<"light" | "panel", SlotTimesClasses> = {
     grid: "grid grid-cols-2 gap-2 sm:grid-cols-3",
   },
 };
-
-/**
- * Three dots travelling in sequence, the picker's working signal.
- *
- * A pulse fades in and out, so a glance away can land on the dim half and read
- * as nothing happening. Dots that bob read as working even out of the corner of
- * an eye, which is what someone half paying attention to a booking form
- * actually gets. Position only, never opacity (the fade would reintroduce the
- * exact problem), and they carry the accent explicitly rather than inheriting
- * the muted colour of the line below. `pn-bob` in globals.css owns the motion
- * and the reduced-motion stop, where the line of text carries the message alone.
- */
-function BobbingDots() {
-  return (
-    <span data-bob-dots aria-hidden="true" className="flex items-end gap-1.5">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          data-bob-dot
-          className="pn-bob h-2 w-2 rounded-full bg-accent motion-reduce:animate-none"
-        />
-      ))}
-    </span>
-  );
-}
 
 /** Each sentence on its own line, so the second never starts mid line (#1336). */
 function PanelMessage({ text, className }: { text: string; className: string }) {

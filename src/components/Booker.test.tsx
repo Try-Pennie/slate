@@ -1035,4 +1035,107 @@ describe("Booker closure state (#1329, #1339)", () => {
     // And it does not claim a closure it cannot support.
     expect(screen.queryByText(/we are closed/i)).toBeNull();
   });
+
+  // #1364: the three states every time-taking action must keep visibly distinct.
+  // This search walks up to eight windows, each doing real calendar work per
+  // bookable agent, so it is plausibly the slowest lead-facing action in the
+  // product. A static word cannot tell a lead that it is progressing.
+  describe("the still-alive signal on the search (#1364)", () => {
+    it("shows a moving working signal while it looks, not just a word", async () => {
+      let release: ((r: Response) => void) | null = null;
+      global.fetch = vi.fn((url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes("/api/availability/next")) {
+          return new Promise<Response>((resolve) => {
+            release = resolve;
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...availability,
+            slots: [],
+            emptyBecause: { kind: "closed", reopensOn: "2026-08-17" },
+          }),
+        } as Response);
+      }) as unknown as typeof fetch;
+
+      render(<Booker {...baseProps} />);
+      const button = await screen.findByRole("button", { name: "See our next available days" });
+      fireEvent.click(button);
+      await act(async () => { await Promise.resolve(); });
+
+      // Bobbing dots, the same working signal the picker uses. Position only, so a
+      // glance away cannot land on a dim half and read as nothing happening.
+      const looking = screen.getByRole("button", { name: /looking/i });
+      expect(looking.querySelector("[data-bob-dots]")).not.toBeNull();
+      // The dots are decorative, so the label still has to carry the state in words
+      // for anyone who cannot see them.
+      expect(looking.textContent).toMatch(/looking/i);
+      expect(looking.querySelector("[data-bob-dots]")!.getAttribute("aria-hidden")).toBe("true");
+
+      await act(async () => {
+        release!({ ok: true, status: 200, json: async () => ({ slots: [] }) } as Response);
+        await Promise.resolve();
+      });
+    });
+
+    it("says it is still alive once the search runs long, then fails at the timeout", async () => {
+      vi.useFakeTimers();
+      // A wedged search: it settles only when its own AbortSignal fires, which is
+      // what the shared request ceiling exists to guarantee will happen.
+      global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/api/availability/next")) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...availability,
+            slots: [],
+            emptyBecause: { kind: "closed", reopensOn: "2026-08-17" },
+          }),
+        } as Response);
+      }) as unknown as typeof fetch;
+
+      render(<Booker {...baseProps} />);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "See our next available days" }));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(screen.queryByText(/still looking/i)).toBeNull();
+      await act(async () => { vi.advanceTimersByTime(10000); });
+      const alive = screen.getByText(/still looking/i);
+      expect(alive).toBeTruthy();
+      // Announced, so it reaches somebody who is not watching the button.
+      expect(alive.closest("[role=status]")).not.toBeNull();
+
+      // The whole point of the ceiling: a hang BECOMES the failed state, with its
+      // retry, instead of sitting on "Looking" forever.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(screen.getByText(/could not look further ahead/i)).toBeTruthy();
+      const retry = screen.getByRole("button", { name: /try again/i }) as HTMLButtonElement;
+      expect(retry.disabled).toBe(false);
+      // And the still-alive line is gone: it claimed the search was alive, and it
+      // is not any more.
+      expect(screen.queryByText(/still looking/i)).toBeNull();
+      vi.useRealTimers();
+    });
+
+    it("drops the working signal the moment the search comes back", async () => {
+      global.fetch = closedWith({ ok: true, slots: [far().toISOString()] });
+      render(<Booker {...baseProps} />);
+      fireEvent.click(await screen.findByRole("button", { name: "See our next available days" }));
+
+      await screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
+      expect(document.querySelector("[data-bob-dots]")).toBeNull();
+      expect(screen.queryByText(/still looking/i)).toBeNull();
+    });
+  });
+
 });
