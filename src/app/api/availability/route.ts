@@ -5,11 +5,9 @@ import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { internalErrorResponse } from "@/lib/api/errors";
-import { emptyReason, type EmptyReason } from "@/lib/availability/empty-reason";
-import { searchWindowDays } from "@/lib/availability/bookable-days";
+import { explainEmptyWindow, type EmptyReason } from "@/lib/availability/empty-reason";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
-import { DateTime } from "luxon";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -121,25 +119,47 @@ async function handle(req: NextRequest) {
  * is merely unhelpful, whereas a wrongly claimed closure names a date the lead
  * will act on. Reads the same cached hours the gate uses, so no extra round trip
  * on a warm isolate.
+ *
+ * The assembly itself lives in `explainEmptyWindow`, shared with the monitor lane
+ * (#1420). This function is only the two reads and their failure handling. The lane
+ * watches whether an answer is REACHABLE at all, and it has to ask the same
+ * question this does or it could only ever confirm its own copy of it (L107).
+ *
+ * Each read is caught on its own rather than under one try, so the blocker names
+ * which input was missing instead of collapsing both into "something failed". The
+ * blocker is dropped here (the lead is served the vaguer copy either way) and kept
+ * in the log line, which is where a forensic reader looks.
  */
 async function whyEmpty(nowMs: number): Promise<EmptyReason | null> {
+  const [hours, horizonDays] = await Promise.all([
+    loadBusinessHoursCached().catch((err) => {
+      log.warn("availability", { msg: "could not read the org's week" }, err);
+      return null;
+    }),
+    loadBookingHorizonDays().catch((err) => {
+      log.warn("availability", { msg: "could not read the booking horizon" }, err);
+      return null;
+    }),
+  ]);
+  // An UNEXPECTED throw from the classifier still serves the window. This route's
+  // whole failure mode is that showing a lead no times looks exactly like a full
+  // calendar, so a fault in the explanation must never take out the response that
+  // carries the times themselves (#1049).
+  let outcome: ReturnType<typeof explainEmptyWindow>;
   try {
-    const [hours, horizonDays] = await Promise.all([
-      loadBusinessHoursCached(),
-      loadBookingHorizonDays(),
-    ]);
-    const fromDay = DateTime.fromMillis(nowMs).setZone(hours.zone).toISODate();
-    if (!fromDay) return null;
-    return emptyReason({
-      businessHours: hours.rules,
-      fromDay,
-      // The same window the slots were searched over, so "every day we looked at
-      // was shut" means exactly that rather than some other span.
-      searchedDays: searchWindowDays(horizonDays),
-      zone: hours.zone,
-    });
+    outcome = explainEmptyWindow({ hours, horizonDays, nowMs });
   } catch (err) {
-    log.warn("availability", { msg: "could not tell why availability is empty" }, err);
+    log.warn("availability", { msg: "the empty-window classifier threw" }, err);
     return null;
   }
+  if (outcome.reason === null) {
+    // The lead sees "We could not work out what is available right now" (#1414).
+    // Honest, and invisible to us on its own, which is why the monitor lane asks the
+    // same question every minute rather than waiting for this line to appear (#1420).
+    log.warn("availability", {
+      msg: "could not tell why availability is empty",
+      blocked_by: outcome.blockedBy,
+    });
+  }
+  return outcome.reason;
 }

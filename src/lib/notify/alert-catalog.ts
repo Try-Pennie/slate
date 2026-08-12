@@ -44,6 +44,11 @@ export interface AlertEntry {
 export const ALERT_CATALOG: AlertEntry[] = [
   // --- Conditions: something is wrong NOW and will stop being wrong ----------
   {
+    key: "booker_empty_reason",
+    kind: "condition",
+    why: "The booker cannot say why a week is empty; the config becomes readable again and the monitor lane sees it on its next pass.",
+  },
+  {
     key: "sync_failures",
     kind: "condition",
     why: "Agents' calendars are failing to sync; the fleet recovers and the sync lane can see it.",

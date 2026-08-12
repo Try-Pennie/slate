@@ -10,6 +10,7 @@
  */
 import { DateTime } from "luxon";
 import type { BusinessWindow } from "../booking/business-hours.ts";
+import { searchWindowDays } from "./bookable-days.ts";
 
 export type EmptyReason =
   | {
@@ -70,4 +71,76 @@ export function emptyReason(input: {
   // No open weekday within the month: the week is misconfigured (or every day is
   // shut), and naming a date we invented would be worse than naming none.
   return { kind: "closed", reopensOn: null };
+}
+
+
+/**
+ * The org's week and horizon as the availability path holds them, either of which
+ * may be absent because the read that produces it failed.
+ */
+export interface EmptyWindowInputs {
+  hours: { zone: string; rules: BusinessWindow[] } | null;
+  horizonDays: number | null;
+  nowMs: number;
+}
+
+/**
+ * A reason, or the thing that stopped one being worked out.
+ *
+ * `blockedBy` is not decoration. "Could not tell" and "nothing to tell" produce
+ * the same null, and the whole of #1420 is that those two are indistinguishable
+ * once they leave this function, so the blocker travels with the null.
+ */
+export type EmptyWindowExplanation =
+  | { reason: EmptyReason; blockedBy: null }
+  | { reason: null; blockedBy: string };
+
+/**
+ * Why an empty window is empty, given the config as it stands (#1328, #1420).
+ *
+ * THE function, asked by the availability route (which serves the answer to a
+ * lead) and by the monitor lane (which watches whether an answer is reachable at
+ * all). Two callers, one predicate: a lane that reimplemented the route's
+ * assembly here could only ever confirm its own copy of it, and would agree with
+ * the route right up until the two drifted (L107).
+ *
+ * The lane matters because of what this returning null COSTS. The lead is shown
+ * "We could not work out what is available right now", which is honest and is
+ * exactly why the fault stays invisible: it pages nobody, and a funnel that has
+ * gone quiet looks like a quiet day. Measured only on the read, it would conclude
+ * only when a lead is present, which before cutover is never, and a detector that
+ * has never once concluded looks identical to one finding nothing wrong (#1394).
+ */
+export function explainEmptyWindow(input: EmptyWindowInputs): EmptyWindowExplanation {
+  const unread: string[] = [];
+  if (!input.hours) unread.push("the org's business hours");
+  if (input.horizonDays === null) unread.push("the booking horizon");
+  if (unread.length > 0) {
+    // EVERY unread input, not just the first: naming one sends the reader back for
+    // a second tick to discover the rest.
+    const list = unread.length === 1 ? unread[0] : `${unread[0]} and ${unread[1]}`;
+    return { reason: null, blockedBy: `${list} could not be read` };
+  }
+  const hours = input.hours!;
+  const fromDay = DateTime.fromMillis(input.nowMs).setZone(hours.zone).toISODate();
+  if (!fromDay) {
+    // Its own cause, and its own sentence. The week READ perfectly well, so
+    // reporting this as an unreadable week would send whoever is holding the pager
+    // to the wrong screen entirely (L11).
+    return {
+      reason: null,
+      blockedBy: `the org's business hours are unusable (timezone ${hours.zone})`,
+    };
+  }
+  return {
+    reason: emptyReason({
+      businessHours: hours.rules,
+      fromDay,
+      // The same window the slots were searched over, so "every day we looked at
+      // was shut" means exactly that rather than some other span.
+      searchedDays: searchWindowDays(input.horizonDays!),
+      zone: hours.zone,
+    }),
+    blockedBy: null,
+  };
 }

@@ -14,6 +14,12 @@ import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
+import {
+  runEmptyReasonCheck,
+  EMPTY_REASON_STREAK_KEY,
+  EMPTY_REASON_STREAK_WINDOW_S,
+} from "@/lib/monitor/empty-reason-health";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health";
 import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availability-tick";
@@ -491,6 +497,35 @@ export async function GET(req: NextRequest) {
     if (!gates.availabilityTruth.run) {
       log.warn("monitor", { msg: "availability truth skipped", why: gates.availabilityTruth.why });
     }
+    // --- Can the booker still say WHY a week is empty (#1420)? When it cannot, the
+    // lead is shown "We could not work out what is available right now", which is
+    // honest and is exactly why the fault was invisible: nothing paged and the
+    // funnel simply got quieter. Measured HERE rather than on the availability read,
+    // because that would only conclude when a lead is present, and before cutover
+    // there are none, so the detector would have shipped blind and looked identical
+    // to one finding nothing wrong (#1394).
+    //
+    // Deliberately NOT behind `gates`: every other consumer of these two reads skips
+    // when they fail, because judging on a guessed week is worse than not judging.
+    // Here the reads ARE the subject, so an unreadable one is the finding, and a gate
+    // would silence the check in exactly the state it exists to notice. ---
+    const emptyReasonHealth = await steps.run("empty_reason", null, () =>
+      runEmptyReasonCheck({
+        inputs: { hours: businessHours, horizonDays, nowMs: now },
+        streak: () =>
+          recordFailureStreak(EMPTY_REASON_STREAK_KEY, EMPTY_REASON_STREAK_WINDOW_S),
+        clearStreak: () => clearFailureStreak(EMPTY_REASON_STREAK_KEY),
+        // alert-key: booker_empty_reason
+        notify: sendThrottledAlert,
+        // alert-key: booker_empty_reason
+        // all-clear-proof: scripts/test-monitor-empty-reason.ts - a tick that could
+        // not read its inputs clears nothing, in either direction.
+        resolve: resolveAlert,
+        cooldownMs: settings.cooldownMs.booker_empty_reason,
+        log: (m) => log.warn("empty-reason", { msg: m }),
+      }),
+    );
+
     // Skipped entirely when the week could not be read (#1296). An empty slot map
     // would make every bucket read as zero and page the whole ladder, and clearing
     // an alert off a tick that measured nothing is the #1152 defect: a run that
@@ -1135,6 +1170,9 @@ export async function GET(req: NextRequest) {
               worstNeverSynced: syncStaleness.worstNeverSynced,
               worstAgeMs: syncStaleness.worstAgeMs,
             },
+      // null, never a "healthy" shape: the step failing is not the booker being able
+      // to explain itself, and the two must not render the same (#1420).
+      emptyReason: emptyReasonHealth,
       overrideSweep,
       inactiveBookings,
       strandedCoverage,

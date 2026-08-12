@@ -35,6 +35,10 @@ import {
   formatSyncStalenessRecovery,
   SYNC_STALENESS_THRESHOLD_MS,
 } from "@/lib/monitor/sync-staleness";
+import {
+  formatEmptyReasonAlert,
+  formatEmptyReasonRecovery,
+} from "@/lib/monitor/empty-reason-health";
 import { formatThinTierNotice } from "@/lib/monitor/thin-tier";
 import { formatScheduleGapNotice } from "@/lib/monitor/schedule-coverage";
 import { formatAttributeGapNotice } from "@/lib/monitor/attribute-coverage";
@@ -728,6 +732,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // Every one of these is sent by a pure monitor check and wired in by bare
   // reference, so none of their copy had ever been rendered anywhere before it
   // reached somebody's phone. Read them.
+  {
+    // Every blocker rendered, because the blocker IS the actionable half and a
+    // generic "could not classify" would send the reader nowhere (#1420). The
+    // unusable-week one is worth reading beside the unreadable one: they look
+    // similar and mean different things, and only one of them is a failed read.
+    key: "booker_empty_reason",
+    state: "the org's week could not be read",
+    channel: "alert",
+    text: formatEmptyReasonAlert("the org's business hours could not be read"),
+  },
+  {
+    key: "booker_empty_reason",
+    state: "both of its inputs were unreadable, so both are named",
+    channel: "alert",
+    text: formatEmptyReasonAlert(
+      "the org's business hours and the booking horizon could not be read",
+    ),
+  },
+  {
+    key: "booker_empty_reason",
+    state: "the week read, and is not a usable one",
+    channel: "alert",
+    text: formatEmptyReasonAlert("the org's business hours are unusable (timezone Mars/Olympus)"),
+  },
+  {
+    key: "booker_empty_reason",
+    state: "the booker can explain an empty week again",
+    channel: "recovery",
+    text: formatEmptyReasonRecovery(),
+  },
   {
     key: "sync_staleness",
     state: "agents have dropped out of the sync rotation",
