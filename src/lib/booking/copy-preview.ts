@@ -31,6 +31,7 @@ import {
   MOVE_COPY,
   NEXT_DAYS_COPY,
   PICKER_COPY,
+  CLOSED_BODY,
   allTimesTaken,
   closedNoReopenDate,
   closedUntil,
@@ -112,6 +113,10 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "every time in the window is taken", text: allTimesTaken() },
         { state: "closed, with a known reopening day", text: closedUntil("2026-08-17", ZONE) },
+        {
+          state: "and what follows it, only when there is a day to point at",
+          text: CLOSED_BODY,
+        },
         { state: "closed, with no reopening day recorded", text: closedNoReopenDate() },
       ],
     },

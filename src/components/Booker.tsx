@@ -14,6 +14,7 @@ import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { BobbingDots } from "@/components/BobbingDots";
+import { messageLines } from "@/lib/booking/slot-picker";
 import {
   BOOKING_ERROR_COPY,
   CONFIRMED_COPY,
@@ -21,6 +22,7 @@ import {
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   MOVE_COPY,
+  CLOSED_BODY,
   NEXT_DAYS_COPY,
   phonePrefillNotice,
   allTimesTaken,
@@ -768,6 +770,12 @@ export default function Booker({
         : closedNoReopenDate()
       : allTimesTaken();
 
+  // #1339: the body only belongs under a closure we can date. "Before then" needs a
+  // `then` to refer to, so it dangles under "We are closed right now", and under
+  // "All times are taken" it is simply false: that week is staffed, it is full.
+  const showClosedBody =
+    meta?.emptyBecause?.kind === "closed" && Boolean(meta.emptyBecause.reopensOn);
+
   /** Look past the bounded window for the first days we can actually offer. */
   async function revealNextDays() {
     setLoadingNext(true);
@@ -806,6 +814,17 @@ export default function Booker({
   const closurePanel = (
     <div className="space-y-3 text-center">
       <p className={`text-sm ${c.faint}`}>{emptyMessage}</p>
+      {showClosedBody && (
+        // Each sentence on its own line, through the same helper every panel uses,
+        // so the second never starts halfway across (#1336).
+        <p className={`text-sm ${c.faint}`}>
+          {messageLines(CLOSED_BODY).map((line) => (
+            <span key={line} className="block">
+              {line}
+            </span>
+          ))}
+        </p>
+      )}
       {nextDaySlots === null && (
         <>
           {nextFailed && (
