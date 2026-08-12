@@ -109,6 +109,27 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
   },
   {
+    key: "sync_staleness",
+    kind: "condition",
+    why:
+      "Agents have dropped out of the calendar sync rotation, so their availability " +
+      "is going stale; they re-enter the rotation and the same gauge re-measures it.",
+  },
+  {
+    key: "availability_data_anomaly",
+    kind: "condition",
+    why:
+      "A bucket's cached slots disagree with a live recompute; the recompute " +
+      "reconverges and the scan sees it on the next tick.",
+  },
+  {
+    key: "migration_version_lag",
+    kind: "condition",
+    why:
+      "Shipped code is ahead of the applied schema; a human runs the migration, and " +
+      "the drift check sees the applied version catch up.",
+  },
+  {
     key: "low_booking_volume",
     kind: "condition",
     why:
@@ -351,6 +372,41 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
 
   // --- Info: never needed action, so never announces recovery ---------------
+  {
+    key: "thin_tier_staffing",
+    kind: "info",
+    why:
+      "A routing tier is resting on one or two bookable agents: worth knowing so " +
+      "staffing can add coverage, never something to act on tonight.",
+  },
+  {
+    key: "agents_without_schedule",
+    kind: "info",
+    why:
+      "Bookable agents the automatic fill could not give working hours to; the " +
+      "whisper names them so someone can, and nothing is broken meanwhile.",
+  },
+  {
+    key: "agents_without_routing",
+    kind: "info",
+    why:
+      "Bookable agents with no routing attributes, so no bucket criteria match them; " +
+      "an admin adds the attributes, and there is no incident to end.",
+  },
+  {
+    key: "availability_booked_solid",
+    kind: "info",
+    why:
+      "A bucket is empty because its agents are genuinely booked, which is a " +
+      "staffing fact rather than a fault, so there is no failure to recover from.",
+  },
+  {
+    key: "fallback_covered_availability",
+    kind: "info",
+    why:
+      "A tier ran dry and the configured fallback absorbed it, so customers were " +
+      "served; it is recorded so the thinness is visible, not acted on.",
+  },
   {
     key: "reassign-unknown-reason-code",
     kind: "info",

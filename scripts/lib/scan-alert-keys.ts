@@ -35,6 +35,23 @@ export interface AlertSite {
 }
 
 const CALL = /\b(sendThrottledAlert|sendThrottledInfo|resolveAlert)\s*\(\s*/g;
+/**
+ * The same three helpers named but NOT called: a bare REFERENCE, handed to
+ * something else to call later.
+ *
+ * This is how the monitor lane wires its pure checks: `notify: sendThrottledAlert`.
+ * It is not a call, so it produced no site, so the key living inside the pure
+ * check (`deps.notify(VOLUME_ALERT_KEY, ...)`) was never seen by anything. Nine
+ * keys sat in that gap, eight with no catalog entry at all and one
+ * (`sync_staleness`) paging with no way to say it had ended (#1400).
+ *
+ * The arrow form (`notify: (key, ms, text) => sendThrottledAlert(key, ms, text)`)
+ * was always covered, because that IS a call whose key cannot be read, and an
+ * unannotated opaque site is a hard failure. Only the reference form escaped, and
+ * a scan that recognises an action by ONE of its syntactic forms is blind to the
+ * others while reading exactly like a scan that covers them all.
+ */
+const WIRING = /\b(sendThrottledAlert|sendThrottledInfo|resolveAlert)\b(?!\s*\()/g;
 /** The batched all-clear helper: `resolveRecovered([{ key, text }, ...])`. */
 const BATCH_CALL = /\bresolveRecovered\s*\(\s*/g;
 
@@ -149,6 +166,28 @@ function argumentBlock(source: string, start: number): string {
   return source.slice(start);
 }
 
+
+/**
+ * The source with imports and comments blanked to spaces, indices preserved.
+ *
+ * Only the bare-reference scan uses it, and it needs both exclusions: an
+ * `import { sendThrottledAlert }` names the helper without calling it and is not
+ * a wiring point, and prose about an alert is not one either. Spaces rather than
+ * deletion so every offset still maps to the real line, and so `declaredKeys`
+ * still reads the untouched lines above.
+ */
+function maskNonWiring(source: string): string {
+  const out = source.split("");
+  const blank = (start: number, end: number) => {
+    for (let i = start; i < end && i < out.length; i++) if (out[i] !== "\n") out[i] = " ";
+  };
+  for (const m of source.matchAll(/\/\*[\s\S]*?\*\//g)) blank(m.index, m.index + m[0].length);
+  for (const m of source.matchAll(/\/\/[^\n]*/g)) blank(m.index, m.index + m[0].length);
+  // An import statement, single or multi line, up to its terminating semicolon.
+  for (const m of source.matchAll(/^import\s[\s\S]*?;/gm)) blank(m.index, m.index + m[0].length);
+  return out.join("");
+}
+
 export function scanAlertSites(source: string, file = "<source>"): AlertSite[] {
   const sites: AlertSite[] = [];
   const lines = source.split("\n");
@@ -211,6 +250,20 @@ export function scanAlertSites(source: string, file = "<source>"): AlertSite[] {
       else if (expression.startsWith("`")) key = templatePattern(expression);
       else if (constants.has(expression)) key = constants.get(expression)!;
       sites.push({ channel: "resolve", key, expression, file, line });
+    }
+  }
+
+  // Bare references: `notify: sendThrottledAlert`. The key is written inside the
+  // pure check that will be handed this function, so it cannot be read here and
+  // the site must DECLARE what it sends, exactly as an opaque call does.
+  for (const m of maskNonWiring(source).matchAll(WIRING)) {
+    const line = lineOf(source, m.index);
+    const channel = CHANNEL[m[1]];
+    const declared = declaredKeys(lines, line - 1);
+    if (declared.length > 0) {
+      for (const d of declared) sites.push({ channel, key: d, expression: m[1], file, line });
+    } else {
+      sites.push({ channel, key: null, expression: m[1], file, line });
     }
   }
   return sites;

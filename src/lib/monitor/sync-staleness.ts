@@ -123,6 +123,24 @@ export function formatSyncStalenessAlert(res: StalenessResult, thresholdMs: numb
   );
 }
 
+
+/**
+ * The all-clear for a recovered sync rotation (#1400).
+ *
+ * The page said their cached availability could drift and double book, so the
+ * ending has to answer that: everyone in the rotation is synced inside the
+ * window again. It carries no remediation, because the page already sent the
+ * reader to look at the rotation and that fault is over.
+ */
+export function formatSyncStalenessRecovery(agentCount: number): string {
+  const who = agentCount === 1 ? "the one bookable agent" : `all ${agentCount} bookable agents`;
+  return (
+    `The calendar sync rotation has caught up: ${who} in it were synced inside the ` +
+    `expected window on this check, so their cached availability is current again ` +
+    `and the earlier page is cleared. No action is needed.`
+  );
+}
+
 /**
  * The monitor-cron step (#241): load the bookable agents in the sync rotation,
  * classify staleness, and fire ONE throttled alert naming the stale agents. The
@@ -135,6 +153,12 @@ export async function runSyncStalenessCheck(deps: {
   nowMs: number;
   thresholdMs?: number;
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  /**
+   * The all-clear (#1400). REQUIRED, not optional, so `tsc` enumerates every
+   * construction site rather than letting a caller quietly wire a page with no
+   * way to end it, which is how this condition went three releases without one.
+   */
+  resolve: (key: string, text: string) => Promise<boolean>;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<StalenessResult> {
@@ -144,6 +168,19 @@ export async function runSyncStalenessCheck(deps: {
   if (res.staleCount) {
     await deps
       .notify(SYNC_STALENESS_KEY, deps.cooldownMs, formatSyncStalenessAlert(res, thresholdMs))
+      .catch(() => {});
+  } else if (agents.length > 0) {
+    // The all-clear hangs off a rotation we actually MEASURED. `agents.length > 0`
+    // is the part that is easy to leave out and impossible to notice afterwards:
+    // an EMPTY candidate list also produces staleCount 0, and "nobody is stale"
+    // and "there was nobody to look at" are indistinguishable from that number
+    // alone (L98). Before cutover the rotation is nearly empty by design, so this
+    // is the live case, not a hypothetical one.
+    //
+    // A read that FAILED never reaches here at all: loadAgents throws, the step
+    // runner records the tick as degraded, and nothing is claimed either way.
+    await deps
+      .resolve(SYNC_STALENESS_KEY, formatSyncStalenessRecovery(agents.length))
       .catch(() => {});
   }
   deps.log?.(

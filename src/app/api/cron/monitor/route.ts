@@ -517,8 +517,12 @@ export async function GET(req: NextRequest) {
           heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
           onHealError: (code, err) =>
             log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
+          // alert-key: availability_data_anomaly
           notify: sendThrottledAlert,
+          // alert-key: availability_booked_solid
+          // alert-key: fallback_covered_availability
           info: sendThrottledInfo,
+          // alert-key: availability_data_anomaly
           // all-clear-proof: scripts/test-monitor-availability-scan.ts - a truncated
           // scan sends no all-clear and a paging tick does not also all-clear.
           resolve: resolveAlert,
@@ -671,6 +675,7 @@ export async function GET(req: NextRequest) {
     const thinTierCount = await steps.run("thin_tier", null, () =>
       runThinTierStaffingCheck({
         loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
+        // alert-key: thin_tier_staffing
         notify: sendThrottledInfo,
         cooldownMs: settings.cooldownMs.thin_tier_staffing,
         log: (m) => log.info("thin-tier", { msg: m }),
@@ -716,6 +721,7 @@ export async function GET(req: NextRequest) {
             );
           }
         },
+        // alert-key: agents_without_schedule
         notify: sendThrottledInfo,
         cooldownMs: settings.cooldownMs.agents_without_schedule,
         log: (m) => log.info("schedule-coverage", { msg: m }),
@@ -756,6 +762,7 @@ export async function GET(req: NextRequest) {
     const attributeCoverage = await steps.run("attribute_coverage", null, () =>
       runAttributeCoverageCheck({
         loadUnroutableAgents,
+        // alert-key: agents_without_routing
         notify: sendThrottledInfo,
         cooldownMs: settings.cooldownMs.agents_without_routing,
         log: (m) => log.info("attribute-coverage", { msg: m }),
@@ -794,7 +801,15 @@ export async function GET(req: NextRequest) {
       runSyncStalenessCheck({
         loadAgents: loadStaleCandidates,
         nowMs: now,
+        // alert-key: sync_staleness
         notify: sendThrottledAlert,
+        // alert-key: sync_staleness
+        // #1400: the gauge pages that agents' calendars have gone stale and could
+        // never say it ended, so a reader had no way to tell a recovered fleet from
+        // a cooldown still running. Hung off a MEASURED healthy reading.
+        // all-clear-proof: scripts/test-sync-staleness.ts - a roster read
+        // that failed reports unverified and clears nothing.
+        resolve: resolveAlert,
         cooldownMs: settings.cooldownMs.sync_staleness,
         log: (m) => log.info("sync-staleness", { msg: m }),
       }),
@@ -927,10 +942,12 @@ export async function GET(req: NextRequest) {
       runMigrationDriftCheck({
         shippedVersion: SHIPPED_MIGRATION_VERSION,
         readAppliedVersions: readAppliedMigrationVersions,
+        // alert-key: migration_version_lag
         notify: sendThrottledAlert,
         // #1134: say so when the schema catches up. This page is cleared by a human
         // running a migration, so silence afterwards is ambiguous: it looks the same
         // as the cooldown still running.
+        // alert-key: migration_version_lag
         // all-clear-proof: scripts/test-migration-drift.ts - an unreadable applied
         // set is classified unverified and never announces recovery.
         resolve: resolveAlert,
