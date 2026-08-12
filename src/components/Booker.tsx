@@ -14,6 +14,24 @@ import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { BobbingDots } from "@/components/BobbingDots";
+import {
+  BOOKING_ERROR_COPY,
+  CONFIRMED_COPY,
+  DETAILS_COPY,
+  DUPLICATE_COPY,
+  HONEYPOT_LABEL,
+  MOVE_COPY,
+  NEXT_DAYS_COPY,
+  allTimesTaken,
+  closedNoReopenDate,
+  closedUntil,
+  confirmedAnnouncement,
+  confirmedWhen,
+  duplicateSetFor,
+  inviteOnItsWay,
+  keepExistingTime,
+  moveToTime,
+} from "@/lib/booking/booker-copy";
 import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import {
@@ -444,14 +462,14 @@ export default function Booker({
         // to move the existing call into it can name it.
         setExistingCall(data.existingCall);
       } else if (status === 409) {
-        setError("That time was just taken. Please pick another.");
+        setError(BOOKING_ERROR_COPY.slotTaken);
         setSelectedSlot(null);
         // Re-run the load so the stale list is swapped for the loading state
         // rather than left tappable with a time that has gone.
         picker.retry();
       } else {
         if (data.fieldErrors) setFieldErrors(data.fieldErrors);
-        setError(data.error ?? "Something went wrong. Please try again.");
+        setError(data.error ?? BOOKING_ERROR_COPY.generic);
       }
     } finally {
       setSubmitting(false);
@@ -488,8 +506,8 @@ export default function Booker({
       setSelectedSlot(null);
       setError(
         status === 409
-          ? "That time was just taken. Please pick another."
-          : (data.error ?? "Could not move your call. Please try again."),
+          ? BOOKING_ERROR_COPY.slotTaken
+          : (data.error ?? BOOKING_ERROR_COPY.moveFailed),
       );
       picker.retry();
     } finally {
@@ -534,7 +552,7 @@ export default function Booker({
               )}
               <div className="mt-5">
                 <ReasonPicker
-                  legend="Why are you rescheduling?"
+                  legend={MOVE_COPY.reasonLegend}
                   options={rescheduleReasons}
                   code={moveReason}
                   detail={moveDetail}
@@ -562,10 +580,10 @@ export default function Booker({
                   style={confirmStyle}
                 >
                   {submitting
-                    ? "Moving your call…"
+                    ? MOVE_COPY.moving
                     : newWhen
-                      ? `Move my call to ${newWhen}`
-                      : "Move my call"}
+                      ? moveToTime(newWhen)
+                      : MOVE_COPY.moveNoTime}
                 </button>
                 <button
                   onClick={() => {
@@ -577,12 +595,12 @@ export default function Booker({
                   disabled={submitting}
                   className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
                 >
-                  Keep my {shortDay(existingCall.startsAt)} time
+                  {keepExistingTime(shortDay(existingCall.startsAt))}
                 </button>
               </div>
               {submitting && stalled && (
                 <p role="status" className={`mt-4 text-center text-xs ${c.muted}`}>
-                  Still working… this is taking longer than usual.
+                  {DETAILS_COPY.stillWorking}
                 </p>
               )}
             </>
@@ -591,8 +609,7 @@ export default function Booker({
             // else: it is not named and its manage token is not handed over, which
             // also means there is nothing to move from here (#1340).
             <p className={`mt-3 text-sm ${c.muted}`}>
-              Check the confirmation email we sent you if you need to view or change
-              it.
+              {DUPLICATE_COPY.checkYourEmail}
             </p>
           )}
         </div>
@@ -637,14 +654,15 @@ export default function Booker({
             tabIndex={-1}
             className={`mt-6 text-[length:var(--fs-h4)] font-semibold leading-snug outline-none ${c.title}`}
           >
-            You&apos;re all set
+            {CONFIRMED_COPY.heading}
           </h2>
           <p className={`mt-2 text-sm ${c.muted}`}>
-            {confirmedDay} at <span className="tabular-nums">{confirmedTime}</span> (
-            {zoneLabel})
+            {/* Assembled by one builder so the preview shows exactly this line,
+                with the markup only carrying the tabular figures (#1343). */}
+            {confirmedWhen(confirmedDay, confirmedTime, zoneLabel)}
           </p>
           <p className={`mt-1 text-xs ${c.faint}`}>
-            A calendar invite is on its way to {attendee.email || "your email"}.
+            {inviteOnItsWay(attendee.email)}
           </p>
           {manageHref && (
             // Opens in a new tab so an embed lead keeps this confirmation instead
@@ -655,13 +673,12 @@ export default function Booker({
               rel="noopener noreferrer"
               className="mt-5 inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
             >
-              View or manage your booking
+              {CONFIRMED_COPY.manageLink}
               <span aria-hidden="true">→</span>
             </a>
           )}
           <p role="status" className="sr-only">
-            Booked. {confirmedDay} at {confirmedTime} {zoneLabel}. A calendar invite
-            is on its way.
+            {confirmedAnnouncement(confirmedDay, confirmedTime, zoneLabel)}
           </p>
           {confirmed.duplicateWarning && (
             <div
@@ -669,25 +686,22 @@ export default function Booker({
               className="mx-auto mt-6 max-w-sm rounded-xl bg-pennie-sky-soft px-5 py-4 text-left dark:bg-accent/15"
             >
               <p className={`text-sm font-semibold ${c.title}`}>
-                Heads up: you already have another call booked
+                {DUPLICATE_COPY.heading}
               </p>
               {confirmed.duplicateWarning.disclose ? (
                 <>
                   <p className={`mt-1 text-sm ${c.muted}`}>
-                    It&apos;s set for{" "}
-                    <span className="tabular-nums">
-                      {DateTime.fromISO(confirmed.duplicateWarning.startsAt)
+                    {duplicateSetFor(
+                      `${DateTime.fromISO(confirmed.duplicateWarning.startsAt)
                         .setZone(zone)
-                        .toFormat("cccc, LLL d")}{" "}
-                      at {fmtTime(confirmed.duplicateWarning.startsAt)}
-                    </span>
-                    . If you only need one, you can view or cancel it.
+                        .toFormat("cccc, LLL d")} at ${fmtTime(confirmed.duplicateWarning.startsAt)}`,
+                    )}
                   </p>
                   <a
                     href={confirmed.duplicateWarning.manageUrl}
                     className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
                   >
-                    View or cancel that booking
+                    {DUPLICATE_COPY.viewOrCancel}
                     <span aria-hidden="true">→</span>
                   </a>
                 </>
@@ -698,8 +712,7 @@ export default function Booker({
                    only thing protecting it. The lead is pointed at the
                    confirmation email they already hold instead. */
                 <p className={`mt-1 text-sm ${c.muted}`}>
-                  Check the confirmation email we sent you if you need to view or
-                  change it.
+                  {DUPLICATE_COPY.checkYourEmail}
                 </p>
               )}
             </div>
@@ -739,9 +752,9 @@ export default function Booker({
   const emptyMessage =
     meta?.emptyBecause?.kind === "closed"
       ? meta.emptyBecause.reopensOn
-        ? `We are closed until ${DateTime.fromISO(meta.emptyBecause.reopensOn, { zone }).toFormat("cccc, LLLL d")}.`
-        : "We are closed right now."
-      : "All times are taken right now. Check back soon.";
+        ? closedUntil(meta.emptyBecause.reopensOn, zone)
+        : closedNoReopenDate()
+      : allTimesTaken();
 
   /** Look past the bounded window for the first days we can actually offer. */
   async function revealNextDays() {
@@ -785,7 +798,7 @@ export default function Booker({
         <>
           {nextFailed && (
             <p role="alert" className="text-sm text-[var(--error)]">
-              Could not look further ahead. Check your connection.
+              {NEXT_DAYS_COPY.failed}
             </p>
           )}
           <button
@@ -799,12 +812,12 @@ export default function Booker({
               // them, and the dots are aria-hidden so it is not announced twice.
               <span className="inline-flex items-center gap-2">
                 <BobbingDots />
-                Looking…
+                {NEXT_DAYS_COPY.looking}
               </span>
             ) : nextFailed ? (
-              "Try again"
+              NEXT_DAYS_COPY.retry
             ) : (
-              "See our next available days"
+              NEXT_DAYS_COPY.ask
             )}
           </button>
           {/* Still ALIVE, distinct from started: a search this slow needs to say so
@@ -814,14 +827,14 @@ export default function Booker({
               is still running would be false. */}
           {loadingNext && lookingStalled && (
             <p role="status" className={`text-xs ${c.muted}`}>
-              Still looking… this is taking longer than usual.
+              {NEXT_DAYS_COPY.stillLooking}
             </p>
           )}
         </>
       )}
       {nextDaySlots !== null && nextDaySlots.length === 0 && (
         <p className={`text-sm ${c.faint}`}>
-          We could not find a day to offer yet. Please check back.
+          {NEXT_DAYS_COPY.foundNothing}
         </p>
       )}
     </div>
@@ -903,7 +916,7 @@ export default function Booker({
             aria-hidden="true"
             style={{ position: "absolute", left: "-9999px", width: 1, height: 1, overflow: "hidden" }}
           >
-            <label htmlFor={`booker-${HONEYPOT_FIELD}`}>Leave this field empty</label>
+            <label htmlFor={`booker-${HONEYPOT_FIELD}`}>{HONEYPOT_LABEL}</label>
             <input
               id={`booker-${HONEYPOT_FIELD}`}
               name={HONEYPOT_FIELD}
@@ -921,7 +934,7 @@ export default function Booker({
             style={confirmStyle}
             className={`group inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-4 text-base font-semibold ${c.confirm} active:translate-y-px disabled:opacity-60`}
           >
-            {submitting ? "Booking your call…" : "Confirm booking"}
+            {submitting ? DETAILS_COPY.confirming : DETAILS_COPY.confirm}
             {!submitting && (
               <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
             )}
@@ -931,7 +944,7 @@ export default function Booker({
               role="status"
               className={`flex items-center justify-center gap-2 text-xs ${c.muted}`}
             >
-              Still working… this is taking longer than usual.
+              {DETAILS_COPY.stillWorking}
             </p>
           )}
         </div>
@@ -1099,7 +1112,7 @@ export default function Booker({
               <PhoneIcon />
             </span>
             <span>
-              Your number:{" "}
+              {DETAILS_COPY.yourNumber}{" "}
               <span className="tabular-nums">{attendee.phone}</span>
             </span>
           </div>

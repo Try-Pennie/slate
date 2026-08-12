@@ -21,6 +21,17 @@ import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { countdownPhrase, advisorFirstName } from "@/lib/booking/countdown";
+import {
+  BEFORE_COPY,
+  CANCEL_COPY,
+  DONE_COPY,
+  LIVE_COPY,
+  RESCHEDULE_COPY,
+  advisorWillCall,
+  doneBody,
+  doneHeading,
+  liveHeading,
+} from "@/lib/booking/manage-copy";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1000,
 // mirroring the Booker's #219 picker); a real zone id can never collide with it.
@@ -214,7 +225,7 @@ export default function ManageBooking({
         setStatus("rescheduled");
         setRescheduling(false);
       } else {
-        setError(data.error ?? "Could not reschedule. Please try again.");
+        setError(data.error ?? RESCHEDULE_COPY.failed);
       }
     } finally {
       setPendingIso(null);
@@ -240,7 +251,7 @@ export default function ManageBooking({
       } else {
         // Previously a native confirm() with no visible failure path: a failed
         // POST left the page looking unchanged. Surface it instead.
-        setError(data.error ?? "Could not cancel. Please try again.");
+        setError(data.error ?? CANCEL_COPY.failed);
       }
     } finally {
       setBusy(false);
@@ -403,31 +414,27 @@ export default function ManageBooking({
               {done ? (
                 <>
                   <h2 className="text-base font-semibold text-fg">
-                    {status === "cancelled"
-                      ? "This booking is cancelled"
-                      : "This call has happened"}
+                    {doneHeading(status)}
                   </h2>
                   <p className="mt-2 text-sm text-fg-muted">
-                    {status === "cancelled"
-                      ? "Changed your mind? You can grab a new time with the same team whenever you are ready."
-                      : "Need to talk again? You can book another time with the same team whenever you are ready."}
+                    {doneBody(status)}
                   </p>
                   <a
                     href={`/book?xbc=${encodeURIComponent(bucketCode)}`}
                     className="pn-btn pn-btn--primary mt-4 inline-flex min-h-[44px] rounded-lg px-5 text-sm"
                   >
-                    Book a new time
+                    {DONE_COPY.bookAgain}
                   </a>
                 </>
               ) : confirmingCancel ? (
                 <div className="rounded-lg border border-[var(--error)] bg-[rgba(196,61,61,0.04)] p-4">
-                  <p className="text-sm font-semibold text-fg">Cancel this booking?</p>
+                  <p className="text-sm font-semibold text-fg">{CANCEL_COPY.heading}</p>
                   <p className="mt-1 text-sm text-fg-muted">
-                    This releases your time and cannot be undone.
+                    {CANCEL_COPY.consequence}
                   </p>
                   <div className="mt-4">
                     <ReasonPicker
-                      legend="Why are you cancelling?"
+                      legend={CANCEL_COPY.reasonLegend}
                       options={cancelReasons}
                       code={cancelReason}
                       detail={cancelDetail}
@@ -443,7 +450,7 @@ export default function ManageBooking({
                       className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
                     >
                       <XIcon />
-                      {busy ? "Cancelling…" : "Yes, cancel it"}
+                      {busy ? CANCEL_COPY.confirming : CANCEL_COPY.confirm}
                     </button>
                     <button
                       onClick={() => {
@@ -454,7 +461,7 @@ export default function ManageBooking({
                       disabled={busy}
                       className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm"
                     >
-                      Keep my booking
+                      {CANCEL_COPY.keep}
                     </button>
                   </div>
                 </div>
@@ -462,7 +469,7 @@ export default function ManageBooking({
                 <div>
                   <div className="mb-4">
                     <ReasonPicker
-                      legend="Why are you rescheduling?"
+                      legend={RESCHEDULE_COPY.reasonLegend}
                       options={rescheduleReasons}
                       code={reschedReason}
                       detail={reschedDetail}
@@ -473,8 +480,8 @@ export default function ManageBooking({
                   </div>
                   <p className="mb-3 text-sm font-semibold text-fg">
                     {reschedReasonValid
-                      ? "Pick a new time"
-                      : "Choose a reason above, then pick a new time"}
+                      ? RESCHEDULE_COPY.pickReady
+                      : RESCHEDULE_COPY.pickBlocked}
                   </p>
                   {/* The same day strip and times panel the booker runs on
                       (#1336), so a lead moving a call meets the surface they
@@ -494,9 +501,7 @@ export default function ManageBooking({
                     onRetry={picker.retry}
                     classes={SLOT_TIMES_CLASSES.panel}
                     noDaysNode={
-                      <p className="text-sm text-fg-muted">
-                        All times are taken right now. Check back soon.
-                      </p>
+                      <p className="text-sm text-fg-muted">{RESCHEDULE_COPY.noTimes}</p>
                     }
                     renderSlot={(iso) => (
                       <button
@@ -510,7 +515,7 @@ export default function ManageBooking({
                             : "border-border bg-surface text-fg hover:border-fg/45"
                         }`}
                       >
-                        {pendingIso === iso ? "Moving…" : formatSlotTime(iso, timeZone)}
+                        {pendingIso === iso ? RESCHEDULE_COPY.moving : formatSlotTime(iso, timeZone)}
                       </button>
                     )}
                   />
@@ -521,7 +526,7 @@ export default function ManageBooking({
                     onClick={closeReschedule}
                     className="mt-5 inline-flex min-h-11 items-center text-sm text-fg-muted underline underline-offset-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
                   >
-                    Keep my current time
+                    {RESCHEDULE_COPY.keepCurrent}
                   </button>
                 </div>
               ) : (
@@ -530,20 +535,17 @@ export default function ManageBooking({
                       first name is dropped when unresolvable rather than
                       replaced. */}
                   <h2 className="text-base font-semibold text-fg">
-                    {[advisorFirstName(advisorName), countdown].filter(Boolean).join(", ") ||
-                      "Your call"}
+                    {liveHeading(advisorFirstName(advisorName), countdown)}
                   </h2>
                   <p className="mt-2 text-sm text-fg-muted">
                     {/* No pronoun for the advisor anywhere on this page: nothing
                         on the agent record says how a person wants to be referred
                         to, and a guess misgenders a colleague in front of a
                         customer. */}
-                    Your advisor will call you at{" "}
-                    <span className="tabular-nums">{attendeePhone ?? "the number you gave us"}</span>
-                    .
+                    {advisorWillCall(attendeePhone)}
                   </p>
                   <p className="mt-1 text-sm text-fg-muted">
-                    If your plans change, you can move it or cancel it.
+                    {LIVE_COPY.changeYourPlans}
                   </p>
                   {/* Cancel is NOT a peer of Reschedule (#1338): an accidental
                       cancel costs far more than an accidental reschedule click.
@@ -558,7 +560,7 @@ export default function ManageBooking({
                       }}
                       className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm"
                     >
-                      Reschedule
+                      {LIVE_COPY.reschedule}
                     </button>
                     <button
                       onClick={() => {
@@ -568,7 +570,7 @@ export default function ManageBooking({
                       disabled={busy}
                       className="inline-flex min-h-[44px] items-center text-sm font-semibold text-[var(--error)] underline underline-offset-2 hover:no-underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
                     >
-                      Cancel booking
+                      {LIVE_COPY.cancel}
                     </button>
                   </div>
                 </>
@@ -576,7 +578,7 @@ export default function ManageBooking({
 
               {busy && stalled && !error && (
                 <p role="status" className="mt-4 text-sm text-fg-muted">
-                  Still working… this is taking longer than usual.
+                  {LIVE_COPY.stillWorking}
                 </p>
               )}
               {error && (
@@ -595,11 +597,9 @@ export default function ManageBooking({
             {/* --- Before the call --- */}
             {!done && !rescheduling && !confirmingCancel && (
               <div className="order-5 border-t border-border px-6 py-5 md:order-none md:col-start-2 md:row-start-3">
-                <p className="text-sm font-semibold text-fg">Before the call</p>
+                <p className="text-sm font-semibold text-fg">{BEFORE_COPY.heading}</p>
                 <p className="mt-1 text-sm text-fg-muted">
-                  Join from somewhere quiet, not while driving, with access to a screen (phone,
-                  tablet, laptop, etc.). Some of what we will cover is easier to follow along
-                  visually.
+                  {BEFORE_COPY.body}
                 </p>
               </div>
             )}
