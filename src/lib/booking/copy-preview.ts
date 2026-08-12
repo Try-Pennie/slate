@@ -28,7 +28,6 @@ import {
   HONEYPOT_LABEL,
   INCOMPLETE_PHONE_NOTICE,
   EXTENSION_PHONE_PREFILL_NOTICE,
-  PHONE_EXTENSION_NOTICE,
   US_ONLY_PHONE_NOTICE,
   MOVE_COPY,
   NEXT_DAYS_COPY,
@@ -156,7 +155,8 @@ export function bookerCopyScreens(): CopyScreen[] {
           text: phoneEchoLine(PHONE),
         },
         {
-          state: "they arrived with a number we cannot call, so the field is empty",
+          state:
+            "they arrived with a number we cannot call, or typed one carrying an extension",
           text: US_ONLY_PHONE_NOTICE,
         },
         {
@@ -166,10 +166,6 @@ export function bookerCopyScreens(): CopyScreen[] {
         {
           state: "they arrived with a number carrying an extension, so the field is empty",
           text: EXTENSION_PHONE_PREFILL_NOTICE,
-        },
-        {
-          state: "they typed a number carrying an extension",
-          text: PHONE_EXTENSION_NOTICE,
         },
         { state: "the bot trap", text: HONEYPOT_LABEL, screenReaderOnly: true },
       ],
