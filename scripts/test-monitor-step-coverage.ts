@@ -70,6 +70,88 @@ const code = src
   }
 }
 
+
+// --- the SHARED SETUP reads are contained too (#1395) -------------------------
+//
+// #1281 covered the checks. The reads at the TOP of the handler stayed outside
+// every boundary, so a throw in one ended the tick before a single check ran,
+// which took out the availability probe and the cal.com override sweep, neither of
+// which needs most of those reads.
+//
+// Derived from the FILE like everything else here: any handler-level `const x =
+// await ...` in the try block is a shared read, and it has to be contained. A
+// sixth one added later is covered by construction rather than by someone
+// remembering this issue.
+{
+  // Exactly four spaces of indent puts a statement directly in the handler's try
+  // block; a read inside an injected callback is nested deeper.
+  const HANDLER_AWAIT = /^ {4}const\s+[A-Za-z_$][\w$]*\s*=\s*await\s/;
+  // `loadMonitorSettings` resolves its own failures to env and coded defaults
+  // internally and cannot throw out, and its fallback is those same defaults, so
+  // wrapping it here would only duplicate them. Named, with the reason, rather
+  // than left as an unexplained gap.
+  const EXEMPT = ["loadMonitorSettings("];
+  const offenders: string[] = [];
+  code.split("\n").forEach((line, i) => {
+    if (!HANDLER_AWAIT.test(line)) return;
+    if (/steps\.run\s*[<(]/.test(line)) return;
+    if (EXEMPT.some((e) => line.includes(e))) return;
+    offenders.push(`${i + 1}: ${line.trim()}`);
+  });
+  eq(
+    offenders,
+    [],
+    "every shared setup read at the top of the handler runs inside its own boundary, so one " +
+      "unreadable input cannot end the tick before any check runs",
+  );
+}
+
+// Positive control for the same rule, or a renamed pattern would leave it green
+// over an unguarded read (L1).
+{
+  const sabotaged = `${code}\n    const horizon = await loadBookingHorizonDays();\n`;
+  const offenders = sabotaged
+    .split("\n")
+    .filter(
+      (line) =>
+        /^ {4}const\s+[A-Za-z_$][\w$]*\s*=\s*await\s/.test(line) &&
+        !/steps\.run\s*[<(]/.test(line) &&
+        !line.includes("loadMonitorSettings("),
+    );
+  eq(offenders.length, 1, "a shared read added straight into the handler IS caught");
+}
+
+// --- and a contained read's failure must GATE its dependents ------------------
+// Containment alone is not enough: a read whose failure resolves to a default that
+// a check then judges on is worse than the throw it replaced, because the check
+// answers confidently instead of skipping. So the gate has to be consulted.
+{
+  assert(
+    /monitorSetupGates\(/.test(code),
+    "the handler asks which checks its setup reads entitle it to run",
+  );
+  // Inside the step, not merely somewhere in the file. A mention in a log line
+  // would satisfy `includes` while the check itself still branched on a
+  // hand-rolled condition, which is a guard passing on prose about itself (L103).
+  for (const [step, gate] of [
+    ["avail_scan", "gates.availabilityScan.run"],
+    ["avail_truth", "gates.availabilityTruth.run"],
+  ]) {
+    // Indexed off the step NAME rather than the `steps.run` token, because a call
+    // carrying a type argument puts the two on different lines.
+    const at = code.indexOf(`"${step}"`);
+    assert(at >= 0, `${step} is a named step`);
+    // The gate is the step body's first decision, so it sits close behind the name.
+    // Wide enough for a multi-line runner call plus a comment, narrow enough that a
+    // mention further down the check's own wiring cannot satisfy it.
+    const body = code.slice(at, at + 400);
+    assert(
+      body.includes(gate),
+      `${step} decides whether to run by consulting ${gate}, not a hand-rolled condition`,
+    );
+  }
+}
+
 // --- the cost line is actually emitted, or #1277 is unwired ---
 {
   assert(

@@ -17,6 +17,7 @@ import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health";
 import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availability-tick";
+import { monitorSetupGates } from "@/lib/monitor/setup-gates";
 import { loadBusinessHours, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
@@ -395,16 +396,29 @@ export async function GET(req: NextRequest) {
     // UI-tunable cooldowns + low-volume floors (#571); never throws (falls back
     // to env/coded defaults) so config can't take down the monitor tick.
     const settings = await loadMonitorSettings();
-    const buckets = ((await db.from("buckets").select("*")).data ?? []) as Bucket[];
+
+    // --- The shared setup reads, each in its OWN boundary (#1395) -------------
+    // These five used to sit above every boundary, so a throw in any one of them
+    // ended the tick before a single check ran. Each is contained now, and each
+    // failure resolves to NULL rather than to an empty or default value, because
+    // the fallback is the whole risk here: zero buckets, an empty week, or a
+    // guessed horizon would each let a check judge and be confidently wrong, where
+    // null makes only its dependents skip and say so. monitorSetupGates owns which
+    // check depends on what.
+    const buckets = await steps.run<Bucket[] | null>("setup_buckets", null, async () =>
+      // unwrap, not `.data ?? []`: an empty bucket list reads as a fleet with no
+      // buckets at all, so a failed read here used to make the whole ladder look
+      // like a dead end and page for it (#277's shape).
+      unwrap(await db.from("buckets").select("*"), "monitor buckets") as Bucket[],
+    );
 
     // bucket_slots health in one scan: slot count + freshness per code.
-    const slotRows = ((await db
-      .from("bucket_slots")
-      .select("bucket_code, payload, computed_at")).data ?? []) as {
-      bucket_code: string;
-      payload: { slots?: string[] } | null;
-      computed_at: string;
-    }[];
+    const slotRows = await steps.run<SlotHealthRow[] | null>("setup_slot_rows", null, async () =>
+      unwrap(
+        await db.from("bucket_slots").select("bucket_code, payload, computed_at"),
+        "monitor bucket_slots",
+      ) as SlotHealthRow[],
+    );
     // #1169: fail closed. An unparseable computed_at reads as epoch 0 (stale,
     // canary alerts), never NaN (reads as fresh, canary silent). Extracted in
     // #1171 so that direction is pinned by scripts/test-monitor-slot-health.ts
@@ -415,28 +429,33 @@ export async function GET(req: NextRequest) {
     // would be measuring a list nobody sees. An unreadable week is not something to
     // guess at either, so the availability scan sits this tick out entirely (below)
     // rather than judging with the wrong window.
-    let businessHours: BusinessHours | null = null;
-    try {
-      businessHours = await loadBusinessHours();
-    } catch (err) {
-      log.error("monitor", { msg: "availability scan skipped: business hours unreadable" }, err);
-    }
+    const businessHours = await steps.run<BusinessHours | null>(
+      "setup_business_hours",
+      null,
+      () => loadBusinessHours(),
+    );
     // null means DO NOT SCAN. Deliberately not an empty map: that would read as
     // zero slots for every bucket and page the whole ladder off a failed config read.
-    const slotByCode = slotHealthForTick(slotRows, businessHours);
+    const slotByCode = slotRows === null ? null : slotHealthForTick(slotRows, businessHours);
 
     // Per-agent working hours, for the on-shift gate. Two whole-table reads
     // joined in JS; both are paged past PostgREST's 1,000-row cap (#828): the
     // rules table alone crosses 1,000 at full roster, and a truncated read would
     // silently mis-judge who is on shift.
-    const { schedules, rules: ruleRows } = await loadAllWorkingHours(db);
-    const scheduleByUser = new Map(schedules.map((s) => [s.user_id, { id: s.id, timezone: s.timezone }]));
+    const workingHours = await steps.run("setup_hours", null, () => loadAllWorkingHours(db));
+    const scheduleByUser = new Map(
+      (workingHours?.schedules ?? []).map((s) => [s.user_id, { id: s.id, timezone: s.timezone }]),
+    );
     const rulesBySchedule = new Map<string, WorkingRule[]>();
-    for (const r of ruleRows) {
+    for (const r of workingHours?.rules ?? []) {
       const list = rulesBySchedule.get(r.schedule_id) ?? [];
       list.push({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute });
       rulesBySchedule.set(r.schedule_id, list);
     }
+    // Only ever called from the availability scan, which the gate below stops from
+    // running at all when `workingHours` is null. So this can never hand out the
+    // "no rules" default on the strength of a failed read, which would make every
+    // agent look off shift and every bucket read as a dead end.
     const shiftFor = (userId: string) => {
       const s = scheduleByUser.get(userId);
       return {
@@ -451,22 +470,43 @@ export async function GET(req: NextRequest) {
     // Probe the SAME window the rows are computed over (#216): comparing a 4-day
     // probe against a 7-day row would flag a false data anomaly. Loaded once and
     // reused by the self-heal.
-    const horizonDays = await loadBookingHorizonDays();
-    const bucketByCode = new Map(buckets.map((b) => [b.code, b]));
+    const horizonDays = await steps.run<number | null>("setup_horizon", null, () =>
+      loadBookingHorizonDays(),
+    );
+    const bucketByCode = new Map((buckets ?? []).map((b) => [b.code, b]));
+
+    // Which checks this tick is entitled to run, given what came back. Decided in
+    // one pure place so the dependency lists sit beside each other rather than as
+    // five conditionals spread down the handler.
+    const gates = monitorSetupGates({
+      buckets: buckets !== null,
+      slotHealth: slotByCode !== null,
+      businessHours: businessHours !== null,
+      workingHours: workingHours !== null,
+      horizonDays: horizonDays !== null,
+    });
+    if (!gates.availabilityScan.run) {
+      log.warn("monitor", { msg: "availability scan skipped", why: gates.availabilityScan.why });
+    }
+    if (!gates.availabilityTruth.run) {
+      log.warn("monitor", { msg: "availability truth skipped", why: gates.availabilityTruth.why });
+    }
     // Skipped entirely when the week could not be read (#1296). An empty slot map
     // would make every bucket read as zero and page the whole ladder, and clearing
     // an alert off a tick that measured nothing is the #1152 defect: a run that
     // could not read its signal must conclude nothing, in either direction.
     const scan = await steps.run("avail_scan", null, async () =>
-      slotByCode === null
+      !gates.availabilityScan.run
         ? null
         : runAvailabilityScan({
           nowMs: now,
           freshWindowMs: FRESH_WINDOW_MS,
           probeConcurrency: PROBE_CONCURRENCY,
           deadlineMs: now + MONITOR_LOCK_TTL_MS,
-          buckets: buckets.map((b) => ({ code: b.code, isTest: b.is_test ?? false })),
-          slotByCode,
+          // Non-null inside here: the gate above refuses to run this scan unless
+          // every one of its five setup reads came back.
+          buckets: buckets!.map((b) => ({ code: b.code, isTest: b.is_test ?? false })),
+          slotByCode: slotByCode!,
           ladder: tierLadder,
           nameOf: (code) => bucketSpecForXbc(code)?.name ?? code,
           eligibleIds: async (code) => {
@@ -483,7 +523,7 @@ export async function GET(req: NextRequest) {
           // Live recompute from the DB (busy_blocks/bookings/schedules, no Google);
           // a falsy result or a throw is null (unverified), never a fake zero.
           recomputeSlots: async (code) => {
-            const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays);
+            const { fromIso, toIso } = slotCacheKey(code, new Date(now).toISOString(), horizonDays!);
             const res = await getBucketSlots(code, fromIso, toIso);
             return res ? res.slots.length : null;
           },
@@ -514,7 +554,7 @@ export async function GET(req: NextRequest) {
           },
           claimHeal: async (code) =>
             (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
-          heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays),
+          heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays!),
           onHealError: (code, err) =>
             log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
           // alert-key: availability_data_anomaly
@@ -630,8 +670,14 @@ export async function GET(req: NextRequest) {
     const availabilityTruth = await steps.run<TruthResult | { status: "errored" }>(
       "avail_truth",
       { status: "errored" },
-      () =>
-        runAvailabilityTruthCheck({
+      async () =>
+        // The probe needs one setup read, the horizon, because that is the window it
+        // asks the slot cache for. It deliberately does NOT need the bucket list, the
+        // shift gate or the org's week, so none of those failing may silence it: that
+        // coupling is what #1395 removed.
+        !gates.availabilityTruth.run
+          ? { status: "skipped", why: gates.availabilityTruth.why }
+          : runAvailabilityTruthCheck({
           nowMs: now,
           thresholds: TRUTH_THRESHOLDS,
           nextBucket: nextTruthBucket,
@@ -639,7 +685,7 @@ export async function GET(req: NextRequest) {
             offeredSlots(
               code,
               new Date(now).toISOString(),
-              new Date(now + horizonDays * 24 * 60 * 60_000).toISOString(),
+              new Date(now + horizonDays! * 24 * 60 * 60_000).toISOString(),
             ),
           eligibleEmails: eligibleEmailsForBucket,
           verifyWindows: verifyWindowsLive,
@@ -1060,7 +1106,9 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.json({
-      buckets: buckets.length,
+      // null, never 0: an unreadable bucket list is not a fleet with no buckets,
+      // and the smoke check reads this number (#1395).
+      buckets: buckets === null ? null : buckets.length,
       // A skipped scan must not read like a clean one (#1296): it reports null and
       // names itself, rather than the `failing: 0` that means "checked, all well".
       ...availabilityScanReport(scan),
