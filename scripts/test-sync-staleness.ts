@@ -17,6 +17,9 @@ import {
 } from "../src/lib/monitor/sync-staleness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
+/** Em/en dash detector built from escapes, so this file holds no literal dash. */
+const DASHES = new RegExp("[\\u2013\\u2014]");
+
 const NOW = 1_000 * 60 * 60 * 24; // an arbitrary fixed epoch-ms (no Date.now)
 const MIN = 60_000;
 const THRESH = 15 * MIN;
@@ -96,12 +99,18 @@ await (async () => {
   const notify = async (key: string, _cd: number, text: string) => {
     calls.push({ key, text });
   };
+  const resolved: { key: string; text: string }[] = [];
+  const resolve = async (key: string, text: string) => {
+    resolved.push({ key, text });
+    return true;
+  };
 
   const staleRes = await runSyncStalenessCheck({
     loadAgents: async () => [agent("b", 30)],
     nowMs: NOW,
     thresholdMs: THRESH,
     notify,
+    resolve,
     cooldownMs: 60_000,
   });
   eq(staleRes.staleCount, 1, "runner reports one stale agent");
@@ -114,6 +123,7 @@ await (async () => {
     nowMs: NOW,
     thresholdMs: THRESH,
     notify,
+    resolve,
     cooldownMs: 60_000,
   });
   eq(cleanRes.staleCount, 0, "runner reports zero stale when fresh");
@@ -130,9 +140,101 @@ await (async () => {
     notify: async () => {
       throw new Error("slack down");
     },
+    resolve: async () => false,
     cooldownMs: 60_000,
   });
   eq(res.staleCount, 1, "runner still returns its result when notify throws");
+})();
+
+// --- the all-clear (#1400) ----------------------------------------------------
+// The gauge pages that agents' calendars have gone stale and could never say it
+// ended, so a reader had no way to tell a recovered rotation from a cooldown
+// still running (#1134). It is a condition, so it owes an ending, and that
+// ending has to hang off a MEASURED reading (#1152).
+await (async () => {
+  const resolved: { key: string; text: string }[] = [];
+  const resolve = async (key: string, text: string) => {
+    resolved.push({ key, text });
+    return true;
+  };
+  const notify = async () => {};
+
+  await runSyncStalenessCheck({
+    loadAgents: async () => [agent("a", 1), agent("b", 2)],
+    nowMs: NOW,
+    thresholdMs: THRESH,
+    notify,
+    resolve,
+    cooldownMs: 60_000,
+  });
+  eq(resolved.length, 1, "a measured rotation with nothing stale offers the all-clear");
+  eq(resolved[0]?.key, SYNC_STALENESS_KEY, "and clears the key it pages on");
+  assert(/no action is needed/i.test(resolved[0]?.text ?? ""), "the all-clear closes the loop");
+  assert(!DASHES.test(resolved[0]?.text ?? ""), "the all-clear has no dashes");
+  assert(
+    !/undefined|NaN|\[object Object\]/.test(resolved[0]?.text ?? ""),
+    "the all-clear renders no placeholder leak",
+  );
+
+  // A tick that is PAGING must not also clear the page it is sending.
+  resolved.length = 0;
+  await runSyncStalenessCheck({
+    loadAgents: async () => [agent("b", 30)],
+    nowMs: NOW,
+    thresholdMs: THRESH,
+    notify,
+    resolve,
+    cooldownMs: 60_000,
+  });
+  eq(resolved.length, 0, "a tick with a stale agent clears nothing");
+
+  // THE failure path. An empty candidate list is not a healthy rotation, it is a
+  // rotation with nothing in it to measure, and the two are indistinguishable from
+  // staleCount alone (L98). Announcing recovery here would be an all-clear off a
+  // reading that never happened.
+  resolved.length = 0;
+  const empty = await runSyncStalenessCheck({
+    loadAgents: async () => [],
+    nowMs: NOW,
+    thresholdMs: THRESH,
+    notify,
+    resolve,
+    cooldownMs: 60_000,
+  });
+  eq(empty.staleCount, 0, "an empty rotation reports nothing stale");
+  eq(resolved.length, 0, "and clears NOTHING: it measured no agent at all");
+
+  // A roster read that throws takes the check with it, so nothing is claimed in
+  // either direction and the step runner reports the tick as degraded.
+  resolved.length = 0;
+  let threw = false;
+  await runSyncStalenessCheck({
+    loadAgents: async () => {
+      throw new Error("roster read failed");
+    },
+    nowMs: NOW,
+    thresholdMs: THRESH,
+    notify,
+    resolve,
+    cooldownMs: 60_000,
+  }).catch(() => {
+    threw = true;
+  });
+  assert(threw, "a roster read that fails is not swallowed into a healthy reading");
+  eq(resolved.length, 0, "and clears nothing");
+
+  // A failing resolve must not take down the tick, exactly as a failing notify does not.
+  const res = await runSyncStalenessCheck({
+    loadAgents: async () => [agent("a", 1)],
+    nowMs: NOW,
+    thresholdMs: THRESH,
+    notify,
+    resolve: async () => {
+      throw new Error("slack down");
+    },
+    cooldownMs: 60_000,
+  });
+  eq(res.staleCount, 0, "runner still returns its result when the all-clear throws");
 })();
 
 finish();

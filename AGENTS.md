@@ -518,6 +518,17 @@ key nothing sends (so a rename cannot leave a stale classification looking like
 coverage). A key the scanner cannot read is a hard failure; declare it with
 `// alert-key: <key or prefix:*>` on or above the call.
 
+One shape defeated that scanner for three releases and is worth knowing (#1400).
+A pure check sends through an injected seam (`deps.notify(SOME_KEY, ...)`) and the
+route wires the dispatcher in. If the wiring is an ARROW
+(`notify: (key, ms, text) => sendThrottledAlert(key, ms, text)`) that arrow is a
+call whose key cannot be read, and an unannotated opaque site is a hard failure,
+so it was always covered. If the wiring is a bare REFERENCE
+(`notify: sendThrottledAlert`) it is not a call at all, produced no site, and the
+key was invisible: **nine keys** lived in that gap, eight with no catalog entry
+and one (`sync_staleness`) paging with no way to say it had ended. Both forms are
+scanned now, and both require an `// alert-key:` declaration at the wiring.
+
 Two rules that fall out of this, both of which have already been violated once:
 
 - **Hang the all-clear off the MEASURED healthy result, never off "we did not

@@ -31,6 +31,24 @@ import {
 } from "@/lib/notify/alerts";
 import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import {
+  formatSyncStalenessAlert,
+  formatSyncStalenessRecovery,
+  SYNC_STALENESS_THRESHOLD_MS,
+} from "@/lib/monitor/sync-staleness";
+import { formatThinTierNotice } from "@/lib/monitor/thin-tier";
+import { formatScheduleGapNotice } from "@/lib/monitor/schedule-coverage";
+import { formatAttributeGapNotice } from "@/lib/monitor/attribute-coverage";
+import {
+  formatDataAnomalyAlert,
+  formatAvailabilityRecovery,
+  formatBookedSolidNotice,
+  formatFallbackCoveredNotice,
+} from "@/lib/monitor/availability-health";
+import {
+  formatMigrationDriftAlert,
+  formatMigrationDriftRecovery,
+} from "@/lib/monitor/migration-drift";
+import {
   formatFailureRateAlert,
   formatFailureRateAllClear,
 } from "@/lib/monitor/booking-failure-rate";
@@ -678,6 +696,157 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatDeletionSaturationRecovery(),
   },
 
+
+  // --- the eight keys that were invisible until #1400 ------------------------
+  // Every one of these is sent by a pure monitor check and wired in by bare
+  // reference, so none of their copy had ever been rendered anywhere before it
+  // reached somebody's phone. Read them.
+  {
+    key: "sync_staleness",
+    state: "agents have dropped out of the sync rotation",
+    channel: "alert",
+    text: formatSyncStalenessAlert(
+      {
+        staleCount: 2,
+        worstAgeMs: 47 * 60_000,
+        worstNeverSynced: true,
+        stale: [
+          { id: "u1", name: "Jordan Reyes", email: "jordan@trypennie.com", lastSyncedMs: null, ageMs: null },
+          {
+            id: "u2",
+            name: "Sam Okafor",
+            email: "sam@trypennie.com",
+            lastSyncedMs: NOW_MS - 47 * 60_000,
+            ageMs: 47 * 60_000,
+          },
+        ],
+      },
+      SYNC_STALENESS_THRESHOLD_MS,
+    ),
+  },
+  {
+    key: "sync_staleness",
+    state: "the rotation has caught up",
+    channel: "recovery",
+    text: formatSyncStalenessRecovery(97),
+  },
+  {
+    // The fixture carries `healed`, because the auto-recompute case is the one the
+    // copy has to get right: the customer impact is over and the fault is not.
+    key: "availability_data_anomaly",
+    state: "cached availability disagrees with the calendars",
+    channel: "alert",
+    text: formatDataAnomalyAlert(
+      { bookedSolid: [], dataAnomaly: ["204", "311"], unverified: ["417"] },
+      ["204"],
+    ),
+  },
+  {
+    key: "availability_data_anomaly",
+    state: "availability reconverged",
+    channel: "recovery",
+    text: formatAvailabilityRecovery(),
+  },
+  {
+    key: "migration_version_lag",
+    state: "shipped code is ahead of the applied schema",
+    channel: "alert",
+    // Applied 0001 to 0102 with 0104 shipped, so the message names the two real
+    // gaps. A fixture with a handful of applied versions would render 100 missing
+    // migrations, which is not a state anyone will ever be paged about.
+    text: formatMigrationDriftAlert(
+      "db-behind",
+      "0104",
+      Array.from({ length: 102 }, (_, i) => String(i + 1).padStart(4, "0")),
+    ),
+  },
+  {
+    key: "migration_version_lag",
+    state: "the schema caught up",
+    channel: "recovery",
+    text: formatMigrationDriftRecovery("0104"),
+  },
+  {
+    key: "thin_tier_staffing",
+    state: "a tier is resting on one agent",
+    channel: "info",
+    text: formatThinTierNotice([
+      {
+        code: "204",
+        name: "Debt 20k to 30k, backend",
+        depth: 1,
+        effectiveDepth: 1,
+        outCount: 0,
+        soleAgentName: "Jordan Reyes",
+        hasWorkingFallback: false,
+        flag: "spof",
+        effectiveFlag: "spof",
+        agents: [{ id: "u1", name: "Jordan Reyes", out: false }],
+      },
+      {
+        code: "311",
+        name: "Debt 30k to 50k, frontend",
+        depth: 2,
+        effectiveDepth: 1,
+        outCount: 1,
+        soleAgentName: null,
+        hasWorkingFallback: true,
+        flag: "thin",
+        effectiveFlag: "spof",
+        agents: [
+          { id: "u2", name: "Sam Okafor", out: false },
+          { id: "u3", name: "Priya Nair", out: true },
+        ],
+      },
+    ]),
+  },
+  {
+    key: "agents_without_schedule",
+    state: "bookable agents have no working hours",
+    channel: "info",
+    text: formatScheduleGapNotice([
+      { id: "u1", name: "Jordan Reyes", email: "jordan@trypennie.com", org_id: "org1" },
+      { id: "u2", name: null, email: "sam@trypennie.com", org_id: "org1" },
+    ]),
+  },
+  {
+    key: "agents_without_routing",
+    state: "bookable agents match no bucket criteria",
+    channel: "info",
+    text: formatAttributeGapNotice([
+      { id: "u1", name: "Jordan Reyes", email: "jordan@trypennie.com" },
+      { id: "u2", name: null, email: "sam@trypennie.com" },
+    ]),
+  },
+  {
+    key: "availability_booked_solid",
+    state: "tiers are empty because the agents are booked",
+    channel: "info",
+    text: formatBookedSolidNotice(["204", "311", "417"]),
+  },
+  {
+    key: "fallback_covered_availability",
+    state: "an empty tier is covered by its fallback",
+    channel: "info",
+    text: formatFallbackCoveredNotice([
+      {
+        code: "204",
+        via: "311",
+        tierName: "Debt 20k to 30k, backend",
+        viaTierName: "Debt 30k to 50k, frontend",
+        emptyDepth: 1,
+        coverDepth: 1,
+      },
+      {
+        code: "417",
+        via: "511",
+        tierName: "Debt 40k to 50k, backend",
+        viaTierName: "Debt 50k plus, backend",
+        emptyDepth: 2,
+        coverDepth: 4,
+      },
+    ]),
+  },
   // --- the cron dead-man's switch -------------------------------------------
   {
     key: "cron_lane_stale:*",

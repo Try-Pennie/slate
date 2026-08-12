@@ -83,6 +83,38 @@ function tsFiles(dir: string): string[] {
   const declared = fx(`// alert-key: verify_on_book_outage\nawait sendThrottledAlert(spec.key, MS, text);`);
   assert(declared[0]?.key === "verify_on_book_outage", "an // alert-key: declaration is read");
 
+  // #1400: the bare REFERENCE form. `notify: sendThrottledAlert` hands the
+  // dispatcher to a pure check that supplies the key, so nothing readable sits at
+  // this boundary and the site has to declare what it sends.
+  const wiring = fx(`const deps = { notify: sendThrottledAlert, resolve: resolveAlert };`);
+  assert(
+    wiring.length === 2 && wiring.every((w) => w.key === null),
+    "a bare reference wiring is a site, with an unreadable key",
+  );
+  assert(
+    wiring.map((w) => w.channel).join(",") === "alert,resolve",
+    "and carries the channel of the helper it wires",
+  );
+  const wiringDeclared = fx(
+    "// alert-key: sync_staleness\nconst deps = { notify: sendThrottledAlert };",
+  );
+  assert(wiringDeclared[0]?.key === "sync_staleness", "a declared bare reference is read");
+
+  // A shape filter has to be tested against what it must PRESERVE, not only what
+  // it must catch (L104). Each of these names a helper without wiring one, and a
+  // scan that flagged them would make the declaration meaningless noise.
+  const imported = fx(`import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";`);
+  assert(imported.length === 0, "an import naming the helpers is not a wiring point");
+  const prose = fx(`// we deliberately do not call sendThrottledAlert here\nconst x = 1;`);
+  assert(prose.length === 0, "a comment mentioning a helper is not a wiring point");
+  const blockProse = fx(`/** Uses resolveAlert when the condition clears. */\nconst x = 1;`);
+  assert(blockProse.length === 0, "a doc comment mentioning a helper is not a wiring point");
+  const called = fx(`await sendThrottledAlert("sync_failures", MS, text);`);
+  assert(
+    called.length === 1 && called[0].key === "sync_failures",
+    "an ordinary call is still read once, not twice",
+  );
+
   // The first argument must survive an inner comma, or a key built by a call
   // would be truncated and silently mis-keyed.
   const nested = fx("const k = (a: string, b: string) => `x:${a}`;\nawait sendThrottledAlert(k(one, two), MS, text);");
