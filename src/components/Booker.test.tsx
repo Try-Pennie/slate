@@ -830,6 +830,52 @@ describe("Booker phone handling (#1332, #1333)", () => {
     });
   });
 
+  // #1335: the description is editable in settings now, so the booker has to render
+  // whatever an admin wrote, including the shape Dan's copy is actually in: a
+  // description followed by an ask.
+  describe("the event description (#1335)", () => {
+    const withDescription = (description: string | null) => ({
+      ...availability,
+      eventType: { ...availability.eventType, description },
+    });
+
+    /** Paragraphs in the panel the heading sits in, which is where the description
+     *  renders. Counted through ONE selector in both directions, so the empty case
+     *  cannot pass merely by looking somewhere the paragraphs never were. */
+    const panelParagraphs = async () => {
+      const heading = await screen.findByRole("heading", { name: "Advisor Call" });
+      return heading.parentElement!.querySelectorAll("p");
+    };
+
+    it("shows a description and an ask as separate paragraphs", async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => withDescription("Twenty minutes with a senior advisor.\n\nA small ask: join from somewhere quiet."),
+      }) as unknown as typeof fetch;
+      render(<Booker {...baseProps} />);
+
+      const paras = await panelParagraphs();
+      // Two elements, not one containing both. Run together they read as one
+      // paragraph and the ask stops reading as an ask.
+      expect(paras.length).toBe(2);
+      expect(paras[0]!.textContent).toBe("Twenty minutes with a senior advisor.");
+      expect(paras[1]!.textContent).toBe("A small ask: join from somewhere quiet.");
+    });
+
+    it("renders nothing at all when no description is set", async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => withDescription(null),
+      }) as unknown as typeof fetch;
+      render(<Booker {...baseProps} />);
+
+      // Zero through the SAME selector that found two above, so this is the absence
+      // of a paragraph rather than the absence of a place to look. An empty one would
+      // be a gap nobody wrote, on the one panel a lead reads before committing.
+      expect((await panelParagraphs()).length).toBe(0);
+    });
+  });
+
   // #1425, Dan's decision: Pennie asks for a number with no extension, and the
   // FIELD is where that has to hold. A mask that quietly trimmed one would leave a
   // lead believing we still have the digits that get past their switchboard.

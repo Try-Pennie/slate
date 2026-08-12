@@ -187,6 +187,26 @@ export function phonePrefillNotice(dropped: PhonePrefillDrop | null): string | n
   return null;
 }
 
+/**
+ * The event description, as the paragraphs it was written in (#1335).
+ *
+ * Dan's copy is a description followed by an ask ("join from somewhere quiet, not
+ * while driving"), and the second half is a real instruction that changes how the
+ * call goes. Rendered as one block they run together on the one panel a lead reads
+ * before committing, and the ask stops reading as an ask.
+ *
+ * Blank lines separate paragraphs. Leading, trailing and repeated ones produce
+ * nothing, so a value stored before the normalising parser existed still renders
+ * as clean paragraphs rather than as gaps nobody wrote.
+ */
+export function descriptionParagraphs(description: string | null | undefined): string[] {
+  if (!description) return [];
+  return description
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
 export function phoneEchoLine(phone: string): string {
   return `${DETAILS_COPY.yourNumber} ${phone}`;
 }

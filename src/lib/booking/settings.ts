@@ -64,6 +64,63 @@ export function parseHorizonForm(raw: string): HorizonFormPayload {
   return { horizon_days: n, errors: [] };
 }
 
+/**
+ * How long the booker's event description may be (#1335).
+ *
+ * It is one panel a lead reads before committing, and the same string rides into
+ * the Regal payload, so this is a real ceiling rather than a guess: past it the
+ * panel stops being read and starts being scrolled. Generous enough for a
+ * description plus an ask, which is the shape Dan wrote it in.
+ */
+export const EVENT_DESCRIPTION_MAX = 1200;
+
+export interface EventDescriptionPayload {
+  /** The value to store, or null to clear it. */
+  description: string | null;
+  errors: string[];
+}
+
+/**
+ * Parse and normalise the admin settings form's description field (#1335).
+ *
+ * Blank CLEARS it, which is not an error: an org may want no description at all,
+ * and storing an empty string instead would leave the booker rendering an empty
+ * panel rather than none.
+ *
+ * Normalised on the way IN, so the stored value is the one thing every surface
+ * reads and none of them has to decide what four blank lines meant. Windows line
+ * endings become newlines, trailing spaces go, and a run of blank lines collapses
+ * to the one that separates two paragraphs. A SINGLE line break is left alone: the
+ * author meant it, and reflowing somebody's short list would be the editor
+ * silently rewriting their copy.
+ *
+ * Over-long is REFUSED rather than truncated. Storing half a sentence would put a
+ * cut-off instruction in front of every lead, and the author would have no way to
+ * know (L5: never destroy good state, and never accept a value you will damage).
+ *
+ * Pure, so it is node-testable without a database.
+ */
+export function parseEventDescriptionForm(raw: string): EventDescriptionPayload {
+  const normalized = (raw ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, "").replace(/^[ \t]+/g, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (normalized === "") return { description: null, errors: [] };
+  if (normalized.length > EVENT_DESCRIPTION_MAX) {
+    return {
+      description: null,
+      errors: [
+        `The description is ${normalized.length} characters. Please keep it to ` +
+          `${EVENT_DESCRIPTION_MAX} or fewer.`,
+      ],
+    };
+  }
+  return { description: normalized, errors: [] };
+}
+
 const envHorizon = (): number | undefined => {
   const raw = process.env.SLATE_BOOKING_HORIZON_DAYS;
   if (raw === undefined || raw.trim() === "") return undefined;

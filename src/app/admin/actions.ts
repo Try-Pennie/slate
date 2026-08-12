@@ -55,7 +55,11 @@ import {
   coerceReasonOptionsForm,
   parseReasonOptionsForm,
 } from "@/lib/booking/reason-options";
-import { parseDefaultBucketForm, parseHorizonForm } from "@/lib/booking/settings";
+import {
+  parseDefaultBucketForm,
+  parseHorizonForm,
+  parseEventDescriptionForm,
+} from "@/lib/booking/settings";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
 import { log } from "@/lib/log";
 import { __clearChannelCache } from "@/lib/notify/channels";
@@ -472,6 +476,78 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
     actorId: admin.id,
     action: "booking.settings",
     details: { horizon_days: parsed.horizon_days },
+  });
+  revalidatePath("/admin/settings");
+  redirect("/admin/settings?ok=1");
+}
+
+/**
+ * Save the description a lead reads before booking (#1335).
+ *
+ * Admin only, guarding independently of the page gate. It was previously settable
+ * only when an event type was CREATED, so changing the one that already exists
+ * needed an engineer, and Dan's rewrite on 2026-08-07 should be the last time that
+ * is true. The second half of that copy is a real instruction that changes how the
+ * call goes, and it will want tuning once advisors report back.
+ *
+ * Keyed on the event type id from the form, so an org with more than one is not
+ * quietly editing whichever happened to be first.
+ *
+ * The write is a plain UPDATE on one column, so it is idempotent under a retry or
+ * a double submit (assume it runs twice). Its result is CHECKED rather than
+ * discarded: a failed save that redirected to a cheerful "Saved" would leave the
+ * old copy in front of every lead while telling the author it had changed, which is
+ * the exact shape of a success claimed over a write that never committed (L12).
+ */
+export async function setEventDescription(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const db = supabaseAdmin();
+
+  const eventTypeId = String(form.get("event_type_id") ?? "").trim();
+  if (!eventTypeId) {
+    redirect(`/admin/settings?error=${encodeURIComponent("No event type was named.")}`);
+  }
+
+  const parsed = parseEventDescriptionForm(String(form.get("description") ?? ""));
+  if (parsed.errors.length) {
+    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+  }
+
+  const { error, count } = await db
+    .from("event_types")
+    .update({ description: parsed.description }, { count: "exact" })
+    .eq("id", eventTypeId)
+    .eq("org_id", admin.org_id);
+  if (error) {
+    log.error("admin", { msg: "event description save failed", event_type_id: eventTypeId }, error);
+    redirect(
+      `/admin/settings?error=${encodeURIComponent("Could not save the description. Please try again.")}`,
+    );
+  }
+  // Zero rows is not a success either: the id did not match anything this admin's
+  // org owns, so nothing changed and saying otherwise would be a lie about somebody
+  // else's data as much as about theirs.
+  if (count === 0) {
+    redirect(
+      `/admin/settings?error=${encodeURIComponent("That event type was not found.")}`,
+    );
+  }
+
+  // Converge the served copy now rather than only as rows age. The description
+  // rides in the cached slots payload, so without this a lead could read the old
+  // one until the next recompute. #1301 gives an admin-triggered mass invalidation
+  // a bounded grace, so this cannot page a false staleness alarm.
+  try {
+    await markAllBucketSlotsStale();
+  } catch (err) {
+    log.error("admin", { msg: "event description save: row invalidation failed" }, err);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { event_type_id: eventTypeId, description_chars: parsed.description?.length ?? 0 },
   });
   revalidatePath("/admin/settings");
   redirect("/admin/settings?ok=1");
