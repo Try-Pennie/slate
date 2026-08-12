@@ -16,6 +16,17 @@ export interface PostJsonResult<T> {
  */
 export const REQUEST_TIMEOUT_MS = 20000;
 
+export interface GetJsonOptions extends PostJsonOptions {
+  /**
+   * Passed straight to `fetch` (#1364). The availability reads must not be served
+   * from a cache: a lead pressing "see our next available days" is asking what is
+   * free NOW, and a cached answer would offer a slot that has since gone. Kept as
+   * an option on the shared helper rather than having the caller hand-roll its own
+   * fetch, which is how it ended up without a timeout in the first place.
+   */
+  cache?: RequestCache;
+}
+
 export interface PostJsonOptions {
   /**
    * Abort the request after this many ms so a wedged connection (server accepted
@@ -70,7 +81,7 @@ export async function postJson<T = Record<string, unknown>>(
  */
 export async function getJson<T = Record<string, unknown>>(
   url: string,
-  options: PostJsonOptions = {},
+  options: GetJsonOptions = {},
 ): Promise<PostJsonResult<T>> {
   const controller = options.timeoutMs != null ? new AbortController() : null;
   const timer =
@@ -78,7 +89,11 @@ export async function getJson<T = Record<string, unknown>>(
       ? setTimeout(() => controller.abort(), options.timeoutMs)
       : null;
   try {
-    const res = await fetch(url, { method: "GET", signal: controller?.signal });
+    const res = await fetch(url, {
+      method: "GET",
+      signal: controller?.signal,
+      ...(options.cache ? { cache: options.cache } : {}),
+    });
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };
   } catch {
