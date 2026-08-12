@@ -11,7 +11,7 @@ import {
   formatFallbackCoveredNotice,
   classifyDeadEndCause,
   formatDataAnomalyAlert,
-  formatBookedSolidNotice,
+  formatBookedSolidAlert,
   isBroadRecomputeFailure,
   availabilityAlertVerdict,
   formatAvailabilityRecovery,
@@ -272,9 +272,9 @@ const ladder = (code: string) => {
   assert(/broadly/i.test(msg), "broad unverified group still collapses to the outage line");
 }
 
-// --- formatBookedSolidNotice: capacity wording, no dashes ---
+// --- formatBookedSolidAlert: capacity wording, no dashes ---
 {
-  const msg = formatBookedSolidNotice(["FULL1", "FULL2"]);
+  const msg = formatBookedSolidAlert(["FULL1", "FULL2"]);
   assert(msg.includes("FULL1") && msg.includes("FULL2"), "booked-solid notice names the tiers");
   assert(/capacity|booked solid|staffing/i.test(msg), "booked-solid notice reads as a capacity heads up");
   assert(!DASHES.test(msg), "booked-solid notice has no dashes");
@@ -427,6 +427,30 @@ const ladder = (code: string) => {
     anyOnShift(nowMs, [], orgAllDay) === false,
     "an open org with nobody rostered is still not on shift",
   );
+}
+
+// #1412: the copy agrees with the count. Both forms render fine through a
+// substring assertion, which is exactly why they have to be pinned: "3 tiers
+// because ITS agents" and "1 tier on THOSE funnels" are what a reader actually
+// notices, and only reading it catches them.
+{
+  const many = formatBookedSolidAlert(["204", "311", "417"]);
+  assert(many.includes("3 tiers are"), "the plural subject agrees");
+  assert(many.includes("their agents"), "and so does the possessive");
+  assert(many.includes("those funnels"), "and the funnels");
+  assert(!many.includes("its agents"), "no singular possessive on a plural subject");
+
+  const one = formatBookedSolidAlert(["204"]);
+  assert(one.includes("1 tier is"), "the singular subject agrees");
+  assert(one.includes("its agents"), "and so does the possessive");
+  assert(one.includes("that funnel"), "and the funnel");
+  assert(!one.includes("those funnels"), "no plural funnels on a single tier");
+
+  // The page has to say plainly, in its first line, that nothing is broken. A
+  // reader woken by it will otherwise hunt a fault that is not there (L106).
+  assert(/nothing is broken/i.test(one), "the page says nothing is broken");
+  assert(/coverage/i.test(one), "and names the action, which is staffing");
+  assert(one.includes("204"), "and names the tier, so it can be acted on");
 }
 
 finish();

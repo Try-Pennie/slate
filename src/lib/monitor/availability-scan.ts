@@ -14,7 +14,8 @@ import {
   anyOnShift,
   classifyEmptyBuckets,
   classifyDeadEndCause,
-  formatBookedSolidNotice,
+  formatBookedSolidAlert,
+  formatBookedSolidRecovery,
   formatFallbackCoveredNotice,
   reportAvailabilityHealth,
   type AgentShift,
@@ -29,7 +30,16 @@ import { mapWithConcurrency } from "../google/sync-pace.ts";
 
 /** Quiet info: a dead-end because agents are booked solid. Full calendars are a
  *  good outcome, not an incident, so this whispers on a long cooldown. */
-export const BOOKED_SOLID_INFO_KEY = "availability_booked_solid";
+/**
+ * #1412: a PAGE, not a whisper, since Dan's "if we're fully booked I want to know
+ * about it ASAP". The cause is not a fault and never was, which is why this used to
+ * be an info notice; being right about the cause said nothing about the urgency,
+ * and a bucket with no times is every lead on that funnel being turned away right
+ * now (L106). Renamed from `_INFO_` so no call site can keep whispering it by
+ * habit; the KEY string is unchanged, so an outstanding notice and its UI-tunable
+ * cooldown carry over.
+ */
+export const BOOKED_SOLID_ALERT_KEY = "availability_booked_solid";
 /** Low-priority info signal (#567): empty tiers the fallback is quietly covering. */
 export const FALLBACK_COVERED_INFO_KEY = "fallback_covered_availability";
 
@@ -213,9 +223,20 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
     resolve: deps.resolve,
   });
 
+  // #1412: page while any bucket is full, all-clear when a scan that saw EVERY
+  // bucket found none. A truncated scan reached neither branch: its empty list is
+  // a bucket it never looked at, not a bucket with times (#1134, #1152).
   if (cause.bookedSolid.length) {
     await deps
-      .info(BOOKED_SOLID_INFO_KEY, deps.cooldownMs.bookedSolid, formatBookedSolidNotice(cause.bookedSolid))
+      .notify(
+        BOOKED_SOLID_ALERT_KEY,
+        deps.cooldownMs.bookedSolid,
+        formatBookedSolidAlert(cause.bookedSolid),
+      )
+      .catch(() => {});
+  } else if (!truncated) {
+    await deps
+      .resolve(BOOKED_SOLID_ALERT_KEY, formatBookedSolidRecovery())
       .catch(() => {});
   }
   if (covered.length) {

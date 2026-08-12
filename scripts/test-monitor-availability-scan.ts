@@ -6,7 +6,7 @@
 // Run: node --experimental-strip-types scripts/test-monitor-availability-scan.ts
 import {
   runAvailabilityScan,
-  BOOKED_SOLID_INFO_KEY,
+  BOOKED_SOLID_ALERT_KEY,
   FALLBACK_COVERED_INFO_KEY,
   type ScanBucket,
 } from "../src/lib/monitor/availability-scan.ts";
@@ -181,19 +181,71 @@ function harness(config: {
   assert(h.healed[0] === "411" && res.selfHeal.healed[0] === "411", "the anomaly bucket is self-healed");
   assert(h.notified[0]?.key === DATA_ANOMALY_ALERT_KEY, "the anomaly still pages after the heal");
   assert(h.notified[0]?.text.includes("411") === true, "the page names the bucket");
-  assert(h.resolved.length === 0, "a paging tick does not also all-clear");
+  assert(
+    !h.resolved.includes(DATA_ANOMALY_ALERT_KEY),
+    "a paging tick does not also all-clear the page it is sending",
+  );
 }
 
-// Booked solid (recompute agrees with the empty cache): a quiet info whisper,
-// never a page, and it does NOT hold the anomaly page open.
+// Booked solid (recompute agrees with the empty cache), #1412.
+//
+// Dan, 2026-08-12: "if we're fully booked I want to know about it ASAP". The cause
+// is not a FAULT, which is why this was a whisper, and that reasoning was right
+// about the cause and wrong about the urgency: a booked solid bucket means every
+// lead landing on that funnel is being turned away right now. Nothing here is
+// broken, and somebody still has to act on staffing today (L106).
 {
   const h = harness({ buckets: { "411": { recompute: 0 } } });
   const res = await h.run();
   assert(res.cause.bookedSolid[0] === "411", "recompute agreeing with empty cache is booked solid");
-  assert(h.notified.length === 0, "booked solid never pages");
-  assert(h.infoed[0]?.key === BOOKED_SOLID_INFO_KEY, "booked solid whispers on the info channel");
-  assert(h.resolved.length === 1, "a booked-solid week does not suppress the all-clear");
+  const page = h.notified.find((n) => n.key === BOOKED_SOLID_ALERT_KEY);
+  assert(page !== undefined, "booked solid PAGES");
+  assert(page?.text.includes("411") === true, "and names the bucket, so staffing knows where");
+  assert(
+    !h.infoed.some((i) => i.key === BOOKED_SOLID_ALERT_KEY),
+    "and does not ALSO whisper: one condition, one notification",
+  );
   assert(h.healed.length === 0, "booked solid is not healed: there is nothing to rewrite");
+  // It is a distinct condition from the data anomaly, so it must not hold that
+  // page open or be mistaken for it.
+  assert(
+    !h.notified.some((n) => n.key === DATA_ANOMALY_ALERT_KEY),
+    "and is not reported as a cache anomaly, which is a different fault with a different fix",
+  );
+  assert(
+    h.resolved.includes(DATA_ANOMALY_ALERT_KEY),
+    "a booked-solid week still all-clears the anomaly page: the cache is fine",
+  );
+  assert(
+    !h.resolved.includes(BOOKED_SOLID_ALERT_KEY),
+    "and a tick that is PAGING booked-solid does not also clear it",
+  );
+}
+
+// The all-clear, hung off a MEASURED reading (#1152).
+{
+  const h = harness({ buckets: { "411": { recompute: 3 } } });
+  await h.run();
+  assert(
+    h.resolved.includes(BOOKED_SOLID_ALERT_KEY),
+    "a scan that measured every bucket with times offers the booked-solid all-clear",
+  );
+}
+
+// THE failure path. A truncated scan ran out of budget before covering every
+// bucket, so its empty booked-solid list proves nothing: the bucket that is full
+// may be one it never reached. It must neither page nor all-clear.
+{
+  const h = harness({ buckets: { "411": { recompute: 3 } }, deadlineMs: 0 });
+  await h.run();
+  assert(
+    !h.resolved.includes(BOOKED_SOLID_ALERT_KEY),
+    "a truncated scan sends NO booked-solid all-clear: it never looked at every bucket",
+  );
+  assert(
+    !h.notified.some((n) => n.key === BOOKED_SOLID_ALERT_KEY),
+    "and pages nothing about it either",
+  );
 }
 
 // A failed recompute: unverified, which PAGES (erring toward flagging) and is
@@ -235,7 +287,10 @@ function harness(config: {
   assert(h.infoed[0]?.key === FALLBACK_COVERED_INFO_KEY, "coverage whispers on the info channel");
   assert(h.infoed[0]?.text.includes("Tier 411") === true, "the notice carries the human tier name");
   assert(h.infoed[0]?.text.includes("only one agent deep") === true, "the notice flags thin one-deep coverage");
-  assert(h.resolved.length === 1, "a covered tier does not block the all-clear");
+  assert(
+    h.resolved.includes(DATA_ANOMALY_ALERT_KEY),
+    "a covered tier does not block the all-clear",
+  );
 }
 
 // A test bucket's slots never masquerade as real coverage.
@@ -318,7 +373,9 @@ function harness(config: {
 }
 
 // An unverified bucket whose recompute recovers and agrees with the empty cache
-// turns out to be booked solid, so it whispers instead of paging.
+// turns out to be booked solid, so it pages as THAT rather than as a cache fault
+// (#1412). Two conditions with two fixes: one is add coverage, the other is find
+// out why the cache disagrees with the calendars.
 {
   const h = harness({
     buckets: { "411": { recompute: null } },
@@ -327,8 +384,14 @@ function harness(config: {
   const res = await h.run();
   assert(res.cause.unverified.length === 0, "a recovered recompute is no longer unverified");
   assert(res.cause.bookedSolid[0] === "411", "agreeing with the empty cache is booked solid");
-  assert(h.notified.length === 0, "so it no longer pages");
-  assert(h.infoed[0]?.key === BOOKED_SOLID_INFO_KEY, "it whispers on the info channel instead");
+  assert(
+    !h.notified.some((n) => n.key === DATA_ANOMALY_ALERT_KEY),
+    "so it no longer pages as a cache anomaly",
+  );
+  assert(
+    h.notified.some((n) => n.key === BOOKED_SOLID_ALERT_KEY),
+    "it pages as booked solid instead, which is a different fix",
+  );
 }
 
 // An unverified bucket whose recompute recovers and finds times is a real

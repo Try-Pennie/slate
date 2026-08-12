@@ -116,6 +116,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "is going stale; they re-enter the rotation and the same gauge re-measures it.",
   },
   {
+    key: "availability_booked_solid",
+    kind: "condition",
+    why:
+      "Every lead landing on that tier is being turned away right now; coverage is " +
+      "added and the same scan sees the tier offering times again (#1412). Not a " +
+      "fault, which is why it reads oddly as a page, and still the moment to act.",
+  },
+  {
     key: "availability_data_anomaly",
     kind: "condition",
     why:
@@ -392,13 +400,6 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why:
       "Bookable agents with no routing attributes, so no bucket criteria match them; " +
       "an admin adds the attributes, and there is no incident to end.",
-  },
-  {
-    key: "availability_booked_solid",
-    kind: "info",
-    why:
-      "A bucket is empty because its agents are genuinely booked, which is a " +
-      "staffing fact rather than a fault, so there is no failure to recover from.",
   },
   {
     key: "fallback_covered_availability",

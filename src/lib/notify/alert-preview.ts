@@ -41,7 +41,8 @@ import { formatAttributeGapNotice } from "@/lib/monitor/attribute-coverage";
 import {
   formatDataAnomalyAlert,
   formatAvailabilityRecovery,
-  formatBookedSolidNotice,
+  formatBookedSolidAlert,
+  formatBookedSolidRecovery,
   formatFallbackCoveredNotice,
 } from "@/lib/monitor/availability-health";
 import {
@@ -844,10 +845,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ]),
   },
   {
+    // #1412: a PAGE now. Read the first line: the reader has to know at once that
+    // they are not hunting a fault, they are looking at leads being turned away
+    // while every calendar behaves correctly.
     key: "availability_booked_solid",
-    state: "tiers are empty because the agents are booked",
-    channel: "info",
-    text: formatBookedSolidNotice(["204", "311", "417"]),
+    state: "several tiers are full",
+    channel: "alert",
+    text: formatBookedSolidAlert(["204", "311", "417"]),
+  },
+  {
+    key: "availability_booked_solid",
+    state: "one tier is full, so the count must not read as plural",
+    channel: "alert",
+    text: formatBookedSolidAlert(["204"]),
+  },
+  {
+    key: "availability_booked_solid",
+    state: "every tier is offering times again",
+    channel: "recovery",
+    text: formatBookedSolidRecovery(),
   },
   {
     key: "fallback_covered_availability",

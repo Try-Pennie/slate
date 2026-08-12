@@ -558,13 +558,15 @@ export async function GET(req: NextRequest) {
           onHealError: (code, err) =>
             log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
           // alert-key: availability_data_anomaly
-          notify: sendThrottledAlert,
           // alert-key: availability_booked_solid
+          notify: sendThrottledAlert,
           // alert-key: fallback_covered_availability
           info: sendThrottledInfo,
           // alert-key: availability_data_anomaly
+          // alert-key: availability_booked_solid
           // all-clear-proof: scripts/test-monitor-availability-scan.ts - a truncated
-          // scan sends no all-clear and a paging tick does not also all-clear.
+          // scan sends no all-clear for EITHER condition, and a paging tick does not
+          // also all-clear the page it is sending.
           resolve: resolveAlert,
           cooldownMs: {
             dataAnomaly: settings.cooldownMs.availability_data_anomaly,
