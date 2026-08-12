@@ -24,7 +24,8 @@ export type MonitorAlertKey =
   | "ooo_calcom_unprotected"
   | "empty_buckets"
   | "booking_failure_rate"
-  | "availability_drift";
+  | "availability_drift"
+  | "booker_empty_reason";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -42,6 +43,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "empty_buckets",
   "booking_failure_rate",
   "availability_drift",
+  "booker_empty_reason",
 ];
 
 /**
@@ -122,6 +124,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Page when the share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
   },
   {
+    key: "booker_empty_reason",
+    label: "Booker cannot say why a week is empty",
+    help: "Page when the booker has no times to offer and cannot tell whether we are closed or fully booked, so a lead is shown a vague message instead of the reason.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -182,6 +189,11 @@ export const MONITOR_DEFAULTS = {
     // (a few hours), so a fast repeat would say nothing new. Hourly, matching the
     // other conditions that persist until something is fixed.
     availability_drift: 60 * 60_000,
+    // The booker unable to explain an empty week (#1420) is a config read that
+    // stays broken until somebody fixes it, and the lane re-measures it every
+    // minute, so a fast repeat would say nothing new. Hourly, matching the other
+    // conditions that persist until something is fixed.
+    booker_empty_reason: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,
