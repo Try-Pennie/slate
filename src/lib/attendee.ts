@@ -3,11 +3,15 @@
  * bookings API (server) so the rules can never drift. Pure; exercised by
  * scripts/test-attendee.ts.
  *
- * Phone stays a light shape check (10 to 15 digits): toE164 normalizes for
- * webhooks and deliberately never drops a number, so rejecting aggressively
- * here would only block real leads with unusual formatting.
+ * Phone is US only (#1356), asked through the SAME `isUsPhone` the booker's field
+ * and its prefill use. It used to be a light 10 to 15 digit shape check while the
+ * field capped at ten, so a longer international number was refused by the field
+ * and accepted here: the product said two different things about one number, and a
+ * lead who cleared that field could not type it back in. Pennie can only CALL a US
+ * number, so that is the rule, held in one place.
  */
 import { INPUT_LIMITS } from "./booking/input-limits.ts";
+import { isUsPhone, PHONE_DIGITS } from "./phone-format.ts";
 
 export type AttendeeInput = { name?: string; email?: string; phone?: string };
 export type AttendeeErrors = Partial<Record<"name" | "email" | "phone", string>>;
@@ -39,8 +43,14 @@ export function validateAttendee(attendee: AttendeeInput): AttendeeErrors {
   const digits = phone.replace(/\D/g, "");
   if (!phone) {
     errors.phone = "Enter your phone number";
-  } else if (phone.length > MAX || digits.length < 10 || digits.length > 15) {
+  } else if (phone.length > MAX || digits.length < PHONE_DIGITS) {
+    // Incomplete, not foreign. Telling this lead about country codes would send
+    // them looking for a problem they do not have (L11).
     errors.phone = "Enter a valid phone number";
+  } else if (!isUsPhone(phone)) {
+    // Long enough to be a real number, and not one we can call. Say which, because
+    // "invalid" would read as a typo and they would try the same number again.
+    errors.phone = "We can only call a US number. Please enter one.";
   }
 
   return errors;

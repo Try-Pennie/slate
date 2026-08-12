@@ -1,7 +1,7 @@
 // Sanity test for the shared attendee contact validation (#37).
 // Run: node --experimental-strip-types scripts/test-attendee.ts
 import { validateAttendee } from "../src/lib/attendee.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const valid = {
   name: "Dana Lead",
@@ -66,5 +66,43 @@ assert(
   !!all.name && !!all.email && !!all.phone,
   "reports every invalid field, not just the first",
 );
+
+/** The phone error for a candidate number, with the other fields valid. */
+function phoneError(phone: string): string | undefined {
+  return validateAttendee({ name: "Dana", email: "d@e.com", phone }).phone;
+}
+
+// --- US only, in ONE place (#1356) -------------------------------------------
+// Dan's decision: Pennie can only CALL a US number. The field already capped at
+// ten digits while this accepted 10 to 15, so a longer international number was
+// refused by the field and accepted by the server, and the product said two
+// different things about the same number. The validator now asks the same
+// question the field does.
+{
+  eq(phoneError("(215) 555-0100"), undefined, "a formatted US number is accepted");
+  eq(phoneError("2155550100"), undefined, "a bare ten digit number is accepted");
+  eq(phoneError("+1 215 555 0100"), undefined, "and one carrying the US country code");
+
+  // The case this issue exists for. It used to book successfully.
+  const intl = phoneError("+44 20 7946 0958");
+  assert(intl !== undefined, "an international number is refused");
+  assert(
+    /US/.test(intl ?? ""),
+    `and the message says WHY, naming the rule rather than calling it invalid (got: ${intl})`,
+  );
+
+  // Distinct causes, distinct messages (L11). Somebody who typed eight digits has
+  // an incomplete number, not a foreign one, and telling them about US numbers
+  // would send them looking for a problem they do not have.
+  const short = phoneError("21555");
+  assert(short !== undefined, "a number too short is still refused");
+  assert(
+    !/US/.test(short ?? ""),
+    `and is NOT told about country codes: it is an incomplete number (got: ${short})`,
+  );
+  assert(short !== intl, "the two causes do not share a message");
+
+  eq(phoneError(""), "Enter your phone number", "an empty field keeps its own message");
+}
 
 finish();

@@ -9,7 +9,7 @@ import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
-import { formatPhoneAsTyped, formatPhoneIfUsShaped } from "@/lib/phone-format";
+import { formatPhoneAsTyped, prefillPhone } from "@/lib/phone-format";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
@@ -22,6 +22,7 @@ import {
   HONEYPOT_LABEL,
   MOVE_COPY,
   NEXT_DAYS_COPY,
+  US_ONLY_PHONE_NOTICE,
   allTimesTaken,
   closedNoReopenDate,
   closedUntil,
@@ -274,12 +275,20 @@ export default function Booker({
   // #1332: a prefilled number is what the advisor ends up calling, and most real
   // leads arrive with one from the landing page, so it reads the same as a typed
   // one. Normalised HERE rather than in each page that builds the props, so a new
-  // construction site cannot forget. Only a US-shaped number is touched: anything
-  // longer is left exactly as given rather than truncated by the ten digit cap.
+  // construction site cannot forget.
+  //
+  // #1356: a number Pennie cannot call is DROPPED rather than passed through, and
+  // the drop is reported, because the field caps at ten digits so the lead cannot
+  // type it back either. An empty field with no explanation would send them to
+  // press confirm and be told "enter your phone number", which is true and useless.
+  const initialPhone = useMemo(() => prefillPhone(initialAttendee.phone), [initialAttendee.phone]);
   const [attendee, setAttendee] = useState<Attendee>(() => ({
     ...initialAttendee,
-    phone: formatPhoneIfUsShaped(initialAttendee.phone),
+    phone: initialPhone.value,
   }));
+  // Shown until they type something, then it has served its purpose: it explains
+  // an empty field, and the field is no longer empty.
+  const showDiscardedPhoneNotice = initialPhone.discarded && attendee.phone === "";
   // Honeypot (#1033): a real user never sees or fills the hidden decoy below, so
   // it stays empty; a bot that fills every field trips the server-side check.
   const [honeypot, setHoneypot] = useState("");
@@ -903,6 +912,13 @@ export default function Booker({
                 >
                   {fieldErrors[field]}
                 </p>
+              )}
+              {/* #1356: why the number they arrived with is not in the field. Not
+                  an error, because they have done nothing wrong and nothing has
+                  failed yet, so it is not styled or announced as one; it is the
+                  reason a field they expected to be filled is empty. */}
+              {field === "phone" && showDiscardedPhoneNotice && !fieldErrors.phone && (
+                <p className={`mt-1 text-sm ${c.muted}`}>{US_ONLY_PHONE_NOTICE}</p>
               )}
             </div>
           ))}

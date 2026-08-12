@@ -6,12 +6,16 @@
  * back. Formatting and capping as they type puts the shape in front of them while
  * they can still see what they meant to write.
  *
- * **US only, deliberately.** `validateAttendee` accepts 10 to 15 digits on
- * purpose, so unusual formatting cannot block a real lead; this display cap is
- * narrower than that. Pennie lends in the US and every lead arrives from a US
- * funnel, so a ten digit cap is right today, but it IS an assumption: a lead with
- * a longer international number could not type it into this field. Widen this,
- * not the validator, if that ever stops being true.
+ * **US only, and enforced as one rule everywhere (#1356).** Pennie can only CALL
+ * a US number, so that is the rule the field, the prefill and the server all hold
+ * to. It used to be enforced in two places that disagreed: the field capped at ten
+ * digits while `validateAttendee` accepted 10 to 15, so a lead arriving with a
+ * longer international number booked successfully, and a lead who cleared that
+ * field could not type it back in. The product said two different things.
+ *
+ * `isUsPhone` is now the single judge. If Pennie ever calls outside the US, widen
+ * THAT, and the field cap with it; do not reintroduce a validator that accepts
+ * what the field cannot hold.
  */
 
 /** The number of digits the field accepts. Stated once. */
@@ -47,24 +51,44 @@ export function formatPhoneAsTyped(value: string): string {
 }
 
 /**
- * A PREFILLED number tidied to the same shape, but only when doing so cannot lose
- * anything (#1332).
+ * Is this a number Pennie can call? Ten digits, or eleven beginning with 1.
+ *
+ * THE rule (#1356). Every surface asks this one function, so the field, the
+ * prefill and the server can never disagree about what US-shaped means, which is
+ * exactly what they used to do.
+ */
+export function isUsPhone(value: string): boolean {
+  const digits = value.replace(/\D/g, "");
+  return (
+    digits.length === PHONE_DIGITS ||
+    (digits.length === PHONE_DIGITS + 1 && digits.startsWith("1"))
+  );
+}
+
+/**
+ * A PREFILLED number, tidied if we can call it and DROPPED if we cannot (#1356).
  *
  * Most real leads arrive with their phone already filled in from the landing page,
  * so that value is what the advisor ends up calling and it should read the same as
- * a typed one. But `formatPhoneAsTyped` caps at ten digits, and running a genuinely
- * longer international number through it would silently truncate a number nobody
- * asked it to touch, which is worse than leaving it untidy: `validateAttendee`
- * accepts 10 to 15 digits precisely so unusual formatting cannot block a real lead.
+ * a typed one.
  *
- * So this reformats ONLY what a US number can be: ten digits, or eleven beginning
- * with 1. Anything else is returned exactly as given, and reaches validation to
- * pass or fail on its own merits.
+ * Dan's decision, and the reason `discarded` is returned rather than just a
+ * string: the field caps at ten digits, so a lead whose number is dropped cannot
+ * type it back either. Dropping it silently would leave them staring at an empty
+ * field with no idea why, and pressing confirm to be told "enter your phone
+ * number", which is true and useless. The booker uses this flag to say what
+ * happened.
+ *
+ * A number too SHORT is a different case and is KEPT: it is not a number we
+ * refuse, it is an incomplete US one, and the lead can finish typing it. Vanishing
+ * it under a message about country codes would be the wrong explanation for the
+ * wrong problem (L11).
  */
-export function formatPhoneIfUsShaped(value: string): string {
+export function prefillPhone(value: string): { value: string; discarded: boolean } {
   const digits = value.replace(/\D/g, "");
-  const isUsShaped =
-    digits.length === PHONE_DIGITS ||
-    (digits.length === PHONE_DIGITS + 1 && digits.startsWith("1"));
-  return isUsShaped ? formatPhoneAsTyped(value) : value;
+  if (isUsPhone(value)) return { value: formatPhoneAsTyped(value), discarded: false };
+  // Nothing given, or a partial US number: leave it exactly as it is. Neither is
+  // a refusal, so neither may be reported as one.
+  if (digits.length < PHONE_DIGITS) return { value, discarded: false };
+  return { value: "", discarded: true };
 }
