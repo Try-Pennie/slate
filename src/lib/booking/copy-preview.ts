@@ -32,6 +32,8 @@ import {
   NEXT_DAYS_COPY,
   PICKER_COPY,
   CLOSED_BODY,
+  UNCLASSIFIED_EMPTY_NOTICE,
+  UNCLASSIFIED_EMPTY_RETRY,
   allTimesTaken,
   closedNoReopenDate,
   closedUntil,
@@ -109,7 +111,8 @@ export function bookerCopyScreens(): CopyScreen[] {
       screen: "Booker: nothing bookable nearby",
       purpose:
         "Three different causes that a single 'check back soon' used to flatten. " +
-        "The office being shut is not the same as every time being taken.",
+        "The office being shut is not the same as every time being taken, and " +
+        "neither is the same as not knowing which it is.",
       lines: [
         { state: "every time in the window is taken", text: allTimesTaken() },
         { state: "closed, with a known reopening day", text: closedUntil("2026-08-17", ZONE) },
@@ -118,6 +121,11 @@ export function bookerCopyScreens(): CopyScreen[] {
           text: CLOSED_BODY,
         },
         { state: "closed, with no reopening day recorded", text: closedNoReopenDate() },
+        {
+          state: "the window is empty and nothing said why",
+          text: UNCLASSIFIED_EMPTY_NOTICE,
+        },
+        { state: "and the way out of that", text: UNCLASSIFIED_EMPTY_RETRY },
       ],
     },
     {
