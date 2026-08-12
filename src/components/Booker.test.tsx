@@ -3,7 +3,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
-import { INCOMPLETE_PHONE_NOTICE, US_ONLY_PHONE_NOTICE } from "@/lib/booking/booker-copy";
+import {
+  INCOMPLETE_PHONE_NOTICE,
+  NEXT_DAYS_COPY,
+  PICKER_COPY,
+  US_ONLY_PHONE_NOTICE,
+  allTimesTaken,
+  closedNoReopenDate,
+} from "@/lib/booking/booker-copy";
+import { DateTime } from "luxon";
 import { RESCHEDULE_REASONS } from "@/lib/booking/core";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
@@ -1214,6 +1222,121 @@ describe("Booker closure state (#1329, #1339)", () => {
       await screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
       expect(document.querySelector("[data-bob-dots]")).toBeNull();
       expect(screen.queryByText(/still looking/i)).toBeNull();
+    });
+  });
+
+
+  // The three guards #1339 asks for by name. Each pins a way this state could look
+  // right while being wrong about something a lead would act on.
+  describe("the guards this state needs (#1339)", () => {
+    it("does NOT appear for an ordinary busy week", async () => {
+      // A staffed week that happens to be full is not a closure. Naming a return
+      // day there would be inventing one, and "nobody is available before then"
+      // would be false: they are available, they are booked.
+      global.fetch = vi.fn(async () =>
+        ({ ok: true, json: async () => ({ ...availability, slots: [] }) }) as Response,
+      ) as unknown as typeof fetch;
+
+      render(<Booker {...baseProps} />);
+      expect(await screen.findByText(allTimesTaken())).toBeTruthy();
+      expect(screen.queryByText(/Nobody is available before then/)).toBeNull();
+      expect(screen.queryByText(/We are closed/)).toBeNull();
+    });
+
+    it("does NOT claim a return day when the server could not name one", async () => {
+      // The vaguer sentence is the honest one here, and the body hangs off a day
+      // that does not exist, so it must not render either.
+      global.fetch = vi.fn(async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            ...availability,
+            slots: [],
+            emptyBecause: { kind: "closed", reopensOn: null },
+          }),
+        }) as Response,
+      ) as unknown as typeof fetch;
+
+      render(<Booker {...baseProps} />);
+      expect(await screen.findByText(closedNoReopenDate())).toBeTruthy();
+      expect(screen.queryByText(/Nobody is available before then/)).toBeNull();
+    });
+
+    it("shows no times on the revealed days until one is picked", async () => {
+      // #1336's rule, and the far side of a closure is the tempting place to break
+      // it: the lead has already asked once, so it feels like they asked for times.
+      // They asked for DAYS.
+      const far = new Date();
+      far.setDate(far.getDate() + 20);
+      far.setHours(10, 0, 0, 0);
+      const alsoFar = new Date(far);
+      alsoFar.setHours(14, 0, 0, 0);
+
+      global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+        if (String(url).includes("/api/availability/next")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ slots: [far.toISOString(), alsoFar.toISOString()] }),
+          } as Response;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ...availability,
+            slots: [],
+            emptyBecause: { kind: "closed", reopensOn: "2026-08-17" },
+          }),
+        } as Response;
+      }) as unknown as typeof fetch;
+
+      render(<Booker {...baseProps} />);
+      fireEvent.click(await screen.findByRole("button", { name: NEXT_DAYS_COPY.ask }));
+
+      // The day chips arrive...
+      await screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
+      // ...and not one time with them.
+      expect(screen.queryByRole("button", { name: /:\d{2}/ })).toBeNull();
+      // getAllByText: the line is both shown and announced, which is deliberate.
+      expect(screen.getAllByText(PICKER_COPY.pickADay).length).toBeGreaterThan(0);
+    });
+
+    it("names the revealed block from the first genuinely bookable day", async () => {
+      // Not the first day after the gap, which is the easy mistake: a Monday we
+      // reopen on with no bookable time is not a day to send anyone to.
+      const monday = "2026-08-17T14:00:00.000Z";
+      const wednesday = "2026-08-19T14:00:00.000Z";
+      global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+        if (String(url).includes("/api/availability/next")) {
+          // The server returns only days that really have times, so the first slot
+          // IS the first bookable day. The heading must follow the slots rather
+          // than the reopening date it was told about.
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ slots: [wednesday] }),
+          } as Response;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ...availability,
+            slots: [],
+            emptyBecause: { kind: "closed", reopensOn: monday.slice(0, 10) },
+          }),
+        } as Response;
+      }) as unknown as typeof fetch;
+
+      render(<Booker {...baseProps} />);
+      fireEvent.click(await screen.findByRole("button", { name: NEXT_DAYS_COPY.ask }));
+
+      const heading = await screen.findByText(/Our next available days, from/);
+      const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const expected = DateTime.fromISO(wednesday, { zone }).toFormat("cccc, LLLL d");
+      expect(heading.textContent).toContain(expected);
+      // And explicitly NOT the reopening day it was handed.
+      const reopen = DateTime.fromISO(monday, { zone }).toFormat("cccc, LLLL d");
+      expect(heading.textContent).not.toContain(reopen);
     });
   });
 

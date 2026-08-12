@@ -66,6 +66,19 @@ export function closedNoReopenDate(): string {
   return "We are closed right now.";
 }
 
+/**
+ * What follows the closure sentence, when we know the day we are back (#1339).
+ *
+ * Two sentences doing two jobs. The first stops a lead hunting for a nearer time
+ * that is not there; the second tells them there IS a way through, which is the
+ * whole reason this state exists rather than "check back soon".
+ *
+ * Shown ONLY alongside `closedUntil`. "Before then" needs a `then` to refer to, so
+ * it would be a dangling sentence under "We are closed right now", and under "All
+ * times are taken" it would be false: that week is staffed, it is simply full.
+ */
+export const CLOSED_BODY = "Nobody is available before then. You can still book the first days back.";
+
 // --- looking further ahead (#1329, #1364) ------------------------------------
 
 export const NEXT_DAYS_COPY = {
