@@ -4,7 +4,6 @@ import { DateTime } from "luxon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon } from "@/components/icons";
-import { BookerCalendar } from "@/components/BookerCalendar";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
@@ -37,7 +36,6 @@ import {
   keepExistingTime,
   moveToTime,
 } from "@/lib/booking/booker-copy";
-import type { BookerLayout } from "@/lib/booking/layout";
 import { labelColorFor } from "@/lib/brand-label";
 import {
   deviceTimeZone,
@@ -90,8 +88,6 @@ interface BookerProps {
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
   brandColor?: string;
-  /** Date-picker layout: a horizontal day strip (default) or the month grid. */
-  layout?: BookerLayout;
   /** Host page origin (from widget.js), used as the postMessage target so the
    *  booking-success payload is never broadcast to "*" (#593). */
   parentOrigin?: string;
@@ -227,7 +223,6 @@ export default function Booker({
   embedded = false,
   theme = "light",
   brandColor,
-  layout = "strip",
   parentOrigin,
   horizonDays,
   rescheduleReasons,
@@ -259,7 +254,6 @@ export default function Booker({
   // Bare `DateTime` (= DateTime<boolean>) matches BookerCalendar's prop contract;
   // @types/luxon's generic validity would otherwise infer a narrower type that
   // onMonthChange (DateTime<boolean>) can't set.
-  const [month, setMonth] = useState<DateTime>(() => today.startOf("month"));
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   // #1337: the confirm was DECLINED because this person already has an active
   // call. Nothing was created. The screen offers to move that call into the slot
@@ -339,20 +333,20 @@ export default function Booker({
       ?.focus();
   }, [nextDaySlots]);
 
-  // Only request the precomputed window [today, today+horizonDays]. The horizon
-  // is the org-wide setting (#216), resolved server-side and passed in as a prop
-  // (single source of truth, AUD-076) rather than duplicated as a client constant.
-  // A month entirely beyond the horizon has no bookable slots, so it loads
-  // NOTHING (url null) rather than anchoring a cold compute outside the warmed
-  // window; the picker settles that as "no days" instead of a stuck spinner.
+  // Request exactly the precomputed window [today, today + horizonDays]. The
+  // horizon is the org-wide setting (#216), resolved server-side and passed in as
+  // a prop (single source of truth, AUD-076) rather than duplicated here.
+  //
+  // #1416: this window used to be intersected with the CALENDAR MONTH being
+  // viewed, which the deleted month grid needed and the day strip never did. At a
+  // month boundary that clipped the horizon: with four bookable days and today the
+  // 30th, `min(monthEnd, horizonEnd)` asked only to the 31st and the lead was
+  // offered two days instead of four. Nothing about the strip ever wanted a month.
   const availabilityUrl = useMemo(() => {
-    const horizonEnd = today.plus({ days: horizonDays });
-    const fromDt = DateTime.max(month.startOf("month"), today);
-    if (fromDt > horizonEnd) return null;
-    const from = fromDt.toUTC().toISO();
-    const to = DateTime.min(month.endOf("month"), horizonEnd).toUTC().toISO();
+    const from = today.toUTC().toISO();
+    const to = today.plus({ days: horizonDays }).toUTC().toISO();
     return `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`;
-  }, [bucketCode, month, today, horizonDays]);
+  }, [bucketCode, today, horizonDays]);
 
   // The shared picker (#1336) owns the fetch, the abort + supersession guard
   // (#629), the day grouping in the viewer's zone, the chosen day and the
@@ -775,10 +769,8 @@ export default function Booker({
   // lead's connection would be a claim the check never established (L11).
   //
   // "Unknown" means the SERVER returned a window with nothing in it and did not say
-  // why. A month layout paged past the horizon is a different thing entirely: the
-  // response carried slots, they just do not fall in the month being looked at, and
-  // the client knows exactly why. So the third state requires an empty payload, not
-  // merely an empty view.
+  // why. That is not the same as a view with nothing in it for other reasons, so
+  // the third state requires an empty PAYLOAD rather than merely an empty view.
   const serverReturnedNothing = meta !== null && meta.slots.length === 0;
   const emptyCause: "closed" | "busy" | "unknown" =
     meta?.emptyBecause?.kind ?? (serverReturnedNothing ? "unknown" : "busy");
@@ -910,7 +902,7 @@ export default function Booker({
     </div>
   );
 
-  // Times / booking form — rendered once and shared by both layouts (the 420px
+  // Times / booking form (the 420px
   // cap is for the scrolling slot list only).
   const timesPanel = (
     <section className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}`}>
@@ -1204,83 +1196,47 @@ export default function Booker({
     </aside>
   );
 
-  const calendarPanel = (
-    <section className={`border-b p-6 ${c.border} md:border-b-0`}>
-      <BookerCalendar
-        month={month}
-        today={today}
-        canPrev={month.startOf("month") > today.startOf("month")}
-        // Availability is cache-limited; once a loaded month comes back
-        // empty there's nothing further to page into. Stay optimistic while
-        // a month is still loading.
-        canNext={loading || picker.days.length > 0}
-        onMonthChange={(m) => {
-          setMonth(m);
-          // A day chosen in the old month must not survive into the new one.
-          picker.selectDay(null);
-          setSelectedSlot(null);
-        }}
-        isSelected={(d) => d.toISODate() === activeDay}
-        isDisabled={(d) => !picker.days.includes(d.toISODate()!)}
-        onSelect={(d) => {
-          picker.selectDay(d.toISODate()!);
-          setSelectedSlot(null);
-        }}
-        selectedStyle={confirmStyle}
-        todayDotStyle={dotStyle}
-      />
-    </section>
-  );
-
   return (
     <div ref={rootRef} data-theme={theme} className={shell}>
-      {layout === "month" ? (
-        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr_240px]">
-          {eventPanel}
-          {calendarPanel}
+      <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+        {eventPanel}
+        <div className="flex flex-col">
+          {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
+          <div className="px-6 pt-6">
+            {loading ? (
+              // As many placeholder chips as days are about to arrive, so the
+              // row does not change width as content lands.
+              <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
+            ) : (
+              <>
+                {/* #1339: the revealed block says where it starts, because these
+                    days are NOT the next few days and a bare strip out here would
+                    read as though they were. Announced politely and given focus,
+                    since the button that revealed it is gone. */}
+                {revealedFrom && (
+                  <p
+                    role="status"
+                    className={`mb-3 text-sm ${c.muted}`}
+                  >
+                    Our next available days, from {revealedFrom}.
+                  </p>
+                )}
+                <BookerStrip
+                  today={today}
+                  days={picker.days}
+                  activeDay={activeDay}
+                  zone={zone}
+                  onSelect={(iso) => {
+                    picker.selectDay(iso);
+                    setSelectedSlot(null);
+                  }}
+                />
+              </>
+            )}
+          </div>
           {timesPanel}
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
-          {eventPanel}
-          <div className="flex flex-col">
-            {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
-            <div className="px-6 pt-6">
-              {loading ? (
-                // As many placeholder chips as days are about to arrive, so the
-                // row does not change width as content lands.
-                <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
-              ) : (
-                <>
-                  {/* #1339: the revealed block says where it starts, because these
-                      days are NOT the next few days and a bare strip out here would
-                      read as though they were. Announced politely and given focus,
-                      since the button that revealed it is gone. */}
-                  {revealedFrom && (
-                    <p
-                      role="status"
-                      className={`mb-3 text-sm ${c.muted}`}
-                    >
-                      Our next available days, from {revealedFrom}.
-                    </p>
-                  )}
-                  <BookerStrip
-                    today={today}
-                    days={picker.days}
-                    activeDay={activeDay}
-                    zone={zone}
-                    onSelect={(iso) => {
-                      picker.selectDay(iso);
-                      setSelectedSlot(null);
-                    }}
-                  />
-                </>
-              )}
-            </div>
-            {timesPanel}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

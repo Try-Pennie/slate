@@ -505,98 +505,6 @@ describe("Booker offers no time until a day is chosen (#1336)", () => {
     expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
   });
 
-  it("asks for a day, and renders no time, on the month-calendar layout", async () => {
-    global.fetch = okFetch();
-    render(<Booker {...baseProps} layout="month" />);
-
-    const day = new Date(slotIso);
-    const label = new Intl.DateTimeFormat("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    }).format(day);
-    // Wait for the date to become PRESSABLE, not merely present: the calendar
-    // draws every date of the month either way, so waiting on the label alone
-    // would assert against a still-loading panel and could never go red.
-    await waitFor(() =>
-      expect(screen.getByLabelText(label).getAttribute("aria-disabled")).toBeNull(),
-    );
-    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
-
-    await userEvent.click(screen.getByLabelText(label));
-    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
-  });
-});
-
-describe("Booker availability race on month change (#629)", () => {
-  // Rapid month navigation issues overlapping availability fetches. If the older
-  // (stale) month's response resolves last, its slots must NOT overwrite the
-  // newer month the user actually landed on. Reproduced with two months both in
-  // the 4-day horizon (today anchored to Jan 30 so Feb 1 still fetches).
-  it("ignores a stale month's response that resolves after the newer month's", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
-
-    const janSlots = ["2026-01-30T15:00:00.000Z", "2026-01-30T18:00:00.000Z"];
-    const febSlots = ["2026-02-01T19:00:00.000Z"];
-    const respFor = (url: string) =>
-      url.includes("from=2026-02")
-        ? { ...availability, slots: febSlots }
-        : { ...availability, slots: janSlots };
-
-    const pending: { url: string; settle: () => void }[] = [];
-    global.fetch = vi.fn((url: RequestInfo | URL) => {
-      const u = decodeURIComponent(String(url));
-      return new Promise<Response>((resolve) => {
-        pending.push({
-          url: u,
-          settle: () => resolve({ ok: true, json: async () => respFor(u) } as Response),
-        });
-      });
-    }) as unknown as typeof fetch;
-
-    render(<Booker {...baseProps} layout="month" />);
-
-    // Settle the initial Jan load, then choose the Jan day: two Jan slots.
-    await act(async () => {
-      pending[0]!.settle();
-      await Promise.resolve();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText("Friday, January 30, 2026"));
-    });
-    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
-
-    // Rapid nav: Next (Feb, older request) then Prev (Jan, newest request).
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /next month/i }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /previous month/i }));
-    });
-
-    const feb = pending.find((p) => p.url.includes("from=2026-02"))!;
-    const janNewest = pending[pending.length - 1]!;
-    // Newest (Jan) resolves first; the stale Feb resolves last and must be dropped.
-    await act(async () => {
-      janNewest.settle();
-      await Promise.resolve();
-    });
-    await act(async () => {
-      feb.settle();
-      await Promise.resolve();
-    });
-
-    // Still the Jan month the user landed on. Paging cleared the chosen day, so
-    // choose it again: had the stale Feb response won, Jan 30 would be unbookable
-    // and this click would offer nothing.
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText("Friday, January 30, 2026"));
-    });
-    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
-    vi.useRealTimers();
-  });
 });
 
 describe("Booker embed postMessage origin (#593)", () => {
@@ -697,44 +605,6 @@ describe("Booker availability states (#215)", () => {
     expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
   });
 
-  it("shows the empty-month message and disables paging past an empty future month (canNext cap)", async () => {
-    // Anchor time so "next month" sits entirely beyond the ~4-day availability
-    // horizon: the current month has a slot, the next does not. (The strip-layout
-    // empty copy is already locked by the #585 test; this drives the month layout
-    // to also pin the canNext cap.)
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-01-15T12:00:00Z"));
-
-    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-      if (String(url).includes("/api/availability")) {
-        return {
-          ok: true,
-          json: async () => ({ ...availability, slots: ["2026-01-16T15:00:00.000Z"] }),
-        } as Response;
-      }
-      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
-    }) as unknown as typeof fetch;
-
-    render(<Booker {...baseProps} layout="month" />);
-
-    // January loaded with a slot, so paging forward is allowed.
-    await screen.findByLabelText("Friday, January 16, 2026");
-    const nextInJan = screen.getByRole("button", { name: /next month/i }) as HTMLButtonElement;
-    expect(nextInJan.disabled).toBe(false);
-
-    // February is beyond the horizon: it resolves empty without a fetch.
-    await act(async () => {
-      fireEvent.click(nextInJan);
-      await Promise.resolve();
-    });
-
-    // The empty month is stated honestly and paging further is now blocked.
-    expect(screen.getAllByText(/all times are taken/i).length).toBeGreaterThan(0);
-    const nextInFeb = screen.getByRole("button", { name: /next month/i }) as HTMLButtonElement;
-    expect(nextInFeb.disabled).toBe(true);
-
-    vi.useRealTimers();
-  });
 });
 
 // #219: a lead whose device zone is wrong AND whose correct zone isn't curated
@@ -1478,4 +1348,61 @@ describe("Booker closure state (#1329, #1339)", () => {
     });
   });
 
+});
+
+// #1416: the availability window used to be intersected with the calendar month
+// being viewed, which the deleted month grid needed and the day strip never did.
+// At a month boundary that CLIPPED the horizon, so a lead near the end of a month
+// was offered fewer days than the org had configured.
+describe("Booker availability window (#1416)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("asks for the whole horizon even when it crosses a month boundary", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // The 30th, with a four day horizon: the window has to reach into September.
+    vi.setSystemTime(new Date("2026-08-30T12:00:00Z"));
+
+    const urls: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      urls.push(decodeURIComponent(String(url)));
+      return { ok: true, json: async () => availability } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await act(async () => {});
+
+    const availabilityCall = urls.find((u) => u.includes("/api/availability?"));
+    expect(availabilityCall).toBeDefined();
+    // Four days on from 30 August is 3 September, so a window that stops at the
+    // 31st is the clip this guards against.
+    const to = /to=([^&]+)/.exec(availabilityCall ?? "")?.[1];
+    expect(to).toBeDefined();
+    expect(new Date(to!).getTime()).toBeGreaterThanOrEqual(
+      new Date("2026-09-03T00:00:00Z").getTime(),
+    );
+  });
+
+  it("asks from today, not from the start of the month", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-20T12:00:00Z"));
+
+    const urls: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      urls.push(decodeURIComponent(String(url)));
+      return { ok: true, json: async () => availability } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await act(async () => {});
+
+    const from = /from=([^&]+)/.exec(urls.find((u) => u.includes("/api/availability?")) ?? "")?.[1];
+    expect(from).toBeDefined();
+    // Nothing before now: a window opening on the 1st would ask the server to
+    // compute two thirds of a month nobody can book.
+    expect(new Date(from!).getTime()).toBeGreaterThanOrEqual(
+      new Date("2026-08-20T00:00:00Z").getTime(),
+    );
+  });
 });

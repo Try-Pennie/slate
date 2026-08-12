@@ -2,7 +2,6 @@ import Booker from "@/components/Booker";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 
@@ -61,15 +60,6 @@ export default async function BookEntry({
       </main>
     );
   }
-  const orgId = bucketRow?.org_id ?? null;
-  const { data: orgRow } = orgId
-    ? await supabaseAdmin()
-        .from("organizations")
-        .select("booker_layout")
-        .eq("id", orgId)
-        .maybeSingle()
-    : { data: null };
-  const layout = normalizeBookerLayout(orgRow?.booker_layout);
   const horizonDays = await loadBookingHorizonDays();
   // #1337: when a lead already has a call, the booker offers to MOVE it, and a
   // reschedule records a mandatory reason (Dan, 2026-08-07: ask the lead), so the
@@ -111,7 +101,6 @@ export default async function BookEntry({
         embedded={embedded}
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
-        layout={layout}
         parentOrigin={first(sp, "parentOrigin") || undefined}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
