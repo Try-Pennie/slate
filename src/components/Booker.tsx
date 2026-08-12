@@ -770,11 +770,19 @@ export default function Booker({
         : closedNoReopenDate()
       : allTimesTaken();
 
+  // Dan, 2026-08-12: the far ahead search is offered for a CLOSURE only. A week
+  // that is merely full is a staffing problem to fix rather than a reason to send a
+  // lead weeks into the future, and this is the slowest action in the product. An
+  // unknown cause counts as busy here: it could be either, and treating it as a
+  // closure would put the button back on every busy week, which is what this
+  // removes. Somebody being TOLD we are full is #1412's job, not the lead's.
+  const closure = meta?.emptyBecause?.kind === "closed" ? meta.emptyBecause : null;
+  const isClosure = closure !== null;
+
   // #1339: the body only belongs under a closure we can date. "Before then" needs a
   // `then` to refer to, so it dangles under "We are closed right now", and under
   // "All times are taken" it is simply false: that week is staffed, it is full.
-  const showClosedBody =
-    meta?.emptyBecause?.kind === "closed" && Boolean(meta.emptyBecause.reopensOn);
+  const showClosedBody = Boolean(closure?.reopensOn);
 
   /** Look past the bounded window for the first days we can actually offer. */
   async function revealNextDays() {
@@ -825,7 +833,7 @@ export default function Booker({
           ))}
         </p>
       )}
-      {nextDaySlots === null && (
+      {isClosure && nextDaySlots === null && (
         <>
           {nextFailed && (
             <p role="alert" className="text-sm text-[var(--error)]">
