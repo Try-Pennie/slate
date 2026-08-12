@@ -17,37 +17,28 @@
  * THAT, and the field cap with it; do not reintroduce a validator that accepts
  * what the field cannot hold.
  *
- * **An extension is part of the number, not a longer number (#1423).** Judging on
- * digit count alone pushed a perfectly good US number out of range the moment a
- * lead gave the extension that actually reaches them, and the sentence they got
- * back was wrong as well as the verdict: they were told to enter a US number about
- * a US number, which is advice to do what they had already done (L111). The
- * extension is stripped BEFORE the country rule is applied, rather than the digit
- * rule being loosened, which would have let a genuinely foreign number back in.
- * `splitPhoneExtension` is the one place that stripping happens.
+ * **No extension, anywhere (#1425, Dan's decision).** Pennie asks for a number with
+ * no extension, and no surface keeps one: the field will not hold it, a prefill
+ * carrying one is BLANKED with its own sentence asking for a number without one,
+ * and the API refuses it rather than stripping it, so an upstream integration is
+ * told to send a clean number instead of a booking quietly carrying one nobody
+ * asked for.
  *
- * It is stripped for JUDGING and kept for CALLING. The extension is how the
- * advisor gets past a switchboard, so it rides through the field, the prefill and
- * the stored string; the field shapes and caps it exactly as it does the number.
+ * The extension is still SEPARATED first, which is the part #1423 settled and the
+ * part that is easy to get wrong. Letting those digits simply fall off the ten
+ * digit cap is not the same thing: "+1 215 555 0100 x99" is thirteen digits, and
+ * capping THAT yields "(121) 555-5010", a different and equally plausible-looking
+ * number, which is the silent wrong answer this file exists to prevent. Separating
+ * it first is also what lets each refusal name the reason that is actually true of
+ * the lead, instead of calling a real US number foreign (L11).
+ *
+ * `splitPhoneExtension` is the one place that separation happens, asked by the
+ * field, the prefill and the server, so they cannot disagree about where the
+ * number ends.
  */
 
 /** The number of digits the field accepts. Stated once. */
 export const PHONE_DIGITS = 10;
-
-/**
- * The number of EXTENSION digits the field accepts, and therefore the number the
- * server accepts (#1423).
- *
- * The two have to be the same. A field that truncates where the validator accepts
- * more is a rule nothing states, blocking input the server would have taken (L99);
- * a validator that accepts more than the field can hold is the #1356 defect over
- * again, since the lead cannot type back what was refused.
- *
- * Six covers every real PBX extension; a value longer than this is not an
- * extension somebody dialled, and it is refused with its own sentence rather than
- * being mistaken for a foreign number.
- */
-export const PHONE_EXT_DIGITS = 6;
 
 /**
  * Everything from the extension marker to the end of the string: `x`, `ext`,
@@ -103,12 +94,10 @@ export function splitPhoneExtension(value: string): PhoneParts {
  * punctuation is never doubled up.
  */
 export function formatPhoneAsTyped(value: string): string {
-  const parts = splitPhoneExtension(value);
-  const number = formatPhoneNumberAsTyped(parts.base);
-  // An extension with no number in front of it is not something to show: the same
-  // reasoning that clears the brackets when the last digit is deleted.
-  if (!number || !parts.hasExtensionMarker) return number;
-  return `${number} x${parts.extension.slice(0, PHONE_EXT_DIGITS)}`;
+  // Separated and then DISCARDED (#1425). Discarding is the product rule; separating
+  // first is what keeps it correct, because these digits must never reach the ten
+  // digit cap (see the header).
+  return formatPhoneNumberAsTyped(splitPhoneExtension(value).base);
 }
 
 /** The number itself, with any extension already removed by the caller. */
@@ -151,13 +140,18 @@ export function isUsPhone(value: string): boolean {
   );
 }
 
-/** Why a prefilled number was dropped, or null when it was kept (#1356, #1409). */
+/** Why a prefilled number was dropped, or null when it was kept (#1356, #1409,
+ *  #1425). */
 export type PhonePrefillDrop =
   /** A real number, and not one Pennie can call. They cannot retype it either,
    *  because the field caps at ten digits. */
   | "not-callable"
   /** Fewer than ten digits: an unfinished US number, which they CAN retype. */
-  | "incomplete";
+  | "incomplete"
+  /** A callable US number carrying an extension, which Pennie does not ask for.
+   *  Nothing is wrong with the number itself, so this lead is asked for it again
+   *  without the extension rather than told about country codes. */
+  | "has-extension";
 
 /**
  * A PREFILLED number, tidied if we can call it and DROPPED if we cannot (#1356,
@@ -182,8 +176,20 @@ export type PhonePrefillDrop =
  * explaining anything to somebody who was never shown a number would be noise.
  */
 export function prefillPhone(value: string): { value: string; dropped: PhonePrefillDrop | null } {
-  if (isUsPhone(value)) return { value: formatPhoneAsTyped(value), dropped: null };
-  const digits = splitPhoneExtension(value).base.replace(/\D/g, "");
+  const parts = splitPhoneExtension(value);
+  if (isUsPhone(value)) {
+    // The number is fine. If it carries an extension, blank it and ask rather than
+    // trimming it away: an extension is a fact about how to reach this person, and
+    // silently dropping it would leave them believing we still have it (#1425).
+    // Judged on DIGITS, not on the marker: a stray trailing "x" with nothing after
+    // it is noise, not something to send a lead back over.
+    if (parts.extension.length > 0) return { value: "", dropped: "has-extension" };
+    return { value: formatPhoneAsTyped(value), dropped: null };
+  }
+  // The country and the length are judged on the number itself, so a foreign or
+  // unfinished number carrying an extension is reported for the thing this lead
+  // actually has to act on.
+  const digits = parts.base.replace(/\D/g, "");
   if (digits.length === 0) return { value: "", dropped: null };
   return { value: "", dropped: digits.length < PHONE_DIGITS ? "incomplete" : "not-callable" };
 }
