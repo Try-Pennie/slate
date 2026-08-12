@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
 import {
+  EXTENSION_PHONE_PREFILL_NOTICE,
   INCOMPLETE_PHONE_NOTICE,
   NEXT_DAYS_COPY,
   PICKER_COPY,
@@ -829,13 +830,11 @@ describe("Booker phone handling (#1332, #1333)", () => {
     });
   });
 
-  // #1423: an extension is part of the number, not a longer number. The rule lives
-  // in one helper, but the FIELD is where a lead would lose it: a mask that judged
-  // on digit count alone ate the extension on the keystroke that typed it, so the
-  // half of the number that gets past a switchboard could never be entered and a
-  // prefilled one was silently thrown away.
-  describe("a number carrying an extension (#1423)", () => {
-    it("keeps a prefilled extension instead of dropping the number as foreign", async () => {
+  // #1425, Dan's decision: Pennie asks for a number with no extension, and the
+  // FIELD is where that has to hold. A mask that quietly trimmed one would leave a
+  // lead believing we still have the digits that get past their switchboard.
+  describe("a number carrying an extension (#1425)", () => {
+    it("blanks a prefilled extension and asks for the number without one", async () => {
       global.fetch = okFetch();
       render(
         <Booker {...baseProps} attendee={{ name: "", email: "", phone: "215-555-0100 ext 4021" }} />,
@@ -843,28 +842,23 @@ describe("Booker phone handling (#1332, #1333)", () => {
       await pickFirstDay();
       await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
-      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe(
-        "(215) 555-0100 x4021",
-      );
+      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("");
+      expect(screen.getByText(EXTENSION_PHONE_PREFILL_NOTICE)).toBeTruthy();
+      // Its own sentence. Both of the others would send this lead to fix something
+      // that is not wrong with their number.
       expect(screen.queryByText(US_ONLY_PHONE_NOTICE)).toBeNull();
       expect(screen.queryByText(INCOMPLETE_PHONE_NOTICE)).toBeNull();
     });
 
-    it("lets a lead type one, marker first, without the mask eating it", async () => {
+    it("does not let one be typed into the field", async () => {
       global.fetch = okFetch();
       render(<Booker {...baseProps} />);
       await pickFirstDay();
       await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
       const phone = screen.getByLabelText("Phone") as HTMLInputElement;
-      await userEvent.type(phone, "2155550100");
-      // The keystroke that starts the extension has no digits after it yet. A mask
-      // that cannot tell that apart from no extension at all removes the marker
-      // here, and the first extension digit can never be reached.
-      await userEvent.type(phone, "x");
-      expect(phone.value).toBe("(215) 555-0100 x");
-      await userEvent.type(phone, "4021");
-      expect(phone.value).toBe("(215) 555-0100 x4021");
+      await userEvent.type(phone, "2155550100x4021");
+      expect(phone.value).toBe("(215) 555-0100");
     });
   });
 

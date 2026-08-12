@@ -3,7 +3,7 @@
  * bookings API (server) so the rules can never drift. Pure; exercised by
  * scripts/test-attendee.ts.
  *
- * Phone is US only (#1356) and may carry an extension (#1423), both asked through
+ * Phone is US only (#1356) and carries no extension (#1425), both asked through
  * the SAME `phone-format.ts` helpers the booker's field and its prefill use. It used to be a light 10 to 15 digit shape check while the
  * field capped at ten, so a longer international number was refused by the field
  * and accepted here: the product said two different things about one number, and a
@@ -11,11 +11,8 @@
  * number, so that is the rule, held in one place.
  */
 import { INPUT_LIMITS } from "./booking/input-limits.ts";
-import {
-  PHONE_EXTENSION_TOO_LONG_NOTICE,
-  US_ONLY_PHONE_NOTICE,
-} from "./booking/booker-copy.ts";
-import { isUsPhone, PHONE_DIGITS, PHONE_EXT_DIGITS, splitPhoneExtension } from "./phone-format.ts";
+import { PHONE_EXTENSION_NOTICE, US_ONLY_PHONE_NOTICE } from "./booking/booker-copy.ts";
+import { isUsPhone, PHONE_DIGITS, splitPhoneExtension } from "./phone-format.ts";
 
 export type AttendeeInput = { name?: string; email?: string; phone?: string };
 export type AttendeeErrors = Partial<Record<"name" | "email" | "phone", string>>;
@@ -60,11 +57,12 @@ export function validateAttendee(attendee: AttendeeInput): AttendeeErrors {
     // "invalid" would read as a typo and they would try the same number again.
     // The one sentence, shared with the prefill notice that makes the same claim.
     errors.phone = US_ONLY_PHONE_NOTICE;
-  } else if (extension.length > PHONE_EXT_DIGITS) {
-    // The number is fine and only the extension is out of range, so it gets its own
-    // sentence: the US one would be untrue here, and this is the same length the
-    // field truncates to, so neither side is stricter than the other (L99).
-    errors.phone = PHONE_EXTENSION_TOO_LONG_NOTICE;
+  } else if (extension.length > 0) {
+    // The number is callable and complete; Pennie simply does not ask for an
+    // extension (#1425). Refused rather than stripped, so an integration posting a
+    // lead's number is TOLD, instead of a booking quietly carrying a number nobody
+    // asked for. Its own sentence, because the other two would each be untrue.
+    errors.phone = PHONE_EXTENSION_NOTICE;
   }
 
   return errors;

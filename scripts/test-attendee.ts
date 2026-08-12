@@ -105,44 +105,49 @@ function phoneError(phone: string): string | undefined {
   eq(phoneError(""), "Enter your phone number", "an empty field keeps its own message");
 }
 
-// --------------------------------------------------- the extension (#1423)
+// ---------------------------------------------- the extension (#1423, #1425)
 {
-  // The booking API (#253/#250) receives a lead's number as captured upstream, and
-  // an extension is a normal thing for a lead to have given. Judged on digit count
-  // alone, those trailing digits pushed a real US number out of range and the lead
-  // or the operator was told "we can only call a US number" about a US number:
-  // advice to do the thing they had already done (L111).
+  // Dan's decision, 2026-08-12: Pennie asks for a number with no extension, and the
+  // API refuses one rather than stripping it, so an upstream integration is told to
+  // send a clean number instead of a booking silently carrying a number nobody
+  // asked for.
   for (const written of [
     "215-555-0100 x123",
     "(215) 555-0100 ext. 4021",
     "+1 215 555 0100 extension 7",
     "2155550100#12",
   ]) {
-    eq(phoneError(written), undefined, `a US number carrying an extension is accepted: ${written}`);
+    const err = phoneError(written);
+    assert(err !== undefined, `a number carrying an extension is refused: ${written}`);
+    assert(
+      /extension/i.test(err ?? ""),
+      `and the message names the extension, not the country (got: ${err})`,
+    );
   }
 
-  // Stripped, not loosened: the extension must not be a way back in for a number
-  // Pennie still cannot call.
+  // The extension is SEPARATED before the number is judged, so the reason a lead is
+  // given is the one that is true of them. Counting those digits is what made a
+  // real US number report as foreign.
   const intlExt = phoneError("+44 20 7946 0958 x12");
-  assert(intlExt !== undefined, "an extension does not make a foreign number callable");
-  assert(/US/.test(intlExt ?? ""), "and the reason is still the country, not the extension");
+  assert(intlExt !== undefined, "a foreign number with an extension is still refused");
+  assert(/US/.test(intlExt ?? ""), "and the reason is the country, which is what they must act on");
 
   const shortExt = phoneError("21555 x12");
-  assert(shortExt !== undefined, "nor does it complete an unfinished number");
+  assert(shortExt !== undefined, "an unfinished number with an extension is refused too");
   assert(
     !/US/.test(shortExt ?? ""),
-    `and that lead is still told it is incomplete, not foreign (got: ${shortExt})`,
+    `and that lead is told it is incomplete, not foreign (got: ${shortExt})`,
   );
 
-  // The field truncates an over-long extension, so the server refuses the same
-  // length rather than accepting what the field cannot hold, and it says which part
-  // of the number is the problem (L99, L11).
-  const longExt = phoneError("2155550100 x1234567");
-  assert(longExt !== undefined, "an extension longer than the field can hold is refused");
+  // All three refusals stay distinct, or two thirds of these leads are sent to fix
+  // something that is not wrong with their number (L11).
+  const plain = phoneError("2155550100 x1");
   assert(
-    /extension/i.test(longExt ?? ""),
-    `and the message names the extension, not the number (got: ${longExt})`,
+    new Set([plain, intlExt, shortExt]).size === 3,
+    "the three refusals do not share a message",
   );
+
+  eq(phoneError("2155550100"), undefined, "a clean US number is still accepted");
 }
 
 

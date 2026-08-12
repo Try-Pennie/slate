@@ -27,7 +27,8 @@ import {
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   INCOMPLETE_PHONE_NOTICE,
-  PHONE_EXTENSION_TOO_LONG_NOTICE,
+  EXTENSION_PHONE_PREFILL_NOTICE,
+  PHONE_EXTENSION_NOTICE,
   US_ONLY_PHONE_NOTICE,
   MOVE_COPY,
   NEXT_DAYS_COPY,
@@ -58,7 +59,6 @@ import {
   doneHeading,
   liveHeading,
 } from "@/lib/booking/manage-copy";
-import { formatPhoneAsTyped } from "@/lib/phone-format";
 
 /** One line of copy, and the state that puts it on screen. */
 export interface CopyLine {
@@ -83,10 +83,6 @@ const DAY = "Monday, August 17";
 const TIME = "2:30 PM";
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
-// Built by the real formatter rather than written out, so the preview shows the
-// shape the field actually produces for an extension (#1423) and cannot drift from
-// it.
-const PHONE_WITH_EXTENSION = formatPhoneAsTyped("215-555-0100 ext 4021");
 const EMAIL = "dana@example.com";
 
 export function bookerCopyScreens(): CopyScreen[] {
@@ -168,12 +164,12 @@ export function bookerCopyScreens(): CopyScreen[] {
           text: INCOMPLETE_PHONE_NOTICE,
         },
         {
-          state: "their number is callable and only the extension is out of range",
-          text: PHONE_EXTENSION_TOO_LONG_NOTICE,
+          state: "they arrived with a number carrying an extension, so the field is empty",
+          text: EXTENSION_PHONE_PREFILL_NOTICE,
         },
         {
-          state: "their number, echoed back with the extension the advisor will dial",
-          text: phoneEchoLine(PHONE_WITH_EXTENSION),
+          state: "they typed a number carrying an extension",
+          text: PHONE_EXTENSION_NOTICE,
         },
         { state: "the bot trap", text: HONEYPOT_LABEL, screenReaderOnly: true },
       ],

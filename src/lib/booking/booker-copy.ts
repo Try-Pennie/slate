@@ -26,7 +26,7 @@
  * No `@/` imports beyond Luxon, so scripts can drive it node-natively.
  */
 import { DateTime } from "luxon";
-import { PHONE_EXT_DIGITS } from "../phone-format.ts";
+import type { PhonePrefillDrop } from "../phone-format.ts";
 
 /** US order everywhere (#1336): "Monday, August 17", never "17 August". */
 export function longDayLabel(iso: string, zone: string): string {
@@ -147,19 +147,34 @@ export const DETAILS_COPY = {
 export const US_ONLY_PHONE_NOTICE = "We can only call a US number. Please enter one.";
 
 /**
- * Why a number that IS callable was still refused (#1423).
+ * Why a number that IS callable was still refused (#1425).
  *
- * Its own sentence, because the US-only one would be flatly untrue here: this
- * lead's number is American and reachable, and only the extension is out of range.
- * Telling them to enter a US number would be telling them to do what they have
- * already done (L111).
+ * Its own sentence, because both of the others would be flatly untrue here: this
+ * lead's number is American and it is complete. Telling them to enter a US number,
+ * or that their number looks unfinished, would each send them to fix something
+ * that is not wrong with it (L11), and the US one would be asking them to do what
+ * they have already done (L111).
  *
- * The limit is interpolated from `PHONE_EXT_DIGITS` rather than written out, so
- * the sentence cannot promise a different number from the one the field and the
- * validator hold to.
+ * It says what to do rather than what is wrong, because the thing to do is the
+ * only part they can act on.
  */
-export const PHONE_EXTENSION_TOO_LONG_NOTICE =
-  `That extension is too long. Please enter up to ${PHONE_EXT_DIGITS} digits after the number.`;
+export const PHONE_EXTENSION_NOTICE =
+  "Please enter your number without an extension.";
+
+/**
+ * The same rule, said to somebody who did not type the number (#1425).
+ *
+ * A lead who ARRIVED with an extension has done nothing at all, so the sentence
+ * leads with why the field they expected to be filled is empty and then asks. The
+ * validation message above is the one for a number they typed themselves, where
+ * naming the empty field would be describing something they are looking at.
+ *
+ * Written out rather than built from the sentence above it, because saying
+ * "extension" twice in two clauses reads as a stumble on the one screen a lead is
+ * being asked to correct something on.
+ */
+export const EXTENSION_PHONE_PREFILL_NOTICE =
+  "The number we had for you has an extension. Please enter it without one.";
 
 /**
  * Why the phone field is empty when the number they arrived with was UNFINISHED
@@ -178,9 +193,10 @@ export const INCOMPLETE_PHONE_NOTICE =
 
 /** The sentence for a given drop, so a caller cannot pair the wrong one with the
  *  right reason. Returns null when nothing was dropped and nothing is owed. */
-export function phonePrefillNotice(dropped: "not-callable" | "incomplete" | null): string | null {
+export function phonePrefillNotice(dropped: PhonePrefillDrop | null): string | null {
   if (dropped === "not-callable") return US_ONLY_PHONE_NOTICE;
   if (dropped === "incomplete") return INCOMPLETE_PHONE_NOTICE;
+  if (dropped === "has-extension") return EXTENSION_PHONE_PREFILL_NOTICE;
   return null;
 }
 
