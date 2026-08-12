@@ -1,0 +1,305 @@
+// A detector that has never once reached a verdict (#1394).
+//
+// The bug class this guards: a fail-safe detector reports `unverified` or
+// `skipped` rather than guessing, which is right, and the cost is that "nothing
+// to report" and "could not check anything" render identically. The
+// availability-truth probe sat in exactly that state for its entire life before
+// #1377: it ran on every tick, advanced its rotation, logged, and had never once
+// compared a real calendar. The existing lane heartbeats could not see it,
+// because the lane genuinely RAN; what it never did was CONCLUDE.
+//
+// So the three pieces tested here: which outcomes count as a measured verdict
+// (nothing else may stamp), how long each detector may go without one, and copy
+// that says "has not reached a verdict" rather than "has not run".
+//
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-verdict-freshness.ts
+import {
+  VERDICT_STALE_BOUNDS_MS,
+  findStaleLanes,
+  describeGap,
+} from "../src/lib/monitor/health.ts";
+import {
+  AVAILABILITY_TRUTH_VERDICT_LANE,
+  FAILURE_RATE_VERDICT_LANE,
+  LOW_VOLUME_VERDICT_LANE,
+  truthReachedVerdict,
+  failureRateReachedVerdict,
+  lowVolumeReachedVerdict,
+} from "../src/lib/monitor/verdict-freshness.ts";
+import { verdictBlindAlertText, verdictRecoveryText } from "../src/lib/monitor/lane-copy.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { assert, finish } from "./lib/harness.ts";
+
+/** Em/en dash detector built from escapes, so this file holds no literal dash. */
+const DASHES = new RegExp("[\\u2013\\u2014]");
+
+const HOUR = 60 * 60_000;
+
+// --- which outcomes count as a MEASURED verdict -------------------------------
+// The whole point. A tick that skipped, could not read Google, or judged too
+// small a sample has measured nothing, and stamping on it would recreate the
+// exact blindness this exists to catch.
+{
+  assert(
+    truthReachedVerdict({
+      status: "checked",
+      code: "101",
+      armed: false,
+      verdict: { status: "healthy", verified: 12, drifted: 0, driftPct: 0 },
+    }),
+    "availability truth: a measured healthy sample is a verdict",
+  );
+  assert(
+    truthReachedVerdict({
+      status: "checked",
+      code: "101",
+      armed: true,
+      verdict: { status: "drifted", verified: 10, drifted: 8, driftPct: 80 },
+    }),
+    "availability truth: a measured drifted sample is a verdict",
+  );
+  assert(
+    !truthReachedVerdict({ status: "skipped", why: "bucket is offering no times to check" }),
+    "availability truth: the skip that hid the probe's blindness for its whole life is NOT a verdict",
+  );
+  assert(
+    !truthReachedVerdict({ status: "unverified", code: "101" }),
+    "availability truth: Google unreadable is NOT a verdict",
+  );
+  assert(
+    !truthReachedVerdict({
+      status: "checked",
+      code: "101",
+      armed: false,
+      verdict: { status: "unverified", verified: 1, unverified: 9 },
+    }),
+    "availability truth: a sample too small to judge is NOT a verdict, even though the tick reports checked",
+  );
+  assert(!truthReachedVerdict({ status: "errored" }), "availability truth: a thrown step is NOT a verdict");
+}
+
+{
+  assert(
+    failureRateReachedVerdict({
+      status: "checked",
+      armed: false,
+      rebased: null,
+      verdict: { status: "healthy", attempts: 40, failures: 1, pct: 2.5, topCodes: [] },
+    }),
+    "failure rate: a measured healthy window is a verdict",
+  );
+  assert(
+    failureRateReachedVerdict({
+      status: "checked",
+      armed: true,
+      rebased: null,
+      verdict: { status: "breach", attempts: 40, failures: 20, pct: 50, topCodes: [] },
+    }),
+    "failure rate: a measured breach is a verdict",
+  );
+  assert(
+    !failureRateReachedVerdict({
+      status: "checked",
+      armed: false,
+      rebased: null,
+      verdict: { status: "insufficient", attempts: 2, failures: 0 },
+    }),
+    "failure rate: too few attempts to judge is NOT a verdict (the permanent state on a dark roster)",
+  );
+  assert(
+    !failureRateReachedVerdict({ status: "unverified", why: "tally" }),
+    "failure rate: an unreadable tally is NOT a verdict",
+  );
+  assert(!failureRateReachedVerdict({ status: "errored" }), "failure rate: a thrown step is NOT a verdict");
+}
+
+{
+  assert(
+    lowVolumeReachedVerdict({ status: "checked", armed: false, windows: [], breaches: [] }),
+    "low volume: a tick that read the counts is a verdict",
+  );
+  assert(
+    !lowVolumeReachedVerdict({ status: "outside-hours" }),
+    "low volume: outside business hours is NOT a verdict",
+  );
+  assert(
+    !lowVolumeReachedVerdict({ status: "count-unreadable" }),
+    "low volume: an unreadable count is NOT a verdict (it is the false zero #1158 removed)",
+  );
+  assert(!lowVolumeReachedVerdict({ status: "unverified" }), "low volume: unverified is NOT a verdict");
+}
+
+// --- the bounds ---------------------------------------------------------------
+{
+  const lanes = Object.keys(VERDICT_STALE_BOUNDS_MS).sort();
+  assert(
+    lanes.join(",") ===
+      [AVAILABILITY_TRUTH_VERDICT_LANE, FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE].sort().join(","),
+    "every detector named by this feature has a bound, and no bound names a detector that does not exist",
+  );
+  // The two traffic-fed detectors are silent all weekend by design (the volume
+  // check is gated to Mon-Fri business hours, and an hourly failure-rate window
+  // cannot reach its attempt floor overnight). A bound shorter than the longest
+  // legitimate quiet stretch would page every Sunday, which is L36 exactly.
+  const FRIDAY_EVENING_TO_MONDAY_MORNING_MS = 60 * HOUR;
+  for (const lane of [FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE]) {
+    assert(
+      VERDICT_STALE_BOUNDS_MS[lane] > FRIDAY_EVENING_TO_MONDAY_MORNING_MS,
+      `${lane}'s bound outlasts a whole weekend of legitimate silence`,
+    );
+  }
+  assert(
+    VERDICT_STALE_BOUNDS_MS[AVAILABILITY_TRUTH_VERDICT_LANE] >= 5 * HOUR,
+    "availability truth's bound covers at least one full pass of the bucket rotation",
+  );
+}
+
+// --- staleness, including the state the issue is named after ------------------
+{
+  const now = Date.UTC(2026, 7, 12, 15, 0, 0);
+  const bound = VERDICT_STALE_BOUNDS_MS[AVAILABILITY_TRUTH_VERDICT_LANE];
+
+  const fresh = findStaleLanes(
+    { [AVAILABILITY_TRUTH_VERDICT_LANE]: now - 60_000 },
+    now,
+    VERDICT_STALE_BOUNDS_MS,
+    true,
+  );
+  assert(
+    !fresh.some((l) => l.lane === AVAILABILITY_TRUTH_VERDICT_LANE),
+    "a detector that concluded a minute ago is not blind",
+  );
+
+  const stale = findStaleLanes(
+    { [AVAILABILITY_TRUTH_VERDICT_LANE]: now - bound - 60_000 },
+    now,
+    VERDICT_STALE_BOUNDS_MS,
+    true,
+  );
+  assert(
+    stale.some((l) => l.lane === AVAILABILITY_TRUTH_VERDICT_LANE),
+    "a detector past its bound since its last verdict is blind",
+  );
+
+  // The headline case: it has run for months and concluded exactly zero times,
+  // so there is no stamp at all. The default leniency (never stamped = fresh
+  // deploy, stay quiet) would make this feature unable to detect the very state
+  // it was written for, which is why these lanes are judged with neverIsStale on.
+  const never = findStaleLanes({}, now, VERDICT_STALE_BOUNDS_MS, true);
+  assert(
+    never.length === Object.keys(VERDICT_STALE_BOUNDS_MS).length,
+    "a detector that has NEVER reached a verdict is reported, not skipped",
+  );
+  assert(
+    never.every((l) => !Number.isFinite(l.ageMs)),
+    "never-concluded carries an infinite age, so copy can tell it from a measured gap",
+  );
+}
+
+// --- describeGap: a bound of days must not be read out in minutes -------------
+{
+  assert(describeGap(45 * 60_000) === "45 minutes", "sub-hour gaps read in minutes");
+  assert(describeGap(90 * 60_000) === "2 hours", "an hour or more reads in hours");
+  assert(describeGap(26 * HOUR) === "26 hours", "just over a day still reads in hours");
+  assert(describeGap(4 * 24 * HOUR) === "4 days", "multi-day gaps read in days, not 5760 minutes");
+  assert(describeGap(1 * 60_000) === "1 minute", "singular minute");
+  assert(describeGap(60 * HOUR) === "3 days", "a weekend-long gap reads in days");
+}
+
+// --- copy ---------------------------------------------------------------------
+{
+  const measured = verdictBlindAlertText({
+    lane: AVAILABILITY_TRUTH_VERDICT_LANE,
+    ageMs: 30 * HOUR,
+    maxStaleMs: VERDICT_STALE_BOUNDS_MS[AVAILABILITY_TRUTH_VERDICT_LANE],
+    unreadable: false,
+  });
+  assert(measured.includes("30 hours"), "measured copy quotes the real gap");
+  assert(
+    /verdict|conclu/i.test(measured),
+    "measured copy says the detector has not CONCLUDED, not that it has not run",
+  );
+  assert(
+    !measured.startsWith("Slate"),
+    "copy does not open with Slate (Slack already shows the app name)",
+  );
+  assert(!DASHES.test(measured), "no dashes as punctuation");
+  assert(!/undefined|NaN|\[object Object\]/.test(measured), "measured copy renders no placeholder leak");
+  assert(
+    !measured.includes(AVAILABILITY_TRUTH_VERDICT_LANE),
+    "copy names the detector in words, not by its internal lane key",
+  );
+
+  const never = verdictBlindAlertText({
+    lane: FAILURE_RATE_VERDICT_LANE,
+    ageMs: Infinity,
+    maxStaleMs: VERDICT_STALE_BOUNDS_MS[FAILURE_RATE_VERDICT_LANE],
+    unreadable: false,
+  });
+  assert(/never/i.test(never), "never-concluded copy says so plainly");
+  assert(!/Infinity|NaN/.test(never), "never-concluded copy quotes no arithmetic on infinity");
+  assert(!DASHES.test(never), "never-concluded copy has no dashes");
+
+  const unreadable = verdictBlindAlertText({
+    lane: LOW_VOLUME_VERDICT_LANE,
+    ageMs: Date.now(),
+    maxStaleMs: VERDICT_STALE_BOUNDS_MS[LOW_VOLUME_VERDICT_LANE],
+    unreadable: true,
+  });
+  assert(
+    /cannot be read/i.test(unreadable),
+    "an unreadable record says so, rather than quoting an age it never measured",
+  );
+
+  // Every detector gets its own words. One shared "a detector went blind" would
+  // send the reader looking for the wrong thing, which is the #1123 defect.
+  const texts = [AVAILABILITY_TRUTH_VERDICT_LANE, FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE].map(
+    (lane) => verdictBlindAlertText({ lane, ageMs: 30 * HOUR, maxStaleMs: HOUR, unreadable: false }),
+  );
+  assert(new Set(texts).size === 3, "each detector's page describes that detector, not a generic one");
+  for (const t of texts) assert(t.length > 80, "each page says what stopped being measured");
+
+  const recovery = verdictRecoveryText(AVAILABILITY_TRUTH_VERDICT_LANE);
+  assert(/no action is needed/i.test(recovery), "the all-clear closes the loop");
+  assert(!DASHES.test(recovery), "recovery copy has no dashes");
+  assert(
+    new Set(
+      [AVAILABILITY_TRUTH_VERDICT_LANE, FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE].map(
+        verdictRecoveryText,
+      ),
+    ).size === 3,
+    "each detector's all-clear names what is being measured again",
+  );
+}
+
+// --- built is not wired (L3) ---------------------------------------------------
+// The heartbeat coverage guard proves every stamp has a bound and every bound has
+// a stamp, but both would still hold if the monitor lane never CALLED any of them.
+// The stamps would then never land, all three detectors would page as blind, and
+// the feature would fail in the loudest possible way while every test stayed green.
+{
+  const route = readFileSync(
+    join(import.meta.dirname, "..", "src", "app", "api", "cron", "monitor", "route.ts"),
+    "utf8",
+  );
+  // Strip comments first: a guard satisfied by a comment ABOUT the call, including
+  // one explaining that it was removed, is indistinguishable from one that works (L103).
+  const code = route.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert(
+    code.includes("recordDetectorVerdict("),
+    "the monitor lane actually stamps detector verdicts",
+  );
+  for (const [name, predicate] of [
+    ["AVAILABILITY_TRUTH_VERDICT_LANE", "truthReachedVerdict"],
+    ["FAILURE_RATE_VERDICT_LANE", "failureRateReachedVerdict"],
+    ["LOW_VOLUME_VERDICT_LANE", "lowVolumeReachedVerdict"],
+  ]) {
+    assert(
+      new RegExp(`recordDetectorVerdict\\(\\s*${name}\\s*,\\s*${predicate}\\(`).test(code),
+      `${name} is stamped from ${predicate}, not from a hand-rolled second opinion`,
+    );
+  }
+}
+
+finish();

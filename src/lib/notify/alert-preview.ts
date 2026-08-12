@@ -29,7 +29,7 @@ import {
   formatSyncRecoveryNotice,
   type FailingAgent,
 } from "@/lib/notify/alerts";
-import { retentionAlertText, LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import {
   formatFailureRateAlert,
   formatFailureRateAllClear,
@@ -107,6 +107,8 @@ import {
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
+  verdictBlindAlertText,
+  verdictRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
   formatInactiveAgentBookingsAlert,
@@ -717,6 +719,37 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a retention lane recovered",
     channel: "recovery",
     text: retentionRecoveryText("prune-bookings-pii"),
+  },
+  // #1394: the same key, a different fault. These lanes are NOT quiet; they run
+  // faithfully and conclude nothing, which every other message here would
+  // misdescribe.
+  {
+    key: "cron_lane_stale:*",
+    state: "a detector has never once reached a verdict",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:availability-truth",
+      ageMs: Infinity,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:availability-truth"],
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a detector stopped reaching a verdict",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:booking-failure-rate",
+      ageMs: 5 * 24 * 60 * 60_000,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:booking-failure-rate"],
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a detector is measuring again",
+    channel: "recovery",
+    text: verdictRecoveryText("verdict:low-booking-volume"),
   },
 
   // --- the booking layer's incidents ----------------------------------------
