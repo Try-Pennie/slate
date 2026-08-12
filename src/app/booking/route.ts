@@ -48,6 +48,17 @@ const schema = z.object({
   prefill: prefillSchema,
 });
 
+/**
+ * The bucket code off the RAW body, for the one refusal that happens because the
+ * body did not parse (#1318). The parsed value does not exist there by definition,
+ * and the tally's bucket column coalesces a missing value to "", so an unreadable
+ * body is recorded as not bucket scoped rather than not recorded at all.
+ */
+function rawBucketCode(raw: unknown): string {
+  const v = (raw as Record<string, unknown> | null)?.bucketCode;
+  return typeof v === "string" ? v.slice(0, 16) : "";
+}
+
 export async function POST(req: NextRequest) {
   const ip = clientIp(req.headers);
   // Light monitoring (#962): the edge per-minute window has no refund path, so a
@@ -61,6 +72,12 @@ export async function POST(req: NextRequest) {
   // window only shapes bursts.
   const tooMany = (scope: "edge-minute" | "hourly" | "contact") => {
     log.info("booking-rate-limit", { msg: "throttled", scope, ip });
+    // refusal: rate_limit_ip_minute
+    // refusal: rate_limit_ip_hour
+    // refusal: rate_limit_contact_hour
+    // Deliberately UNCOUNTED (#1318). Counting a throttle would put bot volume in the
+    // denominator the booking failure share is measured against, so a flood would make
+    // a real outage look proportionally smaller. The reasoning is in refusal-catalog.ts.
     return NextResponse.json(
       { error: "Too many booking attempts from your network. Please try again in a few minutes." },
       { status: 429 },
@@ -83,11 +100,22 @@ export async function POST(req: NextRequest) {
   // a honeypot hit is expected background noise, so it does NOT alert.
   if (raw && typeof raw === "object" && honeypotTripped((raw as Record<string, unknown>)[HONEYPOT_FIELD])) {
     log.info("booking-honeypot", { msg: "tripped", ip });
+    // refusal: honeypot
+    // Deliberately uncounted (#1318): a real user cannot fill a field they never see,
+    // so every trip is a script, and volume here measures bot traffic rather than
+    // customers being refused.
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
+    // refusal: invalid_request
+    // One malformed request is a stray caller; a WAVE means the embed or an integration
+    // is sending a shape Slate rejects, so every lead arriving through it is turned away
+    // and nothing said so (#1318). Counted as an error, so the existing failure-rate
+    // window (#1313) pages on the share and names the code. The bucket is read off the
+    // raw body rather than the parsed one, which is exactly what failed to parse.
+    recordApiOutcome("error", rawBucketCode(raw), "invalid_request");
     return NextResponse.json(
       { error: "Invalid request", details: parsed.error.flatten() },
       { status: 400 },
@@ -96,6 +124,12 @@ export async function POST(req: NextRequest) {
 
   const attendeeErrors = validateAttendee(parsed.data.attendee);
   if (Object.keys(attendeeErrors).length > 0) {
+    // refusal: invalid_contact
+    // One is a typo the lead fixes in the field. A wave is the contact rules and the
+    // incoming data disagreeing, which turns every lead from that source away at once,
+    // and #1425 made that concrete: a number carrying an extension is now refused, so any
+    // upstream source still sending one fails every time (#1318).
+    recordApiOutcome("error", parsed.data.bucketCode, "invalid_contact");
     return NextResponse.json(
       { error: "Please check your contact details.", fieldErrors: attendeeErrors },
       { status: 400 },
@@ -173,6 +207,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof ExistingCallError) {
       await refundAll();
       recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call");
+      // refusal: existing_call
       return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
     }
     // Couldn't verify any candidate (likely a Google/DB outage), not a full
@@ -182,6 +217,7 @@ export async function POST(req: NextRequest) {
       // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
       await refundAll();
       recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable");
+      // refusal: verify_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // A genuinely-full slot: someone else took it a moment earlier. Not the lead's
@@ -194,6 +230,7 @@ export async function POST(req: NextRequest) {
       // does not page on its own; fifty in two hours is the cal.com failure of
       // 2026-08-06, and it is indistinguishable from the one without a count.
       recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable");
+      // refusal: slot_unavailable
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     // An empty/misconfigured pool ALSO surfaces as "no times" (409) to the consumer
@@ -201,9 +238,11 @@ export async function POST(req: NextRequest) {
     // slot race: a retry won't help, so we deliberately do NOT refund here.
     if (err instanceof NoEligibleAgentsError) {
       recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents");
+      // refusal: no_eligible_agents
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     recordApiOutcome("error", parsed.data.bucketCode, "internal");
+    // refusal: internal
     return internalErrorResponse(err, "booking");
   }
 }
