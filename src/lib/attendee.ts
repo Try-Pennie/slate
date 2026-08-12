@@ -11,7 +11,7 @@
  * number, so that is the rule, held in one place.
  */
 import { INPUT_LIMITS } from "./booking/input-limits.ts";
-import { PHONE_EXTENSION_NOTICE, US_ONLY_PHONE_NOTICE } from "./booking/booker-copy.ts";
+import { US_ONLY_PHONE_NOTICE } from "./booking/booker-copy.ts";
 import { isUsPhone, PHONE_DIGITS, splitPhoneExtension } from "./phone-format.ts";
 
 export type AttendeeInput = { name?: string; email?: string; phone?: string };
@@ -52,17 +52,17 @@ export function validateAttendee(attendee: AttendeeInput): AttendeeErrors {
     // Incomplete, not foreign. Telling this lead about country codes would send
     // them looking for a problem they do not have (L11).
     errors.phone = "Enter a valid phone number";
-  } else if (!isUsPhone(phone)) {
-    // Long enough to be a real number, and not one we can call. Say which, because
+  } else if (!isUsPhone(phone) || extension.length > 0) {
+    // Long enough to be a real number, and not one we will take. Say which, because
     // "invalid" would read as a typo and they would try the same number again.
-    // The one sentence, shared with the prefill notice that makes the same claim.
+    //
+    // ONE sentence for both, Dan's call, 2026-08-12. An extension is refused rather
+    // than stripped (#1425), so an integration posting a lead's number is told
+    // instead of a booking quietly carrying a number nobody asked for, and it is
+    // told with the same sentence a number we cannot call gets. The INCOMPLETE case
+    // above deliberately keeps its own: that lead's number is short, not refused,
+    // and this sentence would send them after a problem they do not have (L11).
     errors.phone = US_ONLY_PHONE_NOTICE;
-  } else if (extension.length > 0) {
-    // The number is callable and complete; Pennie simply does not ask for an
-    // extension (#1425). Refused rather than stripped, so an integration posting a
-    // lead's number is TOLD, instead of a booking quietly carrying a number nobody
-    // asked for. Its own sentence, because the other two would each be untrue.
-    errors.phone = PHONE_EXTENSION_NOTICE;
   }
 
   return errors;

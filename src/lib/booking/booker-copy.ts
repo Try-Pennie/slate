@@ -147,31 +147,18 @@ export const DETAILS_COPY = {
 export const US_ONLY_PHONE_NOTICE = "We can only call a US number. Please enter one.";
 
 /**
- * Why a number that IS callable was still refused (#1425).
- *
- * Its own sentence, because both of the others would be flatly untrue here: this
- * lead's number is American and it is complete. Telling them to enter a US number,
- * or that their number looks unfinished, would each send them to fix something
- * that is not wrong with it (L11), and the US one would be asking them to do what
- * they have already done (L111).
- *
- * It says what to do rather than what is wrong, because the thing to do is the
- * only part they can act on.
- */
-export const PHONE_EXTENSION_NOTICE =
-  "Please enter your number without an extension.";
-
-/**
- * The same rule, said to somebody who did not type the number (#1425).
+ * Why the field is empty when the number they arrived with had an extension
+ * (#1425).
  *
  * A lead who ARRIVED with an extension has done nothing at all, so the sentence
- * leads with why the field they expected to be filled is empty and then asks. The
- * validation message above is the one for a number they typed themselves, where
- * naming the empty field would be describing something they are looking at.
+ * leads with why the field they expected to be filled is empty and then asks.
  *
- * Written out rather than built from the sentence above it, because saying
- * "extension" twice in two clauses reads as a stumble on the one screen a lead is
- * being asked to correct something on.
+ * This is the ONLY place an extension is named to a lead. A number they typed or an
+ * integration posted is refused with `US_ONLY_PHONE_NOTICE`, the same sentence a
+ * number we cannot call gets (Dan, 2026-08-12: one refusal sentence rather than one
+ * per cause). Here it is still worth naming, because this lead is being asked why a
+ * field they expected to be filled is empty, and "we can only call a US number"
+ * would be no answer at all to somebody whose number is American.
  */
 export const EXTENSION_PHONE_PREFILL_NOTICE =
   "The number we had for you has an extension. Please enter it without one.";

@@ -1,6 +1,7 @@
 // Sanity test for the shared attendee contact validation (#37).
 // Run: node --experimental-strip-types scripts/test-attendee.ts
 import { validateAttendee } from "../src/lib/attendee.ts";
+import { US_ONLY_PHONE_NOTICE } from "../src/lib/booking/booker-copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const valid = {
@@ -119,10 +120,10 @@ function phoneError(phone: string): string | undefined {
   ]) {
     const err = phoneError(written);
     assert(err !== undefined, `a number carrying an extension is refused: ${written}`);
-    assert(
-      /extension/i.test(err ?? ""),
-      `and the message names the extension, not the country (got: ${err})`,
-    );
+    // Dan's call, 2026-08-12: ONE refusal sentence for a number we will not take,
+    // rather than a separate one naming the extension. Pinned against the constant,
+    // not a substring, so the two cannot drift into looking alike while differing.
+    eq(err, US_ONLY_PHONE_NOTICE, `and it is the one refusal sentence: ${written}`);
   }
 
   // The extension is SEPARATED before the number is judged, so the reason a lead is
@@ -130,7 +131,7 @@ function phoneError(phone: string): string | undefined {
   // real US number report as foreign.
   const intlExt = phoneError("+44 20 7946 0958 x12");
   assert(intlExt !== undefined, "a foreign number with an extension is still refused");
-  assert(/US/.test(intlExt ?? ""), "and the reason is the country, which is what they must act on");
+  eq(intlExt, US_ONLY_PHONE_NOTICE, "with that same sentence");
 
   const shortExt = phoneError("21555 x12");
   assert(shortExt !== undefined, "an unfinished number with an extension is refused too");
@@ -139,13 +140,12 @@ function phoneError(phone: string): string | undefined {
     `and that lead is told it is incomplete, not foreign (got: ${shortExt})`,
   );
 
-  // All three refusals stay distinct, or two thirds of these leads are sent to fix
-  // something that is not wrong with their number (L11).
-  const plain = phoneError("2155550100 x1");
-  assert(
-    new Set([plain, intlExt, shortExt]).size === 3,
-    "the three refusals do not share a message",
-  );
+  // The extension and the foreign number now share one sentence, deliberately.
+  // The UNFINISHED one still does not: that lead's number is short, not refused, and
+  // sending them to look at country codes would be sending them after a problem they
+  // do not have (L11).
+  eq(phoneError("2155550100 x1"), intlExt, "an extension is refused with the same sentence");
+  assert(shortExt !== intlExt, "and an unfinished number keeps its own");
 
   eq(phoneError("2155550100"), undefined, "a clean US number is still accepted");
 }
