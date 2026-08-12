@@ -118,6 +118,12 @@ jobs:
           # resolves over the network and intermittently 502s, red-flagging CI.
           # Bump deliberately; this version is known-good for link + migration list.
           version: 2.84.2
+      # #1433: the parse runs as a node script with a test suite rather than inline
+      # awk. Pinned to the same major the rest of CI uses, and no pnpm install is
+      # needed: the script imports one local module and nothing from node_modules.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Check for unapplied migrations
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -132,15 +138,18 @@ jobs:
             echo "::error::migration-drift cannot run: SUPABASE_ACCESS_TOKEN and/or SUPABASE_DB_PASSWORD is not set. Configure both repo secrets. Failing rather than passing green while checking nothing (#766)."
             exit 1
           fi
+          # #1433: pipefail, so a failing `migration list` cannot hide behind `tee`
+          # succeeding. Without it the empty file that failure leaves reads as "no
+          # unapplied migrations", which is #766's defect again one level down.
+          set -o pipefail
           supabase link --project-ref drukfvgaynzrralbzkzj
           supabase migration list --linked | tee /tmp/mig.txt
-          # A row with a local migration number but a blank remote = unapplied.
-          if awk -F'|' '{ l=$1; r=$2; gsub(/[^0-9]/,"",l); gsub(/[^0-9]/,"",r); if (l!="" && r=="") { print "Unapplied: " $0; bad=1 } } END { exit bad+0 }' /tmp/mig.txt; then
-            echo "All committed migrations are applied on remote."
-          else
-            echo "::error::Committed migrations are not applied to the remote DB. Run: supabase db push"
-            exit 1
-          fi
+          # The parse lives in a script with a suite (scripts/lib/migration-drift.ts),
+          # not in this block, because a rule inside a `run:` is a rule nothing can
+          # test. It reads only real table rows, so the CLI's own upgrade notice can
+          # never be read as an unapplied migration, and it treats reading NO rows as
+          # a failure rather than as an applied database.
+          node --experimental-strip-types scripts/check-migration-drift.ts < /tmp/mig.txt
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy
