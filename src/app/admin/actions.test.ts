@@ -23,7 +23,9 @@ const cookieStore = vi.hoisted(() => ({ set: vi.fn(), get: vi.fn(), delete: vi.f
 const recordAudit = vi.hoisted(() => vi.fn(async () => {}));
 
 const emit = vi.hoisted(() => ({
-  resendDelivery: vi.fn(async () => {}),
+  // #1076: the outcome is what the admin is shown, so the mock has to be able to
+  // return each one rather than resolving void.
+  resendDelivery: vi.fn(async (): Promise<string> => "sent"),
   replayDeadLetteredDeliveries: vi.fn(async () => 0),
 }));
 const offboarding = vi.hoisted(() => ({
@@ -283,7 +285,9 @@ describe("webhook re-delivery duplicate guard", () => {
   });
 
   it("resendWebhookDelivery re-fires when it wins the claim", async () => {
-    await resendWebhookDelivery(form({ delivery_id: "d1" }));
+    await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(
+      /NEXT_REDIRECT/,
+    );
     expect(locks.acquireLock).toHaveBeenCalledWith(
       "webhook_resend:o1:d1",
       expect.any(Number),
@@ -291,15 +295,35 @@ describe("webhook re-delivery duplicate guard", () => {
     expect(emit.resendDelivery).toHaveBeenCalledWith("d1", "o1");
   });
 
-  it("resendWebhookDelivery is a no-op for a duplicate that loses the claim", async () => {
+  // #1076: the outcome reaches the admin, not just the server logs. Every one of
+  // these used to re-render the log unchanged, so a refusal looked exactly like a
+  // success and the button looked broken.
+  it.each(["sent", "payload-erased", "suppressed", "not-found"] as const)(
+    "resendWebhookDelivery reports %s back to the admin",
+    async (result) => {
+      emit.resendDelivery.mockResolvedValueOnce(result);
+      await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(
+        `NEXT_REDIRECT:/admin?resend=${encodeURIComponent(result)}`,
+      );
+    },
+  );
+
+  it("resendWebhookDelivery tells the admin when a duplicate lost the claim", async () => {
+    // Not a silent no-op any more. A second press that says nothing is
+    // indistinguishable from a broken button, and the truthful thing to say is that
+    // the receiver already has it.
     locks.acquireLock.mockResolvedValueOnce(null);
-    await resendWebhookDelivery(form({ delivery_id: "d1" }));
+    await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(
+      "NEXT_REDIRECT:/admin?resend=deduped",
+    );
     expect(emit.resendDelivery).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
   it("does not release the claim on success, so a later retry stays deduped", async () => {
-    await resendWebhookDelivery(form({ delivery_id: "d1" }));
+    await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(
+      /NEXT_REDIRECT/,
+    );
     expect(locks.releaseLock).not.toHaveBeenCalled();
   });
 
