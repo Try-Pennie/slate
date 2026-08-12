@@ -21,6 +21,45 @@
 (function () {
   "use strict";
 
+  // --- every word the embed says, in ONE place ------------------------------
+  //
+  // slate-embed-copy: start
+  //
+  // This is the embed's whole vocabulary, and it lives here so it can be READ
+  // before it ships (#1421). The booker and the manage page already have that
+  // through `pnpm preview:booker`, which is trustworthy because it calls the real
+  // copy builders and holds no wording of its own (L41). This file cannot import
+  // one: it is a dependency-free static asset served to third-party pages, with no
+  // build step between it and the browser.
+  //
+  // So the preview READS this block out of the shipping file instead. That gives
+  // the same guarantee by a different route, and it only holds while the block is
+  // the only place the embed's wording lives, which
+  // `scripts/test-embed-invite-preview.ts` enforces in both directions: every entry
+  // here must be reachable by the preview, and no user-visible string may sit
+  // outside it.
+  //
+  // Most leads meet Slate through this chrome rather than the standalone page, so
+  // these six lines are read more than any other copy in the product.
+  var COPY = {
+    /** The dialog itself, for anyone arriving on a screen reader. */
+    modalLabel: "Book a call",
+    /** The X in the corner. */
+    close: "Close",
+    /** Announced while the booker loads. */
+    loading: "Loading",
+    /** And shown, for a lead who has asked for reduced motion and so sees no
+     *  spinner. Without it that lead gets a blank panel. */
+    loadingText: "Loading\u2026",
+    /** The load failed. It says what to do, not what broke. */
+    loadFailed: "We couldn't load the booking form. Check your connection and try again.",
+    /** The way out of that. */
+    retry: "Try again",
+    /** The frame, named so a screen reader's frame list is navigable. */
+    frameTitle: "Pennie booking",
+  };
+  // slate-embed-copy: end
+
   var prior = window.Cal;
   var priorNs = prior && prior.ns ? prior.ns : {};
   var queuedGlobal = prior && prior.q ? prior.q.slice() : [];
@@ -185,7 +224,7 @@
     modal.className = "slate-widget-modal";
     modal.setAttribute("role", "dialog");
     modal.setAttribute("aria-modal", "true");
-    modal.setAttribute("aria-label", "Book a call");
+    modal.setAttribute("aria-label", COPY.modalLabel);
     modal.style.cssText =
       "background:#fff;border-radius:16px;width:min(720px,92vw);" +
       "max-height:90vh;max-height:90dvh;overflow:auto;position:relative;" +
@@ -196,7 +235,7 @@
 
     var close = document.createElement("button");
     close.textContent = "×";
-    close.setAttribute("aria-label", "Close");
+    close.setAttribute("aria-label", COPY.close);
     close.style.cssText =
       "position:absolute;top:2px;right:2px;border:0;background:transparent;" +
       "width:44px;height:44px;display:flex;align-items:center;" +
@@ -250,9 +289,9 @@
     function renderLoading() {
       clearNode(loader);
       loader.setAttribute("role", "status");
-      loader.setAttribute("aria-label", "Loading");
+      loader.setAttribute("aria-label", COPY.loading);
       if (reduceMotion) {
-        loader.textContent = "Loading…";
+        loader.textContent = COPY.loadingText;
         loader.style.color = "rgb(106,106,112)";
         loader.style.fontSize = "14px";
       } else {
@@ -273,12 +312,11 @@
       loader.style.fontSize = "14px";
 
       var msg = document.createElement("p");
-      msg.textContent =
-        "We couldn't load the booking form. Check your connection and try again.";
+      msg.textContent = COPY.loadFailed;
       msg.style.cssText = "margin:0;max-width:280px;line-height:1.5";
 
       var retry = document.createElement("button");
-      retry.textContent = "Try again";
+      retry.textContent = COPY.retry;
       retry.style.cssText =
         "min-height:44px;padding:0 20px;border:0;border-radius:12px;" +
         "background:#82D0FF;color:rgb(52,52,52);font-size:15px;cursor:pointer;" +
@@ -320,7 +358,7 @@
     iframe.style.cssText =
       "width:100%;border:0;min-height:560px;opacity:0" +
       (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
-    iframe.setAttribute("title", "Pennie booking");
+    iframe.setAttribute("title", COPY.frameTitle);
     iframe.allow = "fullscreen";
     iframe.addEventListener("load", function () {
       if (loadTimer) {

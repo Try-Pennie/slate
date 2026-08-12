@@ -20,6 +20,7 @@ import {
   deterministicEventId,
   EventGone,
   eventDescription,
+  eventSummary,
   idempotencyKeyFor,
   selectAgent,
   MAX_COMPLETION_DRAIN_BATCHES,
@@ -1835,9 +1836,7 @@ export async function createBooking(
     },
   };
   const event: ReservationPayload["event"] = {
-    summary: `${bookedEventType.name}${
-      input.attendee.name ? ` with ${input.attendee.name}` : ""
-    }`,
+    summary: eventSummary(bookedEventType.name, input.attendee.name ?? null),
     description: eventDescription(phone, manageUrl(deps, manageToken)),
     start: startIso,
     end: endIso,
@@ -2899,7 +2898,7 @@ async function applyReschedule(
       newGcalEventId = await deps.createEvent(
         pin.pinned_agent_email,
         {
-          summary: `${eventType.name}${booking.attendee_name ? ` with ${booking.attendee_name}` : ""}`,
+          summary: eventSummary(eventType.name, booking.attendee_name),
           description: eventDescription(booking.attendee_phone, manageUrl(deps, token)),
           start: startIso,
           end: endIso,
@@ -2921,7 +2920,7 @@ async function applyReschedule(
       newGcalEventId = await deps.createEvent(
         pin.pinned_agent_email,
         {
-          summary: `${eventType.name}${booking.attendee_name ? ` with ${booking.attendee_name}` : ""}`,
+          summary: eventSummary(eventType.name, booking.attendee_name),
           description: eventDescription(booking.attendee_phone, manageUrl(deps, token)),
           start: startIso,
           end: endIso,
@@ -3171,9 +3170,7 @@ export async function reassignBooking(
   const newEventId = await deps.createEvent(
     agent.email,
     {
-      summary: `${eventType.name}${
-        booking.attendee_name ? ` with ${booking.attendee_name}` : ""
-      }`,
+      summary: eventSummary(eventType.name, booking.attendee_name),
       // #969: this invite is the ONE notification the customer gets on a reassign
       // (the old event is removed silently below). Explain the swap so a fresh
       // invite for an appointment they already have does not read as a mistake.

@@ -58,6 +58,8 @@ import {
   doneHeading,
   liveHeading,
 } from "@/lib/booking/manage-copy";
+import { eventDescription, eventSummary } from "@/lib/booking/core";
+import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
 
 /** One line of copy, and the state that puts it on screen. */
 export interface CopyLine {
@@ -295,6 +297,56 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the call took place", text: doneHeading("completed") },
         { state: "and what to do about that", text: doneBody("completed") },
         { state: "the way onward, either way", text: DONE_COPY.bookAgain },
+      ],
+    },
+  ];
+}
+
+
+/**
+ * The copy a lead reads in their CALENDAR, which the two screens above do not
+ * cover (#1421).
+ *
+ * Arguably the highest-stakes wording in the product: it is what the lead still
+ * has in front of them on the day, it carries the only link they have for moving
+ * or cancelling the call, and it is where the advisor reads their number from.
+ * Until now it was written and shipped without anybody reading it rendered.
+ *
+ * Pure, like the two above, so this stays importable from the jsdom parity test's
+ * module graph. The EMBED's copy needs a file read, so it lives in `embed-copy.ts`
+ * and is assembled by the preview script.
+ */
+export function inviteCopyScreens(): CopyScreen[] {
+  const manageUrl = "https://slate.trypennie.app/booking/manage/8f2c1a";
+  return [
+    {
+      screen: "Calendar invite: the appointment",
+      purpose:
+        "What the lead has in front of them for the whole week before the call, and " +
+        "the only place they are given a way to move or cancel it.",
+      lines: [
+        { state: "the title", text: eventSummary("Pennie consultation", "Dana Lee") },
+        {
+          state: "the title when we never got a name",
+          text: eventSummary("Pennie consultation", null),
+        },
+        {
+          state: "the body, with the number the advisor will dial",
+          text: eventDescription(PHONE, manageUrl),
+        },
+        {
+          state: "and with no number on the booking",
+          text: eventDescription(null, manageUrl),
+        },
+      ],
+    },
+    {
+      screen: "Calendar invite: a different advisor",
+      purpose:
+        "The ONE notification a lead gets when their booking is moved to another " +
+        "advisor, so it has to explain a fresh invite for a call they already have.",
+      lines: [
+        { state: "the body", text: REASSIGN_INVITE_DESCRIPTION },
       ],
     },
   ];

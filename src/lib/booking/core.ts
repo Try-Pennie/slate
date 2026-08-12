@@ -633,6 +633,23 @@ export function busyBlockFor(
 }
 
 /**
+ * The invite's TITLE, which is the line the lead sees in their calendar for the
+ * whole week before the call and on the day (#1421).
+ *
+ * One builder, because it was assembled inline at four separate call sites (the
+ * booking, both reschedule paths and the reassign), and a payload with no single
+ * place its shape can be seen is one where a difference between two of them is
+ * invisible to a reader of either (L94). It is also what lets the invite copy be
+ * READ before it ships, through `pnpm preview:booker`.
+ *
+ * The name is optional because a booking can reach here without one; the title
+ * then names the appointment alone rather than trailing an empty "with".
+ */
+export function eventSummary(eventTypeName: string, attendeeName: string | null): string {
+  return `${eventTypeName}${attendeeName ? ` with ${attendeeName}` : ""}`;
+}
+
+/**
  * The Google event description, shown on the lead's calendar invite: phone
  * (when present) plus the self-serve manage link - the invite is the lead's
  * only email, so the reschedule/cancel link must ride along (#64).
