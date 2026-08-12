@@ -5,6 +5,7 @@
  */
 import { shortFailureReason } from "@/lib/notify/error-text";
 import { parseStampMs } from "@/lib/date/stamp";
+import type { FailureKind } from "@/lib/google/sync-health";
 
 /** Send only if we've never alerted, or the cooldown has elapsed. */
 export function shouldSendAlert(
@@ -49,7 +50,7 @@ export interface FailingAgent {
   error: string | null;
   /** #916: classification of the worst calendar's last failure, or null when
    *  unclassified (a failure recorded before the classification shipped). */
-  failureKind?: "gone" | "transient" | null;
+  failureKind?: FailureKind | null;
 }
 
 /** A joined agent_calendars + users row, as loaded for the failing-agent alert. */
@@ -60,7 +61,8 @@ export interface FailingCalendarRow {
   email: string | null;
   bookable: boolean;
   deactivated_at: string | null;
-  /** #916: last failure's classification ('gone' | 'transient'), or null. */
+  /** #916 / #1396: last failure's classification ('gone' | 'not-provisioned' |
+   *  'transient'), or null. */
   last_failure_kind?: string | null;
 }
 
@@ -73,6 +75,18 @@ export interface FailingCalendarRow {
  * recorded before #916, or an odd shape) is treated as gone so no streak that
  * used to page ever goes silent.
  */
+/**
+ * Every kind the sync lane can record, as a runtime guard (#1396).
+ *
+ * Derived from one list rather than a chain of literal comparisons at each call
+ * site, so adding a kind cannot leave a reader silently mapping it to null.
+ */
+const FAILURE_KINDS: readonly FailureKind[] = ["gone", "not-provisioned", "transient"];
+
+function isFailureKind(value: string | null | undefined): value is FailureKind {
+  return typeof value === "string" && (FAILURE_KINDS as readonly string[]).includes(value);
+}
+
 export const GONE_PAGE_AT = 2;
 export const TRANSIENT_PAGE_AT = 4;
 
@@ -129,10 +143,11 @@ export function dedupeFailingAgents(rows: FailingCalendarRow[]): FailingAgent[] 
         consecutiveFailures: r.consecutive_failures,
         lastSuccessAt: r.last_success_at,
         error: r.last_sync_error,
-        failureKind:
-          r.last_failure_kind === "gone" || r.last_failure_kind === "transient"
-            ? r.last_failure_kind
-            : null,
+        // Any kind the code can record survives dedup. Listing them by hand here
+        // is what would silently drop a NEW kind to null, and null means "treat as
+        // needing a human" with no idea WHICH human, which is the whole thing
+        // #1396 set out to fix.
+        failureKind: isFailureKind(r.last_failure_kind) ? r.last_failure_kind : null,
       });
     }
   }
@@ -281,9 +296,24 @@ const MAX_NAMED_AGENTS = 5;
  * counts as an account problem, matching #916's conservative default.
  */
 function instructionFor(failing: FailingAgent[]): string {
-  // Only the accounts tagged gone need the re-auth, so say which ones: on a mixed
-  // list a bare "Re-auth or deactivate" points at the transient agents too.
-  if (failing.some((a) => a.failureKind !== "transient")) {
+  const definitive = failing.filter((a) => a.failureKind !== "transient");
+  // #1396: two definitive kinds needing two different people. A never-provisioned
+  // account is fixed by a Workspace admin giving them Calendar, and telling that
+  // reader to re-auth sends them to repair a credential that is fine. So the
+  // instruction names whichever kinds are actually present, and both when both are.
+  const needsProvisioning = definitive.some((a) => a.failureKind === "not-provisioned");
+  const needsAccountFix = definitive.some((a) => a.failureKind !== "not-provisioned");
+  if (needsProvisioning && needsAccountFix) {
+    return "Provision Calendar in Google Workspace for the accounts marked never set up, and re-auth or deactivate the ones marked gone:";
+  }
+  if (needsProvisioning) {
+    // Count-aware: one agent is a single provisioning ticket, and "these accounts"
+    // for one person reads as a bigger problem than it is.
+    return definitive.length === 1
+      ? "Give this account Google Calendar in Workspace; it has never had it:"
+      : "Give these accounts Google Calendar in Workspace; they have never had it:";
+  }
+  if (needsAccountFix) {
     return "Re-auth or deactivate the accounts marked gone:";
   }
   // All transient, but breadth changes what to do. One flaky calendar is nothing
@@ -313,9 +343,13 @@ function failingAgentLines(
     const kind =
       a.failureKind === "gone"
         ? " [account gone: re-auth or deactivate]"
-        : a.failureKind === "transient"
-          ? " [transient: likely self-healing]"
-          : "";
+        : // #1396: definitive like gone, but a different fix. Labelling it "account
+          // gone" sent the reader to repair a credential that is fine.
+          a.failureKind === "not-provisioned"
+          ? " [never set up for Calendar: provision in Google Workspace]"
+          : a.failureKind === "transient"
+            ? " [transient: likely self-healing]"
+            : "";
     return (
       `• ${a.email}: ${n} consecutive failure${n === 1 ? "" : "s"}, ` +
       `${policy.lastSuccessLabel} ${lastOk}${kind}${err}`

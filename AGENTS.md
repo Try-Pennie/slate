@@ -96,6 +96,34 @@ or schema-qualify (`extensions.digest`), or widen the pin.
 `-- search-path-ok: <reason>` escape hatch; the reasoning is in the runbook's
 "Writing a function with a pinned search_path" section (#1126).
 
+# Three ways a Google calendar can fail, not two
+
+A failed calendar read is classified `gone`, `not-provisioned`, or `transient`
+(`src/lib/google/reachability-classify.ts`), and the distinction decides what a
+message tells the reader to DO:
+
+- **gone** (a 4xx: account removed from the Workspace, delegation revoked, calendar
+  not found) is a credential or membership repair: re-auth, or take them out of the
+  pool.
+- **not-provisioned** (`403 notACalendarUser`, #1396) is an account that has never
+  been given Calendar at all. Retrying can never fix it and nothing is wrong with
+  the credentials; a Workspace admin has to give the person Calendar. At least one
+  real agent is in this state, and new hires reaching Slate before their Google
+  provisioning completes make it the expected direction of travel.
+- **transient** (5xx, timeout, rate limit) usually self-heals.
+
+**Never branch on `kind === "gone"`.** Use `isDefinitiveFailure`
+(`src/lib/google/sync-health.ts`, kept there so the every-minute sync coalescer can
+reach it without pulling a Google dependency behind it). A literal comparison
+treats `not-provisioned` as transient, which fails OPEN: the rotation retries a
+hopeless account every minute on a shared budget, and the activation gate refuses
+it with "retry shortly", advice that can never work. A null kind is definitive too,
+matching #916, so an unclassified streak never goes quiet.
+
+Adding a fourth kind means giving it its own label AND its own instruction;
+`scripts/test-google-not-provisioned.ts` drives that off the list of kinds and
+fails when two share either.
+
 # The monitor lane's shared setup reads
 
 Every check on the monitor lane runs inside its own boundary (`steps.run`, #1281),

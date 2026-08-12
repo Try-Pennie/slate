@@ -8,14 +8,34 @@
  */
 
 /**
- * How a failure was classified (#916): a definitively-GONE account (a 4xx from
- * the token mint or calendar API: delegation revoked, account removed from the
- * Workspace) needs a human, while a TRANSIENT failure (5xx, timeout, rate limit)
- * usually self-heals. Structurally identical to the reachability classifier's
+ * How a failure was classified (#916, extended in #1396): a definitively-GONE
+ * account (a 4xx from the token mint or calendar API: delegation revoked, account
+ * removed from the Workspace) needs a human, a NOT-PROVISIONED account
+ * (`403 notACalendarUser`) needs a DIFFERENT human doing a different thing (a
+ * Workspace admin giving them Calendar), and a TRANSIENT failure (5xx, timeout,
+ * rate limit) usually self-heals. Use `isDefinitiveFailure` rather than comparing
+ * against "gone", or the second kind reads as retryable. Structurally identical to the reachability classifier's
  * non-reachable outcomes; kept as a local literal so this module stays
  * import-free and node-testable.
  */
-export type FailureKind = "gone" | "transient";
+export type FailureKind = "gone" | "not-provisioned" | "transient";
+
+/**
+ * Is this failure one that no amount of retrying will fix? (#1396)
+ *
+ * The ONE predicate every gate branches on, so adding a third definitive kind
+ * cannot silently fail OPEN. A gate written as `kind === "gone"` treats
+ * `not-provisioned` as transient, which means retrying an account forever and, at
+ * the activation gate, the difference between refusing an agent and admitting one
+ * whose availability can never be read.
+ *
+ * A null or missing kind counts as definitive, matching #916's conservative
+ * default: a failure recorded before the classification shipped must not go
+ * quiet.
+ */
+export function isDefinitiveFailure(kind: FailureKind | "reachable" | null | undefined): boolean {
+  return kind !== "transient" && kind !== "reachable";
+}
 
 export interface CalSyncHealth {
   consecutive_failures: number;
