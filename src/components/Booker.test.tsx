@@ -7,11 +7,14 @@ import {
   INCOMPLETE_PHONE_NOTICE,
   NEXT_DAYS_COPY,
   PICKER_COPY,
+  UNCLASSIFIED_EMPTY_NOTICE,
+  UNCLASSIFIED_EMPTY_RETRY,
   US_ONLY_PHONE_NOTICE,
   allTimesTaken,
   closedNoReopenDate,
 } from "@/lib/booking/booker-copy";
 import { DateTime } from "luxon";
+import { messageLines } from "@/lib/booking/slot-picker";
 import { RESCHEDULE_REASONS } from "@/lib/booking/core";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
@@ -288,7 +291,12 @@ describe("Booker confirm", () => {
   it("shows honest empty-window copy that doesn't point at a disabled control (#585)", async () => {
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
       if (String(url).includes("/api/availability")) {
-        return { ok: true, json: async () => ({ ...availability, slots: [] }) } as Response;
+        // A staffed week that is simply full, stated as such: an UNSTATED cause is
+        // its own screen now (#1414), and this test is about the busy one.
+        return {
+          ok: true,
+          json: async () => ({ ...availability, slots: [], emptyBecause: { kind: "busy" } }),
+        } as Response;
       }
       return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
     }) as unknown as typeof fetch;
@@ -981,13 +989,17 @@ describe("Booker empty-state honesty (#1328)", () => {
     expect(screen.queryByText(/we are closed/i)).toBeNull();
   });
 
-  it("falls back to the vaguer copy when the server cannot tell why", async () => {
+  it("says it could not work out why, rather than claiming a full week (#1414)", async () => {
     global.fetch = emptyWith(null);
     render(<Booker {...baseProps} />);
 
-    // Vague is merely unhelpful; a wrongly claimed closure names a date the lead
-    // would act on, so this is the safe direction for an unknown.
-    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    // #1328's rule holds and is unchanged: a wrongly claimed closure names a date
+    // the lead would act on, so an unknown must never become one. What #1414 adds
+    // is that it must not become the OTHER claim either. "All times are taken" is a
+    // measurement, and nobody made it.
+    expect(await screen.findByText(UNCLASSIFIED_EMPTY_NOTICE)).toBeTruthy();
+    expect(screen.queryByText(/we are closed/i)).toBeNull();
+    expect(screen.queryByText(allTimesTaken())).toBeNull();
   });
 
   it("says we are closed without a date when there is no reopening day to give", async () => {
@@ -1137,7 +1149,9 @@ describe("Booker closure state (#1329, #1339)", () => {
     })) as unknown as typeof fetch;
     render(<Booker {...baseProps} />);
 
-    expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
+    // The unknown window has its own sentence (#1414); what matters here is that it
+    // is not treated as a closure, since that is what would offer the search.
+    expect(await screen.findByText(UNCLASSIFIED_EMPTY_NOTICE)).toBeTruthy();
     expect(screen.queryByRole("button", { name: NEXT_DAYS_COPY.ask })).toBeNull();
   });
 
@@ -1269,7 +1283,10 @@ describe("Booker closure state (#1329, #1339)", () => {
       // day there would be inventing one, and "nobody is available before then"
       // would be false: they are available, they are booked.
       global.fetch = vi.fn(async () =>
-        ({ ok: true, json: async () => ({ ...availability, slots: [] }) }) as Response,
+        ({
+          ok: true,
+          json: async () => ({ ...availability, slots: [], emptyBecause: { kind: "busy" } }),
+        }) as Response,
       ) as unknown as typeof fetch;
 
       render(<Booker {...baseProps} />);
@@ -1372,6 +1389,92 @@ describe("Booker closure state (#1329, #1339)", () => {
       // And explicitly NOT the reopening day it was handed.
       const reopen = DateTime.fromISO(monday, { zone }).toFormat("cccc, LLLL d");
       expect(heading.textContent).not.toContain(reopen);
+    });
+  });
+
+
+  // #1414, Dan's call: an empty window nobody can explain is a signal, not a quiet
+  // day. `emptyBecause` is set whenever the server CAN tell, so its absence means
+  // either an older response shape or a classifier that did not run, and smoothing
+  // that into "all times are taken" hides both.
+  describe("an empty window nobody can explain (#1414)", () => {
+    const emptyWithNoCause = () =>
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ ...availability, slots: [] }),
+      })) as unknown as typeof fetch;
+
+    it("says we could not work it out, and offers a retry", async () => {
+      global.fetch = emptyWithNoCause();
+      render(<Booker {...baseProps} />);
+
+      expect(await screen.findByText(UNCLASSIFIED_EMPTY_NOTICE)).toBeTruthy();
+      expect(screen.getByRole("button", { name: UNCLASSIFIED_EMPTY_RETRY })).toBeTruthy();
+    });
+
+    it("does NOT blame the lead's connection", async () => {
+      // The read SUCCEEDED. Telling somebody to check their connection is a claim
+      // the check never measured, and it would send them to restart a router over a
+      // server side classification gap (L11).
+      global.fetch = emptyWithNoCause();
+      render(<Booker {...baseProps} />);
+
+      await screen.findByText(UNCLASSIFIED_EMPTY_NOTICE);
+      expect(screen.queryByText(/check your connection/i)).toBeNull();
+    });
+
+    it("does not claim a closure it cannot support, or a full week it did not measure", async () => {
+      global.fetch = emptyWithNoCause();
+      render(<Booker {...baseProps} />);
+
+      await screen.findByText(UNCLASSIFIED_EMPTY_NOTICE);
+      expect(screen.queryByText(/we are closed/i)).toBeNull();
+      expect(screen.queryByText(allTimesTaken())).toBeNull();
+      // And no far ahead search: we do not know there is a far side to look at.
+      expect(screen.queryByRole("button", { name: NEXT_DAYS_COPY.ask })).toBeNull();
+    });
+
+    it("re-runs the availability read when the retry is pressed", async () => {
+      const fetchMock = emptyWithNoCause();
+      global.fetch = fetchMock;
+      render(<Booker {...baseProps} />);
+
+      await screen.findByText(UNCLASSIFIED_EMPTY_NOTICE);
+      const before = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: UNCLASSIFIED_EMPTY_RETRY }));
+      await act(async () => {});
+
+      const after = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      expect(after).toBeGreaterThan(before);
+    });
+
+    // The three empty states must stay apart, or they collapse back into each
+    // other one edit at a time.
+    it("a busy window keeps its own sentence and offers no retry", async () => {
+      global.fetch = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ ...availability, slots: [], emptyBecause: { kind: "busy" } }),
+      })) as unknown as typeof fetch;
+      render(<Booker {...baseProps} />);
+
+      expect(await screen.findByText(allTimesTaken())).toBeTruthy();
+      expect(screen.queryByText(UNCLASSIFIED_EMPTY_NOTICE)).toBeNull();
+      expect(screen.queryByRole("button", { name: UNCLASSIFIED_EMPTY_RETRY })).toBeNull();
+    });
+
+    it("a genuine fetch failure still says the load failed", async () => {
+      // A real network failure, which is what the connection message is ABOUT.
+      global.fetch = vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }) as unknown as typeof fetch;
+      render(<Booker {...baseProps} />);
+
+      // messageLines puts each sentence on its own line (#1336), so they are
+      // separate nodes and the whole string never appears in one of them.
+      for (const sentence of messageLines(PICKER_COPY.failed)) {
+        expect(await screen.findByText(sentence)).toBeTruthy();
+      }
+      expect(screen.queryByText(UNCLASSIFIED_EMPTY_NOTICE)).toBeNull();
     });
   });
 

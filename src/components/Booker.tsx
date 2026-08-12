@@ -23,6 +23,8 @@ import {
   HONEYPOT_LABEL,
   MOVE_COPY,
   CLOSED_BODY,
+  UNCLASSIFIED_EMPTY_NOTICE,
+  UNCLASSIFIED_EMPTY_RETRY,
   NEXT_DAYS_COPY,
   phonePrefillNotice,
   allTimesTaken,
@@ -763,12 +765,31 @@ export default function Booker({
   // screen, and is never told anything. The server says which it is; when it cannot
   // tell, the vaguer line is the honest one, because a wrongly claimed closure
   // names a date the lead would act on.
+  const closure = meta?.emptyBecause?.kind === "closed" ? meta.emptyBecause : null;
+  const isClosure = closure !== null;
+
+  // #1414: THREE causes, not two. The server sets `emptyBecause` whenever it can
+  // tell, so its absence means an older response shape or a classifier that did not
+  // run, and reporting that as "all times are taken" claims a measurement nobody
+  // made. It is not the load failure either: the read succeeded, so blaming the
+  // lead's connection would be a claim the check never established (L11).
+  //
+  // "Unknown" means the SERVER returned a window with nothing in it and did not say
+  // why. A month layout paged past the horizon is a different thing entirely: the
+  // response carried slots, they just do not fall in the month being looked at, and
+  // the client knows exactly why. So the third state requires an empty payload, not
+  // merely an empty view.
+  const serverReturnedNothing = meta !== null && meta.slots.length === 0;
+  const emptyCause: "closed" | "busy" | "unknown" =
+    meta?.emptyBecause?.kind ?? (serverReturnedNothing ? "unknown" : "busy");
   const emptyMessage =
-    meta?.emptyBecause?.kind === "closed"
-      ? meta.emptyBecause.reopensOn
-        ? closedUntil(meta.emptyBecause.reopensOn, zone)
+    closure !== null
+      ? closure.reopensOn
+        ? closedUntil(closure.reopensOn, zone)
         : closedNoReopenDate()
-      : allTimesTaken();
+      : emptyCause === "busy"
+        ? allTimesTaken()
+        : UNCLASSIFIED_EMPTY_NOTICE;
 
   // Dan, 2026-08-12: the far ahead search is offered for a CLOSURE only. A week
   // that is merely full is a staffing problem to fix rather than a reason to send a
@@ -776,8 +797,6 @@ export default function Booker({
   // unknown cause counts as busy here: it could be either, and treating it as a
   // closure would put the button back on every busy week, which is what this
   // removes. Somebody being TOLD we are full is #1412's job, not the lead's.
-  const closure = meta?.emptyBecause?.kind === "closed" ? meta.emptyBecause : null;
-  const isClosure = closure !== null;
 
   // #1339: the body only belongs under a closure we can date. "Before then" needs a
   // `then` to refer to, so it dangles under "We are closed right now", and under
@@ -832,6 +851,18 @@ export default function Booker({
             </span>
           ))}
         </p>
+      )}
+      {/* #1414: the way out of a window we could not explain. It re-runs the
+          availability read, which is the only thing that could change the answer;
+          the far ahead search is deliberately NOT offered, because we do not know
+          there is a far side to look at. */}
+      {emptyCause === "unknown" && (
+        <button
+          onClick={() => picker.retry()}
+          className={`inline-flex min-h-11 items-center justify-center rounded-lg border px-4 text-sm font-semibold ${c.toggleBorder} ${c.body} ${c.navHover}`}
+        >
+          {UNCLASSIFIED_EMPTY_RETRY}
+        </button>
       )}
       {isClosure && nextDaySlots === null && (
         <>

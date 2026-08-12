@@ -113,8 +113,13 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
   });
 
   it("uses the builder's words for every-time-taken, which is a different cause", async () => {
+    // Stated as busy: an UNSTATED cause is its own screen with its own sentence
+    // (#1414), so this fixture has to say which week it means.
     global.fetch = vi.fn(async () =>
-      ({ ok: true, json: async () => ({ ...availability, slots: [] }) }) as Response,
+      ({
+        ok: true,
+        json: async () => ({ ...availability, slots: [], emptyBecause: { kind: "busy" } }),
+      }) as Response,
     ) as unknown as typeof fetch;
 
     render(<Booker {...bookerProps} />);

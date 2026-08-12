@@ -79,6 +79,26 @@ export function closedNoReopenDate(): string {
  */
 export const CLOSED_BODY = "Nobody is available before then. You can still book the first days back.";
 
+/**
+ * The window came back empty and nothing said WHY (#1414).
+ *
+ * The third empty state, and it is neither of the other two. `emptyBecause` is set
+ * by the server whenever it CAN tell, so its absence means an older response shape
+ * or a classifier that did not run, and reporting that as "all times are taken"
+ * claims a measurement nobody made.
+ *
+ * It also is NOT the load failure, whatever it may feel like. The read succeeded.
+ * Telling this lead to check their connection would be false, would send them to
+ * restart a router over a server side gap, and is exactly the claim L11 forbids: a
+ * message may say only what its check actually established. What we established is
+ * that we do not know.
+ */
+export const UNCLASSIFIED_EMPTY_NOTICE =
+  "We could not work out what is available right now. Please try again in a moment.";
+
+/** The way out of it. Named separately so the button and the sentence cannot drift. */
+export const UNCLASSIFIED_EMPTY_RETRY = "Try again";
+
 // --- looking further ahead (#1329, #1364) ------------------------------------
 
 export const NEXT_DAYS_COPY = {
