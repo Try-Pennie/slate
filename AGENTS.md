@@ -96,6 +96,29 @@ or schema-qualify (`extensions.digest`), or widen the pin.
 `-- search-path-ok: <reason>` escape hatch; the reasoning is in the runbook's
 "Writing a function with a pinned search_path" section (#1126).
 
+# The monitor lane's shared setup reads
+
+Every check on the monitor lane runs inside its own boundary (`steps.run`, #1281),
+and since #1395 so does every SHARED READ at the top of the handler: the bucket
+list, the cached slot rows, the org's business hours, the agents' working hours,
+and the booking horizon. A throw in one of those used to end the tick before a
+single check ran, taking out the availability probe and the cal.com override
+sweep, neither of which needs most of them.
+
+The part that matters is the FALLBACK. Each contained read resolves to **null**,
+never to an empty or default value, because a default would let a check answer
+confidently instead of skipping: zero buckets makes the whole ladder look like a
+dead end, an empty week does the same (#1296), no working-hours rules makes every
+agent look off shift, and a guessed horizon has the scan compare a probe against a
+row computed over a different window and call the difference drift (#216).
+
+Which check depends on which read lives in ONE pure place,
+`src/lib/monitor/setup-gates.ts` (`monitorSetupGates`), node-tested with each read
+turned off one at a time and asserting both directions. Two guards keep it honest,
+both in `scripts/test-monitor-step-coverage.ts`: a handler-level `const x = await`
+outside `steps.run` fails the build (so a sixth read is covered by construction),
+and each gated check must consult its gate rather than a hand-rolled condition.
+
 # Where a new test goes
 
 Slate runs two test harnesses on purpose. They are not interchangeable, and the
