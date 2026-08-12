@@ -1,12 +1,9 @@
 import { redirect } from "next/navigation";
-import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/auth";
-import { requireAdmin } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
-import { normalizeBookerLayout } from "@/lib/booking/layout";
 import { paginateRows } from "@/lib/paginate-rows";
 import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
 import { CronLaneHealth } from "@/components/CronLaneHealth";
@@ -25,21 +22,10 @@ import {
   updateBucket,
 } from "@/app/admin/actions";
 
-async function setOrgBookerLayout(formData: FormData): Promise<void> {
-  "use server";
-  const admin = await requireAdmin();
-  const layout = normalizeBookerLayout(formData.get("booker_layout"));
-  await supabaseAdmin()
-    .from("organizations")
-    .update({ booker_layout: layout })
-    .eq("id", admin.org_id);
-  revalidatePath("/admin");
-}
 import {
   atLeast,
   canManageAgents,
   canEditOrgSettings,
-  canEditOrgDefaults,
   roleLabel,
   ROLES,
 } from "@/lib/auth/roles";
@@ -61,7 +47,6 @@ import type {
   BucketMember,
   Criteria,
   EventType,
-  Organization,
   User,
   WebhookDelivery,
   WebhookEndpoint,
@@ -318,10 +303,9 @@ export default async function AdminPage({
   // Managers manage the agent roster; only admins see org/app config and can
   // move the org-wide default working hours.
   const isAdmin = canEditOrgSettings(me.role);
-  const canEditDefaults = canEditOrgDefaults(me.role);
 
   const db = supabaseAdmin();
-  const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, orgRes, calsRes, recentRes] =
+  const [usersRes, eventTypesRes, bucketsRes, membersRes, webhookRes, calsRes, recentRes] =
     await Promise.all([
       // Exclude the synthetic smoke-test agent (#396) from the roster, the
       // bookable count, and the bucket member / fallback pickers fed by it.
@@ -335,7 +319,6 @@ export default async function AdminPage({
         .eq("org_id", me.org_id)
         .limit(1)
         .maybeSingle(),
-      db.from("organizations").select("*").eq("id", me.org_id).single(),
       db
         .from("agent_calendars")
         .select(
@@ -353,7 +336,6 @@ export default async function AdminPage({
         .limit(25),
     ]);
 
-  const org = orgRes.data as Organization;
   const users = (usersRes.data ?? []) as User[];
   const eventTypes = (eventTypesRes.data ?? []) as EventType[];
   const buckets = (bucketsRes.data ?? []) as Bucket[];
@@ -637,44 +619,6 @@ export default async function AdminPage({
           /admin/settings (#1297): both look like "hours in a settings screen", and
           confusing them silently moves the whole roster's bookability, so they are
           named apart and placed adjacent rather than a page apart. */}
-      {/* Booker calendar layout (super admin only) */}
-      {canEditDefaults && (
-      <section className={cardCls}>
-        <h2 className="mb-2 text-sm font-semibold">Booker calendar layout</h2>
-        <p className="mb-3 text-xs text-fg-muted">
-          Controls which calendar view leads see in the booker.
-        </p>
-        <form action={setOrgBookerLayout} className="flex flex-wrap items-end gap-4">
-          <fieldset className="flex flex-wrap gap-4">
-            <legend className={`${labelCls} mb-1`}>Booker calendar layout</legend>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="booker_layout"
-                value="strip"
-                defaultChecked={normalizeBookerLayout(org.booker_layout) === "strip"}
-                className="accent-pennie-sky"
-              />
-              Compact strip (next few days)
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="booker_layout"
-                value="month"
-                defaultChecked={normalizeBookerLayout(org.booker_layout) === "month"}
-                className="accent-pennie-sky"
-              />
-              Month grid
-            </label>
-          </fieldset>
-          <SubmitButton className={btnCls} pendingLabel="Saving…">
-            Save layout
-          </SubmitButton>
-        </form>
-      </section>
-      )}
-
       {/* Monitor alert settings (admin only) */}
       {isAdmin && (
       <section className={cardCls}>
