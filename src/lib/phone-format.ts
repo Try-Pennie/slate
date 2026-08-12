@@ -16,10 +16,84 @@
  * `isUsPhone` is now the single judge. If Pennie ever calls outside the US, widen
  * THAT, and the field cap with it; do not reintroduce a validator that accepts
  * what the field cannot hold.
+ *
+ * **An extension is part of the number, not a longer number (#1423).** Judging on
+ * digit count alone pushed a perfectly good US number out of range the moment a
+ * lead gave the extension that actually reaches them, and the sentence they got
+ * back was wrong as well as the verdict: they were told to enter a US number about
+ * a US number, which is advice to do what they had already done (L111). The
+ * extension is stripped BEFORE the country rule is applied, rather than the digit
+ * rule being loosened, which would have let a genuinely foreign number back in.
+ * `splitPhoneExtension` is the one place that stripping happens.
+ *
+ * It is stripped for JUDGING and kept for CALLING. The extension is how the
+ * advisor gets past a switchboard, so it rides through the field, the prefill and
+ * the stored string; the field shapes and caps it exactly as it does the number.
  */
 
 /** The number of digits the field accepts. Stated once. */
 export const PHONE_DIGITS = 10;
+
+/**
+ * The number of EXTENSION digits the field accepts, and therefore the number the
+ * server accepts (#1423).
+ *
+ * The two have to be the same. A field that truncates where the validator accepts
+ * more is a rule nothing states, blocking input the server would have taken (L99);
+ * a validator that accepts more than the field can hold is the #1356 defect over
+ * again, since the lead cannot type back what was refused.
+ *
+ * Six covers every real PBX extension; a value longer than this is not an
+ * extension somebody dialled, and it is refused with its own sentence rather than
+ * being mistaken for a foreign number.
+ */
+export const PHONE_EXT_DIGITS = 6;
+
+/**
+ * Everything from the extension marker to the end of the string: `x`, `ext`,
+ * `extn`, `extension` or `#`, however it was punctuated, with the digits after it.
+ *
+ * `#` is accepted alongside the written forms because the field is `inputMode="tel"`
+ * and a phone keypad offers `#` where it offers no letters at all, so it is the only
+ * marker a lead on a phone can actually reach.
+ *
+ * Anchored to the END so it can never eat part of the number itself, and the digit
+ * run is left UNBOUNDED here on purpose: capping in the pattern would make a
+ * seventh typed digit fail to match at all, and the whole thing would silently
+ * revert to being read as one long number mid-keystroke. The cap belongs where the
+ * ten digit one already is, in the formatter.
+ */
+const EXTENSION_TAIL = /[\s,;.]*(?:ext(?:ension|n)?|x|#)[\s.:]*(\d*)\s*$/i;
+
+/** A phone string split into the part that decides whether we can CALL it and the
+ *  part that decides where the call LANDS. */
+export type PhoneParts = {
+  /** The number itself, punctuation and all, with any extension removed. */
+  base: string;
+  /** The extension's digits, or "" when there are none yet. */
+  extension: string;
+  /**
+   * Whether an extension was STARTED, which is not the same as having digits in
+   * it. A lead who has just typed the `x` has no digits yet, and a formatter that
+   * cannot tell that apart from no extension at all eats the marker on the
+   * keystroke that typed it, so the first digit can never be reached.
+   */
+  hasExtensionMarker: boolean;
+};
+
+/**
+ * THE extension rule (#1423), asked by the field, the prefill and the server, so
+ * none of them can disagree about where the number ends.
+ */
+export function splitPhoneExtension(value: string): PhoneParts {
+  const match = EXTENSION_TAIL.exec(value);
+  if (!match) return { base: value, extension: "", hasExtensionMarker: false };
+  return {
+    base: value.slice(0, match.index),
+    extension: match[1] ?? "",
+    hasExtensionMarker: true,
+  };
+}
 
 /**
  * The field's value after this keystroke: digits only, capped, punctuated.
@@ -29,6 +103,16 @@ export const PHONE_DIGITS = 10;
  * punctuation is never doubled up.
  */
 export function formatPhoneAsTyped(value: string): string {
+  const parts = splitPhoneExtension(value);
+  const number = formatPhoneNumberAsTyped(parts.base);
+  // An extension with no number in front of it is not something to show: the same
+  // reasoning that clears the brackets when the last digit is deleted.
+  if (!number || !parts.hasExtensionMarker) return number;
+  return `${number} x${parts.extension.slice(0, PHONE_EXT_DIGITS)}`;
+}
+
+/** The number itself, with any extension already removed by the caller. */
+function formatPhoneNumberAsTyped(value: string): string {
   let digits = value.replace(/\D/g, "");
   // A pasted country code is stripped only at ELEVEN digits. A real ten digit
   // number can begin with 1, and dropping that would produce a different, equally
@@ -58,7 +142,9 @@ export function formatPhoneAsTyped(value: string): string {
  * exactly what they used to do.
  */
 export function isUsPhone(value: string): boolean {
-  const digits = value.replace(/\D/g, "");
+  // The extension is removed BEFORE the count is taken (#1423). Loosening the count
+  // instead would let a twelve digit foreign number back in.
+  const digits = splitPhoneExtension(value).base.replace(/\D/g, "");
   return (
     digits.length === PHONE_DIGITS ||
     (digits.length === PHONE_DIGITS + 1 && digits.startsWith("1"))
@@ -97,7 +183,7 @@ export type PhonePrefillDrop =
  */
 export function prefillPhone(value: string): { value: string; dropped: PhonePrefillDrop | null } {
   if (isUsPhone(value)) return { value: formatPhoneAsTyped(value), dropped: null };
-  const digits = value.replace(/\D/g, "");
+  const digits = splitPhoneExtension(value).base.replace(/\D/g, "");
   if (digits.length === 0) return { value: "", dropped: null };
   return { value: "", dropped: digits.length < PHONE_DIGITS ? "incomplete" : "not-callable" };
 }
