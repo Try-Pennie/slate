@@ -26,6 +26,7 @@
  * No `@/` imports beyond Luxon, so scripts can drive it node-natively.
  */
 import { DateTime } from "luxon";
+import { PHONE_EXT_DIGITS } from "../phone-format.ts";
 
 /** US order everywhere (#1336): "Monday, August 17", never "17 August". */
 export function longDayLabel(iso: string, zone: string): string {
@@ -144,6 +145,21 @@ export const DETAILS_COPY = {
  * sentence feel more helpful would be worse than being brief and true.
  */
 export const US_ONLY_PHONE_NOTICE = "We can only call a US number. Please enter one.";
+
+/**
+ * Why a number that IS callable was still refused (#1423).
+ *
+ * Its own sentence, because the US-only one would be flatly untrue here: this
+ * lead's number is American and reachable, and only the extension is out of range.
+ * Telling them to enter a US number would be telling them to do what they have
+ * already done (L111).
+ *
+ * The limit is interpolated from `PHONE_EXT_DIGITS` rather than written out, so
+ * the sentence cannot promise a different number from the one the field and the
+ * validator hold to.
+ */
+export const PHONE_EXTENSION_TOO_LONG_NOTICE =
+  `That extension is too long. Please enter up to ${PHONE_EXT_DIGITS} digits after the number.`;
 
 /**
  * Why the phone field is empty when the number they arrived with was UNFINISHED
