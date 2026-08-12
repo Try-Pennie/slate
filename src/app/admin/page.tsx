@@ -21,6 +21,7 @@ import {
   syncSalesforceNow,
   updateBucket,
 } from "@/app/admin/actions";
+import { resendFeedback, type ResendResult } from "@/lib/webhooks/resend-feedback";
 
 import {
   atLeast,
@@ -273,6 +274,8 @@ export default async function AdminPage({
     imp_email?: string;
     synced?: string;
     sync_error?: string;
+    /** #1076: the outcome of a webhook resend, so the button is never silent. */
+    resend?: string;
     webhook_error?: string;
   }>;
 }) {
@@ -562,6 +565,28 @@ export default async function AdminPage({
           Salesforce sync complete. {sp.synced}.
         </div>
       )}
+      {/* #1076: every resend outcome says something. A refusal used to be logged
+          server side and nothing else, so the admin pressed the button and watched
+          the log re-render unchanged, which is indistinguishable from it working. */}
+      {sp.resend &&
+        (() => {
+          const fb = resendFeedback(sp.resend as ResendResult);
+          return fb.tone === "ok" ? (
+            <div
+              role="status"
+              className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg"
+            >
+              {fb.message}
+            </div>
+          ) : (
+            <div
+              role="alert"
+              className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+            >
+              {fb.message}
+            </div>
+          );
+        })()}
       {sp.sync_error && (
         <div
           role="alert"

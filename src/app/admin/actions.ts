@@ -852,15 +852,23 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
     `webhook_resend:${admin.org_id}:${deliveryId}`,
     WEBHOOK_RESEND_DEDUPE_TTL_MS,
   );
-  if (!claim) return; // a duplicate/racing request already re-fired this delivery
+  // A duplicate or racing request already re-fired this delivery. Reported as the
+  // deduped outcome rather than returning silently (#1076): from the admin's side a
+  // second press that says nothing is indistinguishable from a broken button, and
+  // the truthful thing to say is that the receiver already has it.
+  if (!claim) {
+    redirect(`/admin?resend=${encodeURIComponent("deduped")}`);
+  }
   const result = await resendDelivery(deliveryId, admin.org_id);
   // #1073: a refused resend (payload erased for PII retention, suppressed, etc.)
-  // must not look like a silent success. The delivery row is unchanged on the
-  // re-rendered log; surface the reason to the server logs so it is observable.
+  // must not look like a silent success. The reason goes to the server logs so it
+  // is observable, AND to the admin (#1076), because logging it server side left
+  // the person who pressed the button watching the log re-render unchanged.
   if (result !== "sent") {
     log.warn("webhook-resend", { msg: "resend not sent", delivery_id: deliveryId, result });
   }
   revalidatePath("/admin");
+  redirect(`/admin?resend=${encodeURIComponent(result)}`);
 }
 
 /**
