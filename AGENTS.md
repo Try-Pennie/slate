@@ -542,6 +542,40 @@ every one of these arrives under Slate's own app name and icon, so a "Slate:" (o
 having further along a line read on a phone. Naming Slate inside a sentence is
 fine and often necessary.
 
+# Read lead-facing copy before it ships (`pnpm preview:booker`, #1343)
+
+The copy a CUSTOMER reads had the same gap alert copy did: no way to look at it
+before it shipped. The 2026-08-07 design session was a person clicking through a
+mockup one screen at a time, catching a policy sentence that made the panel about
+us, a message saying "pick another" without saying another what, dates in British
+order, a pronoun we cannot know, and two sentences running together on one line.
+None of it could have been found by reading the code.
+
+**Run `pnpm preview:booker` before changing any wording on the booker or the manage
+page, and read the diff in review.** It prints every string a lead can read (68
+lines across 13 screens), grouped by screen and by the state that produces it,
+including the lines only assistive tech hears.
+
+The rule that makes it trustworthy is the same one as `preview:alerts`: it CALLS
+the real copy builders and holds no wording of its own (L41). That is why the copy
+lives in `src/lib/booking/booker-copy.ts` and `manage-copy.ts` rather than inline
+in the components. **A string a lead can read belongs in those files**; the
+component keeps the markup (a link, a tabular-nums span, a heading level), the
+builder keeps the words.
+
+Two guards, and each is blind where the other looks:
+
+- `scripts/test-booker-preview-coverage.ts` (node): every state renders a real
+  string, nothing leaks `undefined` / `NaN` / a raw blob, the render is
+  deterministic (a builder reading the clock fails the build), the copy rules hold
+  (no dashes, no emoji), and **no literal may be assigned to a `text` in the
+  preview**.
+- `src/components/copy-preview-parity.test.tsx` (vitest): mounts the real
+  components and asserts the BUILDER's exact output is on screen. A static scan
+  cannot mount React, so without this a component could go back to holding its own
+  inline sentence while the preview rendered happily from the builder, showing text
+  that no longer ships. That is worse than no preview, because it would be believed.
+
 # Condition vs incident: which alerts get an all-clear (#1151)
 
 Every alert key Slate can send is classified in **`src/lib/notify/alert-catalog.ts`**

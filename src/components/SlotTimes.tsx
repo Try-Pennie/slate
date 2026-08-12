@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 
 import { BobbingDots } from "@/components/BobbingDots";
+import { PICKER_COPY, timesAvailableAnnouncement } from "@/lib/booking/booker-copy";
 import { AlertIcon } from "@/components/icons";
 import { formatSlotDay } from "@/lib/booking/slot-label";
 import { messageLines, type SlotPickerView } from "@/lib/booking/slot-picker";
@@ -77,12 +78,9 @@ function PanelMessage({ text, className }: { text: string; className: string }) 
   );
 }
 
-const COPY = {
-  pickADay: "Pick a day above to see the times available.",
-  loading: "Finding the days you can book.",
-  failed: "Could not load available times. Check your connection.",
-  dayEmpty: (day: string) => `Nothing left on ${day}. Pick another day above.`,
-};
+// #1343: the words live in booker-copy.ts so `pnpm preview:booker` can render
+// them without mounting React. The alias keeps this file's call sites unchanged.
+const COPY = PICKER_COPY;
 
 /** What assistive tech hears once a state settles (#633). A failure is read by
  *  its own role=alert, so the polite region stays quiet there. */
@@ -103,7 +101,7 @@ function announcement(
     case "day-empty":
       return COPY.dayEmpty(dayLabel(view.day));
     case "times":
-      return `${view.slots.length} time${view.slots.length === 1 ? "" : "s"} available on ${dayLabel(view.day)}`;
+      return timesAvailableAnnouncement(view.slots.length, dayLabel(view.day));
   }
 }
 
