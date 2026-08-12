@@ -36,12 +36,22 @@ export const dynamic = "force-dynamic";
  *   POST (Bearer BOOKING_API_KEY[_2]) -> 501 | 401 | 429 | 503
  */
 export async function POST(req: NextRequest) {
+  // refusal: api_auth_refused
+  // Deliberately uncounted for now (#1318, #1429): the authorizer hands back a
+  // ready-made response and does not say whether this was a rotated key (every lead
+  // refused) or a rate ceiling (abuse shaping), and counting the two as one would let a
+  // noisy caller raise the same number a locked-out integration does.
   const authd = await authorizeBookingApi(req);
   if (!authd.ok) return authd.response;
   log.info("booking-api", { msg: "authenticated request", key: authd.keyId });
 
   const parsed = parseDirectBookingRequest(await req.json().catch(() => null));
   if (!parsed.ok) {
+    // refusal: api_validation
+    // One rejected body is a stray call; a wave means the bot is sending a shape Slate
+    // no longer takes, and every lead it is holding is refused until somebody notices
+    // (#1318). Counted so the failure-rate window (#1313) sees it.
+    recordApiOutcome("error", "", "VALIDATION");
     return NextResponse.json(
       parsed.fieldErrors
         ? { error: parsed.error, code: "VALIDATION", fieldErrors: parsed.fieldErrors }
@@ -104,6 +114,8 @@ export async function POST(req: NextRequest) {
     // The lead already has an appointment and the match wasn't strong enough to
     // move it silently — 409 so the bot asks the lead, then retries with
     // confirmReschedule:true. Everything else is a success.
+    // refusal: api_confirm_required
+    // Nobody is refused: the caller is being ASKED, and retries with confirmReschedule.
     const status = result.outcome === "confirm_required" ? 409 : 200;
     log.info("booking-api", {
       msg: "outcome",
@@ -153,6 +165,7 @@ export async function GET(req: NextRequest) {
   if (!externalIdKeyPresent) {
     const parsed = parseListQuery(sp);
     if (!parsed.ok) {
+      // refusal: api_query_invalid
       return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
     }
     const { bookings, nextCursor } = await listBookings(parsed.value).then((r) => ({
@@ -164,9 +177,11 @@ export async function GET(req: NextRequest) {
 
   // Lookup mode: externalId present. Reject blank, and reject list filters mixed in.
   if ((sp.get("externalId") ?? "").trim() === "") {
+    // refusal: api_query_invalid
     return NextResponse.json({ error: "externalId is required", code: "VALIDATION" }, { status: 400 });
   }
   if (LIST_ONLY_PARAMS.some((k) => sp.has(k))) {
+    // refusal: api_query_invalid
     return NextResponse.json(
       { error: "externalId selects per-person lookup; remove list filters or omit externalId", code: "VALIDATION" },
       { status: 400 },
@@ -175,6 +190,7 @@ export async function GET(req: NextRequest) {
 
   const parsed = parseLookupQuery(sp);
   if (!parsed.ok) {
+    // refusal: api_query_invalid
     return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
   }
   const { externalId, salesforceId, bookingId, status } = parsed.value;
@@ -204,6 +220,7 @@ export async function DELETE(req: NextRequest) {
   const reasonOptions = await loadReasonOptions();
   const parsed = parseCancelQuery(req.nextUrl.searchParams, reasonOptions.cancel.all);
   if (!parsed.ok) {
+    // refusal: api_query_invalid
     return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
   }
   const { bookingId, externalId, salesforceId, reason } = parsed.value;
@@ -268,9 +285,16 @@ function mapBookingError(err: unknown): {
   status: number;
   code: "UNKNOWN_BUCKET" | "NO_ELIGIBLE_AGENTS" | "SLOT_TAKEN" | "VERIFY_UNAVAILABLE" | "INTERNAL";
 } {
+  // Each branch names its decision (#1318). The caller records every one of these as an
+  // error outcome under the same code, so the failure-rate window sees all five.
+  // refusal: api_unknown_bucket
   if (err instanceof UnknownBucketError) return { status: 422, code: "UNKNOWN_BUCKET" };
+  // refusal: api_no_eligible_agents
   if (err instanceof NoEligibleAgentsError) return { status: 409, code: "NO_ELIGIBLE_AGENTS" };
+  // refusal: api_slot_taken
   if (err instanceof SlotUnavailableError) return { status: 409, code: "SLOT_TAKEN" };
+  // refusal: api_verify_unavailable
   if (err instanceof VerifyUnavailableError) return { status: 503, code: "VERIFY_UNAVAILABLE" };
+  // refusal: api_internal
   return { status: 500, code: "INTERNAL" };
 }

@@ -368,6 +368,40 @@ describe("POST /booking outcome tally (#1313)", () => {
     expect(recordApiOutcome.mock.calls[0][1]).toBe(VALID_BODY.bucketCode);
   });
 
+  // #1318: the two 400s were a customer refused with nothing anywhere counting it.
+  // The live case is #1425, which made a phone number carrying an extension a
+  // refusal: any upstream source still sending one now fails EVERY time, and without
+  // this count the only symptom is a quieter funnel.
+  it("counts a request whose body Slate rejects", async () => {
+    const res = await post({ ...VALID_BODY, timezone: 42 });
+    expect(res.status).toBe(400);
+    expect(outcomes()).toEqual([["error", "invalid_request"]]);
+    // The bucket is read off the RAW body, which is the only place it exists when the
+    // parse is what failed, so a fault confined to one bucket stays visible.
+    expect(recordApiOutcome.mock.calls[0][1]).toBe(VALID_BODY.bucketCode);
+  });
+
+  it("counts contact details Slate will not take, under a different code", async () => {
+    const res = await post({
+      ...VALID_BODY,
+      attendee: { ...VALID_BODY.attendee, phone: "2155550100 x4021" },
+    });
+    expect(res.status).toBe(400);
+    // Its own code, not the schema one: a wave of each means a different thing, and a
+    // page naming "invalid_request" for a contact rule would send the reader to the
+    // wrong place.
+    expect(outcomes()).toEqual([["error", "invalid_contact"]]);
+  });
+
+  it("counts NOTHING for a bot tripping the honeypot", async () => {
+    const res = await post({ ...VALID_BODY, website: "http://spam.example" });
+    expect(res.status).toBe(400);
+    // Deliberate (#1318). `attempts` is every recorded outcome summed, so counting a
+    // bot would put its volume in the denominator the failure share is measured
+    // against and make a real outage look proportionally smaller while it floods.
+    expect(outcomes()).toEqual([]);
+  });
+
   it("counts a slot refused at confirm under its own code", async () => {
     service.createBooking.mockRejectedValue(new service.SlotUnavailableError("taken"));
     await post(VALID_BODY);

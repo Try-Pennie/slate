@@ -35,7 +35,9 @@ const service = vi.hoisted(() => {
   };
 });
 
+const recordApiOutcome = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/booking/service", () => service);
+vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 
 import { POST } from "./route";
 
@@ -108,5 +110,54 @@ describe("POST /bookings/[token]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(500);
     expect((await res.json()).error).not.toMatch(/agent_id|does not exist/);
+  });
+});
+
+// #1318: a lead moving their own call is a booking attempt, and until now every way
+// that attempt could be refused was counted NOWHERE. One lost race is ordinary; a
+// wave is the same shape as the 2026-08-06 cal.com failure, reached by leads who
+// already have an appointment.
+describe("POST /api/bookings/[token]/reschedule outcome tally (#1318)", () => {
+  beforeEach(() => recordApiOutcome.mockClear());
+  const outcomes = () => recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);
+
+  const body = { start: "2026-07-01T15:00:00.000Z", reason: "other", reasonDetail: "x" };
+
+  it("counts the SUCCESS as well, so the failure share stays a share", async () => {
+    service.rescheduleBooking.mockResolvedValue({
+      booking: { id: "bk1", starts_at: body.start, ends_at: body.start },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    await POST(req(body), params);
+    // The half that is easy to leave out: counting only the refusals would inflate the
+    // very number #1313 pages on, so the page would fire off a healthy day of moves.
+    expect(outcomes()).toEqual([["rescheduled", null]]);
+  });
+
+  it("counts each refusal under its own code, so a page can name what is failing", async () => {
+    const cases: [Error, string][] = [
+      [new service.SlotUnavailableError("gone"), "reschedule_slot_taken"],
+      [new service.RescheduleConflictError(), "reschedule_conflict"],
+      [new service.NoEligibleAgentsError("411"), "reschedule_no_eligible_agents"],
+      [new service.VerifyUnavailableError("down"), "reschedule_verify_unavailable"],
+      [new service.RescheduleLockUnavailableError(), "reschedule_lock_unavailable"],
+      [new Error("boom"), "reschedule_internal"],
+    ];
+    for (const [err, code] of cases) {
+      recordApiOutcome.mockClear();
+      service.rescheduleBooking.mockRejectedValue(err);
+      await POST(req(body), params);
+      expect(outcomes()).toEqual([["error", code]]);
+    }
+  });
+
+  it("counts nothing for a request the page could not have sent", async () => {
+    recordApiOutcome.mockClear();
+    const res = await POST(req({ start: 5 }), params);
+    expect(res.status).toBe(400);
+    // Deliberate (#1318): the manage page sends one fixed shape, so a body Slate
+    // rejects is hand made. If the PAGE ever sent the wrong shape, every reschedule
+    // would fail and the codes above would report it as a share within minutes.
+    expect(outcomes()).toEqual([]);
   });
 });
