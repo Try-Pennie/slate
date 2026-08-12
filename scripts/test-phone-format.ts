@@ -24,7 +24,7 @@ import {
   prefillPhone,
   PHONE_DIGITS,
 } from "../src/lib/phone-format.ts";
-import { eq, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 // ---------------------------------------------------- formatting as it grows
 
@@ -121,28 +121,44 @@ eq(formatPhoneAsTyped("215-CALL"), "(215", "and are dropped from a mixed value")
 eq(prefillPhone("2155550100").value, "(215) 555-0100", "a bare ten digit prefill is tidied to match a typed one");
 eq(prefillPhone("+1 (215) 555-0100").value, "(215) 555-0100", "and so is one carrying a US country code");
 eq(prefillPhone("(215) 555-0100").value, "(215) 555-0100", "one already in shape is unchanged");
-eq(prefillPhone("2155550100").discarded, false, "a US number is not discarded");
+eq(prefillPhone("2155550100").dropped, null, "a US number is kept");
 
 eq(prefillPhone("").value, "", "an absent prefill stays absent");
 eq(
-  prefillPhone("").discarded,
-  false,
-  "and an ABSENT prefill is not a discarded one: an empty field is the ordinary case, and " +
-    "explaining a rule to somebody who was never shown a number would be noise",
+  prefillPhone("").dropped,
+  null,
+  "an ABSENT prefill is not a dropped one: an empty field is the ordinary case, and " +
+    "explaining anything to somebody who was never shown a number would be noise",
 );
 
 // The decision, both halves. Discarded AND reported, because one without the
 // other is the defect the issue describes.
 eq(prefillPhone("+44 20 7946 0958").value, "", "a non-US prefill is discarded, not passed through");
-eq(prefillPhone("+44 20 7946 0958").discarded, true, "and says so, so the booker can explain why the field is empty");
+eq(prefillPhone("+44 20 7946 0958").dropped, "not-callable", "and says why, so the booker can explain the empty field");
 eq(prefillPhone("+44 7911 123456").value, "", "a thirteen digit number the old validator accepted is discarded too");
-eq(prefillPhone("+44 7911 123456").discarded, true, "and reports it");
+eq(prefillPhone("+44 7911 123456").dropped, "not-callable", "and reports the reason");
 
-// A number too SHORT is not the same case. It is not an international number we
-// refuse, it is an incomplete US one, so it stays in the field for the lead to
-// finish rather than vanishing under a message about country codes (L11).
-eq(prefillPhone("215555").value, "215555", "a partial US number is kept, not discarded");
-eq(prefillPhone("215555").discarded, false, "and is not reported as refused");
+// #1409, Dan's call: a partial number is dropped too, so the field never holds a
+// number that cannot be submitted as it stands. But it is dropped for a DIFFERENT
+// reason, and the reason is returned rather than left for the booker to infer from
+// the value, because inferring it is how the wrong sentence gets shown to somebody
+// whose number is simply unfinished (L11).
+eq(prefillPhone("215555").value, "", "a partial US number is dropped as well");
+eq(prefillPhone("215555").dropped, "incomplete", "and says it was incomplete, not that we cannot call it");
+eq(
+  prefillPhone("+44 20 7946 0958").dropped,
+  "not-callable",
+  "where a real number we cannot call is dropped for that reason instead",
+);
+eq(prefillPhone("2155550100").dropped, null, "a US number is not dropped at all");
+eq(prefillPhone("").dropped, null, "and neither is an absent one: an empty field is the ordinary case");
+
+// The two reasons must stay distinguishable, or the booker can only ever show one
+// sentence and it will be wrong half the time.
+assert(
+  prefillPhone("215555").dropped !== prefillPhone("+44 20 7946 0958").dropped,
+  "the two drops are told apart",
+);
 
 // isUsPhone is the ONE rule, so the field, the prefill and the server cannot
 // disagree about what US-shaped means.

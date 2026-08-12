@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
-import { US_ONLY_PHONE_NOTICE } from "@/lib/booking/booker-copy";
+import { INCOMPLETE_PHONE_NOTICE, US_ONLY_PHONE_NOTICE } from "@/lib/booking/booker-copy";
 import { RESCHEDULE_REASONS } from "@/lib/booking/core";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
@@ -913,16 +913,33 @@ describe("Booker phone handling (#1332, #1333)", () => {
       expect(screen.queryByText(US_ONLY_PHONE_NOTICE)).toBeNull();
     });
 
-    it("keeps a partial US number for them to finish", async () => {
+    // #1409, Dan's call: a partial number is dropped too, so the field never holds
+    // something that cannot be submitted as it stands. The SENTENCE is the point:
+    // it is not a number we refuse, it is an unfinished one, and explaining it with
+    // the US rule would send that lead looking for a problem they do not have.
+    it("drops a partial number and says it looks incomplete, not that it is foreign", async () => {
       global.fetch = okFetch();
       render(<Booker {...baseProps} attendee={{ name: "", email: "", phone: "215555" }} />);
       await pickFirstDay();
       await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
-      // Not a number we refuse, an incomplete one. Vanishing it under a message
-      // about country codes would be the wrong explanation for the wrong problem.
-      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("215555");
+      expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("");
+      expect(screen.getByText(INCOMPLETE_PHONE_NOTICE)).toBeTruthy();
       expect(screen.queryByText(US_ONLY_PHONE_NOTICE)).toBeNull();
+    });
+
+    it("uses the OTHER sentence for a number we cannot call", async () => {
+      global.fetch = okFetch();
+      render(
+        <Booker {...baseProps} attendee={{ name: "", email: "", phone: "+44 20 7946 0958" }} />,
+      );
+      await pickFirstDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+      // Both directions, or a component wired to one constant would pass the test
+      // above while being wrong for every other case.
+      expect(screen.getByText(US_ONLY_PHONE_NOTICE)).toBeTruthy();
+      expect(screen.queryByText(INCOMPLETE_PHONE_NOTICE)).toBeNull();
     });
   });
 

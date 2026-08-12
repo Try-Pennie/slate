@@ -22,7 +22,7 @@ import {
   HONEYPOT_LABEL,
   MOVE_COPY,
   NEXT_DAYS_COPY,
-  US_ONLY_PHONE_NOTICE,
+  phonePrefillNotice,
   allTimesTaken,
   closedNoReopenDate,
   closedUntil,
@@ -287,8 +287,11 @@ export default function Booker({
     phone: initialPhone.value,
   }));
   // Shown until they type something, then it has served its purpose: it explains
-  // an empty field, and the field is no longer empty.
-  const showDiscardedPhoneNotice = initialPhone.discarded && attendee.phone === "";
+  // an empty field, and the field is no longer empty. The SENTENCE comes from the
+  // reason the number was dropped, never from the value, so an unfinished number
+  // cannot be explained as a foreign one (#1409).
+  const phoneNotice =
+    attendee.phone === "" ? phonePrefillNotice(initialPhone.dropped) : null;
   // Honeypot (#1033): a real user never sees or fills the hidden decoy below, so
   // it stays empty; a bot that fills every field trips the server-side check.
   const [honeypot, setHoneypot] = useState("");
@@ -917,8 +920,8 @@ export default function Booker({
                   an error, because they have done nothing wrong and nothing has
                   failed yet, so it is not styled or announced as one; it is the
                   reason a field they expected to be filled is empty. */}
-              {field === "phone" && showDiscardedPhoneNotice && !fieldErrors.phone && (
-                <p className={`mt-1 text-sm ${c.muted}`}>{US_ONLY_PHONE_NOTICE}</p>
+              {field === "phone" && phoneNotice && !fieldErrors.phone && (
+                <p className={`mt-1 text-sm ${c.muted}`}>{phoneNotice}</p>
               )}
             </div>
           ))}
