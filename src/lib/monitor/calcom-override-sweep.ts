@@ -20,6 +20,22 @@ import { parseStampMs } from "@/lib/date/stamp";
 
 export const CALCOM_UNPROTECTED_KEY = "ooo_calcom_unprotected";
 
+/**
+ * The per approval page, fired at approval time when the dual-write fails (#1280).
+ *
+ * Resolved from HERE rather than from the approval path, because this is where the
+ * condition is re-measured. It was classified an incident on the reasoning that
+ * "the transition path holds no state to clear", which was true before this sweep
+ * existed and is not now: on 2026-08-04 request 844bdbab paged at 14:42, was
+ * genuinely fixed that afternoon, and the firing marker was still set.
+ *
+ * Kept as a PAGE rather than demoted to an info whisper, which was the other option
+ * on the table. `ooo_calcom_unprotected` only speaks once an absence is UNDER WAY,
+ * so an override that keeps failing a week ahead would page nobody until the day
+ * arrived. This is the early warning, and the early warning is the one worth having.
+ */
+export const CALCOM_ALERT_KEY = "ooo_calcom";
+
 /** Retries per tick. The set is normally 0 to 2 rows; the cap exists so a bad day
  *  cannot turn one monitor tick into hundreds of outbound cal.com calls. */
 export const MAX_RETRIES_PER_TICK = 10;
@@ -123,6 +139,22 @@ export function formatUnprotectedRecovery(): string {
   );
 }
 
+/**
+ * The all-clear for the per approval page (#1280).
+ *
+ * Says what changed in the reader's terms: the override the page named is in place
+ * now. It names no request id, because the page is one key covering every failing
+ * approval and by the time this sends there are none, so quoting one would suggest
+ * the others were left.
+ */
+export function formatOverrideRecovery(): string {
+  return (
+    "The cal.com availability overrides that had failed are all in place now, so " +
+    "no approved absence is missing its block. The earlier page is cleared and no " +
+    "action is needed."
+  );
+}
+
 export interface SweepResult {
   retried: number;
   cleared: number;
@@ -184,6 +216,14 @@ export async function runCalcomOverrideSweep(deps: {
     // Hung off the MEASURED healthy result: the read succeeded and nothing is
     // unprotected, which is the only evidence that clears this condition.
     await deps.resolve(CALCOM_UNPROTECTED_KEY, formatUnprotectedRecovery());
+  }
+
+  // #1280: the per approval page ends when NOTHING is failing any more. Note this
+  // reads `stillFailing`, which already carries the rows past the per tick cap:
+  // those were never attempted, so this tick knows nothing about them, and counting
+  // them as settled would let the cap end a page for a request still failing.
+  if (stillFailing.length === 0) {
+    await deps.resolve(CALCOM_ALERT_KEY, formatOverrideRecovery());
   }
 
   return {

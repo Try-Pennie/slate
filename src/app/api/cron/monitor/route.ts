@@ -1071,6 +1071,12 @@ export async function GET(req: NextRequest) {
           await sendThrottledAlert(key, settings.cooldownMs.ooo_calcom_unprotected, text);
         },
         // alert-key: ooo_calcom_unprotected
+        // alert-key: ooo_calcom
+        // #1280: the sweep is where BOTH conditions are re-measured, so it is where
+        // both end. The per approval page had no ending at all until now.
+        // all-clear-proof: scripts/test-calcom-override-sweep.ts - an unreadable
+        // candidate set clears neither key, and a row past the per tick cap keeps
+        // the per approval page open because this tick never attempted it.
         resolve: (key, text) => resolveAlert(key, text),
         log: (msg) => log.info("calcom-sweep", { msg }),
       }),
