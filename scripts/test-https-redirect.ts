@@ -178,12 +178,17 @@ assert(
   const unreachable = await evaluateStaticAssetTransport({
     base: "https://slate.trypennie.app",
     expected: true,
+    sleep: async () => {},
     fetchImpl: fakeFetch(
       { status: 308, location: "https://slate.trypennie.app/widget.js" },
       new Error("connection refused"),
     ),
   });
   assert(levels(unreachable) === "ok,fail,fail", "an unreachable asset fails serving AND headers, never silently passes");
+  assert(
+    /unreachable, connection refused/.test(text(unreachable)),
+    "and says it could not be reached, so a reader is not left guessing at `got 0`",
+  );
 
   // A local dev base has no https to assert, so the whole check SKIPs rather
   // than false-failing (matching httpProbeUrl).
@@ -195,6 +200,94 @@ assert(
     },
   });
   assert(levels(local) === "skip", "a localhost base skips the whole check without fetching");
+}
+
+// --- #1210: one retry for an unreachable probe, and nothing else ----------
+// The canary ticks every 30 minutes against the live site, so a single network
+// blip used to page for an embed that was already fine. The retry is bounded and
+// deliberately narrow: it only fires when there was NO answer, because a 404 or a
+// missing header answered on the first look and a second look would say the same
+// thing later. The counts are asserted, not just the verdicts, since a retry that
+// silently fired on every probe would double the canary's requests while every
+// verdict stayed identical.
+{
+  const hardened = {
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+  };
+  const levels = (checks: { level: string }[]) => checks.map((c) => c.level).join(",");
+
+  /**
+   * A fake origin that counts calls per URL scheme and can be told to reject the
+   * first N attempts at either probe.
+   */
+  function countingFetch(opts: { failPlain?: number; failSecure?: number; secureStatus?: number; secureType?: string }) {
+    const calls = { plain: 0, secure: 0 };
+    const impl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.startsWith("http://")) {
+        calls.plain++;
+        if (calls.plain <= (opts.failPlain ?? 0)) throw new Error("socket hang up");
+        return new Response(null, {
+          status: 308,
+          headers: { location: "https://slate.trypennie.app/widget.js" },
+        });
+      }
+      calls.secure++;
+      if (calls.secure <= (opts.failSecure ?? 0)) throw new Error("socket hang up");
+      return new Response("(function(){})()", {
+        status: opts.secureStatus ?? 200,
+        headers: { "content-type": opts.secureType ?? "text/javascript", ...hardened },
+      });
+    };
+    return { calls, impl };
+  }
+  const run = (impl: typeof fetch) =>
+    evaluateStaticAssetTransport({
+      base: "https://slate.trypennie.app",
+      expected: true,
+      fetchImpl: impl,
+      sleep: async () => {},
+    });
+
+  // A blip that clears on the retry leaves the run green.
+  const blipSecure = countingFetch({ failSecure: 1 });
+  const recovered = await run(blipSecure.impl);
+  assert(levels(recovered) === "ok,ok,ok", "#1210: a blip on the https probe that clears on the retry leaves the run green");
+  assert(blipSecure.calls.secure === 2, "the https probe really was attempted twice");
+  assert(blipSecure.calls.plain === 1, "and the probe that answered first time was not retried");
+  // L77: a probe that needed a retry on EVERY tick would otherwise read as perfect
+  // health. The run stays green, but it says it took two looks, so a pattern is
+  // something a reader can see rather than infer.
+  const recoveredText = recovered.map((c) => c.message).join(" | ");
+  assert(
+    /reached on attempt 2/.test(recoveredText),
+    "a recovered blip is visible in the output, not silently identical to a clean run",
+  );
+  const cleanText = (await run(countingFetch({}).impl)).map((c) => c.message).join(" | ");
+  assert(
+    !/reached on attempt/.test(cleanText),
+    "and a run that never retried says nothing about attempts",
+  );
+
+  const blipPlain = countingFetch({ failPlain: 1 });
+  const recoveredPlain = await run(blipPlain.impl);
+  assert(levels(recoveredPlain) === "ok,ok,ok", "#1210: a blip on the plaintext probe also clears on the retry");
+  assert(blipPlain.calls.plain === 2, "the plaintext probe was attempted twice");
+
+  // FAILURE PATH: a genuinely dead embed script still pages, after the retry.
+  const dead = countingFetch({ failSecure: 5 });
+  const stillDead = await run(dead.impl);
+  assert(levels(stillDead) === "ok,fail,fail", "#1210: a retry that also fails keeps today's hard failure, so a dead embed still pages");
+  assert(dead.calls.secure === 2, "having looked exactly twice, not once and not forever");
+
+  // A REACHABLE finding is not retried. This is the property that stops the retry
+  // becoming a way to spend two round trips confirming the same 404.
+  const four04 = countingFetch({ secureStatus: 404, secureType: "text/html" });
+  const notFound = await run(four04.impl);
+  assert(levels(notFound) === "ok,fail,ok", "a 404 in place of the script still fails on the first look");
+  assert(four04.calls.secure === 1, "#1210: a response that arrived is never retried, whatever it said");
 }
 
 finish();

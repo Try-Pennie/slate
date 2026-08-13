@@ -20,6 +20,8 @@
  * off the network; the canary asserts the real site every 30 min (a detective
  * control, matching the after-the-fact model of main-push-guard).
  */
+import { retryTransient } from "./retry.ts";
+
 
 /**
  * The http:// URL to probe for a given smoke base, or `null` when the base isn't
@@ -95,6 +97,64 @@ export function missingSecurityHeaders(
   return HARDENING_HEADERS.filter((name) => !get(name)?.trim());
 }
 
+/**
+ * Fetch a probe URL, giving ONE unreachable result a second look (#1210).
+ *
+ * Only the unreachable path retries. A response that arrived and is wrong (a 404,
+ * an HTML body where javascript belongs, a missing header) is a real finding on
+ * the first look, and retrying it would delay the same answer. That distinction is
+ * what `reached` carries: it is about whether we got an answer, never about
+ * whether we liked it.
+ *
+ * The delay is deliberately tiny. The canary shares its run with the booking
+ * scenarios and pays this on every 30 minute tick, so a long backoff would cost
+ * wall clock on every healthy run to save a rare false page.
+ */
+export const PROBE_RETRY_DELAYS_MS = [500] as const;
+
+/**
+ * The trailing note that makes a RECOVERED blip visible (L77).
+ *
+ * A retry that quietly succeeded leaves a green run identical to one that never
+ * needed it, so a probe blipping on every single tick would read as perfect
+ * health for as long as it lasted. The line still passes; it just says it took two
+ * looks, which is the difference between an occasional blip and a pattern.
+ */
+export function retryNote(attempts: number): string {
+  return attempts > 1 ? ` (reached on attempt ${attempts})` : "";
+}
+
+export type ProbeOutcome =
+  | { reached: true; response: Response; attempts: number }
+  | { reached: false; reason: string; attempts: number };
+
+export async function fetchProbe(opts: {
+  fetchImpl: typeof fetch;
+  url: string;
+  init?: RequestInit;
+  /** Total attempts including the first. Default 2, so one retry (#1210). */
+  attempts?: number;
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<ProbeOutcome> {
+  const result = await retryTransient<Response>({
+    attempts: opts.attempts ?? 2,
+    delaysMs: opts.delaysMs ?? PROBE_RETRY_DELAYS_MS,
+    sleep: opts.sleep,
+    run: async () => {
+      try {
+        // Any response is an ANSWER, however bad. Only a rejection is retryable.
+        return { ok: true, value: await opts.fetchImpl(opts.url, opts.init) };
+      } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+  return result.ok
+    ? { reached: true, response: result.value, attempts: result.attempts }
+    : { reached: false, reason: result.reason, attempts: result.attempts };
+}
+
 /** What the live smoke check should do about an observed transport state. */
 export type RedirectVerdict = "ok" | "warn" | "page";
 
@@ -141,15 +201,26 @@ export type TransportCheck = {
  * can never touch the live site. An unreachable asset fails 2 AND 3: "we could
  * not tell" must never score as healthy, which is how a broken deploy reads as a
  * quiet day around here.
+ *
+ * #1210: an unreachable probe gets ONE retry before that hard failure, because a
+ * single network blip on a 30 minute tick used to page for something already
+ * fine. Nothing else retries: a 404, the wrong content type or a missing header
+ * all answered on the first look, and a second look could only give the same
+ * answer later.
  */
 export async function evaluateStaticAssetTransport(opts: {
   base: string;
   expected: boolean;
   assetPath?: string;
   fetchImpl?: typeof fetch;
+  /** Retry shape, injected so a suite pays no wall clock (#1210). */
+  attempts?: number;
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<TransportCheck[]> {
   const assetPath = opts.assetPath ?? "/widget.js";
   const doFetch = opts.fetchImpl ?? fetch;
+  const retry = { attempts: opts.attempts, delaysMs: opts.delaysMs, sleep: opts.sleep };
   const probe = assetProbeUrl(opts.base, assetPath);
   if (!probe) {
     return [
@@ -160,10 +231,18 @@ export async function evaluateStaticAssetTransport(opts: {
     ];
   }
 
-  const plain = await doFetch(probe, { redirect: "manual" }).then(
-    (r) => ({ status: r.status, location: r.headers.get("location") }),
-    () => ({ status: 0, location: null }),
-  );
+  const plainProbe = await fetchProbe({
+    fetchImpl: doFetch,
+    url: probe,
+    init: { redirect: "manual" },
+    ...retry,
+  });
+  const plain = plainProbe.reached
+    ? {
+        status: plainProbe.response.status,
+        location: plainProbe.response.headers.get("location"),
+      }
+    : { status: 0, location: null };
   const redirectLevel = transportVerdict(
     isHttpsRedirect(plain.status, plain.location),
     opts.expected,
@@ -173,27 +252,33 @@ export async function evaluateStaticAssetTransport(opts: {
       level: redirectLevel === "page" ? "fail" : redirectLevel,
       message:
         `http://…${assetPath} redirects to https:// (#1203): ` +
-        `got ${plain.status} -> ${plain.location ?? "(no Location)"}`,
+        `got ${plain.status} -> ${plain.location ?? "(no Location)"}` +
+        retryNote(plainProbe.attempts),
     },
   ];
 
-  const secure = await doFetch(new URL(assetPath, opts.base).toString()).then(
-    (r) => ({
-      status: r.status,
-      contentType: r.headers.get("content-type") ?? "",
-      missing: missingSecurityHeaders((name) => r.headers.get(name)),
-      reachable: true,
-    }),
-    (e: unknown) => ({
-      status: 0,
-      contentType: "",
-      // Unreachable: report every header as missing rather than an empty list,
-      // which would read as "all present".
-      missing: [...HARDENING_HEADERS],
-      reachable: false,
-      error: e,
-    }),
-  );
+  const secureProbe = await fetchProbe({
+    fetchImpl: doFetch,
+    url: new URL(assetPath, opts.base).toString(),
+    ...retry,
+  });
+  const secure = secureProbe.reached
+    ? {
+        status: secureProbe.response.status,
+        contentType: secureProbe.response.headers.get("content-type") ?? "",
+        missing: missingSecurityHeaders((name) => secureProbe.response.headers.get(name)),
+        reachable: true,
+        reason: "",
+      }
+    : {
+        status: 0,
+        contentType: "",
+        // Unreachable: report every header as missing rather than an empty list,
+        // which would read as "all present".
+        missing: [...HARDENING_HEADERS],
+        reachable: false,
+        reason: secureProbe.reason,
+      };
 
   const servesAsExpected =
     secure.reachable && secure.status === 200 && /javascript/i.test(secure.contentType);
@@ -203,7 +288,11 @@ export async function evaluateStaticAssetTransport(opts: {
     level: servesAsExpected ? "ok" : "fail",
     message:
       `${assetPath} still serves as javascript (got ${secure.status} ` +
-      `${secure.contentType || "(no content-type)"})`,
+      `${secure.contentType || "(no content-type)"})` +
+      // Say WHY when there was no answer at all, or the reader gets "got 0" and
+      // has to guess between a dead site and a broken probe.
+      (secure.reachable ? "" : `: unreachable, ${secure.reason}`) +
+      retryNote(secureProbe.attempts),
   });
 
   const headerLevel = transportVerdict(secure.missing.length === 0, opts.expected);
