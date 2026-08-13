@@ -973,7 +973,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       const data = unwrap(
         await supabaseAdmin()
           .from("busy_blocks")
-          .select("id, user_id, booking_id, source")
+          .select("id, user_id, booking_id, source, ooo_request_id")
           .eq("source", "slate")
           .gte("ends_at", new Date().toISOString())
           .order("ends_at", { ascending: true })
@@ -988,7 +988,25 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         user_id: string;
         booking_id: string | null;
         source: "slate" | "gcal";
+        ooo_request_id: string | null;
       }[];
+    },
+
+    loadApprovedOooRequestIds: async (requestIds) => {
+      if (requestIds.length === 0) return new Set<string>();
+      // Fail loud (#1464): an unreadable answer here would leave every owned block
+      // looking unowned, and the sweep would DELETE the only thing blocking approved
+      // time off. Throwing gives the lane its "could not tell" marker instead.
+      // cap-safe: bounded by the ids passed in, which come from one capped page.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("ooo_requests")
+          .select("id")
+          .in("id", requestIds)
+          .eq("status", "approved"),
+        "loadApprovedOooRequestIds",
+      );
+      return new Set(((data ?? []) as { id: string }[]).map((r) => r.id));
     },
 
     loadBookingStatuses: async (bookingIds) => {
@@ -2270,10 +2288,15 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
     );
   }
 
+  const freedText = reconcileFreedAlert({
+    freedCancelled: res.freedCancelled,
+    freedOrphans: res.freedOrphans,
+    agentCount: res.userIds.length,
+  });
   await sendThrottledAlert(
     RECONCILE_ALERT_KEY,
     RECONCILE_ALERT_COOLDOWN_MS,
-    reconcileFreedAlert(res.freed, res.userIds.length),
+    freedText,
   ).catch(() => {});
 
   return res;

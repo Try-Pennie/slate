@@ -1132,9 +1132,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "reconcile_busy_blocks",
-    state: "stuck slots freed",
+    state: "stuck slots freed after a missed cancel",
     channel: "alert",
-    text: reconcileFreedAlert(14, 6),
+    text: reconcileFreedAlert({ freedCancelled: 14, freedOrphans: 0, agentCount: 6 }),
+  },
+  {
+    key: "reconcile_busy_blocks",
+    state: "rows freed that nothing owned",
+    channel: "alert",
+    text: reconcileFreedAlert({ freedCancelled: 0, freedOrphans: 2, agentCount: 1 }),
   },
   {
     key: "reconcile_missing_busy_blocks",

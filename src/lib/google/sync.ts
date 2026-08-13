@@ -902,6 +902,11 @@ export interface PoolExitCleanup {
   watchesStopped: number;
   /** Cached busy_blocks rows removed for the agent. */
   blocksDeleted: number;
+  /**
+   * Rows left in place because an approved time off owns them (#1471). Reported
+   * rather than silently skipped, so the count says what the prune did not do.
+   */
+  blocksPreserved: number;
 }
 
 /**
@@ -978,12 +983,33 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
   // stale blocks this exists to remove would linger with nothing noticing. Both
   // callers already handle a throw (the toggle logs it and lets the self-heal
   // backstop retry; the sweep reports the tick as "error").
+  //
+  // #1471/#1464: scoped to the rows it MEANS. A calendar mirror and a booking's
+  // write-through are both meaningless once someone leaves the pool, but the OOO
+  // fallback writes a row into this same table that is the only thing blocking
+  // approved time off when the agent's calendar event could not be created. An
+  // agent toggled out of the pool and back used to lose that cover silently. The
+  // preserved rows are counted rather than merely skipped, so an operator reading
+  // the result can see something survived (and the reconcile sweep still frees
+  // them once the request stops being approved).
+  const blocksPreserved = unwrapCount(
+    await db
+      .from("busy_blocks")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .not("ooo_request_id", "is", null),
+    "pool-exit-prune-preserved",
+  );
   const blocksDeleted = unwrapCount(
-    await db.from("busy_blocks").delete({ count: "exact" }).eq("user_id", userId),
+    await db
+      .from("busy_blocks")
+      .delete({ count: "exact" })
+      .eq("user_id", userId)
+      .is("ooo_request_id", null),
     "pool-exit-prune",
   );
 
-  return { watchesStopped, blocksDeleted };
+  return { watchesStopped, blocksDeleted, blocksPreserved };
 }
 
 /**
@@ -1004,7 +1030,13 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
  */
 export async function reconcileOrphanedPoolExits(
   limit: number,
-): Promise<{ scanned: number; cleaned: number; blocksDeleted: number }> {
+): Promise<{
+  scanned: number;
+  cleaned: number;
+  blocksDeleted: number;
+  /** Rows an approved time off owns, deliberately left in place (#1471). */
+  blocksPreserved: number;
+}> {
   const db = supabaseAdmin();
   // Everyone who has left the bookable pool on either axis. `users` is
   // roster-bounded (a fixed 100-200 agent target), so this can't fill a page.
@@ -1016,7 +1048,8 @@ export async function reconcileOrphanedPoolExits(
     "pool-exit-reconcile",
   ) ?? []) as { id: string }[];
   const ids = leftRows.map((r) => r.id);
-  if (ids.length === 0) return { scanned: 0, cleaned: 0, blocksDeleted: 0 };
+  if (ids.length === 0)
+    return { scanned: 0, cleaned: 0, blocksDeleted: 0, blocksPreserved: 0 };
 
   // Of those, which still hold a live push-watch (the #239 load symptom).
   // agent_calendars is roster-bounded too.
@@ -1031,22 +1064,44 @@ export async function reconcileOrphanedPoolExits(
   const withWatch = [...new Set(watchRows.map((r) => r.user_id))].slice(0, limit);
 
   let blocksDeleted = 0;
+  let blocksPreserved = 0;
   for (const id of withWatch) {
     const res = await cleanupOnPoolExit(id).catch((err) => {
       log.error("pool-exit-reconcile", { msg: "watch teardown failed", user_id: id }, err);
       return null;
     });
     blocksDeleted += res?.blocksDeleted ?? 0;
+    blocksPreserved += res?.blocksPreserved ?? 0;
   }
 
   // #248 backstop: prune cached busy time for everyone who left the pool (a bulk
   // delete, so already-cleaned agents from the loop above simply match nothing).
   // #1165: fail loud, so a sweep that could not prune reports as "error" on the
   // lane rather than as a tick that found nothing to clean.
+  // #1471: same scoping as the per-agent prune. A row owned by an approved time
+  // off is the only cover for that window when the calendar write failed, so it
+  // survives leaving the pool and is reported rather than silently skipped.
+  blocksPreserved += unwrapCount(
+    await db
+      .from("busy_blocks")
+      .select("id", { count: "exact", head: true })
+      .in("user_id", ids)
+      .not("ooo_request_id", "is", null),
+    "pool-exit-reconcile-preserved",
+  );
   blocksDeleted += unwrapCount(
-    await db.from("busy_blocks").delete({ count: "exact" }).in("user_id", ids),
+    await db
+      .from("busy_blocks")
+      .delete({ count: "exact" })
+      .in("user_id", ids)
+      .is("ooo_request_id", null),
     "pool-exit-reconcile-prune",
   );
 
-  return { scanned: ids.length, cleaned: withWatch.length, blocksDeleted };
+  return {
+    scanned: ids.length,
+    cleaned: withWatch.length,
+    blocksDeleted,
+    blocksPreserved,
+  };
 }

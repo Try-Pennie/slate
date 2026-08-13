@@ -904,4 +904,95 @@ const input = {
   }
 }
 
+// --- the fallback block names the time off that owns it (#1464) ---
+// A slate block with no booking used to be indistinguishable from an orphan, and
+// the reconcile sweep deleted this one 31 seconds after it was written. The owner
+// is what lets every sweep tell "nothing owns this" from "this is the only thing
+// blocking approved time off".
+{
+  const w = makeWorld();
+  w.failAgentEvent = true;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const r = w.requests.get(id)!;
+  const block = w.busyBlocks.get(r.busy_block_id!)!;
+  assert(
+    block.ooo_request_id === id,
+    "#1464: the slate fallback block names the request that owns it",
+  );
+}
+
+{
+  // The happy path writes a gcal-linked block instead, and it needs the same
+  // owner: the pool-exit prune deletes by user_id regardless of source (#1471),
+  // so an unowned gcal block is just as losable.
+  const w = makeWorld();
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const r = w.requests.get(id)!;
+  const block = w.busyBlocks.get(r.busy_block_id!)!;
+  assert(block.source === "gcal", "the happy path still writes a gcal-linked block");
+  assert(
+    block.ooo_request_id === id,
+    "#1464: the gcal-linked block names its owner too",
+  );
+}
+
+// --- a recorded "ok" is not proof the block still exists (#1464, L121) ---
+// The re-entry guard read `side_effects.busy_block` starting with "ok" as proof,
+// so once the row had been deleted underneath it, no later pass could ever put it
+// back: the retry that exists to repair this request skipped the one step that
+// was broken. The FK is ON DELETE SET NULL, so a deleted block leaves
+// `busy_block_id` null while the effect still says "ok (slate fallback)". Decide
+// from the artifact, never from the marker.
+{
+  const w = makeWorld();
+  w.failAgentEvent = true;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const approved = w.requests.get(id)!;
+  assert(
+    approved.side_effects.busy_block === "ok (slate fallback)",
+    "precondition: the effect records the fallback as ok",
+  );
+
+  // What production did to it: the sweep deleted the row, the FK nulled the id.
+  w.busyBlocks.delete(approved.busy_block_id!);
+  w.requests.set(id, { ...approved, busy_block_id: null });
+  w.failAgentEvent = true; // still no agent calendar, so the fallback is still the only cover
+
+  const res = await retryOooSideEffects(id, admin, w.deps);
+  assert(res.ok, "#1464: the retry runs");
+  const r = w.requests.get(id)!;
+  assert(
+    r.busy_block_id !== null,
+    "#1464: a deleted block is re-created rather than skipped as already ok",
+  );
+  const rebuilt = w.busyBlocks.get(r.busy_block_id!)!;
+  assert(
+    rebuilt.source === "slate" && rebuilt.ooo_request_id === id,
+    "#1464: the re-created block is owned, so the sweep will not take it again",
+  );
+  assert(w.busyBlocks.size === 1, "#1464: exactly one block, not a duplicate");
+}
+
+{
+  // The mirror direction: a block that is still there must NOT be re-created, or
+  // every retry doubles the cached busy rows for the same window.
+  const w = makeWorld();
+  w.failAgentEvent = true;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const before = w.requests.get(id)!.busy_block_id;
+  await retryOooSideEffects(id, admin, w.deps);
+  assert(
+    w.busyBlocks.size === 1 && w.requests.get(id)!.busy_block_id === before,
+    "#1464: an intact block is left exactly as it was",
+  );
+}
+
 finish();
