@@ -28,6 +28,8 @@ import {
   stripModifiedMarkers,
   validateWindow,
 } from "./core.ts";
+import { reachabilityFromError } from "../google/reachability-classify.ts";
+import { deterministicEventId } from "../booking/core.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 /**
@@ -120,11 +122,19 @@ export interface OooDeps {
 
   /** The agent's primary calendar id from agent_calendars (fallback "primary"). */
   agentPrimaryCalendarId(userId: string): Promise<string>;
-  /** Create an event on `calendarId` impersonating `actorEmail`; returns event id. */
+  /**
+   * Create an event on `calendarId` impersonating `actorEmail`; returns event id.
+   *
+   * `clientId` is a deterministic Google event id (#1469). It makes the create
+   * idempotent: an attempt that timed out may still have landed on Google's side,
+   * and sending the same id again returns THAT event instead of inserting a
+   * second one.
+   */
   createCalendarEvent(
     actorEmail: string,
     calendarId: string,
     args: OooEventArgs,
+    clientId?: string,
   ): Promise<string>;
   /** Delete tolerantly (404/410 are fine). */
   deleteCalendarEvent(
@@ -400,6 +410,55 @@ export const EFFECTS = {
 } as const;
 
 /**
+ * How many attempts one calendar create gets inside the manager's wait (#1469).
+ *
+ * The writes are bounded at 8 seconds because the manager is watching, which is
+ * the right posture, but that made a timeout PERMANENT: the failure was recorded
+ * and the only route back was somebody noticing a Slack line and pressing Retry.
+ * A timeout is the most retryable failure there is, and one more attempt costs
+ * the manager a few seconds at worst.
+ *
+ * Two, not more: the point is to survive one slow moment at Google, not to keep
+ * a person waiting through an outage. Everything past that is what the retry
+ * control and the monitor page (#1467) are for.
+ */
+const CALENDAR_CREATE_ATTEMPTS = 2;
+
+/**
+ * Create a calendar event, retrying ONCE on a transient failure.
+ *
+ * What counts as transient is decided by `reachabilityFromError`, the same
+ * classifier the sync health path uses (L35: classify once, explicitly). A
+ * definitive refusal (a 404, a revoked delegation, an account with no Calendar)
+ * is not retried: it would spend another 8 seconds of the manager's wait to be
+ * told the same thing.
+ *
+ * `clientId` is what makes the retry safe. An aborted insert may still have been
+ * applied on Google's side, so the second attempt sends the same deterministic
+ * event id and Google answers with the event it already created rather than
+ * inserting a duplicate. Without it a retry could put two OOO events on an
+ * agent's calendar for the same window.
+ */
+async function createEventWithRetry(
+  deps: OooDeps,
+  actorEmail: string,
+  calendarId: string,
+  args: OooEventArgs,
+  clientId: string,
+): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= CALENDAR_CREATE_ATTEMPTS; attempt++) {
+    try {
+      return await deps.createCalendarEvent(actorEmail, calendarId, args, clientId);
+    } catch (e) {
+      lastError = e;
+      if (reachabilityFromError(e) !== "transient") throw e;
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Post-approval side effects (port of doPostApproval_). Idempotent: each effect
  * is skipped when its artifact/outcome already exists, so retry only fills
  * gaps. Never throws; outcomes land in side_effects.
@@ -428,10 +487,12 @@ async function runPostApproval(
     const preferred = manager?.ooo_calendar_id || deps.mainOooCalendarId();
     const actor = deps.oooCalendarActorEmail();
     try {
-      patch.manager_event_id = await deps.createCalendarEvent(
+      patch.manager_event_id = await createEventWithRetry(
+        deps,
         actor,
         preferred,
         eventArgs,
+        await deterministicEventId(`ooo-manager:${request.id}`, preferred),
       );
       patch.manager_event_calendar_id = preferred;
       effects[EFFECTS.managerEvent] = "ok";
@@ -439,10 +500,12 @@ async function runPostApproval(
       const main = deps.mainOooCalendarId();
       if (preferred !== main) {
         try {
-          patch.manager_event_id = await deps.createCalendarEvent(
+          patch.manager_event_id = await createEventWithRetry(
+            deps,
             actor,
             main,
             eventArgs,
+            await deterministicEventId(`ooo-manager:${request.id}`, main),
           );
           patch.manager_event_calendar_id = main;
           effects[EFFECTS.managerEvent] = "ok (main fallback)";
@@ -471,7 +534,8 @@ async function runPostApproval(
   //    once synced, and the busy block below makes it immediate.
   if (!request.agent_event_id && !effects[EFFECTS.agentEvent]?.startsWith("ok")) {
     try {
-      patch.agent_event_id = await deps.createCalendarEvent(
+      patch.agent_event_id = await createEventWithRetry(
+        deps,
         agent.email,
         "primary",
         {
@@ -481,6 +545,7 @@ async function runPostApproval(
             (request.notes ? `: ${request.notes}` : "") +
             `\nRequest ID: ${request.id}`,
         },
+        await deterministicEventId(`ooo-agent:${request.id}`, agent.id),
       );
       effects[EFFECTS.agentEvent] = "ok";
     } catch (e) {

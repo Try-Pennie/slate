@@ -18,6 +18,7 @@ import {
   NO_MANAGER_MESSAGE,
 } from "../src/lib/ooo/core.ts";
 import type { OooRequest, User } from "../src/lib/db/types.ts";
+import { GoogleHttpError } from "../src/lib/google/http-error.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 /**
@@ -155,6 +156,12 @@ function makeWorld(): World {
     audits: [],
     failCalendars: new Set(),
     failAgentEvent: false,
+    /** Transient failures to serve on the agent calendar before succeeding (#1469). */
+    transientAgentFailures: 0,
+    /** A permanent Google refusal on the agent calendar, which must NOT be retried. */
+    permanentAgentFailure: false,
+    /** Every client id the orchestration sent, in order (#1469 idempotency). */
+    clientIds: [] as (string | undefined)[],
     calcomOutcome: "skipped",
     deps: null as unknown as OooDeps,
   };
@@ -242,12 +249,20 @@ function makeWorld(): World {
     },
     getUser: async (userId) => users.get(userId) ?? null,
     agentPrimaryCalendarId: async () => "agent-cal-id",
-    createCalendarEvent: async (actorEmail, calendarId, args) => {
+    createCalendarEvent: async (actorEmail, calendarId, args, clientId) => {
+      if (calendarId === "primary") world.clientIds.push(clientId);
       if (world.failCalendars.has(calendarId)) {
         throw new Error(`no access to ${calendarId}`);
       }
       if (world.failAgentEvent && calendarId === "primary") {
         throw new Error("agent calendar unavailable");
+      }
+      if (world.permanentAgentFailure && calendarId === "primary") {
+        throw new GoogleHttpError("events.insert failed: 404 not found", 404);
+      }
+      if (world.transientAgentFailures > 0 && calendarId === "primary") {
+        world.transientAgentFailures--;
+        throw new Error("AbortError: The operation was aborted");
       }
       const id = `evt-${++eventSeq}`;
       world.createdEvents.push({ actor: actorEmail, calendarId, summary: args.summary, id });
@@ -992,6 +1007,104 @@ const input = {
   assert(
     w.busyBlocks.size === 1 && w.requests.get(id)!.busy_block_id === before,
     "#1464: an intact block is left exactly as it was",
+  );
+}
+
+
+// --- a timed out calendar write is retried in window (#1469) -----------------
+// The OOO calendar writes are bounded at 8 seconds because the manager is
+// waiting on them, which is the right posture. A timeout was then PERMANENT: the
+// failure was recorded and the only route back was an admin noticing a Slack
+// line and pressing Retry. On 2026-08-13 one slow moment from Google left an
+// approved time off with no event on the agent's calendar, and the button that
+// repairs it was itself broken (#1464, #1468).
+{
+  const w = makeWorld();
+  w.transientAgentFailures = 1;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const r = w.requests.get(id)!;
+
+  assert(r.agent_event_id !== null, "#1469: a transient failure is retried and lands");
+  assert(r.side_effects.agent_event === "ok", "#1469: the outcome recorded is the retry's");
+  assert(
+    !w.alerts.some((a) => a.key === "ooo_busy_block_fallback"),
+    "#1469: no fallback alert, because there was no fallback",
+  );
+  assert(w.clientIds.length === 2, "#1469: exactly two attempts, never a loop");
+}
+
+{
+  // Both attempts fail: recorded, alerted, and NOT retried a third time. The
+  // manager is waiting, so the bound on attempts is part of the posture.
+  const w = makeWorld();
+  w.transientAgentFailures = 5;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const r = w.requests.get(id)!;
+
+  assert(r.agent_event_id === null, "#1469: a repeated transient failure still fails");
+  assert(r.side_effects.agent_event.startsWith("failed"), "#1469: recorded as failed");
+  assert(w.clientIds.length === 2, "#1469: stops at two attempts");
+  assert(w.alerts.some((a) => a.key === "ooo_agent_calendar"), "#1469: ops still alerted");
+  assert(r.busy_block_id !== null, "#1469: the fallback block still covers the window");
+}
+
+{
+  // A definitive refusal is NOT retried. Retrying a 404 spends another 8 seconds
+  // of the manager's wait to be told the same thing (L35: classify once, and the
+  // classification decides what happens).
+  const w = makeWorld();
+  w.permanentAgentFailure = true;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+
+  assert(w.clientIds.length === 1, "#1469: a definitive Google refusal is attempted once");
+  assert(
+    w.requests.get(id)!.side_effects.agent_event.startsWith("failed"),
+    "#1469: and is recorded as failed",
+  );
+}
+
+{
+  // The retry must reconcile, not blindly insert: an aborted request may already
+  // have been applied on Google's side. Both attempts carry the SAME client id,
+  // which is what makes the second one a 409 that Google answers with the event
+  // it already created rather than a duplicate.
+  const w = makeWorld();
+  w.transientAgentFailures = 1;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+
+  assert(w.clientIds[0] !== undefined, "#1469: the create carries a client id");
+  assert(
+    w.clientIds[0] === w.clientIds[1],
+    "#1469: the retry sends the SAME client id, so Google dedupes it",
+  );
+}
+
+{
+  // Two different requests must not collide on one client id, or approving the
+  // second would silently reuse the first one's event.
+  const w = makeWorld();
+  const a = await submitOoo(agent, input, w.deps);
+  const idA = a.ok ? a.request.id : "";
+  await approveOoo(idA, manager, w.deps);
+  const b = await submitOoo(
+    agent,
+    { ...input, startIso: "2026-07-08T13:00:00Z", endIso: "2026-07-08T21:00:00Z" },
+    w.deps,
+  );
+  const idB = b.ok ? b.request.id : "";
+  await approveOoo(idB, manager, w.deps);
+
+  assert(
+    w.clientIds[0] !== w.clientIds[1],
+    "#1469: each request gets its own client id",
   );
 }
 

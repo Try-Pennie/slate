@@ -10,7 +10,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const dwd = vi.hoisted(() => ({ getDelegatedToken: vi.fn() }));
 vi.mock("@/lib/google/dwd", () => dwd);
 
-import { listCalendars } from "./calendar";
+import { listCalendars, createEventOnCalendar } from "./calendar";
+
+const event = {
+  summary: "Dana Ruiz - OOO",
+  description: "Request ID: req-1",
+  start: "2026-08-20T21:00:00.000Z",
+  end: "2026-08-20T23:00:00.000Z",
+  timezone: "America/New_York",
+};
 
 describe("listCalendars timeout (#922)", () => {
   beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
@@ -35,5 +43,61 @@ describe("listCalendars timeout (#922)", () => {
       new Response(JSON.stringify({ items: [{ id: "primary" }] }), { status: 200 }),
     );
     await expect(listCalendars("a@b.com", 20000)).resolves.toEqual([{ id: "primary" }]);
+  });
+});
+
+// #1469: the OOO calendar creates are bounded at 8 seconds because the manager
+// is waiting, so a slow moment at Google surfaces as an abort. The orchestration
+// retries once, and a retry is only safe if the first attempt cannot have left
+// an event behind: an aborted insert may still have been applied on Google's
+// side. A deterministic client id makes the second attempt a 409 that resolves
+// to the event already created, rather than a duplicate on the agent's calendar.
+describe("createEventOnCalendar idempotency (#1469)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the client id as the event id so a repeat insert collides", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      bodies.push(String(init.body));
+      return new Response(JSON.stringify({ id: "evt-1" }), { status: 200 });
+    });
+
+    const id = await createEventOnCalendar("a@b.com", "primary", event, "slateabc");
+
+    expect(id).toBe("evt-1");
+    expect(JSON.parse(bodies[0]).id).toBe("slateabc");
+  });
+
+  it("returns the EXISTING event when Google 409s the duplicate id", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      calls.push(url);
+      return url.includes("/events/slateabc")
+        ? new Response(JSON.stringify({ id: "evt-already-there" }), { status: 200 })
+        : new Response("duplicate", { status: 409 });
+    });
+
+    const id = await createEventOnCalendar("a@b.com", "primary", event, "slateabc");
+
+    // The event Google already had, not a second one: this is the whole point.
+    expect(id).toBe("evt-already-there");
+    expect(calls.some((u) => u.includes("/events/slateabc"))).toBe(true);
+  });
+
+  it("still throws on a 409 when no client id was supplied", async () => {
+    // Without an id of our own, a 409 is a genuine conflict we cannot resolve,
+    // and swallowing it would report an event that does not exist.
+    vi.stubGlobal("fetch", async () => new Response("conflict", { status: 409 }));
+
+    await expect(createEventOnCalendar("a@b.com", "primary", event)).rejects.toThrow(/409/);
+  });
+
+  it("throws on any other failure rather than inventing an id", async () => {
+    vi.stubGlobal("fetch", async () => new Response("boom", { status: 503 }));
+
+    await expect(
+      createEventOnCalendar("a@b.com", "primary", event, "slateabc"),
+    ).rejects.toThrow(/503/);
   });
 });
