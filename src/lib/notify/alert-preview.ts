@@ -145,6 +145,10 @@ import {
   formatInactiveAgentBookingsRecovery,
 } from "@/lib/monitor/inactive-agent-bookings";
 import {
+  formatOooProtectionAlert,
+  formatOooProtectionRecovery,
+} from "@/lib/monitor/ooo-protection";
+import {
   formatCoverageNeedsHumanAlert,
   formatCoverageNeedsHumanRecovery,
 } from "@/lib/monitor/coverage-needs-human";
@@ -620,6 +624,69 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every appointment reassigned",
     channel: "recovery",
     text: formatInactiveAgentBookingsRecovery(),
+  },
+
+  // --- approved time off that has stopped blocking anything (#1467) ----------
+  // Three states: the singular (which is what production produced), the shape
+  // that cannot heal itself sitting beside one that can, and the all-clear.
+  {
+    key: "ooo_protection_lost",
+    state: "one window, and the record still claims the block is written",
+    channel: "alert",
+    text: formatOooProtectionAlert(
+      [
+        {
+          requestId: "d8b51044-c005-42e7-be99-b05e47f4f350",
+          userId: "u1",
+          agentName: "Dana Ruiz",
+          agentEmail: "dana.ruiz@example.com",
+          startsAt: "2026-08-20T21:00:00.000Z",
+          endsAt: "2026-08-20T23:00:00.000Z",
+          displayTzId: "America/New_York",
+          displayTzLabel: "ET",
+          claimedOk: true,
+        },
+      ],
+      "https://slate.trypennie.app",
+    ),
+  },
+  {
+    key: "ooo_protection_lost",
+    state: "two windows, one repairable by a retry and one not",
+    channel: "alert",
+    text: formatOooProtectionAlert(
+      [
+        {
+          requestId: "req-a",
+          userId: "u1",
+          agentName: "Dana Ruiz",
+          agentEmail: "dana.ruiz@example.com",
+          startsAt: "2026-08-20T21:00:00.000Z",
+          endsAt: "2026-08-20T23:00:00.000Z",
+          displayTzId: "America/New_York",
+          displayTzLabel: "ET",
+          claimedOk: true,
+        },
+        {
+          requestId: "req-b",
+          userId: "u2",
+          agentName: null,
+          agentEmail: "sam.okafor@example.com",
+          startsAt: "2026-08-21T13:00:00.000Z",
+          endsAt: "2026-08-22T21:00:00.000Z",
+          displayTzId: "America/New_York",
+          displayTzLabel: "ET",
+          claimedOk: false,
+        },
+      ],
+      "https://slate.trypennie.app",
+    ),
+  },
+  {
+    key: "ooo_protection_lost",
+    state: "every approved window is blocked again",
+    channel: "recovery",
+    text: formatOooProtectionRecovery(),
   },
 
   // --- appointments a coverage sweep gave up on (#1242) -----------------------

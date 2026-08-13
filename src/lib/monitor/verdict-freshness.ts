@@ -25,13 +25,14 @@
 import type { TruthResult } from "@/lib/monitor/availability-truth";
 import type { FailureRateResult } from "@/lib/monitor/booking-failure-rate";
 import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
+import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
 
 /**
  * The lane names these detectors stamp, namespaced away from the cron lane
  * heartbeats they sit beside in `lane_heartbeats`.
  *
  * They share the table on purpose. The lane watchdog already reads every row in
- * ONE query every minute, so watching three more costs nothing on the subrequest
+ * ONE query every minute, so watching four more costs nothing on the subrequest
  * budget four cron lanes share, and both stamps answer the same shape of
  * question ("when did this last happen"). The `verdict:` prefix is what keeps
  * the two meanings apart: a row under it records the last time the detector
@@ -40,11 +41,13 @@ import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
 export const AVAILABILITY_TRUTH_VERDICT_LANE = "verdict:availability-truth";
 export const FAILURE_RATE_VERDICT_LANE = "verdict:booking-failure-rate";
 export const LOW_VOLUME_VERDICT_LANE = "verdict:low-booking-volume";
+export const OOO_PROTECTION_VERDICT_LANE = "verdict:ooo-protection";
 
 export type DetectorVerdictLane =
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
   | typeof FAILURE_RATE_VERDICT_LANE
-  | typeof LOW_VOLUME_VERDICT_LANE;
+  | typeof LOW_VOLUME_VERDICT_LANE
+  | typeof OOO_PROTECTION_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -79,4 +82,17 @@ export function failureRateReachedVerdict(result: FailureRateResult | { status: 
  */
 export function lowVolumeReachedVerdict(result: LowVolumeResult): boolean {
   return result.status === "checked";
+}
+
+/**
+ * Did this time off protection tick actually read the approved requests? (#1467)
+ *
+ * Unlike its three siblings there is no "measured but not enough to judge" state
+ * here: a successful read answers the question outright, including when it finds
+ * no approved time off at all, because nothing approved can then be unprotected.
+ * The one outcome that must never stamp is `unreadable`, which is precisely the
+ * state that would otherwise be indistinguishable from a run of clean ticks.
+ */
+export function oooProtectionReachedVerdict(result: OooProtectionResult): boolean {
+  return result.status !== "unreadable";
 }

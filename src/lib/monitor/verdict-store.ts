@@ -7,7 +7,7 @@
  * best effort and can never take down the monitor lane, and so the lane
  * watchdog's existing one query read picks these rows up for free.
  *
- * The three calls name their lane LITERALLY on purpose. The repo invariant in
+ * The four calls name their lane LITERALLY on purpose. The repo invariant in
  * scripts/test-heartbeat-lane-coverage.ts scans for exactly that shape and then
  * checks, in both directions, that every stamped lane has a bound watching it and
  * every bound watches a lane something really stamps. A computed lane name would
@@ -19,6 +19,7 @@ import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
+  OOO_PROTECTION_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -26,6 +27,7 @@ const STAMP: Record<DetectorVerdictLane, () => Promise<void>> = {
   [AVAILABILITY_TRUTH_VERDICT_LANE]: () => recordHeartbeat("verdict:availability-truth"),
   [FAILURE_RATE_VERDICT_LANE]: () => recordHeartbeat("verdict:booking-failure-rate"),
   [LOW_VOLUME_VERDICT_LANE]: () => recordHeartbeat("verdict:low-booking-volume"),
+  [OOO_PROTECTION_VERDICT_LANE]: () => recordHeartbeat("verdict:ooo-protection"),
 };
 
 /**
