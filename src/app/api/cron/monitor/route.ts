@@ -1136,6 +1136,7 @@ export async function GET(req: NextRequest) {
           displayTzLabel: r.display_tz_label,
           agentEventId: r.agent_event_id,
           busyBlockEffect: r.side_effects?.busy_block ?? null,
+          agentEventEffect: r.side_effects?.agent_event ?? null,
         })),
         blocks: blocks.map((b) => ({
           userId: b.user_id,
@@ -1146,7 +1147,13 @@ export async function GET(req: NextRequest) {
     };
     const oooProtection = await steps.run(
       "ooo_protection",
-      { status: "unreadable", scanned: 0, unprotected: 0, reachedVerdict: false } as const,
+      {
+        status: "unreadable",
+        scanned: 0,
+        unprotected: 0,
+        notHandled: 0,
+        reachedVerdict: false,
+      } as const,
       () =>
         runOooProtectionCheck({
           load: loadOooProtection,
