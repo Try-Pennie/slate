@@ -87,6 +87,7 @@ const healthy = () => ({
   "verdict:availability-truth": ago(60 * MIN),
   "verdict:booking-failure-rate": ago(6 * 60 * MIN),
   "verdict:low-booking-volume": ago(6 * 60 * MIN),
+  "verdict:ooo-protection": ago(10 * MIN),
 });
 
 beforeEach(() => {

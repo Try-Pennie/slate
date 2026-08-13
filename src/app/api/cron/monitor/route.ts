@@ -69,9 +69,11 @@ import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
+  OOO_PROTECTION_VERDICT_LANE,
   truthReachedVerdict,
   failureRateReachedVerdict,
   lowVolumeReachedVerdict,
+  oooProtectionReachedVerdict,
 } from "@/lib/monitor/verdict-freshness";
 import { createStepRunner } from "@/lib/monitor/step-runner";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
@@ -79,7 +81,7 @@ import {
   runCanaryGapFills,
   postCanaryWorkflowDispatch,
 } from "@/lib/monitor/canary-trigger";
-import { githubCanaryToken } from "@/lib/env";
+import { githubCanaryToken, appUrl } from "@/lib/env";
 import {
   runMigrationDriftCheck,
   readAppliedMigrationVersions,
@@ -123,6 +125,7 @@ import {
   type StrandedAppointment,
   type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
+import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
@@ -1064,6 +1067,96 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // --- Approved time off that has stopped blocking anything (#1467). The mirror
+    // of the availability truth probe: that one asks whether the times Slate
+    // OFFERS are really free, this one asks whether the times it promised to
+    // protect are really blocked. Both reads go through `unwrap`, because an
+    // unread list comes back empty and an empty result here is indistinguishable
+    // from "every time off is protected", which would post an all-clear over a
+    // window a lead can be booked into. ---
+    const loadOooProtection = async () => {
+      const requests = await selectAllPages<{
+        id: string;
+        user_id: string;
+        starts_at: string;
+        ends_at: string;
+        display_tz_id: string;
+        display_tz_label: string | null;
+        agent_event_id: string | null;
+        side_effects: Record<string, string> | null;
+      }>("monitor approved time off", (from, to) =>
+        db
+          .from("ooo_requests")
+          .select(
+            "id, user_id, starts_at, ends_at, display_tz_id, display_tz_label, agent_event_id, side_effects",
+          )
+          .eq("status", "approved")
+          .gte("ends_at", new Date(now).toISOString())
+          .range(from, to),
+      );
+      if (requests.length === 0) return { requests: [], blocks: [] };
+      const userIds = [...new Set(requests.map((r) => r.user_id))];
+      const agents = (unwrap(
+        await db
+          .from("users")
+          // cap-safe: primary-key lookup of the (few) agents with approved time off.
+          .select("id, name, email")
+          .in("id", userIds),
+        "monitor approved time off agents",
+      ) ?? []) as { id: string; name: string | null; email: string | null }[];
+      const byId = new Map(agents.map((a) => [a.id, a]));
+      // The whole cached window for those agents, from now to the last time off
+      // end, so coverage is judged against every row that could contribute to it.
+      const lastEnd = requests
+        .map((r) => r.ends_at)
+        .sort()
+        .slice(-1)[0] as string;
+      const blocks = await selectAllPages<{
+        user_id: string;
+        starts_at: string;
+        ends_at: string;
+      }>("monitor time off busy blocks", (from, to) =>
+        db
+          .from("busy_blocks")
+          .select("user_id, starts_at, ends_at")
+          .in("user_id", userIds)
+          .gte("ends_at", new Date(now).toISOString())
+          .lte("starts_at", lastEnd)
+          .range(from, to),
+      );
+      return {
+        requests: requests.map((r) => ({
+          id: r.id,
+          userId: r.user_id,
+          agentName: byId.get(r.user_id)?.name ?? null,
+          agentEmail: byId.get(r.user_id)?.email ?? null,
+          startsAt: r.starts_at,
+          endsAt: r.ends_at,
+          displayTzId: r.display_tz_id,
+          displayTzLabel: r.display_tz_label,
+          agentEventId: r.agent_event_id,
+          busyBlockEffect: r.side_effects?.busy_block ?? null,
+        })),
+        blocks: blocks.map((b) => ({
+          userId: b.user_id,
+          startsAt: b.starts_at,
+          endsAt: b.ends_at,
+        })),
+      };
+    };
+    const oooProtection = await steps.run(
+      "ooo_protection",
+      { status: "unreadable", scanned: 0, unprotected: 0, reachedVerdict: false } as const,
+      () =>
+        runOooProtectionCheck({
+          load: loadOooProtection,
+          nowMs: now,
+          appBaseUrl: appUrl(),
+          cooldownMs: settings.cooldownMs.ooo_protection_lost,
+          log: (fields) => log.info("ooo-protection", { msg: "tick", ...fields }),
+        }),
+    );
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -1175,7 +1268,7 @@ export async function GET(req: NextRequest) {
     // Best-effort, and must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
 
-    // The SECOND kind of stamp (#1394): proves these three detectors CONCLUDED
+    // The SECOND kind of stamp (#1394): proves these four detectors CONCLUDED
     // something this tick, which the heartbeat above cannot tell you. The
     // availability truth probe passed that heartbeat every five minutes for its
     // whole life while never once comparing a real calendar (#1377).
@@ -1188,6 +1281,10 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(AVAILABILITY_TRUTH_VERDICT_LANE, truthReachedVerdict(availabilityTruth)),
       recordDetectorVerdict(FAILURE_RATE_VERDICT_LANE, failureRateReachedVerdict(failureRate)),
       recordDetectorVerdict(LOW_VOLUME_VERDICT_LANE, lowVolumeReachedVerdict(volume)),
+      recordDetectorVerdict(
+        OOO_PROTECTION_VERDICT_LANE,
+        oooProtectionReachedVerdict(oooProtection),
+      ),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means
       // something unexpected. It must not fail the monitor tick, but a stamp that

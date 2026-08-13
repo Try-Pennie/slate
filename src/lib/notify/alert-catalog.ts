@@ -217,6 +217,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Customers hold appointments with an agent who has left the pool until someone reassigns them; the monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "ooo_protection_lost",
+    kind: "condition",
+    why: "An approved time off has stopped blocking its window, so a lead can be booked into hours the agent is away. It stays true until someone retries the calendar updates, and the monitor lane re-measures every 5 minutes.",
+  },
+  {
     key: "coverage_needs_human",
     kind: "condition",
     why: "A coverage sweep gave up on appointments that are still with an absent agent; they stay stranded until a person places them or they pass, and the monitor lane re-measures every 5 minutes.",

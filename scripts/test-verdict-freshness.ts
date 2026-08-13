@@ -22,6 +22,7 @@ import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
+  OOO_PROTECTION_VERDICT_LANE,
   truthReachedVerdict,
   failureRateReachedVerdict,
   lowVolumeReachedVerdict,
@@ -135,7 +136,14 @@ const HOUR = 60 * 60_000;
   const lanes = Object.keys(VERDICT_STALE_BOUNDS_MS).sort();
   assert(
     lanes.join(",") ===
-      [AVAILABILITY_TRUTH_VERDICT_LANE, FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE].sort().join(","),
+      [
+        AVAILABILITY_TRUTH_VERDICT_LANE,
+        FAILURE_RATE_VERDICT_LANE,
+        LOW_VOLUME_VERDICT_LANE,
+        OOO_PROTECTION_VERDICT_LANE,
+      ]
+        .sort()
+        .join(","),
     "every detector named by this feature has a bound, and no bound names a detector that does not exist",
   );
   // The two traffic-fed detectors are silent all weekend by design (the volume
@@ -254,21 +262,24 @@ const HOUR = 60 * 60_000;
 
   // Every detector gets its own words. One shared "a detector went blind" would
   // send the reader looking for the wrong thing, which is the #1123 defect.
-  const texts = [AVAILABILITY_TRUTH_VERDICT_LANE, FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE].map(
-    (lane) => verdictBlindAlertText({ lane, ageMs: 30 * HOUR, maxStaleMs: HOUR, unreadable: false }),
+  // Derived from the bounds map rather than listed by hand, so a fifth detector
+  // is covered by construction: a hand kept list can only check the lanes
+  // somebody remembered to add to it (L96), and those are the ones already safe.
+  const allVerdictLanes = Object.keys(VERDICT_STALE_BOUNDS_MS);
+  const texts = allVerdictLanes.map((lane) =>
+    verdictBlindAlertText({ lane, ageMs: 30 * HOUR, maxStaleMs: HOUR, unreadable: false }),
   );
-  assert(new Set(texts).size === 3, "each detector's page describes that detector, not a generic one");
+  assert(
+    new Set(texts).size === allVerdictLanes.length,
+    "each detector's page describes that detector, not a generic one",
+  );
   for (const t of texts) assert(t.length > 80, "each page says what stopped being measured");
 
   const recovery = verdictRecoveryText(AVAILABILITY_TRUTH_VERDICT_LANE);
   assert(/no action is needed/i.test(recovery), "the all-clear closes the loop");
   assert(!DASHES.test(recovery), "recovery copy has no dashes");
   assert(
-    new Set(
-      [AVAILABILITY_TRUTH_VERDICT_LANE, FAILURE_RATE_VERDICT_LANE, LOW_VOLUME_VERDICT_LANE].map(
-        verdictRecoveryText,
-      ),
-    ).size === 3,
+    new Set(allVerdictLanes.map(verdictRecoveryText)).size === allVerdictLanes.length,
     "each detector's all-clear names what is being measured again",
   );
 }

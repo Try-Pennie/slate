@@ -26,7 +26,8 @@ export type MonitorAlertKey =
   | "booking_failure_rate"
   | "availability_drift"
   | "booker_empty_reason"
-  | "roster_coverage_gap";
+  | "roster_coverage_gap"
+  | "ooo_protection_lost";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -46,6 +47,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_drift",
   "booker_empty_reason",
   "roster_coverage_gap",
+  "ooo_protection_lost",
 ];
 
 /**
@@ -136,6 +138,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Page when the org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
   },
   {
+    key: "ooo_protection_lost",
+    label: "Approved time off no longer blocked",
+    help: "Page when an approved time off has no calendar event and no cached busy time covering it, so a lead can be booked into hours the agent is away.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -207,6 +214,12 @@ export const MONITOR_DEFAULTS = {
     // repeat the same unchanged sentence twenty four times before anyone could
     // act on it, which is how a pager gets muted (L36). Daily.
     roster_coverage_gap: 24 * 60 * 60_000,
+    // Approved time off blocking nothing (#1467): the agent is away and a lead can
+    // be booked into those hours right now, and nothing repairs it on its own (the
+    // request still records the block as written, so no retry acts on it). It stays
+    // wrong until a person opens the request, so repeat while it lasts. Hourly,
+    // like the orphaned and stranded appointment pages it sits beside.
+    ooo_protection_lost: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

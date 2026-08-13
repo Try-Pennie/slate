@@ -168,6 +168,13 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   "verdict:availability-truth": 24 * 60 * MIN,
   "verdict:booking-failure-rate": 4 * 24 * 60 * MIN,
   "verdict:low-booking-volume": 4 * 24 * 60 * MIN,
+  // The time off protection check (#1467) has no legitimate silence at all: it
+  // concludes on every 5 minute tick the database is readable, including ticks
+  // where nobody has time off booked, because "nothing approved can be
+  // unprotected" is an answer. So the only thing this bound can catch is the read
+  // failing over and over, and 6 hours is a long maintenance window rather than a
+  // measure of anything the detector does.
+  "verdict:ooo-protection": 6 * 60 * MIN,
 };
 
 /**
