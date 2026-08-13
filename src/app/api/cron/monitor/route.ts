@@ -31,7 +31,6 @@ import { type WorkingRule } from "@/lib/monitor/availability-health";
 import { runAvailabilityScan } from "@/lib/monitor/availability-scan";
 import {
   runLowVolumeCheck,
-  type BusinessHoursConfig,
   type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
 import { countCustomerBookingsSince } from "@/lib/monitor/customer-bookings";
@@ -219,14 +218,11 @@ const TRUTH_THRESHOLDS: TruthThresholds = {
 const DEFAULT_ZONE = "America/New_York";
 
 // --- Low booking volume (#370) ---
-// Eastern weekday daytime: outside these hours low volume is normal, so the
-// volume alarm stays silent (the availability probe above still runs 24/7).
-const VOLUME_BUSINESS_HOURS: BusinessHoursConfig = {
-  zone: DEFAULT_ZONE,
-  weekdays: [1, 2, 3, 4, 5],
-  startHour: 8,
-  endHour: 20,
-};
+// Outside the org's opening hours low volume is normal, so the alarm stays silent
+// (the availability probe above still runs 24/7). The window is the org's OWN
+// stored hours, read once at the top of this handler: it used to be a second
+// hardcoded copy here, weekdays 1 to 5, and the org is open on SATURDAY, so the
+// alarm was blind for a whole open day every week (#1298).
 // Expected-minimum booking counts per window are UI-tunable (#571), resolved by
 // loadMonitorSettings() with precedence store > env (BOOKING_VOLUME_FLOOR_*) >
 // coded default. Arming is now UI-tunable too (#575): loadMonitorSettings resolves
@@ -620,10 +616,13 @@ export async function GET(req: NextRequest) {
     // cutover (counts + logs but does not alert) so the ramp can't cry wolf.
     // Extracted and tested (#1158): a failed count read reports unverified
     // rather than paging a false zero. ---
-    const volume: LowVolumeResult = await steps.run("volume", UNMEASURED_VOLUME, () =>
+    const volume: LowVolumeResult = !gates.lowVolume.run
+      ? UNMEASURED_VOLUME
+      : await steps.run("volume", UNMEASURED_VOLUME, () =>
       runLowVolumeCheck({
         nowMs: now,
-        businessHours: VOLUME_BUSINESS_HOURS,
+        // Non-null by the gate above: the check does not run without this read.
+        businessHours: { zone: businessHours!.zone, rules: businessHours!.rules },
         countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
         floors: settings.floors,
         armed: settings.lowVolumeArmed,

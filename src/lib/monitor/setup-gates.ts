@@ -93,6 +93,7 @@ function gate(readiness: SetupReadiness, needs: (keyof SetupReadiness)[]): Setup
 export function monitorSetupGates(readiness: SetupReadiness): {
   availabilityScan: SetupGate;
   availabilityTruth: SetupGate;
+  lowVolume: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -110,5 +111,12 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // nor the shift gate. It does need the horizon, because that is the window it
     // asks for: guessing it would check times the bucket is not offering.
     availabilityTruth: gate(readiness, ["horizonDays"]),
+    // #1298: the volume alarm asks "is the org open right now" before deciding that
+    // a quiet half hour is worth mentioning, and it now asks the org's REAL hours
+    // rather than a second hardcoded copy of them. So it depends on that read, and
+    // must SKIP when it fails rather than fall back to a guessed window: guessing
+    // open would page for an ordinary closed evening, and guessing shut would
+    // silence a genuinely dead Monday morning. Neither is a measurement.
+    lowVolume: gate(readiness, ["businessHours"]),
   };
 }

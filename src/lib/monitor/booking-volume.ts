@@ -8,19 +8,40 @@
  */
 import { DateTime } from "luxon";
 
+/**
+ * When the org is open, in the shape the org's own hours are stored in (#1298).
+ *
+ * This used to be a SECOND hardcoded copy of when Pennie is open: weekdays 1 to 5,
+ * 08:00 to 20:00, written here beside the alert. The org's real window includes
+ * SATURDAY, so the volume alarm was blind for a whole open day every week, and
+ * nothing would have said so: a Saturday with zero bookings looked exactly like a
+ * Saturday the alarm had deliberately ignored.
+ *
+ * A window that has to agree with another source of truth is derived from it, never
+ * maintained beside it (L41). The caller passes the SAME rules the availability
+ * gates judge a slot against, so the hours the booker offers and the hours the
+ * alarm watches cannot drift apart.
+ */
 export interface BusinessHoursConfig {
   zone: string;
-  weekdays: number[];
-  startHour: number;
-  endHour: number;
+  /** Per weekday windows (1=Mon..7=Sun), minutes from midnight. */
+  rules: { weekday: number; start_minute: number; end_minute: number }[];
 }
 
-/** True when `nowMs` falls on an active weekday within [startHour, endHour) in
- *  the configured zone. Anchored in Eastern time so the window tracks DST. */
+/**
+ * True when `nowMs` falls inside one of the org's stored windows, judged in the
+ * org's own zone so the window tracks DST.
+ *
+ * An EMPTY rules list means shut, which is a legitimate stored answer and is why
+ * the caller must never pass an empty list as a fallback for a read it could not
+ * make: that would silence the alarm rather than skip it.
+ */
 export function isBusinessHours(nowMs: number, cfg: BusinessHoursConfig): boolean {
   const dt = DateTime.fromMillis(nowMs, { zone: cfg.zone });
-  if (!cfg.weekdays.includes(dt.weekday)) return false;
-  return dt.hour >= cfg.startHour && dt.hour < cfg.endHour;
+  const minute = dt.hour * 60 + dt.minute;
+  return cfg.rules.some(
+    (r) => r.weekday === dt.weekday && r.start_minute <= minute && minute < r.end_minute,
+  );
 }
 
 export interface VolumeWindow {
