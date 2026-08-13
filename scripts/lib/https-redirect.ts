@@ -112,6 +112,18 @@ export function missingSecurityHeaders(
  */
 export const PROBE_RETRY_DELAYS_MS = [500] as const;
 
+/**
+ * The trailing note that makes a RECOVERED blip visible (L77).
+ *
+ * A retry that quietly succeeded leaves a green run identical to one that never
+ * needed it, so a probe blipping on every single tick would read as perfect
+ * health for as long as it lasted. The line still passes; it just says it took two
+ * looks, which is the difference between an occasional blip and a pattern.
+ */
+export function retryNote(attempts: number): string {
+  return attempts > 1 ? ` (reached on attempt ${attempts})` : "";
+}
+
 export type ProbeOutcome =
   | { reached: true; response: Response; attempts: number }
   | { reached: false; reason: string; attempts: number };
@@ -240,7 +252,8 @@ export async function evaluateStaticAssetTransport(opts: {
       level: redirectLevel === "page" ? "fail" : redirectLevel,
       message:
         `http://…${assetPath} redirects to https:// (#1203): ` +
-        `got ${plain.status} -> ${plain.location ?? "(no Location)"}`,
+        `got ${plain.status} -> ${plain.location ?? "(no Location)"}` +
+        retryNote(plainProbe.attempts),
     },
   ];
 
@@ -278,7 +291,8 @@ export async function evaluateStaticAssetTransport(opts: {
       `${secure.contentType || "(no content-type)"})` +
       // Say WHY when there was no answer at all, or the reader gets "got 0" and
       // has to guess between a dead site and a broken probe.
-      (secure.reachable ? "" : `: unreachable, ${secure.reason}`),
+      (secure.reachable ? "" : `: unreachable, ${secure.reason}`) +
+      retryNote(secureProbe.attempts),
   });
 
   const headerLevel = transportVerdict(secure.missing.length === 0, opts.expected);

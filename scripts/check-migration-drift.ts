@@ -45,12 +45,19 @@ function runSupabase(args: string[]): Promise<CliResult> {
         env: process.env,
       },
       (error, stdout, stderr) => {
-        if (error && typeof error.code !== "number") {
-          // Could not spawn at all, or was killed on the timeout.
-          reject(new Error(`${error.message}${stderr ? `: ${stderr.trim()}` : ""}`));
+        if (!error) {
+          resolve({ code: 0, stdout, stderr });
           return;
         }
-        resolve({ code: error ? Number(error.code) : 0, stdout, stderr });
+        // A numeric `code` is a real exit status. Anything else (an ENOENT string,
+        // or null after the timeout killed it) means it never ran to completion, so
+        // it is reported as such rather than coerced into a status: `Number("ENOENT")`
+        // is NaN, and NaN compares false against every check downstream (L50).
+        if (typeof error.code === "number") {
+          resolve({ code: error.code, stdout, stderr });
+          return;
+        }
+        reject(new Error(`${error.message}${stderr ? `: ${stderr.trim()}` : ""}`));
       },
     );
     child.stdin?.end();

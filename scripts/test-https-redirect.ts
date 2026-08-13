@@ -257,6 +257,19 @@ assert(
   assert(levels(recovered) === "ok,ok,ok", "#1210: a blip on the https probe that clears on the retry leaves the run green");
   assert(blipSecure.calls.secure === 2, "the https probe really was attempted twice");
   assert(blipSecure.calls.plain === 1, "and the probe that answered first time was not retried");
+  // L77: a probe that needed a retry on EVERY tick would otherwise read as perfect
+  // health. The run stays green, but it says it took two looks, so a pattern is
+  // something a reader can see rather than infer.
+  const recoveredText = recovered.map((c) => c.message).join(" | ");
+  assert(
+    /reached on attempt 2/.test(recoveredText),
+    "a recovered blip is visible in the output, not silently identical to a clean run",
+  );
+  const cleanText = (await run(countingFetch({}).impl)).map((c) => c.message).join(" | ");
+  assert(
+    !/reached on attempt/.test(cleanText),
+    "and a run that never retried says nothing about attempts",
+  );
 
   const blipPlain = countingFetch({ failPlain: 1 });
   const recoveredPlain = await run(blipPlain.impl);
