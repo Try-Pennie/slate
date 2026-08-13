@@ -14,6 +14,7 @@ import {
   classifyPush,
   buildViolationMessage,
   type AssociatedPr,
+  type MergeCommitClaim,
   type PushContext,
 } from "./lib/main-push-guard.ts";
 
@@ -40,6 +41,39 @@ function parsePrs(raw: string | undefined): AssociatedPr[] {
   });
 }
 
+/**
+ * The claims the workflow gathered, if any (#1447).
+ *
+ * Shape: `[{ "number": 1446, "isMergeCommitOfThisPush": true, "ciConclusion": "success" }]`.
+ * Absent or blank means the fallback route was not needed (the association had an
+ * answer) or produced nothing, and both are the empty list: this route can only ever
+ * EXCUSE a push, so treating an unreadable value as no claim is the fail-safe side.
+ */
+function parseClaims(raw: string | undefined): MergeCommitClaim[] {
+  if (!raw || !raw.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((c) => {
+      const o = c as Record<string, unknown>;
+      return {
+        number: Number(o.number ?? 0),
+        isMergeCommitOfThisPush: o.isMergeCommitOfThisPush === true,
+        ciConclusion: typeof o.ciConclusion === "string" ? o.ciConclusion : null,
+      };
+    })
+    // A claim whose number did not parse is dropped rather than carried as NaN.
+    // It could not excuse a push on its own (that turns on the boolean), but it
+    // WOULD reach a human as "legitimate merge of PR #NaN", which claims something
+    // the guard never measured and points the reader at nothing (L11, L50).
+    .filter((c) => Number.isInteger(c.number) && c.number > 0);
+}
+
 export function readContextFromEnv(
   env: Record<string, string | undefined>,
 ): PushContext {
@@ -56,6 +90,7 @@ export function readContextFromEnv(
     // and defaulting the ambiguous case to "readable" would put it back on the branch
     // that accuses somebody of bypassing review.
     prsReadable: (env.PRS_READ_ERROR ?? "") === "",
+    claimedBy: parseClaims(env.MERGE_CLAIMS_JSON),
   };
 }
 
