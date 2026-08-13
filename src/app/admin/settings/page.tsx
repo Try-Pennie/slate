@@ -14,13 +14,15 @@ import {
 import { loadBusinessHoursRows } from "@/lib/booking/business-hours-load";
 import { BUSINESS_ZONE, SEEDED_BUSINESS_HOURS } from "@/lib/booking/business-hours";
 import { coverageForWeek, type CoverageReadout } from "@/lib/booking/business-hours-coverage";
-import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
+import {
+  loadCoverageAgents,
+  currentWeekStartIso,
+} from "@/lib/booking/business-hours-coverage-load";
 import { minutesToTime } from "@/lib/schedule-core";
 import { humanizeZone } from "@/lib/booking/timezones";
 import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/BusinessHoursForm";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
-import { DateTime } from "luxon";
 import {
   HORIZON_DEFAULT,
   HORIZON_MIN,
@@ -35,6 +37,7 @@ import {
   resolveLowVolumeArmed,
   resolveFailureRateArmed,
   resolveAvailabilityDriftArmed,
+  resolveRosterCoverageArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
@@ -105,6 +108,7 @@ export default async function MonitorSettingsPage({
   const lowVolumeArmed = resolveLowVolumeArmed(config, envLowVolumeArmed());
   const failureRateArmed = resolveFailureRateArmed(config);
   const availabilityDriftArmed = resolveAvailabilityDriftArmed(config);
+  const rosterCoverageArmed = resolveRosterCoverageArmed(config);
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -208,34 +212,10 @@ export default async function MonitorSettingsPage({
       org = orgRes.data as OrgDefaults;
     }
 
-    // Only agents who can ACTUALLY take a booking: active AND bookable. Measured
-    // 2026-08-06, 13 users carry the flag but 11 are deactivated leavers whose flag
-    // was never cleared, so counting the flag alone would overstate the pool by 11.
-    const { data: pool } = await db
-      .from("users")
-      .select("id")
-      .eq("bookable", true)
-      .is("deactivated_at", null)
-      .eq("is_test", false);
-    const poolIds = new Set(((pool ?? []) as { id: string }[]).map((u) => u.id));
-
-    const { schedules, rules } = await loadAllWorkingHours(db);
-    const rulesBySchedule = new Map<string, { weekday: number; start_minute: number; end_minute: number }[]>();
-    for (const r of rules) {
-      const list = rulesBySchedule.get(r.schedule_id) ?? [];
-      list.push({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute });
-      rulesBySchedule.set(r.schedule_id, list);
-    }
-    const agents = schedules
-      .filter((sch) => poolIds.has(sch.user_id))
-      .map((sch) => ({
-        timezone: sch.timezone,
-        rules: rulesBySchedule.get(sch.id) ?? [],
-      }));
-    // Agents with no schedule row at all still count toward the denominator: they
-    // are in the pool, they just cover nothing.
-    const scheduleless = poolIds.size - agents.length;
-    for (let i = 0; i < Math.max(0, scheduleless); i++) agents.push({ timezone: BUSINESS_ZONE, rules: [] });
+    // The pool and their rules, through the SAME loader the monitor lane's
+    // roster-coverage alarm uses (#1454), so the screen and the alarm can never
+    // disagree about who covers what.
+    const agents = await loadCoverageAgents(db);
 
     coverage = coverageForWeek({
       businessHours: businessDays.map((d) => ({
@@ -246,8 +226,7 @@ export default async function MonitorSettingsPage({
       })),
       zone: BUSINESS_ZONE,
       agents,
-      weekStartIso:
-        DateTime.now().setZone(BUSINESS_ZONE).startOf("week").toISODate() ?? "2026-01-05",
+      weekStartIso: currentWeekStartIso(),
     });
   } catch {
     // Any of those reads failing leaves coverage in its could-not-check state and
@@ -454,6 +433,24 @@ export default async function MonitorSettingsPage({
               logs, but nobody is notified. On: Slack gets an alert naming the bucket when
               too many of the times it offers turn out to be already busy, and a follow up
               once they are free again.
+            </p>
+            <label className="mt-4 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="roster_coverage_armed"
+                value="on"
+                defaultChecked={rosterCoverageArmed}
+                className="h-4 w-4"
+              />
+              Send a Slack alert when nobody works hours we say we are open
+            </label>
+            <p className="mt-1 text-xs text-fg-muted">
+              Off: Slate still compares the business hours against everyone&apos;s working
+              hours every 5 minutes and records what it finds in the logs, but nobody is
+              notified. On: Slack gets an alert naming the days and times no bookable
+              agent is scheduled for, and a follow up once every advertised hour is
+              covered again. Leave this off until agents are live and have set their real
+              working hours, or it will report the whole week as uncovered.
             </p>
           </section>
 

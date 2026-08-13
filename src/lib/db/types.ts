@@ -214,6 +214,10 @@ export interface MonitorAlertConfig {
   /** #1315: UI arm/disarm for the availability-truth page. Null = unset (fall
    *  through to the disarmed default, per L56's observe-first rule). */
   availability_drift_armed: boolean | null;
+  /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
+   *  through to the disarmed default, which here is about the roster being dark
+   *  before cutover rather than about calibration: see migration 0102). */
+  roster_coverage_armed: boolean | null;
   updated_at: string;
   updated_by: string | null;
 }

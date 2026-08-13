@@ -20,6 +20,7 @@ const blank = {
   lowVolumeArmed: "",
   failureRateArmed: "",
   availabilityDriftArmed: "",
+  rosterCoverageArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -36,6 +37,7 @@ describe("parseMonitorSettingsForm", () => {
       low_volume_armed: false,
       failure_rate_armed: false,
       availability_drift_armed: false,
+      roster_coverage_armed: false,
     });
   });
 

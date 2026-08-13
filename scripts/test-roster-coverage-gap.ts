@@ -1,50 +1,51 @@
 /**
- * #1454: noticing hours the org advertises that nobody is rostered to cover.
+ * #1454: noticing hours the org advertises that no BOOKABLE agent is rostered for.
  *
  * Measured against production on 2026-08-13: `business_hours` says the org is open
- * 08:00 to 20:00 Monday to Saturday, and all 127 agent rosters run 08:00 to 17:00
- * Monday to Friday. So three hours a day on six days, plus the whole of Saturday,
- * are advertised to leads with nobody able to take the call. A slot passes the org
- * gate and then fails the agent gate, and the booker simply offers nothing.
+ * 08:00 to 20:00 Monday to Saturday, and every agent roster runs 08:00 to 17:00
+ * Monday to Friday. Three hours a day on six days, plus the whole of Saturday, are
+ * advertised to leads with nobody able to take the call.
  *
  * Nothing notices this today, and the two states it sits between are the reason:
  * `emptyReason` classifies an open day that produced no times as `busy`, whose own
  * comment says that is "either genuinely full, or nobody rostered. Either way not a
- * closure". Those two are opposite problems (buy capacity, versus roster the
- * capacity you already have) and they arrive as the same word.
+ * closure". Those two are opposite problems and they arrive as the same word.
  *
- * The agent's rules are judged in the AGENT's zone and the org's window in the
- * ORG's, never by intersecting the two as raw weekday minutes, which is the trap
- * `compute.ts` documents. That is what the Pacific case below is for: it is the
- * assertion that fails if anyone compares minute numbers.
+ * The coverage itself is computed by `coverageForWeek` (#1297), which the business
+ * hours editor already uses, and this suite drives THAT rather than a fake, so the
+ * screen and the alarm cannot drift into disagreeing about who covers what (L107).
+ * That is also what makes the Pacific case below meaningful: every live agent is
+ * Eastern, so no production data can tell a zone-correct implementation from a raw
+ * minute comparison.
  *
  * Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
  *        scripts/test-roster-coverage-gap.ts
  */
+import { coverageForWeek } from "../src/lib/booking/business-hours-coverage.ts";
 import {
   ROSTER_COVERAGE_KEY,
   formatRosterCoverageAlert,
   formatRosterCoverageRecovery,
-  rosterCoverageGaps,
+  gapsFromCoverage,
   runRosterCoverageCheck,
 } from "../src/lib/monitor/roster-coverage.ts";
 import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
+/** A Monday, as `coverageForWeek` expects. */
+const WEEK_START = "2026-08-10";
 
 /** The org's advertised week as production stores it: 08:00 to 20:00, Mon to Sat. */
-const OPEN_WEEK = [1, 2, 3, 4, 5, 6].map((weekday) => ({
+const OPEN_WEEK = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
   weekday,
+  is_open: weekday !== 7,
   start_minute: 8 * 60,
   end_minute: 20 * 60,
 }));
 
-/** A Wednesday, so the seven day walk starts mid week and still covers every day. */
-const NOW = Date.parse("2026-08-12T14:00:00Z");
-
-/** One roster: the same rule on each of the given weekdays. */
-function roster(timezone: string, weekdays: number[], startMinute: number, endMinute: number) {
+/** One bookable agent: the same rule on each of the given weekdays. */
+function agent(timezone: string, weekdays: number[], startMinute: number, endMinute: number) {
   return {
     timezone,
     rules: weekdays.map((weekday) => ({
@@ -55,76 +56,68 @@ function roster(timezone: string, weekdays: number[], startMinute: number, endMi
   };
 }
 
+/** Gaps for a roster, through the REAL coverage predicate. */
+function gapsFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
+  return gapsFromCoverage(
+    coverageForWeek({ businessHours: OPEN_WEEK, zone: ZONE, agents, weekStartIso: WEEK_START }),
+  );
+}
+
 // ------------------------------------------------- a fully covered week
 
 // The control. Without this, a detector hard-wired to "everything is a gap" would
 // satisfy every other assertion in this file (L1).
 {
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [roster(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)],
-    nowMs: NOW,
-  });
-  assert(result.blockedBy === null, "a readable week and roster reach a measured verdict");
-  eq(result.gaps?.length, 0, "a roster matching the advertised week leaves no gap");
+  const gaps = gapsFor([agent(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)]);
+  eq(gaps?.length, 0, "a roster matching the advertised week leaves no gap");
 }
 
 // ------------------------------------------------- the production shape
 
 // The measurement that filed the issue. Both gaps, and each one's own shape: the
 // weekday tail is a PARTIAL gap and Saturday is a WHOLE advertised day, which is
-// the difference between "we are thin after five" and "we are shut but say we are
-// open", and they need different words.
+// the difference between "we are thin after five" and "we say we are open and are
+// shut", and they need different words.
+const PROD_GAPS = gapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]) ?? [];
 {
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [roster(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)],
-    nowMs: NOW,
-  });
-  const gaps = result.gaps ?? [];
-  eq(gaps.length, 6, "six advertised days have an uncovered stretch");
+  eq(PROD_GAPS.length, 6, "six advertised days have an uncovered stretch");
 
-  const saturday = gaps.find((g) => g.weekday === 6);
+  const saturday = PROD_GAPS.find((g) => g.weekday === 6);
   assert(saturday !== undefined, "Saturday is reported");
   eq(saturday?.startMinute, 8 * 60, "Saturday's gap starts when the org says it opens");
   eq(saturday?.endMinute, 20 * 60, "Saturday's gap runs to when the org says it closes");
   eq(saturday?.wholeDay, true, "Saturday is a whole advertised day with nobody rostered");
 
   for (const weekday of [1, 2, 3, 4, 5]) {
-    const gap = gaps.find((g) => g.weekday === weekday);
+    const gap = PROD_GAPS.find((g) => g.weekday === weekday);
     assert(gap !== undefined, `weekday ${weekday} is reported`);
     eq(gap?.startMinute, 17 * 60, `weekday ${weekday}'s gap starts when the roster ends`);
     eq(gap?.endMinute, 20 * 60, `weekday ${weekday}'s gap ends when the org closes`);
     eq(gap?.wholeDay, false, `weekday ${weekday} is a tail, not a whole uncovered day`);
   }
+
+  assert(
+    !PROD_GAPS.some((g) => g.weekday === 7),
+    "a day the org does not advertise is never reported as uncovered",
+  );
 }
 
 // ------------------------------------------------- each agent in their OWN zone
 
-// A Pacific agent working 05:00 to 20:00 local covers 08:00 to 23:00 Eastern, so
+// A Pacific agent working 05:00 to 17:00 local covers 08:00 to 20:00 Eastern, so
 // the org's whole Eastern day is covered by someone whose stored minutes (300 and
-// 1200) do not resemble the org's (480 and 1200) at all. Compare the two as raw
-// weekday minutes and this reports a three hour morning gap that does not exist.
+// 1020) do not resemble the org's (480 and 1200) at all. Compare the two as raw
+// weekday minutes and this reports gaps that do not exist.
 {
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [roster("America/Los_Angeles", [1, 2, 3, 4, 5, 6], 5 * 60, 20 * 60)],
-    nowMs: NOW,
-  });
-  eq(result.gaps?.length, 0, "a Pacific agent covering the Eastern day leaves no gap");
+  const gaps = gapsFor([agent("America/Los_Angeles", [1, 2, 3, 4, 5, 6], 5 * 60, 17 * 60)]);
+  eq(gaps?.length, 0, "a Pacific agent covering the Eastern day leaves no gap");
 }
 
 // The same agent an hour later local no longer reaches the org's opening, and the
-// missing hour has to be reported in the ORG's minutes (08:00 to 09:00), not the
-// agent's. This is the direction that catches a detector reporting the right gap
-// in the wrong clock.
+// missing hour is reported in the ORG's minutes (08:00 to 09:00), not the agent's.
+// This is the direction that catches a gap reported in the wrong clock.
 {
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [roster("America/Los_Angeles", [1, 2, 3, 4, 5, 6], 6 * 60, 20 * 60)],
-    nowMs: NOW,
-  });
-  const gaps = result.gaps ?? [];
+  const gaps = gapsFor([agent("America/Los_Angeles", [1, 2, 3, 4, 5, 6], 6 * 60, 17 * 60)]) ?? [];
   assert(gaps.length > 0, "a Pacific agent starting after the org opens leaves a gap");
   eq(gaps[0]?.startMinute, 8 * 60, "the gap is reported from the org's opening minute");
   eq(gaps[0]?.endMinute, 9 * 60, "the gap ends when the Pacific agent comes on shift");
@@ -135,97 +128,42 @@ function roster(timezone: string, weekdays: number[], startMinute: number, endMi
 // Coverage is the UNION. Neither agent covers the advertised day alone; between
 // them they do, and a detector judging agents one at a time reports a gap here.
 {
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [
-      roster(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 14 * 60),
-      roster(ZONE, [1, 2, 3, 4, 5, 6], 14 * 60, 20 * 60),
-    ],
-    nowMs: NOW,
-  });
-  eq(result.gaps?.length, 0, "two half day rosters together cover the advertised day");
+  const gaps = gapsFor([
+    agent(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 14 * 60),
+    agent(ZONE, [1, 2, 3, 4, 5, 6], 14 * 60, 20 * 60),
+  ]);
+  eq(gaps?.length, 0, "two half day rosters together cover the advertised day");
 }
 
-// ------------------------------------------------- a closed day is not a gap
+// ------------------------------------------------- nobody at all
 
-// Sunday is absent from the advertised week, so nobody needs to cover it. A
-// detector counting unrostered days rather than unrostered ADVERTISED hours
-// reports Sunday here, which would be a page about working as intended.
+// The state the roster is in before cutover (#1272), and the reason the alarm
+// ships disarmed. It is a MEASUREMENT, not a failed read, and must not be
+// swallowed as one (L98).
 {
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [roster(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)],
-    nowMs: NOW,
-  });
-  assert(
-    !(result.gaps ?? []).some((g) => g.weekday === 7),
-    "a day the org does not advertise is never reported as uncovered",
-  );
+  const gaps = gapsFor([]) ?? [];
+  eq(gaps.length, 6, "with nobody bookable every advertised day is uncovered");
+  assert(gaps.every((g) => g.wholeDay), "with nobody bookable every gap is a whole day");
 }
 
-// ------------------------------------------------- an unread input blocks
+// ------------------------------------------------- an unreadable roster
 
-// Both reads must SKIP rather than guess, and for opposite reasons. With no
-// advertised week there is nothing to hold the roster against; with no rosters
-// every agent looks off shift, so the whole week would report as uncovered, which
-// is the loudest possible way to be wrong.
+// `coverageForWeek` returns { ok: false } carrying no counts, precisely so an
+// unreadable roster cannot be rendered as "nobody covers this". That distinction
+// has to survive to here: null, never an empty list.
 {
-  const noHours = rosterCoverageGaps({ hours: null, rosters: [], nowMs: NOW });
-  eq(noHours.gaps, null, "an unreadable week reaches no verdict");
-  assert(
-    (noHours.blockedBy ?? "").includes("business hours"),
-    `the blocker names the business hours (${noHours.blockedBy})`,
+  const gaps = gapsFromCoverage(
+    coverageForWeek({
+      businessHours: OPEN_WEEK,
+      zone: ZONE,
+      agents: null,
+      weekStartIso: WEEK_START,
+    }),
   );
-
-  const noRosters = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: null,
-    nowMs: NOW,
-  });
-  eq(noRosters.gaps, null, "unreadable working hours reach no verdict");
-  assert(
-    (noRosters.blockedBy ?? "").includes("working hours"),
-    `the blocker names the working hours (${noRosters.blockedBy})`,
-  );
-
-  // EVERY unread input, not just the first: naming one sends the reader back for a
-  // second tick to discover the rest.
-  const neither = rosterCoverageGaps({ hours: null, rosters: null, nowMs: NOW });
-  assert(
-    (neither.blockedBy ?? "").includes("business hours") &&
-      (neither.blockedBy ?? "").includes("working hours"),
-    `both unread inputs are named (${neither.blockedBy})`,
-  );
-}
-
-// ------------------------------------------------- an empty roster list
-
-// Distinct from the null above: the read SUCCEEDED and found nobody rostered. That
-// is a measured verdict, and it is the worst one, so it must not be swallowed as a
-// blocked read (L98: finding nothing is not the same as finding nothing wrong).
-{
-  const result = rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [],
-    nowMs: NOW,
-  });
-  eq(result.blockedBy, null, "an empty roster list is a measurement, not a blocked read");
-  eq(result.gaps?.length, 6, "with nobody rostered every advertised day is uncovered");
-  assert(
-    (result.gaps ?? []).every((g) => g.wholeDay),
-    "with nobody rostered every gap is a whole advertised day",
-  );
+  eq(gaps, null, "an unreadable roster reaches no verdict rather than reporting no gaps");
 }
 
 // ------------------------------------------------- the copy a human reads
-
-// The production shape, as the reader would meet it on a phone.
-const PROD_GAPS =
-  rosterCoverageGaps({
-    hours: { zone: ZONE, rules: OPEN_WEEK },
-    rosters: [roster(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)],
-    nowMs: NOW,
-  }).gaps ?? [];
 
 {
   const text = formatRosterCoverageAlert(PROD_GAPS);
@@ -250,17 +188,13 @@ const PROD_GAPS =
     `the message offers both remedies (${text})`,
   );
 
-  // The copy rules that the style gate and #1153 both enforce.
   assert(!/^Slate\b/.test(text), "the alert does not open by repeating Slate's own name");
   assert(!/[\u2014\u2013]/.test(text), "the alert copy carries no dashes");
-  assert(
-    !/undefined|NaN|\[object Object\]/.test(text),
-    `nothing leaks into the copy (${text})`,
-  );
+  assert(!/undefined|NaN|\[object Object\]/.test(text), `nothing leaks into the copy (${text})`);
 }
 
 // A whole uncovered day and a tail are DIFFERENT findings and must not read the
-// same: one is "we are shut but say we are open", the other is "we are thin".
+// same: one is "we say we are open and are shut", the other is "we are thin".
 {
   const wholeDayOnly = formatRosterCoverageAlert(PROD_GAPS.filter((g) => g.wholeDay));
   const tailOnly = formatRosterCoverageAlert(PROD_GAPS.filter((g) => !g.wholeDay));
@@ -268,7 +202,6 @@ const PROD_GAPS =
   assert(!tailOnly.includes("Saturday"), "the tail message does not mention the covered day");
 }
 
-// The all-clear answers the page's own claim, and never renders as an empty page.
 {
   const text = formatRosterCoverageRecovery();
   assert(text.length > 0, "the recovery notice renders");
@@ -305,50 +238,101 @@ function spy() {
   };
 }
 
-// A measured gap pages, and clears nothing.
+const UNCOVERED = coverageForWeek({
+  businessHours: OPEN_WEEK,
+  zone: ZONE,
+  agents: [agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)],
+  weekStartIso: WEEK_START,
+});
+const COVERED = coverageForWeek({
+  businessHours: OPEN_WEEK,
+  zone: ZONE,
+  agents: [agent(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)],
+  weekStartIso: WEEK_START,
+});
+const UNREADABLE = coverageForWeek({
+  businessHours: OPEN_WEEK,
+  zone: ZONE,
+  agents: null,
+  weekStartIso: WEEK_START,
+});
+
+// Armed, with a measured gap: it pages, and clears nothing.
 {
   const s = spy();
   const verdict = await runRosterCoverageCheck({
-    inputs: {
-      hours: { zone: ZONE, rules: OPEN_WEEK },
-      rosters: [roster(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)],
-      nowMs: NOW,
-    },
+    coverage: UNCOVERED,
+    armed: true,
     notify: s.notify,
     resolve: s.resolve,
     cooldownMs: 1000,
   });
   eq(verdict.status, "gaps", "an uncovered advertised week is reported as gaps");
-  eq(s.notified, [ROSTER_COVERAGE_KEY], "it pages on the coverage key");
-  eq(s.resolved, [], "a tick that found a gap clears nothing");
+  eq(s.notified.length, 1, "it pages on the coverage key");
+  eq(s.resolved.length, 0, "a tick that found a gap sends no all-clear");
 }
 
-// A measured healthy week clears, off the MEASUREMENT and not off "we did not
-// alert this run" (#1134, #1152).
+// DISARMED, with the same gap: it still MEASURES, and sends nothing. This is the
+// state between now and cutover, and the verdict must say it did not page, or an
+// observed run reads as a sent one.
 {
   const s = spy();
   const verdict = await runRosterCoverageCheck({
-    inputs: {
-      hours: { zone: ZONE, rules: OPEN_WEEK },
-      rosters: [roster(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)],
-      nowMs: NOW,
-    },
+    coverage: UNCOVERED,
+    armed: false,
+    notify: s.notify,
+    resolve: s.resolve,
+    cooldownMs: 1000,
+  });
+  eq(verdict.status, "gaps", "a disarmed check still reaches the measured verdict");
+  assert(
+    verdict.status === "gaps" && verdict.paged === false,
+    "the verdict records that nothing was sent",
+  );
+  eq(s.notified.length, 0, "a disarmed check pages nobody");
+  eq(s.resolved.length, 0, "a disarmed check sends no all-clear");
+}
+
+// Armed and measured healthy: it clears, off the MEASUREMENT and not off "we did
+// not alert this run" (#1134, #1152).
+{
+  const s = spy();
+  const verdict = await runRosterCoverageCheck({
+    coverage: COVERED,
+    armed: true,
     notify: s.notify,
     resolve: s.resolve,
     cooldownMs: 1000,
   });
   eq(verdict.status, "covered", "a fully covered advertised week is reported as covered");
-  eq(s.notified, [], "a covered week pages nobody");
-  eq(s.resolved, [ROSTER_COVERAGE_KEY], "a covered week clears any standing page");
+  eq(s.notified.length, 0, "a covered week pages nobody");
+  eq(s.resolved.length, 1, "a covered week clears any standing page");
 }
 
-// THE failure path. A tick that could not read its inputs measured no health, so
-// it may neither page nor clear: clearing here would announce that coverage had
-// returned off a query that never ran.
+// Disarmed and covered: it must not send an all-clear either. Silence chosen by a
+// switch is not a measurement of health, and an all-clear for a page that was
+// never sent is noise about nothing.
 {
   const s = spy();
   const verdict = await runRosterCoverageCheck({
-    inputs: { hours: null, rosters: null, nowMs: NOW },
+    coverage: COVERED,
+    armed: false,
+    notify: s.notify,
+    resolve: s.resolve,
+    cooldownMs: 1000,
+  });
+  eq(verdict.status, "covered", "a disarmed covered week still reaches a verdict");
+  const { resolved } = s;
+  eq(resolved.length, 0, "a disarmed covered week sends no all-clear");
+}
+
+// THE failure path. A tick that could not measure may neither page nor clear:
+// clearing here would announce coverage had returned off a read that never ran.
+{
+  const s = spy();
+  const verdict = await runRosterCoverageCheck({
+    coverage: UNREADABLE,
+    armed: true,
     notify: s.notify,
     resolve: s.resolve,
     cooldownMs: 1000,
@@ -365,11 +349,8 @@ function spy() {
     throw new Error("slack is down");
   };
   const verdict = await runRosterCoverageCheck({
-    inputs: {
-      hours: { zone: ZONE, rules: OPEN_WEEK },
-      rosters: [],
-      nowMs: NOW,
-    },
+    coverage: UNCOVERED,
+    armed: true,
     notify: boom,
     resolve: boom as unknown as (key: string, text: string) => Promise<boolean>,
     cooldownMs: 1000,

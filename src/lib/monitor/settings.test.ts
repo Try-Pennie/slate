@@ -169,6 +169,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     lowVolumeArmed: "",
     failureRateArmed: "",
   availabilityDriftArmed: "",
+    rosterCoverageArmed: "",
   };
 
   it("parses a checked toggle as armed=true", () => {

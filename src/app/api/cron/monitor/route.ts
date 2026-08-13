@@ -25,6 +25,11 @@ import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health"
 import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availability-tick";
 import { monitorSetupGates } from "@/lib/monitor/setup-gates";
 import { runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
+import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
+import {
+  loadCoverageAgents,
+  currentWeekStartIso,
+} from "@/lib/booking/business-hours-coverage-load";
 import { loadBusinessHours, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
@@ -531,32 +536,37 @@ export async function GET(req: NextRequest) {
     // "busy", which conflates "genuinely full" with "nobody rostered": opposite
     // problems arriving as the same word.
     //
-    // Gated, unlike the empty-reason check above, because here the reads are the
-    // INPUTS rather than the subject. Unreadable working hours make every agent look
-    // off shift, which would report the entire advertised week as uncovered: being
-    // wrong that way is indistinguishable from the finding itself. ---
-    const rosterCoverage = await steps.run("roster_coverage", null, () =>
-      !gates.rosterCoverage.run
-        ? Promise.resolve(null)
-        : runRosterCoverageCheck({
-          inputs: {
-            hours: businessHours,
-            rosters: (workingHours?.schedules ?? []).map((s) => ({
-              timezone: s.timezone,
-              rules: rulesBySchedule.get(s.id) ?? [],
-            })),
-            nowMs: now,
-          },
-          // alert-key: roster_coverage_gap
-          notify: sendThrottledAlert,
-          // alert-key: roster_coverage_gap
-          // all-clear-proof: scripts/test-roster-coverage-gap.ts - a tick that
-          // could not read its inputs neither pages nor clears.
-          resolve: resolveAlert,
-          cooldownMs: settings.cooldownMs.roster_coverage_gap,
-          log: (m) => log.warn("roster-coverage", { msg: m }),
+    // Coverage is computed by the SAME loader and predicate the business hours
+    // editor renders from, so the screen and the alarm cannot disagree about who
+    // covers what (L107). Gated on the business-hours read: with no advertised week
+    // there is nothing to hold the roster against. The roster read throws rather
+    // than degrading, and steps.run turns that into a failed step, so an unreadable
+    // pool skips instead of reporting the whole week uncovered.
+    //
+    // DISARMED until cutover: it counts bookable agents, and the roster is
+    // deliberately dark (#1272), so an armed check would page every tick from now
+    // to go-live. It still measures and logs. #1456 arms it. ---
+    const rosterCoverage = await steps.run("roster_coverage", null, async () => {
+      if (!gates.rosterCoverage.run || !businessHours) return null;
+      const agents = await loadCoverageAgents(db);
+      return runRosterCoverageCheck({
+        coverage: coverageForWeek({
+          businessHours: businessHours.rules.map((r) => ({ ...r, is_open: true })),
+          zone: businessHours.zone,
+          agents,
+          weekStartIso: currentWeekStartIso(businessHours.zone),
         }),
-    );
+        armed: settings.rosterCoverageArmed,
+        // alert-key: roster_coverage_gap
+        notify: sendThrottledAlert,
+        // alert-key: roster_coverage_gap
+        // all-clear-proof: scripts/test-roster-coverage-gap.ts - a tick that could
+        // not measure coverage neither pages nor clears.
+        resolve: resolveAlert,
+        cooldownMs: settings.cooldownMs.roster_coverage_gap,
+        log: (m) => log.warn("roster-coverage", { msg: m }),
+      });
+    });
     if (!gates.rosterCoverage.run) {
       log.warn("monitor", { msg: "roster coverage skipped", why: gates.rosterCoverage.why });
     }

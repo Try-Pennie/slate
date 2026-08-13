@@ -359,6 +359,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     lowVolumeArmed: String(form.get("low_volume_armed") ?? ""),
     failureRateArmed: String(form.get("failure_rate_armed") ?? ""),
     availabilityDriftArmed: String(form.get("availability_drift_armed") ?? ""),
+    rosterCoverageArmed: String(form.get("roster_coverage_armed") ?? ""),
   });
 
   if (parsed.errors.length) {

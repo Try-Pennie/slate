@@ -1,0 +1,21 @@
+-- #1454: arm/disarm the "advertised hours nobody is rostered for" page.
+--
+-- Same single-row config table, same precedence (store > coded default), same
+-- admin form as low_volume_armed (#575), failure_rate_armed (#1313) and
+-- availability_drift_armed (#1315), so there is one way to arm an alert rather
+-- than four.
+--
+-- Nullable, and the coded default is DISARMED, for a reason specific to this
+-- check rather than the usual calibration one. The check now counts BOOKABLE
+-- agents, which is what a lead can actually reach, and the roster is deliberately
+-- dark before cutover (#1272): 2 of 126 users are bookable today. So an armed
+-- check would page, correctly and uselessly, that the entire advertised week has
+-- no coverage, on every tick between now and go-live, and would be muted long
+-- before the day it starts telling the truth.
+--
+-- It still MEASURES every tick and logs the verdict, so the observation is real
+-- and readable while it waits. The issue that arms it is filed in the same change
+-- (L65), because an unenforced guard is indistinguishable from no guard once the
+-- reason for the silence is forgotten.
+alter table monitor_alert_config
+  add column roster_coverage_armed boolean;

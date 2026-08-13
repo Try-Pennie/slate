@@ -361,6 +361,22 @@ export function resolveAvailabilityDriftArmed(
   return resolveArmed(config?.availability_drift_armed);
 }
 
+/**
+ * Roster-coverage ARMED switch (#1454): store > disarmed, same shape as its three
+ * siblings above.
+ *
+ * The disarmed default is NOT the usual observe-a-cycle-first reasoning. This
+ * check counts bookable agents, and the roster is deliberately dark before
+ * cutover (#1272), so an armed check would report the whole advertised week
+ * uncovered on every tick until go-live: correct, useless, and muted long before
+ * the day it starts telling the truth. It measures and logs throughout.
+ */
+export function resolveRosterCoverageArmed(
+  config: Pick<MonitorAlertConfig, "roster_coverage_armed"> | null,
+): boolean {
+  return resolveArmed(config?.roster_coverage_armed);
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -379,6 +395,7 @@ export interface MonitorSettingsFormInput {
   failureRateArmed: string;
   /** Raw value of the arm-availability-drift checkbox (#1315), same encoding. */
   availabilityDriftArmed: string;
+  rosterCoverageArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -391,6 +408,7 @@ export interface MonitorSettingsPayload {
     low_volume_armed: boolean;
     failure_rate_armed: boolean;
     availability_drift_armed: boolean;
+    roster_coverage_armed: boolean;
   };
   errors: string[];
 }
@@ -446,6 +464,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       low_volume_armed: checked(input.lowVolumeArmed),
       failure_rate_armed: checked(input.failureRateArmed),
       availability_drift_armed: checked(input.availabilityDriftArmed),
+      roster_coverage_armed: checked(input.rosterCoverageArmed),
     },
     errors,
   };
@@ -466,6 +485,8 @@ export interface ResolvedMonitorSettings {
   failureRateArmed: boolean;
   /** #1315: is the availability-truth page armed (store > disarmed)? */
   availabilityDriftArmed: boolean;
+  /** #1454: is the roster-coverage page armed (store > disarmed)? */
+  rosterCoverageArmed: boolean;
 }
 
 /**
@@ -483,6 +504,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "low_volume_armed"
         | "failure_rate_armed"
         | "availability_drift_armed"
+        | "roster_coverage_armed"
       >
     | null = null;
   try {
@@ -491,7 +513,9 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       db.from("monitor_settings").select("key, cooldown_min"),
       db
         .from("monitor_alert_config")
-        .select("floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed")
+        .select(
+          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed",
+        )
         .eq("id", 1)
         .maybeSingle(),
     ]);
@@ -506,6 +530,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "low_volume_armed"
         | "failure_rate_armed"
         | "availability_drift_armed"
+        | "roster_coverage_armed"
       >;
     }
   } catch {
@@ -520,6 +545,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
     failureRateArmed: resolveFailureRateArmed(config),
     availabilityDriftArmed: resolveAvailabilityDriftArmed(config),
+    rosterCoverageArmed: resolveRosterCoverageArmed(config),
   };
 }
 
