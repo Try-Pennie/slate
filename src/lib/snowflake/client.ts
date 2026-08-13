@@ -16,6 +16,8 @@
  *     safe to resend (Snowflake will not re-run a statement that already ran).
  */
 
+import { createJwtCache, type JwtIdentity } from "./jwt-cache";
+
 export interface SnowflakeConfig {
   account: string; // e.g. 'ab12345.us-east-1' (URL prefix: locator plus region)
   user: string; // e.g. 'SLATE_SERVICE'
@@ -42,13 +44,59 @@ export interface SnowflakeStatementResponse {
 // Public API
 // ============================================================
 
+/**
+ * The one JWT cache for this isolate (#1141).
+ *
+ * Signing is four asymmetric operations for a token valid an hour, and it used to
+ * happen per statement. The cache is keyed on the whole signing identity, so a
+ * rotated key or a different user signs again immediately rather than being served
+ * the previous token, and it is invalidated the moment Snowflake refuses a token.
+ */
+const jwtCache = createJwtCache({
+  sign: async (identity: JwtIdentity) => {
+    const privateKey = await importPrivateKey(identity.privateKeyPem);
+    return signSnowflakeJwt({ account: identity.account, user: identity.user }, privateKey);
+  },
+});
+
+function authHeaders(jwt: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${jwt}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "User-Agent": "slate-worker/1.0",
+    "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
+  };
+}
+
+/** Test seam: drop the cached token so a suite cannot inherit one (#1141). */
+export function resetSnowflakeJwtCache(): void {
+  jwtCache.invalidate();
+}
+
+/**
+ * How many times the signer has actually run (#1141).
+ *
+ * This exists because reuse is otherwise UNOBSERVABLE. RS256 over the same payload
+ * is deterministic and the token's `iat` has second granularity, so a token
+ * re-signed in the same second is byte for byte identical to the one it replaced.
+ * A test comparing Authorization headers therefore passes whether the cache works
+ * or not, in both directions, which is worse than having no test.
+ */
+export function snowflakeJwtSignCount(): number {
+  return jwtCache.signCount();
+}
+
 export async function executeStatement(
   config: SnowflakeConfig,
   statement: string,
   bindings?: unknown[],
 ): Promise<SnowflakeStatementResponse> {
-  const privateKey = await importPrivateKey(config.privateKeyPem);
-  const jwt = await signSnowflakeJwt(config, privateKey);
+  const identity: JwtIdentity = {
+    account: config.account,
+    user: config.user,
+    privateKeyPem: config.privateKeyPem,
+  };
   const url = `https://${snowflakeHost(config.account)}/api/v2/statements`;
   // Snowflake stores unquoted identifiers uppercase. Send uppercase to match
   // regardless of how the config is set.
@@ -68,20 +116,63 @@ export async function executeStatement(
     body.bindings = bindMap;
   }
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${jwt}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    "User-Agent": "slate-worker/1.0",
-    "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
-  };
+  let headers = authHeaders(await jwtCache.get(identity));
 
   // A fresh requestId per statement. Resubmitting the SAME requestId with
   // retry=true is Snowflake's idempotency contract: it will not execute a
   // statement that already succeeded, which is what makes retrying a request
   // that died before we saw its response safe.
-  const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID());
-  return resolveStatementResult(config, headers, status, text);
+  const requestId = crypto.randomUUID();
+  const payload = JSON.stringify(body);
+  let posted: { status: number; text: string };
+  try {
+    posted = await postStatementWithRetry(url, headers, payload, requestId);
+  } catch (err) {
+    // A token this isolate has been reusing can be refused for reasons a fresh one
+    // fixes: clock skew against Snowflake, or the key having been rotated in
+    // Snowflake while our copy still signs. Without this the cache would go on
+    // resending the refused token for the whole reuse window, so it would turn one
+    // auth blip into thirty minutes of failed exports. Exactly one re-sign: a
+    // second 401 is a real auth problem and must surface rather than loop.
+    if (!isAuthRejection(err)) throw err;
+    jwtCache.invalidate();
+    headers = authHeaders(await jwtCache.get(identity));
+    posted = await postStatementWithRetry(url, headers, payload, requestId, { resubmit: true });
+  }
+  return resolveStatementResult(config, headers, posted.status, posted.text);
+}
+
+/**
+ * A non-2xx from Snowflake, carrying the STATUS rather than only a message.
+ *
+ * #1141 needs to tell an auth rejection apart from anything else so it can re-sign
+ * and resubmit once. Reading that back out of the message text would be a decision
+ * made on a substring (L35), and the message is copy, not a contract.
+ */
+export class SnowflakeHttpError extends Error {
+  // Written out rather than as constructor parameter properties: node's
+  // strip-only type stripping (which runs every scripts/test-*.ts) rejects those,
+  // so the shorthand typechecks and lints cleanly while breaking the node suites.
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, body: string) {
+    super(`Snowflake ${status}: ${body}`);
+    this.name = "SnowflakeHttpError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/**
+ * Is this Snowflake refusing the TOKEN, as opposed to refusing the statement?
+ *
+ * 401 only. A 403 is an authorization problem (the role cannot touch the object),
+ * and a fresh signature cannot fix it, so resubmitting on 403 would spend a second
+ * round trip to be told the same thing and would hide a real grant error behind it.
+ */
+export function isAuthRejection(err: unknown): boolean {
+  return err instanceof SnowflakeHttpError && err.status === 401;
 }
 
 // Statuses worth resubmitting. 429/503/504 are Snowflake's own documented
@@ -99,6 +190,13 @@ export interface RetryOptions {
   maxAttempts?: number;
   delaysMs?: number[];
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Force `retry=true` from the FIRST attempt (#1141). Used when re-sending a
+   * statement whose earlier submission was refused on the token: the requestId is
+   * the same, so Snowflake's idempotency contract still covers the ambiguity even
+   * though a 401 means it never ran.
+   */
+  resubmit?: boolean;
 }
 
 // Bounded on purpose. The export lane's per-run wall-time budget is spent across
@@ -128,7 +226,8 @@ export async function postStatementWithRetry(
   const doSleep = opts.sleep ?? sleep;
 
   for (let attempt = 1; ; attempt++) {
-    const target = `${url}?requestId=${encodeURIComponent(requestId)}${attempt > 1 ? "&retry=true" : ""}`;
+    const isRetry = attempt > 1 || opts.resubmit === true;
+    const target = `${url}?requestId=${encodeURIComponent(requestId)}${isRetry ? "&retry=true" : ""}`;
     let retryable: boolean;
     let error: Error;
 
@@ -137,7 +236,7 @@ export async function postStatementWithRetry(
       const text = await res.text();
       if (res.ok) return { status: res.status, text };
       retryable = isTransientSnowflakeError(res.status);
-      error = new Error(`Snowflake ${res.status}: ${text}`);
+      error = new SnowflakeHttpError(res.status, text);
     } catch (e) {
       // fetch rejected, so no response ever arrived. Always retryable: the
       // requestId contract covers the ambiguity about whether it executed.
@@ -248,7 +347,10 @@ function accountForJwt(account: string): string {
 // JWT signer
 // ============================================================
 
-async function signSnowflakeJwt(config: SnowflakeConfig, privateKey: CryptoKey): Promise<string> {
+async function signSnowflakeJwt(
+  config: { account: string; user: string },
+  privateKey: CryptoKey,
+): Promise<string> {
   const fingerprint = await publicKeyFingerprint(privateKey);
   const account = accountForJwt(config.account);
   const user = config.user.toUpperCase();
