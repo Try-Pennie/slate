@@ -107,6 +107,90 @@ jobs:
   # check; and the #766 fail-loud path below still guards every non-dependabot
   # branch. main-push-guard reads only the `ci` check (not this one), so a skip
   # here never affects the merge-to-main backstop.
+  # --- Automated security scanning (#1042) ---------------------------------------
+  #
+  # The bespoke guard layer (capped reads, swallowed errors, migration invariants,
+  # the pinning and license checks) covers defect classes specific to this repo.
+  # It says nothing about committed secrets or generic injection and authz
+  # patterns, and GitHub's own push protection is a paid feature this org does not
+  # have, so nothing server side catches either.
+  #
+  # Its own job rather than steps on `ci`, so a scanner outage or a rule change
+  # cannot block a correctness failure from being reported, and so its runtime is
+  # visible separately.
+  #
+  # Deliberately NOT in `deploy`'s `needs`, matching `coverage`. The semgrep rule
+  # packs are fetched at run time (see below), so a newly published rule could
+  # otherwise block an emergency deploy over code nobody touched, which is a worse
+  # outcome than a late finding. Like every other control in this repo on the free
+  # plan (see the main-push guard, #1027), it is DETECTIVE: a red run means look
+  # now and rotate if needed, not "the change was prevented".
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the secret scan reads the commits a push ADDS, and needs the
+      # base commit present to work out what that range is.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      # The official gitleaks action requires a paid licence key for an
+      # organisation, so the binary is fetched directly. Pinned by version AND
+      # verified by checksum: an unverified download into a job is the same class
+      # of exposure as an unpinned action tag, which is what #1051 was about.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$f" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${f}"
+          echo "${GITLEAKS_SHA256}  ${f}" | sha256sum -c -
+          tar -xzf "$f" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # The COMMITS this push adds, not the working tree. A secret added in one
+      # commit and deleted in the next is still readable by anyone with repo
+      # access and still needs rotating, and a working tree scan calls that clean.
+      #
+      # --redact so a hit never prints the credential into a public build log,
+      # which would turn the detection into a second disclosure.
+      - name: Scan for committed secrets
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No usable base commit, scanning full history instead of a range."
+            gitleaks git --no-banner --redact --config .gitleaks.toml
+          else
+            echo "Scanning $BASE..$HEAD"
+            gitleaks git --no-banner --redact --config .gitleaks.toml \
+              --log-opts "$BASE..$HEAD"
+          fi
+
+      # Pinned, like everything else. NOTE the deliberate residual risk: the rule
+      # PACKS are fetched from the semgrep registry at run time, so unlike the
+      # binary they are not pinned and a newly published rule can fail a build
+      # over code nobody touched. That is accepted rather than overlooked: the
+      # alternative is vendoring a large ruleset that then never improves. When it
+      # happens, fix the finding or annotate the line with `nosemgrep` and a
+      # reason, and do not disable the job.
+      - name: Install semgrep
+        run: pipx install semgrep==1.172.0
+
+      # p/typescript is the injection and authz surface the bespoke guards do not
+      # cover; p/secrets is defence in depth beside gitleaks, matching on code
+      # shape rather than on entropy.
+      - name: Static analysis
+        run: |
+          semgrep scan --config p/typescript --config p/secrets \
+            --error --quiet --metrics=off --disable-version-check
+
   migration-drift:
     if: ${{ ! startsWith(github.head_ref, 'dependabot/') }}
     runs-on: ubuntu-latest

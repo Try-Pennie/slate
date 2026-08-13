@@ -1,0 +1,61 @@
+# Secret scanning config (#1042).
+#
+# GitHub's own push protection is a paid feature and Try-Pennie is on the free
+# plan, so nothing server side stops a secret reaching this repo. gitleaks in CI
+# is the compensating control, and like the main-push guard (#1027) it is
+# DETECTIVE rather than preventive: it runs after the push, so a hit means rotate
+# the credential, not "the push was blocked".
+#
+# CI scans the commits a push ADDS, not the working tree. A secret added in one
+# commit and deleted in the next is still readable by anyone with repo access and
+# still needs rotating, and a working tree scan would call that clean.
+#
+# History before this config was triaged by hand on 2026-08-13 (#1042). It held
+# four booking manage tokens in two brand redesign log files, which were deleted,
+# and PEM shaped test placeholders, which are allowlisted below. Nothing else.
+
+[extend]
+useDefault = true
+
+# --- Build output --------------------------------------------------------------
+#
+# None of this is committed, so a git scan never sees it, but `gitleaks dir .` run
+# by hand walks it: 2.3 GB and 105 findings, all of them other people's fixtures
+# in node_modules. Excluded so a local run is fast enough to actually be run, and
+# kept in its OWN block so the lockstep check on the block below is not reading
+# these paths as security exemptions.
+[[allowlists]]
+description = "Uncommitted build output and dependencies"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.open-next/''',
+  '''(^|/)\.wrangler/''',
+  '''(^|/)coverage/''',
+  '''(^|/)\.claude/worktrees/''',
+]
+
+# --- PEM shaped placeholders ---------------------------------------------------
+#
+# The default private-key rule matches the "-----BEGIN PRIVATE KEY-----" header,
+# so it cannot tell a real key from a test placeholder shaped like one, and these
+# files legitimately need the shape: the JWT signing and config parsing tests
+# exist to exercise the PEM handling, and .env.example documents the variable's
+# format for whoever fills it in.
+#
+# This is a PATH exemption, which is how an allowlist rots: once a file is exempt,
+# a real key pasted into it is invisible to the scanner, and the exemption then
+# reads to the next person as evidence that somebody checked. So it is pinned to
+# four exact files, never a glob like `*.test.ts`, and
+# `scripts/test-secret-placeholders.ts` independently asserts that every PEM body
+# in them is short filler rather than real key material. The two halves are
+# deliberately separate: the scanner is told to look away, and something else is
+# told to look.
+[[allowlists]]
+description = "PEM placeholders, each checked by scripts/test-secret-placeholders.ts"
+paths = [
+  '''^\.env\.example$''',
+  '''^scripts/test-snowflake-jwt-cache\.ts$''',
+  '''^src/lib/snowflake/config\.test\.ts$''',
+  '''^src/lib/snowflake/client\.test\.ts$''',
+]
