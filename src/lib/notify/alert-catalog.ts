@@ -388,8 +388,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
   {
     key: "ooo_busy_block_fallback",
-    kind: "incident",
-    why: "One approval fell back to a busy-block write; that approval is complete.",
+    kind: "condition",
+    why:
+      "An approved time off is being blocked by a Slate written busy block alone, " +
+      "with no event on the agent's own calendar, so its protection rests on one " +
+      "cached row (#1464). It ends when that event is created or the window passes, " +
+      "and the monitor lane clears it off a measured read (#1470).",
   },
   {
     key: "ooo_undo",

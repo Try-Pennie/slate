@@ -26,9 +26,26 @@ export function oooAgentCalendarAlert(requestId: string, reason: string): string
   return `Creating the agent calendar OOO event for request ${requestId} failed: ${reason}`;
 }
 
-/** Time-off orchestration incident: oooBusyBlockFallbackAlert. */
+/**
+ * Time-off orchestration condition: the approval fell back to a Slate written
+ * busy block because the agent's calendar event could not be created.
+ *
+ * The old wording ended "Availability is blocked correctly; flagging the
+ * fallback", which asserted an ongoing truth the message could never take back:
+ * in #1464 it was true for 31 seconds and false forever after, and it was the
+ * reader's last word on that time off. It now says what happened, what it rests
+ * on, and that the monitor lane is watching it, and the all-clear arrives when
+ * nothing is relying on that block any more (#1470).
+ */
 export function oooBusyBlockFallbackAlert(requestId: string): string {
-  return `Availability for request ${requestId} was blocked with a Slate-native busy block (the calendar-linked one couldn't be used because the agent calendar event wasn't created). Availability is blocked correctly; flagging the fallback.`;
+  return (
+    `The time off for request ${requestId} is blocked by a Slate written busy block ` +
+    `alone: the event on the agent's own calendar could not be created. Those hours ` +
+    `are blocked for now, but the protection rests on that one cached row. Retry the ` +
+    `calendar updates on the request. The monitor lane checks every 5 minutes and will ` +
+    `page if the window stops being blocked, and clear this when nothing is relying on ` +
+    `the fallback.`
+  );
 }
 
 /** Time-off orchestration incident: oooCalcomAlert. */
