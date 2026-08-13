@@ -52,11 +52,33 @@ rather than reasoning it out per PR.
    which the prod lag monitor filters out (`^[0-9]{4}$`); the migration would then
    read as never applied and, worse, could pin the check to a false "database is
    ahead" and silence it. `supabase db push` records the `NNNN` version correctly.
-5. **Re-run the merge gate.** `gh run rerun <run-id> --failed`, then confirm the
+5. **Record what was applied**, in the same commit, so a later edit to the file
+   cannot pass unnoticed (#1127). The drift gate compares VERSION labels only, so a
+   migration edited after it was applied is invisible to it: four of the 101 applied
+   migrations already diverge from what prod ran, and none of them broke anything,
+   which is precisely why nobody noticed.
+
+   Run this only AFTER the push in step 4 succeeded, never before, or the lock
+   records an intention rather than a fact:
+
+   <!-- runbook-verified: 2026-08-13 (1896a179) run against the repo; rewrote
+        supabase/migrations/applied-content.lock with 101 entries, and
+        scripts/test-migration-content-lock.ts passed against the result. Editing an
+        applied migration and re-running that suite fails it, which is the behaviour
+        this step exists to enable. -->
+
+   ```
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/update-migration-lock.ts
+   ```
+
+   Commit the changed `applied-content.lock` with the migration. Deliberately editing
+   an already applied migration is done the same way: change the file, re-run this,
+   and the lock's diff is what a reviewer sees.
+6. **Re-run the merge gate.** `gh run rerun <run-id> --failed`, then confirm the
    `migration-drift` check is green (`gh pr checks <pr>`).
-6. **Merge.** The push to main deploys the code, now that its schema is already in
+7. **Merge.** The push to main deploys the code, now that its schema is already in
    place.
-7. **Verify.** On the next monitor tick the `migration-drift` log line should read
+8. **Verify.** On the next monitor tick the `migration-drift` log line should read
    `status=in-sync`. To confirm the schema directly, read the applied set back via
    the `applied_migration_versions()` RPC (server-only; deny-all to API clients).
    Run this as an admin in the Supabase SQL editor:
