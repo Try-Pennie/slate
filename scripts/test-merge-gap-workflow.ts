@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
+import { mergeGapVerdict } from "./lib/merge-gap.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const wf = readFileSync(join(ROOT, ".github", "workflows", "merge-gap.yml"), "utf8");
@@ -25,13 +26,31 @@ assert(
   "#113: merge-gap fires on push to every non-main branch (branches-ignore: main)",
 );
 
-// It must actually fail (non-zero) on the strand condition, not just log.
-assert(/exit 1/.test(wf), "#113: the guard fails (exit 1) when the branch strands");
-
-// It distinguishes merged/closed from an open PR (an open PR on the branch is fine).
+// #1436: the decision moved out of the `run:` block and into a script with a
+// suite, because inside YAML "no pull request" and "could not read the pull
+// requests" were the same empty string, and the second one exited 0.
+//
+// These two assertions used to grep the YAML for `exit 1` and for the literal
+// `MERGED|CLOSED` regex. That pins the RENDERING rather than the rule (L103): the
+// strings could be present while the guard did nothing, and the same guard written
+// differently would fail the check while behaving correctly. They now assert the
+// wiring here and the BEHAVIOUR through the real decision function, with the full
+// set of cases in scripts/test-merge-gap.ts.
 assert(
-  /MERGED\|CLOSED/.test(wf) && /\^OPEN\$/.test(wf),
-  "#113: it blocks MERGED/CLOSED but allows an OPEN PR on the branch",
+  /scripts\/check-merge-gap\.ts/.test(wf),
+  "#113: the workflow runs the merge-gap check (whose decision has its own suite)",
+);
+assert(
+  !mergeGapVerdict({ ok: true, states: ["MERGED"] }, "b").ok,
+  "#113: the guard really fails when the branch's PR is merged, so a push there strands",
+);
+assert(
+  mergeGapVerdict({ ok: true, states: ["MERGED", "OPEN"] }, "b").ok,
+  "#113: and really allows an open PR on the branch, which is a live route to main",
+);
+assert(
+  !mergeGapVerdict({ ok: false, reason: "gh down" }, "b").ok,
+  "#1436: and fails rather than passing when it could not read the pull requests at all",
 );
 
 // Cheap-only: it must NOT invoke the full pipeline (no build/test), or it would

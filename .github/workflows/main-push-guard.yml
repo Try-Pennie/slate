@@ -50,8 +50,26 @@ jobs:
           # PRs associated with this commit. For a squash merge the merge commit
           # on main resolves to the PR it came from (merged_at set); a direct push
           # resolves to none.
-          pulls="$(gh api "/repos/$REPO/commits/$HEAD_SHA/pulls" 2>/dev/null || echo '[]')"
-          enriched="$(echo "$pulls" | jq -c '[.[] | {number, merged: (.merged_at != null), head: .head.sha, ciConclusion: null}]')"
+          #
+          # #1436: a FAILED read is not an empty list. This used to be
+          # `|| echo '[]'`, and an empty array is byte for byte what a genuine
+          # direct push looks like, so a GitHub outage paged saying somebody had
+          # bypassed review. The failure is recorded instead, and the classifier
+          # reports it as a check that could not run.
+          PRS_READ_ERROR=""
+          if ! pulls="$(gh api "/repos/$REPO/commits/$HEAD_SHA/pulls" 2>&1)"; then
+            PRS_READ_ERROR="gh api could not read the commit's pull requests"
+            echo "::warning::main-push-guard: $PRS_READ_ERROR: $(head -n 1 <<<"$pulls")"
+            pulls='[]'
+          fi
+          export PRS_READ_ERROR
+          # A 200 whose body is not an array is also a read this cannot use.
+          if ! enriched="$(jq -ce '[.[] | {number, merged: (.merged_at != null), head: .head.sha, ciConclusion: null}]' <<<"$pulls")"; then
+            PRS_READ_ERROR="the pull request list was not the expected shape"
+            export PRS_READ_ERROR
+            echo "::warning::main-push-guard: $PRS_READ_ERROR"
+            enriched='[]'
+          fi
 
           # For each merged PR, read the CI conclusion on its own head commit (the
           # pre-merge checks), so a merged-red PR is caught. Unknown stays null and
@@ -63,6 +81,12 @@ jobs:
             merged="$(echo "$enriched" | jq -r ".[$i].merged")"
             [ "$merged" = "true" ] || continue
             head="$(echo "$enriched" | jq -r ".[$i].head")"
+            # parse-ok: fails to "unknown CI", which the classifier deliberately
+            # tolerates rather than pages on (see classifyPush): the hard signal is
+            # "no merged PR at all", and that half no longer swallows its errors.
+            # A false page every time GitHub's checks API blips would be worse than
+            # the residual risk of a merged-red PR going unnoticed on the one run
+            # where the read also failed.
             concls="$(gh api "/repos/$REPO/commits/$head/check-runs" \
               --jq '[.check_runs[] | select(.name == "ci") | .conclusion]' 2>/dev/null || echo '[]')"
             ci="$(echo "$concls" | jq -r 'if any(.[]; . == "failure") then "failure" elif (length > 0 and all(.[]; . == "success")) then "success" else "null" end')"
