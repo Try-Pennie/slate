@@ -7,7 +7,7 @@
 // Run: node --experimental-strip-types scripts/test-smoke-canary-workflow.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const wf = readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), "utf8");
@@ -16,6 +16,28 @@ const wf = readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), 
 assert(/^on:/m.test(wf), "has an `on:` trigger block");
 assert(/cron:\s*"\*\/30 \* \* \* \*"/.test(wf), "schedules the ~30-min dry-run tick");
 assert(/cron:\s*"0 \*\/6 \* \* \*"/.test(wf), "schedules the 6h full pass");
+
+// #1436: the step that decides which pass to run compares `github.event.schedule`
+// against a HAND-COPIED cron string. If the schedule above were ever retimed and
+// that literal not updated with it, the comparison would silently never match, the
+// full pass (the only automated proof a booking can be made, rescheduled and
+// cancelled) would stop running, and the dry tick would keep the smoke-canary
+// heartbeat fresh the whole time. The separate smoke-canary-full heartbeat (#982)
+// would eventually go stale and page, which is the compensating control, but the
+// two strings have to agree in the first place (L41: never maintain a copy beside
+// its source of truth without checking they match).
+{
+  const crons = [...wf.matchAll(/cron:\s*"([^"]+)"/g)].map((m) => m[1]!);
+  assert(crons.length >= 2, `the on: block declares ${crons.length} schedules`);
+  const compared = [...wf.matchAll(/\$SCHEDULE"\s*=\s*"([^"]+)"/g)].map((m) => m[1]!);
+  assert(compared.length > 0, "the mode step really compares the schedule (it is not dead code)");
+  const orphans = compared.filter((c) => !crons.includes(c));
+  eq(
+    orphans,
+    [],
+    "every cron string the mode step compares against is one this workflow actually schedules",
+  );
+}
 assert(/workflow_dispatch:/.test(wf), "can be run on demand (workflow_dispatch)");
 
 // --- never cancel a canary mid-teardown ---

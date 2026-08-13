@@ -24,26 +24,23 @@ jobs:
   merge-gap:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      # #1436: the decision moved out of this block and into a script with a suite
+      # (scripts/lib/merge-gap.ts). It used to read the PR list as
+      # `states="$(gh pr list ... || echo '')"`, so a gh outage produced an empty
+      # string, nothing matched, and the job printed "No merged/closed PR blocking"
+      # and exited 0. This backstop had the SAME failure mode as the local hook it
+      # compensates for, and a compensating control that reports green having asked
+      # nothing is worse than no control, because it is believed.
+      #
+      # No pnpm install: the script imports two local modules and nothing from
+      # node_modules.
       - name: Flag a push onto an already-merged/closed PR branch
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # Every PR whose head is this branch, with its state.
-          states="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json state --jq '.[].state' || echo '')"
-
-          # A still-open PR on the branch is legitimate (active work, or a reopened
-          # PR under the same name), so merged/closed history does not strand.
-          if grep -q '^OPEN$' <<<"$states"; then
-            echo "An open PR exists for '$BRANCH'; push is fine."
-            exit 0
-          fi
-
-          if grep -qE '^(MERGED|CLOSED)$' <<<"$states"; then
-            echo "::error::Branch '$BRANCH' has a merged/closed PR and no open one. Commits pushed here strand and never reach main. Branch fresh off main and cherry-pick instead (ALLOW_MERGED_PUSH bypasses only the local hook, not this)."
-            exit 1
-          fi
-
-          echo "No merged/closed PR blocking '$BRANCH'."
+        run: node --experimental-strip-types scripts/check-merge-gap.ts

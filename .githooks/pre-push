@@ -24,6 +24,8 @@ set -euo pipefail
 push_refs=""
 [ -t 0 ] || push_refs="$(cat)"
 
+# parse-ok: a detached HEAD legitimately has no branch name, and every guard
+# below returns early on an empty branch rather than acting on a guess.
 branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
 
 # --- 1. Merge-gap guard -----------------------------------------------------
@@ -34,6 +36,13 @@ merge_gap_guard() {
   command -v gh >/dev/null 2>&1 || return 0
 
   local state
+  # parse-ok: this guard fails OPEN on purpose, and that is only acceptable because
+  # something else closes it. An unreadable state (no auth, gh down, no PR yet) lets
+  # the push through, and .github/workflows/merge-gap.yml then fires on the same push
+  # server-side and FAILS when the branch's PR is merged or closed. Since #1436 that
+  # backstop no longer shares this failure mode: an unreadable PR list there is a red
+  # run, not a green one. Do not "fix" this to fail closed without checking that,
+  # since blocking every push made without gh auth would be worse than the gap.
   state="$(gh pr view "$branch" --json state --jq .state 2>/dev/null || echo '')"
   if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
     echo "" >&2

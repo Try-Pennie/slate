@@ -25,6 +25,7 @@ const base: PushContext = {
   actor: "someone",
   runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
   prs: [{ number: 42, merged: true, ciConclusion: "success" }],
+  prsReadable: true,
 };
 
 // --- classifier ----------------------------------------------------------
@@ -101,5 +102,56 @@ const wf = readFileSync(join(ROOT, ".github", "workflows", "main-push-guard.yml"
 assert(/on:\s*\n\s*push:\s*\n\s*branches:\s*\n\s*-\s*main\b/.test(wf), "workflow fires on push to main");
 assert(/scripts\/check-main-push\.ts/.test(wf), "workflow invokes the check-main-push runner");
 assert(/SLACK_BOT_TOKEN/.test(wf) && /SLACK_ALERTS_CHANNEL/.test(wf), "workflow passes the Slack secrets");
+
+// --- #1436: an unreadable PR list is not a direct push ------------------
+// The workflow used to gather the list as `pulls="$(gh api ... || echo '[]')"`, and
+// an empty array is byte for byte what a genuine direct push looks like. So a
+// GitHub outage failed the run AND paged saying somebody had bypassed review: an
+// accusation about something the check never measured (L11).
+{
+  const blind = { ...base, prs: [], prsReadable: false };
+  const verdict = classifyPush(blind);
+  assert(!verdict.ok, "an unreadable PR list still fails: a push to main we cannot vouch for is not silent");
+  assert(verdict.unverified, "but it is marked unverified rather than being scored as a violation");
+  assert(
+    /UNKNOWN|could not read/i.test(verdict.reason),
+    "and the reason says it could not tell",
+  );
+  assert(
+    !/bypass/i.test(verdict.reason) && !/direct push to main with no merged/i.test(verdict.reason),
+    "and never accuses anyone of bypassing review",
+  );
+
+  // The two failures must not read the same to the person holding the phone: one
+  // is a commit to review, the other is a job to re-run, and telling someone to
+  // revert over a GitHub blip is advice that cannot fix the state they are in.
+  const blindMsg = buildViolationMessage(blind, verdict);
+  const realMsg = buildViolationMessage(directPush, classifyPush(directPush));
+  assert(/could not check/i.test(blindMsg), "the unverified alert says the check could not run");
+  assert(/[Rr]e-run/.test(blindMsg), "and tells the reader to re-run the job");
+  assert(!/revert/i.test(blindMsg), "and does NOT tell them to revert a commit that may be fine");
+  assert(/revert/i.test(realMsg), "while a real violation still says to review and revert");
+  assert(blindMsg !== realMsg, "the two never render the same");
+
+  // An unreadable list beats even a bypass marker? No: a deliberate hotfix is
+  // still legitimate, and the marker is checked first on purpose.
+  const marked = { ...blind, commitMessage: `Hotfix main ${BYPASS_MARKER}` };
+  assert(classifyPush(marked).ok, "a deliberate marked hotfix is still allowed when the list is unreadable");
+}
+
+// --- the env read defaults to READABLE only when nothing went wrong -----
+{
+  const readable = readContextFromEnv({ PRS_JSON: "[]" });
+  assert(readable.prsReadable, "no PRS_READ_ERROR means the read succeeded (the normal case)");
+
+  const failed = readContextFromEnv({ PRS_JSON: "[]", PRS_READ_ERROR: "gh api 502" });
+  assert(!failed.prsReadable, "a recorded read error is carried through");
+
+  // The ambiguous case falls on the SAFE side: anything present at all means the
+  // read path went wrong, and defaulting it to readable would put it straight back
+  // on the branch that accuses somebody of bypassing review.
+  const blank = readContextFromEnv({ PRS_JSON: "[]", PRS_READ_ERROR: " " });
+  assert(!blank.prsReadable, "a whitespace-only error value still counts as unreadable");
+}
 
 finish();

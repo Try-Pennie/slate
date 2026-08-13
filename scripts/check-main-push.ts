@@ -49,13 +49,20 @@ export function readContextFromEnv(
     actor: env.ACTOR ?? "",
     runUrl: env.RUN_URL ?? "",
     prs: parsePrs(env.PRS_JSON),
+    // #1436: the workflow sets PRS_READ_ERROR when `gh api` could not answer, so an
+    // unreadable list is not scored as an empty one. Missing (the normal case) means
+    // the read succeeded. Anything present, even a whitespace-only value, is treated
+    // as a failure: a variable that exists at all here means the read path went wrong,
+    // and defaulting the ambiguous case to "readable" would put it back on the branch
+    // that accuses somebody of bypassing review.
+    prsReadable: (env.PRS_READ_ERROR ?? "") === "",
   };
 }
 
 export async function run(
   post: PostFn,
   env: Record<string, string | undefined>,
-): Promise<{ ok: boolean; alerted: boolean; reason: string }> {
+): Promise<{ ok: boolean; alerted: boolean; unverified?: boolean; reason: string }> {
   const ctx = readContextFromEnv(env);
   const verdict = classifyPush(ctx);
   if (verdict.ok) {
@@ -68,6 +75,7 @@ export async function run(
   return {
     ok: false,
     alerted: res.ok,
+    unverified: !!verdict.unverified,
     reason: res.ok ? verdict.reason : `${verdict.reason} (slack: ${res.error})`,
   };
 }
@@ -87,9 +95,18 @@ if (isMain) {
         `::error title=Slack alert not sent::main-push-guard could not post the violation alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL.`,
       );
     }
-    console.error(
-      `::error title=Illegitimate push to main::${res.reason}. See the job log; revert if unintended.`,
-    );
+    // The two failures never read the same: one is a commit to review, the other is
+    // a check to re-run, and telling someone to revert over a GitHub blip is advice
+    // that cannot fix the state they are in.
+    if (res.unverified) {
+      console.error(
+        `::error title=main-push-guard could not check this push::${res.reason}. Re-run this job; main is unguarded for this commit, not proven bad.`,
+      );
+    } else {
+      console.error(
+        `::error title=Illegitimate push to main::${res.reason}. See the job log; revert if unintended.`,
+      );
+    }
     process.exit(1);
   });
 }
