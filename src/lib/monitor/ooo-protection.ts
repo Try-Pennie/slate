@@ -29,6 +29,19 @@ import { log } from "@/lib/log";
 export const OOO_PROTECTION_KEY = "ooo_protection_lost";
 
 /**
+ * The key the ORCHESTRATION uses when an approval falls back to a Slate written
+ * busy block because the agent's calendar event could not be created (#1470).
+ *
+ * Sent there, at the moment it happens; cleared here, because only a measurement
+ * can say it has stopped being true. It was classified as an incident, so it
+ * could never retract itself, and its text ("Availability is blocked correctly")
+ * was true for 31 seconds and false forever after in #1464. It is a condition:
+ * it ends when nothing is relying on that block any more, either because the
+ * calendar event was created or because the window has passed.
+ */
+export const OOO_FALLBACK_KEY = "ooo_busy_block_fallback";
+
+/**
  * Consecutive ticks before this pages. The monitor lane runs every 5 minutes.
  *
  * Two, not one, for a specific legitimate transient: approval flips the request
@@ -118,11 +131,17 @@ function merge(intervals: { start: number; end: number }[]): { start: number; en
  *    permissive side of a comparison (L50), and the permissive side here is
  *    "this window is fine".
  */
-export function unprotectedTimeOff(
+type Protection = "protected" | "fallback-only" | "unprotected" | "past";
+
+/**
+ * One pass over the requests, classifying each. Both exported views read this,
+ * so "covered" can never mean two different things on two surfaces.
+ */
+function classify(
   requests: ApprovedTimeOff[],
   blocks: CachedBusyWindow[],
   nowMs: number,
-): UnprotectedTimeOff[] {
+): { request: ApprovedTimeOff; state: Protection }[] {
   const byUser = new Map<string, { start: number; end: number }[]>();
   for (const b of blocks) {
     const start = parseStampMs(b.startsAt);
@@ -133,36 +152,67 @@ export function unprotectedTimeOff(
     byUser.set(b.userId, list);
   }
 
-  const found: UnprotectedTimeOff[] = [];
-  for (const r of requests) {
-    if (r.agentEventId) continue;
+  return requests.map((r) => {
     const start = parseStampMs(r.startsAt);
     const end = parseStampMs(r.endsAt);
     // An unreadable window is reported rather than waved through: the stored
     // columns are NOT NULL timestamptz, so this cannot happen without something
     // else being wrong, and a detector that silently passes what it cannot read
     // is the failure this whole feature exists to notice.
-    const from = start === null ? null : Math.max(start, nowMs);
-    if (start !== null && end !== null) {
-      if (end <= nowMs) continue; // wholly in the past: nothing can be booked into it
-      const covered = merge(byUser.get(r.userId) ?? []).some(
-        (iv) => iv.start <= (from as number) && iv.end >= end,
-      );
-      if (covered) continue;
-    }
-    found.push({
-      requestId: r.id,
-      userId: r.userId,
-      agentName: r.agentName,
-      agentEmail: r.agentEmail,
-      startsAt: r.startsAt,
-      endsAt: r.endsAt,
-      displayTzId: r.displayTzId,
-      displayTzLabel: r.displayTzLabel,
-      claimedOk: (r.busyBlockEffect ?? "").startsWith("ok"),
-    });
-  }
-  return found;
+    if (start === null || end === null) return { request: r, state: "unprotected" as const };
+    if (end <= nowMs) return { request: r, state: "past" as const };
+    if (r.agentEventId) return { request: r, state: "protected" as const };
+    const from = Math.max(start, nowMs);
+    const covered = merge(byUser.get(r.userId) ?? []).some(
+      (iv) => iv.start <= from && iv.end >= end,
+    );
+    // Covered, but by cached busy time alone with no event on the agent's own
+    // calendar: working, and relying on the one row this system keeps losing.
+    return { request: r, state: covered ? ("fallback-only" as const) : ("unprotected" as const) };
+  });
+}
+
+function found(r: ApprovedTimeOff): UnprotectedTimeOff {
+  return {
+    requestId: r.id,
+    userId: r.userId,
+    agentName: r.agentName,
+    agentEmail: r.agentEmail,
+    startsAt: r.startsAt,
+    endsAt: r.endsAt,
+    displayTzId: r.displayTzId,
+    displayTzLabel: r.displayTzLabel,
+    claimedOk: (r.busyBlockEffect ?? "").startsWith("ok"),
+  };
+}
+
+/** Approved windows with nothing blocking them at all: a lead can be booked in. */
+export function unprotectedTimeOff(
+  requests: ApprovedTimeOff[],
+  blocks: CachedBusyWindow[],
+  nowMs: number,
+): UnprotectedTimeOff[] {
+  return classify(requests, blocks, nowMs)
+    .filter((c) => c.state === "unprotected")
+    .map((c) => found(c.request));
+}
+
+/**
+ * Approved windows blocked ONLY by cached busy time, with no event on the
+ * agent's own calendar (#1470).
+ *
+ * Degraded but working, which is why it is not the same finding as an
+ * unprotected window and must not share its status (L53): one is a lead being
+ * bookable into time off, the other is protection resting on a single cached row.
+ */
+export function fallbackOnlyTimeOff(
+  requests: ApprovedTimeOff[],
+  blocks: CachedBusyWindow[],
+  nowMs: number,
+): UnprotectedTimeOff[] {
+  return classify(requests, blocks, nowMs)
+    .filter((c) => c.state === "fallback-only")
+    .map((c) => found(c.request));
 }
 
 // Match the other monitor notices' list cap so a broad gap stays one readable
@@ -224,6 +274,22 @@ export function formatOooProtectionRecovery(): string {
   );
 }
 
+/**
+ * The all-clear for the fallback notice (#1470).
+ *
+ * It says only what was measured: nothing is relying on that block now. It does
+ * NOT claim the calendar event was created, because the condition also ends when
+ * the window simply passes, and a recovery notice that names a repair nobody
+ * performed sends the reader looking for work that was never done.
+ */
+export function formatFallbackClearedRecovery(): string {
+  return (
+    `No approved time off is relying on a Slate written busy block any more: every ` +
+    `approved window still ahead of us has an event on the agent's own calendar, or ` +
+    `has passed. No action is needed.`
+  );
+}
+
 /** What one tick measured. `unreadable` is NOT zero: see the check below. */
 export interface OooProtectionResult {
   status: "clear" | "unprotected" | "unreadable";
@@ -279,6 +345,15 @@ export async function runOooProtectionCheck(deps: {
   }
 
   const found = unprotectedTimeOff(requests, blocks, deps.nowMs);
+
+  // #1470, judged independently of the page above (L53: two checks must never
+  // share one status). A window blocking nothing at all is a different condition
+  // with a different remedy, and is no reason to keep saying something is relying
+  // on the fallback. Reached only on a MEASURED read, never on a failed one.
+  if (fallbackOnlyTimeOff(requests, blocks, deps.nowMs).length === 0) {
+    // alert-key: ooo_busy_block_fallback
+    await resolveAlert(OOO_FALLBACK_KEY, formatFallbackClearedRecovery()).catch(() => {});
+  }
 
   if (found.length === 0) {
     await clearFailureStreak(OOO_PROTECTION_KEY);

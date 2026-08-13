@@ -145,6 +145,7 @@ import {
   formatInactiveAgentBookingsRecovery,
 } from "@/lib/monitor/inactive-agent-bookings";
 import {
+  formatFallbackClearedRecovery,
   formatOooProtectionAlert,
   formatOooProtectionRecovery,
 } from "@/lib/monitor/ooo-protection";
@@ -1443,6 +1444,11 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: oooAgentCalendarAlert("req_9f2", "503 backendError") },
   { key: "ooo_busy_block_fallback", state: "fell back to a native block", channel: "alert",
     text: oooBusyBlockFallbackAlert("req_9f2") },
+  // #1470: the ending this one never had. It names no request id, for the same
+  // reason as the cal.com all-clear below: the key covers every approval relying
+  // on a fallback, and by the time this sends there are none.
+  { key: "ooo_busy_block_fallback", state: "nothing is relying on the fallback any more",
+    channel: "recovery", text: formatFallbackClearedRecovery() },
   { key: "ooo_calcom", state: "the override failed at approval", channel: "alert",
     text: oooCalcomAlert("req_9f2", "409 conflict") },
   // #1280: the ending it never had. It names no request id on purpose: the page is

@@ -26,7 +26,10 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, resolveAlert }));
 import {
   runOooProtectionCheck,
   unprotectedTimeOff,
+  fallbackOnlyTimeOff,
   formatOooProtectionAlert,
+  formatFallbackClearedRecovery,
+  OOO_FALLBACK_KEY,
   OOO_PROTECTION_KEY,
   OOO_PROTECTION_ALERT_AFTER_TICKS,
   type ApprovedTimeOff,
@@ -282,7 +285,7 @@ describe("runOooProtectionCheck", () => {
     expect(res.status).toBe("clear");
     expect(res.reachedVerdict).toBe(true);
     expect(clearFailureStreak).toHaveBeenCalledWith(OOO_PROTECTION_KEY);
-    expect(resolveAlert).toHaveBeenCalledTimes(1);
+    expect(resolveAlert.mock.calls.map((c) => c[0])).toContain(OOO_PROTECTION_KEY);
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -322,5 +325,104 @@ describe("runOooProtectionCheck", () => {
 
     expect(res.status).toBe("unprotected");
     expect(res.reachedVerdict).toBe(true);
+  });
+});
+
+// --- the fallback condition, and its all-clear (#1470) ----------------------
+//
+// `ooo_busy_block_fallback` was classified as an incident, so it could never
+// retract itself. Its text said "Availability is blocked correctly; flagging the
+// fallback", which in #1464 was true for 31 seconds and false forever after, and
+// the reader's last word on that time off was a claim that had quietly gone
+// false. It is a condition: it ends when nothing is relying on the Slate block
+// any more, either because the calendar event was created or because the window
+// has passed.
+
+describe("fallbackOnlyTimeOff", () => {
+  it("reports an approved window covered only by cached busy time, with no calendar event", () => {
+    const found = fallbackOnlyTimeOff([request()], [busy()], NOW);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.requestId).toBe("req-1");
+  });
+
+  it("does not report one whose calendar event exists", () => {
+    const found = fallbackOnlyTimeOff([request({ agentEventId: "evt-1" })], [busy()], NOW);
+
+    expect(found).toEqual([]);
+  });
+
+  it("does not report one that is blocking nothing at all, which is the other alert", () => {
+    // Two different conditions with two different remedies: this one is degraded
+    // but working, that one is a window a lead can be booked into.
+    expect(fallbackOnlyTimeOff([request()], [], NOW)).toEqual([]);
+    expect(unprotectedTimeOff([request()], [], NOW)).toHaveLength(1);
+  });
+
+  it("does not report a window that has already passed", () => {
+    const found = fallbackOnlyTimeOff(
+      [request({ startsAt: "2026-08-13T21:00:00.000Z", endsAt: "2026-08-13T23:00:00.000Z" })],
+      [busy({ startsAt: "2026-08-13T21:00:00.000Z", endsAt: "2026-08-13T23:00:00.000Z" })],
+      NOW,
+    );
+
+    expect(found).toEqual([]);
+  });
+});
+
+describe("the fallback all-clear", () => {
+  const run = (
+    load: () => Promise<{ requests: ApprovedTimeOff[]; blocks: CachedBusyWindow[] }>,
+  ) =>
+    runOooProtectionCheck({
+      load,
+      nowMs: NOW,
+      appBaseUrl: "https://slate.test",
+      cooldownMs: COOLDOWN_MS,
+    });
+
+  it("clears the fallback notice once nothing is relying on the Slate block", async () => {
+    await run(async () => ({
+      requests: [request({ agentEventId: "evt-1" })],
+      blocks: [busy()],
+    }));
+
+    expect(resolveAlert.mock.calls.map((c) => c[0])).toContain(OOO_FALLBACK_KEY);
+  });
+
+  it("stays quiet while a window is still relying on it", async () => {
+    await run(async () => ({ requests: [request()], blocks: [busy()] }));
+
+    expect(resolveAlert.mock.calls.map((c) => c[0])).not.toContain(OOO_FALLBACK_KEY);
+  });
+
+  it("does not clear it from a read that FAILED", async () => {
+    // The #1134 / #1152 defect: an unread list comes back empty, and an empty
+    // result here is indistinguishable from "nothing is relying on the fallback".
+    await run(async () => {
+      throw new Error("supabase unreachable");
+    });
+
+    expect(resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("clears it even while a DIFFERENT window is unprotected", async () => {
+    // Two independent conditions must not share one status (L53): a window
+    // blocking nothing at all is not a reason to keep saying something is
+    // relying on the fallback.
+    await run(async () => ({
+      requests: [request({ id: "req-2", userId: "u2" })],
+      blocks: [],
+    }));
+
+    expect(resolveAlert.mock.calls.map((c) => c[0])).toContain(OOO_FALLBACK_KEY);
+  });
+
+  it("says what is no longer true, without claiming a repair it did not measure", () => {
+    const text = formatFallbackClearedRecovery();
+
+    expect(text).toMatch(/no action is needed/i);
+    expect(text).not.toMatch(/[\u2014\u2013]/);
+    expect(text).not.toMatch(/undefined|NaN|\[object/);
   });
 });
