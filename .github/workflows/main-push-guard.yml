@@ -98,4 +98,70 @@ jobs:
           export PRS_JSON="$(echo "$prs" | jq -c '[.[] | {number, merged, ciConclusion}]')"
           export COMMIT_MESSAGE="$(git log -1 --pretty=%B "$HEAD_SHA")"
 
+          # #1447: when the association index has NO answer, ask the pull requests
+          # named in the commit subject whether one of them claims this commit as its
+          # own merge commit. GitHub's index can be permanently missing an entry: on
+          # 2026-08-13 it returned [] for the squash merge of a reviewed, green PR and
+          # still did twenty minutes later, because the merge went through during an
+          # API incident. An empty index is byte for byte what a direct push looks
+          # like, so with one lookup the guard accuses on a missing record.
+          #
+          # Only reached when the association is empty, so the common path costs no
+          # extra request. Only the SUBJECT is read: a squash body carries every
+          # branch commit message and could name dozens of unrelated PRs.
+          MERGE_CLAIMS_JSON='[]'
+          if [ "$(jq '[.[] | select(.merged)] | length' <<<"$prs")" = "0" ]; then
+            subject="$(head -n 1 <<<"$COMMIT_MESSAGE")"
+            claims='[]'
+            for num in $(grep -oE '#[0-9]+' <<<"$subject" | tr -d '#' | sort -u); do
+              # A PR's own record: is it merged, and is THIS commit its merge commit?
+              # A direct push cannot fabricate that, since it would have to make some
+              # merged PR's merge_commit_sha equal the commit being pushed.
+              # An `if !` rather than `|| echo '{}'`: on a 404 (the number is an ISSUE
+              # reference, not a pull request) gh writes its error body to STDOUT and
+              # exits non-zero, so the fallback would APPEND a second JSON document and
+              # jq would receive a two-document stream. Replacing the value is the only
+              # form that cannot do that. Proven by running this block against the real
+              # commit that false-paged.
+              #
+              # parse-ok: a failed read leaves the claim absent, which is the fail-safe
+              # side here: this route can only ever EXCUSE a push, so losing it means
+              # falling back to the accusation the guard would have made anyway.
+              if ! pr="$(gh api "/repos/$REPO/pulls/$num" 2>/dev/null)"; then pr='{}'; fi
+              claims="$(jq -c --argjson c "$claims" --arg sha "$HEAD_SHA" --argjson n "$num" \
+                '$c + [{
+                   number: $n,
+                   isMergeCommitOfThisPush: ((.merged_at != null) and (.merge_commit_sha == $sha)),
+                   ciConclusion: null
+                 }]' <<<"$pr")"
+            done
+            # CI for a claimed PR is read off its head commit, the same way the
+            # association path does, so a red merge is caught on either route.
+            claim_count="$(jq 'length' <<<"$claims")"
+            for i in $(seq 0 "$((claim_count - 1))"); do
+              [ "$claim_count" -gt 0 ] || break
+              [ "$(jq -r ".[$i].isMergeCommitOfThisPush" <<<"$claims")" = "true" ] || continue
+              cnum="$(jq -r ".[$i].number" <<<"$claims")"
+              # parse-ok: an unreadable head sha leaves ciConclusion null via the
+              # `continue` below, which the classifier tolerates exactly as it does on
+              # the association path. It can only lose the CI half of a merge this
+              # route already established, never excuse a push.
+              chead="$(gh api "/repos/$REPO/pulls/$cnum" --jq '.head.sha' 2>/dev/null || echo '')"
+              [ -n "$chead" ] || continue
+              # parse-ok: an unreadable checks list leaves ciConclusion null, which the
+              # classifier tolerates exactly as it does on the association path.
+              if ! cconcls="$(gh api "/repos/$REPO/commits/$chead/check-runs" \
+                --jq '[.check_runs[] | select(.name == "ci") | .conclusion]' 2>/dev/null)"; then
+                cconcls='[]'
+              fi
+              cci="$(jq -r 'if any(.[]; . == "failure") then "failure" elif (length > 0 and all(.[]; . == "success")) then "success" else "null" end' <<<"$cconcls")"
+              if [ "$cci" != "null" ]; then
+                claims="$(jq -c --argjson i "$i" --arg c "$cci" '.[$i].ciConclusion = $c' <<<"$claims")"
+              fi
+            done
+            MERGE_CLAIMS_JSON="$claims"
+            echo "::notice::main-push-guard: the commit association was empty, so the pull requests named in the subject were asked directly: $MERGE_CLAIMS_JSON"
+          fi
+          export MERGE_CLAIMS_JSON
+
           node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-main-push.ts

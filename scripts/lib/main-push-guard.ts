@@ -14,12 +14,43 @@ export interface AssociatedPr {
   ciConclusion: string | null;
 }
 
+/**
+ * A merge confirmed from the PR's OWN record rather than from GitHub's
+ * commit-to-PR association index (#1447).
+ *
+ * The association index can be permanently missing an entry. On 2026-08-13
+ * `/commits/<sha>/pulls` returned `[]` for a squash merge of a reviewed, green PR,
+ * and still did twenty minutes later, while that PR reported the same commit as its
+ * `merge_commit_sha`. The merge had gone through during a GitHub API incident, so
+ * the record was never written and no retry could have helped.
+ *
+ * An empty association is byte for byte what a direct push looks like, so a guard
+ * with only that one lookup accuses on a missing index entry (L119). This is the
+ * independent second route: it comes from the pull request record, and a direct push
+ * cannot fabricate it, because it would have to make some merged PR's own
+ * merge_commit_sha equal the pushed commit.
+ */
+export interface MergeCommitClaim {
+  number: number;
+  /** True when the PR is merged AND its merge_commit_sha is the commit under test. */
+  isMergeCommitOfThisPush: boolean;
+  /** CI conclusion on the PR head, same vocabulary as the association read. */
+  ciConclusion: string | null;
+}
+
 export interface PushContext {
   headSha: string;
   commitMessage: string;
   actor: string;
   runUrl: string;
   prs: AssociatedPr[];
+  /**
+   * PRs named in the commit SUBJECT whose own record claims this commit as their
+   * merge commit (#1447). Only consulted when the association read came back empty:
+   * it is a fallback route to establishing that a merge HAPPENED, never a second
+   * opinion on whether the merge was acceptable.
+   */
+  claimedBy?: MergeCommitClaim[];
   /**
    * Whether the PR list was actually READ (#1436).
    *
@@ -44,7 +75,10 @@ export interface Verdict {
 /**
  * Decide whether a commit that landed on main arrived legitimately.
  *
- * Legitimate  = it came from a merged PR AND that PR's CI did not fail.
+ * Legitimate  = it came from a merged PR AND that PR's CI did not fail. "Came from a
+ *               merged PR" is established by GitHub's commit association, or, when
+ *               that index is empty, by a PR named in the commit subject whose own
+ *               record claims this commit as its merge commit (#1447).
  * Violation   = a direct push with no merged PR (bypassed review), OR a merged
  *               PR whose CI concluded failure (a red merge).
  * Bypass      = the commit message carries BYPASS_MARKER (a deliberate hotfix).
@@ -75,9 +109,28 @@ export function classifyPush(ctx: PushContext): Verdict {
 
   const merged = ctx.prs.filter((p) => p.merged);
   if (merged.length === 0) {
+    // #1447: before accusing anyone, ask the pull requests named in the commit
+    // subject whether one of them claims this commit as its merge commit. GitHub's
+    // association index can be permanently missing the entry, and an empty index is
+    // indistinguishable from a real direct push (L119).
+    const claimed = (ctx.claimedBy ?? []).filter((c) => c.isMergeCommitOfThisPush);
+    if (claimed.length === 0) {
+      return {
+        ok: false,
+        reason: "direct push to main with no merged PR (review bypassed)",
+      };
+    }
+    // The merge is established. It is still judged on the same terms, so a merged
+    // PR whose CI failed is caught whichever route found it.
+    const redClaim = claimed.find((c) => c.ciConclusion === "failure");
+    if (redClaim) {
+      return { ok: false, reason: `merged PR #${redClaim.number} had failing CI` };
+    }
     return {
-      ok: false,
-      reason: "direct push to main with no merged PR (review bypassed)",
+      ok: true,
+      reason:
+        `legitimate merge of PR #${claimed[0]!.number}, confirmed from that PR's own merge ` +
+        `commit because GitHub's commit association was empty`,
     };
   }
 
@@ -87,6 +140,31 @@ export function classifyPush(ctx: PushContext): Verdict {
   }
 
   return { ok: true, reason: `legitimate merge of PR #${merged[0].number}` };
+}
+
+/**
+ * The pull request numbers named in a commit SUBJECT (#1447).
+ *
+ * Every squash merge here ends with `(#1446)`, and the PR body's own `(#1435)` style
+ * issue references ride along in the subject too, so this returns all of them and
+ * lets the caller ask GitHub which (if any) actually claims the commit. Asking about
+ * an issue number is harmless: an issue is not a pull request, so it cannot claim a
+ * merge commit.
+ *
+ * Only the SUBJECT is read, never the body. A squash body is every commit message
+ * from the branch, so it can name dozens of unrelated PRs, and each one would be
+ * another API call on a guard that runs on every push.
+ */
+export function prNumbersInSubject(commitMessage: string): number[] {
+  const subject = (commitMessage || "").split("\n")[0] ?? "";
+  const found: number[] = [];
+  for (const m of subject.matchAll(/#(\d+)/g)) {
+    const n = Number(m[1]);
+    // A bounded, plausible PR number. Rejecting 0 matters: `#0` is not a PR, and
+    // asking about it would spend a request to be told so on every push.
+    if (Number.isInteger(n) && n > 0 && !found.includes(n)) found.push(n);
+  }
+  return found;
 }
 
 export function buildViolationMessage(ctx: PushContext, verdict: Verdict): string {
