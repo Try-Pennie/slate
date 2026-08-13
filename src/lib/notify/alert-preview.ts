@@ -423,6 +423,33 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    // #1429: a locked out direct booking integration. Counted as a failure share,
+    // and the page has to say which secret to look at, since neither code's repair
+    // is guessable from its name.
+    key: "booking_failure_rate",
+    state: "the booking API key is being rejected (the integration is locked out)",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 31,
+      failures: 29,
+      pct: 94,
+      windowMinutes: 60,
+      topCodes: [{ code: "API_KEY_REJECTED", count: 29 }],
+    }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "no booking API key is configured at all",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 18,
+      failures: 18,
+      pct: 100,
+      windowMinutes: 60,
+      topCodes: [{ code: "API_NOT_CONFIGURED", count: 18 }],
+    }),
+  },
+  {
     key: "booking_failure_rate",
     state: "failing with no error code recorded",
     channel: "alert",

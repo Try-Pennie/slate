@@ -232,6 +232,44 @@ function codeList(codes: CodeCount[]): string {
  * a diagnosis wrong is how a page becomes something people learn to distrust
  * (L36). So it appears only when slot_unavailable is what leads.
  */
+/**
+ * The one sentence saying what to DO about the code that is failing most, or
+ * nothing when the code speaks for itself.
+ *
+ * A page that names a code and stops leaves the reader to work out the repair
+ * mid-incident, and two of these codes have repairs that are not guessable from
+ * the name (L111: advice has to name an action that changes the state, and L80: a
+ * message naming a specific cause owes the reader somewhere to go).
+ *
+ * Not every code needs one, and the empty default is deliberate rather than an
+ * omission: `no_eligible_agents` and `internal` already page on their own with
+ * their own copy, and a generic sentence bolted onto them would say less than the
+ * code does. Keyed on the TOP code only, because a page with three sentences of
+ * advice for three codes is a page nobody finishes on a phone.
+ */
+const CODE_GUIDANCE: Record<string, string> = {
+  slot_unavailable:
+    "slot_unavailable means the times being offered are not really free, so start with the " +
+    "availability cache.",
+  // #1429. Both of these mean the direct booking integration is locked out, so
+  // every lead it handles is refused until someone fixes a secret. The two are
+  // named apart because the repair is in different hands.
+  API_KEY_REJECTED:
+    "API_KEY_REJECTED means the caller is presenting a key Slate does not accept, so every lead " +
+    "it handles is refused until the key is fixed. Check whether BOOKING_API_KEY was rotated " +
+    "without the caller being updated. Counted per refused call, so a caller that retries can " +
+    "appear more than once.",
+  API_NOT_CONFIGURED:
+    "API_NOT_CONFIGURED means Slate has no booking API key set, so the endpoint refuses " +
+    "everyone. Check the BOOKING_API_KEY secret on the deployed Worker. Counted per refused " +
+    "call, so a caller that retries can appear more than once.",
+};
+
+function guidanceFor(code: string | undefined): string {
+  const advice = code ? CODE_GUIDANCE[code] : undefined;
+  return advice ? ` ${advice}` : "";
+}
+
 export function formatFailureRateAlert(input: {
   attempts: number;
   failures: number;
@@ -241,10 +279,7 @@ export function formatFailureRateAlert(input: {
 }): string {
   const codes = codeList(input.topCodes);
   const naming = codes ? ` Failing with: ${codes}.` : "";
-  const guidance =
-    input.topCodes[0]?.code === "slot_unavailable"
-      ? " slot_unavailable means the times being offered are not really free, so start with the availability cache."
-      : "";
+  const guidance = guidanceFor(input.topCodes[0]?.code);
   return (
     `${plural(input.failures, "customer")} could not complete a booking in the last ` +
     `${input.windowMinutes} minutes, out of ${input.attempts} who tried (${input.pct}%).` +

@@ -26,6 +26,10 @@
  *        scripts/test-refusal-catalog.ts
  */
 import { readFileSync } from "node:fs";
+import {
+  AUTH_REFUSAL_REASONS,
+  authRefusalCounting,
+} from "../src/lib/booking/api-auth.ts";
 import { REFUSAL_CATALOG, refusalPath } from "../src/lib/booking/refusal-catalog.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -199,11 +203,15 @@ function annotationNear(lines: string[], i: number, shape: RegExp): boolean {
       recorded.add(m[1]!);
     }
   }
+  // #1429: this used to exempt the WHOLE booking API surface, on the grounds that
+  // its codes come from mapBookingError rather than a literal. That made every new
+  // counted path on that surface exempt from the check meant to catch it (L96), so
+  // the exemption is now per entry and has to be declared: `codeFrom: "mapped"`.
+  // Anything else, including a missing field, must really record its code.
+  const SCANNABLE = (r: (typeof REFUSAL_CATALOG)[number]) =>
+    r.codeFrom !== "mapped" && r.codeFrom !== "authorizer";
   const missing = REFUSAL_CATALOG.filter(
-    (r) =>
-      r.counting.kind === "error" &&
-      r.surface !== "booking API" && // its code comes from mapBookingError, not a literal here
-      !recorded.has(r.counting.code),
+    (r) => r.counting.kind === "error" && SCANNABLE(r) && !recorded.has(r.counting.code),
   ).map((r) => `${r.id} -> ${r.counting.kind === "error" ? r.counting.code : ""}`);
   eq(
     missing,
@@ -211,6 +219,30 @@ function annotationNear(lines: string[], i: number, shape: RegExp): boolean {
     "every path the catalog says is counted really records that error code, so the decision " +
       "cannot be true on paper and absent in the route",
   );
+}
+
+// An `authorizer` code is checked against the FUNCTION that produces it, not
+// against a string in a route. The authorizer records `counting.code` through a
+// variable, so a literal scan could never see it, and declaring the source
+// without checking it would be the exemption this guard just stopped granting by
+// surface (#1429).
+{
+  const produced = new Set(
+    AUTH_REFUSAL_REASONS.flatMap((reason) =>
+      (["write", "read"] as const).map((surface) => authRefusalCounting(reason, surface)),
+    )
+      .filter((d) => d.kind === "error")
+      .map((d) => (d.kind === "error" ? d.code : "")),
+  );
+  const unproduced = REFUSAL_CATALOG.filter(
+    (r) => r.codeFrom === "authorizer" && r.counting.kind === "error" && !produced.has(r.counting.code),
+  ).map((r) => r.id);
+  eq(
+    unproduced,
+    [],
+    "every entry whose code comes from the authorizer names a code the authorizer really produces",
+  );
+  assert(produced.size > 0, "and the authorizer really counts something, or the check is vacuous");
 }
 
 finish();

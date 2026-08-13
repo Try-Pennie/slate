@@ -1,6 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
-import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
+import {
+  type AuthRefusalReason,
+  authRefusalCounting,
+  authenticateBearer,
+  parseApiKeys,
+  refusalReasonForStatus,
+} from "@/lib/booking/api-auth";
+import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { log } from "@/lib/log";
 import {
   allowRequest,
   clientIp,
@@ -16,7 +24,47 @@ import type { RateLimitRule } from "@/lib/rate-limit-core";
 
 export type AuthOutcome =
   | { ok: true; keyId: "primary" | "secondary" }
-  | { ok: false; response: NextResponse };
+  /**
+   * #1429: the refusal now says WHICH one it was. A rotated key (the integration
+   * cannot book at all) and a rate ceiling trip (one caller going too fast) sat
+   * behind one branch, so nothing downstream could tell a config outage from
+   * abuse shaping.
+   */
+  | { ok: false; reason: AuthRefusalReason; response: NextResponse };
+
+/**
+ * Build the refusal, record it if the catalog says it is counted, and always log
+ * which one it was.
+ *
+ * The counting decision lives in `authRefusalCounting`, not here, so the rule that
+ * a rotated key is a failure and a throttle is not is written down once with its
+ * reasoning (src/lib/booking/refusal-catalog.ts) rather than being re-derived per
+ * call site. The log line carries the reason either way, which is the only signal
+ * an uncounted refusal has.
+ */
+function refuse(
+  reason: AuthRefusalReason,
+  error: string,
+  status: 401 | 429 | 503,
+  readPath: boolean,
+  keyId?: "primary" | "secondary",
+): AuthOutcome {
+  const counting = authRefusalCounting(reason, readPath ? "read" : "write");
+  if (counting.kind === "error") {
+    // No bucket is known yet: the body has not been read. "" is the tally's
+    // existing convention for an outcome recorded before routing (#418).
+    recordApiOutcome("error", "", counting.code);
+  }
+  log.warn("booking-api", {
+    msg: "refused",
+    reason,
+    path: readPath ? "read" : "write",
+    status,
+    key: keyId ?? "none",
+    counted: counting.kind === "error" ? counting.code : "no",
+  });
+  return { ok: false, reason, response: NextResponse.json({ error }, { status }) };
+}
 
 /**
  * Shared bearer-auth + rate-limit gate for the key-authed booking API routes
@@ -37,7 +85,9 @@ export async function authorizeBookingApi(
   const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
-    return { ok: false, response: NextResponse.json({ error: auth.error }, { status: auth.status }) };
+    // The reason is DERIVED from the status the authenticator already decided, so
+    // the classification and the response cannot disagree (L53).
+    return refuse(refusalReasonForStatus(auth.status), auth.error, auth.status, readPath);
   }
   const keyBudget = "Rate limit exceeded for this API key.";
   // Per-key: edge per-minute burst window first (no DB round-trip), then the hourly cap.
@@ -45,10 +95,7 @@ export async function authorizeBookingApi(
     ? await bookingApiReadWithinLimit(auth.keyId)
     : await bookingApiWriteWithinLimit(auth.keyId);
   if (!keyEdgeOk || !(await allowRequest(`key:${auth.keyId}`, hourlyKeyRules))) {
-    return {
-      ok: false,
-      response: NextResponse.json({ error: keyBudget }, { status: 429 }),
-    };
+    return refuse("throttled_key", keyBudget, 429, readPath, auth.keyId);
   }
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
   // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
@@ -56,13 +103,13 @@ export async function authorizeBookingApi(
   if (hourlyIpRules) {
     const ip = clientIp(req.headers);
     if (!(await bookingApiIpWithinLimit(ip)) || !(await allowRequest(`ip:${ip}`, hourlyIpRules))) {
-      return {
-        ok: false,
-        response: NextResponse.json(
-          { error: "Rate limit exceeded for this client." },
-          { status: 429 },
-        ),
-      };
+      return refuse(
+        "throttled_ip",
+        "Rate limit exceeded for this client.",
+        429,
+        readPath,
+        auth.keyId,
+      );
     }
   }
   return { ok: true, keyId: auth.keyId };
