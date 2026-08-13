@@ -2,14 +2,16 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   escapeSqlLiteral,
   executeStatement,
   isTransientSnowflakeError,
   pollStatement,
   postStatementWithRetry,
+  resetSnowflakeJwtCache,
   resolveStatementResult,
+  snowflakeJwtSignCount,
   snowflakeHost,
   type SnowflakeConfig,
 } from "./client";
@@ -52,7 +54,12 @@ async function makePemConfig(): Promise<SnowflakeConfig> {
   };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  // #1141: the JWT is cached in module scope, so a token signed by one test would
+  // otherwise be inherited by the next and its signing path never exercised.
+  resetSnowflakeJwtCache();
+});
 
 describe("escapeSqlLiteral", () => {
   it("doubles single quotes so a value cannot close the literal early", () => {
@@ -206,6 +213,112 @@ describe("the Snowflake setup runbook's key-pair commands (docs/snowflake-setup.
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// #1141: the token is reused across statements rather than re-signed per call.
+// Four asymmetric operations for something valid an hour, paid seven times per
+// reconciliation, inside cron invocations that share one CPU budget.
+//
+// These drive the REAL signing path with a real generated key, because the risk in
+// caching a credential is not the arithmetic, it is serving the wrong one.
+describe("JWT reuse across statements (#1141)", () => {
+  function captureFetch(responder: (call: number) => { ok: boolean; status: number; text: () => Promise<string> }) {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+        calls.push({ url, headers: init.headers });
+        return responder(calls.length);
+      }),
+    );
+    return calls;
+  }
+  const okRes = () => fakeRes(200, JSON.stringify({ message: "ok" }));
+
+  // The counter is cumulative for the isolate, so each case measures the delta from
+  // where it started rather than from zero.
+  let signsAtStart = 0;
+  beforeEach(() => {
+    signsAtStart = snowflakeJwtSignCount();
+  });
+  const signsSinceStart = () => snowflakeJwtSignCount() - signsAtStart;
+
+  it("sends the same token for several statements, so one signature serves them all", async () => {
+    const config = await makePemConfig();
+    const calls = captureFetch(okRes);
+
+    for (let i = 0; i < 7; i++) await executeStatement(config, `SELECT ${i}`);
+
+    expect(calls).toHaveLength(7);
+    // Counted at the SIGNER, not by comparing tokens. RS256 over the same payload is
+    // deterministic and `iat` has second granularity, so seven tokens signed inside
+    // one second are byte for byte identical: comparing headers would pass whether
+    // the cache worked or not.
+    expect(signsSinceStart()).toBe(1);
+    expect(new Set(calls.map((c) => c.headers.Authorization)).size).toBe(1);
+  });
+
+  it("signs a fresh token for a rotated private key rather than reusing the previous one", async () => {
+    const first = await makePemConfig();
+    const calls = captureFetch(okRes);
+    await executeStatement(first, "SELECT 1");
+
+    // A different key for the same account and user: the case a cache keyed on the
+    // account alone would get wrong, and the case that actually happens.
+    const rotated = { ...(await makePemConfig()), account: first.account, user: first.user };
+    await executeStatement(rotated, "SELECT 2");
+
+    expect(signsSinceStart()).toBe(2);
+    // A different key really does produce a different token, which is the half a
+    // sign count alone would not prove.
+    expect(calls[0].headers.Authorization).not.toBe(calls[1].headers.Authorization);
+  });
+
+  // FAILURE PATH: a token this isolate has been reusing is refused. Without the
+  // re-sign the cache would resend the refused token for the whole reuse window,
+  // turning one auth blip into thirty minutes of failed exports.
+  it("re-signs and resubmits once when Snowflake refuses the token", async () => {
+    const config = await makePemConfig();
+    // Warm the cache, then have the next submission come back 401 once.
+    const calls = captureFetch((call) =>
+      call === 2 ? fakeRes(401, '{"code":"390144","message":"JWT token is invalid"}') : okRes(),
+    );
+
+    await executeStatement(config, "SELECT 1");
+    const res = await executeStatement(config, "SELECT 2");
+    expect(res).toMatchObject({ message: "ok" });
+
+    // Three requests: the warm-up, the refused one, and the resubmission.
+    expect(calls).toHaveLength(3);
+    // Two signatures across three requests: the warm-up's token was reused for the
+    // second statement, then re-signed after the refusal.
+    expect(signsSinceStart()).toBe(2);
+    // The resubmission carries the SAME requestId with retry=true, Snowflake's
+    // idempotency contract, so a statement that somehow did run is not run twice.
+    const idOf = (url: string) => new URL(url).searchParams.get("requestId");
+    expect(idOf(calls[2].url)).toBe(idOf(calls[1].url));
+    expect(calls[2].url).toContain("retry=true");
+  });
+
+  it("surfaces a second refusal instead of looping on it", async () => {
+    const config = await makePemConfig();
+    const calls = captureFetch(() => fakeRes(401, "still no"));
+    await expect(executeStatement(config, "SELECT 1")).rejects.toThrow(/Snowflake 401/);
+    // Exactly one re-sign: a persistent 401 is a real auth problem (a key not
+    // registered in Snowflake, a disabled user) and must reach a human.
+    expect(calls).toHaveLength(2);
+    expect(signsSinceStart()).toBe(2);
+  });
+
+  it("does NOT re-sign on a 403, which a fresh signature cannot fix", async () => {
+    const config = await makePemConfig();
+    const calls = captureFetch(() => fakeRes(403, "role cannot access table"));
+    await expect(executeStatement(config, "SELECT 1")).rejects.toThrow(/Snowflake 403/);
+    // A grant problem, not a token problem. Resubmitting would spend a round trip
+    // to be told the same thing and would bury the real error.
+    expect(calls).toHaveLength(1);
+    expect(signsSinceStart()).toBe(1);
   });
 });
 
