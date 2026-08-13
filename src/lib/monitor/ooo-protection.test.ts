@@ -50,7 +50,8 @@ const request = (over: Partial<ApprovedTimeOff> = {}): ApprovedTimeOff => ({
   displayTzId: "America/New_York",
   displayTzLabel: "ET",
   agentEventId: null,
-  busyBlockEffect: null,
+  busyBlockEffect: "ok",
+  agentEventEffect: null,
   ...over,
 });
 
@@ -325,6 +326,66 @@ describe("runOooProtectionCheck", () => {
 
     expect(res.status).toBe("unprotected");
     expect(res.reachedVerdict).toBe(true);
+  });
+});
+
+// --- records Slate never acted on (#1485) -----------------------------------
+//
+// Measured on production the hour this check shipped: of 35 approved periods
+// still ahead of us, 10 matched, every one carrying no side effects at all
+// because it was imported from the old Apps Script tool rather than approved
+// through Slate. So the page fired ten times over on its first tick, none of it
+// the defect it exists to catch. Select on a RECORDED outcome, never on the bare
+// approved status, which is the same rule the cal.com override sweep learned
+// (#1253, where 631 of 634 flag-keyed rows predated the feature).
+
+describe("requests Slate never acted on", () => {
+  const imported = request({ busyBlockEffect: null, agentEventId: null });
+
+  it("is not reported as unprotected, because Slate never wrote its cover", () => {
+    expect(unprotectedTimeOff([imported], [], NOW)).toEqual([]);
+  });
+
+  it("is still counted, so the exclusion is never silent", async () => {
+    const logged: Record<string, unknown>[] = [];
+    const res = await runOooProtectionCheck({
+      load: async () => ({ requests: [imported], blocks: [] }),
+      nowMs: NOW,
+      appBaseUrl: "https://slate.test",
+      cooldownMs: COOLDOWN_MS,
+      log: (f) => logged.push(f),
+    });
+
+    expect(res.notHandled).toBe(1);
+    expect(logged[0]?.not_handled).toBe(1);
+  });
+
+  it("still reports one Slate DID act on, in the same scan", () => {
+    // Both directions, or the exclusion could be hiding everything (L1). The
+    // recorded "ok" over a cover that is gone is exactly #1464.
+    const slateWrote = request({
+      id: "req-2",
+      userId: "u2",
+      busyBlockEffect: "ok (slate fallback)",
+    });
+
+    const out = unprotectedTimeOff([imported, slateWrote], [], NOW);
+
+    expect(out.map((f) => f.requestId)).toEqual(["req-2"]);
+  });
+
+  it("judges one whose recorded outcome is a FAILURE, which is a real gap", () => {
+    const failed = request({ busyBlockEffect: "failed: no calendar access" });
+
+    expect(unprotectedTimeOff([failed], [], NOW)).toHaveLength(1);
+  });
+
+  it("judges one that only recorded a calendar event attempt", () => {
+    // A request whose agent_event step ran and failed, with no busy_block entry
+    // yet, is still one Slate acted on.
+    const attempted = request({ agentEventEffect: "failed: aborted" });
+
+    expect(unprotectedTimeOff([attempted], [], NOW)).toHaveLength(1);
   });
 });
 

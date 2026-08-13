@@ -72,6 +72,9 @@ export interface ApprovedTimeOff {
   /** `side_effects.busy_block` as stored, so the alert can name the shape where
    *  the record disagrees with reality: a stored "ok" over a cover that is gone. */
   busyBlockEffect: string | null;
+  /** `side_effects.agent_event` as stored. Read only to answer "did Slate ever
+   *  act on this request", below. */
+  agentEventEffect: string | null;
 }
 
 /** One cached busy period, as the monitor reads it. */
@@ -131,7 +134,35 @@ function merge(intervals: { start: number; end: number }[]): { start: number; en
  *    permissive side of a comparison (L50), and the permissive side here is
  *    "this window is fine".
  */
-type Protection = "protected" | "fallback-only" | "unprotected" | "past";
+type Protection =
+  | "protected"
+  | "fallback-only"
+  | "unprotected"
+  | "past"
+  | "not-handled";
+
+/**
+ * Did Slate ever act on this request? (#1485)
+ *
+ * Selection is on a RECORDED OUTCOME, never on the bare approved status. Ten of
+ * the 35 approved future periods on production the hour this check shipped were
+ * imported from the old Apps Script tool: approved, and carrying no side effects
+ * at all, because Slate never ran a single step for them. They match every part
+ * of the unprotected signature while being nothing to do with the defect this
+ * page exists to catch (a cover Slate WROTE and then lost), so the first tick
+ * paged ten times over.
+ *
+ * The same rule the cal.com override sweep arrived at (#1253): keyed on the flag
+ * it matched 634 rows, 631 of them predating the feature; keyed on a recorded
+ * failure it matched 2.
+ *
+ * The cost of the exclusion, named rather than hidden: an imported record that is
+ * genuinely unprotected does not page here. That backlog is #1486, and the
+ * excluded rows are counted on every tick so the exclusion cannot go quiet.
+ */
+function slateActedOn(r: ApprovedTimeOff): boolean {
+  return r.busyBlockEffect !== null || r.agentEventEffect !== null || r.agentEventId !== null;
+}
 
 /**
  * One pass over the requests, classifying each. Both exported views read this,
@@ -153,6 +184,7 @@ function classify(
   }
 
   return requests.map((r) => {
+    if (!slateActedOn(r)) return { request: r, state: "not-handled" as const };
     const start = parseStampMs(r.startsAt);
     const end = parseStampMs(r.endsAt);
     // An unreadable window is reported rather than waved through: the stored
@@ -296,6 +328,8 @@ export interface OooProtectionResult {
   /** Approved, not yet finished requests examined. */
   scanned: number;
   unprotected: number;
+  /** Of `scanned`, the imported records Slate never acted on (#1485). */
+  notHandled: number;
   /**
    * The read succeeded, so this tick answered the question. Drives the
    * `verdict:` stamp (#1394): a detector that only ever fails to read must not
@@ -341,10 +375,17 @@ export async function runOooProtectionCheck(deps: {
   } catch (err) {
     log.error("ooo-protection", { msg: "approved time off read failed" }, err);
     deps.log?.({ status: "unreadable" });
-    return { status: "unreadable", scanned: 0, unprotected: 0, reachedVerdict: false };
+    return {
+      status: "unreadable",
+      scanned: 0,
+      unprotected: 0,
+      notHandled: 0,
+      reachedVerdict: false,
+    };
   }
 
   const found = unprotectedTimeOff(requests, blocks, deps.nowMs);
+  const notHandled = requests.filter((r) => !slateActedOn(r)).length;
 
   // #1470, judged independently of the page above (L53: two checks must never
   // share one status). A window blocking nothing at all is a different condition
@@ -359,11 +400,17 @@ export async function runOooProtectionCheck(deps: {
     await clearFailureStreak(OOO_PROTECTION_KEY);
     // alert-key: ooo_protection_lost
     await resolveAlert(OOO_PROTECTION_KEY, formatOooProtectionRecovery()).catch(() => {});
-    deps.log?.({ status: "clear", scanned: requests.length, unprotected: 0 });
+    deps.log?.({
+      status: "clear",
+      scanned: requests.length,
+      unprotected: 0,
+      not_handled: notHandled,
+    });
     return {
       status: "clear",
       scanned: requests.length,
       unprotected: 0,
+      notHandled,
       reachedVerdict: true,
     };
   }
@@ -385,6 +432,7 @@ export async function runOooProtectionCheck(deps: {
     status: "unprotected",
     scanned: requests.length,
     unprotected: found.length,
+    not_handled: notHandled,
     sustained,
     request_ids: found.slice(0, NAME_CAP).map((f) => f.requestId),
   });
@@ -392,6 +440,7 @@ export async function runOooProtectionCheck(deps: {
     status: "unprotected",
     scanned: requests.length,
     unprotected: found.length,
+    notHandled,
     reachedVerdict: true,
   };
 }
