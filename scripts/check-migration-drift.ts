@@ -19,7 +19,11 @@
  */
 import { execFile } from "node:child_process";
 import { migrationDriftVerdict } from "./lib/migration-drift.ts";
-import { type CliResult, readMigrationListWithRetry } from "./lib/migration-drift-cli.ts";
+import {
+  type CliResult,
+  cliResultFromExec,
+  readMigrationListWithRetry,
+} from "./lib/migration-drift-cli.ts";
 
 const refFlag = process.argv.indexOf("--project-ref");
 const projectRef = refFlag === -1 ? "" : (process.argv[refFlag + 1] ?? "");
@@ -45,19 +49,12 @@ function runSupabase(args: string[]): Promise<CliResult> {
         env: process.env,
       },
       (error, stdout, stderr) => {
-        if (!error) {
-          resolve({ code: 0, stdout, stderr });
-          return;
-        }
-        // A numeric `code` is a real exit status. Anything else (an ENOENT string,
-        // or null after the timeout killed it) means it never ran to completion, so
-        // it is reported as such rather than coerced into a status: `Number("ENOENT")`
-        // is NaN, and NaN compares false against every check downstream (L50).
-        if (typeof error.code === "number") {
-          resolve({ code: error.code, stdout, stderr });
-          return;
-        }
-        reject(new Error(`${error.message}${stderr ? `: ${stderr.trim()}` : ""}`));
+        // The exited-versus-never-ran decision lives in the tested module, because
+        // a non-numeric `error.code` coerced into a status is NaN, and NaN compares
+        // false against every check downstream (L50).
+        const outcome = cliResultFromExec(error, stdout, stderr);
+        if (outcome.ran) resolve(outcome.result);
+        else reject(new Error(outcome.reason));
       },
     );
     child.stdin?.end();

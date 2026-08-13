@@ -16,7 +16,11 @@
 // Run: node --experimental-strip-types scripts/test-migration-drift-cli.ts
 import { assert, eq, finish } from "./lib/harness.ts";
 import { migrationDriftVerdict } from "./lib/migration-drift.ts";
-import { type CliResult, readMigrationListWithRetry } from "./lib/migration-drift-cli.ts";
+import {
+  type CliResult,
+  cliResultFromExec,
+  readMigrationListWithRetry,
+} from "./lib/migration-drift-cli.ts";
 
 const REF = "drukfvgaynzrralbzkzj";
 
@@ -191,6 +195,63 @@ const noSleep = async () => {};
   assert(waits.length === 2, "two waits across three attempts");
   assert(total > 0, "the retry actually backs off rather than hammering a struggling upstream");
   assert(total <= 15_000, `the whole backoff is ${total}ms, which a CI step can afford`);
+}
+
+// --- exited, versus never ran at all -------------------------------------
+// The mapping from what execFile reports to what the retry sees. `error.code` is a
+// NUMBER only when the command ran and exited; it is a string when the binary is
+// missing and null when the timeout killed it. Coercing either of those into a
+// status gives NaN, which compares false against every check downstream, so a
+// command that never ran would arrive looking like one that exited on some unknown
+// status (L50).
+{
+  const clean = cliResultFromExec(null, "the table", "");
+  assert(clean.ran, "no error means it ran");
+  eq(clean.ran ? clean.result.code : -1, 0, "with exit 0");
+  eq(clean.ran ? clean.result.stdout : "", "the table", "and its stdout intact");
+
+  const exited = cliResultFromExec({ message: "Command failed", code: 1 }, "", "error code: 502");
+  assert(exited.ran, "a numeric code is a real exit status, so it ran");
+  eq(exited.ran ? exited.result.code : -1, 1, "and the status comes through as itself");
+  eq(exited.ran ? exited.result.stderr : "", "error code: 502", "with what it said on stderr");
+
+  const missing = cliResultFromExec(
+    { message: "spawn supabase ENOENT", code: "ENOENT" },
+    "",
+    "",
+  );
+  assert(!missing.ran, "a string code means the binary never ran, not that it exited on NaN");
+  assert(
+    (missing.ran ? "" : missing.reason).includes("ENOENT"),
+    "and the reason names what happened",
+  );
+
+  const timedOut = cliResultFromExec(
+    { message: "Command failed", code: null, killed: true, signal: "SIGTERM" },
+    "",
+    "",
+  );
+  assert(!timedOut.ran, "a killed command never ran to completion");
+  assert(
+    /killed/.test(timedOut.ran ? "" : timedOut.reason),
+    "and says it was killed, so a hung CLI is not read as a status",
+  );
+
+  // The property that ties it back: an unrun command is what the retry treats as
+  // "could not tell", and after its attempts it must still be a hard failure.
+  let calls = 0;
+  const r = await readMigrationListWithRetry({
+    projectRef: REF,
+    sleep: noSleep,
+    run: async () => {
+      calls++;
+      const outcome = cliResultFromExec({ message: "spawn supabase ENOENT", code: "ENOENT" }, "", "");
+      if (!outcome.ran) throw new Error(outcome.reason);
+      return outcome.result;
+    },
+  });
+  assert(!r.ok, "a CLI that never ran fails the gate rather than reporting a database");
+  eq(calls, 3, "after the bounded retry");
 }
 
 finish();

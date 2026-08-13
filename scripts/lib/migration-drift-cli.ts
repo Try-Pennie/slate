@@ -33,6 +33,42 @@ export type MigrationListRead =
   | { ok: true; output: string; attempts: number }
   | { ok: false; reason: string; attempts: number };
 
+/**
+ * The shape `child_process.execFile` hands its callback on failure. Narrowed to the
+ * fields the decision below reads, so this module needs no node types.
+ */
+export type ExecFailure = {
+  message: string;
+  /** The exit status when it ran, a string like "ENOENT" when it could not, null when killed. */
+  code?: number | string | null;
+  killed?: boolean;
+  signal?: string | null;
+} | null;
+
+/**
+ * Turn what execFile reported into either a result or a "never ran".
+ *
+ * The distinction matters because only one of them is a status. `error.code` is a
+ * NUMBER when the command ran and exited, and a string ("ENOENT", the binary
+ * missing because setup-cli failed) or null (killed on the timeout) when it did
+ * not. Coercing those with `Number(...)` yields NaN, and NaN compares false against
+ * every check downstream, so a command that never ran would arrive looking like one
+ * that exited on some unknown status (L50).
+ */
+export function cliResultFromExec(
+  error: ExecFailure,
+  stdout: string,
+  stderr: string,
+): { ran: true; result: CliResult } | { ran: false; reason: string } {
+  if (!error) return { ran: true, result: { code: 0, stdout, stderr } };
+  if (typeof error.code === "number") {
+    return { ran: true, result: { code: error.code, stdout, stderr } };
+  }
+  const detail = stderr.trim() || stdout.trim();
+  const killed = error.killed || error.signal ? " (killed, most likely the timeout)" : "";
+  return { ran: false, reason: `${error.message}${killed}${detail ? `: ${detail}` : ""}` };
+}
+
 /** The first non-empty line of what a failing command said, for a one line reason. */
 function firstLine(result: CliResult): string {
   const text = `${result.stderr}\n${result.stdout}`;
