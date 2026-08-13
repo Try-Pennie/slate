@@ -61,6 +61,7 @@ import {
   parseEventDescriptionForm,
 } from "@/lib/booking/settings";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
+import { updateEventType } from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
 import { __clearChannelCache } from "@/lib/notify/channels";
 import { planScheduleReplacement } from "@/lib/schedule-replacement";
@@ -501,7 +502,6 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
  */
 export async function setEventDescription(form: FormData): Promise<void> {
   const admin = await requireAdmin();
-  const db = supabaseAdmin();
 
   const eventTypeId = String(form.get("event_type_id") ?? "").trim();
   if (!eventTypeId) {
@@ -513,13 +513,22 @@ export async function setEventDescription(form: FormData): Promise<void> {
     redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
-  const { error, count } = await db
-    .from("event_types")
-    .update({ description: parsed.description }, { count: "exact" })
-    .eq("id", eventTypeId)
-    .eq("org_id", admin.org_id);
-  if (error) {
-    log.error("admin", { msg: "event description save failed", event_type_id: eventTypeId }, error);
+  // #1435: one helper owns the write AND the refresh of what the booker serves,
+  // because the description rides inside the cached slots payload and editing the
+  // row is not the same as serving it. Nothing else in src/ may write this table
+  // (scripts/test-event-type-writes.ts), so the next editor added here cannot ship
+  // the stale-copy defect by forgetting a step.
+  const saved = await updateEventType({
+    eventTypeId,
+    orgId: admin.org_id,
+    patch: { description: parsed.description },
+  });
+  if (saved.error) {
+    log.error(
+      "admin",
+      { msg: "event description save failed", event_type_id: eventTypeId },
+      saved.error,
+    );
     redirect(
       `/admin/settings?error=${encodeURIComponent("Could not save the description. Please try again.")}`,
     );
@@ -527,20 +536,10 @@ export async function setEventDescription(form: FormData): Promise<void> {
   // Zero rows is not a success either: the id did not match anything this admin's
   // org owns, so nothing changed and saying otherwise would be a lie about somebody
   // else's data as much as about theirs.
-  if (count === 0) {
+  if (saved.count === 0) {
     redirect(
       `/admin/settings?error=${encodeURIComponent("That event type was not found.")}`,
     );
-  }
-
-  // Converge the served copy now rather than only as rows age. The description
-  // rides in the cached slots payload, so without this a lead could read the old
-  // one until the next recompute. #1301 gives an admin-triggered mass invalidation
-  // a bounded grace, so this cannot page a false staleness alarm.
-  try {
-    await markAllBucketSlotsStale();
-  } catch (err) {
-    log.error("admin", { msg: "event description save: row invalidation failed" }, err);
   }
 
   await recordAudit({

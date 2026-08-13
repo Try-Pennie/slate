@@ -219,6 +219,60 @@ A table created by a backfill script is outside `scripts/test-migrations.ts`'s R
 scan, so check it by hand: `availability_rules_backup_1255` came out with RLS
 enabled and no policies, which is default-deny and correct.
 
+## Changing an event type by hand: the marker, then the invalidation (#1435)
+
+The event type rides **inside** the cached `bucket_slots` payload the booker serves.
+So editing `event_types` is not the same as serving it, and the gap is invisible from
+every angle anyone checks: the row is correct, the admin screen shows the new value,
+and only a lead sees the old one. That is exactly how it was found, on 2026-08-12,
+after a description change.
+
+In the app this is no longer a step anyone can forget: `updateEventType`
+(`src/lib/availability/event-type-store.ts`) is the only place `src/` may write the
+table, and it invalidates as part of writing (`scripts/test-event-type-writes.ts`
+enforces the other direction). **A hand-run SQL edit is outside every code guard**,
+so it carries the same two steps itself, in this order:
+
+1. **Record the mass-invalidation marker first**, then
+2. **back-date `computed_at`** so the recompute lane rebuilds every bucket.
+
+The order is not cosmetic (#1301, and the L33 ordering). A marker with no staleness
+grants a grace nothing needs, which is harmless. Staleness with no marker is a false
+`bucket_slots_stale` page, which is the thing the marker exists to prevent, so the
+write that can strand you must not be the second one.
+
+<!-- runbook-unverified: running it would back-date every bucket_slots row on the live
+     project, forcing a full recompute across the fleet, so it cannot be executed on
+     demand to prove itself. Each half IS proven continuously instead: the same two
+     writes are what markAllBucketSlotsStale performs on every admin save, covered by
+     src/lib/availability/event-type-store.test.ts and src/app/admin/set-booking-horizon.test.ts,
+     and scripts/test-event-type-writes.ts asserts this block still names the real
+     marker key, in the real order. -->
+```sql
+begin;
+-- 1. the marker: a deliberate mass invalidation is draining
+insert into alert_state (key, last_sent_at)
+values ('bucket_slots_invalidated_at', now())
+on conflict (key) do update set last_sent_at = now();
+
+-- 2. the edit
+update event_types set duration_min = 45 where id = '<event-type-id>';
+
+-- 3. the invalidation, so what is SERVED matches what was written
+update bucket_slots set computed_at = 'epoch' where computed_at > 'epoch';
+commit;
+```
+
+The key above is `MASS_INVALIDATION_KEY` in
+`src/lib/availability/precompute.ts`, and `scripts/test-event-type-writes.ts` asserts
+that this block still spells it the same way. A key that does not match buys no
+grace, and the page it was meant to suppress arrives anyway, which is a failure mode
+a reader following the runbook has no way to notice.
+
+A **duration** change is the one to be most careful with. It is not cosmetic: the org
+business-hours gate judges whether a slot FITS the window, so a stale duration can go
+on offering a time that no longer does.
+
 ## Roll-forward only, and what the migration tests cover (#607)
 
 Slate deliberately uses **roll-forward-only** migrations. There are no
