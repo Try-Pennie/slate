@@ -24,6 +24,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health";
 import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availability-tick";
 import { monitorSetupGates } from "@/lib/monitor/setup-gates";
+import { runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
 import { loadBusinessHours, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
@@ -521,6 +522,44 @@ export async function GET(req: NextRequest) {
         log: (m) => log.warn("empty-reason", { msg: m }),
       }),
     );
+
+    // --- Does anyone actually work the hours we advertise (#1454)? The org says it
+    // is open 08:00 to 20:00 Monday to Saturday and every roster runs 08:00 to 17:00
+    // Monday to Friday, so a quarter of the advertised week, and the whole of
+    // Saturday, is offered to leads with nobody able to take the call. Nothing
+    // noticed, because `emptyReason` calls an open day that produced no times
+    // "busy", which conflates "genuinely full" with "nobody rostered": opposite
+    // problems arriving as the same word.
+    //
+    // Gated, unlike the empty-reason check above, because here the reads are the
+    // INPUTS rather than the subject. Unreadable working hours make every agent look
+    // off shift, which would report the entire advertised week as uncovered: being
+    // wrong that way is indistinguishable from the finding itself. ---
+    const rosterCoverage = await steps.run("roster_coverage", null, () =>
+      !gates.rosterCoverage.run
+        ? Promise.resolve(null)
+        : runRosterCoverageCheck({
+          inputs: {
+            hours: businessHours,
+            rosters: (workingHours?.schedules ?? []).map((s) => ({
+              timezone: s.timezone,
+              rules: rulesBySchedule.get(s.id) ?? [],
+            })),
+            nowMs: now,
+          },
+          // alert-key: roster_coverage_gap
+          notify: sendThrottledAlert,
+          // alert-key: roster_coverage_gap
+          // all-clear-proof: scripts/test-roster-coverage-gap.ts - a tick that
+          // could not read its inputs neither pages nor clears.
+          resolve: resolveAlert,
+          cooldownMs: settings.cooldownMs.roster_coverage_gap,
+          log: (m) => log.warn("roster-coverage", { msg: m }),
+        }),
+    );
+    if (!gates.rosterCoverage.run) {
+      log.warn("monitor", { msg: "roster coverage skipped", why: gates.rosterCoverage.why });
+    }
 
     // Skipped entirely when the week could not be read (#1296). An empty slot map
     // would make every bucket read as zero and page the whole ladder, and clearing
@@ -1172,6 +1211,10 @@ export async function GET(req: NextRequest) {
       // null, never a "healthy" shape: the step failing is not the booker being able
       // to explain itself, and the two must not render the same (#1420).
       emptyReason: emptyReasonHealth,
+      // null when the step failed or its gate stood it down, never a covered-looking
+      // shape: "could not check" and "everyone's hours cover the week" are the two
+      // this check exists to keep apart (#1454).
+      rosterCoverage,
       overrideSweep,
       inactiveBookings,
       strandedCoverage,

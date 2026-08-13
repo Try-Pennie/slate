@@ -49,6 +49,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The booker cannot say why a week is empty; the config becomes readable again and the monitor lane sees it on its next pass.",
   },
   {
+    key: "roster_coverage_gap",
+    kind: "condition",
+    why: "The org advertises hours nobody is rostered for; a schedule or the business hours are edited and the monitor lane sees it on its next pass.",
+  },
+  {
     key: "sync_failures",
     kind: "condition",
     why: "Agents' calendars are failing to sync; the fleet recovers and the sync lane can see it.",

@@ -39,6 +39,10 @@ import {
   formatEmptyReasonAlert,
   formatEmptyReasonRecovery,
 } from "@/lib/monitor/empty-reason-health";
+import {
+  formatRosterCoverageAlert,
+  formatRosterCoverageRecovery,
+} from "@/lib/monitor/roster-coverage";
 import { formatThinTierNotice } from "@/lib/monitor/thin-tier";
 import { formatScheduleGapNotice } from "@/lib/monitor/schedule-coverage";
 import { formatAttributeGapNotice } from "@/lib/monitor/attribute-coverage";
@@ -788,6 +792,42 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the booker can explain an empty week again",
     channel: "recovery",
     text: formatEmptyReasonRecovery(),
+  },
+  {
+    // The production shape as of 2026-08-13, which is the state this alert was
+    // built for: a whole uncovered Saturday plus a 17:00 to 20:00 tail on the five
+    // weekdays. Rendered so the day grouping can be READ: five separate weekday
+    // lines would push the uncovered Saturday off a phone notification.
+    key: "roster_coverage_gap",
+    state: "a whole advertised day and a weekday tail have nobody rostered",
+    channel: "alert",
+    text: formatRosterCoverageAlert([
+      { weekday: 6, startMinute: 480, endMinute: 1200, wholeDay: true },
+      ...[1, 2, 3, 4, 5].map((weekday) => ({
+        weekday,
+        startMinute: 1020,
+        endMinute: 1200,
+        wholeDay: false,
+      })),
+    ]),
+  },
+  {
+    // The partial case alone, because it must not read like the whole-day one:
+    // "we are thin after five" and "we say we are open and are shut" are different
+    // findings and the reader acts on them differently.
+    key: "roster_coverage_gap",
+    state: "only a weekday evening tail is uncovered",
+    channel: "alert",
+    text: formatRosterCoverageAlert([
+      { weekday: 1, startMinute: 1020, endMinute: 1200, wholeDay: false },
+      { weekday: 3, startMinute: 1020, endMinute: 1200, wholeDay: false },
+    ]),
+  },
+  {
+    key: "roster_coverage_gap",
+    state: "every advertised hour is covered again",
+    channel: "recovery",
+    text: formatRosterCoverageRecovery(),
   },
   {
     key: "sync_staleness",
