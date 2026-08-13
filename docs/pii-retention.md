@@ -300,9 +300,23 @@ treated as free. Revisit it if these tables ever get a second writer.
 
 ## 8. PII inventory / processor map
 
-The processor map (who we send PII to: Regal/Cadence via webhooks, Google
-Calendar) lives in the separate PII inventory doc (#1045); this document
-cross-references it rather than duplicating it.
+The processor map lives in **[pii.md](./pii.md)** (#1045): the six destinations a
+lead's contact data reaches, what each one gets, how long it keeps it, who can read
+it there, and which of them an erasure actually reaches. This document keeps the
+field level inventory (§1), the windows (§2) and the positions (§9), and does not
+restate any of that map.
+
+Two things in it that change how a request should be answered, so they are flagged
+here too rather than only there:
+
+- **Slate does not hold the consent it asserts.** On `booking.created` it sends
+  `voiceOptIn` / `smsOptIn` / `emailOptIn` as subscribed to Regal, and there is no
+  consent checkbox, privacy notice or policy link anywhere on the booker. Consent is
+  captured upstream on the landing page, so "prove this person agreed to be called"
+  cannot be answered from Slate's own data. #1041 is the issue for the booker side.
+- **The Snowflake mirror carries `manage_token`**, which is a credential rather than
+  a description: whoever holds it can reschedule or cancel that booking with no other
+  authentication. Warehouse read access is therefore booking control access.
 
 ## 9. Confirmed legal positions (2026-07-29)
 
