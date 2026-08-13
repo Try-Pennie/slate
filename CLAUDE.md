@@ -28,7 +28,13 @@ v4 · Luxon. Package manager: pnpm.
   unfiltered hours would silently re-open a narrowing and look like a healthy day.
   The two hour windows are each judged in their OWN zone and never intersected:
   clipping is correct only for an agent in the business zone, and every live agent
-  is Eastern, so no production data can tell the two apart.
+  is Eastern, so no production data can tell the two apart. `scripts/test-availability-zones.ts`
+  (#1316) is what does tell them apart: it drives a Pacific, a Tokyo and a London
+  agent at instants where the correct answer and minute-clipping DISAGREE, including
+  the org's day spanning two of the agent's local weekdays and the three weeks a year
+  when only one of two zones has changed its clocks. Breaking the gates either
+  plausible way (judging the agent in the org's zone, or intersecting the windows)
+  makes it fail.
   `businessHours` is REQUIRED on `SlotRules` / `SlotComputeInput` so `tsc`
   enumerates every construction site.
 - **The org window is ALSO applied at read time** (#1296), because a slot computed
