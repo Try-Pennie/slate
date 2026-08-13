@@ -94,6 +94,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   availabilityScan: SetupGate;
   availabilityTruth: SetupGate;
   lowVolume: SetupGate;
+  rosterCoverage: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -118,5 +119,13 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // open would page for an ordinary closed evening, and guessing shut would
     // silence a genuinely dead Monday morning. Neither is a measurement.
     lowVolume: gate(readiness, ["businessHours"]),
+    // #1454: holds the org's advertised week against the union of the agents'
+    // rostered hours. It needs both, and must skip on either, for OPPOSITE
+    // reasons: with no advertised week there is nothing to hold the roster
+    // against, and with no working hours every agent looks off shift, so the
+    // whole week would report as uncovered. That second one is the dangerous
+    // direction, because being wrong there is indistinguishable from the very
+    // finding this check exists to report.
+    rosterCoverage: gate(readiness, ["businessHours", "workingHours"]),
   };
 }

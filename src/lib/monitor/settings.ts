@@ -25,7 +25,8 @@ export type MonitorAlertKey =
   | "empty_buckets"
   | "booking_failure_rate"
   | "availability_drift"
-  | "booker_empty_reason";
+  | "booker_empty_reason"
+  | "roster_coverage_gap";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -44,6 +45,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "booking_failure_rate",
   "availability_drift",
   "booker_empty_reason",
+  "roster_coverage_gap",
 ];
 
 /**
@@ -129,6 +131,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Page when the booker has no times to offer and cannot tell whether we are closed or fully booked, so a lead is shown a vague message instead of the reason.",
   },
   {
+    key: "roster_coverage_gap",
+    label: "Advertised hours nobody is rostered for",
+    help: "Page when the org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -194,6 +201,12 @@ export const MONITOR_DEFAULTS = {
     // minute, so a fast repeat would say nothing new. Hourly, matching the other
     // conditions that persist until something is fixed.
     booker_empty_reason: 60 * 60_000,
+    // An advertised hour nobody covers (#1454) is not a fault that clears itself:
+    // it ends when somebody edits a roster or the org's week, which is a staffing
+    // decision measured in days, not a service that recovers. Hourly here would
+    // repeat the same unchanged sentence twenty four times before anyone could
+    // act on it, which is how a pager gets muted (L36). Daily.
+    roster_coverage_gap: 24 * 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,
