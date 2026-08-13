@@ -18,19 +18,51 @@ import { assert, finish } from "./lib/harness.ts";
  *  would trip the repo's own copy lint on this very file. */
 const DASHES = new RegExp("[\\u2013\\u2014]");
 
+/**
+ * The org's real stored week: Monday to SATURDAY, 08:00 to 20:00 Eastern (#1298).
+ *
+ * This fixture used to be a hand-written weekdays 1 to 5 window, matching a second
+ * hardcoded copy of the org's hours that lived beside the alert. It is now the shape
+ * the hours are actually stored in, and the Saturday case below is the day the alarm
+ * was blind for.
+ */
 const CFG: BusinessHoursConfig = {
   zone: "America/New_York",
-  weekdays: [1, 2, 3, 4, 5],
-  startHour: 8,
-  endHour: 20,
+  rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({
+    weekday,
+    start_minute: 8 * 60,
+    end_minute: 20 * 60,
+  })),
 };
 
 // --- isBusinessHours (Eastern, DST aware) ---
 {
   assert(isBusinessHours(Date.UTC(2026, 5, 23, 23, 0, 0), CFG), "summer 19:00 ET weekday -> business hours (ET not UTC)");
   assert(isBusinessHours(Date.UTC(2026, 0, 6, 0, 30, 0), CFG), "winter 19:30 EST weekday -> business hours (DST aware)");
-  assert(!isBusinessHours(Date.UTC(2026, 5, 20, 16, 0, 0), CFG), "weekend -> outside");
+  assert(!isBusinessHours(Date.UTC(2026, 5, 21, 16, 0, 0), CFG), "SUNDAY -> outside (the org's one closed day)");
   assert(!isBusinessHours(Date.UTC(2026, 5, 23, 7, 0, 0), CFG), "overnight ET -> outside");
+
+  // #1298: the day the alarm was blind for. The org is open on Saturday, so a
+  // Saturday with no bookings is a real finding rather than an expected quiet.
+  assert(
+    isBusinessHours(Date.UTC(2026, 5, 20, 16, 0, 0), CFG),
+    "SATURDAY noon ET -> inside: the org is open, so the volume alarm watches it",
+  );
+  // And the window really does close on Saturday evening, so this is a window and
+  // not an "always open at weekends" mistake in the other direction.
+  assert(
+    !isBusinessHours(Date.UTC(2026, 5, 21, 3, 0, 0), CFG),
+    "Saturday 23:00 ET -> outside, so Saturday is a WINDOW and not an open-ended day",
+  );
+
+  // An empty week is shut everywhere, which is a legitimate stored answer and is
+  // why the caller must skip rather than pass an empty list for a read it could
+  // not make: that would silence the alarm instead of reporting it unmeasured.
+  const closedOrg: BusinessHoursConfig = { zone: "America/New_York", rules: [] };
+  assert(
+    !isBusinessHours(Date.UTC(2026, 5, 23, 16, 0, 0), closedOrg),
+    "an org with no stored windows is shut, even at what would be midday",
+  );
 }
 
 // --- lowVolumeBreaches ---
@@ -60,7 +92,11 @@ const CFG: BusinessHoursConfig = {
 /** A weekday 14:00 ET instant, squarely inside business hours. */
 const BUSINESS_NOW = Date.UTC(2026, 5, 23, 18, 0, 0);
 /** A Saturday, outside business hours. */
-const WEEKEND_NOW = Date.UTC(2026, 5, 20, 18, 0, 0);
+// #1298: SUNDAY, the org's one closed day. This fixture used to be a Saturday, back
+// when the alarm carried its own weekdays 1 to 5 copy of the opening hours. Saturday
+// is an OPEN day, so using it as the closed case is what made a whole blind day look
+// deliberate.
+const CLOSED_DAY_NOW = Date.UTC(2026, 5, 21, 18, 0, 0);
 
 function harness(overrides: {
   counts?: Record<string, number | null>;
@@ -122,8 +158,9 @@ function harness(overrides: {
 }
 
 // Outside business hours: no reads, no alert, explicit status.
+// Sunday, which is the only day of the week the org is shut.
 {
-  const h = harness({ nowMs: WEEKEND_NOW });
+  const h = harness({ nowMs: CLOSED_DAY_NOW });
   const res = await h.run();
   assert(res.status === "outside-hours", "outside business hours the check does not run");
   assert(h.countCalls.length === 0, "outside business hours no booking counts are read");
@@ -229,7 +266,7 @@ function harness(overrides: {
   );
 }
 {
-  const h = harness({ nowMs: WEEKEND_NOW, unreadableFiring: true });
+  const h = harness({ nowMs: CLOSED_DAY_NOW, unreadableFiring: true });
   await h.run();
   assert(
     h.resolved.length === 0,
@@ -314,7 +351,7 @@ function harness(overrides: {
 // The failure paths, which are the point. Each of these measured NOTHING about
 // volume, so none may announce that volume recovered.
 {
-  const weekend = harness({ nowMs: WEEKEND_NOW });
+  const weekend = harness({ nowMs: CLOSED_DAY_NOW });
   await weekend.run();
   assert(
     !weekend.resolved.some((r) => r.key === VOLUME_ALERT_KEY),
