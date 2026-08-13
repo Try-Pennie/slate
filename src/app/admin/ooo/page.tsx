@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { formatWhenLine, overlaps } from "@/lib/ooo/core";
+import { canRetrySideEffects, formatWhenLine, overlaps } from "@/lib/ooo/core";
 import { loadOrgOooHistory } from "@/lib/ooo/history-load";
 import {
   approvalStats,
@@ -97,6 +97,10 @@ export default async function OooQueuePage({
   // Team leads, admins, and super admins moderate the whole org; a regular
   // manager is scoped to their own reports.
   const seesAll = canModerateAllOoo(me.role);
+  // #1468: the retry is a narrower power than moderating. Read it from the SAME
+  // predicate the action enforces, so the button can never be offered to someone
+  // the action will refuse (a team lead used to see it and get "Not authorized").
+  const canRetry = canRetrySideEffects(me);
   const db = supabaseAdmin();
 
   // Managers see their reports' requests; team leads and up see the whole org.
@@ -643,7 +647,7 @@ export default async function OooQueuePage({
                         {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
                       </p>
                     </div>
-                    {seesAll && r.status === "approved" && failures.length > 0 && (
+                    {canRetry && r.status === "approved" && failures.length > 0 && (
                       <form action={retryOooAction}>
                         <input type="hidden" name="request_id" value={r.id} />
                         <button className={btnSecondaryCls}>

@@ -8,6 +8,7 @@ import {
   canCancel,
   canModerate,
   canModify,
+  canRetrySideEffects,
   canTransition,
   formatRequestWhenAndReason,
   formatWhenLine,
@@ -22,6 +23,7 @@ const manager = { id: "u-mgr", role: "manager" as const };
 const otherManager = { id: "u-mgr2", role: "manager" as const };
 const admin = { id: "u-admin", role: "admin" as const };
 const teamLead = { id: "u-lead", role: "team_lead" as const };
+const superAdmin = { id: "u-super", role: "super_admin" as const };
 const req = { user_id: "u-agent", manager_id: "u-mgr", status: "pending" as const };
 
 // --- authz ---
@@ -42,6 +44,19 @@ assert(canCancel(admin, req), "admin can cancel");
 assert(!canCancel(manager, req), "manager cannot cancel (reject instead)");
 assert(canModify(agent, req), "requester can modify");
 assert(!canModify(admin, req), "admin cannot modify someone's request");
+
+// Retry the calendar updates (#1468). One predicate, so the button that offers
+// the repair and the action that performs it can never disagree, and it is a
+// RANK test: an equality against "admin" refuses super_admin, the only rank
+// above it and the one whose holder actually reaches for this control.
+assert(canRetrySideEffects(admin), "admin can retry the calendar updates");
+assert(
+  canRetrySideEffects(superAdmin),
+  "super admin can retry too (the rank ABOVE admin is not excluded)",
+);
+assert(!canRetrySideEffects(teamLead), "a team lead moderates but cannot retry");
+assert(!canRetrySideEffects(manager), "a manager cannot retry");
+assert(!canRetrySideEffects(agent), "an agent cannot retry");
 
 // --- transitions ---
 assert(canTransition("pending", "approved"), "pending -> approved");

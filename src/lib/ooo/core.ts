@@ -27,6 +27,22 @@ export function canCancel(actor: Actor, request: RequestLike): boolean {
   return actor.id === request.user_id || atLeast(actor.role, "admin");
 }
 
+/**
+ * Retry the calendar updates on an approved request whose side effects partly
+ * failed: admins and up (#1468).
+ *
+ * `atLeast`, never `role === "admin"`. This gate shipped as an equality against
+ * one rank of a five tier hierarchy, which refuses `super_admin`, the only rank
+ * above it, so the person most likely to reach for the repair was the one person
+ * it turned away. It lives here rather than inline in the orchestration so the
+ * BUTTON offering the repair and the ACTION performing it read the same
+ * predicate and cannot drift apart: the page used to render it for team leads
+ * and up, who then met a bare "Not authorized" with nothing naming the gate.
+ */
+export function canRetrySideEffects(actor: Pick<Actor, "role">): boolean {
+  return atLeast(actor.role, "admin");
+}
+
 /** Modify: only the requester (a manager who wants changes rejects instead). */
 export function canModify(actor: Actor, request: RequestLike): boolean {
   return actor.id === request.user_id;
