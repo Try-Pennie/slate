@@ -312,24 +312,49 @@ export async function createEventOnCalendar(
   actorEmail: string,
   calendarId: string,
   input: Omit<CreateEventInput, "attendeeEmail" | "attendeeName">,
+  clientId?: string,
 ): Promise<string> {
-  const res = await ok(
-    await gfetch(
-      actorEmail,
-      `${BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          summary: input.summary,
-          description: input.description,
-          start: { dateTime: input.start, timeZone: input.timezone },
-          end: { dateTime: input.end, timeZone: input.timezone },
-        }),
-      },
-      CALENDAR_WRITE_TIMEOUT_MS,
-    ),
-    "events.insert",
+  const res = await gfetch(
+    actorEmail,
+    `${BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        // #1469: a deterministic client supplied id makes the create idempotent,
+        // the same trick the booking path uses. These writes are bounded at 8
+        // seconds because the manager waits on them, so a slow moment at Google
+        // surfaces as an abort, and an aborted insert may still have been applied
+        // on Google's side. The retry sends this same id and Google 409s it.
+        ...(clientId ? { id: clientId } : {}),
+        summary: input.summary,
+        description: input.description,
+        start: { dateTime: input.start, timeZone: input.timezone },
+        end: { dateTime: input.end, timeZone: input.timezone },
+      }),
+    },
+    CALENDAR_WRITE_TIMEOUT_MS,
   );
+
+  // 409-as-success, but ONLY when we supplied the id: then the duplicate is
+  // provably this same intent, and GETting it returns the event Google already
+  // created. With no id of our own a 409 is a conflict we cannot resolve, and
+  // swallowing it would report an event that does not exist.
+  if (clientId && res.status === 409) {
+    const existing = await ok(
+      await gfetch(
+        actorEmail,
+        `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(clientId)}`,
+        {},
+        CALENDAR_WRITE_TIMEOUT_MS,
+      ),
+      "events.get (409 reuse)",
+    );
+    const reused = (await existing.json()) as { id?: string };
+    if (!reused.id) throw new Error("Google did not return an event id on reuse");
+    return reused.id;
+  }
+
+  await ok(res, "events.insert");
   const data = (await res.json()) as { id?: string };
   if (!data.id) throw new Error("Google did not return an event id");
   return data.id;

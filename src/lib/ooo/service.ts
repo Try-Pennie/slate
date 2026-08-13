@@ -122,8 +122,8 @@ function realDeps(): OooDeps {
       return (data as { calendar_id: string } | null)?.calendar_id ?? "primary";
     },
 
-    createCalendarEvent: (actorEmail, calendarId, args) =>
-      createEventOnCalendar(actorEmail, calendarId, args),
+    createCalendarEvent: (actorEmail, calendarId, args, clientId) =>
+      createEventOnCalendar(actorEmail, calendarId, args, clientId),
     deleteCalendarEvent: (actorEmail, calendarId, eventId) =>
       deleteEventOnCalendar(actorEmail, calendarId, eventId),
 
