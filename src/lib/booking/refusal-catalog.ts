@@ -318,16 +318,17 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "booking API",
     outcome: "429, the per-key ceiling or the per-IP backstop",
     counting: { kind: "none" },
-    rateSignal: { kind: "none" },
+    rateSignal: { kind: "deferred", issue: 1442 },
     why:
-      "A ceiling trip is one caller going faster than its budget, which is what the ceiling is " +
-      "FOR, so the same reasoning as the booker's rate limits above: counting it would put that " +
-      "caller's volume in the denominator the failure share is measured against, diluting the " +
-      "share a real outage has to move, so the counting would actively hurt. Every trip is " +
-      "logged with its scope and key. What WOULD change this decision is a SUSTAINED trip on the " +
-      "write path, which would mean the ceiling is wrong for the bot's real volume rather than " +
-      "that the caller is abusive; that is a capacity question needing attempts measured against " +
-      "the ceiling, which this counter cannot express.",
+      "Not counted into the failure SHARE, and that part is settled: a trip is normally one " +
+      "caller going faster than its budget, which is what the ceiling is FOR, and counting it " +
+      "would put that caller's volume in the denominator the share is measured against, diluting " +
+      "what a real outage has to move. But the same trip means something else entirely when it " +
+      "is SUSTAINED on the write path: it means the ceiling is wrong for the bot's real volume, " +
+      "so leads are being turned away by our own limit with nothing saying so. One benign trip " +
+      "and a systemic one arrive on the identical path (L77). That needs attempts measured " +
+      "against the ceiling in its OWN counter rather than in the share, which is #1442. Until " +
+      "then the log line is the only signal, and it carries the scope and key on every trip.",
   },
   {
     id: "api_confirm_required",

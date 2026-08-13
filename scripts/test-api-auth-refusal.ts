@@ -160,11 +160,20 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
   const throttled = entry("api_rate_limited");
   assert(!!throttled, "api_rate_limited is in the catalog");
-  eq(throttled?.counting.kind, "none", "the throttle is deliberately uncounted");
-  eq(throttled?.rateSignal.kind, "none", "and claims no signal it does not have");
+  eq(throttled?.counting.kind, "none", "the throttle stays out of the failure share");
   assert(
     !!throttled && /dilut|denominator/i.test(throttled.why),
     "with the dilution cost written down, matching the booker's rate limit entries",
+  );
+  // L77 is only half answered by not counting it. A SUSTAINED trip on the write
+  // path means the ceiling is wrong for the bot's real volume, so leads are turned
+  // away by our own limit with nothing saying so, and one benign trip and a
+  // systemic one arrive on the identical path. That gap is recorded as a deferred
+  // signal with the issue that builds it, never as a bare no (L65).
+  eq(throttled?.rateSignal.kind, "deferred", "the sustained case is a deferred signal, not a settled no");
+  assert(
+    throttled?.rateSignal.kind === "deferred" && throttled.rateSignal.issue > 0,
+    "naming the issue that will build it, so a later cannot quietly become a never",
   );
 }
 
