@@ -36,11 +36,12 @@ export const dynamic = "force-dynamic";
  *   POST (Bearer BOOKING_API_KEY[_2]) -> 501 | 401 | 429 | 503
  */
 export async function POST(req: NextRequest) {
-  // refusal: api_auth_refused
-  // Deliberately uncounted for now (#1318, #1429): the authorizer hands back a
-  // ready-made response and does not say whether this was a rotated key (every lead
-  // refused) or a rate ceiling (abuse shaping), and counting the two as one would let a
-  // noisy caller raise the same number a locked-out integration does.
+  // Three refusals, decided apart (#1429). The authorizer reports WHICH one it was
+  // and records it according to the catalog, so a rotated key and a noisy caller no
+  // longer raise the same number:
+  //   refusal: api_key_rejected     401, counted as API_KEY_REJECTED
+  //   refusal: api_not_configured   503, counted as API_NOT_CONFIGURED
+  //   refusal: api_rate_limited     429, deliberately uncounted (it would dilute the share)
   const authd = await authorizeBookingApi(req);
   if (!authd.ok) return authd.response;
   log.info("booking-api", { msg: "authenticated request", key: authd.keyId });

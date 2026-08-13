@@ -282,6 +282,61 @@ const reading = (
     "an internal-error wave still names what is failing",
   );
 
+  // #1429: the two credential codes reach this window now, and neither repair is
+  // guessable from the code alone. A page that names API_KEY_REJECTED and stops
+  // leaves the reader working out mid-incident which secret to look at (L80/L111),
+  // so each names the ACTION that changes the state, and they name different ones:
+  // one is a key to fix at the caller, the other a secret missing on the Worker.
+  const rotated = formatFailureRateAlert({
+    attempts: 31,
+    failures: 29,
+    pct: 94,
+    windowMinutes: 60,
+    topCodes: [{ code: "API_KEY_REJECTED", count: 29 }],
+  });
+  assert(
+    rotated.includes("BOOKING_API_KEY was rotated"),
+    "a rejected-key wave says to check whether the key was rotated without the caller being updated",
+  );
+  assert(
+    rotated.includes("Counted per refused call"),
+    "and says the count is refused CALLS, so a retrying bot is not read as that many distinct leads",
+  );
+  assert(!DASHES.test(rotated), "the rejected-key page uses no em/en dashes");
+
+  const unset = formatFailureRateAlert({
+    attempts: 18,
+    failures: 18,
+    pct: 100,
+    windowMinutes: 60,
+    topCodes: [{ code: "API_NOT_CONFIGURED", count: 18 }],
+  });
+  assert(
+    unset.includes("BOOKING_API_KEY secret on the deployed Worker"),
+    "an unconfigured endpoint points at the secret on the Worker, which is where that repair is",
+  );
+  assert(
+    !unset.includes("rotated"),
+    "and does NOT repeat the rotation advice, which cannot fix a secret nobody set (L36)",
+  );
+  assert(
+    !internalWave.includes("BOOKING_API_KEY"),
+    "an internal-error wave carries no credential advice, so the reader is not sent at the wrong system",
+  );
+  // The default really is empty rather than a stray sentence, so a code with no
+  // written advice reads as the bare naming it always did.
+  const noAdvice = formatFailureRateAlert({
+    attempts: 40,
+    failures: 12,
+    pct: 30,
+    windowMinutes: 60,
+    topCodes: [{ code: "no_eligible_agents", count: 12 }],
+  });
+  assert(
+    noAdvice.includes("no_eligible_agents") && !noAdvice.includes("Check "),
+    "a code with no written guidance names itself and adds no invented advice",
+  );
+
   const clear = formatFailureRateAllClear({ attempts: 90, failures: 2, pct: 2, windowMinutes: 60 });
   assert(clear.includes("2%"), "the all-clear states the measured share it cleared on");
   assert(!DASHES.test(clear), "the all-clear uses no em/en dashes");

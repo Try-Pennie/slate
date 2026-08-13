@@ -65,6 +65,19 @@ export interface RefusalPath {
   /** What the customer or the caller gets, in a reader's terms. */
   outcome: string;
   counting: RefusalCounting;
+  /**
+   * Where a counted path's error code comes from, so the guard can check the claim
+   * instead of exempting a whole surface (#1429).
+   *
+   * `"route"` means the entry point records the code as a literal, and the guard
+   * requires it to really appear there. `"mapped"` means the code is produced by
+   * `mapBookingError` from a thrown domain error, so it is not a literal in the
+   * route. `"authorizer"` means it comes from `authRefusalCounting`, and the guard
+   * checks that function's real output rather than scanning for a string, which is
+   * a stronger tie than the literal scan. Absent counts as `"route"`: a new counted
+   * path must be visible, not exempt by default.
+   */
+  codeFrom?: "route" | "mapped" | "authorizer";
   rateSignal: RefusalRateSignal;
   /** The reasoning that produced the decision. Required, including for a "no". */
   why: string;
@@ -204,6 +217,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "booking API",
     outcome: "422 UNKNOWN_BUCKET, telling the caller to stop retrying",
     counting: { kind: "error", code: "UNKNOWN_BUCKET" },
+    codeFrom: "mapped",
     rateSignal: { kind: "covered" },
     why:
       "A caller sending a code that does not resolve is refusing every lead it routes there, and " +
@@ -215,6 +229,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "booking API",
     outcome: "409 NO_ELIGIBLE_AGENTS",
     counting: { kind: "error", code: "NO_ELIGIBLE_AGENTS" },
+    codeFrom: "mapped",
     rateSignal: { kind: "covered-and-pages", alertKey: "no_eligible_agents:*" },
     why: "The same dead end as the booker's, reached through the API, and it pages the same way.",
   },
@@ -223,6 +238,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "booking API",
     outcome: "409 SLOT_TAKEN, telling the caller to pick another time",
     counting: { kind: "error", code: "SLOT_TAKEN" },
+    codeFrom: "mapped",
     rateSignal: { kind: "covered" },
     why: "The API-side twin of slot_unavailable, and it needs the same rate signal for the same reason.",
   },
@@ -231,6 +247,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "booking API",
     outcome: "503 VERIFY_UNAVAILABLE, marked transient",
     counting: { kind: "error", code: "VERIFY_UNAVAILABLE" },
+    codeFrom: "mapped",
     rateSignal: { kind: "covered-and-pages", alertKey: "verify_on_book_outage" },
     why: "The API-side twin of verify_unavailable, and it pages on the first one for the same reason.",
   },
@@ -239,6 +256,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "booking API",
     outcome: "500 INTERNAL",
     counting: { kind: "error", code: "INTERNAL" },
+    codeFrom: "mapped",
     rateSignal: { kind: "covered" },
     why: "An unexpected fault reached through the API, judged on the same share as the booker's.",
   },
@@ -265,19 +283,51 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "would put read traffic in the denominator of a booking failure share, which is the same " +
       "dilution the rate limits are kept out for.",
   },
+  // #1429 split what used to be one `api_auth_refused` entry. The authorizer now
+  // reports WHICH refusal it made, so the two opposite things behind that branch
+  // get opposite treatment instead of one badly-chosen answer for both.
   {
-    id: "api_auth_refused",
+    id: "api_key_rejected",
     surface: "booking API",
-    outcome: "401, 403 or 429 from the shared authorizer",
-    counting: { kind: "none" },
-    rateSignal: { kind: "deferred", issue: 1429 },
+    outcome: "401, the credential is missing, malformed, or no longer one of ours",
+    counting: { kind: "error", code: "API_KEY_REJECTED" },
+    codeFrom: "authorizer",
+    rateSignal: { kind: "covered" },
     why:
-      "Two opposite things behind one branch. A rotated or bad key means the bot cannot book at " +
-      "all and every lead it handles is refused; a rate ceiling trip is abuse shaping. The " +
-      "authorizer hands back a ready-made response and does not say which, so counting them " +
-      "together would let a noisy caller raise the same number a locked-out integration does, " +
-      "and the page could not tell the reader which had happened. Recorded as deferred rather " +
-      "than counted badly.",
+      "A rotated or wrong key means the bot cannot book AT ALL, so every lead it handles is " +
+      "refused for as long as the key is wrong. That is a config outage wearing a 401, and it is " +
+      "exactly what a failure share exists to notice: a sustained share of attempts refused on " +
+      "the credential means the integration is locked out. Its own code, distinct from " +
+      "API_NOT_CONFIGURED, because the repair differs: this one is a key to fix at the caller.",
+  },
+  {
+    id: "api_not_configured",
+    surface: "booking API",
+    outcome: "503, no booking API key is configured at all",
+    counting: { kind: "error", code: "API_NOT_CONFIGURED" },
+    codeFrom: "authorizer",
+    rateSignal: { kind: "covered" },
+    why:
+      "The endpoint is effectively switched off, so every call is refused. Counted for the same " +
+      "reason as a rejected key, under a DIFFERENT code because the instruction to the reader is " +
+      "not the same: a secret nobody set is a deploy or environment gap, not a caller holding a " +
+      "stale key. Sharing one code would let the page name a repair that cannot work.",
+  },
+  {
+    id: "api_rate_limited",
+    surface: "booking API",
+    outcome: "429, the per-key ceiling or the per-IP backstop",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "A ceiling trip is one caller going faster than its budget, which is what the ceiling is " +
+      "FOR, so the same reasoning as the booker's rate limits above: counting it would put that " +
+      "caller's volume in the denominator the failure share is measured against, diluting the " +
+      "share a real outage has to move, so the counting would actively hurt. Every trip is " +
+      "logged with its scope and key. What WOULD change this decision is a SUSTAINED trip on the " +
+      "write path, which would mean the ceiling is wrong for the bot's real volume rather than " +
+      "that the caller is abusive; that is a capacity question needing attempts measured against " +
+      "the ceiling, which this counter cannot express.",
   },
   {
     id: "api_confirm_required",
