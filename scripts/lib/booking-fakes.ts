@@ -98,6 +98,10 @@ export function makeBooking(over: Partial<Booking>): Booking {
 
 export interface FakeOpts {
   candidates?: string[];
+  /** #1300: the bucket's POOL size, when it differs from the free list. Setting
+   *  candidates: [] with memberCount > 0 is "people exist, nobody is free now",
+   *  which must never page as a misconfigured bucket. */
+  memberCount?: number;
   freeEmails?: Set<string>;
   /** #1295: override the org's opening hours (defaults to open all week). */
   businessHours?: { zone: string; rules: WorkingRule[] };
@@ -336,7 +340,12 @@ export function makeDeps(opts: FakeOpts) {
           },
     roundRobinCandidates: async (_b, _e, _ms, preview) => {
       calls.roundRobinPreview.push(preview);
-      return opts.candidates ?? ["a"];
+      const candidates = opts.candidates ?? ["a"];
+      // #1300: the pool SIZE, which is what tells an empty bucket (pages) apart
+      // from a bucket whose people are simply off shift (must not page). Defaults
+      // to the candidate count, and `memberCount` overrides it so a test can say
+      // "people exist, none of them is free".
+      return { candidates, memberCount: opts.memberCount ?? candidates.length };
     },
     businessHours: async () => {
       calls.businessHours++;

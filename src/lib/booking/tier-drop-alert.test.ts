@@ -97,8 +97,13 @@ function makeTierDropDeps(): BookingDeps {
       return null;
     },
     // Empty pool on "511" → NoEligibleAgentsError → cascade to "411"
+    // #1300: memberCount 0 is what makes an empty pool page. A bucket with people
+    // who are merely off shift returns zero candidates with a NON-zero count and
+    // must NOT cascade as a misconfiguration.
     roundRobinCandidates: async (bucket) =>
-      bucket.code === "511" ? [] : ["a"],
+      bucket.code === "511"
+        ? { candidates: [], memberCount: 0 }
+        : { candidates: ["a"], memberCount: 1 },
     // Gate 1 (#1295) open all week, so these stay about the tier cascade.
     businessHours: async () => ({
       zone: "America/New_York",
@@ -221,7 +226,7 @@ describe("tier-drop alert dispatch", () => {
   it("does NOT dispatch a tier_fallback alert when the requested bucket itself has an agent free", async () => {
     const deps = makeTierDropDeps();
     // Override: "511" has a free agent → no cascade
-    deps.roundRobinCandidates = async () => ["a"];
+    deps.roundRobinCandidates = async () => ({ candidates: ["a"], memberCount: 1 });
 
     await createBooking(tierDropInput, deps);
 

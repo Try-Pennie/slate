@@ -342,7 +342,8 @@ async function run() {
     const dry: ApiBookingInput = { ...input, externalId: "ext-cascade", confirmReschedule: false };
     const { deps, calls } = makeDeps({ personBookings: [], freeEmails: new Set(["a@x.com"]) });
     let rr = 0;
-    deps.roundRobinCandidates = async () => (++rr === 1 ? [] : ["a"]);
+    deps.roundRobinCandidates = async () =>
+      ++rr === 1 ? { candidates: [], memberCount: 0 } : { candidates: ["a"], memberCount: 1 };
     deps.resolveBucketByCode = async (code: string) =>
       code === "411" ? { bucket, eventType } : code === "311" ? { bucket: bucket311, eventType } : null;
     const preview = await previewBooking(dry, deps);
@@ -361,7 +362,8 @@ async function run() {
     const bucket311 = { ...bucket, id: "bkt311", code: "311" } as unknown as Bucket;
     const { deps } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
     let rr = 0;
-    deps.roundRobinCandidates = async () => (++rr === 1 ? [] : ["a"]);
+    deps.roundRobinCandidates = async () =>
+      ++rr === 1 ? { candidates: [], memberCount: 0 } : { candidates: ["a"], memberCount: 1 };
     deps.resolveBucketByCode = async (code: string) =>
       code === "411" ? { bucket, eventType } : code === "311" ? { bucket: bucket311, eventType } : null;
     const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
@@ -697,7 +699,9 @@ async function run() {
     // First roundRobinCandidates call is for "411" (no candidates), second for "311" (agent a).
     deps.roundRobinCandidates = async () => {
       rrCallCount++;
-      return rrCallCount === 1 ? [] : ["a"];
+      return rrCallCount === 1
+        ? { candidates: [], memberCount: 0 }
+        : { candidates: ["a"], memberCount: 1 };
     };
     deps.resolveBucketByCode = async (code: string) => {
       if (code === "411") return { bucket, eventType };

@@ -484,12 +484,22 @@ export interface BookingDeps {
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
+  /**
+   * The agents free for this instant, AND how many the bucket has at all (#1300).
+   *
+   * Both numbers, because zero free has two causes that need opposite handling and
+   * are indistinguishable from the free list alone: the bucket has nobody in it (a
+   * misconfiguration, which pages), or it has people and none of them is on shift
+   * or free right now (an ordinary evening, which must not). The count is returned
+   * rather than fetched separately because the implementation already loaded the
+   * members in order to filter them.
+   */
   roundRobinCandidates(
     bucket: Bucket,
     eventType: EventType,
     startMs: number,
     preview?: boolean,
-  ): Promise<string[]>;
+  ): Promise<{ candidates: string[]; memberCount: number }>;
   /**
    * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
    * that judge a slot themselves: the in-place reschedule guard, and `checkBookable`,
@@ -1115,7 +1125,7 @@ async function assignAgent(
   endIso: string,
   preview = false,
 ): Promise<AssignResult & { candidates: string[] }> {
-  const candidates = await deps.roundRobinCandidates(
+  const { candidates, memberCount } = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
@@ -1129,9 +1139,17 @@ async function assignAgent(
     VERIFY_WAVE_SIZE,
   );
   if (!assignment) {
-    // Zero candidates means the bucket pool is empty/misconfigured — a different
-    // failure (and a different caller action) than a full slot (#358).
-    if (candidates.length === 0) throw new NoEligibleAgentsError(bucket.code, bucket.is_test);
+    // #1300: an EMPTY BUCKET is a misconfiguration and pages; a bucket whose people
+    // are simply not on shift is an ordinary evening and must not.
+    //
+    // The candidate list is already filtered by all three gates, so zero candidates
+    // used to mean both, and the alert said "No advisors are configured for this
+    // booking type" for every out of hours attempt a bot could make. The pool size
+    // is what tells them apart, and it is the only thing that can.
+    if (memberCount === 0) throw new NoEligibleAgentsError(bucket.code, bucket.is_test);
+    // People exist and none of them can take this time: from the caller's side that
+    // is the same instruction as a taken slot, pick another time, so it reuses that
+    // error rather than inventing a code the booking API's contract does not carry.
     // No agent was free. If at least one candidate couldn't be VERIFIED (read
     // error / outage), this isn't a genuinely-full slot — surface it distinctly
     // so the caller alerts + lets the lead retry, rather than showing "no times".

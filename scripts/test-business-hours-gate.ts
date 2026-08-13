@@ -17,6 +17,12 @@
 //
 // So the org window and the agent window are judged independently, each in its own
 // zone, and never intersected.
+//
+// Its companion is scripts/test-availability-zones.ts (#1316), which takes the same
+// non-Eastern angle further: the org's day spanning two of the agent's local
+// WEEKDAYS, the spring-forward hour that does not exist, the booker's own zone being
+// display only, and an agent whose whole working day is the org's night. Check both
+// before adding a case to either, or the reasoning gets written a third time.
 import {
   computeBucketSlots,
   bookableSlotReason,

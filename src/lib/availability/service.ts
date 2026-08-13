@@ -491,7 +491,7 @@ export async function roundRobinCandidates(
   eventType: EventType,
   startMs: number,
   preview = false,
-): Promise<string[]> {
+): Promise<{ candidates: string[]; memberCount: number }> {
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
   ).toISOString();
@@ -517,20 +517,28 @@ export async function roundRobinCandidates(
     },
     startMs,
   );
-  if (free.length <= 1) return free;
+  // #1300: the POOL SIZE travels with the free list. Zero free has two causes that
+  // need opposite handling (an empty bucket pages, an out of hours moment must not),
+  // and the free list alone cannot tell them apart. The members are already loaded
+  // here, so this costs nothing.
+  const memberCount = members.length;
+  if (free.length <= 1) return { candidates: free, memberCount };
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
   // next-period slot balances against next-period meetings. On the real assignment
   // path, log the equal-share vs recency divergence (#321) for pre-cutover
   // validation; a dry-run preview (#380) suppresses both that log and the
   // unfair-ordering alert so previews never pollute real-assignment data.
-  return rankBucketShare(
-    bucket.id,
-    free,
-    startMs,
-    "verify-on-book candidate order",
-    !preview,
-    preview,
-  );
+  return {
+    candidates: await rankBucketShare(
+      bucket.id,
+      free,
+      startMs,
+      "verify-on-book candidate order",
+      !preview,
+      preview,
+    ),
+    memberCount,
+  };
 }
 
 const UNFAIR_ORDERING_ALERT_KEY = "rr_ordering_degraded";

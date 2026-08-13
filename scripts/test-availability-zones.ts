@@ -24,6 +24,14 @@
 // arithmetic is wrong tests a case that does not exist while passing forever (L48),
 // and timezone arithmetic done by hand in a comment is exactly where that happens.
 //
+// WHAT LIVES WHERE, so a third copy of this reasoning does not appear. Gate 1's own
+// suite, scripts/test-business-hours-gate.ts, already covers a Pacific agent against
+// the seeded org week and the off-cycle DST gap, from the same non-Eastern angle.
+// This file exists for the cases it does not reach: the org's day spanning two of the
+// agent's local WEEKDAYS, the spring-forward hour that does not exist, the booker's
+// zone being display only, and an agent whose entire working day is the org's night.
+// Check both before adding a case to either.
+//
 // Run: node --experimental-strip-types scripts/test-availability-zones.ts
 import { DateTime } from "luxon";
 import {
