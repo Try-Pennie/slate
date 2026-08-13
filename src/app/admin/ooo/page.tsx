@@ -3,6 +3,8 @@ import { currentUser } from "@/lib/auth";
 import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { canRetrySideEffects, formatWhenLine, overlaps } from "@/lib/ooo/core";
+import { describeEffects } from "@/lib/ooo/effect-copy";
+import { FailedSteps } from "./FailedSteps";
 import { loadOrgOooHistory } from "@/lib/ooo/history-load";
 import {
   approvalStats,
@@ -298,10 +300,10 @@ export default async function OooQueuePage({
 
   const whenOf = (r: OooRequest) =>
     formatWhenLine(r.starts_at, r.ends_at, r.display_tz_id, r.display_tz_label);
-  const failedEffects = (r: OooRequest) =>
-    Object.entries(r.side_effects ?? {}).filter(([, v]) =>
-      v.startsWith("failed"),
-    );
+  // One description of the request's finished state, shared with the retry
+  // banner (#1476), so the marker, the list under it and the message after a
+  // retry can never disagree about which steps are in place.
+  const failedEffects = (r: OooRequest) => describeEffects(r.side_effects).failed;
 
   return (
     <>
@@ -631,12 +633,7 @@ export default async function OooQueuePage({
                           </Pill>
                         )}
                         {r.status === "approved" && failures.length > 0 && (
-                          <Pill
-                            variant="status-error"
-                            title={failures
-                              .map(([k, v]) => `${k}: ${v}`)
-                              .join("\n")}
-                          >
+                          <Pill variant="status-error">
                             calendar updates incomplete
                           </Pill>
                         )}
@@ -646,6 +643,13 @@ export default async function OooQueuePage({
                         {r.rejection_note ? ` · Note: ${r.rejection_note}` : ""}
                         {r.decided_by ? ` · by ${nameOf(r.decided_by)}` : ""}
                       </p>
+                      {/* #1477: the steps that failed, as VISIBLE text. This
+                          detail used to live in a title attribute, so the page
+                          named a problem and offered no way to read it on a
+                          phone, to a screen reader, or from the keyboard, and
+                          this is the surface someone lands on after an alert to
+                          decide whether to press Retry. */}
+                      {r.status === "approved" && <FailedSteps steps={failures} />}
                     </div>
                     {canRetry && r.status === "approved" && failures.length > 0 && (
                       <form action={retryOooAction}>

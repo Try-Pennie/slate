@@ -33,3 +33,46 @@ describe("OooQueuePage guard", () => {
     expect(screen.getByText(/manager or admin account to review time off/i)).toBeTruthy();
   });
 });
+
+// #1477: the failed calendar steps used to live in a title attribute, so the
+// page named a problem and offered no way to read it on a phone, to a screen
+// reader, or from the keyboard. A static read of the component cannot tell a
+// tooltip from text, so this mounts the real thing and asserts on the DOM.
+import { FailedSteps } from "./FailedSteps";
+import { describeEffects } from "@/lib/ooo/effect-copy";
+
+describe("FailedSteps (#1477)", () => {
+  const steps = describeEffects({
+    manager_event: "ok",
+    agent_event:
+      'failed: Error: events.insert failed: 503 {"error":{"errors":[{"reason":"backendError"}],"code":503}}',
+    busy_block: "ok (slate fallback)",
+  }).failed;
+
+  it("names the failed step, and its reason, as text on the page", () => {
+    const { container } = render(<FailedSteps steps={steps} />);
+
+    expect(container.textContent).toMatch(
+      /not in place: the event on the agent.s own calendar/i,
+    );
+    expect(container.textContent).toMatch(/503 backendError/);
+  });
+
+  it("puts nothing in a tooltip, which is unreachable without a pointer", () => {
+    const { container } = render(<FailedSteps steps={steps} />);
+
+    expect(container.querySelector("[title]")).toBeNull();
+  });
+
+  it("says nothing about the steps that are in place", () => {
+    const { container } = render(<FailedSteps steps={steps} />);
+
+    expect(container.textContent).not.toMatch(/manager.s OOO calendar entry/i);
+  });
+
+  it("renders nothing at all when every step landed", () => {
+    const { container } = render(<FailedSteps steps={[]} />);
+
+    expect(container.textContent).toBe("");
+  });
+});
