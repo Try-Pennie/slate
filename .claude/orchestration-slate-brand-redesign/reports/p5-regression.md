@@ -12,12 +12,20 @@ Date: 2026-06-12 · Branch: `redesign/pennie-brand` · Dev server: localhost:300
 | 4 | `pnpm exec tsc --noEmit` | **PASS** (exit 0) | `reports/p5-tsc.log` |
 | 5 | `pnpm cf:build` (OpenNext/Workers) | **PASS** (exit 0; "Worker saved in `.open-next/worker.js`", "OpenNext build complete") | `reports/p5-cf-build.log` |
 | 6 | git-diff review (no UNINTENDED logic) | **PASS** — 5 visual commits clean, 16 approved logic commits match purposes, 3 uncommitted files contain only the documented 5.1/5.2 fixes | `reports/diff-review.md` |
-| 7 | Standalone booking E2E (REAL) | **PASS** | `reports/p5-e2e-standalone.log` |
-| 8 | Embed booking E2E (REAL, modal UI) | **PASS** | `reports/p5-e2e-embed.log`, `reports/screens/p5-3-embed-real-confirm.png` |
+| 7 | Standalone booking E2E (REAL) | **PASS** | log removed 2026-08-13, see note below |
+| 8 | Embed booking E2E (REAL, modal UI) | **PASS** | log removed 2026-08-13 (see note below), `reports/screens/p5-3-embed-real-confirm.png` |
 | 9 | Validation + rate-limit spot checks | **PASS** (400 fieldErrors; 429 on 4th rapid post; spoof keys deleted) | `reports/p5-e2e-limits.log` |
 | 10 | cal.com contract (static + live) | **PASS** | greps + live walk below |
 | 11 | Cron endpoints sanity | **PASS** | `reports/p5-cron-sanity.log` |
 | 12 | Fonts + brand assets present | **PASS** (2 woff2 + 7 brand assets on disk; build resolves them) | ls + build log |
+
+> **Two evidence logs removed, 2026-08-13 (#1042).** `p5-e2e-standalone.log` and
+> `p5-e2e-embed.log` were deleted because each contained a live booking
+> `manage_token`, which grants reschedule and cancel on that booking to anyone who
+> can read the repo. Secret scanning found them when it was added. The gate results
+> above stood at the time and are not being restated; the transcripts below still
+> record what was walked. Do not commit a log containing a manage token: the token
+> is a credential, not an identifier.
 
 ## E2E transcripts
 
