@@ -81,6 +81,13 @@ export type OooBusyBlockInsert = {
   source: "slate" | "gcal";
   gcal_event_id: string | null;
   calendar_id: string | null;
+  /**
+   * The request this row was written for (#1464). Required, not optional: it is
+   * what tells the reconcile sweep and the pool-exit prune that an approved time
+   * off owns this window, and a block written without it is the exact row
+   * production lost 31 seconds after writing it.
+   */
+  ooo_request_id: string;
 };
 
 /** Coordinates of a posted Slack message, so it can be edited later. */
@@ -489,7 +496,16 @@ async function runPostApproval(
   //    With the agent event in hand we insert source='gcal' + its event id so
   //    the next sync pass upserts onto this same row (no double-counting);
   //    without it we fall back to a slate-source block.
-  if (!request.busy_block_id && !effects[EFFECTS.busyBlock]?.startsWith("ok")) {
+  //
+  //    The condition is `busy_block_id` alone, deliberately (#1464, L121). It used
+  //    to also skip whenever `side_effects.busy_block` began with "ok", which made
+  //    the step decide from its own success MARKER instead of from the artifact.
+  //    When the reconcile sweep deleted the row, the FK (ON DELETE SET NULL) left
+  //    `busy_block_id` null while the effect still read "ok (slate fallback)", so
+  //    the retry that exists to repair exactly this request skipped the only step
+  //    that was broken, permanently. The id is the artifact's own existence, so a
+  //    null id with an "ok" effect is damage and gets re-created.
+  if (!request.busy_block_id) {
     const agentEventId = patch.agent_event_id ?? request.agent_event_id;
     const block: OooBusyBlockInsert = agentEventId
       ? {
@@ -499,6 +515,7 @@ async function runPostApproval(
           source: "gcal",
           gcal_event_id: agentEventId,
           calendar_id: await deps.agentPrimaryCalendarId(agent.id),
+          ooo_request_id: request.id,
         }
       : {
           user_id: agent.id,
@@ -507,6 +524,7 @@ async function runPostApproval(
           source: "slate",
           gcal_event_id: null,
           calendar_id: null,
+          ooo_request_id: request.id,
         };
     const blockId = await deps.insertBusyBlock(block);
     if (blockId) {
@@ -539,6 +557,7 @@ async function runPostApproval(
       source: "gcal",
       gcal_event_id: patch.agent_event_id,
       calendar_id: await deps.agentPrimaryCalendarId(agent.id),
+      ooo_request_id: request.id,
     });
     if (convergedId) {
       await deps.deleteBusyBlock({

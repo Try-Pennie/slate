@@ -649,7 +649,19 @@ export interface BookingDeps {
   loadReconcilableBusyBlocks(
     limit: number,
     offset?: number,
-  ): Promise<Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[]>;
+  ): Promise<
+    Pick<
+      BusyBlock,
+      "id" | "user_id" | "booking_id" | "source" | "ooo_request_id"
+    >[]
+  >;
+  /**
+   * Of these `ooo_requests` ids, the ones still APPROVED (#1464). A block owned by
+   * a live approval is protecting that window and must survive the sweep; one whose
+   * request was cancelled, rejected, or deleted is owned by nothing and is freed
+   * exactly like any other orphan, so a missed OOO cancel still self-heals.
+   */
+  loadApprovedOooRequestIds(requestIds: string[]): Promise<Set<string>>;
   /** Status of each booking by id (absent from the map = the booking is gone). */
   loadBookingStatuses(bookingIds: string[]): Promise<Map<string, BookingStatus>>;
   /**
@@ -990,7 +1002,15 @@ export async function reconcileCancelledBusyBlocks(
   deps: BookingDeps,
   limit: number,
   offset = 0,
-): Promise<{ freed: number; userIds: string[]; scanned: number }> {
+): Promise<{
+  freed: number;
+  /** Of `freed`, the ones a cancel's write-through delete missed. */
+  freedCancelled: number;
+  /** Of `freed`, the ones nothing owned at all (no booking, no time off). */
+  freedOrphans: number;
+  userIds: string[];
+  scanned: number;
+}> {
   const rows = await deps.loadReconcilableBusyBlocks(limit, offset);
   const bookingIds = [
     ...new Set(
@@ -999,16 +1019,34 @@ export async function reconcileCancelledBusyBlocks(
         .map((r) => r.booking_id as string),
     ),
   ];
-  const [statuses, inflightCancels] = bookingIds.length
-    ? await Promise.all([
-        deps.loadBookingStatuses(bookingIds),
-        deps.loadInflightCancelBookingIds(bookingIds),
-      ])
-    : [new Map<string, BookingStatus>(), new Set<string>()];
+  // #1464: the OOO fallback writes a slate row with no booking, which is the shape
+  // this sweep read as an orphan. Ask which of those owners is still approved
+  // before judging anything, in one batched read.
+  const oooIds = [
+    ...new Set(
+      rows
+        .filter((r) => r.source === "slate" && r.ooo_request_id !== null)
+        .map((r) => r.ooo_request_id as string),
+    ),
+  ];
+  const [statuses, inflightCancels, approvedOoo] = await Promise.all([
+    bookingIds.length
+      ? deps.loadBookingStatuses(bookingIds)
+      : Promise.resolve(new Map<string, BookingStatus>()),
+    bookingIds.length
+      ? deps.loadInflightCancelBookingIds(bookingIds)
+      : Promise.resolve(new Set<string>()),
+    oooIds.length
+      ? deps.loadApprovedOooRequestIds(oooIds)
+      : Promise.resolve(new Set<string>()),
+  ]);
 
   const stuck = rows.filter((r) => {
     if (r.source !== "slate") return false; // never free a gcal mirror
-    if (r.booking_id === null) return true; // orphan: no booking owns this slot
+    // An approved time off owns this window: it is the only thing blocking it when
+    // the agent's calendar event could not be created, so it is not an orphan.
+    if (r.ooo_request_id !== null && approvedOoo.has(r.ooo_request_id)) return false;
+    if (r.booking_id === null) return true; // orphan: nothing owns this slot
     // The cancel's own busy_block delete is still queued: not damage, just in flight.
     if (inflightCancels.has(r.booking_id)) return false;
     const status = statuses.get(r.booking_id);
@@ -1017,10 +1055,15 @@ export async function reconcileCancelledBusyBlocks(
     return status === undefined || !ACTIVE_BUSY_STATUSES.has(status);
   });
 
-  if (stuck.length === 0) return { freed: 0, userIds: [], scanned: rows.length };
+  if (stuck.length === 0) {
+    return { freed: 0, freedCancelled: 0, freedOrphans: 0, userIds: [], scanned: rows.length };
+  }
   await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id));
+  const freedCancelled = stuck.filter((r) => r.booking_id !== null).length;
   return {
     freed: stuck.length,
+    freedCancelled,
+    freedOrphans: stuck.length - freedCancelled,
     userIds: [...new Set(stuck.map((r) => r.user_id))],
     scanned: rows.length,
   };

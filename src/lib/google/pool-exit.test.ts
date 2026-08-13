@@ -49,9 +49,13 @@ function fakeDb(tables: Record<string, Row[]>, faults: { deleteError?: string } 
     let mode: "select" | "update" | "delete" = "select";
     let payload: Row = {};
     let wantCount = false;
+    let headCount = false;
     const preds: Array<(r: Row) => boolean> = [];
     const b: Record<string, unknown> = {
-      select: () => b,
+      select: (_cols?: string, opts?: { count?: string; head?: boolean }) => {
+        if (opts?.head) headCount = true;
+        return b;
+      },
       update: (p: Row) => {
         mode = "update";
         payload = p;
@@ -67,7 +71,11 @@ function fakeDb(tables: Record<string, Row[]>, faults: { deleteError?: string } 
         return b;
       },
       is: (col: string, val: unknown) => {
-        preds.push((r) => r[col] === val);
+        // `.is(col, null)` matches SQL NULL, and a key absent from a fixture row
+        // stands for exactly that, so undefined has to match too. Without this the
+        // fake would answer "not null" for every column a test did not spell out,
+        // which is the opposite of what PostgREST does.
+        preds.push((r) => (val === null ? r[col] == null : r[col] === val));
         return b;
       },
       in: (col: string, vals: unknown[]) => {
@@ -89,6 +97,13 @@ function fakeDb(tables: Record<string, Row[]>, faults: { deleteError?: string } 
       },
       then: (resolve: (v: unknown) => unknown) => {
         const match = (r: Row) => preds.every((p) => p(r));
+        if (mode === "select" && headCount) {
+          return Promise.resolve({
+            data: null,
+            count: rows().filter(match).length,
+            error: null,
+          }).then(resolve);
+        }
         if (mode === "update") {
           for (const r of rows()) if (match(r)) Object.assign(r, payload);
           return Promise.resolve({ error: null }).then(resolve);
@@ -199,6 +214,32 @@ describe("cleanupOnPoolExit", () => {
     await expect(cleanupOnPoolExit("u1")).rejects.toThrow(/busy_blocks/);
   });
 
+  // #1471/#1464: the prune deletes by user_id regardless of where the row came
+  // from. That was safe while every row was a Google mirror or a booking's
+  // write-through, both meaningless once someone leaves the pool. The OOO
+  // fallback made it unsafe: its row is the ONLY thing blocking approved time
+  // off when the agent's calendar event could not be created, and an agent
+  // toggled out of the pool and back (or caught by the periodic backstop) lost
+  // that protection with no record.
+  it("keeps a block owned by an approved time off, and still prunes the rest", async () => {
+    const tables = {
+      users: [{ id: "u1", email: "a@trypennie.com", bookable: false, deactivated_at: null }],
+      agent_calendars: [],
+      busy_blocks: [
+        { user_id: "u1", ooo_request_id: null }, // calendar mirror / booking write-through
+        { user_id: "u1", ooo_request_id: "ooo-1" }, // approved time off's cover
+      ],
+    } as Record<string, Row[]>;
+    admin.current = fakeDb(tables);
+
+    const res = await cleanupOnPoolExit("u1");
+
+    expect(res.blocksDeleted).toBe(1);
+    // Visible in the count, not silent: the operator can see something survived.
+    expect(res.blocksPreserved).toBe(1);
+    expect(tables.busy_blocks).toEqual([{ user_id: "u1", ooo_request_id: "ooo-1" }]);
+  });
+
   it("a failing stopChannel does not abort the cleanup (columns still nulled, blocks still pruned)", async () => {
     const tables = seed();
     admin.current = fakeDb(tables);
@@ -282,6 +323,37 @@ describe("reconcileOrphanedPoolExits", () => {
   // needed cleaning" rather than "this sweep did not run". The route already
   // catches and logs a throw and reports "error" for the tick, so failing loud
   // here is what makes the failure visible.
+  // #1471: the bulk backstop is the second call site of the same delete, and it
+  // reaches every non-routable agent at once, so an unscoped prune here undoes
+  // the protection for everyone who has ever left the pool.
+  it("the bulk backstop also keeps time-off-owned rows and reports how many", async () => {
+    const tables = {
+      users: [
+        { id: "u1", email: "a@trypennie.com", bookable: false, deactivated_at: null },
+        { id: "u2", email: "b@trypennie.com", bookable: true, deactivated_at: "2026-01-01T00:00:00Z" },
+        { id: "u3", email: "c@trypennie.com", bookable: true, deactivated_at: null },
+      ],
+      agent_calendars: [],
+      busy_blocks: [
+        { user_id: "u1", ooo_request_id: null },
+        { user_id: "u1", ooo_request_id: "ooo-1" },
+        { user_id: "u2", ooo_request_id: "ooo-2" },
+        { user_id: "u3", ooo_request_id: null },
+      ],
+    } as Record<string, Row[]>;
+    admin.current = fakeDb(tables);
+
+    const res = await reconcileOrphanedPoolExits(50);
+
+    expect(res.blocksDeleted).toBe(1); // only u1's unowned row
+    expect(res.blocksPreserved).toBe(2); // both time-off covers
+    expect(tables.busy_blocks).toEqual([
+      { user_id: "u1", ooo_request_id: "ooo-1" },
+      { user_id: "u2", ooo_request_id: "ooo-2" },
+      { user_id: "u3", ooo_request_id: null }, // still routable, never in scope
+    ]);
+  });
+
   it("throws instead of reporting 0 blocks deleted when the bulk prune fails", async () => {
     const tables = seed();
     admin.current = fakeDb(tables, { deleteError: "permission denied for table busy_blocks" });
@@ -301,7 +373,7 @@ describe("reconcileOrphanedPoolExits", () => {
 
     const res = await reconcileOrphanedPoolExits(50);
 
-    expect(res).toEqual({ scanned: 0, cleaned: 0, blocksDeleted: 0 });
+    expect(res).toEqual({ scanned: 0, cleaned: 0, blocksDeleted: 0, blocksPreserved: 0 });
     expect(stopChannelSpy).not.toHaveBeenCalled();
     expect(tables.busy_blocks).toEqual([{ user_id: "u3" }]);
   });

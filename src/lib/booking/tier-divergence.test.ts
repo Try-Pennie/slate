@@ -140,9 +140,10 @@ function makeDeps(): BookingDeps {
     deleteBusyBlocksForBooking: noop,
     deleteGcalMirrorBlock: noop,
     loadReconcilableBusyBlocks: async () =>
-      [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source">[],
+      [] as Pick<BusyBlock, "id" | "user_id" | "booking_id" | "source" | "ooo_request_id">[],
     loadBookingStatuses: async () => new Map<string, BookingStatus>(),
     loadInflightCancelBookingIds: async () => new Set<string>(),
+    loadApprovedOooRequestIds: async () => new Set<string>(),
     deleteBusyBlocksByIds: noop,
     loadActiveUpcomingBookings: async () => [],
     loadBusyBlockBookingIds: async () => new Set<string>(),

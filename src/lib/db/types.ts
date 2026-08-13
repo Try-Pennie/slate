@@ -309,6 +309,14 @@ export interface BusyBlock {
   gcal_event_id: string | null;
   calendar_id: string | null;
   booking_id: string | null;
+  /**
+   * The approved time off this row was written for (#1464). A slate-source block
+   * with no booking used to mean "orphan, free it"; the OOO fallback is a second
+   * writer of exactly that shape and it is the ONLY thing blocking the window when
+   * the agent's calendar event could not be created, so it needs an owner the
+   * reconcile sweep and the pool-exit prune can see.
+   */
+  ooo_request_id: string | null;
   created_at: string;
 }
 

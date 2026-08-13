@@ -70,13 +70,40 @@ export function creationOrphanAlert(count: number, eventIds: string[]): string {
   );
 }
 
-/** The cancelled-booking reconcile freed slots a write-through delete had missed. */
-export function reconcileFreedAlert(freed: number, agentCount: number): string {
+/**
+ * The reconcile sweep freed cached busy time that nothing live was holding.
+ *
+ * The two kinds are reported apart (#1464) because they send the reader to
+ * different places. A block over a cancelled booking means a write-through delete
+ * was missed, so the cancel path is worth checking. A block nothing owned never
+ * referenced a booking at all, so naming the cancel path there spends the incident
+ * on code that did nothing wrong; it points at what actually wrote the row instead.
+ */
+export function reconcileFreedAlert(counts: {
+  freedCancelled: number;
+  freedOrphans: number;
+  agentCount: number;
+}): string {
+  const { freedCancelled, freedOrphans, agentCount } = counts;
+  const parts: string[] = [];
+  if (freedCancelled > 0) {
+    parts.push(
+      `${freedCancelled} stuck busy_block(s) whose booking was cancelled or missing. ` +
+        `A write-through delete was missed, so check cancel-path health.`,
+    );
+  }
+  if (freedOrphans > 0) {
+    parts.push(
+      `${freedOrphans} busy_block(s) that no booking and no approved time off owned. ` +
+        `The cancel path is not implicated. Diagnose via busy_blocks where booking_id ` +
+        `is null and ooo_request_id is null, which is the shape with no live owner.`,
+    );
+  }
+  const total = freedCancelled + freedOrphans;
   return (
-    `Reconcile freed ${freed} stuck busy_block(s) whose booking was cancelled/missing ` +
-    `across ${agentCount} agent(s). The slot(s) are now bookable again, but a write-through ` +
-    `delete was missed. Check cancel-path health.`
-  );
+    `Reconcile freed ${total} cached busy_block(s) across ${agentCount} agent(s), so ` +
+    `those slot(s) are bookable again. ${parts.join(" ")}`
+  ).trim();
 }
 
 /** The missing-block reconcile re-created slots that were showing free. */
