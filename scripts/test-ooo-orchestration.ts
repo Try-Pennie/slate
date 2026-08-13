@@ -88,6 +88,26 @@ const stranger: User = {
   role: "manager",
   manager_id: null,
 };
+// #1468: the rank ABOVE admin. The retry gated on `role !== "admin"`, so the
+// only role that outranks admin was the one refused, and the person holding it
+// is the one who reaches for the repair.
+const superAdmin: User = {
+  ...baseUser,
+  id: "u-super",
+  email: "super@trypennie.com",
+  name: "Sam Super",
+  role: "super_admin",
+  manager_id: null,
+};
+// The rank directly BELOW admin: moderates any request, but does not repair one.
+const teamLead: User = {
+  ...baseUser,
+  id: "u-lead",
+  email: "lead@trypennie.com",
+  name: "Lee Lead",
+  role: "team_lead",
+  manager_id: null,
+};
 
 interface AuditRecord {
   action: string;
@@ -139,7 +159,9 @@ function makeWorld(): World {
     deps: null as unknown as OooDeps,
   };
   const users = new Map(
-    [agent, namelessAgent, manager, admin, stranger].map((u) => [u.id, u]),
+    [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
+      (u) => [u.id, u],
+    ),
   );
   const isDuplicate = (
     userId: string,
@@ -835,6 +857,51 @@ const input = {
   );
   assert(w.dms.length === 0, "silent retry sends no DMs");
   assertAudited(w, "ooo.retry", agent.id, id);
+}
+
+// --- retry: every rank at or above admin, and nothing below (#1468) ---
+// The gate was written as `role !== "admin"`, an equality against ONE rank of a
+// five tier hierarchy, so super_admin (the only rank above it) was refused by
+// the one control that repairs a time off whose calendar write failed. Drive
+// the TOP tier explicitly: it is the rank no other fixture reaches for, which
+// is exactly why the defect shipped and survived a passing suite.
+{
+  for (const actor of [admin, superAdmin]) {
+    const w = makeWorld();
+    w.failAgentEvent = true;
+    const sub = await submitOoo(agent, input, w.deps);
+    const id = sub.ok ? sub.request.id : "";
+    await approveOoo(id, manager, w.deps);
+    assert(
+      w.requests.get(id)!.agent_event_id === null,
+      `${actor.role}: the agent event really is missing before the retry`,
+    );
+    w.failAgentEvent = false;
+
+    const res = await retryOooSideEffects(id, actor, w.deps);
+    assert(res.ok, `${actor.role} may retry the calendar updates`);
+    assert(
+      w.requests.get(id)!.agent_event_id !== null,
+      `${actor.role}: the retry actually filled the missing agent event`,
+    );
+  }
+
+  // The ranks BELOW admin stay refused, or the check above proves nothing.
+  for (const actor of [agent, manager, teamLead]) {
+    const w = makeWorld();
+    w.failAgentEvent = true;
+    const sub = await submitOoo(agent, input, w.deps);
+    const id = sub.ok ? sub.request.id : "";
+    await approveOoo(id, manager, w.deps);
+    w.failAgentEvent = false;
+
+    const res = await retryOooSideEffects(id, actor, w.deps);
+    assert(!res.ok, `${actor.role} may NOT retry the calendar updates`);
+    assert(
+      w.requests.get(id)!.agent_event_id === null,
+      `${actor.role}: a refused retry changes nothing`,
+    );
+  }
 }
 
 finish();

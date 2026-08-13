@@ -17,6 +17,7 @@ import {
   canCancel,
   canModerate,
   canModify,
+  canRetrySideEffects,
   DEFAULT_REJECTION_NOTE,
   DUPLICATE_REQUEST_MESSAGE,
   formatRequestWhenAndReason,
@@ -905,7 +906,9 @@ export async function retryOooSideEffects(
   actor: User,
   deps: OooDeps,
 ): Promise<OooActionResult> {
-  if (actor.role !== "admin") return fail("Not authorized");
+  if (!canRetrySideEffects(actor)) {
+    return fail("Only an admin can retry the calendar updates.");
+  }
   const request = await deps.loadRequest(requestId);
   if (!request) return fail("Request not found.");
   if (request.status !== "approved") {
