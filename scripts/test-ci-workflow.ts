@@ -93,10 +93,10 @@ assert(
 // attempt plus a second gated on its outcome. Both halves are asserted: the id
 // without the gate would swallow a genuinely broken install and run the gate with
 // no CLI at all.
-const setupId = migBlock.match(/uses: supabase\/setup-cli@v1\n\s+id: ([\w-]+)\n/)?.[1] ?? "";
+const setupId = migBlock.match(/uses: supabase\/setup-cli@\S+.*\n\s+id: ([\w-]+)\n/)?.[1] ?? "";
 assert(setupId.length > 0, "#1437: the first setup-cli attempt carries an id so its outcome can be read");
 assert(
-  /uses: supabase\/setup-cli@v1\n\s+id: [\w-]+\n\s+continue-on-error: true/.test(migBlock),
+  /uses: supabase\/setup-cli@\S+.*\n\s+id: [\w-]+\n\s+continue-on-error: true/.test(migBlock),
   "#1437: the first setup-cli attempt is allowed to fail so a second can run",
 );
 assert(
@@ -104,7 +104,7 @@ assert(
   "#1437: the retry runs ONLY when the first attempt failed (never unconditionally)",
 );
 assert(
-  (migBlock.match(/uses: supabase\/setup-cli@v1/g) ?? []).length === 2,
+  (migBlock.match(/uses: supabase\/setup-cli@\S+/g) ?? []).length === 2,
   "#1437: exactly two install attempts, so a dead download still fails the job rather than retrying forever",
 );
 assert(
