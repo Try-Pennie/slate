@@ -26,6 +26,7 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, resolveAlert }));
 import {
   runOooProtectionCheck,
   unprotectedTimeOff,
+  slateActedOn,
   fallbackOnlyTimeOff,
   formatOooProtectionAlert,
   formatFallbackClearedRecovery,
@@ -338,6 +339,31 @@ describe("runOooProtectionCheck", () => {
 // the defect it exists to catch. Select on a RECORDED outcome, never on the bare
 // approved status, which is the same rule the cal.com override sweep learned
 // (#1253, where 631 of 634 flag-keyed rows predated the feature).
+
+describe("slateActedOn", () => {
+  // Exported because the live check over these same rows
+  // (scripts/verify-imported-timeoff-cover.ts) has to select the identical set:
+  // a second copy of the rule beside it would drift in whichever direction
+  // flattered the conclusion (L41, L107).
+  it("is false only when no step was ever recorded and no event exists", () => {
+    expect(slateActedOn(request({ busyBlockEffect: null }))).toBe(false);
+  });
+
+  it("is true once the busy block step recorded any outcome", () => {
+    expect(slateActedOn(request({ busyBlockEffect: "ok" }))).toBe(true);
+    expect(slateActedOn(request({ busyBlockEffect: "failed: nope" }))).toBe(true);
+  });
+
+  it("is true once the calendar step recorded any outcome", () => {
+    expect(
+      slateActedOn(request({ busyBlockEffect: null, agentEventEffect: "failed: aborted" })),
+    ).toBe(true);
+  });
+
+  it("is true when a calendar event id exists, whatever was recorded", () => {
+    expect(slateActedOn(request({ busyBlockEffect: null, agentEventId: "evt-1" }))).toBe(true);
+  });
+});
 
 describe("requests Slate never acted on", () => {
   const imported = request({ busyBlockEffect: null, agentEventId: null });

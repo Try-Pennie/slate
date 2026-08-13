@@ -160,7 +160,7 @@ type Protection =
  * genuinely unprotected does not page here. That backlog is #1486, and the
  * excluded rows are counted on every tick so the exclusion cannot go quiet.
  */
-function slateActedOn(r: ApprovedTimeOff): boolean {
+export function slateActedOn(r: ApprovedTimeOff): boolean {
   return r.busyBlockEffect !== null || r.agentEventEffect !== null || r.agentEventId !== null;
 }
 
