@@ -86,4 +86,47 @@ assert(
   "#766: migration-drift still fails loud (exit 1) when its secrets are absent, so a non-dependabot branch can't pass green while verifying nothing",
 );
 
+// --- #1437: the CLI download gets a second attempt, and only a second -------
+// The download hung up its socket three times in one afternoon and failed the
+// job before any of our code ran, which skipped the deploy for a good commit.
+// Actions has no native step retry, so this is a `continue-on-error` first
+// attempt plus a second gated on its outcome. Both halves are asserted: the id
+// without the gate would swallow a genuinely broken install and run the gate with
+// no CLI at all.
+const setupId = migBlock.match(/uses: supabase\/setup-cli@v1\n\s+id: ([\w-]+)\n/)?.[1] ?? "";
+assert(setupId.length > 0, "#1437: the first setup-cli attempt carries an id so its outcome can be read");
+assert(
+  /uses: supabase\/setup-cli@v1\n\s+id: [\w-]+\n\s+continue-on-error: true/.test(migBlock),
+  "#1437: the first setup-cli attempt is allowed to fail so a second can run",
+);
+assert(
+  new RegExp(`if: steps\\.${setupId}\\.outcome == 'failure'`).test(migBlock),
+  "#1437: the retry runs ONLY when the first attempt failed (never unconditionally)",
+);
+assert(
+  (migBlock.match(/uses: supabase\/setup-cli@v1/g) ?? []).length === 2,
+  "#1437: exactly two install attempts, so a dead download still fails the job rather than retrying forever",
+);
+assert(
+  !/continue-on-error/.test(migBlock.split("Retry the Supabase CLI install")[1] ?? ""),
+  "#1437: the SECOND attempt is not continue-on-error, or a job with no CLI would carry on to the gate",
+);
+
+// --- #1437: the CLI calls live in the tested script, not in the run block ----
+// The retry that stops a Supabase 502 failing a good commit has to sit where a
+// suite can drive it. A bare `supabase link` back in the YAML would be that rule
+// leaking back into a place nothing can test, which is the #1433 objection.
+assert(
+  /check-migration-drift\.ts[\s\\]+--project-ref\s+\w+/.test(migBlock),
+  "#1437: the gate runs the script with the project ref, so link + list + retry are all inside it",
+);
+assert(
+  !/^\s*supabase (link|migration)/m.test(migBlock),
+  "#1437: no raw `supabase link` / `supabase migration list` in the run block (the retry would be untestable there)",
+);
+assert(
+  !/\/tmp\/mig\.txt/.test(migBlock),
+  "#1437: the tee-to-a-tempfile pipeline is gone (the script prints the table itself)",
+);
+
 finish();

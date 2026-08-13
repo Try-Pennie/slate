@@ -112,15 +112,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # #1437: the CLI DOWNLOAD is its own upstream, and it hung up its socket
+      # three times in a row on 2026-08-12, failing the job (and so skipping the
+      # deploy) before any of our code ran. Actions has no native step retry, so
+      # the first attempt is allowed to fail and a second one runs only if it did.
+      # If the second also fails the job goes red, which is the point: this is a
+      # bounded retry, not a way to proceed without the CLI.
       - uses: supabase/setup-cli@v1
+        id: setup-supabase-cli
+        continue-on-error: true
         with:
-          # Pinned (not `latest`) so the step is deterministic — `latest`
+          # Pinned (not `latest`) so the step is deterministic: `latest`
           # resolves over the network and intermittently 502s, red-flagging CI.
           # Bump deliberately; this version is known-good for link + migration list.
           version: 2.84.2
+      - name: Retry the Supabase CLI install (the download hung up, #1437)
+        if: steps.setup-supabase-cli.outcome == 'failure'
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.84.2
       # #1433: the parse runs as a node script with a test suite rather than inline
       # awk. Pinned to the same major the rest of CI uses, and no pnpm install is
-      # needed: the script imports one local module and nothing from node_modules.
+      # needed: the script imports local modules and nothing from node_modules.
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -138,18 +151,20 @@ jobs:
             echo "::error::migration-drift cannot run: SUPABASE_ACCESS_TOKEN and/or SUPABASE_DB_PASSWORD is not set. Configure both repo secrets. Failing rather than passing green while checking nothing (#766)."
             exit 1
           fi
-          # #1433: pipefail, so a failing `migration list` cannot hide behind `tee`
-          # succeeding. Without it the empty file that failure leaves reads as "no
-          # unapplied migrations", which is #766's defect again one level down.
           set -o pipefail
-          supabase link --project-ref drukfvgaynzrralbzkzj
-          supabase migration list --linked | tee /tmp/mig.txt
-          # The parse lives in a script with a suite (scripts/lib/migration-drift.ts),
-          # not in this block, because a rule inside a `run:` is a rule nothing can
-          # test. It reads only real table rows, so the CLI's own upgrade notice can
-          # never be read as an unapplied migration, and it treats reading NO rows as
-          # a failure rather than as an applied database.
-          node --experimental-strip-types scripts/check-migration-drift.ts < /tmp/mig.txt
+          # #1437: the CLI calls moved INTO the script, so the bounded retry that
+          # stops a Supabase 502 red-flagging a good commit lives somewhere a suite
+          # can drive (scripts/lib/migration-drift-cli.ts). It retries only a CLI
+          # that could not ANSWER; a successful read is judged, never retried, so no
+          # retry can turn real drift into a pass.
+          #
+          # The parse is a second module with its own suite
+          # (scripts/lib/migration-drift.ts), not a rule in this block where nothing
+          # can test it (#1433). It reads only real table rows, so the CLI's own
+          # upgrade notice can never be read as an unapplied migration, and it treats
+          # reading NO rows as a failure rather than as an applied database.
+          node --experimental-strip-types scripts/check-migration-drift.ts \
+            --project-ref drukfvgaynzrralbzkzj
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy

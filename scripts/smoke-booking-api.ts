@@ -62,6 +62,7 @@ import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
 import {
   evaluateStaticAssetTransport,
+  fetchProbe,
   httpProbeUrl,
   isHttpsRedirect,
   redirectVerdict,
@@ -266,10 +267,13 @@ async function checkHttpsRedirect() {
     console.log(`SKIP-INFO: http->https redirect check (base ${BASE} is not a public https host)`);
     return;
   }
-  const res = await fetch(probe, { redirect: "manual" }).then(
-    (r) => ({ status: r.status, location: r.headers.get("location") }),
-    (e: unknown) => ({ status: 0, location: null, error: e }),
-  );
+  // #1210: one retry when the probe cannot reach the site at all, so a single
+  // network blip on a 30 minute tick does not report a redirect as missing. Same
+  // helper and same narrowness as the asset probe: only "no answer" is retried.
+  const outcome = await fetchProbe({ fetchImpl: fetch, url: probe, init: { redirect: "manual" } });
+  const res = outcome.reached
+    ? { status: outcome.response.status, location: outcome.response.headers.get("location") }
+    : { status: 0, location: null };
   const isRedirect = isHttpsRedirect(res.status, res.location);
   const expected = process.env.EXPECT_HTTPS_REDIRECT === "1";
   const detail = `got ${res.status} -> ${res.location ?? "(no Location)"}`;
