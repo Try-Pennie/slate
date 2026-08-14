@@ -1,4 +1,9 @@
 import { parseStampMs } from "@/lib/date/stamp";
+import {
+  OUTCOME_NOT_IN_CALCOM,
+  OUTCOME_OK_PREFIX,
+  OUTCOME_SKIPPED_PREFIX,
+} from "@/lib/calcom/outcomes";
 
 /**
  * Retry a cal.com availability override that failed, and page when an absence is
@@ -63,10 +68,8 @@ export interface OverrideCandidate {
  * tick can discover it has changed, and retrying it would spend a shared per tick
  * budget on a lookup that cannot succeed.
  */
-const PROVISIONAL_SKIP = "skipped: not in cal.com";
-
 export function isProvisionalSkip(outcome: string): boolean {
-  return outcome.startsWith(PROVISIONAL_SKIP);
+  return outcome.startsWith(OUTCOME_NOT_IN_CALCOM);
 }
 
 /**
@@ -75,7 +78,7 @@ export function isProvisionalSkip(outcome: string): boolean {
  */
 export function isSettled(outcome: string): boolean {
   if (isProvisionalSkip(outcome)) return false;
-  return outcome.startsWith("ok") || outcome.startsWith("skipped");
+  return outcome.startsWith(OUTCOME_OK_PREFIX) || outcome.startsWith(OUTCOME_SKIPPED_PREFIX);
 }
 
 /**

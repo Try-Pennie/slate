@@ -1,4 +1,5 @@
 import { calcomApiKey, calcomBaseUrl, calcomOrgId } from "@/lib/env";
+import { OUTCOME_NOT_CONFIGURED, notInCalcomOutcome } from "./outcomes.ts";
 import {
   buildDateOverrides,
   filterOutOverrides,
@@ -188,7 +189,7 @@ async function attemptOoo(
     // Not a failure: cal.com is being wound down, so an unconfigured integration
     // is a deliberate state with nothing for anyone to do. Alerting on it would
     // page on every single approval.
-    if (!calcomConfigured()) return done("skipped: cal.com not configured");
+    if (!calcomConfigured()) return done(OUTCOME_NOT_CONFIGURED);
     const user = await getUserIdByEmail(agentEmail);
     if (user.kind === "error") {
       return { outcome: `failed: ${user.detail}`, retryable: user.retryable };
@@ -196,7 +197,7 @@ async function attemptOoo(
     // Nobody can book an agent who does not exist in cal.com, so there is no
     // availability to block and no action for a human: a skip, not a failure
     // (#1249). Expected to become more common as new hires land in Slate only.
-    if (user.kind === "absent") return done(`skipped: not in cal.com (${agentEmail})`);
+    if (user.kind === "absent") return done(notInCalcomOutcome(agentEmail));
     const userId = user.value;
     const found = await getDefaultSchedule(userId);
     if (found.kind === "error") {
