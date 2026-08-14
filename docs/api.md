@@ -102,13 +102,16 @@ phone). The result is reported as an `outcome`:
 | Situation | `outcome` | HTTP |
 |---|---|---|
 | No existing appointment | `created` | 200 |
-| Same person, same slot | `deduped` | 200 |
+| Same person, same slot, same bucket | `deduped` | 200 |
+| Same person, same slot, different bucket | `rescheduled` | 200 |
 | Same person, different time, confident match | `rescheduled` | 200 |
 | Same person, different time, weak match (email or phone only) | `confirm_required` | 409 |
 
 A `confirm_required` makes no change and returns the existing booking; the caller
-confirms with the lead and retries with `confirmReschedule: true`. See
-`docs/booking-api.md` for the full rebook and cross-bucket-move semantics.
+confirms with the lead and retries with `confirmReschedule: true`. A `deduped`
+may carry a `bucketChangeDeclined` object when a requested bucket change could
+not be made; see `docs/booking-api.md` for the full rebook and cross-bucket-move
+semantics.
 
 **Success response** (`200`, or `409` for `confirm_required`):
 

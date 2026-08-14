@@ -458,3 +458,38 @@ describe("GET rate limiting (#597)", () => {
     expect(rateLimit.bookingApiIpWithinLimit).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/bookings: a declined bucket change (#1465)", () => {
+
+  // #1465: a same time rebook into a DIFFERENT bucket is honoured, and when it
+  // cannot be, the response has to say so. A bare 200 deduped reads as "handled"
+  // while the routing request was dropped and the lead stayed with the old team.
+  it("names a declined bucket change on the response, with the bucket that was asked for", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    service.bookViaApi.mockResolvedValue({
+      ...result("deduped"),
+      bucketChangeDeclined: "no_eligible_agents",
+    });
+
+    const res = await post("Bearer secret", VALID_BODY);
+    const body = await res.json();
+
+    expect(res.status).toBe(200); // the lead DOES hold a valid appointment
+    expect(body.outcome).toBe("deduped");
+    expect(body.bucketChangeDeclined).toEqual({
+      requestedBucketCode: "411",
+      reason: "no_eligible_agents",
+    });
+  });
+
+  it("omits the field entirely when nothing was declined, so its presence always means something", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    service.bookViaApi.mockResolvedValue(result("deduped"));
+
+    const res = await post("Bearer secret", VALID_BODY);
+    const body = await res.json();
+
+    expect(body.outcome).toBe("deduped");
+    expect("bucketChangeDeclined" in body).toBe(false);
+  });
+});

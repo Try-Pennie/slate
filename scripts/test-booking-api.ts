@@ -126,6 +126,114 @@ async function run() {
     );
   }
 
+  // --- bookViaApi: SAME TIME, DIFFERENT bucket -> move, not a silent dedupe (#1465) ---
+  //
+  // A re-tiered lead confirming the time they already hold is the ordinary call:
+  // the bot re-books them into the bucket their new debt profile routes to, at
+  // the slot they already agreed. That used to come back 200 deduped with the
+  // OLD booking in the OLD bucket, so the routing request was dropped and the
+  // response said nothing about it. The instant is the same; the TEAM is not.
+  {
+    const existingB = makeBooking({
+      id: "bk-existing",
+      external_id: "ext-1",
+      bucket_id: "bkt-OLD",
+      manage_token: "tokX",
+    });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: existingB.starts_at, // the SAME instant
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({
+      personBookings: [existingB],
+      existing: { booking: existingB, bucket, eventType },
+    });
+    const res = await bookViaApi(apiInput, deps);
+    assert(
+      res.outcome === "rescheduled",
+      `bookViaApi same-time cross-bucket -> rescheduled (got ${res.outcome})`,
+    );
+    assert(
+      res.booking.id === "bk-new",
+      "bookViaApi same-time cross-bucket: returns the NEW booking in the requested bucket",
+    );
+    assert(
+      calls.webhooks.some((w) => w.event === "booking.created"),
+      "bookViaApi same-time cross-bucket: created in the target bucket FIRST",
+    );
+    assert(
+      calls.webhooks.some((w) => w.event === "booking.cancelled"),
+      "bookViaApi same-time cross-bucket: then the old appointment is cancelled",
+    );
+    assert(
+      res.bucketChangeDeclined === undefined,
+      "bookViaApi same-time cross-bucket: nothing was declined on the happy path",
+    );
+  }
+
+  // --- and the SAME bucket at the same instant is still a plain dedupe ---
+  //
+  // The other half, or the rule above is satisfied by code that treats every
+  // same-instant rebook as a move and quietly rebuilds a booking that was
+  // already correct (L1).
+  {
+    const existingB = makeBooking({ id: "bk-existing", external_id: "ext-1", bucket_id: bucket.id });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: existingB.starts_at,
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    const { deps, calls } = makeDeps({ personBookings: [existingB] });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "deduped", "same instant, same bucket -> still deduped");
+    assert(calls.createEvent.length === 0, "and nothing is rebuilt");
+  }
+
+  // --- the move cannot be made: say so, never a bare 200 that reads as handled ---
+  //
+  // The new bucket may have nobody free at that instant, which is a normal "no"
+  // rather than an error: the lead still holds a valid appointment, so answering
+  // with a failure would say nothing is booked, which is false. It comes back as
+  // a dedupe that NAMES the declined bucket change, so the caller can tell that
+  // the bucket it asked for is not the bucket the lead is in (L11, L12).
+  {
+    const existingB = makeBooking({
+      id: "bk-existing",
+      external_id: "ext-1",
+      bucket_id: "bkt-OLD",
+      manage_token: "tokX",
+    });
+    const apiInput: ApiBookingInput = {
+      ...input,
+      startIso: existingB.starts_at,
+      externalId: "ext-1",
+      confirmReschedule: false,
+    };
+    // An empty pool in the target bucket, which is the shape the real refusal
+    // takes: at the same instant the lead's own booking still holds their current
+    // agent, so a bucket whose only free agent is that same person answers no.
+    const { deps, calls } = makeDeps({
+      personBookings: [existingB],
+      existing: { booking: existingB, bucket, eventType },
+      candidates: [],
+    });
+
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "deduped", `a refused move falls back to deduped (got ${res.outcome})`);
+    assert(res.booking.id === "bk-existing", "and the lead keeps the appointment they had");
+    assert(
+      res.bucketChangeDeclined === "no_eligible_agents",
+      `the response names WHY the bucket change was dropped (got ${String(res.bucketChangeDeclined)})`,
+    );
+    assert(
+      !calls.webhooks.some((w) => w.event === "booking.cancelled"),
+      "and the old appointment is never cancelled when its replacement did not land",
+    );
+  }
+
   // --- bookViaApi: WEAK match (email only), different time -> confirm_required ---
   {
     const existingB = makeBooking({

@@ -2290,6 +2290,15 @@ export type ApiBookingOutcome =
   | "rescheduled"
   | "confirm_required";
 
+/**
+ * Why a requested bucket change could not be honoured (#1465).
+ *
+ * Both are ordinary "no" answers from the target bucket rather than errors: the
+ * lead still holds a valid appointment, so answering with a failure would tell
+ * the caller nothing is booked, which is false. Anything else propagates.
+ */
+export type BucketChangeDeclineReason = "slot_taken" | "no_eligible_agents";
+
 export interface ApiBookingResult {
   outcome: ApiBookingOutcome;
   booking: Booking;
@@ -2297,6 +2306,13 @@ export interface ApiBookingResult {
   /** #543: present on a "rescheduled" outcome when the in-place agent was
    *  declined and the booking reassigned. Observability only. */
   rescheduleDecline?: RescheduleDeclineReason;
+  /**
+   * #1465: present on a "deduped" outcome when the request named a DIFFERENT
+   * bucket and the move into it could not be made. The lead keeps the
+   * appointment they had, in the OLD bucket, and this says so, because a bare
+   * 200 deduped reads as "handled" while the routing request was dropped.
+   */
+  bucketChangeDeclined?: BucketChangeDeclineReason;
 }
 
 // Machine-to-machine rebooking reason; recorded on the reschedule history row.
@@ -2306,9 +2322,13 @@ const API_REBOOK_REASON: ValidatedReason = { code: "api_rebooking", detail: null
  * Direct booking API entry (#357): enforce "one active appointment per person".
  * Look the lead up across active bookings, grade the match, then create / dedupe
  * / auto-reschedule / ask-to-confirm. Auto-reschedule reuses the full reschedule
- * path (verify-on-book, history, booking.rescheduled webhook); it moves the
- * EXISTING booking's time and keeps its bucket (a cross-bucket rebook is the
- * documented v1 edge — the original bucket wins).
+ * path (verify-on-book, history, booking.rescheduled webhook) when the bucket is
+ * unchanged.
+ *
+ * A rebook naming a DIFFERENT bucket is a routing request, not a time request,
+ * and it is honoured at BOTH a new time (#364) and the time the lead already
+ * holds (#1465), by the same move: create in the new bucket first, then cancel
+ * the old, so a refusal there leaves the existing appointment intact.
  */
 /** Shared person-dedupe decision used by both the real book and the dry run. */
 async function resolvePersonDecision(
@@ -2506,6 +2526,55 @@ function notBookable(reason: BookableReason): BookableResult {
   };
 }
 
+/**
+ * Move a lead's existing appointment into the bucket the request names, when
+ * that bucket differs from the one they are in (#364, #1465).
+ *
+ * Create in the new bucket FIRST, then cancel the old, so a refusal in the new
+ * bucket leaves the existing appointment intact rather than leaving the lead
+ * with nothing. At the SAME instant that ordering matters most: the lead's own
+ * booking still occupies their current agent while the new one is placed, so a
+ * bucket whose only free agent is that same person legitimately answers no.
+ *
+ * `tolerateRefusal` decides what a normal "no" from the new bucket means, and
+ * the two callers genuinely differ. On a same-instant rebook the lead keeps a
+ * valid appointment, so the refusal is reported as a declined bucket change; on
+ * a rebook to a new time they asked for something they did not get, so it
+ * propagates.
+ */
+type BucketMove =
+  | { outcome: "unchanged" }
+  | { outcome: "moved"; booking: Booking; manageUrl: string }
+  | { outcome: "declined"; reason: BucketChangeDeclineReason };
+
+async function moveToRequestedBucket(
+  input: ApiBookingInput,
+  existing: Booking,
+  deps: BookingDeps,
+  opts: { tolerateRefusal?: boolean } = {},
+): Promise<BucketMove> {
+  const resolved = await deps.resolveBucketByCode(input.bucketCode);
+  if (!resolved) throw new UnknownBucketError();
+  if (resolved.bucket.id === existing.bucket_id) return { outcome: "unchanged" };
+
+  let created: Awaited<ReturnType<typeof createBooking>>;
+  try {
+    created = await createBooking(input, deps);
+  } catch (err) {
+    if (opts.tolerateRefusal === false) throw err;
+    // Only the two ordinary "no" answers are tolerated. A transient verify
+    // outage or anything unexpected must never be reported as a lead who simply
+    // could not be moved, because that would be a claim the code never measured.
+    if (err instanceof SlotUnavailableError) return { outcome: "declined", reason: "slot_taken" };
+    if (err instanceof NoEligibleAgentsError) {
+      return { outcome: "declined", reason: "no_eligible_agents" };
+    }
+    throw err;
+  }
+  await cancelBooking(existing.manage_token, API_REBOOK_REASON, "system", deps);
+  return { outcome: "moved", booking: created.booking, manageUrl: created.manageUrl };
+}
+
 export async function bookViaApi(
   input: ApiBookingInput,
   deps: BookingDeps,
@@ -2517,25 +2586,44 @@ export async function bookViaApi(
       const res = await createBooking(input, deps);
       return { outcome: "created", booking: res.booking, manageUrl: res.manageUrl };
     }
-    case "dedupe":
+    case "dedupe": {
+      // #1465: the decision is made on the INSTANT alone, which is right for its
+      // own rule (the same instant is the same booking intent) but leaves the
+      // bucket with nowhere to be noticed. A re-tiered lead confirming the time
+      // they already hold is the ordinary call, and answering 200 deduped left
+      // them with the old pool and the old agent while the response said nothing.
+      const moved = await moveToRequestedBucket(input, decision.booking, deps);
+      if (moved.outcome === "moved") {
+        return {
+          outcome: "rescheduled",
+          booking: moved.booking,
+          manageUrl: moved.manageUrl,
+        };
+      }
       return {
         outcome: "deduped",
         booking: decision.booking,
         manageUrl: manageUrl(deps, decision.booking.manage_token),
+        // Undefined when the bucket never changed, so the field means "the
+        // change you asked for was dropped" rather than merely "no change".
+        ...(moved.outcome === "declined" ? { bucketChangeDeclined: moved.reason } : {}),
       };
+    }
     case "reschedule": {
       // #364: if the rebook targets a DIFFERENT bucket than the existing
       // appointment, move the lead to the new bucket rather than just shifting
       // the time within the original one (so they route to the team matching
-      // their new request).
-      const resolved = await deps.resolveBucketByCode(input.bucketCode);
-      if (!resolved) throw new UnknownBucketError();
-      if (resolved.bucket.id !== decision.booking.bucket_id) {
-        // Create in the new bucket FIRST so a failure (e.g. no eligible agents
-        // there) leaves the existing appointment intact, THEN cancel the old.
-        const created = await createBooking(input, deps);
-        await cancelBooking(decision.booking.manage_token, API_REBOOK_REASON, "system", deps);
-        return { outcome: "rescheduled", booking: created.booking, manageUrl: created.manageUrl };
+      // their new request). One shared move with the same-instant case (#1465),
+      // so the two cannot diverge on what a bucket change means.
+      //
+      // A refusal here is NOT swallowed: the lead asked for a different time and
+      // did not get it, so there is nothing to report as handled and the error
+      // propagates. That asymmetry with the dedupe arm is the point.
+      const moved = await moveToRequestedBucket(input, decision.booking, deps, {
+        tolerateRefusal: false,
+      });
+      if (moved.outcome === "moved") {
+        return { outcome: "rescheduled", booking: moved.booking, manageUrl: moved.manageUrl };
       }
       const res = await rescheduleBooking(
         decision.booking.manage_token,

@@ -145,7 +145,8 @@ ends up double-booked, even across channels (an embed booking carries no
 | Situation | `outcome` | HTTP | What happened |
 |---|---|---|---|
 | No existing appointment | `created` | 200 | New booking created. |
-| Same person, **same slot** | `deduped` | 200 | Existing booking returned; nothing created. |
+| Same person, **same slot**, same bucket | `deduped` | 200 | Existing booking returned; nothing created. |
+| Same person, **same slot**, **different bucket** | `rescheduled` | 200 | The lead is **moved to the new team** at the time they already hold (#1465). |
 | Same person, **different time**, confident match¹ | `rescheduled` | 200 | Existing booking **moved** to the new time. |
 | Same person, **different time**, weak match² | `confirm_required` | 409 | **No change made.** The existing appointment is returned — confirm with the lead, then retry with `confirmReschedule: true`. |
 
@@ -153,11 +154,23 @@ ends up double-booked, even across channels (an embed booking carries no
 ² weak = matched by email **or** phone only. The confirm step guards against
 silently moving the wrong person (shared household phone, recycled id).
 
-> A "different time" rebook **moves the existing appointment** rather than making
-> a second one. If the rebook targets the **same bucket**, the appointment's time
-> is shifted in place. If it targets a **different bucket**, the lead is **moved to
-> the new bucket** (a fresh booking is created there and the old one is cancelled),
-> so they route to the team matching their new request (#364).
+> A rebook **moves the existing appointment** rather than making a second one. If
+> it targets the **same bucket**, the appointment's time is shifted in place. If
+> it targets a **different bucket**, the lead is **moved to the new bucket** (a
+> fresh booking is created there and the old one is cancelled), so they route to
+> the team matching their new request. That holds at a new time (#364) **and at
+> the time they already hold** (#1465): a bucket change is a routing request, not
+> a time request, and a re-tiered lead confirming their existing slot is the
+> ordinary call.
+>
+> The new booking is created **before** the old one is cancelled, so a bucket with
+> nobody free leaves the lead's appointment intact. At the same instant that
+> matters most, because the lead's own booking still occupies their current agent
+> while the new one is placed. When the move is refused that way, the response is
+> `deduped` with a **`bucketChangeDeclined`** object naming the requested bucket
+> and the reason (`slot_taken` or `no_eligible_agents`), so the caller can tell
+> that the bucket it asked for is not the bucket the lead is in. The field is
+> absent whenever nothing was declined.
 
 ### Success / confirm response
 
@@ -377,7 +390,8 @@ Authorization: Bearer <key>
 |---|---|---|
 | Same `bucketCode`, new `start` | `rescheduled` | The appointment's **time is shifted in place** (same agent/bucket). |
 | Different `bucketCode`, new `start` | `rescheduled` | The lead is **moved to the new team**: a fresh booking is created there and the old one cancelled (#364). |
-| Same `externalId`, same slot | `deduped` | No change — the existing booking is returned. |
+| Same `externalId`, same slot, same bucket | `deduped` | No change: the existing booking is returned. |
+| Different `bucketCode`, **same** `start` | `rescheduled` | The lead is **moved to the new team** at the slot they already hold (#1465), or `deduped` with `bucketChangeDeclined` when that team has nobody free. |
 
 Because the bot always carries a strong id (`externalId`/`salesforceId`), a
 reschedule is **deterministic** — it never returns `confirm_required` (that
