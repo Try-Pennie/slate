@@ -20,6 +20,7 @@ import {
   inProgressUnprotected,
   runCalcomOverrideSweep,
   selectCandidates,
+  PROVISIONAL_RETRY_WINDOW_DAYS,
   toCandidates,
   type OverrideCandidate,
 } from "../src/lib/monitor/calcom-override-sweep.ts";
@@ -47,18 +48,79 @@ const candidate = (over: Partial<OverrideCandidate> = {}): OverrideCandidate => 
   // they were approved before the dual-write existed. They are not failures and
   // they are certainly not done, so a filter keyed on either word misses them and
   // those agents stay bookable in cal.com throughout their time off.
+  //
+  // #1276: "not in cal.com" is PROVISIONAL, not terminal. It stops being true the
+  // moment the agent is added there, which happened for real on 2026-08-04, and
+  // new hires reaching Slate before cal.com make it the expected direction of
+  // travel. Every row here has not ended yet (the loader's own filter), so a skip
+  // in this set always has time left to become bookable.
   const rows: OverrideCandidate[] = [
     candidate({ id: "failed", effect: "failed: schedule patch returned 500" }),
     candidate({ id: "never-attempted", effect: "" }),
     candidate({ id: "done", effect: "ok" }),
-    candidate({ id: "nothing-to-do", effect: "skipped: not in cal.com (a@b.com)" }),
+    candidate({ id: "no-account-yet", effect: "skipped: not in cal.com (a@b.com)" }),
+    candidate({ id: "calcom-off", effect: "skipped: cal.com not configured" }),
   ];
-  const picked = selectCandidates(rows).map((r) => r.id).sort();
+  const picked = selectCandidates(rows).map((r) => r.id);
+  eq(
+    JSON.stringify([...picked].sort()),
+    JSON.stringify(["failed", "never-attempted", "no-account-yet"]),
+    "picks a recorded failure, one never attempted, AND an agent who may since have a cal.com account",
+  );
+  // The other skip reason is genuinely terminal: cal.com being unconfigured is not
+  // something a later tick can discover has changed, and retrying it forever would
+  // spend the per tick cap on a lookup that cannot succeed.
+  assert(!picked.includes("calcom-off"), "cal.com being unconfigured stays terminal");
+  assert(!picked.includes("done"), "and a successful write is never redone");
+
+  // Real failures come FIRST, because the per tick cap is a shared budget: a run of
+  // agents waiting on cal.com accounts must not push an override that genuinely
+  // failed past the cap, where it goes unattempted for a whole tick (L117).
+  eq(
+    picked[picked.length - 1],
+    "no-account-yet",
+    "and a provisional skip is ordered behind the real failures it shares the cap with",
+  );
+}
+
+// --- how far ahead a provisional skip is worth re-checking ------------------
+
+{
+  // An agent who never gets a cal.com account would otherwise cost one outbound
+  // lookup every five minutes, and hold a slot in the per tick cap, for as long as
+  // the absence is in the future. The retry is only useful before somebody can
+  // book into the absence, and nobody books further out than the booking horizon.
+  const far = new Date(NOW + (PROVISIONAL_RETRY_WINDOW_DAYS + 30) * hours(24)).toISOString();
+  const near = new Date(NOW + hours(24)).toISOString();
+  const rows: OverrideCandidate[] = [
+    candidate({ id: "soon", effect: "skipped: not in cal.com (a@b.com)", startsAt: near }),
+    candidate({ id: "months-away", effect: "skipped: not in cal.com (a@b.com)", startsAt: far }),
+    // A real failure is retried whatever its date: it is evidence something went
+    // wrong, not a state that may change on its own.
+    candidate({ id: "failed-far", effect: "failed: 500", startsAt: far }),
+  ];
+  const picked = selectCandidates(rows, NOW).map((r) => r.id).sort();
   eq(
     JSON.stringify(picked),
-    JSON.stringify(["failed", "never-attempted"]),
-    "picks a recorded failure AND one never attempted, and leaves the settled ones alone",
+    JSON.stringify(["failed-far", "soon"]),
+    "a provisional skip is re-checked as its absence approaches, not for months beforehand",
   );
+
+  // Deferred, never dropped: the same row is picked up once it is close.
+  const later = selectCandidates(rows, NOW + (PROVISIONAL_RETRY_WINDOW_DAYS + 29) * hours(24))
+    .map((r) => r.id);
+  assert(
+    later.includes("months-away"),
+    "and it re-enters the set as the absence approaches, well before anyone can book into it",
+  );
+
+  // An unreadable start keeps checking, because the cost of an extra lookup is a
+  // lookup and the cost of skipping is an agent bookable through their time off.
+  const unreadable = selectCandidates(
+    [candidate({ id: "bad-date", effect: "skipped: not in cal.com (a@b.com)", startsAt: "not a date" })],
+    NOW,
+  );
+  eq(unreadable.length, 1, "an unreadable start is re-checked, not silently deferred forever");
 }
 
 // --- whose absences count at all -------------------------------------------
@@ -149,15 +211,49 @@ function runFake(opts: FakeOpts) {
 }
 
 {
-  // A retry that comes back as a SKIP also clears: the agent is not in cal.com, so
-  // there is nothing to protect and it must stop being swept forever.
+  // A retry that comes back "not in cal.com" must NOT page: nobody can book an
+  // agent who does not exist there, so nothing is unprotected. It is also not
+  // CLEARED, because the reason it skipped can change on any later tick (#1276),
+  // and counting it as done is what left an agent bookable through their time off
+  // after they were added to the cal.com org.
   const { state, promise } = runFake({
-    candidates: [candidate()],
+    candidates: [
+      candidate({
+        startsAt: new Date(NOW - hours(1)).toISOString(),
+        endsAt: new Date(NOW + hours(7)).toISOString(),
+      }),
+    ],
     outcomes: { "req-1": "skipped: not in cal.com (agent@trypennie.com)" },
   });
   const res = await promise;
-  eq(res.cleared, 1, "a skip clears the row rather than being retried forever");
+  eq(state.alerts.length, 0, "an agent with no cal.com account never pages");
+  eq(res.unprotected, 0, "and is not counted as unprotected, even mid absence");
+  eq(res.cleared, 0, "and is not counted as cleared, because it can still change");
+}
+
+{
+  // The terminal skip DOES clear: cal.com being switched off is not a state a
+  // later tick can find has changed, so sweeping it forever would be waste.
+  const { state, promise } = runFake({
+    candidates: [candidate()],
+    outcomes: { "req-1": "skipped: cal.com not configured" },
+  });
+  const res = await promise;
+  eq(res.cleared, 1, "an unconfigured cal.com clears the row for good");
   eq(state.alerts.length, 0, "and does not page");
+}
+
+{
+  // The point of the whole change: the agent has since been added to cal.com, so
+  // the same row that skipped last tick now succeeds.
+  const { state, promise } = runFake({
+    candidates: [candidate({ effect: "skipped: not in cal.com (agent@trypennie.com)" })],
+    outcomes: { "req-1": "ok" },
+  });
+  const res = await promise;
+  eq(res.retried, 1, "a row that skipped last time is attempted again");
+  eq(res.cleared, 1, "and clears once the account exists");
+  eq(state.alerts.length, 0, "with nothing to page about");
 }
 
 {
