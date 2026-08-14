@@ -94,12 +94,17 @@ jobs:
       # already read it, so without it here the smoke could test a different origin
       # from the one being stamped alive. An unset variable arrives as "", which the
       # scripts' envOr treats as absent (never as a base URL of "").
+      # SMOKE_FAILURE_FILE lets each run record WHICH checks failed, so the Slack
+      # alert names them instead of one sentence covering every possible cause
+      # (#1492). A literal path, not a repo variable: it is an internal handoff
+      # between two steps of the same job, and the alert step reads the same path.
       - name: Booking smoke (dry-run health tick)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '0'
         env:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           EXPECT_HTTPS_REDIRECT: ${{ vars.EXPECT_HTTPS_REDIRECT }}
+          SMOKE_FAILURE_FILE: smoke-failures.txt
           SMOKE_DRY_RUN_ONLY: "1"
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
 
@@ -110,6 +115,7 @@ jobs:
           REASSIGN_API_KEY: ${{ secrets.REASSIGN_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           EXPECT_HTTPS_REDIRECT: ${{ vars.EXPECT_HTTPS_REDIRECT }}
+          SMOKE_FAILURE_FILE: smoke-failures.txt
           SMOKE_STRICT: "1"
           # No Google service-account creds on the runner, so skip the orphan-event
           # sweep; the API-driven cancels still tear down every booking server-side.
@@ -121,6 +127,7 @@ jobs:
         env:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-reschedule.ts
 
       - name: Stamp canary heartbeat (success only)
@@ -154,4 +161,8 @@ jobs:
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
           SMOKE_MODE: ${{ steps.mode.outputs.full == '1' && 'full' || 'dry' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Same path the smoke steps wrote to. An ABSENT file is a real outcome, not
+          # an error: it means the run died before any check reported, and the alert
+          # says that rather than implying a booking regression (#1492).
+          SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/notify-smoke-failure.ts

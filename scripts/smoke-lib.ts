@@ -8,6 +8,11 @@
 // keeps those scripts working regardless of import order.
 
 import { envOr } from "./smoke-env.ts";
+import {
+  failureLogPath,
+  nodeSmokeFailureIo,
+  recordFailure,
+} from "./lib/smoke-failure-log.ts";
 
 export type Json = Record<string, unknown>;
 
@@ -120,12 +125,17 @@ export function createChecker(): {
   failed: () => number;
 } {
   let failures = 0;
+  // #1492: record each failure as it happens, so the canary's Slack alert can name
+  // WHICH checks failed rather than one sentence covering every possible cause. A
+  // no-op unless the workflow set SMOKE_FAILURE_FILE, so a hand run is unchanged.
+  const failureLog = failureLogPath(process.env);
   return {
     check(cond: boolean, msg: string): void {
       if (cond) console.log("ok:", msg);
       else {
         console.error("FAIL:", msg);
         failures += 1;
+        recordFailure(nodeSmokeFailureIo, failureLog, msg);
       }
     },
     failed: () => failures,

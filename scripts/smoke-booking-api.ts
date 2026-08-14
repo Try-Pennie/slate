@@ -80,6 +80,11 @@ import {
   type SlotPlan,
 } from "./lib/smoke-slot-plan.ts";
 import {
+  failureLogPath,
+  nodeSmokeFailureIo,
+  recordFailure,
+} from "./lib/smoke-failure-log.ts";
+import {
   evaluateStaticAssetTransport,
   fetchProbe,
   httpProbeUrl,
@@ -120,9 +125,19 @@ const AGENT_A_EMAIL = envOr(process.env.SMOKE_AGENT_A_EMAIL, "smoketest@trypenni
 
 let failures = 0;
 let skipped = 0;
+// #1492: each failure is recorded as it happens, so the Slack alert can name WHICH
+// checks failed instead of one sentence covering every possible cause. Appended
+// immediately rather than at exit, because the run can die before it finishes: on
+// 2026-08-14 it threw on an unparseable URL before a single booking check ran, and a
+// log written at exit would have been empty for exactly the failure that most needed
+// explaining.
+const failureLog = failureLogPath(process.env);
 function check(cond: boolean, msg: string) {
   console.log(`${cond ? "PASS" : "FAIL"}: ${msg}`);
-  if (!cond) failures++;
+  if (!cond) {
+    failures++;
+    recordFailure(nodeSmokeFailureIo, failureLog, msg);
+  }
 }
 function skip(msg: string) {
   console.log(`SKIP: ${msg}`);
