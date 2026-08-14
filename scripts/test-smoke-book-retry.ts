@@ -150,4 +150,54 @@ const gapMins = (a: string, b: string): number =>
   );
 }
 
+// --- an absorbed conflict is REPORTED, not silently swallowed (#1491, L77) ---
+//
+// The retry classifies SLOT_TAKEN / NO_ELIGIBLE_AGENTS as expected and moves on. A
+// run that retried nine times then reads exactly like one that retried none, so the
+// callback is what makes rising contention visible at all.
+{
+  const seen: { slot: string; code: string | undefined; attempt: number }[] = [];
+  const res = await bookFirstFreeSlot(
+    SLOTS,
+    0,
+    async (slot) =>
+      slot === at(0)
+        ? { status: 409, body: { code: "SLOT_TAKEN" as const } }
+        : { status: 200, body: { outcome: "created" as const } },
+    4,
+    undefined,
+    (info) => seen.push(info),
+  );
+  eq(res.status, 200, "the booking still succeeds");
+  eq(seen.length, 1, "the one absorbed conflict is reported exactly once");
+  eq(seen[0]!.code, "SLOT_TAKEN", "and carries the code, so the cause is named");
+  eq(seen[0]!.slot, at(0), "and the slot it happened on");
+}
+{
+  // A clean first attempt reports nothing, so the signal means what it says.
+  const seen: unknown[] = [];
+  await bookFirstFreeSlot(
+    SLOTS,
+    0,
+    async () => ({ status: 200, body: { outcome: "created" as const } }),
+    4,
+    undefined,
+    (info) => seen.push(info),
+  );
+  eq(seen.length, 0, "a clean run reports no absorbed conflicts");
+}
+{
+  // A functional confirm_required is not a conflict and must not be counted as one.
+  const seen: unknown[] = [];
+  await bookFirstFreeSlot(
+    SLOTS,
+    0,
+    async () => ({ status: 409, body: { outcome: "confirm_required" as const } }),
+    4,
+    undefined,
+    (info) => seen.push(info),
+  );
+  eq(seen.length, 0, "confirm_required is not counted as an absorbed slot conflict");
+}
+
 finish();

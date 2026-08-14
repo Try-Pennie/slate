@@ -62,6 +62,15 @@ export async function bookFirstFreeSlot<T extends BookOutcome>(
   attempt: (slot: string) => Promise<T>,
   maxAttempts = 4,
   minGapMs = RETRY_MIN_GAP_MS,
+  /**
+   * Called each time a transient conflict is absorbed (#1491, L77).
+   *
+   * A retried conflict is deliberately classified as expected, and the code waving
+   * it through has no notion of volume: a run where every scenario needed three
+   * retries reads exactly like a clean run. That is worth seeing, because it is what
+   * a rising tide of orphaned events or real slot contention looks like from here.
+   */
+  onRetry?: (info: { slot: string; code: string | undefined; attempt: number }) => void,
 ): Promise<T> {
   let last: T | undefined;
   let index = startIndex;
@@ -70,6 +79,7 @@ export async function bookFirstFreeSlot<T extends BookOutcome>(
     if (slot === undefined) break; // ran out of fresh slots
     last = await attempt(slot);
     if (!isTransientSlotConflict(last)) return last;
+    onRetry?.({ slot, code: last.body.code, attempt: i + 1 });
 
     // Advance to the next slot a full margin clear of the one just attempted.
     const triedMs = Date.parse(slot);

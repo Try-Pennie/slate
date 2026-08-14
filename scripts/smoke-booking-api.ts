@@ -133,7 +133,18 @@ function skip(msg: string) {
  *  full coverage (#397); SMOKE_STRICT=1 makes any skip a non-zero exit. */
 function printSummaryAndExit() {
   const skipNote = skipped > 0 ? ` (${skipped} SKIPPED — coverage incomplete)` : "";
-  console.log(failures === 0 ? `\nALL CHECKS PASSED${skipNote}` : `\n${failures} CHECK(S) FAILED${skipNote}`);
+  // Absorbed slot conflicts are reported even on a passing run (#1491, L77): they are
+  // classified as expected, so without a count a run that retried nine times reads
+  // exactly like one that retried none, and rising contention stays invisible.
+  const retryNote =
+    retriesAbsorbed > 0
+      ? ` (${retriesAbsorbed} slot conflict(s) retried past; see RETRY lines)`
+      : "";
+  console.log(
+    failures === 0
+      ? `\nALL CHECKS PASSED${skipNote}${retryNote}`
+      : `\n${failures} CHECK(S) FAILED${skipNote}${retryNote}`,
+  );
   const strictFail = !!process.env.SMOKE_STRICT && skipped > 0;
   process.exit(failures === 0 && !strictFail ? 0 : 1);
 }
@@ -363,6 +374,22 @@ async function checkStaticAssetTransport() {
 //
 // A refusal is reported as the fixture problem it is, and returns undefined so the
 // scenario stops rather than booking a colliding slot.
+/**
+ * Report an absorbed slot conflict (#1491, L77). The retry deliberately treats a
+ * SLOT_TAKEN / NO_ELIGIBLE_AGENTS as expected, so without this a run that needed
+ * three retries per scenario reads exactly like a clean one, and a rising tide of
+ * orphaned events looks like nothing at all.
+ */
+function noteRetry(label: string) {
+  return (info: { slot: string; code: string | undefined; attempt: number }) => {
+    retriesAbsorbed++;
+    console.log(
+      `RETRY: ${label} attempt ${info.attempt} hit ${info.code ?? "a slot conflict"} on ${info.slot}; advancing an hour`,
+    );
+  };
+}
+let retriesAbsorbed = 0;
+
 function reserveSlot(plan: SlotPlan, label: string): string | undefined {
   const r = plan.reserve(label);
   if (r.ok) return r.start;
@@ -440,8 +467,13 @@ async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
   // separation independent of the slot we asked for.
   const seedA = reserveSlot(plan, "scenario 2 (cross bucket, first booking)");
   if (!seedA) return;
-  const inA = await bookFirstFreeSlot(slotsA, slotsA.indexOf(seedA), (slot) =>
-    book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+  const inA = await bookFirstFreeSlot(
+    slotsA,
+    slotsA.indexOf(seedA),
+    (slot) => book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+    4,
+    undefined,
+    noteRetry("scenario 2"),
   );
   // The retry may have moved it, so record where it LANDED, not what was asked for.
   recordBooked(plan, inA.body);
@@ -538,8 +570,13 @@ async function scenarioLookupAndCancel(slotsA: string[], plan: SlotPlan) {
   // 1/2/3 (slots 0/2/3); the helper advances if this slot also has residue.
   const seed = reserveSlot(plan, "scenario 4 (lookup and cancel)");
   if (!seed) return;
-  const created = await bookFirstFreeSlot(slotsA, slotsA.indexOf(seed), (slot) =>
-    book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+  const created = await bookFirstFreeSlot(
+    slotsA,
+    slotsA.indexOf(seed),
+    (slot) => book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+    4,
+    undefined,
+    noteRetry("scenario 4"),
   );
   recordBooked(plan, created.body);
   check(created.status === 200 && created.body.outcome === "created", `seed booking -> created (got ${created.status}/${created.body.outcome})`);
@@ -611,8 +648,13 @@ async function scenarioReassign(slotsA: string[], plan: SlotPlan) {
   // helper advances past a transient slot conflict onto a clean slot.
   const seed = reserveSlot(plan, "scenario 6 (reassign)");
   if (!seed) return;
-  const created = await bookFirstFreeSlot(slotsA, slotsA.indexOf(seed), (slot) =>
-    book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+  const created = await bookFirstFreeSlot(
+    slotsA,
+    slotsA.indexOf(seed),
+    (slot) => book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+    4,
+    undefined,
+    noteRetry("scenario 6"),
   );
   recordBooked(plan, created.body);
   trackForCleanup(created.body);
