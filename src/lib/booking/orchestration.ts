@@ -3767,6 +3767,17 @@ export async function updateBookingPhone(
   // The invite is derived from the row, so it is refreshed AFTER the write, never
   // instead of it. Its failure is contained: the number is saved, and saying
   // otherwise would push the lead to retype a number we already hold (L12).
+  //
+  // L33, stated rather than assumed: this pair is deliberately NOT outboxed. The
+  // must-not-lose half is the row, and it commits first, so a crash between the
+  // two loses the PAGE about a stale invite, never the correction itself. The
+  // residual is one advisor reading an old number off an invite with nothing
+  // saying so, which is bounded and repairable from the booking. An outbox step
+  // would close it; it is not worth a durable queue for a body rewrite.
+  //
+  // Every patch failure is treated the same on purpose: gone, refused or unwell,
+  // the invite is stale either way, and splitting them would produce two pages
+  // that ask for the same repair.
   if (booking.gcal_event_id && booking.agent_email) {
     try {
       await deps.updateEventDescription(
