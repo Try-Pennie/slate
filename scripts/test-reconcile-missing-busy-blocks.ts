@@ -110,23 +110,35 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
   // The safety-critical branch: if we can't tell which bookings have blocks, we
   // must NOT treat them all as missing and mass-insert. Abort the tick instead.
   const inserted: BusyBlockInsert[] = [];
+  let insertCalls = 0;
   const deps = {
     loadActiveUpcomingBookings: async () => [booking("E1", "u1"), booking("E2", "u2")],
     loadBusyBlockBookingIds: async () => {
       throw new Error("read blip");
     },
     insertBusyBlocks: async (blocks: BusyBlockInsert[]) => {
-      calls.insertBatches++;
+      insertCalls++;
       inserted.push(...blocks);
     },
   } as unknown as BookingDeps;
-  let threw = false;
+  // The message is asserted, not merely that SOMETHING threw. `assert(threw)` alone
+  // is satisfied by any error, including one raised by this fake: the insert branch
+  // used to increment an undefined `calls`, which threw BEFORE recording anything, so
+  // threw became true, `inserted` stayed empty, and BOTH assertions below passed. Had
+  // the sweep ever regressed into mass-inserting, this test would have reported
+  // success on exactly the branch that exists to stop bulk writes.
+  let caught: unknown = null;
   try {
     await reconcileMissingBusyBlocks(deps, 100);
-  } catch {
-    threw = true;
+  } catch (err) {
+    caught = err;
   }
-  assert(threw, "a busy-block read error aborts the sweep (does not swallow)");
+  assert(caught !== null, "a busy-block read error aborts the sweep (does not swallow)");
+  assert(
+    caught instanceof Error && /read blip/.test(caught.message),
+    `it aborts on the READ error, not on some other failure (got: ${caught instanceof Error ? caught.message : String(caught)})`,
+  );
+  assert(insertCalls === 0, "the insert was never even attempted on a read error");
   assert(inserted.length === 0, "ZERO inserts on a read error (no mass-insert on a blip)");
 }
 
