@@ -1035,7 +1035,7 @@ export async function retryOooSideEffects(
   deps: OooDeps,
 ): Promise<OooActionResult> {
   if (!canRetrySideEffects(actor)) {
-    return fail("Only an admin can retry the calendar updates.");
+    return fail("Only a team lead or admin can retry the calendar updates.");
   }
   const request = await deps.loadRequest(requestId);
   if (!request) return fail("Request not found.");

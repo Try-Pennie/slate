@@ -965,7 +965,7 @@ const input = {
   const createdBefore = w.createdEvents.length;
 
   const denied = await retryOooSideEffects(id, manager, w.deps);
-  assert(!denied.ok, "retry is admin-only");
+  assert(!denied.ok, "a manager, scoped to their own reports, may not retry");
 
   const res = await retryOooSideEffects(id, admin, w.deps);
   assert(res.ok, "admin retry succeeds");
@@ -992,14 +992,19 @@ const input = {
   assertAudited(w, "ooo.retry", agent.id, id);
 }
 
-// --- retry: every rank at or above admin, and nothing below (#1468) ---
+// --- retry: every rank that moderates all time off, and nothing below (#1468, #1473) ---
 // The gate was written as `role !== "admin"`, an equality against ONE rank of a
 // five tier hierarchy, so super_admin (the only rank above it) was refused by
 // the one control that repairs a time off whose calendar write failed. Drive
 // the TOP tier explicitly: it is the rank no other fixture reaches for, which
 // is exactly why the defect shipped and survived a passing suite.
+//
+// The floor is the same one that gates moderating every request (#1473), so the
+// person who approved a request can also repair it rather than having to find an
+// admin. team_lead is asserted through the real action, not only the predicate:
+// a rank moved to the allowed side has to be seen doing the work.
 {
-  for (const actor of [admin, superAdmin]) {
+  for (const actor of [teamLead, admin, superAdmin]) {
     const w = makeWorld();
     w.failAgentEvent = true;
     const sub = await submitOoo(agent, input, w.deps);
@@ -1019,8 +1024,9 @@ const input = {
     );
   }
 
-  // The ranks BELOW admin stay refused, or the check above proves nothing.
-  for (const actor of [agent, manager, teamLead]) {
+  // The ranks below stay refused, or the check above proves nothing. A manager is
+  // scoped to their own reports, so they are the boundary that matters here.
+  for (const actor of [agent, manager]) {
     const w = makeWorld();
     w.failAgentEvent = true;
     const sub = await submitOoo(agent, input, w.deps);
