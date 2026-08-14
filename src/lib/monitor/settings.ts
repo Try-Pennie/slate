@@ -27,7 +27,8 @@ export type MonitorAlertKey =
   | "availability_drift"
   | "booker_empty_reason"
   | "roster_coverage_gap"
-  | "ooo_protection_lost";
+  | "ooo_protection_lost"
+  | "webhook_event_no_subscriber";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -48,6 +49,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "booker_empty_reason",
   "roster_coverage_gap",
   "ooo_protection_lost",
+  "webhook_event_no_subscriber",
 ];
 
 /**
@@ -143,6 +145,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Page when an approved time off has no calendar event and no cached busy time covering it, so a lead can be booked into hours the agent is away.",
   },
   {
+    key: "webhook_event_no_subscriber",
+    label: "Booking event nobody is subscribed to",
+    help: "Page when a booking event Slate sends has no active webhook endpoint subscribed to it, so the delivery is recorded and reaches no downstream system.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -220,6 +227,11 @@ export const MONITOR_DEFAULTS = {
     // wrong until a person opens the request, so repeat while it lasts. Hourly,
     // like the orphaned and stranded appointment pages it sits beside.
     ooo_protection_lost: 60 * 60_000,
+    // An event reaching nobody (#1459) persists until a person updates the
+    // endpoint's events array, which is a database edit no deploy will do. Repeat
+    // daily rather than hourly: the fix is not urgent to the minute, and the state
+    // can legitimately last as long as the person who has to make that edit is away.
+    webhook_event_no_subscriber: 24 * 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

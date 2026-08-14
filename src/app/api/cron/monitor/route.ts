@@ -87,6 +87,8 @@ import {
   readAppliedMigrationVersions,
 } from "@/lib/monitor/migration-drift";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
+import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
+import { WEBHOOK_EVENTS, deliberatelyUnsubscribedReason } from "@/lib/webhooks/events";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
@@ -1195,6 +1197,57 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // A webhook event with no subscriber (#1459). `emitWebhook` delivers only to
+    // endpoints whose stored `events` array contains the event, so a value added to
+    // the WebhookEvent union ships INERT: the delivery row is written, nobody is
+    // sent anything, and it looks exactly like a delivered event. The subscription
+    // lives in a database column that no code change touches.
+    //
+    // It sits beside migration_drift because it is the same kind of thing: code
+    // shipped ahead of the database state it needs. The build guard
+    // (scripts/test-webhook-event-subscribers.ts) covers the migration DEFAULT,
+    // which is what a NEW endpoint gets; only this can see that the endpoint which
+    // already exists was never updated, and the one live Regal endpoint predates
+    // every event added from here on.
+    //
+    // One read of a roster-bounded table (a single row today). An unreadable read
+    // reports measured:false, which neither pages nor clears.
+    const webhookSubscribers = await steps.run("webhook_subscribers", null, () =>
+      runWebhookSubscriberCheck({
+        events: WEBHOOK_EVENTS,
+        loadEndpoints: async () => {
+          // cap-safe: webhook_endpoints is roster-bounded config (one row in prod),
+          // so it can never fill a PostgREST page.
+          const { data, error } = await db
+            .from("webhook_endpoints")
+            .select("url, events")
+            .eq("active", true);
+          // Null, never [], on a read error: an empty list would say every event
+          // reaches nobody and page falsely, while "no findings" would say
+          // everything is subscribed and go blind. Both are wrong; unmeasured is
+          // the honest third answer.
+          if (error) {
+            log.warn("webhook-subscribers", { msg: "endpoints read failed" }, error);
+            return null;
+          }
+          return (data ?? []) as { url: string; events: string[] }[];
+        },
+        unsubscribedReason: deliberatelyUnsubscribedReason,
+        // alert-key: webhook_event_no_subscriber
+        // alert-text-ok: our own copy from webhook-subscriber-coverage.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // A condition, not an incident: it stays true until somebody updates the
+        // subscription, so it has to be able to end.
+        // alert-key: webhook_event_no_subscriber
+        // all-clear-proof: scripts/test-webhook-subscriber-coverage.ts - an
+        // unreadable or throwing endpoint read clears nothing, because it measured
+        // nothing.
+        resolve: resolveAlert,
+        cooldownMs: settings.cooldownMs.webhook_event_no_subscriber,
+        log: (msg) => log.info("webhook-subscribers", { msg }),
+      }),
+    );
+
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
@@ -1333,6 +1386,10 @@ export async function GET(req: NextRequest) {
       inactiveBookings,
       strandedCoverage,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
+      // null when the step failed, and measured:false inside when the endpoint read
+      // failed: "no event is unsubscribed" and "could not tell" must not render the
+      // same, since the second is the state this check exists to notice (#1459).
+      webhookSubscribers,
       truncated,
       volume,
       failureRate,
