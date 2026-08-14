@@ -2,17 +2,22 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { appUrl } from "@/lib/env";
-import { dmSlackUserByEmail } from "@/lib/notify/slack";
+import { dmSlackUserByEmail, postSlack } from "@/lib/notify/slack";
 import {
-  buildManagerDigests,
+  buildOooDigests,
   isDigestTime,
-  type DigestManager,
+  type DigestPerson,
   type DigestPendingRequest,
 } from "@/lib/ooo/digest";
 import { agentDisplayName, formatRequestWhenAndReason } from "@/lib/ooo/core";
 import type { OooRequest } from "@/lib/db/types";
 import { log } from "@/lib/log";
-import { digestUnreachableAlert, digestUnreachableRecovery } from "@/lib/monitor/cron-alert-copy";
+import {
+  digestUnreachableAlert,
+  digestUnreachableRecovery,
+  digestUnroutedUnreachableAlert,
+  digestUnroutedUnreachableRecovery,
+} from "@/lib/monitor/cron-alert-copy";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 
@@ -26,6 +31,42 @@ export const dynamic = "force-dynamic";
 const FAIL_STREAK_WINDOW_SECONDS = 3 * 24 * 60 * 60; // > the ~24h digest cadence, so consecutive daily failures accumulate in one window
 const ALERT_AFTER_RUNS = 2; // day one may be a transient Slack blip; the second consecutive miss alerts
 const ALERT_COOLDOWN_MS = 22 * 60 * 60 * 1000; // remind about once a day while a mapping stays broken, no more
+
+/**
+ * Record whether the unrouted-requests post landed (#1499).
+ *
+ * Deliberately NOT folded into `noteDigestDelivery`: that one is keyed per
+ * manager and its copy names a Slack address problem, which is the wrong
+ * diagnosis here. One condition, one key, one set of words (L11).
+ */
+async function noteUnroutedDelivery(count: number, ok: boolean) {
+  const streakKey = "ooo-digest-unrouted-fail";
+  // alert-key: ooo-digest-unrouted-unreachable
+  const alertKey = "ooo-digest-unrouted-unreachable";
+  try {
+    if (ok) {
+      await clearFailureStreak(streakKey);
+      // Hung off the MEASURED success, never off "we did not alert this run": a
+      // run that threw or skipped measured nothing and must clear nothing.
+      const cleared = await resolveAlert(alertKey, digestUnroutedUnreachableRecovery());
+      if (cleared) log.info("ooo-digest", { msg: "unrouted alert cleared" });
+      return;
+    }
+    const tripped = await recordConsecutiveStreak(
+      streakKey,
+      FAIL_STREAK_WINDOW_SECONDS,
+      ALERT_AFTER_RUNS,
+    );
+    if (!tripped) return;
+    await sendThrottledAlert(
+      alertKey,
+      ALERT_COOLDOWN_MS,
+      digestUnroutedUnreachableAlert(count, ALERT_AFTER_RUNS),
+    );
+  } catch (err) {
+    log.error("ooo-digest", { msg: "unrouted delivery tracking failed", count }, err);
+  }
+}
 
 /**
  * Record one manager's digest delivery outcome. A clean send clears the streak;
@@ -89,8 +130,11 @@ export async function GET(req: NextRequest) {
     // cap-safe: the org's pending time off queue, drained by moderation.
     .from("ooo_requests")
     .select("id, user_id, manager_id, starts_at, ends_at, display_tz_id, display_tz_label, reason")
-    .eq("status", "pending")
-    .not("manager_id", "is", null);
+    .eq("status", "pending");
+  // #1499: no `manager_id is not null` filter. A request with no manager of
+  // record is exactly the one nobody is nudged about, so filtering it out here
+  // made the daily reminder quietest about the requests most likely to be
+  // forgotten. It goes to the fallback channel post instead.
   const pendingReqs = (pendingRows ?? []) as Pick<
     OooRequest,
     | "id"
@@ -115,10 +159,12 @@ export async function GET(req: NextRequest) {
   ];
   const { data: userRows } = await db
     .from("users")
-    .select("id, email, name")
+    // `role` decides whether a manager of record may actually approve (#1475),
+    // which is what makes a request routed rather than unrouted.
+    .select("id, email, name, role")
     .in("id", userIds);
-  const usersById = new Map<string, DigestManager>(
-    ((userRows ?? []) as DigestManager[]).map((u) => [u.id, u]),
+  const usersById = new Map<string, DigestPerson>(
+    ((userRows ?? []) as DigestPerson[]).map((u) => [u.id, u]),
   );
 
   // Route builds each request's descriptive line (agent + when + reason); the pure
@@ -134,7 +180,40 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  const digests = buildManagerDigests(pending, usersById, `${appUrl()}/admin/ooo`);
+  const { managers: digests, unrouted } = buildOooDigests(
+    pending,
+    usersById,
+    `${appUrl()}/admin/ooo`,
+  );
+
+  // Requests nobody can be nudged about go to the shared fallback channel, which
+  // is where the per-request notification already sends them on the day they are
+  // submitted. Wrapped, because a Slack failure here must not abort the manager
+  // DMs below, and logged rather than swallowed so a channel that stops accepting
+  // posts is visible in the logs alongside the returned count.
+  let unroutedPosted = false;
+  if (unrouted) {
+    try {
+      const r = await postSlack({ text: unrouted.text, blocks: unrouted.blocks });
+      unroutedPosted = r.ok;
+      if (!r.ok) {
+        log.warn("ooo-digest", {
+          msg: "unrouted digest post failed",
+          count: unrouted.count,
+          reason: r.error ?? "unknown",
+        });
+      }
+    } catch (err) {
+      log.error("ooo-digest", { msg: "unrouted digest post threw", count: unrouted.count }, err);
+    }
+    // L13: a background job that only LOGS its failure is invisible twice. These
+    // are the requests with no assigned approver, so a post that keeps failing
+    // leaves the least watched part of the queue with nobody watching it. Same
+    // streak machinery as a manager's DM, one fixed key, and best-effort so a
+    // tracking problem can never abort the run it is observing (L71).
+    await noteUnroutedDelivery(unrouted.count, unroutedPosted);
+  }
+
   let sent = 0;
   let failed = 0;
   for (const d of digests) {
@@ -158,6 +237,10 @@ export async function GET(req: NextRequest) {
     sent,
     failed,
     managers: digests.length,
+    // Reported separately from `sent`, because a run that nudged every manager
+    // while failing to post the unrouted requests is not a clean run.
+    unrouted: unrouted?.count ?? 0,
+    unroutedPosted,
     pending: pending.length,
   });
 }

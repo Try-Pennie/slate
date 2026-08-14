@@ -6,6 +6,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { allTimeZones, humanizeZone, isKnownTimeZone } from "@/lib/booking/timezones";
 import type { OooFormState } from "@/app/me/actions";
+import { NO_MANAGER_REVIEWER } from "@/lib/ooo/core";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1007,
 // mirroring the booker's #219 picker); a real zone id can never collide with it.
@@ -230,7 +231,7 @@ export function OooForm({
               </p>
               {editing.approved && (
                 <p className="mt-1 text-sm text-fg-muted">
-                  Saving sends it back to {managerName ?? "your manager"} for
+                  Saving sends it back to {managerName ?? NO_MANAGER_REVIEWER} for
                   approval.
                 </p>
               )}

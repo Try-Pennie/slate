@@ -8,7 +8,10 @@ import { cancelMyOoo, modifyMyOoo, submitMyOoo } from "@/app/me/actions";
 import {
   formatWhenLine,
   normalizeTzLabel,
+  oooApproverLine,
+  oooRequestIntro,
   stripModifiedMarkers,
+  NO_MANAGER_REVIEWER,
 } from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
 import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
@@ -274,9 +277,11 @@ export default async function MePage({
             </h1>
             <p className="mt-2 text-pennie-beige/85">
               {!hasRequests ? (
-                managerName
-                  ? `Need a day off? Request it below and ${managerName} takes it from there.`
-                  : "Need a day off? An admin needs to set your manager before you can request."
+                // #1499: no manager of record is not a blocker. It routes to
+                // whoever moderates all time off, and the copy says so rather
+                // than naming a step nobody can perform (the admin field is read
+                // only, because Salesforce owns the link).
+                oooRequestIntro(managerName)
               ) : summary.pending === 0 && summary.upcomingApproved === 0 ? (
                 "Nothing pending. Need another day off? Request it below."
               ) : (
@@ -286,7 +291,7 @@ export default async function MePage({
                       <span className="font-semibold tabular-nums text-pennie-beige">
                         {summary.pending}
                       </span>{" "}
-                      waiting on {managerName ?? "your manager"}
+                      waiting on {managerName ?? NO_MANAGER_REVIEWER}
                     </span>
                   )}
                   {summary.pending > 0 && summary.upcomingApproved > 0 && (
@@ -416,9 +421,7 @@ export default async function MePage({
               {editing ? "Change your request" : "Request time away"}
             </h2>
             <p className="mt-1.5 text-sm text-fg-muted">
-              {managerName
-                ? `${managerName} signs off on these.`
-                : "Ask an admin to set your manager before you can request."}
+              {oooApproverLine(managerName)}
             </p>
           </header>
 

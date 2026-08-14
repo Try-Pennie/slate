@@ -230,3 +230,69 @@ describe("OooQueuePage: manager of record who cannot approve (#1475)", () => {
     expect(screen.queryByText(/on the agent page/i)).toBeNull();
   });
 });
+
+// #1499: everyone is in the OOO system now, so the roster the insights measure
+// against must be everyone too.
+//
+// "In the OOO system" used to mean "has a manager of record", which was true only
+// while a request from somebody without one was REFUSED. Nine active people are
+// in that state, every one of Pennie's debt managers among them, and their
+// requests count in the same insights the roster sizes, so leaving them out made
+// the count and the rows it promises come from two different populations (L16).
+describe("OooQueuePage: the roster covers people with no manager of record (#1499)", () => {
+  // The count sits in its own <span> inside the heading, so match on the whole
+  // heading's text rather than a fragment that no single element carries.
+  const noTimeOffHeading = () =>
+    screen
+      .getAllByRole("heading")
+      .map((h) => h.textContent?.replace(/\s+/g, " ").trim() ?? "")
+      .find((t) => /taken no time off/.test(t)) ?? "";
+
+  const person = (id: string, role: string, name: string, managerId: string | null = null) => ({
+    id,
+    name,
+    email: `${id}@trypennie.com`,
+    role,
+    manager_id: managerId,
+  });
+
+  beforeEach(() => {
+    dbState.oooReads = 0;
+    dbState.pending = [];
+    dbState.history = [];
+    dbState.bookings = [];
+    auth.currentUser.mockResolvedValue({
+      id: "u-lead",
+      role: "team_lead",
+      org_id: "o1",
+      email: "lead@trypennie.com",
+    });
+  });
+
+  it("counts a manager with no manager of record as somebody who has taken no time off", async () => {
+    dbState.users = [
+      person("u-managed", "agent", "Aria Agent", "u-mgr"),
+      person("u-mgr", "manager", "Mona Manager"), // no manager of record: the live shape
+    ];
+
+    render(await OooQueuePage(props));
+
+    // Both, not just the one with a manager. Asserting the NAME rather than the
+    // count, so the assertion cannot be satisfied by a different person.
+    expect(noTimeOffHeading()).toMatch(/^2 people have taken no time off/);
+    expect(screen.getByText("Mona Manager")).toBeTruthy();
+    expect(screen.getByText("Aria Agent")).toBeTruthy();
+  });
+
+  it("still leaves admins out, who are operators rather than part of the bookable team", async () => {
+    dbState.users = [
+      person("u-mgr", "manager", "Mona Manager"),
+      person("u-admin", "admin", "Ada Admin"),
+    ];
+
+    render(await OooQueuePage(props));
+
+    expect(noTimeOffHeading()).toMatch(/^1 person has taken no time off/);
+    expect(screen.queryByText("Ada Admin")).toBeNull();
+  });
+});

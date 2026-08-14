@@ -23,7 +23,7 @@ import {
   DUPLICATE_REQUEST_MESSAGE,
   formatRequestWhenAndReason,
   formatWhenLine,
-  NO_MANAGER_MESSAGE,
+  NO_MANAGER_REVIEWER,
   overlaps,
   shortDate,
   stripModifiedMarkers,
@@ -61,7 +61,13 @@ export interface OooEventArgs {
 export type OooInsert = {
   org_id: string;
   user_id: string;
-  manager_id: string;
+  /**
+   * Nullable since #1499: nine active people carry no manager of record, and a
+   * request from one of them is accepted and routed to the moderator pool rather
+   * than refused. The column has always been nullable; this type was the only
+   * thing insisting otherwise.
+   */
+  manager_id: string | null;
   starts_at: string;
   ends_at: string;
   display_tz_id: string;
@@ -294,7 +300,9 @@ export async function submitOoo(
   if (!input.reason.trim()) {
     return fail("Please add a short reason for your time off.");
   }
-  if (!agent.manager_id) return fail(NO_MANAGER_MESSAGE);
+  // #1499: no manager of record is deliberately NOT a refusal. It routes to the
+  // moderator pool below (`notifyManagerOfPending`) instead, which is who would
+  // have approved it anyway. The old refusal named a step nobody can perform.
 
   const clash = await findOverlap(agent.id, input.startIso, input.endIso, deps);
   if (clash) return fail(overlapError(clash), clash.id);
@@ -396,8 +404,21 @@ async function notifyManagerOfPending(
         `:warning: *${managerDisplayName(namedManager)} is set as the manager of record but cannot approve time off* ` +
         `(they hold the ${roleLabel(namedManager.role)} role). A team lead or admin can action this, and their ` +
         `manager of record should be corrected in Salesforce.\n\n${text}`;
+    } else if (request.manager_id === null) {
+      // #1499: nobody was named, so nobody could be nudged. Say that, and name who
+      // CAN act, rather than posting a bare request that reads like an ordinary
+      // one whose approver is simply slow. It must not repeat the old refusal's
+      // advice to have an admin set a manager: that field is read only (L111).
+      fallbackText =
+        `:information_source: *${agentDisplayName(agent)} has no manager of record, so nobody was nudged directly.* ` +
+        `${NO_MANAGER_REVIEWER.charAt(0).toUpperCase()}${NO_MANAGER_REVIEWER.slice(1)} can approve it here.\n\n${text}`;
     } else {
-      fallbackText = text;
+      // A manager of record is named but could not be read back at all (offboarded,
+      // or a stale id). A third cause, and a roster repair rather than a Slack one.
+      fallbackText =
+        `:warning: *Their manager of record could not be found, so nobody was nudged.* ` +
+        `${NO_MANAGER_REVIEWER.charAt(0).toUpperCase()}${NO_MANAGER_REVIEWER.slice(1)} can approve it here, ` +
+        `and their Agent Manager should be corrected in Salesforce.\n\n${text}`;
     }
     ref = await deps.postFallbackChannel(fallbackText, request.id);
   }

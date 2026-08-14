@@ -10,6 +10,17 @@ const slack = vi.hoisted(() => ({
   dmSlackUserByEmail: vi.fn(
     async (_email: string, _text: string, _blocks?: unknown[]): Promise<boolean> => true,
   ),
+  // #1499: requests nobody can be nudged about are posted to the shared fallback
+  // channel instead of DMed, so this route now has a second Slack surface.
+  postSlack: vi.fn(
+    async (
+      _msg: { text: string; blocks?: unknown[] },
+    ): Promise<{ ok: boolean; error?: string; channel?: string; ts?: string }> => ({
+      ok: true,
+      channel: "C1",
+      ts: "1",
+    }),
+  ),
 }));
 // #1001: a repeatedly-undelivered digest must escalate, not stay swallowed. The
 // route folds each manager's delivery result into the shared consecutive-failure
@@ -46,9 +57,20 @@ const forcedReq = () =>
 
 // A supabase query builder whose every chained method returns itself and which
 // resolves (when awaited) to { data: rows }.
-function builderFor(rows: unknown[]) {
+// Every chained method is RECORDED, not just swallowed. The #1499 fix is the
+// absence of a filter (`manager_id is not null`) on the pending read, and a
+// builder that silently accepts every call cannot tell a route that dropped the
+// filter from one that never did, so the test would pass on the bug it exists to
+// catch (L141).
+const builderCalls: { table: string; method: string; args: unknown[] }[] = [];
+function builderFor(rows: unknown[], table = "") {
   const b: Record<string, unknown> = {};
-  for (const m of ["select", "eq", "not", "in"]) b[m] = () => b;
+  for (const m of ["select", "eq", "not", "in"]) {
+    b[m] = (...args: unknown[]) => {
+      builderCalls.push({ table, method: m, args });
+      return b;
+    };
+  }
   (b as { then: unknown }).then = (resolve: (v: unknown) => void) => resolve({ data: rows });
   return b;
 }
@@ -85,25 +107,30 @@ const pendingRows = [
     reason: "personal",
   },
 ];
+// `role` is real, not decoration: a manager of record only routes a request when
+// they can actually approve it (#1475), so a double that omits the column would
+// quietly send every request down the unrouted path and agree with itself (L52).
 const userRows = [
-  { id: "m1", email: "m1@x.com", name: "Manager One" },
-  { id: "m2", email: "m2@x.com", name: "Manager Two" },
-  { id: "a1", email: "a1@x.com", name: "Agent One" },
-  { id: "a2", email: "a2@x.com", name: "Agent Two" },
-  { id: "a3", email: "a3@x.com", name: "Agent Three" },
+  { id: "m1", email: "m1@x.com", name: "Manager One", role: "manager" },
+  { id: "m2", email: "m2@x.com", name: "Manager Two", role: "manager" },
+  { id: "a1", email: "a1@x.com", name: "Agent One", role: "agent" },
+  { id: "a2", email: "a2@x.com", name: "Agent Two", role: "agent" },
+  { id: "a3", email: "a3@x.com", name: "Agent Three", role: "agent" },
 ];
 
 function wireDb() {
   from.mockImplementation((table: string) =>
-    builderFor(table === "ooo_requests" ? pendingRows : userRows),
+    builderFor(table === "ooo_requests" ? pendingRows : userRows, table),
   );
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  builderCalls.length = 0;
   // clearAllMocks wipes call history but keeps implementations, so re-establish
   // the defaults a prior test may have overridden.
   slack.dmSlackUserByEmail.mockImplementation(async () => true);
+  slack.postSlack.mockImplementation(async () => ({ ok: true, channel: "C1", ts: "1" }));
   streak.recordConsecutiveStreak.mockResolvedValue(false);
   streak.clearFailureStreak.mockResolvedValue(undefined);
   dispatch.sendThrottledAlert.mockResolvedValue(undefined);
@@ -262,5 +289,156 @@ describe("GET /api/cron/ooo-digest", () => {
     expect(streak.clearFailureStreak.mock.calls.map((c) => c[0])).toContain(
       "ooo-digest-send-fail:m2",
     );
+  });
+
+  // --- #1499: the requests nobody can be nudged about ---
+  //
+  // The route used to filter `manager_id is not null` out of the pending read, so
+  // a request from one of the nine people with no manager of record was nudged
+  // once on the day it was submitted and then never again. It reaches the shared
+  // fallback channel now, which is where team leads and up already see them.
+  it("posts the unrouted requests to the fallback channel and counts them", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [
+              pendingRows[0], // routed: m1 is a manager
+              { ...pendingRows[2], id: "r9", manager_id: null }, // no manager of record
+            ]
+          : userRows,
+        table,
+      ),
+    );
+
+    const res = await GET(forcedReq());
+    const body = await res.json();
+
+    expect(body.unrouted).toBe(1);
+    expect(body.unroutedPosted).toBe(true);
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    const posted = slack.postSlack.mock.calls[0][0];
+    expect(posted.text).toContain("team lead or admin");
+    expect(JSON.stringify(posted.blocks)).toContain("No manager of record");
+    // The routed one is still DMed, so this is a second lane, not a redirect.
+    expect(slack.dmSlackUserByEmail).toHaveBeenCalledTimes(1);
+    // And the read itself is unfiltered: re-adding `manager_id is not null` would
+    // hide these rows from the query long before any of the above could notice.
+    expect(
+      builderCalls.filter(
+        (c) => c.table === "ooo_requests" && c.args.some((a) => a === "manager_id"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("reports the fallback post as NOT sent when Slack refuses it", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [{ ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+
+    const res = await GET(forcedReq());
+    const body = await res.json();
+
+    // A run that could not deliver the unrouted nudge must not read as clean:
+    // `sent: 0, failed: 0` alone is indistinguishable from having had nothing
+    // unrouted to send.
+    expect(res.status).toBe(200);
+    expect(body.unrouted).toBe(1);
+    expect(body.unroutedPosted).toBe(false);
+  });
+
+  it("does not post at all when every pending request has a manager who can act", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+
+    const res = await GET(forcedReq());
+    const body = await res.json();
+
+    expect(body.unrouted).toBe(0);
+    expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+
+  // L13: a repeated failure to post the unrouted nudge must ESCALATE, not sit in
+  // the logs. These are the requests with no assigned approver, so a silent
+  // failure leaves the least watched part of the queue unwatched.
+  it("escalates once the unrouted post has failed for consecutive runs", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [{ ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    streak.recordConsecutiveStreak.mockResolvedValue(true);
+
+    await GET(forcedReq());
+
+    const call = dispatch.sendThrottledAlert.mock.calls.find(
+      (c) => c[0] === "ooo-digest-unrouted-unreachable",
+    );
+    expect(call).toBeTruthy();
+    // Its own words, not the per manager copy, which names a Slack address problem.
+    expect(call?.[2]).toContain("no assigned approver");
+    expect(call?.[2]).not.toContain("Slate email address");
+  });
+
+  it("clears the unrouted alert only from a post that actually landed", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [{ ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    await GET(forcedReq());
+    expect(dispatch.resolveAlert.mock.calls.map((c) => c[0])).not.toContain(
+      "ooo-digest-unrouted-unreachable",
+    );
+
+    vi.clearAllMocks();
+    builderCalls.length = 0;
+    cron.isAuthorizedCron.mockReturnValue(true);
+    slack.dmSlackUserByEmail.mockImplementation(async () => true);
+    slack.postSlack.mockImplementation(async () => ({ ok: true, channel: "C1", ts: "1" }));
+    await GET(forcedReq());
+    expect(dispatch.resolveAlert.mock.calls.map((c) => c[0])).toContain(
+      "ooo-digest-unrouted-unreachable",
+    );
+  });
+
+  it("keeps the run going when the unrouted tracking itself throws (L71)", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [pendingRows[0], { ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("streak store down"));
+
+    const res = await GET(forcedReq());
+
+    expect(res.status).toBe(200);
+    // The routed manager was still DMed: a watchdog that dies must not take the
+    // work it watches with it.
+    expect(slack.dmSlackUserByEmail).toHaveBeenCalledTimes(1);
   });
 });

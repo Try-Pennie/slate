@@ -92,6 +92,33 @@ export function digestUnreachableRecovery(managerLabel: string): string {
   );
 }
 
+/**
+ * The daily nudge for time off nobody can be nudged about could not be posted
+ * (#1499).
+ *
+ * Its own key and its own words, not the per manager one: nothing here is a
+ * Slack address problem, and there is no manager to name. The requests behind it
+ * are exactly the ones with no assigned approver, so a silent failure leaves the
+ * least watched part of the queue with nobody watching it at all.
+ */
+export function digestUnroutedUnreachableAlert(count: number, afterRuns: number): string {
+  const noun = count === 1 ? "request" : "requests";
+  return (
+    `The daily Slack post for time off requests with no assigned approver has failed ` +
+    `${afterRuns} days running. ${count} ${noun} ${count === 1 ? "is" : "are"} waiting with ` +
+    `nobody nudged about ${count === 1 ? "it" : "them"}. Review them on the time off queue, ` +
+    `and check the alerts channel the bot posts to.`
+  );
+}
+
+/** The post is landing again. */
+export function digestUnroutedUnreachableRecovery(): string {
+  return (
+    `The daily Slack post for time off requests with no assigned approver is landing again, ` +
+    `so requests with nobody to nudge are being surfaced. No action is needed.`
+  );
+}
+
 /** An endpoint has exhausted its delivery retries. */
 export function webhookDeadAlert(url: string, event: string, attempt: number, lastResponse: string): string {
   return `Webhook delivery to ${url} keeps failing (event ${event}, ${attempt} attempts). Last response: ${lastResponse}`;

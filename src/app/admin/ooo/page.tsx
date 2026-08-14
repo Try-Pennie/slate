@@ -208,8 +208,14 @@ export default async function OooQueuePage({
   ): RosterPerson => ({ id: u.id, name: u.name ?? u.email });
   // Roster mirrors the request filter: admins/super admins are excluded so the
   // headcount and coverage/no-time-off insights cover only the bookable team.
+  // #1499: "is in the OOO system" used to mean "has a manager of record", which
+  // is no longer true now that a request with no manager routes to the moderators
+  // instead of being refused. Nine active people were outside this roster while
+  // their requests counted in the same insights (L16: the count and the rows it
+  // promises come from one predicate), so coverage alerts compared them against a
+  // headcount they were not in.
   const inScope = seesAll
-    ? (u: (typeof users)[number]) => u.manager_id !== null
+    ? () => true
     : (u: (typeof users)[number]) => u.manager_id === me.id;
   const roster = users
     .filter((u) => inScope(u) && !atLeast(u.role, "admin"))
