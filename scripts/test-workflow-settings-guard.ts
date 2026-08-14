@@ -10,7 +10,7 @@
 // Driven through the real shell script with stub `pnpm` and `gh` on PATH, so
 // nothing here re-implements the logic it is checking.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,25 +42,43 @@ function runGuard(
     // The stub touches a marker file, so "the checker ran" is observable
     // independently of the guard's exit code. Without it, a guard that skipped
     // and a guard that ran a passing checker are the same exit 0 (L1).
+    // The marker is written with a shell REDIRECT, not `touch`: PATH is isolated
+    // to this directory, so an external command inside the stub would not be
+    // found and the stub would silently fail to record that it ran.
     writeFileSync(
       join(dir, "pnpm"),
-      `#!/bin/sh\ntouch '${marker}'\necho 'stub checker output'\nexit ${checkerExit}\n`,
+      `#!/bin/sh\n: > '${marker}'\necho 'stub checker output'\nexit ${checkerExit}\n`,
     );
     chmodSync(join(dir, "pnpm"), 0o755);
     if (opts.withGh !== false) {
       writeFileSync(join(dir, "gh"), "#!/bin/sh\nexit 0\n");
       chmodSync(join(dir, "gh"), 0o755);
     }
-    // PATH is REPLACED so a real gh or pnpm elsewhere can never answer for the
-    // stubs; /usr/bin and /bin are kept for grep, printf and command.
-    const r = spawnSync("bash", [guard, changed], {
+    // PATH is REPLACED by this ONE directory, so a real gh or pnpm elsewhere can
+    // never answer for the stubs. That matters more than it looks: a CI runner
+    // has gh at /usr/bin, so keeping the system path on the "gh is absent" case
+    // let the real gh answer and the case tested nothing (L141). The externals
+    // the guard genuinely needs are symlinked in instead of borrowing a whole
+    // system directory.
+    for (const tool of ["grep", "sh"]) {
+      const real = spawnSync("/usr/bin/which", [tool], { encoding: "utf8" }).stdout.trim();
+      if (!real) throw new Error(`could not locate ${tool}, so this test cannot isolate PATH`);
+      symlinkSync(real, join(dir, tool));
+    }
+    // bash by ABSOLUTE path: it is not on the isolated PATH either, and a
+    // spawn that fails to find its own shell would report as the guard exiting
+    // non-zero, which is indistinguishable from the guard blocking the push.
+    const bash = spawnSync("/usr/bin/which", ["bash"], { encoding: "utf8" }).stdout.trim();
+    if (!bash) throw new Error("could not locate bash");
+    const r = spawnSync(bash, [guard, changed], {
       encoding: "utf8",
-      env: { PATH: `${dir}:/usr/bin:/bin`, ...(opts.env ?? {}) },
+      env: { PATH: dir, ...(opts.env ?? {}) },
     });
+    if (r.error) throw r.error;
     return {
       code: r.status ?? 1,
       err: `${r.stderr ?? ""}${r.stdout ?? ""}`,
-      ran: spawnSync("test", ["-f", marker]).status === 0,
+      ran: existsSync(marker),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
