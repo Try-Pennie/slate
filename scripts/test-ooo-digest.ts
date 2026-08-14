@@ -197,7 +197,8 @@ assert(
   buildOooDigests([req("x", "m1")], managers, "https://slate.test/admin/ooo").unrouted === null,
   "nothing unrouted means no fallback post",
 );
-assert(
-  !unrouted?.text.includes("—") && !unrouted?.text.includes("–"),
-  "no em or en dashes in the unrouted copy",
-);
+// Written as escapes, not literals, so this file holds no dash for the pre-push
+// style hook to catch: it cannot tell the line banning the character from a line
+// using it.
+const DASHES = /[\u2014\u2013]/;
+assert(!DASHES.test(unrouted?.text ?? ""), "no em or en dashes in the unrouted copy");

@@ -364,4 +364,81 @@ describe("GET /api/cron/ooo-digest", () => {
     expect(body.unrouted).toBe(0);
     expect(slack.postSlack).not.toHaveBeenCalled();
   });
+
+  // L13: a repeated failure to post the unrouted nudge must ESCALATE, not sit in
+  // the logs. These are the requests with no assigned approver, so a silent
+  // failure leaves the least watched part of the queue unwatched.
+  it("escalates once the unrouted post has failed for consecutive runs", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [{ ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    streak.recordConsecutiveStreak.mockResolvedValue(true);
+
+    await GET(forcedReq());
+
+    const call = dispatch.sendThrottledAlert.mock.calls.find(
+      (c) => c[0] === "ooo-digest-unrouted-unreachable",
+    );
+    expect(call).toBeTruthy();
+    // Its own words, not the per manager copy, which names a Slack address problem.
+    expect(call?.[2]).toContain("no assigned approver");
+    expect(call?.[2]).not.toContain("Slate email address");
+  });
+
+  it("clears the unrouted alert only from a post that actually landed", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [{ ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    await GET(forcedReq());
+    expect(dispatch.resolveAlert.mock.calls.map((c) => c[0])).not.toContain(
+      "ooo-digest-unrouted-unreachable",
+    );
+
+    vi.clearAllMocks();
+    builderCalls.length = 0;
+    cron.isAuthorizedCron.mockReturnValue(true);
+    slack.dmSlackUserByEmail.mockImplementation(async () => true);
+    slack.postSlack.mockImplementation(async () => ({ ok: true, channel: "C1", ts: "1" }));
+    await GET(forcedReq());
+    expect(dispatch.resolveAlert.mock.calls.map((c) => c[0])).toContain(
+      "ooo-digest-unrouted-unreachable",
+    );
+  });
+
+  it("keeps the run going when the unrouted tracking itself throws (L71)", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    wireDb();
+    from.mockImplementation((table: string) =>
+      builderFor(
+        table === "ooo_requests"
+          ? [pendingRows[0], { ...pendingRows[2], id: "r9", manager_id: null }]
+          : userRows,
+        table,
+      ),
+    );
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "channel_not_found" });
+    streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("streak store down"));
+
+    const res = await GET(forcedReq());
+
+    expect(res.status).toBe(200);
+    // The routed manager was still DMed: a watchdog that dies must not take the
+    // work it watches with it.
+    expect(slack.dmSlackUserByEmail).toHaveBeenCalledTimes(1);
+  });
 });

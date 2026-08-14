@@ -12,7 +12,12 @@ import {
 import { agentDisplayName, formatRequestWhenAndReason } from "@/lib/ooo/core";
 import type { OooRequest } from "@/lib/db/types";
 import { log } from "@/lib/log";
-import { digestUnreachableAlert, digestUnreachableRecovery } from "@/lib/monitor/cron-alert-copy";
+import {
+  digestUnreachableAlert,
+  digestUnreachableRecovery,
+  digestUnroutedUnreachableAlert,
+  digestUnroutedUnreachableRecovery,
+} from "@/lib/monitor/cron-alert-copy";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 
@@ -26,6 +31,42 @@ export const dynamic = "force-dynamic";
 const FAIL_STREAK_WINDOW_SECONDS = 3 * 24 * 60 * 60; // > the ~24h digest cadence, so consecutive daily failures accumulate in one window
 const ALERT_AFTER_RUNS = 2; // day one may be a transient Slack blip; the second consecutive miss alerts
 const ALERT_COOLDOWN_MS = 22 * 60 * 60 * 1000; // remind about once a day while a mapping stays broken, no more
+
+/**
+ * Record whether the unrouted-requests post landed (#1499).
+ *
+ * Deliberately NOT folded into `noteDigestDelivery`: that one is keyed per
+ * manager and its copy names a Slack address problem, which is the wrong
+ * diagnosis here. One condition, one key, one set of words (L11).
+ */
+async function noteUnroutedDelivery(count: number, ok: boolean) {
+  const streakKey = "ooo-digest-unrouted-fail";
+  // alert-key: ooo-digest-unrouted-unreachable
+  const alertKey = "ooo-digest-unrouted-unreachable";
+  try {
+    if (ok) {
+      await clearFailureStreak(streakKey);
+      // Hung off the MEASURED success, never off "we did not alert this run": a
+      // run that threw or skipped measured nothing and must clear nothing.
+      const cleared = await resolveAlert(alertKey, digestUnroutedUnreachableRecovery());
+      if (cleared) log.info("ooo-digest", { msg: "unrouted alert cleared" });
+      return;
+    }
+    const tripped = await recordConsecutiveStreak(
+      streakKey,
+      FAIL_STREAK_WINDOW_SECONDS,
+      ALERT_AFTER_RUNS,
+    );
+    if (!tripped) return;
+    await sendThrottledAlert(
+      alertKey,
+      ALERT_COOLDOWN_MS,
+      digestUnroutedUnreachableAlert(count, ALERT_AFTER_RUNS),
+    );
+  } catch (err) {
+    log.error("ooo-digest", { msg: "unrouted delivery tracking failed", count }, err);
+  }
+}
 
 /**
  * Record one manager's digest delivery outcome. A clean send clears the streak;
@@ -165,6 +206,12 @@ export async function GET(req: NextRequest) {
     } catch (err) {
       log.error("ooo-digest", { msg: "unrouted digest post threw", count: unrouted.count }, err);
     }
+    // L13: a background job that only LOGS its failure is invisible twice. These
+    // are the requests with no assigned approver, so a post that keeps failing
+    // leaves the least watched part of the queue with nobody watching it. Same
+    // streak machinery as a manager's DM, one fixed key, and best-effort so a
+    // tracking problem can never abort the run it is observing (L71).
+    await noteUnroutedDelivery(unrouted.count, unroutedPosted);
   }
 
   let sent = 0;

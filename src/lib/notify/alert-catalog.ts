@@ -194,6 +194,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A manager is not receiving their digest until their Slack DM works; the daily run re-measures.",
   },
   {
+    key: "ooo-digest-unrouted-unreachable",
+    kind: "condition",
+    why: "Requests with no assigned approver are going unnudged until the channel post lands; the daily run re-measures.",
+  },
+  {
     key: "webhook_dead:*",
     kind: "condition",
     why: "An endpoint is dead-lettering every delivery; a delivery that succeeds ends it.",
