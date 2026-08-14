@@ -15,6 +15,7 @@ import {
   agentDisplayName,
   managerDisplayName,
   canCancel,
+  canHoldManagerOfRecord,
   canModerate,
   canModify,
   canRetrySideEffects,
@@ -28,6 +29,9 @@ import {
   stripModifiedMarkers,
   validateWindow,
 } from "./core.ts";
+// Relative value import, per this file's header: a "@/" VALUE import is not
+// erased and breaks the node --experimental-strip-types suites.
+import { roleLabel } from "../auth/roles.ts";
 import { reachabilityFromError } from "../google/reachability-classify.ts";
 import { deterministicEventId } from "../booking/core.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -362,20 +366,39 @@ async function notifyManagerOfPending(
   deps: OooDeps,
 ): Promise<void> {
   const text = managerNotice(request, agent, deps, heading, "pending");
-  const manager = request.manager_id
+  const namedManager = request.manager_id
     ? await deps.getUser(request.manager_id)
     : null;
+  // #1475: only DM the manager of record when they can actually ACT on it. The
+  // notification carries Approve/Decline buttons, and those buttons run through
+  // canModerate, so DMing somebody the rule now refuses would hand them a control
+  // that answers "Not authorized" with nothing on screen explaining why (L109).
+  //
+  // Read from the SAME predicate the action enforces, never a hand-rolled role
+  // test, so the button offered and the action performed cannot drift apart. This
+  // is the #1468 pattern applied to the notification rather than to a page.
+  const manager =
+    namedManager && canHoldManagerOfRecord(namedManager.role) ? namedManager : null;
   // Pass the request id so the notification carries Approve/Decline buttons.
   let ref = manager
     ? await deps.dmUserByEmail(manager.email, text, request.id)
     : null;
   if (!ref) {
-    // The DM failed (or no manager resolved). Post to the fallback channel, and
-    // when a manager was expected, flag it so someone checks why the DM failed
-    // (usually the bot is missing users:read.email / im:write).
-    const fallbackText = manager
-      ? `:warning: *Couldn't DM ${managerDisplayName(manager)}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`
-      : text;
+    // The DM failed, or there is nobody to DM. Post to the fallback channel, where
+    // team leads and up see it, and say WHICH of the three cases this is: a failed
+    // DM is a Slack permissions problem, a manager who cannot approve is a roster
+    // problem, and no manager at all is neither. One message for one cause (L11).
+    let fallbackText: string;
+    if (manager) {
+      fallbackText = `:warning: *Couldn't DM ${managerDisplayName(manager)}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`;
+    } else if (namedManager) {
+      fallbackText =
+        `:warning: *${managerDisplayName(namedManager)} is set as the manager of record but cannot approve time off* ` +
+        `(they hold the ${roleLabel(namedManager.role)} role). A team lead or admin can action this, and their ` +
+        `manager of record should be corrected in Salesforce.\n\n${text}`;
+    } else {
+      fallbackText = text;
+    }
     ref = await deps.postFallbackChannel(fallbackText, request.id);
   }
   if (ref) {

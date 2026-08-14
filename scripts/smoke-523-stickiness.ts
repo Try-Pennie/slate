@@ -19,13 +19,15 @@
 //
 // Optional env: SLATE_BASE_URL (default prod).
 import { DateTime } from "luxon";
-import { loadEnvFiles } from "./smoke-env.ts";
+import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 
 // Keys load from .env.local / .dev.vars if not already in the environment.
 loadEnvFiles([".env.local", ".dev.vars"]);
 
-const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
+// envOr, not `??`: a workflow wiring SLATE_BASE_URL from an unset repo variable
+// passes an EMPTY STRING, which `??` would accept as the base URL (#1494).
+const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 const KEY = process.env.BOOKING_API_KEY ?? "";
 const BUCKET = "SMOKE";
 const SMOKE_BUCKET_ID = "44004a29-da8a-47fe-9ebc-6a95bccd1bfc";

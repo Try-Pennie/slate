@@ -28,14 +28,16 @@
 // Optional: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
 
 import { buildResumeReservation, type PersistedBookingRow } from "./create-resume-reservation.ts";
-import { loadEnvFiles } from "./smoke-env.ts";
+import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 
 // --- config -----------------------------------------------------------------
 
 // Keys load from .env.local if not already in the environment (process env wins).
 loadEnvFiles([".env.local"]);
-const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
+// envOr, not `??`: a workflow wiring SLATE_BASE_URL from an unset repo variable
+// passes an EMPTY STRING, which `??` would accept as the base URL (#1494).
+const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 const KEY = process.env.BOOKING_API_KEY ?? "";
 const SB_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/$/, "");
 const SB_KEY = process.env.SUPABASE_SECRET_KEY ?? "";

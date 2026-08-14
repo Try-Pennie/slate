@@ -2,7 +2,13 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { canRetrySideEffects, formatWhenLine, overlaps } from "@/lib/ooo/core";
+import {
+  canHoldManagerOfRecord,
+  canRetrySideEffects,
+  formatWhenLine,
+  managerCannotApproveNotice,
+  overlaps,
+} from "@/lib/ooo/core";
 import { describeEffects } from "@/lib/ooo/effect-copy";
 import { FailedSteps } from "./FailedSteps";
 import { loadOrgOooHistory } from "@/lib/ooo/history-load";
@@ -179,6 +185,15 @@ export default async function OooQueuePage({
     r.manager_id && ignoredManagerIds.has(r.manager_id)
       ? { ...r, manager_id: null }
       : r;
+
+  // #1475: managers of record who cannot actually approve. The SAME predicate the
+  // approve rule uses, so the badge and the action can never disagree about who
+  // qualifies, and the sentence comes from the same builder the test reads.
+  const cannotApprove = new Map(
+    users
+      .filter((u) => !canHoldManagerOfRecord(u.role))
+      .map((u) => [u.id, managerCannotApproveNotice(u.name ?? u.email, u.role)] as const),
+  );
 
   const pending = ((pendingRes.data ?? []) as OooRequest[]).filter(notStaff);
   const history = ((historyRes.data ?? []) as OooRequest[]).filter(notStaff);
@@ -521,8 +536,20 @@ export default async function OooQueuePage({
                         <Pill variant="status-error">No manager</Pill>
                         <span className="text-fg-muted">
                           No manager is assigned, so no one was nudged to review
-                          it. Approve it here, and set their manager on the agent
-                          page so future requests route automatically.
+                          it. Approve it here, and set their Agent Manager in
+                          Salesforce so future requests route automatically.
+                        </span>
+                      </p>
+                    )}
+                    {/* #1475: the named manager exists but cannot approve, so
+                        nobody was nudged and the request is sitting here waiting
+                        on a team lead. Without this the row looks like an ordinary
+                        pending request with an approver who is simply slow. */}
+                    {r.manager_id !== null && cannotApprove.has(r.manager_id) && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                        <Pill variant="status-error">Manager cannot approve</Pill>
+                        <span className="text-fg-muted">
+                          {cannotApprove.get(r.manager_id)}
                         </span>
                       </p>
                     )}

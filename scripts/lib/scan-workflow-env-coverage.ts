@@ -185,6 +185,56 @@ function collectScripts(text: string, into: string[]): void {
 }
 
 /**
+ * Env names a workflow wires from a `${{ vars.X }}` or `${{ secrets.X }}`
+ * expression.
+ *
+ * These are the dangerous ones. GitHub does NOT leave the variable undefined when
+ * it is unset: it interpolates the empty string. So a script reading one with
+ * `process.env.X ?? "default"` takes the EMPTY STRING, because `??` only catches
+ * null and undefined, and the default it was written to fall back on never
+ * applies.
+ *
+ * This is not hypothetical. #1494 wired SLATE_BASE_URL for the first time, two
+ * scripts were converted to `envOr` and the SHARED helper every request actually
+ * goes through was not, and on 2026-08-14 the production canary failed with
+ * `Failed to parse URL from /api/availability?bucket=SMOKE`: the base URL was "".
+ * Patching the sites one at a time is what caused it, so the rule is enforced
+ * instead (L30).
+ */
+export function varsWiredEnvNames(yaml: string): string[] {
+  const out = new Set<string>();
+  for (const m of yaml.matchAll(
+    /^\s*([A-Z][A-Z0-9_]*)\s*:\s*\$\{\{\s*(?:vars|secrets)\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}/gm,
+  )) {
+    out.add(m[1]!);
+  }
+  return [...out];
+}
+
+/**
+ * Reads of `name` that fall back with `??` to a NON-EMPTY literal, which is the
+ * shape that silently accepts an empty wired value.
+ *
+ * A fallback of `""` is fine and deliberately allowed: `BOOKING_API_KEY ?? ""`
+ * means the same thing whether the value is absent or empty, and those call sites
+ * check for emptiness themselves. Only a non-empty default is a promise the `??`
+ * cannot keep.
+ */
+export function unsafeEmptyFallbackReads(source: string, name: string): string[] {
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const re = new RegExp(
+    String.raw`process\.env\.${name}\s*\?\?\s*("(?:[^"]*)"|'(?:[^']*)'|\`(?:[^\`]*)\`)`,
+    "g",
+  );
+  const hits: string[] = [];
+  for (const m of stripped.matchAll(re)) {
+    const literal = m[1]!.slice(1, -1);
+    if (literal.length > 0) hits.push(m[0]!);
+  }
+  return hits;
+}
+
+/**
  * Env var names a script reads. Matches the direct `process.env.NAME` form and
  * the bracket form, which is how a wired-but-defaulted var is read via `envOr`
  * (the VALUE is passed, so the read itself stays visible to this scan).

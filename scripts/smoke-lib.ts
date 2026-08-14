@@ -7,11 +7,23 @@
 // this module's imports are evaluated. Reading process.env inside each function
 // keeps those scripts working regardless of import order.
 
+import { envOr } from "./smoke-env.ts";
+
 export type Json = Record<string, unknown>;
 
-/** Base URL of the target deployment (SLATE_BASE_URL, default prod), no trailing slash. */
+/**
+ * Base URL of the target deployment (SLATE_BASE_URL, default prod), no trailing
+ * slash.
+ *
+ * envOr, never `??`. The canary wires SLATE_BASE_URL from a repo Actions variable,
+ * and `${{ vars.X }}` for a variable that is NOT set arrives as an EMPTY STRING
+ * rather than undefined, which `??` accepts. That shipped on 2026-08-14 and took
+ * the canary down with `Failed to parse URL from /api/availability?bucket=SMOKE`:
+ * two scripts had been converted and this shared helper, the one every request
+ * actually goes through, had not.
+ */
 export function smokeBase(): string {
-  return (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
+  return envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 }
 
 /** The booking API key (BOOKING_API_KEY); empty string if unset. */
