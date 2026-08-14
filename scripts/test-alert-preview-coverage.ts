@@ -100,6 +100,9 @@ for (const p of ALERT_PREVIEWS) {
 // A preview whose text moved with the wall clock would produce a diff on every
 // run, and reviewers would stop reading it.
 {
+  // typecheck-ok: the ?bust=1 query is what defeats the module cache, which is the
+  // whole point of this check; no resolver can follow it, and there is nothing to
+  // resolve differently from the plain import at the top of this file.
   const again = (await import("../src/lib/notify/alert-preview.ts?bust=1")).ALERT_PREVIEWS;
   const first = ALERT_PREVIEWS.map((p) => `${p.key}|${p.state}|${p.text}`).join("\n");
   const second = again.map((p) => `${p.key}|${p.state}|${p.text}`).join("\n");
