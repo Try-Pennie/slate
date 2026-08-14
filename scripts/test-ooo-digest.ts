@@ -1,10 +1,10 @@
 // Tests for the daily pending-OOO digest core (send-time gate + message build).
 // Run: node --experimental-strip-types scripts/test-ooo-digest.ts
 import {
-  buildManagerDigests,
+  buildOooDigests,
   isDigestTime,
   DIGEST_MAX_INTERACTIVE,
-  type DigestManager,
+  type DigestPerson,
 } from "../src/lib/ooo/digest.ts";
 import {
   OOO_APPROVE_ACTION,
@@ -25,9 +25,11 @@ assert(!isDigestTime(Date.parse("2026-07-04T13:00:00Z")), "Saturday is skipped")
 assert(!isDigestTime(Date.parse("2026-07-01T18:00:00Z")), "2pm ET is skipped");
 
 // --- message building ---
-const managers = new Map<string, DigestManager>([
-  ["m1", { id: "m1", email: "mona@x.com", name: "Mona" }],
-  ["m2", { id: "m2", email: "noname@x.com", name: null }],
+const managers = new Map<string, DigestPerson>([
+  ["m1", { id: "m1", email: "mona@x.com", name: "Mona", role: "manager" }],
+  ["m2", { id: "m2", email: "noname@x.com", name: null, role: "manager" }],
+  // #1475: named as somebody's manager of record but not allowed to approve.
+  ["low", { id: "low", email: "andy@x.com", name: "Andy", role: "agent" }],
 ]);
 const req = (id: string, manager_id: string | null) => ({
   id,
@@ -39,10 +41,15 @@ const pending = [
   req("r2", "m1"),
   req("r3", "m1"),
   req("r4", "m2"),
-  req("r5", null), // unassigned: ignored
-  req("r6", "ghost"), // manager not resolvable: ignored
+  req("r5", null), // #1499: no manager of record
+  req("r6", "ghost"), // manager of record not resolvable
+  req("r7", "low"), // #1475: named manager cannot approve
 ];
-const digests = buildManagerDigests(pending, managers, "https://slate.test/admin/ooo");
+const { managers: digests, unrouted } = buildOooDigests(
+  pending,
+  managers,
+  "https://slate.test/admin/ooo",
+);
 
 assert(digests.length === 2, "one digest per resolvable manager with pending");
 assert(digests[0].managerId === "m1" && digests[0].count === 3, "busiest manager first");
@@ -100,13 +107,13 @@ assert(
 );
 
 // --- overflow: a large backlog is capped but NEVER silently truncated (#194) ---
-const bigMgr = new Map<string, DigestManager>([
-  ["big", { id: "big", email: "big@x.com", name: "Bianca" }],
+const bigMgr = new Map<string, DigestPerson>([
+  ["big", { id: "big", email: "big@x.com", name: "Bianca", role: "manager" }],
 ]);
 const bigPending = Array.from({ length: DIGEST_MAX_INTERACTIVE + 4 }, (_, i) =>
   req(`b${i}`, "big"),
 );
-const [bigDigest] = buildManagerDigests(bigPending, bigMgr, "https://slate.test/admin/ooo");
+const [bigDigest] = buildOooDigests(bigPending, bigMgr, "https://slate.test/admin/ooo").managers;
 const bigBlocks = bigDigest.blocks as Block[];
 assert(bigDigest.count === DIGEST_MAX_INTERACTIVE + 4, "count reflects the FULL backlog, not the shown subset");
 assert(
@@ -119,6 +126,78 @@ assert(
 );
 
 // --- empty pending -> no digests ---
-assert(buildManagerDigests([], managers, "x").length === 0, "no pending, no digests");
+{
+  const empty = buildOooDigests([], managers, "x");
+  assert(empty.managers.length === 0 && empty.unrouted === null, "no pending, no digests");
+}
 
 finish();
+
+// --- #1499: every pending request reaches SOMEBODY's nudge ---
+//
+// The digest used to filter `manager_id is not null` and then skip any request
+// whose manager did not resolve, so three shapes were silently dropped from the
+// daily nudge and nobody was ever reminded about them: no manager of record
+// (nine active people, every one of Pennie's debt managers among them), a
+// manager of record who cannot approve (#1475), and a manager id that reads back
+// as nobody. The split is exhaustive by construction, so a request can never
+// fall between the two views (L45).
+{
+  const routedIds = digests.flatMap((d) =>
+    ((d.blocks as Block[]).filter((b) => b.type === "actions") as { block_id?: string }[]).map(
+      (b) => (b.block_id ?? "").replace("ooo_actions:", ""),
+    ),
+  );
+  const unroutedIds = ((unrouted?.blocks ?? []) as Block[])
+    .filter((b) => b.type === "actions")
+    .map((b) => ((b as { block_id?: string }).block_id ?? "").replace("ooo_actions:", ""));
+  const covered = new Set([...routedIds, ...unroutedIds]);
+  assert(
+    pending.every((r) => covered.has(r.id)),
+    `every pending request is nudged somewhere (missing: ${pending
+      .filter((r) => !covered.has(r.id))
+      .map((r) => r.id)
+      .join(", ")})`,
+  );
+  assert(
+    routedIds.filter((id) => unroutedIds.includes(id)).length === 0,
+    "and no request is nudged twice",
+  );
+}
+
+assert(unrouted !== null && unrouted.count === 3, "r5, r6 and r7 have nobody to nudge");
+assert(
+  !!unrouted && unrouted.text.includes("*3*") && unrouted.text.includes("https://slate.test/admin/ooo"),
+  "the unrouted post carries the count and the review link",
+);
+assert(
+  !!unrouted && /team lead or admin/i.test(unrouted.text),
+  "and names who can act on them",
+);
+// L11: three causes, three sentences. A reader has to know whether this is a
+// roster repair (a wrong or missing manager) or simply nobody being named.
+{
+  const text = JSON.stringify(unrouted?.blocks ?? []);
+  assert(text.includes("No manager of record"), "the no-manager cause is named");
+  assert(
+    text.includes("Andy") && text.includes("cannot approve"),
+    "the manager-cannot-approve cause names the manager and the reason",
+  );
+  assert(
+    text.includes("could not be found"),
+    "the unresolvable-manager cause is named as its own third thing",
+  );
+  assert(
+    !/ask an admin to set/i.test(text),
+    "and none of them names the step nobody can perform (L111)",
+  );
+}
+// No unrouted work means no post at all, rather than an empty one.
+assert(
+  buildOooDigests([req("x", "m1")], managers, "https://slate.test/admin/ooo").unrouted === null,
+  "nothing unrouted means no fallback post",
+);
+assert(
+  !unrouted?.text.includes("—") && !unrouted?.text.includes("–"),
+  "no em or en dashes in the unrouted copy",
+);

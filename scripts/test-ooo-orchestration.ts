@@ -15,7 +15,6 @@ import {
 import {
   agentDisplayName,
   DEFAULT_REJECTION_NOTE,
-  NO_MANAGER_MESSAGE,
 } from "../src/lib/ooo/core.ts";
 import type { OooRequest, User } from "../src/lib/db/types.ts";
 import { GoogleHttpError } from "../src/lib/google/http-error.ts";
@@ -433,8 +432,24 @@ const input = {
     "over-max-length window blocked",
   );
 
-  const noMgr = await submitOoo({ ...agent, manager_id: null }, input, w.deps);
-  assert(!noMgr.ok && noMgr.error === NO_MANAGER_MESSAGE, "no manager blocks submit");
+  // #1499: no manager of record is NOT a refusal. Nine active people (every one
+  // of Pennie's debt managers among them) carry no manager of record, and the old
+  // refusal told them to ask an admin to set one, which after #1474 nobody can do
+  // (the field is read only and Salesforce holds null for them). The request is
+  // accepted and routed to whoever moderates all time off.
+  const orphanEarly: User = {
+    ...agent,
+    id: "u-orphan-early",
+    email: "orphan-early@trypennie.com",
+    manager_id: null,
+  };
+  w.users.set(orphanEarly.id, orphanEarly);
+  const noMgr = await submitOoo(orphanEarly, input, w.deps);
+  assert(noMgr.ok, `no manager of record still submits (got: ${noMgr.ok ? "" : noMgr.error})`);
+  assert(
+    noMgr.ok && w.requests.get(noMgr.request.id)?.manager_id === null,
+    "the stored request carries a null manager of record rather than a fabricated one",
+  );
 
   const badWindow = await submitOoo(
     agent,
@@ -503,6 +518,47 @@ const input = {
   const id = sub.ok ? sub.request.id : "";
   const byLead = await approveOoo(id, teamLead, w.deps);
   assert(byLead.ok, "a team lead can still approve it");
+}
+
+// --- #1499: no manager of record routes to the moderators, and says so ---
+//
+// Three causes reach the fallback channel and each gets its own sentence (L11):
+// a failed DM is a Slack permissions problem, a manager who cannot approve is a
+// roster problem, and no manager at all is neither. The last one used to be
+// unreachable, because submission refused first.
+{
+  const w = makeWorld();
+  const orphan: User = {
+    ...agent,
+    id: "u-orphan",
+    email: "orphan@trypennie.com",
+    name: "Olive Orphan",
+    manager_id: null,
+  };
+  w.users.set(orphan.id, orphan);
+
+  const sub = await submitOoo(orphan, input, w.deps);
+  assert(sub.ok, "a requester with no manager of record is accepted");
+  assert(w.dms.length === 0, "nobody is DMed, because there is nobody to DM");
+  assert(w.channelPosts.length === 1, "it goes to the fallback channel the moderators watch");
+  assert(
+    w.channelPosts[0].includes("no manager of record"),
+    `the post names THIS cause (got: ${w.channelPosts[0].slice(0, 140)})`,
+  );
+  assert(
+    !w.channelPosts[0].includes("Couldn't DM") &&
+      !w.channelPosts[0].includes("cannot approve time off"),
+    "and is not confused with the DM failure or the unqualified manager cause",
+  );
+  assert(
+    !/ask an admin to set/i.test(w.channelPosts[0]),
+    "and never names the step nobody can perform: the field is read only (L111)",
+  );
+
+  // Not stranded: a team lead moderates all time off, so the request is actionable.
+  const id = sub.ok ? sub.request.id : "";
+  const byLead = await approveOoo(id, teamLead, w.deps);
+  assert(byLead.ok, "a team lead can approve a request with no manager of record");
 }
 {
   // The qualifying side of the same routing: a real manager still gets the DM, so

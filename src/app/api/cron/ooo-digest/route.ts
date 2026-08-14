@@ -2,11 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { appUrl } from "@/lib/env";
-import { dmSlackUserByEmail } from "@/lib/notify/slack";
+import { dmSlackUserByEmail, postSlack } from "@/lib/notify/slack";
 import {
-  buildManagerDigests,
+  buildOooDigests,
   isDigestTime,
-  type DigestManager,
+  type DigestPerson,
   type DigestPendingRequest,
 } from "@/lib/ooo/digest";
 import { agentDisplayName, formatRequestWhenAndReason } from "@/lib/ooo/core";
@@ -89,8 +89,11 @@ export async function GET(req: NextRequest) {
     // cap-safe: the org's pending time off queue, drained by moderation.
     .from("ooo_requests")
     .select("id, user_id, manager_id, starts_at, ends_at, display_tz_id, display_tz_label, reason")
-    .eq("status", "pending")
-    .not("manager_id", "is", null);
+    .eq("status", "pending");
+  // #1499: no `manager_id is not null` filter. A request with no manager of
+  // record is exactly the one nobody is nudged about, so filtering it out here
+  // made the daily reminder quietest about the requests most likely to be
+  // forgotten. It goes to the fallback channel post instead.
   const pendingReqs = (pendingRows ?? []) as Pick<
     OooRequest,
     | "id"
@@ -115,10 +118,12 @@ export async function GET(req: NextRequest) {
   ];
   const { data: userRows } = await db
     .from("users")
-    .select("id, email, name")
+    // `role` decides whether a manager of record may actually approve (#1475),
+    // which is what makes a request routed rather than unrouted.
+    .select("id, email, name, role")
     .in("id", userIds);
-  const usersById = new Map<string, DigestManager>(
-    ((userRows ?? []) as DigestManager[]).map((u) => [u.id, u]),
+  const usersById = new Map<string, DigestPerson>(
+    ((userRows ?? []) as DigestPerson[]).map((u) => [u.id, u]),
   );
 
   // Route builds each request's descriptive line (agent + when + reason); the pure
@@ -134,7 +139,34 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  const digests = buildManagerDigests(pending, usersById, `${appUrl()}/admin/ooo`);
+  const { managers: digests, unrouted } = buildOooDigests(
+    pending,
+    usersById,
+    `${appUrl()}/admin/ooo`,
+  );
+
+  // Requests nobody can be nudged about go to the shared fallback channel, which
+  // is where the per-request notification already sends them on the day they are
+  // submitted. Wrapped, because a Slack failure here must not abort the manager
+  // DMs below, and logged rather than swallowed so a channel that stops accepting
+  // posts is visible in the logs alongside the returned count.
+  let unroutedPosted = false;
+  if (unrouted) {
+    try {
+      const r = await postSlack({ text: unrouted.text, blocks: unrouted.blocks });
+      unroutedPosted = r.ok;
+      if (!r.ok) {
+        log.warn("ooo-digest", {
+          msg: "unrouted digest post failed",
+          count: unrouted.count,
+          reason: r.error ?? "unknown",
+        });
+      }
+    } catch (err) {
+      log.error("ooo-digest", { msg: "unrouted digest post threw", count: unrouted.count }, err);
+    }
+  }
+
   let sent = 0;
   let failed = 0;
   for (const d of digests) {
@@ -158,6 +190,10 @@ export async function GET(req: NextRequest) {
     sent,
     failed,
     managers: digests.length,
+    // Reported separately from `sent`, because a run that nudged every manager
+    // while failing to post the unrouted requests is not a clean run.
+    unrouted: unrouted?.count ?? 0,
+    unroutedPosted,
     pending: pending.length,
   });
 }

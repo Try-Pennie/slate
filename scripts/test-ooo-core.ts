@@ -15,8 +15,12 @@ import {
   formatRequestWhenAndReason,
   formatWhenLine,
   normalizeTzLabel,
+  noManagerReviewerCapitalized,
+  oooApproverLine,
+  oooRequestIntro,
   overlaps,
   validateWindow,
+  NO_MANAGER_REVIEWER,
 } from "../src/lib/ooo/core.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -305,5 +309,34 @@ assert(
   !formatRequestWhenAndReason(reqDesc).includes("Notes:"),
   "the shared description carries no notes (notes stay with the notification)",
 );
+
+// --- #1499: the /me copy never names a step the reader cannot perform ---
+//
+// The refusal this replaced said "ask an admin to set your manager", and after
+// #1474 there is no such control: the admin agent profile shows the manager of
+// record read only because Salesforce owns the link, and Salesforce holds null
+// for all nine of these people. The copy has to name who WILL review it instead
+// (L111), and one constant has to be the only spelling of that reviewer, so the
+// promise on /me and the pool that can actually act cannot drift.
+{
+  const withManager = [oooRequestIntro("Mona"), oooApproverLine("Mona")];
+  const without = [oooRequestIntro(null), oooApproverLine(null)];
+  assert(
+    withManager.every((line) => line.includes("Mona")),
+    "a named manager is still the one who takes it from there",
+  );
+  assert(
+    without.every((line) => line.toLowerCase().includes(NO_MANAGER_REVIEWER)),
+    `with no manager the copy names the moderator pool (got: ${without.join(" | ")})`,
+  );
+  assert(
+    without.every((line) => !/ask an admin|set your manager/i.test(line)),
+    "and never names the step nobody can perform",
+  );
+  assert(
+    noManagerReviewerCapitalized().toLowerCase() === NO_MANAGER_REVIEWER,
+    "the sentence-start spelling is derived from the constant, not a second copy of it",
+  );
+}
 
 finish();

@@ -266,8 +266,36 @@ export function formatRequestWhenAndReason(
 export const DUPLICATE_REQUEST_MESSAGE =
   "A request for this exact time range already exists. Check your pending requests or change the dates.";
 
-export const NO_MANAGER_MESSAGE =
-  "You don't have a manager assigned yet. Ask an admin to set your manager before requesting time off.";
+/**
+ * Who reviews time off for somebody with no manager of record (#1499).
+ *
+ * Submission used to REFUSE that person with "ask an admin to set your manager",
+ * which after #1474 names a step nobody can take: the admin field is read only
+ * because Salesforce owns the link, and Salesforce holds null for all nine of
+ * them (every one of Pennie's debt managers among them). So the request is
+ * accepted and routed to whoever moderates all time off, which is exactly who
+ * would have approved it anyway.
+ *
+ * One constant, read by the queue, the Slack fallback post and the /me copy, so
+ * the person promised a reviewer and the person who can actually act cannot
+ * drift apart.
+ */
+export const NO_MANAGER_REVIEWER = "a team lead or admin";
+
+/** `NO_MANAGER_REVIEWER` at the start of a sentence, so there is still one spelling. */
+export function noManagerReviewerCapitalized(): string {
+  return NO_MANAGER_REVIEWER.charAt(0).toUpperCase() + NO_MANAGER_REVIEWER.slice(1);
+}
+
+/** The /me intro: who takes it from here once you submit. */
+export function oooRequestIntro(managerName: string | null): string {
+  return `Need a day off? Request it below and ${managerName ?? NO_MANAGER_REVIEWER} takes it from there.`;
+}
+
+/** The /me form subheading: who signs these off. */
+export function oooApproverLine(managerName: string | null): string {
+  return `${managerName ?? noManagerReviewerCapitalized()} signs off on these.`;
+}
 
 export const DEFAULT_REJECTION_NOTE =
   "Your manager declined this request but did not provide details. If you have questions, please follow up with them directly.";
