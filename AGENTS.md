@@ -511,6 +511,36 @@ TS) on or above the write. Hand-run SQL is out of reach of any repo scan, so the
 6-hourly reconcile lane also counts rows strictly behind the cursor against the
 warehouse count, which pages on a single stranded row with no tolerance.
 
+# Adding a webhook event (#1459)
+
+`emitWebhook` delivers only to endpoints whose stored `events` array **contains**
+the event (`.contains("events", [event])`). Zero matches is not an error: the map
+over the empty endpoint list resolves, the outbox step is marked done, and the
+event is gone with no failure, no alert, and no delivery row. So adding a value to
+the `WebhookEvent` union ships it **inert**, and it stays inert until somebody
+remembers a database update that lives nowhere in the repo.
+
+The subscription is a database column no code change touches, so **both halves are
+guarded, each blind where the other looks**:
+
+- `scripts/test-webhook-event-subscribers.ts` compares the union against the
+  migration **DEFAULT**, which is what a NEW endpoint is created with. It can say
+  nothing about the endpoint that already exists.
+- the monitor lane's `webhook_subscribers` step reads the **live rows**, which is
+  the only thing that can notice the existing endpoint was never updated. The one
+  live Regal endpoint predates every event added from here on.
+
+So adding an event means three things, not one: the union in `src/lib/db/types.ts`,
+the map in `src/lib/webhooks/events.ts` (a `Record<WebhookEvent, true>`, so `tsc`
+names the omission), and a **`webhook_endpoints.events` update on the live row**.
+`src/lib/webhooks/regal.ts` also keys its label map on the union, so `tsc` catches
+that one too.
+
+To ship an event deliberately unsubscribed, add it to `DELIBERATELY_UNSUBSCRIBED`
+(`src/lib/webhooks/events.ts`) with a reason **and the issue that will subscribe
+it**; both guards then stay quiet about it and the guard rejects an entry with no
+issue number. Delete the entry in the change that subscribes it.
+
 # Read alert copy before it ships (`pnpm preview:alerts`, #1153)
 
 Alert copy is a contract with a person holding a phone mid-incident, and it was

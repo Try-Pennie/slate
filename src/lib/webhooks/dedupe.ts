@@ -8,7 +8,7 @@ import type { WebhookEvent } from "@/lib/db/types";
  *
  * - `booking.created` / `booking.completed`: no `booking_events` row exists, and
  *   there is exactly one of each per booking, ever → key on the booking id.
- * - `booking.rescheduled` / `booking.cancelled` / `booking.reassigned`: key on the
+ * - `booking.rescheduled` / `booking.cancelled`: key on the
  *   `booking_events` row id, which is fresh per action — so a legitimate SECOND
  *   reschedule is NOT deduped away.
  * - A mutation whose history insert failed (no id available, a best-effort path

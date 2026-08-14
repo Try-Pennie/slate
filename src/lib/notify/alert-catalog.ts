@@ -148,6 +148,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "the drift check sees the applied version catch up.",
   },
   {
+    key: "webhook_event_no_subscriber",
+    kind: "condition",
+    why:
+      "A booking event Slate sends has no endpoint subscribed to it, so it reaches " +
+      "nobody; a person updates the subscription and the same lane re-measures it.",
+  },
+  {
     key: "low_booking_volume",
     kind: "condition",
     why:

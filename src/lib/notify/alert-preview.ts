@@ -192,6 +192,10 @@ import {
   emptyBucketsAggregateMessage,
   emptyBucketsAggregateRecoveredMessage,
 } from "@/lib/availability/bucket-coverage";
+import {
+  formatUnsubscribedEventsAlert,
+  formatUnsubscribedEventsRecovery,
+} from "@/lib/monitor/webhook-subscriber-coverage";
 
 /** One rendered state of one alert. */
 export interface AlertPreview {
@@ -961,6 +965,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the schema caught up",
     channel: "recovery",
     text: formatMigrationDriftRecovery("0104"),
+  },
+  {
+    key: "webhook_event_no_subscriber",
+    state: "one event reaches nobody, with a live endpoint to fix",
+    channel: "alert",
+    text: formatUnsubscribedEventsAlert({
+      measured: true,
+      unsubscribed: ["booking.updated"],
+      declared: [],
+      // One active endpoint, which is production today: the remedy sentence has to
+      // name editing THAT endpoint.
+      endpointCount: 1,
+    }),
+  },
+  {
+    key: "webhook_event_no_subscriber",
+    state: "several events reach nobody",
+    channel: "alert",
+    text: formatUnsubscribedEventsAlert({
+      measured: true,
+      unsubscribed: ["booking.updated", "booking.no_show"],
+      declared: [],
+      endpointCount: 3,
+    }),
+  },
+  {
+    key: "webhook_event_no_subscriber",
+    state: "no active endpoint exists at all",
+    channel: "alert",
+    // A different remedy, not a different phrasing of the same one: with nothing to
+    // edit, "add the event to that endpoint" names an action nobody can take.
+    text: formatUnsubscribedEventsAlert({
+      measured: true,
+      unsubscribed: ["booking.created"],
+      declared: [],
+      endpointCount: 0,
+    }),
+  },
+  {
+    key: "webhook_event_no_subscriber",
+    state: "every event has a subscriber again",
+    channel: "recovery",
+    text: formatUnsubscribedEventsRecovery(),
   },
   {
     key: "thin_tier_staffing",

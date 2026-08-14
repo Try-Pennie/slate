@@ -167,6 +167,20 @@ export async function emitWebhook(
     throw new Error(`webhook endpoints read failed: ${endpointsError.message}`);
   }
 
+  // #1459: a zero fan-out is silent. The map below over an empty list resolves,
+  // the outbox step is marked done, and the event is gone with no failure and no
+  // delivery row. Nothing downstream can tell that apart from a delivered event, so
+  // say it here: the monitor lane's subscriber-coverage check is what pages, and
+  // this is what a forensic log read needs to confirm which events it happened to.
+  if ((endpoints ?? []).length === 0) {
+    log.warn("webhook-emit", {
+      msg: "no subscriber for event",
+      org_id: orgId,
+      event,
+      suppressed,
+    });
+  }
+
   await Promise.all(
     ((endpoints ?? []) as WebhookEndpoint[]).map(async (endpoint) => {
       const { data: delivery, error } = await db
