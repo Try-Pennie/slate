@@ -28,6 +28,25 @@ export function parseEnvFile(content: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Read an env value with a fallback, treating an EMPTY or whitespace-only value
+ * as absent.
+ *
+ * #1494: a workflow wiring `FOO: ${{ vars.FOO }}` for a repo variable that is not
+ * set does not leave FOO undefined, it sets it to the EMPTY STRING. `??` only
+ * catches null/undefined, so `process.env.SLATE_BASE_URL ?? "https://…"` would
+ * take the empty string and every request in the run would go to a base URL of
+ * "". Shell already handles this with `${VAR:-default}`; this is the same rule for
+ * the scripts, so wiring a var can never blank a working default.
+ *
+ * Pass the VALUE, not the name (`envOr(process.env.FOO, "x")`), so the
+ * `process.env.FOO` read stays visible to scripts/test-workflow-env-coverage.ts.
+ */
+export function envOr(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : fallback;
+}
+
 /** Load each file into process.env WITHOUT overriding vars already set (so an
  *  explicit `FOO=bar node …` still wins). Missing files are skipped. */
 export function loadEnvFiles(files: string[]): void {
