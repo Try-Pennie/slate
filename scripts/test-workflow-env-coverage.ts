@@ -25,6 +25,8 @@ import {
   findUncoveredEnv,
   parseWorkflowSteps,
   readEnvNames,
+  unsafeEmptyFallbackReads,
+  varsWiredEnvNames,
 } from "./lib/scan-workflow-env-coverage.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -193,6 +195,90 @@ jobs:
     /EXPECT_HTTPS_REDIRECT:\s*\$\{\{\s*vars\.EXPECT_HTTPS_REDIRECT\s*\}\}/.test(wf),
     "the flag comes from the repo Actions variable, not a hard-coded literal",
   );
+}
+
+// --- a WIRED var must never be read with a non-empty `??` fallback ---
+//
+// GitHub interpolates an UNSET `${{ vars.X }}` as the empty string, not as
+// nothing, so `process.env.X ?? "default"` takes "" and the default never applies.
+// #1494 wired SLATE_BASE_URL, converted two scripts to envOr, and missed the shared
+// helper every request goes through; the production canary failed 11 minutes after
+// the merge with `Failed to parse URL from /api/availability?bucket=SMOKE`.
+//
+// Enforced rather than patched per site, because patching per site is what caused
+// it (L30).
+{
+  // Positive control first: the guard has to be shown catching the exact shape.
+  eq(
+    unsafeEmptyFallbackReads(
+      'const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app");',
+      "SLATE_BASE_URL",
+    ).length,
+    1,
+    "control: a non-empty ?? fallback on a wired var is caught",
+  );
+  eq(
+    unsafeEmptyFallbackReads('const KEY = process.env.BOOKING_API_KEY ?? "";', "BOOKING_API_KEY").length,
+    0,
+    'control: a `?? ""` fallback is allowed (absent and empty mean the same thing there)',
+  );
+  eq(
+    unsafeEmptyFallbackReads(
+      'const B = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app");',
+      "SLATE_BASE_URL",
+    ).length,
+    0,
+    "control: the envOr form is not flagged",
+  );
+  eq(
+    unsafeEmptyFallbackReads(
+      '// const B = process.env.SLATE_BASE_URL ?? "https://x";',
+      "SLATE_BASE_URL",
+    ).length,
+    0,
+    "control: a commented-out read is not flagged",
+  );
+
+  const files = readdirSync(WORKFLOW_DIR).filter((f) => /\.ya?ml$/.test(f));
+  const wired = new Set<string>();
+  for (const file of files) {
+    for (const name of varsWiredEnvNames(readFileSync(join(WORKFLOW_DIR, file), "utf8"))) {
+      wired.add(name);
+    }
+  }
+  assert(wired.size > 0, `${wired.size} env vars are wired from vars./secrets. expressions`);
+
+  // Every script in scripts/, not only the ones a workflow runs directly: the
+  // failure came from a SHARED helper that no workflow names, reached through a
+  // script that one does.
+  const scriptFiles = readdirSync(join(ROOT, "scripts"))
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => join("scripts", f))
+    .concat(
+      readdirSync(join(ROOT, "scripts", "lib"))
+        .filter((f) => f.endsWith(".ts"))
+        .map((f) => join("scripts", "lib", f)),
+    );
+  // This file is excluded from its own scan: the positive controls above hold the
+  // bad shape as string literals ON PURPOSE, and a guard that flagged its own proof
+  // would have to drop the proof to go green. Named explicitly rather than by a
+  // pattern, so the exclusion cannot quietly widen to cover a real script.
+  const SELF = join("scripts", "test-workflow-env-coverage.ts");
+  const offenders: string[] = [];
+  for (const rel of scriptFiles) {
+    if (rel === SELF) continue;
+    const source = readFileSync(join(ROOT, rel), "utf8");
+    for (const name of wired) {
+      for (const hit of unsafeEmptyFallbackReads(source, name)) {
+        offenders.push(
+          `${rel}: \`${hit}\` reads a WIRED var with a non-empty ?? fallback. An unset ` +
+            `\${{ vars.${name} }} arrives as "", which ?? accepts, so the fallback never ` +
+            `applies. Use envOr(process.env.${name}, <default>) from scripts/smoke-env.ts.`,
+        );
+      }
+    }
+  }
+  eq(offenders.length, 0, `no script reads a wired env var with a non-empty ?? fallback\n  ${offenders.join("\n  ")}`);
 }
 
 // --- the opt-outs that exist must be justified, not bare ---
