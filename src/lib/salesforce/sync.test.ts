@@ -184,4 +184,117 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
     store.config.errorOn = "select";
     await expect(syncSalesforceAgents()).rejects.toThrow(/read failed/);
   });
+
+  // #1474: the sync must CONVERGE on Salesforce, not accumulate.
+  //
+  // Both directions, because a sync that only ever adds looks correct in every test
+  // that only ever adds. Two live rows proved the gap: a manager whose manager of
+  // record was one of his own agents, and a row pointing at itself.
+  describe("converges on Salesforce instead of accumulating (#1474)", () => {
+    /** The manager_id values written by this run, one entry per update call. */
+    const managerWrites = () =>
+      store.calls
+        .filter((c) => c.op === "update" && "manager_id" in (c.payload as object))
+        .map((c) => ({
+          managerId: (c.payload as { manager_id: string | null }).manager_id,
+          ids: c.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2],
+        }));
+
+    it("clears a link when Salesforce no longer names a manager", async () => {
+      // a@x is already linked to u3; Salesforce now names nobody for them.
+      store.config.afterInsert = [
+        { id: "u1", email: "a@x.com", manager_id: "u3", role: "agent" },
+        { id: "u3", email: "mona@x.com", manager_id: null, role: "manager" },
+      ];
+      sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+        if (url.includes("oauth2/token")) {
+          return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+        }
+        const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+        if (q.includes("IsActive = true AND (")) {
+          return sfResponse([{ Email: "a@x.com", Name: "Agent A", Agent_Manager__c: null, HighDebt__c: true }]);
+        }
+        return sfResponse([]);
+      });
+
+      const result = await syncSalesforceAgents();
+
+      const cleared = managerWrites().filter((w) => w.managerId === null);
+      expect(cleared).toHaveLength(1);
+      expect(cleared[0].ids).toEqual(["u1"]);
+      expect(result.managersUnlinked).toBe(1);
+      expect(result.managersLinked).toBe(0);
+    });
+
+    // The distinction the whole thing rests on. Salesforce NAMING a manager we
+    // cannot resolve to a Slate user arrives as the same null email as naming
+    // nobody, and only the second is grounds for clearing. Treating them alike
+    // would delete a correct link every time a picklist name went ambiguous.
+    it("does NOT clear when the manager name could not be resolved", async () => {
+      store.config.afterInsert = [
+        { id: "u1", email: "a@x.com", manager_id: "u3", role: "agent" },
+        { id: "u3", email: "mona@x.com", manager_id: null, role: "manager" },
+      ];
+      sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+        if (url.includes("oauth2/token")) {
+          return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+        }
+        const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+        if (q.includes("IsActive = true AND (")) {
+          return sfResponse([
+            { Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Nobody Matching", HighDebt__c: true },
+          ]);
+        }
+        // The name lookup finds no candidate, so the resolver returns null.
+        return sfResponse([]);
+      });
+
+      const result = await syncSalesforceAgents();
+
+      expect(managerWrites().filter((w) => w.managerId === null)).toHaveLength(0);
+      expect(result.managersUnlinked).toBe(0);
+      // Counted, so a run that deliberately did nothing is visible as that rather
+      // than as an agent who genuinely has no manager.
+      expect(result.managersUnresolved).toBe(1);
+    });
+
+    it("writes nothing when the link is already null (a quiet hour is quiet)", async () => {
+      store.config.afterInsert = [{ id: "u1", email: "a@x.com", manager_id: null, role: "agent" }];
+      sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+        if (url.includes("oauth2/token")) {
+          return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+        }
+        const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+        if (q.includes("IsActive = true AND (")) {
+          return sfResponse([{ Email: "a@x.com", Name: "Agent A", Agent_Manager__c: null, HighDebt__c: true }]);
+        }
+        return sfResponse([]);
+      });
+
+      const result = await syncSalesforceAgents();
+
+      expect(managerWrites()).toHaveLength(0);
+      expect(result.managersUnlinked).toBe(0);
+    });
+
+    it("throws when the unlink write errors (fail loud, never a quiet non-clear)", async () => {
+      store.config.afterInsert = [
+        { id: "u1", email: "a@x.com", manager_id: "u3", role: "agent" },
+        { id: "u3", email: "mona@x.com", manager_id: null, role: "manager" },
+      ];
+      sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+        if (url.includes("oauth2/token")) {
+          return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+        }
+        const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+        if (q.includes("IsActive = true AND (")) {
+          return sfResponse([{ Email: "a@x.com", Name: "Agent A", Agent_Manager__c: null, HighDebt__c: true }]);
+        }
+        return sfResponse([]);
+      });
+      store.config.errorOn = "update";
+
+      await expect(syncSalesforceAgents()).rejects.toThrow(/manager unlink batch failed/);
+    });
+  });
 });

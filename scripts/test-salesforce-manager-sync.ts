@@ -104,6 +104,75 @@ const agent = (
   );
 }
 
+// --- #1474: the sync must CONVERGE, so it also has to say what to CLEAR ---
+//
+// The sync only ever added a link, so a link written once (or written wrongly)
+// survived forever and Slate's roster silently diverged from the source it
+// mirrors (L41). Two live rows proved it, one of them pointing at its own row.
+//
+// The whole difficulty is that "Salesforce says this person has no manager" and
+// "Salesforce named someone we could not resolve" both arrive as a null email, and
+// only the first is grounds for clearing. Getting that wrong wipes a correct link
+// every time a picklist name is ambiguous (L11: a value that could not be read is
+// never scored as an answer).
+{
+  // Salesforce positively names NO manager: a clear.
+  const plan = resolveManagerSync([agent("a@x.com", null, null)], new Set(["a@x.com"]));
+  assert(plan.links.length === 0, "no manager named: nothing to link");
+  assert(
+    plan.clears.length === 1 && plan.clears[0] === "a@x.com",
+    "an agent Salesforce says has NO manager is cleared",
+  );
+}
+{
+  // Salesforce NAMES a manager the resolver could not turn into an email. We could
+  // not tell, so the existing link stands: neither a link nor a clear.
+  const plan = resolveManagerSync(
+    [agent("a@x.com", null, "Ambiguous Person")],
+    new Set(["a@x.com"]),
+  );
+  assert(plan.links.length === 0, "an unresolvable manager name links nothing");
+  assert(
+    plan.clears.length === 0,
+    "an unresolvable manager name does NOT clear: could-not-resolve is not no-manager",
+  );
+  assert(
+    plan.unresolved.length === 1 && plan.unresolved[0] === "Ambiguous Person",
+    "the unresolvable name is reported, so a silent no-op is visible",
+  );
+}
+{
+  // Salesforce names the agent as their own manager. Skipping the write was
+  // already right; leaving an existing self link in place is not (#1474).
+  const plan = resolveManagerSync([agent("a@x.com", "a@x.com", "A Self")], new Set(["a@x.com"]));
+  assert(plan.links.length === 0, "a self link is never written");
+  assert(
+    plan.clears.length === 1 && plan.clears[0] === "a@x.com",
+    "a self link is CLEARED, not merely skipped",
+  );
+}
+{
+  // A resolved manager is a link, never also a clear: the two lists must not
+  // disagree, because the writer applies both.
+  const plan = resolveManagerSync(
+    [agent("a@x.com", "mgr@x.com", "Mona Manager"), agent("b@x.com", null, null)],
+    new Set(["a@x.com", "b@x.com", "mgr@x.com"]),
+  );
+  assert(plan.links.length === 1 && plan.links[0].agentEmail === "a@x.com", "the resolved agent is linked");
+  assert(plan.clears.length === 1 && plan.clears[0] === "b@x.com", "the unmanaged agent is cleared");
+  const linked = new Set(plan.links.map((l) => l.agentEmail));
+  assert(
+    plan.clears.every((e) => !linked.has(e)),
+    "no agent appears in both links and clears",
+  );
+}
+{
+  // An agent with no email at all is not a subject: it can be neither linked nor
+  // cleared, and clearing "" would be a write against nobody.
+  const plan = resolveManagerSync([agent("", null, null)], new Set());
+  assert(plan.links.length === 0 && plan.clears.length === 0, "an agent with no email is skipped entirely");
+}
+
 // --- matchByInitialLastName: informal Agent_Manager picklist names ---
 const cands = [
   { firstName: "Michael", lastName: "Dugan", email: "mdugan@x.com" },

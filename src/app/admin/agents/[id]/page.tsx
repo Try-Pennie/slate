@@ -14,7 +14,6 @@ import { oooOnlyFor } from "@/lib/env";
 import {
   setUserRole,
   setBookable,
-  setAgentManager,
   setOooCalendarId,
   setWorkingHours,
   useDefaultHours,
@@ -148,20 +147,13 @@ export default async function AgentProfilePage({
     User,
     "id" | "name" | "email" | "role" | "deactivated_at"
   >[];
-  // Deactivated users are not offered as managers. The currently-assigned
-  // manager is resolved from the full set below (and shown via the prepend even
-  // if deactivated), so an existing assignment still displays — you just can't
-  // newly assign a departed manager.
-  const managers = allUsers
-    .filter((u) => (u.role === "manager" || u.role === "admin") && isActive(u))
-    .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
+  // The manager of record is DISPLAYED, not chosen (#1474): Salesforce owns the
+  // link and the hourly sync converges on it, so there is no picker to build a
+  // candidate list for. Resolved from the full user set, including deactivated
+  // ones, so an existing assignment still shows who it points at.
   const assignedManager = agent.manager_id
     ? allUsers.find((u) => u.id === agent.manager_id)
     : null;
-  const managerOptions =
-    assignedManager && !managers.some((m) => m.id === assignedManager.id)
-      ? [assignedManager, ...managers.filter((m) => m.id !== agent.id)]
-      : managers.filter((m) => m.id !== agent.id);
   const org = orgRes.data as Organization;
 
   const initials = (agent.name ?? agent.email).slice(0, 2).toUpperCase();
@@ -271,27 +263,25 @@ export default async function AgentProfilePage({
                 )}
               </form>
             )}
+            {/* Read only on purpose (#1474). Salesforce owns this link: the hourly
+                roster sync now converges on Agent_Manager__c, clearing a link
+                Salesforce no longer backs, so anything set here would be undone
+                within the hour. An editable control that silently reverts is worse
+                than none, so the value is shown with where to change it. */}
             {canManageThisAgent && (
-              <form action={setAgentManager} className="flex items-end gap-2">
-                <input type="hidden" name="user_id" value={agent.id} />
-                <div>
-                  <label className={labelCls}>Manager (time off approvals)</label>
-                  <select
-                    name="manager_id"
-                    aria-label="Manager"
-                    defaultValue={agent.manager_id ?? ""}
-                    className={`${inputCls} w-56`}
-                  >
-                    <option value="">No manager</option>
-                    {managerOptions.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name ?? m.email}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button className={btnSecondaryCls}>Set manager</button>
-              </form>
+              <div>
+                <span className={labelCls}>Manager (time off approvals)</span>
+                <p className="text-sm">
+                  {assignedManager ? (
+                    assignedManager.name ?? assignedManager.email
+                  ) : (
+                    <span className="text-[color:var(--pn-muted)]">No manager</span>
+                  )}
+                </p>
+                <p className="mt-1 text-xs text-[color:var(--pn-muted)]">
+                  Set in Salesforce (Agent Manager), and synced hourly.
+                </p>
+              </div>
             )}
           </div>
           {isAdmin && agent.role !== "agent" && (

@@ -27,6 +27,28 @@ export interface ManagerSyncPlan {
   managersToCreate: ManagerToCreate[];
   /** agent->manager pairs to write (manager resolves to a Slate user). */
   links: ManagerLink[];
+  /**
+   * Agent emails whose `manager_id` must be set back to NULL, because Salesforce
+   * positively says they have no manager, or names them as their own (#1474).
+   *
+   * This is what makes the sync CONVERGE instead of accumulate. It is deliberately
+   * narrow: an agent only reaches this list when Salesforce named nothing at all.
+   * An agent whose manager NAME was given but could not be resolved to an email is
+   * in `unresolved` instead, and is left exactly as it is, because "we could not
+   * work out who this is" must never be written down as "this person has no
+   * manager" (L11).
+   *
+   * No email appears in both `links` and `clears`.
+   */
+  clears: string[];
+  /**
+   * Manager names Salesforce gave that could not be resolved to a Slate user.
+   *
+   * Reported rather than dropped, because this is the case where the sync
+   * deliberately does nothing, and a silent no-op here is indistinguishable from
+   * an agent who genuinely has no manager. The caller logs it.
+   */
+  unresolved: string[];
 }
 
 const norm = (s: string | null | undefined): string =>
@@ -75,11 +97,36 @@ export function resolveManagerSync(
   const agentEmails = new Set(agents.map((a) => norm(a.email)));
   const toCreate = new Map<string, ManagerToCreate>();
   const links: ManagerLink[] = [];
+  const clears: string[] = [];
+  const unresolved: string[] = [];
 
   for (const agent of agents) {
     const email = norm(agent.email);
+    // An agent with no email is not a subject at all: it can be neither linked nor
+    // cleared, and a clear keyed on "" would be a write against nobody.
+    if (!email) continue;
+
     const managerEmail = norm(agent.managerEmail);
-    if (!email || !managerEmail || managerEmail === email) continue;
+    const managerName = (agent.managerName ?? "").trim();
+
+    if (!managerEmail) {
+      // The distinction the whole convergence rests on (#1474). Salesforce giving
+      // NO name is a fact about the person: clear. Salesforce giving a name we
+      // could not resolve is a fact about our matching: leave the row alone and
+      // say so, because writing null here would silently delete a correct link
+      // every time a picklist name went ambiguous.
+      if (managerName) unresolved.push(managerName);
+      else clears.push(email);
+      continue;
+    }
+
+    if (managerEmail === email) {
+      // Salesforce names the agent as their own manager. Skipping the write was
+      // always right; leaving an EXISTING self link in place is not, and one was
+      // live in production.
+      clears.push(email);
+      continue;
+    }
 
     links.push({ agentEmail: email, managerEmail });
     if (!existingEmails.has(managerEmail) && !agentEmails.has(managerEmail)) {
@@ -91,5 +138,5 @@ export function resolveManagerSync(
     }
   }
 
-  return { managersToCreate: [...toCreate.values()], links };
+  return { managersToCreate: [...toCreate.values()], links, clears, unresolved };
 }

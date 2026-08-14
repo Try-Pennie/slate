@@ -111,9 +111,12 @@ function agentOf(role: string, id = "x1"): Record<string, unknown> {
 }
 
 // The manager+ mutate controls that must track canManageUser (#550).
+//
+// "Set manager" is deliberately absent (#1474): Salesforce owns that link and the
+// hourly sync converges on it, so an editable control here would be undone within
+// the hour. The manager of record is displayed instead, asserted below.
 const MANAGE_BUTTONS = [
   /make bookable/i,
-  /set manager/i,
   /save hours/i,
   /save attributes/i,
   /deactivate account/i,
@@ -233,6 +236,20 @@ describe("AgentProfilePage control visibility (#550)", () => {
       expect(screen.queryByRole("button", { name: label })).toBeTruthy();
     }
     expect(screen.queryByText(/cannot change their settings/i)).toBeNull();
+  });
+
+  // #1474: the manager of record is READ ONLY, and the page has to say where it
+  // comes from. Without the second half a reader sees a value with no way to change
+  // it and no reason, which is a dead end rather than a deliberate one.
+  it("shows the manager of record without offering to change it, and names Salesforce", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    render(await AgentProfilePage(props));
+
+    expect(screen.queryByRole("button", { name: /set manager/i })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /manager/i })).toBeNull();
+    expect(screen.queryByText(/manager \(time off approvals\)/i)).toBeTruthy();
+    expect(screen.queryByText(/set in salesforce/i)).toBeTruthy();
   });
 
   it("hides the mutate controls (and explains why) when a manager views an admin", async () => {

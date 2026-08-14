@@ -206,6 +206,15 @@ export async function syncSalesforceNow(): Promise<void> {
       r.managersLinked
         ? `${plural(r.managersLinked, "agent")} reassigned to a manager`
         : null,
+      // Reported, because a run that CLEARS a link changes who approves someone's
+      // time off just as much as one that sets it, and a summary that only ever
+      // counts additions makes convergence look like a quiet run (#1474).
+      r.managersUnlinked
+        ? `${plural(r.managersUnlinked, "agent")} no longer has a manager in Salesforce`
+        : null,
+      r.managersUnresolved
+        ? `${plural(r.managersUnresolved, "manager name")} in Salesforce could not be matched, so those links were left alone`
+        : null,
       r.managersCreated ? `${plural(r.managersCreated, "new manager")}` : null,
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
       r.deactivated ? `${plural(r.deactivated, "user")} deactivated` : null,
@@ -798,33 +807,6 @@ export async function endDroppedImpersonation(
       details: { reason },
     });
   }
-}
-
-/** Assigns (or clears) an agent's manager, the routing edge for OOO requests. */
-export async function setAgentManager(form: FormData): Promise<void> {
-  const userId = String(form.get("user_id") ?? "");
-  if (!userId) return;
-  const managerId = String(form.get("manager_id") ?? "");
-  if (managerId === userId) throw new Error("An agent cannot manage themselves");
-
-  if (managerId) {
-    const { data } = await supabaseAdmin()
-      .from("users")
-      .select("role")
-      .eq("id", managerId)
-      .maybeSingle();
-    const role = (data as { role: Role } | null)?.role;
-    if (role !== "manager" && role !== "admin") {
-      throw new Error("Manager must hold the manager or admin role");
-    }
-  }
-
-  await requireManageAgent(userId, "agent.manager");
-  await supabaseAdmin()
-    .from("users")
-    .update({ manager_id: managerId || null })
-    .eq("id", userId);
-  revalidatePath("/admin");
 }
 
 /** Admin-only: set the OOO Google calendar approval events land on (manager rows). */
