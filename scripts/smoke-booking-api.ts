@@ -41,7 +41,10 @@
 // Scenarios (each uses a fresh identity + cleans up its bookings):
 //   0. dry run -> validates routing with NO booking/event/webhook (side-effect-free)
 //   1. create -> deduped (same slot) -> rescheduled (different time), same bucket
-//   2. cross-bucket move: book in A, rebook the same person into B -> new booking
+//   2. cross-bucket move: book in A, rebook the same person into B -> new booking.
+//      B's start is chosen relative to the instant A actually landed on (#1489):
+//      a same-instant rebook always dedupes, so two slots picked independently
+//      from two reads of the live cache can collide and false-page.
 //   3. confirm path: a weak (email-only) match on a new time -> confirm_required,
 //      then the same call with confirmReschedule:true -> rescheduled
 //   6. reassign: book -> POST /api/bookings/reassign onto the OTHER SMOKE agent
@@ -60,6 +63,7 @@ import { loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
+import { chooseCrossBucketSlot } from "./lib/smoke-cross-bucket-slot.ts";
 import {
   evaluateStaticAssetTransport,
   fetchProbe,
@@ -110,7 +114,10 @@ function printSummaryAndExit() {
 
 type BookBody = {
   outcome?: string;
-  booking?: { id?: string; manageUrl?: string };
+  // startsAt is the instant the booking ACTUALLY holds, which is what the person
+  // dedupe compares (#1489); the cross-bucket scenario anchors on it rather than
+  // on the slot it asked for.
+  booking?: { id?: string; manageUrl?: string; startsAt?: string };
   dryRun?: boolean;
   wouldAssign?: { id?: string; name?: string | null; email?: string | null } | null;
   error?: string;
@@ -368,21 +375,51 @@ async function scenarioCrossBucket(slotsA: string[]) {
     skip("SMOKE_BUCKET_B not set — set it to a second bucket your test agent serves to run this");
     return;
   }
+  const id = uniq("xbucket");
+  const phone = "+12155550101";
+
+  // Book A FIRST, then read B's slots and choose relative to the instant A
+  // actually landed on (#1489). The old code took slotsB[0] and assumed it
+  // differed from slotsA[2]: two reads of the same live cache taken at different
+  // moments, whose healthy margin is exactly one event length, so one stale read
+  // put both bookings on the same instant, the API deduped (correctly, it compares
+  // instants and never the bucket) and these two checks paged three times in ten
+  // days. Anchoring on the booking's own startsAt keeps the two sides of the
+  // separation independent of the slot we asked for.
+  const inA = await bookFirstFreeSlot(slotsA, 2, (slot) =>
+    book({ bucket: BUCKET_A, start: slot, ...id, phone }),
+  );
+  trackForCleanup(inA.body);
+  check(inA.body.outcome === "created", `book in bucket ${BUCKET_A} -> created (got ${inA.body.outcome})`);
+  const startA = inA.body.booking?.startsAt;
+  if (!startA) {
+    check(false, `book in bucket ${BUCKET_A} returned no startsAt to separate the rebook from`);
+    return;
+  }
+
   const slotsB = await slots(BUCKET_B);
   if (slotsB.length === 0) {
     skip(`bucket ${BUCKET_B} has no open slots`);
     return;
   }
-  const id = uniq("xbucket");
-  const phone = "+12155550101";
+  const pick = chooseCrossBucketSlot(slotsB, startA);
+  if (!pick.ok) {
+    // A window with slots but none far enough apart is a FAILURE, not a skip: the
+    // bucket is offering times, so this is the fixture unable to do its job, and a
+    // quiet skip would read as coverage (#397).
+    check(false, `cannot separate the rebook in ${BUCKET_B} from ${BUCKET_A}: ${pick.reason}`);
+    return;
+  }
 
-  const inA = await book({ bucket: BUCKET_A, start: slotsA[2], ...id, phone });
-  trackForCleanup(inA.body);
-  check(inA.body.outcome === "created", `book in bucket ${BUCKET_A} -> created (got ${inA.body.outcome})`);
-
-  const inB = await book({ bucket: BUCKET_B, start: slotsB[0], ...id, phone });
+  const inB = await book({ bucket: BUCKET_B, start: pick.start, ...id, phone });
   trackForCleanup(inB.body);
-  check(inB.body.outcome === "rescheduled", `rebook into bucket ${BUCKET_B} -> rescheduled (got ${inB.body.outcome})`);
+  // Both instants are named, so a future failure says whether the two collided
+  // (a fixture problem) or the move itself broke. Diagnosing #1489 needed a
+  // production query precisely because "got deduped" named neither.
+  check(
+    inB.body.outcome === "rescheduled",
+    `rebook ${startA} in ${BUCKET_A} -> ${pick.start} in ${BUCKET_B} -> rescheduled (got ${inB.body.outcome})`,
+  );
   check(
     !!inB.body.booking?.id && inB.body.booking?.id !== inA.body.booking?.id,
     "cross-bucket move creates a NEW booking (different id), not an in-place reschedule",
