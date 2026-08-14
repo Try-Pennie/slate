@@ -40,9 +40,13 @@ const service = vi.hoisted(() => {
   };
 });
 
+const monitor = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/booking/service", () => service);
+// The daily outcome tally (#418) is asserted directly: a declined bucket change
+// has to be COUNTABLE, not merely reported in one response (L77).
+vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST, GET } from "./route";
 import {
@@ -102,6 +106,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockClear();
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+    monitor.recordApiOutcome.mockClear();
     service.bookViaApi.mockReset();
     service.bookViaApi.mockResolvedValue(result("created"));
     service.previewBooking.mockReset();
@@ -480,6 +485,14 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
       requestedBucketCode: "411",
       reason: "no_eligible_agents",
     });
+    // L77: countable, so one unlucky lead and a bucket refusing every move are
+    // not the same number. An ordinary dedupe carries no code (asserted below),
+    // so the two cannot share a row.
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith(
+      "deduped",
+      "411",
+      "bucket_change_declined_no_eligible_agents",
+    );
   });
 
   it("omits the field entirely when nothing was declined, so its presence always means something", async () => {
@@ -491,5 +504,6 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
 
     expect(body.outcome).toBe("deduped");
     expect("bucketChangeDeclined" in body).toBe(false);
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith("deduped", "411", null);
   });
 });
