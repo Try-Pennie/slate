@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
 // Relative value import so this module still runs under `node --experimental-
 // strip-types` in tests (roles.ts only type-imports "@/…", which is erased).
-import { atLeast, canModerateAllOoo } from "../auth/roles.ts";
+import { atLeast, canModerateAllOoo, roleLabel } from "../auth/roles.ts";
 import type { OooRequest, OooStatus, Role, User } from "@/lib/db/types";
 
 /**
@@ -16,10 +16,61 @@ type RequestLike = Pick<OooRequest, "user_id" | "manager_id" | "status">;
 /**
  * Approve/reject: the request's manager of record, or anyone who can moderate
  * all OOO (team leads, admins, super admins).
+ *
+ * The manager of record must ALSO hold at least `manager` (#1475). The link used
+ * to grant approval with no floor on the named person's own role, so an AGENT
+ * could approve or decline time off, including a MANAGER's, purely by being the
+ * value in someone's `manager_id`. That was live: a manager had one of his own
+ * agents as his manager of record, so that agent was the approver for a manager's
+ * time off (#1474 cleared the link, this closes the rule behind it).
+ *
+ * It was also a LOWER bar than editing the same person's hours, which needs
+ * `canManageAgents` (`atLeast(role, "manager")`). Approving somebody's time off
+ * should not be easier than changing their working week.
+ *
+ * `atLeast`, never `role === "manager"`: an equality against one rank of a five
+ * tier hierarchy refuses every rank ABOVE it, so a team lead or admin named as
+ * someone's manager of record would be turned away by the very check meant to
+ * raise the bar (L122).
+ *
+ * When the named person does not qualify, nothing is stranded: `canModerateAllOoo`
+ * still lets team leads and up act, which is the honest fallback rather than
+ * silently treating an unqualified person as an approver.
  */
 export function canModerate(actor: Actor, request: RequestLike): boolean {
   if (canModerateAllOoo(actor.role)) return true;
-  return request.manager_id !== null && actor.id === request.manager_id;
+  return (
+    request.manager_id !== null &&
+    actor.id === request.manager_id &&
+    canHoldManagerOfRecord(actor.role)
+  );
+}
+
+/**
+ * Whether a role can hold the manager-of-record power at all (#1475).
+ *
+ * The floor, named once, so the RULE in canModerate, the notification that decides
+ * who to DM, and the queue badge that explains why a request is waiting all read
+ * the same predicate. Three places asking the same question with three hand-rolled
+ * role tests is how the button and the action end up disagreeing (#1468).
+ */
+export function canHoldManagerOfRecord(role: Role): boolean {
+  return atLeast(role, "manager");
+}
+
+/**
+ * The queue's explanation for a request whose manager of record cannot approve it.
+ *
+ * A builder, not a sentence inline in the page, for the reason the alert and booker
+ * copy live in builders: it is the only way the words can be read and tested
+ * without mounting the screen they appear on.
+ */
+export function managerCannotApproveNotice(managerName: string, role: Role): string {
+  return (
+    `${managerName} is set as their manager of record but does not hold a manager role ` +
+    `(they are ${roleLabel(role) === "agent" ? "an" : "a"} ${roleLabel(role)}), so nobody was ` +
+    `nudged to review it. Approve it here, and correct their Agent Manager in Salesforce.`
+  );
 }
 
 /** Cancel: the requester themselves, or an admin cleaning up. */

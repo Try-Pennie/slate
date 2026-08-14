@@ -6,8 +6,10 @@ import {
   managerDisplayName,
   displayName,
   canCancel,
+  canHoldManagerOfRecord,
   canModerate,
   canModify,
+  managerCannotApproveNotice,
   canRetrySideEffects,
   canTransition,
   formatRequestWhenAndReason,
@@ -39,6 +41,115 @@ assert(
   !canModerate(manager, { ...req, manager_id: null }),
   "no manager of record means only team leads and up moderate",
 );
+
+// --- #1475: the manager of record needs a manager ROLE before the link counts ---
+//
+// The link used to grant approval with no floor on the named person's own role,
+// so an AGENT could approve or decline time off, including a MANAGER's, purely by
+// being the value in someone's manager_id. That was live: mjamele (role manager)
+// had an agent as his manager of record, so that agent was the approver for a
+// manager's time off.
+//
+// The bar everywhere else in the app is atLeast(role, "manager") to manage agents
+// at all, so approving time off through a link was a LOWER bar than editing
+// someone's hours.
+//
+// Both sides asserted, because a rule that only ever refuses is satisfied by a
+// function hard-wired to false (L1).
+{
+  const agentAsManagerOfRecord = { id: "u-agent-mgr", role: "agent" as const };
+  const linkedToAgent = { ...req, manager_id: "u-agent-mgr" };
+  assert(
+    !canModerate(agentAsManagerOfRecord, linkedToAgent),
+    "an AGENT named as the manager of record cannot moderate (#1475)",
+  );
+  // The qualifying side still works, which is the half that proves the rule is a
+  // floor rather than a blanket refusal of the link.
+  assert(
+    canModerate(manager, req),
+    "a manager named as the manager of record still moderates",
+  );
+  // A team lead or admin named as the manager of record is above the floor, and
+  // must not be refused by an equality against "manager" (L122: a rank test, never
+  // `role === "manager"`, or the ranks ABOVE the floor are the ones turned away).
+  assert(
+    canModerate({ id: "u-lead-mgr", role: "team_lead" }, { ...req, manager_id: "u-lead-mgr" }),
+    "a team lead named as the manager of record moderates (the rank ABOVE the floor is not excluded)",
+  );
+  assert(
+    canModerate({ id: "u-admin-mgr", role: "admin" }, { ...req, manager_id: "u-admin-mgr" }),
+    "an admin named as the manager of record moderates",
+  );
+  // And the fallback the issue asks for: when the named person does not qualify,
+  // team leads and up can still act, so the request is never stranded.
+  assert(
+    canModerate(teamLead, linkedToAgent),
+    "a team lead can still moderate a request whose manager of record does not qualify",
+  );
+  assert(
+    canModerate(admin, linkedToAgent),
+    "an admin can still moderate a request whose manager of record does not qualify",
+  );
+}
+
+// --- the floor, named once, so three surfaces cannot disagree (#1475) ---
+//
+// canModerate (the rule), the notification that decides who to DM, and the queue
+// badge that explains why a request is waiting all read canHoldManagerOfRecord.
+// Three hand-rolled role tests is how a button and its action end up disagreeing.
+{
+  assert(!canHoldManagerOfRecord("agent"), "an agent cannot hold the manager-of-record power");
+  assert(canHoldManagerOfRecord("manager"), "a manager can");
+  assert(canHoldManagerOfRecord("team_lead"), "a team lead can (the rank above the floor)");
+  assert(canHoldManagerOfRecord("admin"), "an admin can");
+  assert(canHoldManagerOfRecord("super_admin"), "a super admin can (the TOP rank is not excluded)");
+
+  // The predicate and the rule must agree, or the badge tells somebody the opposite
+  // of what the approve action does.
+  for (const role of ["agent", "manager", "team_lead", "admin", "super_admin"] as const) {
+    const person = { id: "u-x", role };
+    const req = { user_id: "u-someone", manager_id: "u-x", status: "pending" as const };
+    // A team lead and up moderate everything anyway, so the link only DECIDES the
+    // outcome below that rank; above it, both must still say yes.
+    if (!canHoldManagerOfRecord(role)) {
+      assert(!canModerate(person, req), `${role}: predicate and rule agree (neither allows)`);
+    } else {
+      assert(canModerate(person, req), `${role}: predicate and rule agree (both allow)`);
+    }
+  }
+}
+
+// --- the queue's explanation reads correctly, in every role it can name ---
+{
+  const forAgent = managerCannotApproveNotice("Andy Approver", "agent");
+  assert(forAgent.includes("Andy Approver"), "the notice names the manager of record");
+  assert(
+    forAgent.includes("does not hold a manager role"),
+    "the notice says why they cannot approve",
+  );
+  assert(
+    forAgent.includes("Salesforce"),
+    "the notice names where to correct it, so it is not a dead end (L111)",
+  );
+  // Grammar, checked because the article is computed: "an agent", never "a agent".
+  assert(forAgent.includes("they are an agent"), `reads "they are an agent" (got: ${forAgent})`);
+  assert(
+    !/\ba agent\b/.test(forAgent),
+    "never renders the wrong article before a role starting with a vowel",
+  );
+  // The stored value is `team_lead`; a reader must never see the underscore.
+  const forLead = managerCannotApproveNotice("Lee Lead", "team_lead");
+  assert(!forLead.includes("team_lead"), `no raw stored role in the copy (got: ${forLead})`);
+  assert(forLead.includes("a team lead"), "renders the human role label");
+  // No dashes, per the repo's copy rules. Written as escapes, not literals, so this
+  // file holds no dash for the pre-push style hook to catch: it cannot tell the line
+  // BANNING the character from a line using it.
+  const DASHES = /[\u2014\u2013]/;
+  assert(
+    !DASHES.test(forAgent) && !DASHES.test(forLead),
+    "the notice carries no dashes",
+  );
+}
 assert(canCancel(agent, req), "requester can cancel");
 assert(canCancel(admin, req), "admin can cancel");
 assert(!canCancel(manager, req), "manager cannot cancel (reject instead)");

@@ -163,13 +163,15 @@ function makeWorld(): World {
     /** Every client id the orchestration sent, in order (#1469 idempotency). */
     clientIds: [] as (string | undefined)[],
     calcomOutcome: "skipped",
+    /** The roster getUser reads, exposed so a test can add its own fixture user. */
+    users: new Map<string, User>(
+      [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
+        (u) => [u.id, u] as const,
+      ),
+    ),
     deps: null as unknown as OooDeps,
   };
-  const users = new Map(
-    [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
-      (u) => [u.id, u],
-    ),
-  );
+  const users = world.users;
   const isDuplicate = (
     userId: string,
     startsAt: string,
@@ -453,6 +455,66 @@ const input = {
     sub.ok && w.requests.get(sub.request.id)?.slack_channel === "C-alerts",
     "message ref stored from the fallback post",
   );
+}
+
+// --- #1475: an unqualified manager of record is not DMed buttons it cannot use ---
+//
+// The pending notification carries Approve/Decline buttons, and those buttons run
+// through canModerate. Since a manager of record must now hold at least `manager`,
+// DMing an AGENT named as somebody's manager would hand them a control that answers
+// "Not authorized" with nothing on screen explaining why (L109). It goes to the
+// fallback channel instead, where team leads and up see it, and the post says WHY
+// rather than reading like a Slack permissions problem.
+{
+  const w = makeWorld();
+  // An agent set as this requester's manager of record: the exact live shape, where
+  // a manager had one of his own agents as his approver.
+  const agentApprover: User = {
+    ...agent,
+    id: "u-agent-approver",
+    email: "approver-agent@trypennie.com",
+    name: "Andy Approver",
+    role: "agent",
+  };
+  w.users.set(agentApprover.id, agentApprover);
+  const requester: User = { ...agent, id: "u-req", email: "req@trypennie.com", manager_id: agentApprover.id };
+  w.users.set(requester.id, requester);
+
+  const sub = await submitOoo(requester, input, w.deps);
+  assert(sub.ok, "the request is still accepted (routing changes, submission does not)");
+  assert(
+    w.dms.every((d) => d.email !== agentApprover.email),
+    "an agent named as manager of record is NOT DMed the approve buttons",
+  );
+  assert(w.channelPosts.length === 1, "it goes to the fallback channel instead");
+  assert(
+    w.channelPosts[0].includes("cannot approve time off"),
+    `the post says the named manager cannot approve (got: ${w.channelPosts[0].slice(0, 120)})`,
+  );
+  assert(
+    !w.channelPosts[0].includes("Couldn't DM"),
+    "and does NOT read as a Slack permissions problem, which is a different cause",
+  );
+  assert(
+    w.channelPosts[0].includes("Salesforce"),
+    "and names where the manager of record is corrected",
+  );
+  // The request is not stranded: a team lead can still action it.
+  const id = sub.ok ? sub.request.id : "";
+  const byLead = await approveOoo(id, teamLead, w.deps);
+  assert(byLead.ok, "a team lead can still approve it");
+}
+{
+  // The qualifying side of the same routing: a real manager still gets the DM, so
+  // this is a floor and not a blanket redirect to the channel.
+  const w = makeWorld();
+  const sub = await submitOoo(agent, input, w.deps);
+  assert(sub.ok, "a request with a qualifying manager is accepted");
+  assert(
+    w.dms.some((d) => d.email === manager.email),
+    "a manager named as manager of record IS DMed the approve buttons",
+  );
+  assert(w.channelPosts.length === 0, "and nothing is posted to the fallback channel");
 }
 
 // --- approve: full happy path ---
