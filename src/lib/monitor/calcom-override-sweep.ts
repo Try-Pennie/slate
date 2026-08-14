@@ -1,4 +1,9 @@
 import { parseStampMs } from "@/lib/date/stamp";
+import {
+  OUTCOME_NOT_IN_CALCOM,
+  OUTCOME_OK_PREFIX,
+  OUTCOME_SKIPPED_PREFIX,
+} from "@/lib/calcom/outcomes";
 
 /**
  * Retry a cal.com availability override that failed, and page when an absence is
@@ -49,9 +54,44 @@ export interface OverrideCandidate {
   effect: string;
 }
 
-/** An outcome that needs no further attempts: it worked, or there was nothing to do. */
+/**
+ * The skip that stops being true on its own (#1276).
+ *
+ * "Not in cal.com" says nothing about the absence and everything about the agent's
+ * account, and that changes: agents missing from the cal.com org were added on
+ * 2026-08-04, and new hires reaching Slate before cal.com make it the expected
+ * direction of travel. Treating it as done left those agents bookable in cal.com
+ * right through time off that Slate had already approved, with nothing retrying
+ * and nothing reporting it.
+ *
+ * The OTHER skip, cal.com being unconfigured, is genuinely terminal: no later
+ * tick can discover it has changed, and retrying it would spend a shared per tick
+ * budget on a lookup that cannot succeed.
+ */
+export function isProvisionalSkip(outcome: string): boolean {
+  return outcome.startsWith(OUTCOME_NOT_IN_CALCOM);
+}
+
+/**
+ * An outcome that needs no further attempts: it worked, or there was nothing to do
+ * AND nothing that could change.
+ */
 export function isSettled(outcome: string): boolean {
-  return outcome.startsWith("ok") || outcome.startsWith("skipped");
+  if (isProvisionalSkip(outcome)) return false;
+  return outcome.startsWith(OUTCOME_OK_PREFIX) || outcome.startsWith(OUTCOME_SKIPPED_PREFIX);
+}
+
+/**
+ * An outcome that means an override which SHOULD exist does not (#1276).
+ *
+ * Deliberately narrower than "not settled": an agent with no cal.com account
+ * cannot be booked there by anyone, so nothing is unprotected and nothing should
+ * page. Splitting the two is what lets a provisional skip be retried every tick
+ * without turning into a nightly alarm about an account nobody in Slate can
+ * create.
+ */
+export function isFailure(outcome: string): boolean {
+  return !isProvisionalSkip(outcome) && !isSettled(outcome);
 }
 
 /**
@@ -68,8 +108,45 @@ export function isSettled(outcome: string): boolean {
  * It stays cheap because the caller's set is bounded by absences that have not
  * ended: 44 rows on prod 2026-08-04, of which 35 were already done.
  */
-export function selectCandidates(rows: OverrideCandidate[]): OverrideCandidate[] {
-  return rows.filter((r) => !isSettled(r.effect));
+/**
+ * How close an absence has to be before a provisional skip is retried (#1276).
+ *
+ * Without a bound, an agent who never gets a cal.com account would cost one
+ * outbound lookup every five minutes for as long as the absence is in the
+ * future, and would hold a slot in the per tick cap the whole time. The retry is
+ * only USEFUL before somebody can book into the absence, and nobody can book
+ * further out than the booking horizon (days, not weeks), so two weeks is
+ * comfortably early while costing nothing for an absence six months away.
+ *
+ * A far future absence is not dropped, only deferred: it re-enters the set as it
+ * approaches, which is well before anyone could book into it.
+ */
+export const PROVISIONAL_RETRY_WINDOW_DAYS = 14;
+
+export function selectCandidates(
+  rows: OverrideCandidate[],
+  nowMs: number = Date.now(),
+): OverrideCandidate[] {
+  const horizon = nowMs + PROVISIONAL_RETRY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const picked = rows.filter((r) => {
+    if (isSettled(r.effect)) return false;
+    if (!isProvisionalSkip(r.effect)) return true;
+    // An unreadable start is treated as NEAR, not far: the fail-safe side of this
+    // comparison is the one that keeps checking, since the cost of an extra
+    // lookup is a lookup and the cost of skipping is an agent bookable through
+    // their time off (L50).
+    const startMs = parseStampMs(r.startsAt);
+    return startMs === null || startMs <= horizon;
+  });
+  // Real failures first. The per tick cap is a shared budget, and a run of agents
+  // waiting on cal.com accounts would otherwise push an override that genuinely
+  // failed past it, leaving it unattempted for a whole tick while the cheap,
+  // benign class consumed every slot (L117). A stable partition, not a sort, so
+  // the order within each group is the loader's.
+  return [
+    ...picked.filter((r) => !isProvisionalSkip(r.effect)),
+    ...picked.filter((r) => isProvisionalSkip(r.effect)),
+  ];
 }
 
 /**
@@ -189,7 +266,7 @@ export async function runCalcomOverrideSweep(deps: {
   if (loaded === null) return empty;
   // Applied here rather than trusted to the loader, so a caller cannot forget the
   // rule and quietly narrow what gets retried.
-  const rows = selectCandidates(loaded);
+  const rows = selectCandidates(loaded, deps.nowMs);
 
   const max = deps.max ?? MAX_RETRIES_PER_TICK;
   const attempt = rows.slice(0, max);
@@ -203,11 +280,17 @@ export async function runCalcomOverrideSweep(deps: {
   for (const row of attempt) {
     const outcome = await deps.retry(row.id);
     if (isSettled(outcome)) cleared++;
-    else stillFailing.push({ ...row, effect: outcome });
+    // #1276: a provisional skip is neither. It is not cleared, because the agent
+    // may get a cal.com account before the absence starts and the next tick has to
+    // look again; and it is not failing, because nobody can book an agent who does
+    // not exist there, so there is nothing to be unprotected about.
+    else if (isFailure(outcome)) stillFailing.push({ ...row, effect: outcome });
   }
   // Rows past the cap were not attempted, so they are still failing as far as this
-  // tick knows. Counting them as healthy would let the cap hide the condition.
-  stillFailing.push(...rows.slice(max));
+  // tick knows. Counting them as healthy would let the cap hide the condition. The
+  // same split applies: an unattempted provisional skip is not evidence of a
+  // missing override either.
+  stillFailing.push(...rows.slice(max).filter((r) => isFailure(r.effect)));
 
   const unprotected = inProgressUnprotected(stillFailing, deps.nowMs);
   if (unprotected.length > 0) {

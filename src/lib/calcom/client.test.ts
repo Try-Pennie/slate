@@ -26,6 +26,11 @@ vi.mock("@/lib/env", () => ({
 }));
 
 import { addOooOverrides } from "./client";
+import {
+  isFailure,
+  isProvisionalSkip,
+  isSettled,
+} from "@/lib/monitor/calcom-override-sweep";
 
 /** One queued response per fetch call, in order. */
 type Reply = { status: number; data?: unknown };
@@ -184,5 +189,45 @@ describe("cal.com override outcome: absent versus failed (#1250, #1249)", () => 
     const outcome = await run();
     expect(outcome).toBe("ok");
     expect(urls.at(-1)).toContain("/schedules/55");
+  });
+});
+
+// #1276: the outcome string is a CONTRACT between this client, which writes it
+// into ooo_requests.side_effects, and the override sweep, which decides from it
+// whether to retry and whether to page. Asserted from the PRODUCING end and
+// through the sweep's real classifier, never by restating the literal: reword
+// the sentence below without this and the sweep silently reverts to treating
+// "not in cal.com" as terminal, which is the exact defect #1276 fixes (L35, L26).
+describe("the outcome vocabulary the override sweep classifies on (#1276)", () => {
+  it("an agent with no cal.com account is classified as PROVISIONAL by the sweep itself", async () => {
+    replies = [{ status: 200, data: [] }]; // cal.com answered: nobody by that email
+    const outcome = await run();
+
+    expect(isProvisionalSkip(outcome)).toBe(true);
+    expect(isSettled(outcome)).toBe(false); // so it is looked at again
+    expect(isFailure(outcome)).toBe(false); // and never pages
+    // The email rides along for diagnosis, and must survive the prefix contract.
+    expect(outcome).toContain("agent@trypennie.com");
+  });
+
+  it("an unconfigured cal.com is classified as TERMINAL by the sweep itself", async () => {
+    // Unconfigured is exactly "no org id / no key", so it is produced the way it
+    // really occurs rather than by stubbing the predicate that reads them.
+    env.apiKey = "";
+    const outcome = await run();
+    env.apiKey = "key-1";
+
+    expect(isSettled(outcome)).toBe(true); // never swept again
+    expect(isProvisionalSkip(outcome)).toBe(false);
+    expect(isFailure(outcome)).toBe(false);
+  });
+
+  it("a real error is classified as a FAILURE, so it still pages mid absence", async () => {
+    replies = [{ status: 401 }];
+    const outcome = await run();
+
+    expect(isFailure(outcome)).toBe(true);
+    expect(isSettled(outcome)).toBe(false);
+    expect(isProvisionalSkip(outcome)).toBe(false);
   });
 });
