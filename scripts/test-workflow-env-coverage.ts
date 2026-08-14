@@ -27,6 +27,8 @@ import {
   readEnvNames,
   unsafeEmptyFallbackReads,
   varsWiredEnvNames,
+  missingRepoSettings,
+  referencedRepoSettings,
 } from "./lib/scan-workflow-env-coverage.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -297,6 +299,100 @@ jobs:
       `the ${name} exemption states a reason`,
     );
   }
+}
+
+// --- #1500: the setting a workflow REFERENCES has to exist -----------------------
+//
+// The sibling of the wiring check above, and each is blind where the other looks:
+// that one reads the LEFT side of `FOO: ${{ vars.BAR }}` (the env name a script
+// reads), this one reads the RIGHT side (the setting that has to exist). A
+// reference to a setting nobody created is not an error to GitHub: it substitutes
+// the EMPTY STRING, so the step runs misconfigured and the file reads as
+// configured. That is what took the production canary down on 2026-08-14.
+//
+// The live comparison needs GitHub (`pnpm check:workflow-settings`), so what is
+// pinned here is the DECISION: what counts as a reference, what is built in, and
+// what counts as missing. Without this the rule would exist only where it cannot
+// be tested.
+{
+  const yaml = [
+    "env:",
+    "  SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}",
+    "  BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}",
+    "  TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "if: ${{ vars.EXPECT_HTTPS_REDIRECT }}",
+    "run: echo ${{ vars.SLATE_BASE_URL }}",
+  ].join("\n");
+  const refs = referencedRepoSettings(yaml);
+  const keys = refs.map((r) => `${r.kind}.${r.name}`).sort();
+
+  assert(
+    JSON.stringify(keys) ===
+      JSON.stringify([
+        "secrets.BOOKING_API_KEY",
+        "vars.EXPECT_HTTPS_REDIRECT",
+        "vars.SLATE_BASE_URL",
+      ]),
+    `every reference is found once, wherever it appears (got ${keys.join(", ")})`,
+  );
+  // An `if:` and a `run:` reference are just as empty and just as silent as an
+  // env one, so the scan is deliberately not restricted to the env shape.
+  assert(
+    keys.includes("vars.EXPECT_HTTPS_REDIRECT"),
+    "a reference outside an env block still counts",
+  );
+  assert(
+    !keys.includes("secrets.GITHUB_TOKEN"),
+    "GITHUB_TOKEN is minted per run and must never be reported missing",
+  );
+
+  const existing = {
+    vars: new Set(["EXPECT_HTTPS_REDIRECT"]),
+    secrets: new Set(["BOOKING_API_KEY"]),
+  };
+  const missing = missingRepoSettings(refs, existing);
+  assert(
+    missing.length === 1 && missing[0].kind === "vars" && missing[0].name === "SLATE_BASE_URL",
+    `only the setting that does not exist is reported (got ${JSON.stringify(missing)})`,
+  );
+  // Both directions: a kind mismatch is still missing, because a VARIABLE named
+  // like a secret does not satisfy a `secrets.` reference.
+  assert(
+    missingRepoSettings(
+      [{ kind: "secrets", name: "EXPECT_HTTPS_REDIRECT" }],
+      existing,
+    ).length === 1,
+    "a variable does not satisfy a secrets reference of the same name",
+  );
+  assert(
+    missingRepoSettings(refs, {
+      vars: new Set(["EXPECT_HTTPS_REDIRECT", "SLATE_BASE_URL"]),
+      secrets: new Set(["BOOKING_API_KEY"]),
+    }).length === 0,
+    "and nothing is reported once every referenced setting exists",
+  );
+}
+
+// The scan runs over the REAL workflows too, so a rewrite that stopped matching
+// anything cannot pass as "no references found". An empty result here is the
+// failure mode the live checker refuses on, and it would be invisible above,
+// where the fixture is hand written (L98).
+{
+  const dir = join(ROOT, ".github", "workflows");
+  const found = new Set<string>();
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".yml"))) {
+    for (const r of referencedRepoSettings(readFileSync(join(dir, file), "utf8"))) {
+      found.add(`${r.kind}.${r.name}`);
+    }
+  }
+  assert(
+    found.size >= 5,
+    `the real workflows reference settings the scan can see (found ${found.size})`,
+  );
+  assert(
+    found.has("secrets.BOOKING_API_KEY"),
+    "including a secret the canary genuinely depends on",
+  );
 }
 
 finish();

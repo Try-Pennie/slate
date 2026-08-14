@@ -147,6 +147,42 @@ both in `scripts/test-monitor-step-coverage.ts`: a handler-level `const x = awai
 outside `steps.run` fails the build (so a sixth read is covered by construction),
 and each gated check must consult its gate rather than a hand-rolled condition.
 
+# A workflow reference to a repo setting that does not exist
+
+GitHub does NOT fail when a workflow references `${{ vars.X }}` or
+`${{ secrets.X }}` for a setting nobody created: it interpolates the **empty
+string**, so the step runs misconfigured while the file reads as fully
+configured. On 2026-08-14 that took the production canary down eleven minutes
+after the merge that introduced it (#1495 wired `SLATE_BASE_URL` to a variable
+that did not exist, and the smoke run died on
+`Failed to parse URL from /api/availability?bucket=SMOKE`).
+
+Both halves of the wiring are guarded, and each is blind where the other looks:
+
+- **the consuming half** (#1498): a wired env name may not be read with a
+  non-empty `??` fallback, because `??` catches only null and undefined and the
+  default it promises never applies to `""`. Enforced offline by
+  `scripts/test-workflow-env-coverage.ts`.
+- **the referenced half** (#1500): `pnpm check:workflow-settings` compares every
+  `vars.`/`secrets.` reference in `.github/workflows/` against the settings that
+  actually exist, and names the ones that do not with the `gh` command to create
+  them. `GITHUB_TOKEN` is exempt (GitHub mints it per run).
+
+**It runs in the pre-push hook, not in CI, and that is a token limitation rather
+than a preference.** Listing repo variables or secret names needs a token with
+Actions variables/secrets read access; the default `GITHUB_TOKEN` does not have
+it and it cannot be granted through the `permissions:` key, so a CI job would
+need a PAT secret. The hook fails OPEN without `gh`, like the merge-gap guard
+above it, and SAYS so rather than skipping in silence, and it only runs when the
+push touches a workflow. Skip a false positive with
+`SKIP_WORKFLOW_SETTINGS_CHECK=1`. The decision lives in
+`.githooks/lib/workflow-settings-guard.sh` so it can be driven by
+`scripts/test-workflow-settings-guard.ts` without a remote.
+
+The decision logic (what counts as a reference, what is built in, what counts as
+missing) is pinned offline in `scripts/test-workflow-env-coverage.ts`, so the
+rule is tested even where the listing is not available.
+
 # The scripts tree is typechecked, but only for what breaks at runtime
 
 `tsconfig.json` excludes `scripts` and `worker`, so `pnpm build` and

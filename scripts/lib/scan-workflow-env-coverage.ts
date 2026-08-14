@@ -288,3 +288,66 @@ export function findUncoveredEnv(
   }
   return findings;
 }
+
+/**
+ * Every repo setting a workflow REFERENCES, as `{ kind, name }` (#1500).
+ *
+ * The sibling of `varsWiredEnvNames`, and each is blind where the other looks:
+ * that one reads the LEFT side of `FOO: ${{ vars.BAR }}` (the env name a script
+ * will read), this one reads the RIGHT side (the setting that has to exist).
+ *
+ * A reference to a setting that was never created is not an error to GitHub: it
+ * interpolates the empty string, so the step runs with an empty value while the
+ * workflow file reads as fully configured. #1495 wired
+ * `SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}` against a variable that does not
+ * exist, and the production canary died on
+ * `Failed to parse URL from /api/availability?bucket=SMOKE`.
+ *
+ * Deliberately NOT restricted to the `NAME: ${{ ... }}` env shape: a reference in
+ * an `if:`, a `with:` or a run line is just as empty and just as silent.
+ */
+export interface RepoSettingRef {
+  kind: "vars" | "secrets";
+  name: string;
+}
+
+/**
+ * Settings GitHub provides itself, which no repo lists and which must never be
+ * reported missing. `GITHUB_TOKEN` is minted per run; `ACTIONS_*` are set by the
+ * runner.
+ */
+const BUILT_IN_SECRETS = new Set(["GITHUB_TOKEN"]);
+
+export function referencedRepoSettings(yaml: string): RepoSettingRef[] {
+  const seen = new Set<string>();
+  const out: RepoSettingRef[] = [];
+  for (const m of yaml.matchAll(/\$\{\{\s*(vars|secrets)\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)) {
+    const kind = m[1] as "vars" | "secrets";
+    const name = m[2]!;
+    if (kind === "secrets" && BUILT_IN_SECRETS.has(name)) continue;
+    const key = `${kind}.${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ kind, name });
+  }
+  return out;
+}
+
+/**
+ * References with no matching setting in the repo.
+ *
+ * `existing` is passed in rather than read here, so the comparison stays pure and
+ * the caller owns talking to GitHub. The caller must ALSO refuse to run when it
+ * could not list: an empty `existing` set and a repo with no settings are
+ * indistinguishable here, and treating "could not read" as "nothing exists" would
+ * report every reference as missing, while the reverse (an empty REFERENCE set)
+ * would pass silently (L98).
+ */
+export function missingRepoSettings(
+  referenced: RepoSettingRef[],
+  existing: { vars: Set<string>; secrets: Set<string> },
+): RepoSettingRef[] {
+  return referenced.filter((r) =>
+    r.kind === "vars" ? !existing.vars.has(r.name) : !existing.secrets.has(r.name),
+  );
+}

@@ -27,6 +27,7 @@ push_refs=""
 # parse-ok: a detached HEAD legitimately has no branch name, and every guard
 # below returns early on an empty branch rather than acting on a guess.
 branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
+root_dir="$(git rev-parse --show-toplevel)"
 
 # --- 1. Merge-gap guard -----------------------------------------------------
 merge_gap_guard() {
@@ -56,6 +57,31 @@ merge_gap_guard() {
   fi
 }
 merge_gap_guard
+
+# --- 1b. Workflow settings guard (#1500) ------------------------------------
+#
+# A workflow can reference `${{ vars.X }}` / `${{ secrets.X }}` for a setting
+# that was never created, and GitHub interpolates the EMPTY STRING rather than
+# failing, so the step runs misconfigured while the file reads as configured.
+# That is what took the production canary down on 2026-08-14.
+#
+# It runs HERE rather than in CI because listing repo variables and secret names
+# needs a token with Actions variables/secrets read access, which the default
+# GITHUB_TOKEN does not have and cannot be granted through the `permissions:`
+# key. See the note in scripts/check-workflow-settings.ts.
+#
+# The decision lives in its own lib so it can be driven by
+# scripts/test-workflow-settings-guard.ts without a remote; this only computes
+# which paths the push touches.
+# parse-ok: fails CLOSED, not open. A diff that cannot be read (no upstream yet,
+# a detached HEAD) yields the literal "UNKNOWN", and the guard then RUNS the
+# check rather than skipping it, because an unreadable diff and a push that
+# touched no workflow would otherwise be the same empty string and the skip would
+# be silent (#1436). Running it costs one GitHub round trip and can only be right.
+changed_paths="$(git diff --name-only "@{push}"..HEAD 2>/dev/null)" \
+  || changed_paths="$(git diff --name-only origin/main...HEAD 2>/dev/null)" \
+  || changed_paths="UNKNOWN"
+"$root_dir/.githooks/lib/workflow-settings-guard.sh" "$changed_paths" || exit 1
 
 # --- 2. CI parity checks ----------------------------------------------------
 if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
