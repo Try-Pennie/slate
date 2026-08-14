@@ -147,6 +147,39 @@ both in `scripts/test-monitor-step-coverage.ts`: a handler-level `const x = awai
 outside `steps.run` fails the build (so a sixth read is covered by construction),
 and each gated check must consult its gate rather than a hand-rolled condition.
 
+# The scripts tree is typechecked, but only for what breaks at runtime
+
+`tsconfig.json` excludes `scripts` and `worker`, so `pnpm build` and
+`npx tsc --noEmit` never look at the ~280 node test suites or at the canary
+scripts that run against live prod every 30 minutes. That cost two things: an
+undefined `failureLogPath` shipped in `scripts/smoke-booking-api.ts` and tsc
+reported clean, and an undefined `calls` inside a test fake threw before the
+fake recorded anything, so the guard for "a block-lookup read error aborts with
+ZERO inserts" passed on its own typo and would have stayed green through a
+regression into mass-inserting busy blocks (#1504, #1505).
+
+The tree carries roughly 100 errors, almost all nullable and shape mismatches in
+test fakes, so it is **not** demanded to be clean. `tsconfig.scripts.json` plus
+`scripts/test-scripts-typecheck.ts` (in `pnpm test`, so in the pre-push gate and
+CI) run tsc over `scripts/` and fail on the two classes that ship broken:
+
+- `TS2304`, an undefined name, which throws the moment the line executes;
+- `TS2307`, an unresolved import, which throws on load.
+
+The list lives in `scripts/lib/scan-scripts-typecheck.ts` (`BREAKING_CODES`).
+Widen it by fixing a class and adding its code, which is a deliberate act rather
+than a silent no-op. The guard plants a real undefined identifier in the tree and
+requires itself to catch it, because a tsc run that never looked at `scripts/`
+and a clean tree produce the same empty error list (L1, L98).
+
+**The escape hatch** is `// typecheck-ok: <why>` on, or in the `//` block
+directly above, the line, and it must carry a reason. The one use today is the
+`?bust=1` cache-busting dynamic import in `test-alert-preview-coverage.ts`, which
+no resolver can follow and which is the entire point of that check.
+
+`worker/` is still excluded: its two errors need `@cloudflare/workers-types`,
+which is not a dependency here.
+
 # Where a new test goes
 
 Slate runs two test harnesses on purpose. They are not interchangeable, and the

@@ -1,0 +1,25 @@
+{
+  "//": [
+    "Typecheck config for the scripts tree (#1504).",
+    "",
+    "The app's tsconfig excludes `scripts` and `worker`, so `pnpm build` and",
+    "`npx tsc --noEmit` never look at ~280 node test suites or the production",
+    "canary scripts that run against live prod every 30 minutes. An undefined",
+    "identifier in one of them reported CLEAN and only surfaced when the script",
+    "was actually run, and inside a test fake it made a safety-critical guard",
+    "pass vacuously (see scripts/test-scripts-typecheck.ts).",
+    "",
+    "There are ~100 errors in the tree, mostly nullable and shape mismatches in",
+    "test fakes, so this config is NOT wired into `tsc --noEmit` wholesale.",
+    "`scripts/test-scripts-typecheck.ts` runs it and fails on the two classes",
+    "that break at RUNTIME (an undefined name, an unresolved import), which is",
+    "the class that actually ships broken. Tighten by fixing errors and adding",
+    "their codes to that guard's list.",
+    "",
+    "`worker/` is deliberately not included: its two errors need",
+    "@cloudflare/workers-types, which is not a dependency here."
+  ],
+  "extends": "./tsconfig.json",
+  "include": ["scripts/**/*.ts", "scripts/**/*.mts"],
+  "exclude": ["node_modules"]
+}
