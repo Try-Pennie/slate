@@ -10,6 +10,7 @@ import { reapableUserIds } from "@/lib/salesforce/reap";
 import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
 import { fetchSfWithRetry } from "@/lib/salesforce/retry";
 import { unwrap } from "@/lib/db/result";
+import { log } from "@/lib/log";
 import type { Attributes, Role, User } from "@/lib/db/types";
 
 /**
@@ -137,6 +138,19 @@ export interface SyncResult {
   deactivated: number;
   managersCreated: number;
   managersLinked: number;
+  /**
+   * Links set back to NULL because Salesforce no longer names a manager for that
+   * person, or names them as their own (#1474). Reported separately from
+   * managersLinked so a converging run is visible as convergence, not as a quiet
+   * absence of links.
+   */
+  managersUnlinked: number;
+  /**
+   * Agents whose Salesforce manager NAME could not be resolved to a Slate user, so
+   * the sync deliberately left the row alone. Counted because this is the case
+   * where doing nothing is correct and therefore invisible.
+   */
+  managersUnresolved: number;
   managersPromoted: number;
 }
 
@@ -333,11 +347,9 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     }),
   );
 
-  // Apply links; only write when the value actually changes (and never null
-  // out an existing assignment just because SF didn't resolve - admins can
-  // override). Self-links are already filtered by resolveManagerSync. Grouped
-  // by manager (#91) so every agent gaining the same manager is one write, not
-  // one round-trip per agent.
+  // Apply links; only write when the value actually changes. Grouped by manager
+  // (#91) so every agent gaining the same manager is one write, not one round-trip
+  // per agent.
   const pendingLinks: { agentId: string; managerId: string }[] = [];
   for (const link of plan.links) {
     const agentId = idByEmail.get(link.agentEmail);
@@ -354,6 +366,43 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       .in("id", agentIds);
     if (error) throw new Error(`SF manager link batch failed: ${error.message}`);
     managersLinked += agentIds.length;
+  }
+
+  // Converge, do not accumulate (#1474). This sync only ever ADDED a link, so one
+  // written once (or written wrongly) survived forever and Slate's roster silently
+  // diverged from the source it mirrors. Two live rows proved it: a manager whose
+  // manager of record was one of his own agents, and a row pointing at itself.
+  // Since `manager_id` decides who a time off request is routed to and who may
+  // approve it, a stale link hands somebody else's decision to the wrong person.
+  //
+  // Three things this deliberately does NOT clear, because each would be a guess:
+  //  - an agent whose Salesforce manager NAME could not be resolved to a Slate
+  //    user (plan.unresolved): could-not-resolve is not no-manager, and treating it
+  //    as one would delete a correct link whenever a picklist name went ambiguous;
+  //  - anyone absent from the Salesforce response, since this sync queries only
+  //    debt-team agents and knows nothing about the rest of the roster;
+  //  - a row that is already null, so a quiet hour writes nothing at all.
+  const pendingClears = plan.clears
+    .map((email) => idByEmail.get(email))
+    .filter((id): id is string => !!id && managerIdByUser.get(id) != null);
+  let managersUnlinked = 0;
+  if (pendingClears.length) {
+    const { error } = await db
+      .from("users")
+      .update({ manager_id: null })
+      .in("id", pendingClears);
+    if (error) throw new Error(`SF manager unlink batch failed: ${error.message}`);
+    managersUnlinked = pendingClears.length;
+  }
+  if (plan.unresolved.length) {
+    // The case where the sync deliberately does nothing. Logged because an
+    // unresolvable manager name and an agent who genuinely has no manager are
+    // otherwise the same silence, and this one is a config gap somebody can fix.
+    log.warn("sf-sync", {
+      msg: "manager name could not be resolved, link left unchanged",
+      count: plan.unresolved.length,
+      names: [...new Set(plan.unresolved)].slice(0, 10).join(", "),
+    });
   }
 
   // Anyone SF lists as an Agent_Manager (a real approver) becomes a Slate
@@ -417,6 +466,8 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     deactivated: toDeactivate.length,
     managersCreated: plan.managersToCreate.length,
     managersLinked,
+    managersUnlinked,
+    managersUnresolved: plan.unresolved.length,
     managersPromoted,
   };
 }
