@@ -50,6 +50,45 @@ export function liveHeading(advisorFirstName: string | null, countdown: string |
   return [advisorFirstName, countdown].filter(Boolean).join(", ") || LIVE_COPY.headingFallback;
 }
 
+// --- correcting the number ----------------------------------------------------
+// The number the advisor rings is the most useful fact on this page, and it was
+// the only one a lead could not change (#1341). A mistyped digit, an old mobile,
+// a work line nobody answers: the call simply fails and is recorded as a no show.
+
+export const PHONE_COPY = {
+  /** A control has to look like a control at rest, so this is a visible button,
+   *  not a hover affordance (L49). Phrased as the lead's own doubt, because most
+   *  leads never need it and should not be invited to fiddle. */
+  trigger: "Not the right number?",
+  heading: "What number should we call?",
+  label: "Phone number",
+  /** The booker's own hint, said the same way, because it is the same promise. */
+  hint: "So your advisor can reach you.",
+  save: "Save this number",
+  /** The middle of the three states every time-taking action must keep distinct. */
+  saving: "Saving…",
+  stillWorking: LIVE_COPY.stillWorking,
+  cancel: "Keep the number I have",
+  /** A failed save must never leave the new number on screen looking accepted. */
+  failed: "Could not save that number. Please try again.",
+} as const;
+
+/**
+ * Server side refusals for a phone correction. They are copy, so they live here
+ * with every other sentence a lead can read, and they are DISTINCT causes: a
+ * token that resolves to nothing is not the same as a call that has already
+ * happened, and a single "could not save" would flatten both (L11).
+ */
+export const MANAGE_PHONE_NOT_FOUND =
+  "We could not find this booking. Open the link from your confirmation email again.";
+export const MANAGE_PHONE_NOT_CHANGEABLE =
+  "This call is over, so there is no number left to change. Book a new time whenever you are ready.";
+
+/** The confirmation, naming the number that is now stored rather than the one typed. */
+export function phoneSaved(phone: string): string {
+  return `Saved. Your advisor will call you at ${phone}.`;
+}
+
 // --- before the call ----------------------------------------------------------
 
 export const BEFORE_COPY = {

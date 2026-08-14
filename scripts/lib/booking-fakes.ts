@@ -170,6 +170,11 @@ export interface FakeOpts {
   // EventGone so the reschedule recreates the event instead of committing a
   // phantom move.
   updateEventTimeGone?: boolean;
+  /** #1341: the invite body PATCH fails, so the row is correct and the advisor's
+   *  copy is stale. A different outcome from the row write failing. */
+  updateEventDescriptionThrows?: boolean;
+  /** #1341: the phone write itself fails, which must never read as saved. */
+  updateBookingPhoneThrows?: boolean;
   // #480: a concurrent different-target holder re-pins the lease at the exact
   // instant Guard-1 runs its commit-then-crash cleanup delete. Fired at the
   // ENTRY of the cleanup-delete method, modelling the documented read->delete
@@ -216,6 +221,8 @@ export function makeDeps(opts: FakeOpts) {
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
+    updateEventDescription: [] as { email: string; id: string; description: string }[],
+    updateBookingPhone: [] as { bookingId: string; phone: string }[],
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     /** #762: how many batched WRITES the sweep issued, not how many rows it wrote. */
     insertBusyBlocks: 0,
@@ -413,6 +420,23 @@ export function makeDeps(opts: FakeOpts) {
       calls.updateEventTime.push({ id });
       if (opts.updateEventTimeGone) throw new EventGone("events.patch"); // #617
       fireConcurrent(); // #615: a concurrent cancel/reassign lands mid-PATCH
+    },
+    // #1341: the invite body carries the number the advisor dials, so a phone
+    // correction rewrites it. Recorded rather than swallowed, so a test can assert
+    // the invite really was refreshed and not merely that the row changed.
+    updateEventDescription: async (email, id, description) => {
+      calls.updateEventDescription.push({ email, id, description });
+      if (opts.updateEventDescriptionThrows) throw new Error("google 503");
+    },
+    updateBookingPhone: async (bookingId, phone) => {
+      if (opts.updateBookingPhoneThrows) throw new Error("db write failed");
+      calls.updateBookingPhone.push({ bookingId, phone });
+      const existing = opts.existing;
+      // Mirror production: the stored row really changes, so a later read in the
+      // same test sees the corrected number rather than the one it started with.
+      if (existing && existing.booking.id === bookingId) {
+        existing.booking = { ...existing.booking, attendee_phone: phone };
+      }
     },
     getUser: async (id) => users[id],
     loadEmails: async (ids) => {

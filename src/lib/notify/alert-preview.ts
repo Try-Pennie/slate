@@ -186,6 +186,7 @@ import {
   verifyOutageAlert,
   rescheduleLockOutageAlert,
   verifyReadFailedAlert,
+  stalePhoneInviteAlert,
 } from "@/lib/booking/alert-copy";
 import {
   emptyBucketMessage,
@@ -1436,6 +1437,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: digestUnroutedUnreachableAlert(1, 2) },
   { key: "ooo-digest-unrouted-unreachable", state: "posting again", channel: "recovery",
     text: digestUnroutedUnreachableRecovery() },
+  { key: "stale_phone_invite:*", state: "a corrected number the invite did not take", channel: "alert",
+    text: stalePhoneInviteAlert("dana.whitfield@trypennie.com", "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431") },
   { key: "webhook_dead:*", state: "an endpoint dead-lettering", channel: "alert",
     text: webhookDeadAlert("https://hooks.regal.io/slate/bookings", "booking.created", 5, "502 Bad Gateway") },
   { key: "webhook_dead:*", state: "delivering again", channel: "recovery",

@@ -186,3 +186,22 @@ export function verifyOutageAlert(): string {
 export function rescheduleLockOutageAlert(): string {
   return "A reschedule failed CLOSED because the per-booking lock claim hit an unexpected DB error (not a real conflict). The actor saw a retryable 503. Check DB health.";
 }
+
+/**
+ * A lead corrected their phone number and the advisor's calendar invite could
+ * not be rewritten (#1341).
+ *
+ * The number IS saved, so this is not a lost correction: it is a stale invite,
+ * and the advisor reads the number to dial off that invite. Left unsaid, they
+ * ring the digits the lead just told us are wrong, which is exactly the no show
+ * the correction exists to prevent. Names the calendar to repair rather than
+ * pasting the Google error, which lives in the logs.
+ */
+export function stalePhoneInviteAlert(agentEmail: string, bookingId: string): string {
+  return (
+    `A lead corrected their phone number and the calendar invite on ${agentEmail} could not ` +
+    `be updated, so it still shows the old number. The booking itself is correct. Open the ` +
+    `event and read the number off the booking before the call. Diagnose via the manage-phone ` +
+    `log lines; booking id ${bookingId}.`
+  );
+}

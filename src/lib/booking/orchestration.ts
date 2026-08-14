@@ -50,6 +50,13 @@ import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { tierKeyOf } from "../routing/tiers.ts";
 import { walkTierLadder } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
+import {
+  MANAGE_PHONE_NOT_CHANGEABLE,
+  MANAGE_PHONE_NOT_FOUND,
+} from "./manage-copy.ts";
+import { validateAttendee } from "../attendee.ts";
+import { formatPhoneAsTyped } from "../phone-format.ts";
+import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
@@ -573,11 +580,26 @@ export interface BookingDeps {
   /** #401: bump the attempt count and record the error for a failed deletion. */
   bumpPendingEventDeletion(id: string, attempts: number, error: string): Promise<void>;
   updateEventTime(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
+  /**
+   * #1341: rewrite the event body on the advisor's calendar. The invite is where
+   * the advisor reads the number to dial, so a phone correction that only lands
+   * in the database leaves them ringing the digits the lead just told us are
+   * wrong. Separate from `updateEventTime` because the two patch different
+   * fields and a phone correction must never touch the time.
+   */
+  updateEventDescription(email: string, eventId: string, description: string): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
   /** Batched userId -> email resolver for a verify-on-book wave (skips emailless). */
   loadEmails(userIds: string[]): Promise<Map<string, string>>;
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
+  /**
+   * #1341: write a lead's corrected phone onto their booking. Scoped to the one
+   * field on purpose, so a manage-token edit can never reach anything else on
+   * the row. Throws on a write failure, because a save the lead is told landed
+   * and which did not is the exact defect this control exists to avoid (L12).
+   */
+  updateBookingPhone(bookingId: string, phone: string): Promise<void>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   /** One write for many blocks (#762). The reconcile-missing sweep can re-create up
    *  to RECONCILE_LIMIT rows, and a write per row was that many serial round-trips
@@ -3675,6 +3697,97 @@ export async function completePastBookings(
   // `backlogRemains` is the completion sweep's saturation verdict: the caller
   // folds it into a consecutive-run streak and pages when sustained (#883).
   return { completed, backlogRemains };
+}
+
+/**
+ * A lead corrects the number their advisor will call (#1341).
+ *
+ * The number is the most useful fact on the manage page and was the only one the
+ * lead could not change. A mistyped digit, an old mobile, a work line nobody
+ * answers: the advisor dials, nobody picks up, and it is recorded as a no show.
+ * This is a scoped edit of ONE field on a booking the manage token already
+ * authorises, not a new identity surface, so nothing else about the lead moves.
+ *
+ * The rule is the booker's own (`validateAttendee`), asked through the same
+ * helper rather than a second copy, so a number the field would refuse can never
+ * be accepted here and the product cannot say two things about one number
+ * (#1356, L99).
+ *
+ * Order matters. The database is the source of truth and the invite is derived
+ * from it, so the row is written first and the calendar body patched after. A
+ * failed patch therefore leaves the lead's number CORRECT and one advisor's
+ * invite stale, which is worth telling the lead was saved (because it was, L12)
+ * and worth paging about (because the advisor will otherwise ring the old
+ * number, which is exactly the harm this exists to prevent).
+ */
+export interface UpdatePhoneResult {
+  ok: boolean;
+  /** The stored, formatted number on success. */
+  phone?: string;
+  /** The lead-facing refusal on failure. Never a raw error. */
+  error?: string;
+  /**
+   * Set when the number IS saved but the advisor's invite still shows the old
+   * one. Returned rather than alerted here, because every other booking alert is
+   * dispatched by the service layer; this keeps the domain node-testable and
+   * puts the page where its siblings are. The caller must not turn it into a
+   * failure for the lead: their number really is corrected.
+   */
+  staleInvite?: { agentEmail: string; bookingId: string };
+}
+
+/** One page per booking per day: a lead retyping the same number must not repage. */
+export const STALE_PHONE_INVITE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export async function updateBookingPhone(
+  token: string,
+  rawPhone: string,
+  deps: BookingDeps,
+): Promise<UpdatePhoneResult> {
+  const phone = rawPhone.trim();
+  const invalid = validateAttendee({ phone }).phone;
+  if (invalid) return { ok: false, error: invalid };
+
+  const found = await deps.loadBookingContext(token);
+  if (!found) return { ok: false, error: MANAGE_PHONE_NOT_FOUND };
+  const { booking } = found;
+  // A call that has happened or been called off has no number left to correct,
+  // and offering one would say we had not noticed. The page already hides the
+  // control in those states; this is the same rule on the server, because a
+  // client side gate is not a gate.
+  if (booking.status === "cancelled" || booking.status === "completed") {
+    return { ok: false, error: MANAGE_PHONE_NOT_CHANGEABLE };
+  }
+
+  // Formatted as the booker formats it, so the page reads back what it shows
+  // everywhere else rather than the raw keystrokes.
+  const stored = formatPhoneAsTyped(phone);
+  await deps.updateBookingPhone(booking.id, stored);
+
+  // The invite is derived from the row, so it is refreshed AFTER the write, never
+  // instead of it. Its failure is contained: the number is saved, and saying
+  // otherwise would push the lead to retype a number we already hold (L12).
+  if (booking.gcal_event_id && booking.agent_email) {
+    try {
+      await deps.updateEventDescription(
+        booking.agent_email,
+        booking.gcal_event_id,
+        eventDescription(stored, manageUrl(deps, token)),
+      );
+    } catch (err) {
+      log.warn("manage-phone", {
+        msg: "invite body not refreshed",
+        booking_id: booking.id,
+        reason: shortErrorReason(err),
+      });
+      return {
+        ok: true,
+        phone: stored,
+        staleInvite: { agentEmail: booking.agent_email, bookingId: booking.id },
+      };
+    }
+  }
+  return { ok: true, phone: stored };
 }
 
 export async function getBookingByToken(

@@ -1,0 +1,52 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { z } from "zod";
+import { updateBookingPhone } from "@/lib/booking/service";
+import { INPUT_LIMITS } from "@/lib/booking/input-limits";
+import { internalErrorResponse } from "@/lib/api/errors";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * A lead corrects the number their advisor will call (#1341).
+ *
+ * Authorised by the manage token in the path, exactly like reschedule and cancel
+ * beside it: this is a scoped edit of ONE field on a booking that token already
+ * governs, not a new identity surface, so it needs no new auth and can reach
+ * nothing else on the row.
+ *
+ * The shape check here is only a ceiling: a multi-MB blob is refused before it
+ * reaches Postgres or a Google event body (#1034). Whether the number is one we
+ * can actually call is decided by the shared attendee rule inside the service,
+ * so this route can never become a second, laxer opinion about a phone number.
+ */
+const schema = z.object({
+  phone: z.string().max(INPUT_LIMITS.contact),
+});
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ token: string }> },
+) {
+  const { token } = await params;
+  const parsed = schema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    // refusal: manage_phone_invalid_request
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
+
+  try {
+    const res = await updateBookingPhone(token, parsed.data.phone);
+    if (!res.ok) {
+      // refusal: manage_phone_refused
+      // The service's own lead-facing sentence, not a generic one: a number we
+      // cannot call, an incomplete number, an unknown link and a call that has
+      // already happened are four different things to a reader (L11).
+      return NextResponse.json({ error: res.error }, { status: 400 });
+    }
+    // The STORED number, so the page renders what was saved rather than what was
+    // typed. A save that did not commit never reaches here: the write throws.
+    return NextResponse.json({ phone: res.phone });
+  } catch (err) {
+    return internalErrorResponse(err, "manage-phone");
+  }
+}

@@ -556,3 +556,28 @@ export async function syncEvents(
 
   return { events, nextSyncToken, truncated };
 }
+
+/**
+ * Rewrite an event's description on the agent's primary calendar (#1341).
+ *
+ * Only the body: a phone correction must never move the time, so this PATCHes
+ * `description` alone and shares nothing with `updateEventTime`. `sendUpdates=all`
+ * so the lead's own copy of the invite carries the number they just corrected.
+ *
+ * A deleted event surfaces as the same typed `EventGone` the time patch uses, so
+ * a caller can tell "the event is not there" from "Google is unwell" rather than
+ * reading both as one generic failure.
+ */
+export async function updateEventDescription(
+  email: string,
+  eventId: string,
+  description: string,
+): Promise<void> {
+  const res = await gfetch(
+    email,
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    { method: "PATCH", body: JSON.stringify({ description }) },
+  );
+  if (res.status === 404 || res.status === 410) throw new EventGone("events.patch.description");
+  await ok(res, "events.patch.description");
+}

@@ -199,6 +199,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Requests with no assigned approver are going unnudged until the channel post lands; the daily run re-measures.",
   },
   {
+    key: "stale_phone_invite:*",
+    kind: "incident",
+    why: "One correction's invite patch failed and nothing re-reads that event, so there is no healthy state to observe; the booking itself is already correct.",
+  },
+  {
     key: "webhook_dead:*",
     kind: "condition",
     why: "An endpoint is dead-lettering every delivery; a delivery that succeeds ends it.",

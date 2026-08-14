@@ -36,7 +36,9 @@ import {
   BEFORE_COPY,
   CANCEL_COPY,
   LIVE_COPY,
+  PHONE_COPY,
   advisorWillCall,
+  phoneSaved,
 } from "@/lib/booking/manage-copy";
 
 const ZONE = "America/New_York";
@@ -198,5 +200,75 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     // irreversible action, so it is the one worth pinning hardest.
     expect(pageText()).toContain(CANCEL_COPY.consequence);
     expect(screen.getByRole("button", { name: CANCEL_COPY.keep })).toBeTruthy();
+  });
+
+  // #1341: the phone correction. A static scan cannot mount React, so without
+  // this the component could go back to holding its own inline sentence while the
+  // preview rendered happily from the builder, showing text that no longer ships.
+  it("uses the builder's words when correcting the number", async () => {
+    render(<ManageBooking {...manageProps} />);
+    await act(async () => {});
+
+    const trigger = screen.getByRole("button", { name: PHONE_COPY.trigger });
+    fireEvent.click(trigger);
+
+    expect(await screen.findByLabelText(PHONE_COPY.heading)).toBeTruthy();
+    expect(pageText()).toContain(PHONE_COPY.hint);
+    expect(screen.getByRole("button", { name: PHONE_COPY.save })).toBeTruthy();
+    expect(screen.getByRole("button", { name: PHONE_COPY.cancel })).toBeTruthy();
+  });
+
+  // The failure path, because a save that did not commit must never leave the new
+  // number on screen looking accepted (L12). The server's own sentence is what a
+  // lead reads, so a generic fallback here would flatten "we cannot call that
+  // number" into "invalid" and they would try the same number again.
+  it("keeps the old number on screen and shows the server's reason when a save fails", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/phone")) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "We can only call US numbers." }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ slots: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<ManageBooking {...manageProps} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.trigger }));
+    const field = await screen.findByLabelText(PHONE_COPY.heading);
+    fireEvent.change(field, { target: { value: "2155559999" } });
+    fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.save }));
+    await act(async () => {});
+
+    expect((await screen.findByRole("alert")).textContent).toContain("We can only call US numbers.");
+    // Still open, and still saying the number we actually hold.
+    expect(screen.getByLabelText(PHONE_COPY.heading)).toBeTruthy();
+    expect(pageText()).toContain(advisorWillCall(manageProps.attendeePhone));
+  });
+
+  it("shows the STORED number after a save that committed", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/phone")) {
+        // The server formats it; the page must render what came BACK, not what
+        // was typed, or the two disagree the moment formatting differs.
+        return { ok: true, json: async () => ({ phone: "(215) 555-9999" }) } as Response;
+      }
+      return { ok: true, json: async () => ({ slots: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<ManageBooking {...manageProps} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.trigger }));
+    fireEvent.change(await screen.findByLabelText(PHONE_COPY.heading), {
+      target: { value: "2155559999" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.save }));
+    await act(async () => {});
+
+    expect(pageText()).toContain(advisorWillCall("(215) 555-9999"));
+    expect(pageText()).toContain(phoneSaved("(215) 555-9999"));
+    expect(pageText()).not.toContain(advisorWillCall(manageProps.attendeePhone));
   });
 });
