@@ -43,20 +43,43 @@ assert(
 );
 
 // --- bookFirstFreeSlot: advance past a transient conflict onto a fresh slot -------
+//
+// Real ISO stamps at the real 10 minute cadence, not opaque labels (#1491). The
+// retry now advances by TIME rather than to the adjacent index, because the next
+// slot along sits inside the 20 minute window just attempted: when the conflict is
+// residue from a just-cancelled event, retrying 10 minutes later re-reads the same
+// busy period and spends the attempt budget without moving. Opaque labels cannot
+// exercise that at all, so the fixture has to carry the shape the code reads (L48).
+const SLOT_STEP_MS = 10 * 60_000;
+const SLOT_BASE_MS = Date.parse("2026-09-01T13:00:00.000Z");
+/** 24 slots, four hours, so an hourly stride has somewhere to go. */
+const SLOTS = Array.from({ length: 24 }, (_, i) =>
+  new Date(SLOT_BASE_MS + i * SLOT_STEP_MS).toISOString(),
+);
+/** The slot at a given 10 minute offset, for readable assertions. */
+const at = (i: number): string => SLOTS[i]!;
+/** Minutes between two slots, for a readable failure message. */
+const gapMins = (a: string, b: string): number =>
+  Math.round(Math.abs(Date.parse(a) - Date.parse(b)) / 60_000);
 
-const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
-
-// First slot conflicts (residue of a just-cancelled event), next one is free.
+// First slot conflicts (residue of a just-cancelled event), the next one it tries
+// is free. The retry must land a full margin later, NOT on the adjacent slot that
+// overlaps the window it just failed on.
 {
   const tried: string[] = [];
-  const res = await bookFirstFreeSlot(SLOTS, 5, async (slot) => {
+  const res = await bookFirstFreeSlot(SLOTS, 0, async (slot) => {
     tried.push(slot);
-    return slot === "s5"
+    return slot === at(0)
       ? { status: 409, body: { code: "SLOT_TAKEN" as const } }
       : { status: 200, body: { outcome: "created" as const } };
   });
   eq(res.status, 200, "advances past a busy slot to a fresh one and returns created");
-  eq(tried.join(","), "s5,s6", "tried the residue slot then the next fresh slot, in order");
+  eq(tried.length, 2, "tried the residue slot, then one more");
+  eq(tried[0], at(0), "started on the slot it was given");
+  assert(
+    gapMins(tried[0]!, tried[1]!) >= 60,
+    `the retry is a full hour clear of the failed attempt (got ${gapMins(tried[0]!, tried[1]!)} min)`,
+  );
 }
 
 // A clean first slot returns immediately without touching later slots.
@@ -67,7 +90,7 @@ const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
     return { status: 200, body: { outcome: "created" as const } };
   });
   eq(res.status, 200, "a free first slot returns created");
-  eq(tried.join(","), "s5", "does not advance when the first slot is accepted");
+  eq(tried.join(","), at(5), "does not advance when the first slot is accepted");
 }
 
 // A functional (non-transient) 409 is returned immediately, NEVER retried:
@@ -79,7 +102,7 @@ const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
     return { status: 409, body: { outcome: "confirm_required" as const } };
   });
   eq(res.body.outcome, "confirm_required", "confirm_required is returned as-is");
-  eq(tried.join(","), "s5", "confirm_required is NOT retried onto another slot");
+  eq(tried.join(","), at(5), "confirm_required is NOT retried onto another slot");
 }
 
 // Exhausting the attempt budget returns the last conflict so the CALLER's check
@@ -88,7 +111,7 @@ const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
   const tried: string[] = [];
   const res = await bookFirstFreeSlot(
     SLOTS,
-    5,
+    0,
     async (slot) => {
       tried.push(slot);
       return { status: 409, body: { code: "SLOT_TAKEN" as const } };
@@ -97,6 +120,14 @@ const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
   );
   eq(res.status, 409, "persistent conflict surfaces the last 409 (fails loudly)");
   eq(tried.length, 3, "stops after maxAttempts and does not loop forever");
+  // Every attempt a margin apart, so three attempts really cover three distinct
+  // windows rather than three reads of one busy period.
+  for (let i = 1; i < tried.length; i++) {
+    assert(
+      gapMins(tried[i - 1]!, tried[i]!) >= 60,
+      `attempt ${i} is a full hour clear of attempt ${i - 1} (got ${gapMins(tried[i - 1]!, tried[i]!)} min)`,
+    );
+  }
 }
 
 // Running out of slots before the budget stops cleanly (no undefined-slot call).
@@ -104,7 +135,7 @@ const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
   const tried: string[] = [];
   const res = await bookFirstFreeSlot(
     SLOTS,
-    6, // only s6, s7 remain
+    SLOTS.length - 2, // nothing an hour past these two
     async (slot) => {
       tried.push(slot);
       return { status: 409, body: { code: "SLOT_TAKEN" as const } };
@@ -112,7 +143,11 @@ const SLOTS = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
     5,
   );
   eq(res.status, 409, "returns the last conflict when the slot list is exhausted");
-  eq(tried.join(","), "s6,s7", "never attempts a slot past the end of the list");
+  eq(tried.join(","), at(SLOTS.length - 2), "stops rather than attempting a slot too close to the last");
+  assert(
+    !tried.includes("undefined"),
+    "never attempts a slot past the end of the list",
+  );
 }
 
 finish();

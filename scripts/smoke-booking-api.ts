@@ -75,6 +75,11 @@ import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
 import { chooseCrossBucketSlot } from "./lib/smoke-cross-bucket-slot.ts";
 import {
+  MIN_SLOTS_FOR_RUN,
+  createSlotPlan,
+  type SlotPlan,
+} from "./lib/smoke-slot-plan.ts";
+import {
   evaluateStaticAssetTransport,
   fetchProbe,
   httpProbeUrl,
@@ -349,10 +354,34 @@ async function checkStaticAssetTransport() {
   }
 }
 
+// #1491: every scenario's seed start comes from ONE plan with a stated separation,
+// instead of each indexing into slotsA with a hardcoded offset. The offsets were one
+// or two slots wide (10 to 20 min) against a 20 minute event, and scenarios 2 and 7
+// both started from index 2, so two scenarios could land inside each other's window.
+// That does not fail as "the fixture overlapped": it fails as a dedupe or as
+// NO_ELIGIBLE_AGENTS, which reads as a booking regression (the #1489 shape).
+//
+// A refusal is reported as the fixture problem it is, and returns undefined so the
+// scenario stops rather than booking a colliding slot.
+function reserveSlot(plan: SlotPlan, label: string): string | undefined {
+  const r = plan.reserve(label);
+  if (r.ok) return r.start;
+  check(false, `slot plan: ${r.reason}`);
+  return undefined;
+}
+
+/** Record where a booking ACTUALLY landed, which the retry helper may have moved. */
+function recordBooked(plan: SlotPlan, body: { booking?: { startsAt?: string } } | undefined): void {
+  const landed = body?.booking?.startsAt;
+  if (landed) plan.record(landed);
+}
+
 // --- Scenario 0: dry run — validate routing with ZERO side effects ---
 async function scenarioDryRun(slotsA: string[]) {
   console.log("\n[0] dry run (no calendar event, no booking, no webhook)");
   const id = uniq("dryrun");
+  // No reservation: a dry run creates nothing, so it cannot collide with anything
+  // and must not consume a slot the booking scenarios need (#1491).
   const res = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone: "+12155550100", dryRun: true });
   check(res.status === 200 && res.body.dryRun === true, `dry run -> 200 dryRun:true (got ${res.status}/${res.body.dryRun})`);
   check(res.body.outcome === "created", `dry run -> would create (got ${res.body.outcome})`);
@@ -361,14 +390,15 @@ async function scenarioDryRun(slotsA: string[]) {
 }
 
 // --- Scenario 1: create / dedupe / reschedule within one bucket ---
-async function scenarioMain(slotsA: string[]) {
+async function scenarioMain(slotsA: string[], plan: SlotPlan) {
   console.log("\n[1] create -> deduped -> rescheduled (same bucket)");
   const id = uniq("main");
   // Distinct slot per scenario (the single test agent is shared); cleanup runs
   // between scenarios, so holds release before the next one books. slotB is a
   // safe margin LATER than slotA (not the adjacent slot) so the reschedule
   // target doesn't overlap slotA's own event — see laterSlot.
-  const slotA = slotsA[0];
+  const slotA = reserveSlot(plan, "scenario 1 (create/dedupe/reschedule)");
+  if (!slotA) return;
   const slotB = laterSlot(slotsA, slotA);
   const phone = "+12155550100";
   if (!slotB) {
@@ -378,6 +408,7 @@ async function scenarioMain(slotsA: string[]) {
 
   const created = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
   trackForCleanup(created.body);
+  recordBooked(plan, created.body);
   check(created.status === 200 && created.body.outcome === "created", `book -> created (got ${created.status}/${created.body.outcome})`);
 
   const dup = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
@@ -390,7 +421,7 @@ async function scenarioMain(slotsA: string[]) {
 }
 
 // --- Scenario 2: cross-bucket move (book in A, rebook same person into B) ---
-async function scenarioCrossBucket(slotsA: string[]) {
+async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
   console.log("\n[2] cross-bucket move (rebook same person into a different bucket)");
   if (!BUCKET_B) {
     skip("SMOKE_BUCKET_B not set — set it to a second bucket your test agent serves to run this");
@@ -407,9 +438,13 @@ async function scenarioCrossBucket(slotsA: string[]) {
   // instants and never the bucket) and these two checks paged three times in ten
   // days. Anchoring on the booking's own startsAt keeps the two sides of the
   // separation independent of the slot we asked for.
-  const inA = await bookFirstFreeSlot(slotsA, 2, (slot) =>
+  const seedA = reserveSlot(plan, "scenario 2 (cross bucket, first booking)");
+  if (!seedA) return;
+  const inA = await bookFirstFreeSlot(slotsA, slotsA.indexOf(seedA), (slot) =>
     book({ bucket: BUCKET_A, start: slot, ...id, phone }),
   );
+  // The retry may have moved it, so record where it LANDED, not what was asked for.
+  recordBooked(plan, inA.body);
   trackForCleanup(inA.body);
   check(inA.body.outcome === "created", `book in bucket ${BUCKET_A} -> created (got ${inA.body.outcome})`);
   const startA = inA.body.booking?.startsAt;
@@ -448,13 +483,14 @@ async function scenarioCrossBucket(slotsA: string[]) {
 }
 
 // --- Scenario 3: weak (email-only) match -> confirm_required, then confirm ---
-async function scenarioConfirm(slotsA: string[]) {
+async function scenarioConfirm(slotsA: string[], plan: SlotPlan) {
   console.log("\n[3] weak match -> confirm_required -> confirm -> rescheduled");
   const id1 = uniq("confirm");
   // slotB is a safe margin LATER than slotA (not the adjacent slot) so the
   // confirmed reschedule stays in-place rather than overlapping slotA — see
   // laterSlot.
-  const slotA = slotsA[3];
+  const slotA = reserveSlot(plan, "scenario 3 (weak match then confirm)");
+  if (!slotA) return;
   const slotB = laterSlot(slotsA, slotA);
   if (!slotB) {
     check(false, "need a non-overlapping later slot for the confirm reschedule");
@@ -464,6 +500,7 @@ async function scenarioConfirm(slotsA: string[]) {
   // Existing appointment for this email (phone P1, externalId E1).
   const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: "+12155550110" });
   trackForCleanup(created.body);
+  recordBooked(plan, created.body);
   check(created.body.outcome === "created", `seed booking -> created (got ${created.body.outcome})`);
 
   // New call: SAME email, DIFFERENT externalId + phone, different time -> weak match.
@@ -484,7 +521,7 @@ async function scenarioConfirm(slotsA: string[]) {
 }
 
 // --- Scenario 4: GET lookup (list + by-id + status filter) + DELETE-by-id ---
-async function scenarioLookupAndCancel(slotsA: string[]) {
+async function scenarioLookupAndCancel(slotsA: string[], plan: SlotPlan) {
   console.log("\n[4] GET list / GET by-id / GET by-id+status / DELETE by-id");
   const id = uniq("lookup");
   // Unique phone per run too (not just externalId/email): a fixed phone lets a
@@ -499,9 +536,12 @@ async function scenarioLookupAndCancel(slotsA: string[]) {
   // that residue is off in CI (no SA creds), so re-using slotsA[0] here flaked
   // this create with a 409 and paged (run 30010672602). Start past scenarios
   // 1/2/3 (slots 0/2/3); the helper advances if this slot also has residue.
-  const created = await bookFirstFreeSlot(slotsA, 1, (slot) =>
+  const seed = reserveSlot(plan, "scenario 4 (lookup and cancel)");
+  if (!seed) return;
+  const created = await bookFirstFreeSlot(slotsA, slotsA.indexOf(seed), (slot) =>
     book({ bucket: BUCKET_A, start: slot, ...id, phone }),
   );
+  recordBooked(plan, created.body);
   check(created.status === 200 && created.body.outcome === "created", `seed booking -> created (got ${created.status}/${created.body.outcome})`);
   const bookingId = created.body.booking?.id;
   if (!bookingId) {
@@ -553,7 +593,7 @@ async function scenarioListMode() {
 }
 
 // --- Scenario 6: reassign (owner-override move onto a second agent) ---
-async function scenarioReassign(slotsA: string[]) {
+async function scenarioReassign(slotsA: string[], plan: SlotPlan) {
   console.log("\n[6] reassign (force the booking onto a second test agent)");
   if (!REASSIGN_KEY) {
     skip("REASSIGN_API_KEY not set — set it to exercise the owner-override reassign path");
@@ -569,9 +609,12 @@ async function scenarioReassign(slotsA: string[]) {
   // Fresh slot, past scenarios 1/2/3 and scenario 4 (start 1): re-using slotsA[0]
   // here also 409'd on residue from a just-cancelled event (run 30010672602). The
   // helper advances past a transient slot conflict onto a clean slot.
-  const created = await bookFirstFreeSlot(slotsA, 4, (slot) =>
+  const seed = reserveSlot(plan, "scenario 6 (reassign)");
+  if (!seed) return;
+  const created = await bookFirstFreeSlot(slotsA, slotsA.indexOf(seed), (slot) =>
     book({ bucket: BUCKET_A, start: slot, ...id, phone }),
   );
+  recordBooked(plan, created.body);
   trackForCleanup(created.body);
   check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`);
   const bookingId = created.body.booking?.id;
@@ -611,16 +654,18 @@ async function scenarioReassign(slotsA: string[]) {
 // Meaningful only in the now-two-agent SMOKE bucket (#464): the new slot overlaps
 // the booking's own still-present event, which the pre-#523 self-free check
 // counted as a conflict, re-routing the booking to the other agent. ---
-async function scenarioRescheduleStickiness(slotsA: string[]) {
+async function scenarioRescheduleStickiness(slotsA: string[], plan: SlotPlan) {
   console.log("\n[7] sub-event-length reschedule keeps the same agent (#523)");
   const id = uniq("stick");
-  const slot = slotsA[2];
+  const slot = reserveSlot(plan, "scenario 7 (sub-event-length reschedule)");
+  if (!slot) return;
   // +10 min on the 20-min SMOKE event: the new window [+10, +30] overlaps the
   // original [0, +20] event — the exact #523 trigger.
   const target = new Date(Date.parse(slot) + 10 * 60_000).toISOString();
 
   const created = await book({ bucket: BUCKET_A, start: slot, ...id, phone: "+12155550130" });
   trackForCleanup(created.body);
+  recordBooked(plan, created.body);
   check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`);
   const bookingId = created.body.booking?.id;
   const token = (created.body.booking?.manageUrl ?? "").match(/\/booking\/manage\/([^/?#]+)/)?.[1];
@@ -669,7 +714,9 @@ async function main() {
   // that must fail LOUDLY as a configuration error, never exit quietly in a way
   // that reads as a pass (#456). A thin-but-nonzero window is a distinct failure.
   const slotsA = await slots(BUCKET_A);
-  const availability = evaluateSlotAvailability(BUCKET_A, slotsA.length);
+  // The floor is derived from what the slot plan actually needs (#1491), not a
+  // number chosen when scenarios indexed the list at offsets 0 to 4.
+  const availability = evaluateSlotAvailability(BUCKET_A, slotsA.length, MIN_SLOTS_FOR_RUN);
   check(availability.ok, `bucket ${BUCKET_A} has enough open slots (got ${slotsA.length})`);
   if (!availability.ok) {
     console.error(`\n${availability.message}`);
@@ -686,20 +733,27 @@ async function main() {
   // Clean up between scenarios (not just at the end): the single test agent is
   // shared, so releasing each scenario's holds keeps the next one's slots free.
   // Scenario 4 (lookup + cancel) uses DELETE-by-id for its own cleanup.
+  // ONE plan for the whole run (#1491). Each scenario reserves its seed from it, so
+  // the separations are stated in one place rather than implied by hardcoded indices
+  // that were one or two slots wide against a 20 minute event. cleanup() between
+  // scenarios frees the bookings, but the just-cancelled event can still read busy on
+  // the live verify, which is precisely why the margin has to hold across scenarios
+  // and not only within one.
+  const plan = createSlotPlan(slotsA);
   try {
     await scenarioDryRun(slotsA);
-    await scenarioMain(slotsA);
+    await scenarioMain(slotsA, plan);
     await cleanup();
-    await scenarioCrossBucket(slotsA);
+    await scenarioCrossBucket(slotsA, plan);
     await cleanup();
-    await scenarioConfirm(slotsA);
+    await scenarioConfirm(slotsA, plan);
     await cleanup();
-    await scenarioLookupAndCancel(slotsA);
+    await scenarioLookupAndCancel(slotsA, plan);
     await scenarioListMode();
     await cleanup();
-    await scenarioReassign(slotsA);
+    await scenarioReassign(slotsA, plan);
     await cleanup();
-    await scenarioRescheduleStickiness(slotsA);
+    await scenarioRescheduleStickiness(slotsA, plan);
   } finally {
     console.log("\nCleaning up test bookings...");
     await cleanup();

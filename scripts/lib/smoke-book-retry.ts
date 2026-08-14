@@ -30,26 +30,60 @@ export function isTransientSlotConflict(res: BookOutcome): boolean {
 }
 
 /**
+ * Separation between one attempt and the next (#1491).
+ *
+ * The retry used to advance to the ADJACENT slot (`startIndex + i`). Slots are
+ * published every 10 minutes and the seeded event is 20, so the next slot sits
+ * INSIDE the window just attempted. When the reason for the conflict is residue
+ * from a just-cancelled event, retrying 10 minutes along re-reads the same busy
+ * period and conflicts again, which spends the attempt budget without moving.
+ *
+ * One hour, matching SCENARIO_MIN_GAP_MS and CROSS_BUCKET_MIN_GAP_MS: every margin
+ * in this canary is the same stated number for the same reason.
+ */
+export const RETRY_MIN_GAP_MS = 60 * 60 * 1000;
+
+/**
  * Book the first slot (from `slots`, starting at `startIndex`) that `attempt`
- * accepts, advancing past a transient slot conflict onto the next slot. Returns as
- * soon as `attempt` yields anything that is not a transient conflict (a created
- * booking, a functional `confirm_required`, or a real error) so the caller's checks
- * still see the true result. On a persistent conflict, or when the slot list runs
- * out first, it returns the LAST result so the caller fails loudly rather than
- * looping or hanging.
+ * accepts, advancing past a transient slot conflict onto the next slot at least
+ * `minGapMs` LATER than the one just tried. Returns as soon as `attempt` yields
+ * anything that is not a transient conflict (a created booking, a functional
+ * `confirm_required`, or a real error) so the caller's checks still see the true
+ * result. On a persistent conflict, or when the slot list runs out first, it returns
+ * the LAST result so the caller fails loudly rather than looping or hanging.
+ *
+ * A slot whose stamp cannot be read is skipped rather than attempted: Date.parse
+ * yields NaN, every comparison with NaN is false, and accepting it would silently
+ * put the retry back on the adjacent slot this margin exists to avoid.
  */
 export async function bookFirstFreeSlot<T extends BookOutcome>(
   slots: string[],
   startIndex: number,
   attempt: (slot: string) => Promise<T>,
   maxAttempts = 4,
+  minGapMs = RETRY_MIN_GAP_MS,
 ): Promise<T> {
   let last: T | undefined;
+  let index = startIndex;
   for (let i = 0; i < maxAttempts; i++) {
-    const slot = slots[startIndex + i];
+    const slot = slots[index];
     if (slot === undefined) break; // ran out of fresh slots
     last = await attempt(slot);
     if (!isTransientSlotConflict(last)) return last;
+
+    // Advance to the next slot a full margin clear of the one just attempted.
+    const triedMs = Date.parse(slot);
+    let next = -1;
+    for (let j = index + 1; j < slots.length; j++) {
+      const ms = Date.parse(slots[j]!);
+      if (!Number.isFinite(ms) || !Number.isFinite(triedMs)) continue;
+      if (ms - triedMs >= minGapMs) {
+        next = j;
+        break;
+      }
+    }
+    if (next === -1) break; // nothing far enough left to try
+    index = next;
   }
   return last as T;
 }
