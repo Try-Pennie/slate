@@ -25,6 +25,16 @@
 //   SMOKE_STRICT       (default unset)   — treat any SKIPped scenario as a failure
 //                                          (non-zero exit), so CI/cron can require
 //                                          full coverage rather than a quiet skip.
+//   EXPECT_HTTPS_REDIRECT (default unset): arms the http->https redirect guard
+//                                          (#1024/#1203): set to 1 and a regression
+//                                          FAILS the run instead of only warning.
+//                                          Set as a repo Actions variable AND wired
+//                                          into the canary steps' env (#1494), and a
+//                                          variable alone never reaches the process.
+//
+// A defaulted var above is read through envOr, not `??`, because a workflow wiring
+// `${{ vars.X }}` for an unset repo variable passes an EMPTY STRING rather than
+// leaving it undefined, and `??` would take it (#1494).
 //
 // Isolation (#396): the default buckets route only to the dedicated test agent,
 // whose email is the real smoketest@trypennie.com mailbox; synthetic attendees
@@ -59,7 +69,7 @@
 // if not already in the environment, so a plain `node … smoke-booking-api.ts`
 // works without exporting them by hand (and without `source`, which dies on an
 // unmatched quote anywhere in the file).
-import { loadEnvFiles } from "./smoke-env.ts";
+import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
@@ -74,23 +84,34 @@ import {
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
-const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
+// Every defaulted read goes through envOr, which treats an EMPTY value as absent
+// (#1494). The canary wires SLATE_BASE_URL and EXPECT_HTTPS_REDIRECT from repo
+// Actions variables, and `${{ vars.X }}` for an UNSET variable arrives as "", which
+// `??` would happily accept: a base URL of "" would break every request in the run.
+const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 // Default to the ISOLATED test buckets (#396): they have a single dedicated
 // member (smoketest@trypennie.com) so a smoke run never books a real
 // round-robin agent. Override SMOKE_BUCKET/SMOKE_BUCKET_B only to deliberately
 // exercise a live bucket. (Booking real agents with the synthetic smoke+
 // attendee is what bounced "undeliverable" notices onto agents like marnold.)
-const BUCKET_A = process.env.SMOKE_BUCKET ?? "SMOKE";
-const BUCKET_B = process.env.SMOKE_BUCKET_B ?? "SMOKE2";
+//
+// env-ok: SMOKE_BUCKET (a local override only; CI wants the seeded default, and
+//   wiring it would let an unset repo variable send the run at bucket "")
+// env-ok: SMOKE_BUCKET_B (same, the seeded second isolated bucket)
+const BUCKET_A = envOr(process.env.SMOKE_BUCKET, "SMOKE");
+const BUCKET_B = envOr(process.env.SMOKE_BUCKET_B, "SMOKE2");
 const KEY = process.env.BOOKING_API_KEY ?? "";
 // Reassign scenario (#450): a separate Bearer key (the owner-override API) and
 // the second test agent the booking is forced onto. Defaults to the seeded
 // smoketest2@ target; the scenario SKIPs if REASSIGN_API_KEY is unset.
 const REASSIGN_KEY = process.env.REASSIGN_API_KEY ?? "";
-const AGENT_B_EMAIL = process.env.SMOKE_AGENT_B_EMAIL ?? "smoketest2@trypennie.com";
+// env-ok: SMOKE_AGENT_B_EMAIL (a local override only; CI wants the seeded
+//   smoketest2@ mailbox, and an unset repo variable would blank the target)
+const AGENT_B_EMAIL = envOr(process.env.SMOKE_AGENT_B_EMAIL, "smoketest2@trypennie.com");
 // SMOKE's two bookable agents (#464): the booking can land on either, so the
 // reassign scenario targets whichever one it did NOT land on.
-const AGENT_A_EMAIL = process.env.SMOKE_AGENT_A_EMAIL ?? "smoketest@trypennie.com";
+// env-ok: SMOKE_AGENT_A_EMAIL (a local override only; as above for smoketest@)
+const AGENT_A_EMAIL = envOr(process.env.SMOKE_AGENT_A_EMAIL, "smoketest@trypennie.com");
 
 let failures = 0;
 let skipped = 0;

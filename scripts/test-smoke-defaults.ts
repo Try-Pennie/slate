@@ -13,19 +13,37 @@ import { assert, finish } from "./lib/harness.ts";
 const src = readFileSync(join(import.meta.dirname, "smoke-booking-api.ts"), "utf8");
 
 // Default primary/secondary buckets are the isolated test buckets.
+//
+// Matched on the DEFAULT VALUE next to the var name, not on how the fallback is
+// spelled. These assertions pinned `?? "SMOKE"` and went red on #1494's move to
+// `envOr(process.env.SMOKE_BUCKET, "SMOKE")`, which changes nothing about the rule
+// they exist to protect: an assertion tied to one rendering of a value fails the
+// first legitimate refinement of it (L103), and the temptation then is to re-pin
+// the new spelling rather than the rule.
+const defaultsTo = (name: string, value: string) =>
+  new RegExp(`${name}\\s*(?:\\?\\?|,)\\s*"${value}"`).test(src);
 assert(
-  /SMOKE_BUCKET\s*\?\?\s*"SMOKE"/.test(src),
+  defaultsTo("SMOKE_BUCKET", "SMOKE"),
   'SMOKE_BUCKET defaults to the isolated "SMOKE" bucket',
 );
 assert(
-  /SMOKE_BUCKET_B\s*\?\?\s*"SMOKE2"/.test(src),
+  defaultsTo("SMOKE_BUCKET_B", "SMOKE2"),
   'SMOKE_BUCKET_B defaults to the isolated "SMOKE2" bucket (enables the cross-bucket scenario)',
 );
 
-// The dangerous live default must be gone.
+// The dangerous live default must be gone, however the fallback is written.
+const livePool = /(?:\?\?|,)\s*"411"/;
 assert(
-  !/\?\?\s*"411"/.test(src),
+  !livePool.test(src),
   'no env default falls back to live production bucket "411"',
+);
+// Positive control: a rule loosened to accept a second spelling has to be shown
+// still catching the thing it exists for, in BOTH spellings, or "no live default
+// found" is indistinguishable from a pattern that can no longer find one (L1).
+assert(
+  livePool.test('const B = process.env.SMOKE_BUCKET ?? "411";') &&
+    livePool.test('const B = envOr(process.env.SMOKE_BUCKET, "411");'),
+  "control: the live-bucket pattern catches both the ?? and the envOr spelling",
 );
 
 // Synthetic attendees use the deliverable smoketest mailbox so invites/cancels

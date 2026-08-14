@@ -12,11 +12,16 @@
 //
 // Optional env: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
 
+import { envOr } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 
-const BASE = (process.env.SLATE_BASE_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
+// envOr, not `??`: the canary wires SLATE_BASE_URL from a repo Actions variable and
+// `${{ vars.X }}` for an unset variable arrives as "" rather than undefined (#1494).
+const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 const KEY = process.env.BOOKING_API_KEY ?? "";
-const BUCKET = process.env.SMOKE_BUCKET ?? "SMOKE";
+// env-ok: SMOKE_BUCKET (a local override only; CI wants the seeded SMOKE bucket,
+//   and wiring it would let an unset repo variable aim the run at bucket "")
+const BUCKET = envOr(process.env.SMOKE_BUCKET, "SMOKE");
 const REASON = "schedule_conflict";
 
 const { check, failed } = createChecker();

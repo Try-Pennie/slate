@@ -26,6 +26,7 @@ const key = process.env.BOOKING_API_KEY ?? "";
 // scripts/smoke-booking-api.ts), so there is one name for one thing rather than a
 // second convention to keep in sync. SMOKE is the isolated test bucket (#396), so
 // this exercises the real read path without touching a real agent.
+// env-ok: SMOKE_BUCKET (a local override only; CI wants the seeded SMOKE bucket)
 const bucket = process.env.SMOKE_BUCKET ?? "SMOKE";
 
 if (!key) {
@@ -37,6 +38,8 @@ if (!key) {
   process.exit(1);
 }
 
+// env-ok: PROBE_COMMIT (a hand-run override for probing a commit other than the
+//   one being deployed; in CI the runner's own GITHUB_SHA is the real input)
 const expectedCommit = normalizeCommit(process.env.PROBE_COMMIT ?? process.env.GITHUB_SHA);
 
 const authed = { authorization: `Bearer ${key}` };
@@ -85,6 +88,9 @@ const deps: ProbeDeps = {
 };
 
 const outcome = await runProbe(deps, {
+  // env-ok: PROBE_TIMEOUT_MS (a hand-run tuning knob; CI wants the pinned default,
+  //   so that how long a deploy is given to propagate is decided in the repo)
+  // env-ok: PROBE_POLL_MS (same, the poll interval while it propagates)
   expectedCommit,
   versionTimeoutMs: Number(process.env.PROBE_TIMEOUT_MS ?? DEFAULT_VERSION_TIMEOUT_MS),
   pollIntervalMs: Number(process.env.PROBE_POLL_MS ?? DEFAULT_POLL_INTERVAL_MS),

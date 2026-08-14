@@ -84,10 +84,22 @@ jobs:
             echo "full=0" >> "$GITHUB_OUTPUT"
           fi
 
+      # EXPECT_HTTPS_REDIRECT arms the http->https redirect guard (#1024/#1203) so a
+      # regression FAILS the run instead of printing "not armed". A repo Actions
+      # variable does NOT reach the process unless the step names it: the variable
+      # was set on 2026-07-31 and the guard stayed inert for two weeks because this
+      # line was missing (#1494). scripts/test-workflow-env-coverage.ts now fails the
+      # build on any var a workflow-run script reads that no step provides.
+      # SLATE_BASE_URL is wired for the same reason: the heartbeat steps below
+      # already read it, so without it here the smoke could test a different origin
+      # from the one being stamped alive. An unset variable arrives as "", which the
+      # scripts' envOr treats as absent (never as a base URL of "").
       - name: Booking smoke (dry-run health tick)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '0'
         env:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          EXPECT_HTTPS_REDIRECT: ${{ vars.EXPECT_HTTPS_REDIRECT }}
           SMOKE_DRY_RUN_ONLY: "1"
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
 
@@ -96,6 +108,8 @@ jobs:
         env:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
           REASSIGN_API_KEY: ${{ secrets.REASSIGN_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          EXPECT_HTTPS_REDIRECT: ${{ vars.EXPECT_HTTPS_REDIRECT }}
           SMOKE_STRICT: "1"
           # No Google service-account creds on the runner, so skip the orphan-event
           # sweep; the API-driven cancels still tear down every booking server-side.
@@ -106,6 +120,7 @@ jobs:
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
         env:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-reschedule.ts
 
       - name: Stamp canary heartbeat (success only)

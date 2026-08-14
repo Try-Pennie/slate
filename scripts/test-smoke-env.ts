@@ -3,7 +3,7 @@
 // process.env; this parser loads them from .env.local / .dev.vars line-by-line so
 // shell-sourcing quirks (an unmatched quote on some unrelated line) can't break a
 // run. Run: node --experimental-strip-types scripts/test-smoke-env.ts
-import { parseEnvFile } from "./smoke-env.ts";
+import { envOr, parseEnvFile } from "./smoke-env.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // Plain KEY=VALUE.
@@ -30,5 +30,17 @@ assert(parseEnvFile("export TOKEN=xyz").TOKEN === "xyz", "tolerates an 'export '
 
 // Surrounding whitespace around the value is trimmed.
 assert(parseEnvFile("K=  spaced  ").K === "spaced", "trims surrounding whitespace on the value");
+
+// --- envOr: an EMPTY value is absent, not a value (#1494) ---
+// A workflow wiring `FOO: ${{ vars.FOO }}` for an unset repo variable sets FOO to
+// "", not undefined, so `??` would take the empty string and blank a working
+// default. This is the whole reason wiring a var is safe.
+assert(envOr(undefined, "fallback") === "fallback", "envOr: undefined takes the fallback");
+assert(envOr("", "fallback") === "fallback", "envOr: an EMPTY string takes the fallback (the ${{ vars.X }} shape)");
+assert(envOr("   ", "fallback") === "fallback", "envOr: a whitespace-only value takes the fallback");
+assert(envOr("https://x.co", "fallback") === "https://x.co", "envOr: a real value wins");
+assert(envOr("  https://x.co  ", "fallback") === "https://x.co", "envOr: a real value is trimmed");
+// "0" is a real value: only emptiness means absent, never falsiness.
+assert(envOr("0", "fallback") === "0", "envOr: \"0\" is a value, not an absence");
 
 finish();
