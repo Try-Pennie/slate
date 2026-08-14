@@ -80,18 +80,26 @@ export function canCancel(actor: Actor, request: RequestLike): boolean {
 
 /**
  * Retry the calendar updates on an approved request whose side effects partly
- * failed: admins and up (#1468).
+ * failed: whoever moderates all time off, so team leads and up (#1468, #1473).
  *
- * `atLeast`, never `role === "admin"`. This gate shipped as an equality against
- * one rank of a five tier hierarchy, which refuses `super_admin`, the only rank
- * above it, so the person most likely to reach for the repair was the one person
- * it turned away. It lives here rather than inline in the orchestration so the
- * BUTTON offering the repair and the ACTION performing it read the same
- * predicate and cannot drift apart: the page used to render it for team leads
- * and up, who then met a bare "Not authorized" with nothing naming the gate.
+ * Read from `canModerateAllOoo` rather than restating its rank, because the two
+ * are one job. Dan's call, 2026-08-13: "team leads already moderate every
+ * request, so they should be able to press the repair when its calendar updates
+ * fail." Splitting them across two ranks meant the person who approved a request
+ * was not allowed to fix it and had to go and find an admin.
+ *
+ * Never an equality against a single rank. This gate shipped as `role === "admin"`
+ * in a five tier hierarchy, which refuses `super_admin`, the only rank above it,
+ * so the person most likely to reach for the repair was the one person it turned
+ * away (L122).
+ *
+ * It lives here rather than inline in the orchestration so the BUTTON offering
+ * the repair and the ACTION performing it read the same predicate and cannot
+ * drift apart: the page used to render it for team leads and up, who then met a
+ * bare "Not authorized" with nothing naming the gate.
  */
 export function canRetrySideEffects(actor: Pick<Actor, "role">): boolean {
-  return atLeast(actor.role, "admin");
+  return canModerateAllOoo(actor.role);
 }
 
 /** Modify: only the requester (a manager who wants changes rejects instead). */

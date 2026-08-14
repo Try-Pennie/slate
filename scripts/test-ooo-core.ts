@@ -22,6 +22,7 @@ import {
   validateWindow,
   NO_MANAGER_REVIEWER,
 } from "../src/lib/ooo/core.ts";
+import { canModerateAllOoo } from "../src/lib/auth/roles.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const agent = { id: "u-agent", role: "agent" as const };
@@ -162,16 +163,31 @@ assert(!canModify(admin, req), "admin cannot modify someone's request");
 
 // Retry the calendar updates (#1468). One predicate, so the button that offers
 // the repair and the action that performs it can never disagree, and it is a
-// RANK test: an equality against "admin" refuses super_admin, the only rank
-// above it and the one whose holder actually reaches for this control.
+// RANK test: an equality against a single rank refuses every rank ABOVE it, and
+// the holders of those are the ones who actually reach for this control.
+//
+// #1473 (Dan's call, 2026-08-13: "team leads already moderate every request, so
+// they should be able to press the repair when its calendar updates fail"). The
+// floor is the SAME rank that gates moderating every request, and it is read
+// from that predicate rather than restated, so a change to who moderates cannot
+// leave the person who approved a request unable to fix it.
+assert(canRetrySideEffects(teamLead), "a team lead who moderates every request can also retry");
 assert(canRetrySideEffects(admin), "admin can retry the calendar updates");
 assert(
   canRetrySideEffects(superAdmin),
   "super admin can retry too (the rank ABOVE admin is not excluded)",
 );
-assert(!canRetrySideEffects(teamLead), "a team lead moderates but cannot retry");
-assert(!canRetrySideEffects(manager), "a manager cannot retry");
+assert(!canRetrySideEffects(manager), "a manager, scoped to their own reports, cannot retry");
 assert(!canRetrySideEffects(agent), "an agent cannot retry");
+
+// The floor and the moderation rule agree across the whole hierarchy, which is
+// what stops the two drifting apart in one direction only.
+for (const role of ["agent", "manager", "team_lead", "admin", "super_admin"] as const) {
+  assert(
+    canRetrySideEffects({ role }) === canModerateAllOoo(role),
+    `${role}: whoever moderates every request may also repair one`,
+  );
+}
 
 // --- transitions ---
 assert(canTransition("pending", "approved"), "pending -> approved");
