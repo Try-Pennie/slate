@@ -10,7 +10,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const dwd = vi.hoisted(() => ({ getDelegatedToken: vi.fn() }));
 vi.mock("@/lib/google/dwd", () => dwd);
 
-import { listCalendars, createEventOnCalendar } from "./calendar";
+import { listCalendars, createEventOnCalendar, updateEventDescription } from "./calendar";
+import { EventGone } from "@/lib/booking/core";
 
 const event = {
   summary: "Dana Ruiz - OOO",
@@ -99,5 +100,65 @@ describe("createEventOnCalendar idempotency (#1469)", () => {
     await expect(
       createEventOnCalendar("a@b.com", "primary", event, "slateabc"),
     ).rejects.toThrow(/503/);
+  });
+});
+
+// #1341: a lead corrects the number the advisor will ring, so the event BODY is
+// rewritten. Three things about that request are decisions, not incidentals, and
+// each is invisible from the call site.
+describe("updateEventDescription (#1341)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function capture(status = 200) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(status === 200 ? "{}" : "", { status });
+    });
+    return calls;
+  }
+
+  it("patches only the description, so a phone correction can never move the time", async () => {
+    const calls = capture();
+    await updateEventDescription("agent@trypennie.com", "evt-1", "Phone: (215) 555-9999");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.method).toBe("PATCH");
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).toEqual({ description: "Phone: (215) 555-9999" });
+    expect(body.start).toBeUndefined();
+    expect(body.end).toBeUndefined();
+  });
+
+  it("does not email the attendees about it", async () => {
+    // Google syncs the event CONTENT either way; sendUpdates decides only whether
+    // people are mailed. A number the lead just typed on our own page is not news
+    // to them, and "your event was updated" for their own correction is noise.
+    const calls = capture();
+    await updateEventDescription("agent@trypennie.com", "evt-1", "Phone: (215) 555-9999");
+
+    expect(calls[0].url).toContain("sendUpdates=none");
+    expect(calls[0].url).not.toContain("sendUpdates=all");
+  });
+
+  it("impersonates the agent whose calendar holds the event", async () => {
+    capture();
+    await updateEventDescription("agent@trypennie.com", "evt-1", "x");
+    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("agent@trypennie.com");
+  });
+
+  for (const status of [404, 410]) {
+    it(`raises a typed EventGone on ${status}, not a generic failure`, async () => {
+      capture(status);
+      await expect(updateEventDescription("agent@trypennie.com", "gone", "x")).rejects.toThrow(
+        EventGone,
+      );
+    });
+  }
+
+  it("still throws on an unwell Google, so the caller can page about a stale invite", async () => {
+    capture(503);
+    await expect(updateEventDescription("agent@trypennie.com", "evt-1", "x")).rejects.toThrow();
   });
 });

@@ -561,8 +561,14 @@ export async function syncEvents(
  * Rewrite an event's description on the agent's primary calendar (#1341).
  *
  * Only the body: a phone correction must never move the time, so this PATCHes
- * `description` alone and shares nothing with `updateEventTime`. `sendUpdates=all`
- * so the lead's own copy of the invite carries the number they just corrected.
+ * `description` alone and shares nothing with `updateEventTime`.
+ *
+ * `sendUpdates=none`, unlike the time patch beside it. Google syncs the event's
+ * CONTENT to every attendee either way; this parameter decides only whether they
+ * are EMAILED about it. A moved time is news to both people. A number the lead
+ * just typed on our own page is not, and mailing them "your event was updated"
+ * for their own correction is noise. The advisor's copy still carries the new
+ * number, which is the whole point.
  *
  * A deleted event surfaces as the same typed `EventGone` the time patch uses, so
  * a caller can tell "the event is not there" from "Google is unwell" rather than
@@ -575,7 +581,7 @@ export async function updateEventDescription(
 ): Promise<void> {
   const res = await gfetch(
     email,
-    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
     { method: "PATCH", body: JSON.stringify({ description }) },
   );
   if (res.status === 404 || res.status === 410) throw new EventGone("events.patch.description");
