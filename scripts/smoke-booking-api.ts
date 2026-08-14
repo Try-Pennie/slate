@@ -476,10 +476,15 @@ async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
   // actually landed on (#1489). The old code took slotsB[0] and assumed it
   // differed from slotsA[2]: two reads of the same live cache taken at different
   // moments, whose healthy margin is exactly one event length, so one stale read
-  // put both bookings on the same instant, the API deduped (correctly, it compares
-  // instants and never the bucket) and these two checks paged three times in ten
-  // days. Anchoring on the booking's own startsAt keeps the two sides of the
-  // separation independent of the slot we asked for.
+  // put both bookings on the same instant and these two checks paged three times
+  // in ten days. Anchoring on the booking's own startsAt keeps the two sides of
+  // the separation independent of the slot we asked for.
+  //
+  // Since #1465 a same instant cross bucket rebook is a MOVE too, so a collision
+  // would no longer read as a dedupe. The separation is kept anyway: with SMOKE2
+  // single agent, a same instant move can be legitimately refused (the lead's own
+  // booking holds that agent), and this scenario is here to prove the move, not
+  // the refusal.
   const seedA = reserveSlot(plan, "scenario 2 (cross bucket, first booking)");
   if (!seedA) return;
   const inA = await bookFirstFreeSlot(

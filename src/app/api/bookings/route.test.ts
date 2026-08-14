@@ -40,9 +40,13 @@ const service = vi.hoisted(() => {
   };
 });
 
+const monitor = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/booking/service", () => service);
+// The daily outcome tally (#418) is asserted directly: a declined bucket change
+// has to be COUNTABLE, not merely reported in one response (L77).
+vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST, GET } from "./route";
 import {
@@ -102,6 +106,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockClear();
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+    monitor.recordApiOutcome.mockClear();
     service.bookViaApi.mockReset();
     service.bookViaApi.mockResolvedValue(result("created"));
     service.previewBooking.mockReset();
@@ -456,5 +461,49 @@ describe("GET rate limiting (#597)", () => {
     expect(keys.every((k) => !String(k).startsWith("ip:"))).toBe(true);
     // Reads opt out of the per-IP edge backstop too, not just the DB one (#597/#961).
     expect(rateLimit.bookingApiIpWithinLimit).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/bookings: a declined bucket change (#1465)", () => {
+
+  // #1465: a same time rebook into a DIFFERENT bucket is honoured, and when it
+  // cannot be, the response has to say so. A bare 200 deduped reads as "handled"
+  // while the routing request was dropped and the lead stayed with the old team.
+  it("names a declined bucket change on the response, with the bucket that was asked for", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    service.bookViaApi.mockResolvedValue({
+      ...result("deduped"),
+      bucketChangeDeclined: "no_eligible_agents",
+    });
+
+    const res = await post("Bearer secret", VALID_BODY);
+    const body = await res.json();
+
+    expect(res.status).toBe(200); // the lead DOES hold a valid appointment
+    expect(body.outcome).toBe("deduped");
+    expect(body.bucketChangeDeclined).toEqual({
+      requestedBucketCode: "411",
+      reason: "no_eligible_agents",
+    });
+    // L77: countable, so one unlucky lead and a bucket refusing every move are
+    // not the same number. An ordinary dedupe carries no code (asserted below),
+    // so the two cannot share a row.
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith(
+      "deduped",
+      "411",
+      "bucket_change_declined_no_eligible_agents",
+    );
+  });
+
+  it("omits the field entirely when nothing was declined, so its presence always means something", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    service.bookViaApi.mockResolvedValue(result("deduped"));
+
+    const res = await post("Bearer secret", VALID_BODY);
+    const body = await res.json();
+
+    expect(body.outcome).toBe("deduped");
+    expect("bucketChangeDeclined" in body).toBe(false);
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith("deduped", "411", null);
   });
 });

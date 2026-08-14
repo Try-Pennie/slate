@@ -110,6 +110,14 @@ export async function POST(req: NextRequest) {
         agent: { name: result.booking.agent_name, email: result.booking.agent_email },
         manageUrl: result.manageUrl,
       },
+      // #1465: a same time rebook into a DIFFERENT bucket is a routing request,
+      // and it is honoured. When the target bucket had nobody free the lead keeps
+      // the appointment they had, in the OLD bucket, and this names that so the
+      // caller can tell the bucket it asked for is not the bucket the lead is in.
+      // Absent when nothing was declined, so its presence always means something.
+      ...(result.bucketChangeDeclined
+        ? { bucketChangeDeclined: { requestedBucketCode: v.bucketCode, reason: result.bucketChangeDeclined } }
+        : {}),
     };
 
     // The lead already has an appointment and the match wasn't strong enough to
@@ -124,8 +132,21 @@ export async function POST(req: NextRequest) {
       bucket: v.bucketCode,
       key: authd.keyId,
       status,
+      ...(result.bucketChangeDeclined
+        ? { bucket_change_declined: result.bucketChangeDeclined }
+        : {}),
     });
-    recordApiOutcome(result.outcome, v.bucketCode, null);
+    // L77: a refusal deliberately classified as EXPECTED still needs a VOLUME.
+    // One re-tiered lead whose new team happened to be full and a whole bucket
+    // refusing every move arrive on the same path and are indistinguishable, so
+    // the decline carries its own code into the daily tally rather than counting
+    // as an ordinary dedupe. The outcome stays `deduped`, so the outcome mix is
+    // unchanged and only the error slice gains a countable row.
+    recordApiOutcome(
+      result.outcome,
+      v.bucketCode,
+      result.bucketChangeDeclined ? `bucket_change_declined_${result.bucketChangeDeclined}` : null,
+    );
     return NextResponse.json(body, { status });
   } catch (err) {
     const { status, code } = mapBookingError(err);
