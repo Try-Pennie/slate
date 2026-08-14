@@ -26,7 +26,11 @@ import {
   ROSTER_COVERAGE_KEY,
   formatRosterCoverageAlert,
   formatRosterCoverageRecovery,
+  COVERAGE_UNCHECKED_WARNING,
+  coverageGapPhrases,
   gapsFromCoverage,
+  newlyUncoveredGaps,
+  newlyUncoveredWarning,
   runRosterCoverageCheck,
 } from "../src/lib/monitor/roster-coverage.ts";
 import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
@@ -356,6 +360,97 @@ const UNREADABLE = coverageForWeek({
     cooldownMs: 1000,
   });
   eq(verdict.status, "gaps", "a notify failure still returns the measured verdict");
+}
+
+// ------------------------------------- what the SAVE says (#1458)
+//
+// The alarm notices this after the fact, on a five minute cycle, and tells
+// whoever is on call. The business hours editor is where the gap is CREATED, and
+// the person who caused it is standing in front of the coverage readout that
+// proves nobody is there. These are the pure pieces behind telling them.
+{
+  const readout = (businessHours: typeof OPEN_WEEK, agents: Parameters<typeof coverageForWeek>[0]["agents"]) =>
+    coverageForWeek({ businessHours, zone: ZONE, agents, weekStartIso: WEEK_START });
+
+  // Mon to Fri, 08:00 to 17:00, which is every live agent's real roster.
+  const roster = [agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)];
+  const NINE_TO_FIVE = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+    weekday,
+    is_open: weekday <= 5,
+    start_minute: 8 * 60,
+    end_minute: 17 * 60,
+  }));
+
+  // Nothing changed, so nothing is newly uncovered. The control: without it, a
+  // function returning every gap would satisfy the assertions below (L1).
+  const same = newlyUncoveredGaps(readout(NINE_TO_FIVE, roster), readout(NINE_TO_FIVE, roster));
+  eq(JSON.stringify(same), "[]", "a week that did not change adds no uncovered time");
+
+  // The headline case: the day is extended past the roster.
+  const LATER = NINE_TO_FIVE.map((d) => (d.is_open ? { ...d, end_minute: 20 * 60 } : d));
+  const added = newlyUncoveredGaps(readout(NINE_TO_FIVE, roster), readout(LATER, roster));
+  assert(added !== null && added.length === 5, `extending to 20:00 adds a gap on each open day (got ${added?.length})`);
+  assert(
+    added!.every((g) => g.startMinute === 17 * 60 && g.endMinute === 20 * 60),
+    "and the gap is the newly advertised stretch, not the whole day",
+  );
+
+  // The stretch GREW rather than appeared: 17:00 to 18:00 was already uncovered,
+  // and pushing to 20:00 adds 18:00 onwards. An hour level comparison sees it; a
+  // stretch level one would either miss it or call the whole thing new.
+  const SIX = NINE_TO_FIVE.map((d) => (d.is_open ? { ...d, end_minute: 18 * 60 } : d));
+  const grew = newlyUncoveredGaps(readout(SIX, roster), readout(LATER, roster));
+  assert(grew !== null && grew.length === 5, "a gap that GREW is reported as newly uncovered");
+
+  // Narrowing the week adds nothing, so a save that FIXES coverage says nothing
+  // about gaps. This is the direction that would otherwise nag on every save.
+  const narrowed = newlyUncoveredGaps(readout(LATER, roster), readout(NINE_TO_FIVE, roster));
+  eq(JSON.stringify(narrowed), "[]", "narrowing the week adds no uncovered time");
+
+  // Opening a day nobody works is the other real shape.
+  const SATURDAY = NINE_TO_FIVE.map((d) => (d.weekday === 6 ? { ...d, is_open: true } : d));
+  const sat = newlyUncoveredGaps(readout(NINE_TO_FIVE, roster), readout(SATURDAY, roster));
+  assert(sat !== null && sat.length === 1 && sat[0].weekday === 6, "opening Saturday is reported");
+  assert(sat![0].wholeDay, "and as the whole day, since nobody works any of it");
+
+  // An unreadable roster is NULL, never an empty list: a save that could not be
+  // checked and a save that changed nothing must not look the same (L98).
+  eq(newlyUncoveredGaps({ ok: false }, readout(LATER, roster)), null, "an unreadable BEFORE reports null");
+  eq(newlyUncoveredGaps(readout(NINE_TO_FIVE, roster), { ok: false }), null, "an unreadable AFTER reports null");
+
+  // The words. The screen and the Slack page group and phrase the stretches with
+  // ONE function, so an admin cannot read two different spellings of one finding.
+  const phrases = coverageGapPhrases(added!);
+  eq(phrases.length, 1, "five identical weekday gaps are stated once, not five times");
+  assert(
+    phrases[0].includes("Monday to Friday"),
+    `the days collapse into a run (got ${phrases[0]})`,
+  );
+  const warning = newlyUncoveredWarning(added!);
+  assert(warning.startsWith("Saved."), "the warning says the save WENT THROUGH, because it did");
+  assert(warning.includes(phrases[0]), "and carries the same phrase the readout shows");
+  assert(
+    /narrow the business hours|working hours to cover/.test(warning),
+    "and names both remedies, since which is right is the org's call",
+  );
+  assert(
+    !/cannot|not allowed|refused/i.test(warning),
+    "and never reads as a refusal: opening hours ahead of rostering them is legitimate (L54)",
+  );
+  assert(
+    formatRosterCoverageAlert(added!).includes(phrases[0]),
+    "and the Slack page is built from the very same phrase",
+  );
+  assert(
+    COVERAGE_UNCHECKED_WARNING.startsWith("Saved.") &&
+      /could not be read/.test(COVERAGE_UNCHECKED_WARNING),
+    "an unchecked save says it saved AND that nothing was checked, never that all is well",
+  );
+  const DASHES = /[\u2014\u2013]/;
+  assert(
+    !DASHES.test(warning) && !DASHES.test(COVERAGE_UNCHECKED_WARNING),
+    "no dashes in the copy",
+  );
 }
 
 finish();

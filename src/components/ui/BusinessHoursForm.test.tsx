@@ -112,8 +112,13 @@ describe("BusinessHoursForm", () => {
         ],
       });
       expect(screen.getByText(/4 agents are in the booking pool/i)).toBeTruthy();
-      // Consecutive uncovered hours collapse into a range rather than listing each.
-      expect(screen.getByText(/8am, 5pm to 8pm/)).toBeTruthy();
+      // #1458: the SAME grouping and phrasing the roster alarm posts to Slack, so
+      // an admin reading this screen and reading the page cannot meet two
+      // spellings of one finding. Consecutive uncovered hours still collapse into
+      // a range; each line now names its day, which is what lets identical
+      // weekday gaps be stated once.
+      expect(screen.getByText("08:00 to 09:00 Monday")).toBeTruthy();
+      expect(screen.getByText("17:00 to 20:00 Monday")).toBeTruthy();
     });
 
     it("says so plainly when every open hour is covered", () => {
