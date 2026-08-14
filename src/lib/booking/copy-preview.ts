@@ -53,10 +53,14 @@ import {
   DONE_COPY,
   LIVE_COPY,
   RESCHEDULE_COPY,
+  MANAGE_PHONE_NOT_CHANGEABLE,
+  MANAGE_PHONE_NOT_FOUND,
+  PHONE_COPY,
   advisorWillCall,
   doneBody,
   doneHeading,
   liveHeading,
+  phoneSaved,
 } from "@/lib/booking/manage-copy";
 import { eventDescription, eventSummary } from "@/lib/booking/core";
 import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
@@ -246,6 +250,26 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the softer control", text: LIVE_COPY.reschedule },
         { state: "the irreversible one", text: LIVE_COPY.cancel },
         { state: "an action has been running a while", text: LIVE_COPY.stillWorking },
+      ],
+    },
+    {
+      screen: "Manage: correcting the number",
+      purpose:
+        "The number the advisor rings is the one fact on this page the call " +
+        "actually depends on. A mistyped digit means the advisor dials, nobody " +
+        "picks up, and it is recorded as a no show. Every refusal here has to say " +
+        "which problem it is, because they send the reader somewhere different.",
+      lines: [
+        { state: "at rest, offering the correction", text: PHONE_COPY.trigger },
+        { state: "the field is open", text: PHONE_COPY.heading },
+        { state: "why we want it", text: PHONE_COPY.hint },
+        { state: "the save is in flight", text: PHONE_COPY.saving },
+        { state: "the save is taking too long", text: PHONE_COPY.stillWorking },
+        { state: "the way back out", text: PHONE_COPY.cancel },
+        { state: "the save committed", text: phoneSaved(PHONE) },
+        { state: "the save failed for no stated reason", text: PHONE_COPY.failed },
+        { state: "a link that resolves to no booking", text: MANAGE_PHONE_NOT_FOUND },
+        { state: "a call that has already happened", text: MANAGE_PHONE_NOT_CHANGEABLE },
       ],
     },
     {

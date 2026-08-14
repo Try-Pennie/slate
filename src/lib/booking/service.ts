@@ -23,6 +23,7 @@ import {
   freeBusyMany,
   isFree,
   updateEventTime,
+  updateEventDescription,
 } from "@/lib/google/calendar";
 import {
   joinBookingContexts,
@@ -80,6 +81,7 @@ import { deferWebhookSend } from "@/lib/after-response";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 import {
   bookingEventInsertAlert,
+  stalePhoneInviteAlert,
   busyBlockWriteThroughAlert,
   creationOrphanAlert,
   outboxDrainRecovery,
@@ -751,6 +753,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .eq("id", id);
     },
     updateEventTime,
+    updateEventDescription,
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
@@ -813,6 +816,17 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         if (row.email) m.set(row.id, row.email);
       }
       return m;
+    },
+
+    // #1341: one field, one write. `unwrap`-style: a failed update THROWS rather
+    // than resolving, because the lead is told their number is saved off the back
+    // of this call, and a swallowed error would make that a lie (L12).
+    updateBookingPhone: async (bookingId, phone) => {
+      const { error } = await supabaseAdmin()
+        .from("bookings")
+        .update({ attendee_phone: phone })
+        .eq("id", bookingId);
+      if (error) throw new Error(`booking phone update failed: ${error.message}`);
     },
 
     findBookingByIdempotencyKey: async (key) => {
@@ -1835,6 +1849,34 @@ export async function findDuplicateBookingWarning(input: {
   } catch {
     return null;
   }
+}
+
+/**
+ * A lead corrects the number their advisor will call (#1341).
+ *
+ * The orchestration does the deciding and returns whether the advisor's invite
+ * was left showing the old number; the page is dispatched here, alongside every
+ * other booking alert, so the domain stays node-testable.
+ *
+ * The stale invite is an INCIDENT, not a condition: no later run re-reads that
+ * event, so there is no healthy state to observe and an all-clear would be a
+ * claim nothing measured. It is throttled per booking, because a lead retyping
+ * the same number must not repage.
+ */
+export async function updateBookingPhone(
+  token: string,
+  phone: string,
+): Promise<orchestration.UpdatePhoneResult> {
+  const res = await orchestration.updateBookingPhone(token, phone, realDeps());
+  if (res.staleInvite) {
+    // alert-key: stale_phone_invite:*
+    await sendThrottledAlert(
+      `stale_phone_invite:${res.staleInvite.bookingId}`,
+      orchestration.STALE_PHONE_INVITE_COOLDOWN_MS,
+      stalePhoneInviteAlert(res.staleInvite.agentEmail, res.staleInvite.bookingId),
+    ).catch(() => {});
+  }
+  return res;
 }
 
 /**

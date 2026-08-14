@@ -20,6 +20,7 @@ import { useSlotPicker } from "@/components/use-slot-picker";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
+import { formatPhoneAsTyped } from "@/lib/phone-format";
 import { countdownPhrase, advisorFirstName } from "@/lib/booking/countdown";
 import {
   BEFORE_COPY,
@@ -27,10 +28,12 @@ import {
   DONE_COPY,
   LIVE_COPY,
   RESCHEDULE_COPY,
+  PHONE_COPY,
   advisorWillCall,
   doneBody,
   doneHeading,
   liveHeading,
+  phoneSaved as phoneSaved_,
 } from "@/lib/booking/manage-copy";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1000,
@@ -170,6 +173,16 @@ export default function ManageBooking({
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [pendingIso, setPendingIso] = useState<string | null>(null);
 
+  // #1341: the number the advisor rings, corrected in place. Held in state (not
+  // read from the prop) so a successful save is reflected without a reload.
+  const [phone, setPhone] = useState(attendeePhone);
+  const [editingPhone, setEditingPhone] = useState(false);
+  const [phoneDraft, setPhoneDraft] = useState(attendeePhone ?? "");
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [savingPhone, setSavingPhone] = useState(false);
+  const [phoneSaved, setPhoneSaved] = useState(false);
+  const phoneStalled = useStalledAfter(savingPhone);
+
   // Mandatory reschedule/cancel reason (#326).
   const [reschedReason, setReschedReason] = useState("");
   const [reschedDetail, setReschedDetail] = useState("");
@@ -230,6 +243,43 @@ export default function ManageBooking({
     } finally {
       setPendingIso(null);
       setBusy(false);
+    }
+  }
+
+  function closePhoneEdit() {
+    setEditingPhone(false);
+    setPhoneError(null);
+  }
+
+  /**
+   * Save the corrected number.
+   *
+   * The panel stays OPEN and the old number stays on screen until the server
+   * confirms: a failed save that closed the field and showed the new digits
+   * would tell the lead their advisor has a number we never stored, which is the
+   * exact defect this control exists to prevent (L12).
+   */
+  async function savePhone() {
+    setSavingPhone(true);
+    setPhoneError(null);
+    try {
+      const { ok, data } = await postJson<{ phone?: string; error?: string }>(
+        `/api/bookings/${token}/phone`,
+        { phone: phoneDraft },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
+      );
+      if (ok && data.phone) {
+        setPhone(data.phone);
+        setPhoneSaved(true);
+        setEditingPhone(false);
+      } else {
+        // The server's own sentence when it gave one: it distinguishes a number
+        // we cannot call from an incomplete one, and a generic fallback here
+        // would flatten that back into "invalid".
+        setPhoneError(data.error ?? PHONE_COPY.failed);
+      }
+    } finally {
+      setSavingPhone(false);
     }
   }
 
@@ -542,8 +592,100 @@ export default function ManageBooking({
                         on the agent record says how a person wants to be referred
                         to, and a guess misgenders a colleague in front of a
                         customer. */}
-                    {advisorWillCall(attendeePhone)}
+                    {advisorWillCall(phone)}
                   </p>
+                  {/* #1341: the number is the one fact on this page the call
+                      actually depends on, and it was the only one a lead could
+                      not change. Behind a plain-language trigger rather than an
+                      always-open field, because most leads never need it, and a
+                      real button at rest rather than a hover affordance (L49). */}
+                  {editingPhone ? (
+                    <form
+                      className="mt-4 max-w-sm"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void savePhone();
+                      }}
+                    >
+                      <label htmlFor="manage-phone" className="block text-sm font-semibold text-fg">
+                        {PHONE_COPY.heading}
+                      </label>
+                      <input
+                        id="manage-phone"
+                        name="phone"
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        autoFocus
+                        value={phoneDraft}
+                        aria-describedby="manage-phone-hint"
+                        aria-invalid={phoneError ? true : undefined}
+                        // The booker's own as-you-type formatter, so an impossible
+                        // number cannot be typed in either place and the two
+                        // surfaces cannot drift on what a number looks like.
+                        onChange={(e) => {
+                          setPhoneDraft(formatPhoneAsTyped(e.target.value));
+                          setPhoneError(null);
+                        }}
+                        className="mt-2 h-[44px] w-full rounded-lg border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                      />
+                      <p id="manage-phone-hint" className="mt-1.5 text-sm text-fg-muted">
+                        {PHONE_COPY.hint}
+                      </p>
+                      {phoneError && (
+                        <p role="alert" className="mt-2 text-sm text-error">
+                          {phoneError}
+                        </p>
+                      )}
+                      {/* Three visibly distinct states: started, still alive,
+                          failed. A bare spinner that looks the same whether the
+                          save is progressing, hung or dead is a defect. */}
+                      {phoneStalled && (
+                        <p role="status" className="mt-2 text-sm text-fg-muted">
+                          {PHONE_COPY.stillWorking}
+                        </p>
+                      )}
+                      <div className="mt-4 flex flex-wrap items-center gap-5">
+                        <button
+                          type="submit"
+                          disabled={savingPhone}
+                          className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm disabled:opacity-60"
+                        >
+                          {savingPhone ? PHONE_COPY.saving : PHONE_COPY.save}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={closePhoneEdit}
+                          disabled={savingPhone}
+                          className="inline-flex min-h-[44px] items-center text-sm font-semibold text-fg underline underline-offset-2 hover:no-underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                        >
+                          {PHONE_COPY.cancel}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingPhone(true);
+                          setPhoneDraft(phone ?? "");
+                          setPhoneError(null);
+                          setPhoneSaved(false);
+                        }}
+                        className="mt-1 inline-flex min-h-[44px] items-center text-sm font-semibold text-fg underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                      >
+                        {PHONE_COPY.trigger}
+                      </button>
+                      {/* Said only after the save COMMITTED, and it names the
+                          number that is now stored rather than the one typed. */}
+                      {phoneSaved && phone && (
+                        <p role="status" className="mt-1 text-sm text-fg">
+                          {phoneSaved_(phone)}
+                        </p>
+                      )}
+                    </>
+                  )}
                   <p className="mt-1 text-sm text-fg-muted">
                     {LIVE_COPY.changeYourPlans}
                   </p>
