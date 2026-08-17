@@ -239,6 +239,18 @@ export const NEAREST_TIMES_COPY = {
   heading: "The soonest times still open",
   /** Under the list, so it is obvious no booking happened on a tap. */
   hint: "Pick one and confirm. Your details are saved.",
+  /**
+   * The same place, for a lead MOVING a call they already have (#1549): the manage
+   * page, and the booker's offer to move an existing call.
+   *
+   * The wording above promises saved details, which is the reassurance somebody
+   * mid-signup needs and the wrong one here. This person already has a booking and
+   * has just been refused, so the fact worth putting in front of them is that they
+   * have not lost it. Says nothing about what a tap does, because that differs
+   * between the two surfaces and is visible on both.
+   */
+  hintMove:
+    "Your call is still booked at its original time. Nothing changes until you choose a new one.",
   /** The re-check worked and there is genuinely nothing left in the bookable window. */
   none:
     "There are no other times open in the next few days. Please try again later, or call us and we will find a time with you.",

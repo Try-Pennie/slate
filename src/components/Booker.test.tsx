@@ -472,6 +472,70 @@ describe("Booker refuses a second booking (#1337)", () => {
     expect(await dayChip()).toBeTruthy();
   });
 
+  // #1549: the same dead end #1319 removed from the confirm, on the OTHER refusal
+  // this surface can hand a lead. They already have a call, they are trying to keep
+  // it by moving it, and being told the time went with nowhere to go is the worst of
+  // the three moments to leave empty.
+  it("offers the soonest times still open when the slot goes before the Move", async () => {
+    const other = new Date(Date.parse(slotIso) + 24 * 60 * 60 * 1000).toISOString();
+    let loads = 0;
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        loads += 1;
+        // The reload after the refusal still carries the taken time, which is exactly
+        // why the panel excludes it rather than showing the first few slots. The FIRST
+        // load offers one day only, so the day strip is unambiguous while the lead is
+        // still filling the form in.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ...availability,
+            slots: loads === 1 ? [slotIso] : [slotIso, other],
+          }),
+        } as Response;
+      }
+      if (u.includes("/reschedule")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "That time is no longer available.",
+            reason: "reschedule_slot_taken",
+          }),
+        } as Response;
+      }
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          existingCall: {
+            disclose: true,
+            startsAt: existingIso,
+            advisorName: "Aisha Bello",
+            manageToken: "tok-old",
+          },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText("You already have a call booked");
+    await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^move my call/i }));
+
+    expect(await screen.findByText(BOOKING_ERROR_COPY.slotTaken)).toBeTruthy();
+    const offered = await screen.findAllByTestId("nearest-time");
+    expect(offered.map((b) => b.getAttribute("data-slot"))).toEqual([other]);
+    // The move wording, not the booking one: this lead has not lost anything, and
+    // telling them their DETAILS are saved answers a question they did not ask.
+    expect(screen.getByText(NEAREST_TIMES_COPY.hintMove)).toBeTruthy();
+    expect(screen.queryByText(NEAREST_TIMES_COPY.hint)).toBeNull();
+    expect(loads).toBeGreaterThan(1);
+  });
+
   // #1340: a weak one-signal match may be a housemate, so the call is declined
   // but nothing about it is shown and there is nothing to move from here.
   it("shows no time, no advisor and no Move on a match too weak to disclose", async () => {

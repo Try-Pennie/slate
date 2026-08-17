@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
+import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
 
 // Regression coverage for the booker hardening (#168): cancel must use an
 // in-DOM confirm (not native confirm()) and surface a failed POST instead of
@@ -29,7 +30,7 @@ const baseProps = {
   advisorRole: "Senior Loan Advisor",
 };
 
-type FetchResult = { ok: boolean; body?: unknown };
+type FetchResult = { ok: boolean; status?: number; body?: unknown };
 function mockFetch(routes: { cancel?: FetchResult; reschedule?: FetchResult; availability?: FetchResult }) {
   const fn = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
     const u = String(url);
@@ -39,7 +40,14 @@ function mockFetch(routes: { cancel?: FetchResult; reschedule?: FetchResult; ava
         ? routes.reschedule
         : routes.availability ?? { ok: true, body: { slots: [] } };
     const r = pick ?? { ok: true, body: {} };
-    return { ok: r.ok, json: async () => r.body ?? {} } as Response;
+    // #1549: the status is real, because the component now tells the two 409s
+    // apart. A fake that answered `ok:false` with no status would let a surface
+    // gated on the status pass while never being reachable in production.
+    return {
+      ok: r.ok,
+      status: r.status ?? (r.ok ? 200 : 500),
+      json: async () => r.body ?? {},
+    } as Response;
   });
   global.fetch = fn as unknown as typeof fetch;
   return fn;
@@ -620,6 +628,126 @@ describe("ManageBooking timezone fallback", () => {
     // Junk is rejected: the applied zone is unchanged and the search stays open.
     expect(select.value).toBe(before);
     expect(screen.getByLabelText("Search all timezones")).toBeTruthy();
+  });
+});
+
+// #1549: the manage page had the same dead end the booker lost in #1319. A lead who
+// clicks the link in their confirmation email to move their call can lose the time
+// while they are deciding, and a refusal with nowhere to go risks them simply not
+// rescheduling and not turning up. Same customer, same moment, arguably worse: this
+// person already HAS a call and is trying to keep it.
+describe("the soonest times still open, under a refused move (#1549)", () => {
+  const SLOTS = [
+    "2026-06-21T15:00:00.000Z",
+    "2026-06-21T16:00:00.000Z",
+    "2026-06-21T17:00:00.000Z",
+  ];
+
+  /** Open the panel, pick a reason, and tap the FIRST time offered. */
+  async function moveIntoFirstTime(
+    reschedule: FetchResult,
+    beforeTap?: (container: HTMLElement) => void,
+  ) {
+    const fn = mockFetch({ availability: { ok: true, body: { slots: SLOTS } }, reschedule });
+    const view = render(<ManageBooking {...baseProps} />);
+    beforeTap?.(view.container);
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    await pickDay();
+    const times = await screen.findAllByRole("button", { name: /:\d{2}/ });
+    await userEvent.click(times[0]);
+    return { fn, container: view.container };
+  }
+
+  it("offers the soonest times still open, leaving out the one that went", async () => {
+    const heroBefore: { text?: string | null } = {};
+    const { container } = await moveIntoFirstTime(
+      {
+        ok: false,
+        status: 409,
+        body: { error: "That time was just taken.", reason: "reschedule_slot_taken" },
+      },
+      (c) => {
+        heroBefore.text = c.querySelector("[data-hero-time]")?.textContent;
+      },
+    );
+
+    expect(await screen.findByText("That time was just taken.")).toBeTruthy();
+    const chips = await screen.findAllByTestId("nearest-time");
+    // The refused time is the one time we KNOW is gone, so offering it back would be
+    // the same dead end wearing a helpful face.
+    expect(chips.map((c) => c.getAttribute("data-slot"))).toEqual([SLOTS[1], SLOTS[2]]);
+    // Nothing moved: the hero still shows the call's original time.
+    expect(container.querySelector("[data-hero-time]")?.textContent).toBe(heroBefore.text);
+  });
+
+  it("says the call is still where it was, rather than implying anything was lost", async () => {
+    await moveIntoFirstTime({
+      ok: false,
+      status: 409,
+      body: { error: "That time was just taken.", reason: "reschedule_slot_taken" },
+    });
+    await screen.findAllByTestId("nearest-time");
+    expect(screen.getByText(NEAREST_TIMES_COPY.hintMove)).toBeTruthy();
+    // The booker's wording promises saved DETAILS, which is not the reassurance a
+    // person moving an existing call needs.
+    expect(screen.queryByText(NEAREST_TIMES_COPY.hint)).toBeNull();
+  });
+
+  it("tapping an offered time selects its day and does NOT move the call", async () => {
+    const { fn } = await moveIntoFirstTime({
+      ok: false,
+      status: 409,
+      body: { error: "That time was just taken.", reason: "reschedule_slot_taken" },
+    });
+    const chips = await screen.findAllByTestId("nearest-time");
+    await userEvent.click(chips[0]);
+
+    // One reschedule POST, the refused one. Moving the call on a glance, right after
+    // the product has already surprised them once, turns a look into a commitment.
+    const posts = fn.mock.calls.filter(([u]) => String(u).includes("/reschedule"));
+    expect(posts.length).toBe(1);
+  });
+
+  it("re-reads availability, so the time that went is not left tappable", async () => {
+    const { fn } = await moveIntoFirstTime({
+      ok: false,
+      status: 409,
+      body: { error: "That time was just taken.", reason: "reschedule_slot_taken" },
+    });
+    await screen.findAllByTestId("nearest-time");
+    const loads = fn.mock.calls.filter(([u]) => String(u).includes("/api/availability"));
+    expect(loads.length).toBeGreaterThan(1);
+  });
+
+  it("offers NOTHING when the booking moved under the reader, so refresh stands alone", async () => {
+    // #439 is the other 409: the page is showing a time that is no longer the
+    // booking's, so a list of times to move it into walks them back into the same
+    // refusal. The two causes need opposite answers (L11).
+    await moveIntoFirstTime({
+      ok: false,
+      status: 409,
+      body: {
+        error: "This booking was just changed. Refresh and try again.",
+        reason: "reschedule_conflict",
+      },
+    });
+    expect(
+      await screen.findByText("This booking was just changed. Refresh and try again."),
+    ).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("nearest-times")).toBeNull());
+  });
+
+  it("offers nothing on a failure that never measured whether the time is gone", async () => {
+    // A verify outage means we could not check, which is not the same as knowing a
+    // time went, and must not be dressed up as it.
+    await moveIntoFirstTime({
+      ok: false,
+      status: 503,
+      body: { error: "Could not check that time just now.", reason: "reschedule_verify_unavailable" },
+    });
+    expect(await screen.findByText("Could not check that time just now.")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("nearest-times")).toBeNull());
   });
 });
 

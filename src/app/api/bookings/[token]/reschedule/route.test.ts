@@ -63,6 +63,28 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect((await res.json()).error).toContain("411");
   });
 
+  // #1549: two of the 409s mean "that time is not available" and one means "the
+  // booking moved under you", and the lead-facing surfaces answer them in opposite
+  // ways (one offers the soonest times still open, the other must not). The status
+  // cannot tell them apart and the message must not be load-bearing, so each
+  // refusal names its reason on the wire.
+  it("names the refusal reason on every 409, so a client can tell a gone time from a moved booking", async () => {
+    const cases: [Error, string][] = [
+      [new service.SlotUnavailableError("gone"), "reschedule_slot_taken"],
+      [new service.NoEligibleAgentsError("411"), "reschedule_no_eligible_agents"],
+      [new service.RescheduleConflictError(), "reschedule_conflict"],
+    ];
+    for (const [err, reason] of cases) {
+      service.rescheduleBooking.mockRejectedValueOnce(err);
+      const res = await POST(
+        req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }),
+        params,
+      );
+      expect(res.status).toBe(409);
+      expect((await res.json()).reason).toBe(reason);
+    }
+  });
+
   it("maps RescheduleLockUnavailableError to a retriable 503 (not a generic 500) (#479)", async () => {
     // A fail-closed lock claim (transient DB error) is safe to retry, so it must
     // read as 503 like a verify outage, not a hard 500.
