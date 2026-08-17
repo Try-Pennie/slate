@@ -1,4 +1,5 @@
 import Booker from "@/components/Booker";
+import LegalFooter from "@/components/LegalFooter";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
@@ -81,6 +82,10 @@ export default async function BookingPage({
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
       />
+      {/* #1041: only when standalone. The embed sits inside a trypennie.com page
+          that already carries Pennie's policies, and adding a second copy of them
+          inside the iframe would be noise; this page has nothing around it. */}
+      {!embedded && <LegalFooter />}
     </main>
   );
 }
