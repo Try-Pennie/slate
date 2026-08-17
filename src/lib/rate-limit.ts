@@ -4,6 +4,8 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule, EdgeLimiterBinding } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
+import { BurstTracker, BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
+import { UNIDENTIFIED_IP } from "@/lib/rate-limit-core";
 
 export {
   clientIp,
@@ -33,11 +35,116 @@ import {
  * it, so absent means broken.
  */
 export async function availabilityWithinLimit(ip: string): Promise<boolean> {
-  return edgeWithinLimit(ip, {
+  const withinEdge = await edgeWithinLimit(ip, {
     binding: "AVAIL_RATE_LIMITER",
     area: "availability",
     friendly: "booking availability",
   });
+  if (!withinEdge) return false;
+  return availabilityWithinBurstCeiling(ip);
+}
+
+/**
+ * The second ceiling, the one a concurrent burst cannot spread across (#1536).
+ *
+ * The check above is enforced per datacenter and counted approximately, which is Cloudflare's
+ * design and was already described here as permissive. Measured against production on
+ * 2026-08-17 from one machine, though, the gap is much larger than permissive suggests: 45
+ * sequential requests down one socket were blocked at exactly 30, and 60 fired in parallel into
+ * the same datacenter in 1.1 seconds were blocked ZERO times. Same address, same second, same
+ * configured ceiling. So the practical guarantee on the one endpoint anybody on the internet can
+ * reach without authentication was 30 a minute PER ISOLATE.
+ *
+ * This runs after the fast check and behind an escalation threshold, so an ordinary booker load
+ * pays nothing for it: see `@/lib/rate-limit-burst` for the three numbers and why the ceiling is
+ * ten times the one above rather than equal to it.
+ *
+ * Fails OPEN and LOUD, exactly like the check above. The whole reason this endpoint is worth
+ * protecting is that leads load it, so a counter we cannot reach must never be the thing that
+ * stops one.
+ */
+async function availabilityWithinBurstCeiling(ip: string): Promise<boolean> {
+  // An address we could not identify is a SHARED bucket, not an address (L75). Counting every
+  // such request against one counter would turn a per-address ceiling into a global one, and the
+  // first thing it would refuse is real leads. Behind Cloudflare `cf-connecting-ip` is always
+  // set, so reaching here at all is itself news: it is reported rather than silently allowed,
+  // because requests arriving without it means something is in front of us that should not be.
+  if (ip === UNIDENTIFIED_IP) {
+    await alertEdgeLimiterDown(
+      { area: "availability-burst-unidentified", friendly: "booking availability" },
+      "a request arrived with no client address, so the burst ceiling cannot be applied to it",
+    );
+    return true;
+  }
+  try {
+    const env = getCloudflareContext().env as unknown as Record<
+      string,
+      DurableObjectishNamespace | undefined
+    >;
+    const ns = env[BURST_LIMITER_BINDING];
+    if (!ns) {
+      // Same reading as a missing rate-limit binding: wrangler.jsonc always binds it, so
+      // absent means broken rather than "not configured".
+      await alertEdgeLimiterDown(
+        { area: "availability-burst", friendly: "booking availability" },
+        `the ${BURST_LIMITER_BINDING} binding is missing, so the burst ceiling is OFF`,
+      );
+      return true;
+    }
+    return burstTracker(ns).allow(ip, Date.now());
+  } catch (err) {
+    await alertEdgeLimiterDown(
+      { area: "availability-burst", friendly: "booking availability" },
+      `the burst ceiling threw: ${String(err)}`,
+    );
+    return true;
+  }
+}
+
+/** The Durable Object namespace shape this uses, named locally because
+ *  `@cloudflare/workers-types` is not a dependency here. */
+interface DurableObjectishNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): { fetch(url: string, init?: RequestInit): Promise<Response> };
+}
+
+/** One tracker per isolate. The in-isolate counts ARE the cheap half of the ceiling, so they
+ *  have to outlive a single request; a tracker built per call would count every request as the
+ *  first and never escalate, which is a limiter that looks wired and enforces nothing (L3). */
+let sharedBurstTracker: BurstTracker | null = null;
+
+/** The CURRENT binding, re-read on every request rather than captured when the tracker was
+ *  built. The tracker's state has to persist and the transport must not: closing over the
+ *  first namespace ever seen means a tracker that keeps talking to a stale binding, and
+ *  nothing downstream could tell, because it answers perfectly well. */
+let currentBurstNamespace: DurableObjectishNamespace | null = null;
+
+function burstTracker(ns: DurableObjectishNamespace): BurstTracker {
+  currentBurstNamespace = ns;
+  sharedBurstTracker ??= new BurstTracker({
+    ask: async (key, bump) => {
+      const namespace = currentBurstNamespace;
+      if (!namespace) throw new Error("no burst limiter namespace bound");
+      const stub = namespace.get(namespace.idFromName(key));
+      const res = await stub.fetch("https://burst-limiter.slate/count", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bump }),
+      });
+      if (!res.ok) throw new Error(`burst limiter answered ${res.status}`);
+      return (await res.json()) as { count: number };
+    },
+    // Fail LOUD while the tracker fails open. Routed through the same alerting the edge
+    // limiters use, so a burst ceiling that has quietly stopped counting reads the same way as
+    // an edge limiter that has (#796).
+    onFailure: (err) => {
+      void alertEdgeLimiterDown(
+        { area: "availability-burst", friendly: "booking availability" },
+        `the burst ceiling could not be reached: ${String(err)}`,
+      );
+    },
+  });
+  return sharedBurstTracker;
 }
 
 /**
