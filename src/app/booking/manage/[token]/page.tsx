@@ -1,6 +1,7 @@
 import ManageBooking from "@/components/ManageBooking";
 import ManageNotFound from "@/components/ManageNotFound";
 import StandaloneTheme from "@/components/StandaloneTheme";
+import LegalFooter from "@/components/LegalFooter";
 import { getBookingByToken, getBookingAdvisorName } from "@/lib/booking/service";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 
@@ -48,6 +49,7 @@ export default async function ManagePage({
       <>
         <StandaloneTheme theme={theme} />
         <ManageNotFound theme={theme} />
+        <LegalFooter />
       </>
     );
   }
@@ -70,6 +72,9 @@ export default async function ManagePage({
         cancelReasons={reasonOptions.cancel.active}
         theme={theme}
       />
+      {/* #1041: this page is never embedded, so it never inherits a host page's
+          policies. */}
+      <LegalFooter />
     </>
   );
 }

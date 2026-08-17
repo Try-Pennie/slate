@@ -27,6 +27,7 @@ import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import {
   CONFIRMED_COPY,
   DETAILS_COPY,
+  contactDisclosure,
   NEXT_DAYS_COPY,
   PICKER_COPY,
   allTimesTaken,
@@ -90,6 +91,12 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
     fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
     expect(screen.getByRole("button", { name: DETAILS_COPY.confirm })).toBeTruthy();
+
+    // #1041: the contact disclosure is on the SAME screen as the confirm button,
+    // which is the only place it means anything. A static scan cannot mount React
+    // and so cannot tell whether this sentence reached a customer or only the
+    // preview.
+    expect(pageText()).toContain(contactDisclosure());
   });
 
   it("uses the builder's words for the closed state and the search button", async () => {

@@ -18,6 +18,7 @@ import {
   BOOKING_ERROR_COPY,
   CONFIRMED_COPY,
   DETAILS_COPY,
+  contactDisclosure,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   MOVE_COPY,
@@ -998,6 +999,12 @@ export default function Booker({
             />
           </div>
           {errorAlert}
+          {/* #1041: what handing over the number actually leads to, said before
+              the commitment rather than after it. It describes what happens and
+              claims no agreement, because Slate records no consent anywhere and
+              copy is a contract. It renders in the embed too: this is about the
+              data being collected, not about whose page is around it. */}
+          <p className={`text-center text-xs ${c.muted}`}>{contactDisclosure()}</p>
           <button
             onClick={submit}
             disabled={submitting}

@@ -282,3 +282,56 @@ export function keepExistingTime(shortDay: string): string {
 // ones no human is meant to act on.
 
 export const HONEYPOT_LABEL = "Leave this field empty";
+
+// --- privacy, terms, and what giving us a number leads to (#1041) ------------
+//
+// The 2026-07-23 production readiness audit found the standalone booker
+// collecting a name, an email and a phone number for a debt consultation call
+// with no privacy policy, no terms, and nothing saying what the number is for.
+//
+// The EMBEDDED booker inherits Pennie's policies from the trypennie.com page
+// around it. The standalone page at slate.trypennie.app/book has no page around
+// it, so it inherits nothing, and it is the one a lead can reach directly.
+//
+// The links are ABSOLUTE and point at trypennie.com, because this booker is
+// served from slate.trypennie.app and is also embedded on other pages, so a
+// relative path would resolve against whichever host is showing it.
+
+/** Pennie's own legal pages. Taken from that site's sitemap route rather than
+ *  guessed: a legal link that 404s says a policy exists and then fails to
+ *  produce it, which is worse than not linking one. */
+export function legalLinks(): { label: string; href: string }[] {
+  return [
+    { label: "Privacy policy", href: "https://trypennie.com/privacy-policy" },
+    { label: "Terms of service", href: "https://trypennie.com/terms-of-service" },
+  ];
+}
+
+/**
+ * The one line above the confirm button.
+ *
+ * It describes WHAT HAPPENS rather than asserting that the lead has agreed to
+ * anything. Slate records no consent anywhere, so copy saying "you agree" or
+ * "you consent" would be a claim the product cannot support, and copy is a
+ * contract (L21). Booking a call is itself the request to be called, and saying
+ * so plainly is both true and the thing the lead actually wants to know.
+ *
+ * It promises no outcome: Pennie is a lending marketplace and never guarantees
+ * one.
+ *
+ * It says "the number you gave" rather than naming a position on the page. The
+ * phone sits in the LEFT column on desktop and above the button on mobile, so
+ * "above" is true in one layout and false in the other.
+ */
+export function contactDisclosure(): string {
+  return (
+    "Booking this call means a Pennie specialist will phone you on the number " +
+    "you gave, at the time you picked."
+  );
+}
+
+export const LEGAL_COPY = {
+  /** Labels the footer for assistive tech, so the links are not two bare words
+   *  floating at the bottom of the page. */
+  heading: "Legal",
+} as const;

@@ -24,6 +24,9 @@ import {
   BOOKING_ERROR_COPY,
   CONFIRMED_COPY,
   DETAILS_COPY,
+  LEGAL_COPY,
+  legalLinks,
+  contactDisclosure,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   INCOMPLETE_PHONE_NOTICE,
@@ -173,7 +176,23 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "they arrived with a number carrying an extension, so the field is empty",
           text: EXTENSION_PHONE_PREFILL_NOTICE,
         },
+        {
+          state: "what handing over the number leads to (#1041)",
+          text: contactDisclosure(),
+        },
         { state: "the bot trap", text: HONEYPOT_LABEL, screenReaderOnly: true },
+      ],
+    },
+    {
+      screen: "Booker and manage: the legal footer",
+      purpose:
+        "The standalone booker has no trypennie.com page around it to inherit " +
+        "Pennie's policies from, and it is the one a lead can reach directly. " +
+        "These are the only words on any Slate surface that point a customer at " +
+        "a policy, so a wrong or dead one is not a small error.",
+      lines: [
+        { state: "the group's label", text: LEGAL_COPY.heading, screenReaderOnly: true },
+        ...legalLinks().map((l) => ({ state: `link to ${l.href}`, text: l.label })),
       ],
     },
     {
