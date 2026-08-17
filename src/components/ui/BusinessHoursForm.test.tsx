@@ -169,4 +169,43 @@ describe("BusinessHoursForm", () => {
       expect(alert.textContent).toMatch(/Wednesday/);
     });
   });
+  // #1458: the other half of the wiring. The action produces the warning
+  // (src/app/admin/set-business-hours.test.ts); this is the only thing that can
+  // say it reaches the screen, and that the ordinary saved notice gets out of its
+  // way rather than the admin meeting two success lines at once.
+  describe("the coverage warning after a save", () => {
+    const WARNING =
+      "Saved. These hours are now open with no bookable agent rostered: " +
+      "17:00 to 20:00 Monday to Friday. A lead asking for one of those times is " +
+      "offered nothing and is not told why. Set agents' working hours to cover " +
+      "them, or narrow the business hours again.";
+
+    it("shows the warning the save came back with, announced as a status", () => {
+      draw({ ok: false }, { error: null, ok: true, warning: WARNING });
+
+      // Exactly one, so the ordinary saved notice steps aside rather than the
+      // admin meeting "Saved." twice, once of which mentions the gap.
+      const status = screen.getByRole("status");
+      expect(status.textContent).toContain("17:00 to 20:00 Monday to Friday");
+      // It leads with the save having gone through. A warning, never a refusal.
+      expect(status.textContent).toMatch(/^\s*Coverage\s*Saved\./);
+      // And it is NOT an error: nothing went wrong, so nothing may be announced
+      // as though something did.
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("carries a second signal besides colour", () => {
+      draw({ ok: false }, { error: null, ok: true, warning: WARNING });
+      expect(screen.getByText("Coverage")).toBeTruthy();
+    });
+
+    it("shows the plain saved notice instead when nothing was opened uncovered", () => {
+      draw({ ok: false }, { error: null, ok: true, warning: null });
+
+      const statuses = screen.getAllByRole("status");
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0].textContent).not.toMatch(/no bookable agent rostered/);
+      expect(screen.queryByText("Coverage")).toBeNull();
+    });
+  });
 });
