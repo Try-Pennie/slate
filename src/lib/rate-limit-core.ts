@@ -229,3 +229,28 @@ export function refundFailedAlert(area: string): string {
     `(the cause is in the logs).`
   );
 }
+
+/**
+ * Every Workers rate-limit binding Slate declares, in ONE list (#1525).
+ *
+ * The names also live in `wrangler.jsonc`, which is what actually creates them, and a
+ * hand-kept second copy beside a source of truth drifts the moment somebody updates one
+ * and not the other (L41). Two things depend on this list being complete: the
+ * `EdgeLimiterBinding` type that stops a typo reaching a binding lookup, and the monitor
+ * lane's health check, which reports a binding missing from the deployment. A limiter
+ * added to wrangler.jsonc and forgotten here would be typed loosely AND unmonitored, so
+ * `scripts/test-edge-limiter-bindings.ts` compares the two in both directions.
+ *
+ * It lives in this file rather than beside the limiter calls because this half has no
+ * Cloudflare imports, so a node test can read it without pulling the runtime in behind it.
+ */
+export const EDGE_LIMITER_BINDINGS = [
+  "AVAIL_RATE_LIMITER",
+  "BOOKING_RATE_LIMITER",
+  "ROUTING_RATE_LIMITER",
+  "BOOKINGAPI_RATE_LIMITER",
+  "BOOKINGAPI_IP_RATE_LIMITER",
+  "BOOKINGAPI_READ_RATE_LIMITER",
+] as const;
+
+export type EdgeLimiterBinding = (typeof EDGE_LIMITER_BINDINGS)[number];

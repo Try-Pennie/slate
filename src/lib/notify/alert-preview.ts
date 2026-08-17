@@ -199,6 +199,11 @@ import {
   formatUnsubscribedEventsAlert,
   formatUnsubscribedEventsRecovery,
 } from "@/lib/monitor/webhook-subscriber-coverage";
+import {
+  formatEdgeLimiterUnusableAlert,
+  formatEdgeLimiterRecovery,
+} from "@/lib/monitor/edge-limiter-health";
+import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 
 /** One rendered state of one alert. */
 export interface AlertPreview {
@@ -1011,6 +1016,64 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every event has a subscriber again",
     channel: "recovery",
     text: formatUnsubscribedEventsRecovery(),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "one endpoint's ceiling is missing from the deploy",
+    channel: "alert",
+    text: formatEdgeLimiterUnusableAlert({
+      status: "unusable",
+      runtime: "Cloudflare-Workers",
+      missing: ["AVAIL_RATE_LIMITER"],
+      contextUnreadable: false,
+      serviceUnreachable: false,
+    }),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "the whole ratelimits block is missing",
+    channel: "alert",
+    // The shape a deploy that dropped the block produces. Read this one for the plural
+    // grammar and for whether six plain-language endpoint names still scan on a phone.
+    text: formatEdgeLimiterUnusableAlert({
+      status: "unusable",
+      runtime: "Cloudflare-Workers",
+      missing: [...EDGE_LIMITER_BINDINGS],
+      contextUnreadable: false,
+      serviceUnreachable: false,
+    }),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "the request context cannot be read at all",
+    channel: "alert",
+    // A different remedy, not a rephrasing: nothing is misconfigured, so telling the
+    // reader to check wrangler.jsonc would send them to a file that is already correct.
+    text: formatEdgeLimiterUnusableAlert({
+      status: "unusable",
+      runtime: "Cloudflare-Workers",
+      missing: [],
+      contextUnreadable: true,
+      serviceUnreachable: false,
+    }),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "the rate limit service refused a test call",
+    channel: "alert",
+    text: formatEdgeLimiterUnusableAlert({
+      status: "unusable",
+      runtime: "Cloudflare-Workers",
+      missing: [],
+      contextUnreadable: false,
+      serviceUnreachable: true,
+    }),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "the ceilings are being enforced again",
+    channel: "recovery",
+    text: formatEdgeLimiterRecovery(),
   },
   {
     key: "thin_tier_staffing",
