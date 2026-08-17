@@ -39,6 +39,12 @@ export interface SlotPicker {
   view: SlotPickerView;
   /** The days on offer, ascending, for the day strip. */
   days: string[];
+  /** Every time currently on offer, flat and ungrouped (#1319).
+   *
+   *  Exposed so a caller can answer "what is the soonest thing still free" without
+   *  re-fetching or keeping a second copy of the availability. The day grouping and the
+   *  no-times-before-a-day rule stay in this hook; this is the same data underneath it. */
+  slots: string[];
   /** The chosen day, or null until one is chosen. */
   selectedDay: string | null;
   /** Choose a day (or clear the choice with null). */
@@ -102,5 +108,5 @@ export function useSlotPicker({
     slotsForDay: selectedDay ? (slotsByDay.get(selectedDay) ?? []) : [],
   });
 
-  return { view, days, selectedDay, selectDay: setSelectedDay, retry, payload };
+  return { view, days, slots, selectedDay, selectDay: setSelectedDay, retry, payload };
 }
