@@ -351,6 +351,18 @@ export interface AgentCalendar {
   watch_last_success_at: string | null;
   watch_last_error: string | null;
   watch_last_failure_kind: "gone" | "not-provisioned" | "transient" | null;
+  /** HYDRATION (#1260): when a bootstrap was last ATTEMPTED, stamped before the
+   *  fetch so it moves even when the fetch fails. Drives rotation fairness only.
+   *  Without it, ordering by coverage lets a revoked calendar stay the oldest
+   *  forever and be picked first every tick, starving the healthy ones behind it.
+   *  Null means never attempted, which reads as due. */
+  last_bootstrap_attempt_at: string | null;
+  /** HYDRATION (#1260): the `timeMax` ACTUALLY SENT on the last SUCCESSFUL
+   *  bootstrap, so it can only ever describe a request that really happened.
+   *  Authorizes the out-of-window prune (#1265) and feeds the coverage alert
+   *  (#1262). Null means no coverage has been established, never "covered up to
+   *  the default window": every reader maps null to the fail-safe side. */
+  sync_window_to: string | null;
   created_at: string;
 }
 
