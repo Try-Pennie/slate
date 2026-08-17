@@ -815,6 +815,24 @@ from data that is really there):
 **Run a positive control before believing any zero** (the every-minute `recompute
 cycle` line is always there). If the control is also zero, the query is wrong.
 
+**And check the control is RECENT, not merely present (#1533).** A passing control
+proves the query shape, the credentials and the field names; it cannot prove the
+query reached the part of the window you are asking about, because a line from
+hours ago satisfies it as well as one from a minute ago. Measured on 2026-08-17
+the query pipeline ran about **three hours** behind: `tag=recompute` returned 0
+over 1h, 50 over 4h and 290 over 8h for a lane that emits every minute, while
+`npx wrangler tail` captured lines live that the API reported zero of. That
+produced a wrong conclusion the same day, a 4h window covering 14:44 reading as a
+trustworthy absence when its recent end simply held nothing yet.
+
+So the lag is usually small and can be hours. **For anything within the last few
+hours use `npx wrangler tail`**, which streams live from the deployed Worker and
+was accurate every time it was checked; it only shows traffic while attached, so
+for a cron lane attach and wait one cadence. `scripts/logs.ts` now enforces the
+rule: it reads the control's newest non-empty bucket and reports UNVERIFIABLE when
+that is more than `CONTROL_FRESHNESS_MS` behind the window's end, in its own
+wording so a lagging pipeline is never mistaken for a broken query.
+
 Retention is 7 days and there is no alerting on top of it, so logs are for
 forensics after the fact. Anything that must page someone still needs a real
 sink (a Slack alert or an `alert_state` row); see the fail-loud rule.
