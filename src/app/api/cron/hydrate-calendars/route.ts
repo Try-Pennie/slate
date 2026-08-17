@@ -9,8 +9,13 @@ import { hydrateCalendar } from "@/lib/google/sync";
 import {
   calendarsDueForHydration,
   hydrationBatchSize,
+  runHydrationTickCheck,
+  HYDRATION_FAILING_KEY,
   type HydrationCandidate,
 } from "@/lib/google/hydration";
+import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { loadMonitorSettings } from "@/lib/monitor/settings";
 import type { AgentCalendar } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
@@ -19,6 +24,13 @@ export const dynamic = "force-dynamic";
 const LOCK_TTL_MS = 120_000;
 /** Under the lock TTL, so a slow run can never outlive its own claim. */
 const HYDRATE_BUDGET_MS = 90_000;
+
+/** Consecutive all-failed ticks before this pages, and the window that must span them.
+ *  Four ticks is an hour at this cadence: long enough that a batch of genuinely revoked
+ *  calendars is not news, short enough to notice within a working morning. The window is
+ *  comfortably wider, or consecutive runs would each look like the first. */
+const ALL_FAILED_TICKS = 4;
+const ALL_FAILED_WINDOW_SECONDS = 90 * 60;
 
 /**
  * CALENDAR HYDRATION lane (#1261): re-bootstrap a slice of the calendars every tick, sized
@@ -43,6 +55,7 @@ export async function GET(req: NextRequest) {
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {
     const db = supabaseAdmin();
+    const settings = await loadMonitorSettings();
     const deadlineMs = Date.now() + HYDRATE_BUDGET_MS;
 
     // unwrap, not a bare destructure: a read error returning [] would look like "no
@@ -88,6 +101,40 @@ export async function GET(req: NextRequest) {
       events += res.events;
     }
 
+    // #1544: the lane's own failure signal. Each calendar records its failure against the
+    // SYNC lane's health columns, which the every-minute incremental sync resets to zero on
+    // every success, so a rotation failing on EVERY calendar can never build the streak
+    // those thresholds need. Its heartbeat keeps stamping regardless, because that is
+    // written whether the work succeeded or not, so without this a dead lane and a healthy
+    // one are identical from outside (L53).
+    //
+    // Judged over CONSECUTIVE ticks rather than one: today's batch is 2, so two genuinely
+    // revoked calendars landing in one batch is an ordinary event and paging on it would be
+    // the alert nobody reads (L36).
+    const verdict = await runHydrationTickCheck({
+      tick: { due: due.length, refreshed, failed },
+      // The window comfortably spans the ticks it counts (4 ticks at 15 minutes is an hour),
+      // or genuinely consecutive runs would each look like the first.
+      recordStreak: () =>
+        recordConsecutiveStreak(
+          HYDRATION_FAILING_KEY,
+          ALL_FAILED_WINDOW_SECONDS,
+          ALL_FAILED_TICKS,
+        ),
+      clearStreak: () => clearFailureStreak(HYDRATION_FAILING_KEY),
+      // alert-key: hydration_all_failing
+      // alert-text-ok: our own copy from hydration.ts, never a raw error.
+      notify: sendThrottledAlert,
+      // A condition: it stays true until somebody fixes the cause, so it has to be able to
+      // end.
+      // alert-key: hydration_all_failing
+      // all-clear-proof: scripts/test-hydration-tick-verdict.ts - an unmeasured tick is its
+      // own outcome and neither pages nor clears.
+      resolve: resolveAlert,
+      cooldownMs: settings.cooldownMs.hydration_all_failing,
+      consecutiveTicks: ALL_FAILED_TICKS,
+    });
+
     // Stamped on every completed tick, including one that refreshed nothing: the watchdog's
     // question is whether this lane is RUNNING, and a tick that legitimately found nothing
     // due is a healthy tick. What must never be silent is the lane stopping.
@@ -105,6 +152,7 @@ export async function GET(req: NextRequest) {
       failed,
       events,
       budget_hit: budgetHit,
+      verdict,
     });
     return NextResponse.json({
       calendars: calendars.length,
@@ -113,6 +161,7 @@ export async function GET(req: NextRequest) {
       failed,
       events,
       budgetHit,
+      verdict,
     });
   } finally {
     await releaseLock("cron_hydrate_calendars", lock);

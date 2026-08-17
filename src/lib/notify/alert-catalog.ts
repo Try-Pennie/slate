@@ -148,6 +148,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "the drift check sees the applied version catch up.",
   },
   {
+    key: "hydration_all_failing",
+    kind: "condition",
+    why: "The calendar refresh is failing on every calendar, which stays true until the cause is fixed, so the reader needs to be told when it is over (#1544).",
+  },
+  {
     key: "edge_limiter_unusable",
     kind: "condition",
     why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",

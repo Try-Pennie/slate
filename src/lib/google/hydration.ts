@@ -99,3 +99,126 @@ export function calendarsDueForHydration<T extends HydrationCandidate>(
     parseStampMs(c.last_bootstrap_attempt_at) ?? Number.NEGATIVE_INFINITY;
   return [...eligible].sort((a, b) => attemptedAt(a) - attemptedAt(b)).slice(0, batchSize);
 }
+
+/** alert_state key for the rotation's own failure signal (#1544). */
+export const HYDRATION_FAILING_KEY = "hydration_all_failing";
+
+/**
+ * What one tick of the rotation measured about ITSELF.
+ *
+ * WHY THIS IS NEEDED AT ALL, given each calendar already records its own health.
+ * `hydrateCalendar` writes a failure to the SYNC lane's columns, the same ones the
+ * every-minute incremental sync writes, and every success there resets the streak to zero.
+ * The paging thresholds need 2 consecutive failures (4 for a transient), the rotation fails
+ * at most once per tick, and the sync wipes the count within the next minute. So the streak
+ * can never build and a rotation failing on EVERY calendar raises nothing, while its
+ * heartbeat keeps stamping because that is written whether the work succeeded or not. A dead
+ * lane and a healthy one are then identical from outside (L53, the mistake #1150 already
+ * fixed once by giving the watch lane its own columns).
+ *
+ * Three outcomes, and `unmeasured` is the one that matters. A tick with nothing due
+ * legitimately happens when the shared eligibility gate holds every candidate back, and
+ * scoring it either way is wrong: as healthy it would CLEAR a real page, as failure it would
+ * page about a lane with nothing to do (#1134, #1152).
+ *
+ * A tick that refreshed SOMETHING is healthy. One bad calendar among several is not this
+ * signal's job; per-calendar visibility needs its own health columns and is #1545.
+ */
+export type HydrationTickVerdict = "healthy" | "all-failed" | "unmeasured";
+
+export function hydrationTickVerdict(tick: {
+  due: number;
+  refreshed: number;
+  failed: number;
+}): HydrationTickVerdict {
+  const { due, refreshed, failed } = tick;
+  // Counts that contradict each other are not a measurement. A verdict computed from them
+  // would be a confident answer about numbers nothing produced.
+  if (due < 0 || refreshed < 0 || failed < 0) return "unmeasured";
+  if (refreshed + failed > due) return "unmeasured";
+  if (due === 0) return "unmeasured";
+  return refreshed > 0 ? "healthy" : "all-failed";
+}
+
+/**
+ * The Slack text. A builder rather than a literal at the send site, so
+ * `pnpm preview:alerts` renders exactly what ships (L41).
+ */
+export function formatHydrationFailingAlert(input: {
+  due: number;
+  consecutiveTicks: number;
+}): string {
+  const calendars =
+    input.due === 1 ? "the one calendar it tried" : `all ${input.due} calendars it tried`;
+  return (
+    `The calendar refresh has failed on ${calendars}, ` +
+    `${input.consecutiveTicks} runs in a row. ` +
+    // What is NOT broken, first: without this the reader assumes bookings are failing and
+    // treats a slow-burning maintenance problem as an outage.
+    "Customers are unaffected right now and bookings are working: the minute-by-minute sync " +
+    "is still keeping availability fresh, so nobody is being offered a time an agent is busy " +
+    "in. What has stopped is the daily full refresh that keeps the cached window from " +
+    "expiring, and if it stays stopped that cover slowly goes stale. " +
+    "Check the server logs under tag=hydrate-calendars for the reason, which is usually " +
+    "Google delegation or a mailbox that no longer exists."
+  );
+}
+
+/** The all-clear. Same reason for being a builder (L41). */
+export function formatHydrationRecovery(): string {
+  return (
+    "The calendar refresh is working again. Its last run re-read at least one calendar " +
+    "successfully, so the daily rotation is progressing and cached cover is being renewed."
+  );
+}
+
+/**
+ * The tick's alerting step, with IO injected so all three outcomes, including the two that
+ * must send nothing, are exercised offline (scripts/test-hydration-tick-verdict.ts).
+ *
+ * Extracted from the route rather than inlined there for the usual reason: the branch that
+ * must stay SILENT is the one worth testing, and a branch inside a cron handler is reachable
+ * only by standing up the whole handler.
+ */
+export async function runHydrationTickCheck(deps: {
+  tick: { due: number; refreshed: number; failed: number };
+  /** True once the all-failed streak has reached its threshold. */
+  recordStreak: () => Promise<boolean>;
+  clearStreak: () => Promise<unknown>;
+  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  resolve: (key: string, text: string) => Promise<unknown>;
+  cooldownMs: number;
+  consecutiveTicks: number;
+}): Promise<HydrationTickVerdict> {
+  const verdict = hydrationTickVerdict(deps.tick);
+
+  if (verdict === "all-failed") {
+    const overThreshold = await deps.recordStreak().catch(() => false);
+    if (overThreshold) {
+      const text = formatHydrationFailingAlert({
+        due: deps.tick.due,
+        consecutiveTicks: deps.consecutiveTicks,
+      });
+      // swallow-ok: a failed alert must not fail the lane, or a Slack outage would stop the
+      // refresh itself. The streak is already recorded, so the condition is still true and
+      // the next tick re-attempts; nothing is lost but this one send.
+      await deps.notify(HYDRATION_FAILING_KEY, deps.cooldownMs, text).catch(() => {});
+    }
+    return verdict;
+  }
+
+  if (verdict === "healthy") {
+    // swallow-ok: the reset is best effort. A miss leaves a stale count the next healthy
+    // tick clears, and the window expires on its own, so the worst case is one late
+    // all-clear rather than a lost signal.
+    await deps.clearStreak().catch(() => {});
+    // swallow-ok: a failed all-clear leaves the condition showing as open, which is the safe
+    // direction, and the next healthy tick re-sends it.
+    await deps.resolve(HYDRATION_FAILING_KEY, formatHydrationRecovery()).catch(() => {});
+    return verdict;
+  }
+
+  // Unmeasured: neither pages nor clears. A tick that learned nothing must never announce a
+  // recovery (#1134, #1152), and must never page about a lane with nothing to do.
+  return verdict;
+}

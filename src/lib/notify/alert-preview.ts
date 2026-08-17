@@ -203,6 +203,10 @@ import {
   formatEdgeLimiterUnusableAlert,
   formatEdgeLimiterRecovery,
 } from "@/lib/monitor/edge-limiter-health";
+import {
+  formatHydrationFailingAlert,
+  formatHydrationRecovery,
+} from "@/lib/google/hydration";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 
 /** One rendered state of one alert. */
@@ -1016,6 +1020,26 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every event has a subscriber again",
     channel: "recovery",
     text: formatUnsubscribedEventsRecovery(),
+  },
+  {
+    key: "hydration_all_failing",
+    state: "every calendar in the batch failed, four runs running",
+    channel: "alert",
+    text: formatHydrationFailingAlert({ due: 6, consecutiveTicks: 4 }),
+  },
+  {
+    key: "hydration_all_failing",
+    state: "a single-calendar batch failed",
+    channel: "alert",
+    // Today's roster gives a batch of 2, so a one-calendar tick is reachable and the
+    // singular grammar is the version that will actually ship first.
+    text: formatHydrationFailingAlert({ due: 1, consecutiveTicks: 4 }),
+  },
+  {
+    key: "hydration_all_failing",
+    state: "the refresh is progressing again",
+    channel: "recovery",
+    text: formatHydrationRecovery(),
   },
   {
     key: "edge_limiter_unusable",
