@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { BOOKING_ERROR_COPY, NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
@@ -461,7 +462,10 @@ describe("Booker refuses a second booking (#1337)", () => {
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     await userEvent.click(screen.getByRole("button", { name: /^move my call/i }));
 
-    expect(await screen.findByText("That time was just taken. Please pick another.")).toBeTruthy();
+    // Asserted through the BUILDER, not a copied literal. A literal here is a second copy of
+    // the wording that goes stale the first time the sentence is improved, and this repo keeps
+    // lead-facing strings in one place precisely so the preview shows what ships (L41).
+    expect(await screen.findByText(BOOKING_ERROR_COPY.slotTaken)).toBeTruthy();
     // Not stuck on the refusal screen, and not falsely confirmed.
     expect(screen.queryByText("You already have a call booked")).toBeNull();
     expect(screen.queryByText("You're all set")).toBeNull();
@@ -1483,5 +1487,125 @@ describe("Booker availability window (#1416)", () => {
     expect(new Date(from!).getTime()).toBeGreaterThanOrEqual(
       new Date("2026-08-20T00:00:00Z").getTime(),
     );
+  });
+});
+
+describe("nearest free times after a refused confirm (#1319)", () => {
+  // A refusal at confirm is not rare by design: the booker reads a cached availability index
+  // and the only live check happens at confirm, so the gap between what was shown and what is
+  // true closes at exactly that step. The lead has already filled in every field and pressed
+  // the final button. Answering with a refusal and nothing else is where an otherwise willing
+  // customer gives up.
+
+  const taken = slotIso;
+  const later = (days: number) =>
+    new Date(Date.parse(slotIso) + days * 24 * 60 * 60 * 1000).toISOString();
+
+  /**
+   * First availability load offers `taken`; the confirm 409s; the RELOAD that follows answers
+   * with `after`. That second answer is what the alternatives are drawn from, which is the
+   * point: they must be times that are free NOW, not the stale list the lead was looking at.
+   */
+  function refuseThenReload(after: string[] | "fail") {
+    let loads = 0;
+    return vi.fn(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST") {
+        return new Response(JSON.stringify({ error: "That time is no longer available." }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      loads += 1;
+      if (loads > 1 && after === "fail") return new Response("nope", { status: 500 });
+      const slots = loads === 1 ? [taken] : (after as string[]);
+      return new Response(JSON.stringify({ ...availability, slots }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+  }
+
+  it("keeps the honest error AND offers the soonest times still open", async () => {
+    global.fetch = refuseThenReload([taken, later(1), later(2)]) as never;
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    // The explanation is not replaced by the alternatives (L10).
+    expect(await screen.findByText(BOOKING_ERROR_COPY.slotTaken)).toBeTruthy();
+    expect(await screen.findByText(NEAREST_TIMES_COPY.heading)).toBeTruthy();
+    // And it is obvious a tap does not book, so nobody taps one to look at it and finds
+    // themselves booked.
+    expect(screen.getByText(NEAREST_TIMES_COPY.hint)).toBeTruthy();
+  });
+
+  it("never offers back the time that was just taken", async () => {
+    // The one time we KNOW is gone. Re-offering it is the same dead end wearing a helpful
+    // face, and it is exactly what a naive "show the first few slots" would do, because the
+    // reload can still carry it.
+    global.fetch = refuseThenReload([taken, later(1)]) as never;
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText(NEAREST_TIMES_COPY.heading);
+
+    const offered = screen.getAllByTestId("nearest-time").map((b) => b.getAttribute("data-slot"));
+    expect(offered).not.toContain(taken);
+    expect(offered).toContain(later(1));
+  });
+
+  it("selects a tapped alternative rather than booking it", async () => {
+    global.fetch = refuseThenReload([later(1)]) as never;
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText(NEAREST_TIMES_COPY.heading);
+
+    const posts = () =>
+      (global.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c) => ((c[1] as RequestInit | undefined)?.method ?? "GET") === "POST",
+      ).length;
+    const postsBefore = posts();
+    await userEvent.click(screen.getAllByTestId("nearest-time")[0]!);
+
+    // Settle any pending work before judging. Counting immediately after the click passes
+    // even when the tap DOES book, because the request has not been issued yet, and that
+    // vacuous version of this test let a booking-on-tap mutation through (L1).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(posts()).toBe(postsBefore);
+    // And the positive half: they are still on the form, not on a confirmation they never
+    // asked for. This is the assertion that would catch a booking made by some other route.
+    expect(screen.queryByText(/you're all set/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /confirm booking/i })).toBeTruthy();
+    // And their details survived, so the recovery really is a tap and a confirm rather than
+    // filling the form again.
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Dana Lead");
+    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("dana@example.com");
+  });
+
+  it("says plainly when nothing else is open, rather than showing an empty area", async () => {
+    // A settled, measured answer: we looked and there is nothing. Distinct from the failure
+    // below, and it must not render as a heading over nothing (L10, L22).
+    global.fetch = refuseThenReload([taken]) as never;
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText(NEAREST_TIMES_COPY.none)).toBeTruthy();
+    expect(screen.queryByTestId("nearest-time")).toBeNull();
+    expect(screen.queryByText(NEAREST_TIMES_COPY.heading)).toBeNull();
+  });
+
+  it("says something DIFFERENT when the re-check itself failed", async () => {
+    // "We could not look" is not "there is nothing", and telling a lead there are no times
+    // when we simply failed to load them sends them away for a reason that is not true (L11).
+    global.fetch = refuseThenReload("fail") as never;
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText(NEAREST_TIMES_COPY.lookupFailed)).toBeTruthy();
+    expect(screen.queryByText(NEAREST_TIMES_COPY.none)).toBeNull();
+    // A way out of it, rather than a statement they can do nothing with (L80), and exactly
+    // ONE of them: the picker's own load-error notice already carries a retry, and two
+    // identical controls a few lines apart read as a broken page.
+    expect(screen.getAllByRole("button", { name: NEAREST_TIMES_COPY.retry })).toHaveLength(1);
   });
 });

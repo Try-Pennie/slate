@@ -214,10 +214,39 @@ export function phoneEchoLine(phone: string): string {
 // --- errors on the way through ------------------------------------------------
 
 export const BOOKING_ERROR_COPY = {
-  /** The 409 race: somebody else took it while this lead was typing. */
-  slotTaken: "That time was just taken. Please pick another.",
+  /** The 409 race: somebody else took it while this lead was typing.
+   *
+   *  It no longer ends in "Please pick another", because #1319 puts the alternatives right
+   *  underneath: telling someone to pick another and then showing them which ones reads as
+   *  two instructions for one action. The sentence still says plainly what happened, because
+   *  the alternatives must be added to the explanation rather than replace it (L10). */
+  slotTaken: "That time was just taken.",
   generic: "Something went wrong. Please try again.",
   moveFailed: "Could not move your call. Please try again.",
+} as const;
+
+/**
+ * What to say beneath a refused confirm, alongside the soonest times that are free (#1319).
+ *
+ * Every state is written out, because the degenerate ones are where a recovery turns back into
+ * a dead end and each needs its own words (L22). "Nothing free at all" and "we could not look"
+ * are different screens and must never share a sentence (L10, L11).
+ */
+export const NEAREST_TIMES_COPY = {
+  /** While the fresh availability is being fetched. Never an indefinite blank. */
+  looking: "Finding the next available times",
+  /** Heading above the alternatives. */
+  heading: "The soonest times still open",
+  /** Under the list, so it is obvious no booking happened on a tap. */
+  hint: "Pick one and confirm. Your details are saved.",
+  /** The re-check worked and there is genuinely nothing left in the bookable window. */
+  none:
+    "There are no other times open in the next few days. Please try again later, or call us and we will find a time with you.",
+  /** The re-check itself failed, which is NOT the same as nothing being free. */
+  lookupFailed:
+    "We could not load the remaining times just now. Please try again in a moment.",
+  /** The retry control on that failure. */
+  retry: "Try again",
 } as const;
 
 // --- the confirmation ---------------------------------------------------------

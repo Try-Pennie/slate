@@ -7,6 +7,7 @@ import { ArrowRightIcon } from "@/components/icons";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
+import { nearestSlots, NEAREST_SLOT_COUNT } from "@/lib/booking/nearest-slots";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { formatPhoneAsTyped, prefillPhone } from "@/lib/phone-format";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
@@ -37,6 +38,7 @@ import {
   inviteOnItsWay,
   keepExistingTime,
   moveToTime,
+  NEAREST_TIMES_COPY,
 } from "@/lib/booking/booker-copy";
 import { labelColorFor } from "@/lib/brand-label";
 import {
@@ -356,6 +358,10 @@ export default function Booker({
   // cannot drift apart again. No day is chosen until the lead chooses one.
   const picker = useSlotPicker({ url: availabilityUrl, zone, slotsOverride: nextDaySlots });
   const meta = picker.payload as AvailabilityResponse | null;
+  // #1319: the time a confirm was just refused for, or null. Set only on the 409 race, and
+  // cleared as soon as the lead picks anything, because the offer only makes sense while the
+  // refusal is the thing on screen.
+  const [refusedSlot, setRefusedSlot] = useState<string | null>(null);
   const activeDay = picker.selectedDay;
   const loading = picker.view.kind === "loading";
 
@@ -475,6 +481,9 @@ export default function Booker({
         setExistingCall(data.existingCall);
       } else if (status === 409) {
         setError(BOOKING_ERROR_COPY.slotTaken);
+        // #1319: remember WHICH time went, so the alternatives below can leave it out. It is
+        // the one time we know is gone, and the reload can still be carrying it.
+        setRefusedSlot(selectedSlot);
         setSelectedSlot(null);
         // Re-run the load so the stale list is swapped for the loading state
         // rather than left tappable with a time that has gone.
@@ -742,17 +751,79 @@ export default function Booker({
   // Rose error notice; rendered in whichever right-column branch is active
   // (the 409 race resets selectedSlot, so the message must show on the slot list too).
   // Plain rose text per the DS forms recipe: rose on the 12% wash is only 4.33:1 (AA fail).
+  /**
+   * #1319: the soonest times still open, under a refused confirm.
+   *
+   * Every state is rendered, because the degenerate ones are where a recovery turns back into
+   * the dead end this replaces, and each needs its own words (L22). "We are still looking",
+   * "there is nothing", and "we could not look" are three different screens (L10, L11), and
+   * the first exists because a time-taking step must never present as a blank (the progress
+   * rule in CLAUDE.md).
+   *
+   * Tapping one SELECTS it and leaves Confirm to the lead. Booking on the tap would turn a
+   * glance into a commitment, right after the product has already surprised them once.
+   */
+  const nearest = refusedSlot
+    ? nearestSlots(picker.slots, NEAREST_SLOT_COUNT, refusedSlot)
+    : [];
+
+  const nearestPanel = refusedSlot ? (
+    <div className="mt-3 text-sm" data-testid="nearest-times">
+      {picker.view.kind === "loading" ? (
+        <p className={c.muted}>{NEAREST_TIMES_COPY.looking}</p>
+      ) : picker.view.kind === "failed" ? (
+        // The sentence, but deliberately NOT a second Try again: the picker's own load-error
+        // notice is already on screen with one, and two identical controls a few lines apart
+        // read as a broken page. What this adds is the explanation for THIS moment, which is
+        // not the same as "there is nothing free" and must not share its words (L11); the
+        // route out is the control that is already there (L80).
+        <p className={c.muted}>{NEAREST_TIMES_COPY.lookupFailed}</p>
+      ) : nearest.length === 0 ? (
+        <p className={c.muted}>{NEAREST_TIMES_COPY.none}</p>
+      ) : (
+        <>
+          <p className="mb-2 font-medium">{NEAREST_TIMES_COPY.heading}</p>
+          <div className="flex flex-wrap gap-2">
+            {nearest.map((iso) => (
+              <button
+                key={iso}
+                type="button"
+                data-testid="nearest-time"
+                data-slot={iso}
+                className={`inline-flex min-h-11 items-center rounded-md border px-3 text-sm tabular-nums ${c.slot}`}
+                onClick={() => {
+                  // Put the picker on that time's own day, so the rest of the surface agrees
+                  // with what was just chosen rather than still showing the old one.
+                  picker.selectDay(DateTime.fromISO(iso, { zone }).toISODate());
+                  setSelectedSlot(iso);
+                  setRefusedSlot(null);
+                  setError(null);
+                }}
+              >
+                {DateTime.fromISO(iso, { zone }).toFormat("ccc d LLL, h:mm a")}
+              </button>
+            ))}
+          </div>
+          <p className={`mt-2 ${c.muted}`}>{NEAREST_TIMES_COPY.hint}</p>
+        </>
+      )}
+    </div>
+  ) : null;
+
   const errorAlert = error ? (
-    <p
-      id="booker-error"
-      role="alert"
-      className="flex items-start gap-2 text-sm text-[var(--error)]"
-    >
-      <span className="mt-0.5 shrink-0">
-        <AlertIcon />
-      </span>
-      {error}
-    </p>
+    <div>
+      <p
+        id="booker-error"
+        role="alert"
+        className="flex items-start gap-2 text-sm text-[var(--error)]"
+      >
+        <span className="mt-0.5 shrink-0">
+          <AlertIcon />
+        </span>
+        {error}
+      </p>
+      {nearestPanel}
+    </div>
   ) : null;
 
   // #1328: "All times are taken right now. Check back soon." is untrue in both

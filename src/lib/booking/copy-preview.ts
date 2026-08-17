@@ -49,6 +49,7 @@ import {
   moveToTime,
   phoneEchoLine,
   timesAvailableAnnouncement,
+  NEAREST_TIMES_COPY,
 } from "@/lib/booking/booker-copy";
 import {
   BEFORE_COPY,
@@ -204,6 +205,21 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "somebody took the time while they typed", text: BOOKING_ERROR_COPY.slotTaken },
         { state: "anything else", text: BOOKING_ERROR_COPY.generic },
         { state: "moving an existing call failed", text: BOOKING_ERROR_COPY.moveFailed },
+      ],
+    },
+    {
+      screen: "Booker: the soonest times still open",
+      purpose:
+        "What sits UNDER a refused confirm (#1319). The lead has filled in every field and " +
+        "pressed the final button, so a refusal with nothing beneath it is where they give " +
+        "up. Read the five states together: two of them are the ones that quietly turn a " +
+        "recovery back into a dead end.",
+      lines: [
+        { state: "still fetching the fresh times", text: NEAREST_TIMES_COPY.looking },
+        { state: "there are alternatives", text: NEAREST_TIMES_COPY.heading },
+        { state: "under the list, so a tap is not a booking", text: NEAREST_TIMES_COPY.hint },
+        { state: "we looked and there is genuinely nothing", text: NEAREST_TIMES_COPY.none },
+        { state: "we could NOT look, which is not the same thing", text: NEAREST_TIMES_COPY.lookupFailed },
       ],
     },
     {
