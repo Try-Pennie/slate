@@ -126,7 +126,12 @@ semantics.
     "status": "confirmed",
     "agent": { "name": "…", "email": "…" },
     "manageUrl": "https://…/booking/manage/<token>"
-  }
+  },
+  // #1515: which team owns the lead. `code` is the bucket they are ACTUALLY in,
+  // which a cross bucket rebook or a tier drop can move away from the one asked
+  // for. Null when the booking predates the routing trace, never the requested
+  // code standing in. See docs/booking-api.md for the full field table.
+  "bucket": { "code": "421", "requestedCode": "411", "tierFallback": true, "rungsDropped": 1 }
 }
 ```
 

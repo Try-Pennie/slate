@@ -110,6 +110,28 @@ export async function POST(req: NextRequest) {
         agent: { name: result.booking.agent_name, email: result.booking.agent_email },
         manageUrl: result.manageUrl,
       },
+      // #1515: WHICH TEAM OWNS THE LEAD. The caller is the system of record for
+      // that, and until now had to infer it from the agent, which breaks the
+      // moment an agent serves more than one bucket and can never show a tier
+      // drop at all. Two things move a lead off the bucket that was asked for: a
+      // cross bucket rebook (#364, #1465) and routing dropping a rung.
+      //
+      // `code` is read from the BOOKING's own routing trace, so it describes
+      // where the lead actually is on every outcome, including a `deduped` where
+      // the booking returned is the one they already held. Null when the trace
+      // does not record it (2 of 1,146 production rows, both predating the trace
+      // and neither active) rather than echoing the request back, because a
+      // requested code presented as the effective one is exactly the misreport
+      // this field exists to prevent (L75).
+      bucket: {
+        code: result.booking.routing_trace?.bucket_code ?? null,
+        requestedCode: v.bucketCode,
+        // These describe the booking named in the response. A missing flag is a
+        // real false, not an unknown: whatever routing placed that booking wrote
+        // the trace, and it writes these together.
+        tierFallback: result.booking.routing_trace?.tier_fallback ?? false,
+        rungsDropped: Math.max(0, result.booking.routing_trace?.rungs_dropped ?? 0),
+      },
       // #1465: a same time rebook into a DIFFERENT bucket is a routing request,
       // and it is honoured. When the target bucket had nobody free the lead keeps
       // the appointment they had, in the OLD bucket, and this names that so the
