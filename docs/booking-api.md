@@ -185,9 +185,36 @@ silently moving the wrong person (shared household phone, recycled id).
     "status": "confirmed",
     "agent": { "name": "…", "email": "…" },
     "manageUrl": "https://…/booking/manage/<token>"
+  },
+  "bucket": {
+    "code": "421",
+    "requestedCode": "411",
+    "tierFallback": true,
+    "rungsDropped": 1
   }
 }
 ```
+
+#### `bucket`: which team owns the lead (#1515)
+
+Present on every success and on `confirm_required`. **`code` is the bucket the
+lead is actually in**, which is not always the one you asked for: a cross bucket
+rebook moves them to a new team (#364, #1465), and tier fallback can route the
+request down a rung. Do not infer the team from the agent, who may serve more
+than one bucket, and who tells you nothing about a tier drop.
+
+| Field | Meaning |
+|---|---|
+| `code` | The effective bucket, read from the booking's own routing trace. `null` when that booking predates the trace (2 of 1,146 rows as of 2026-08-17, none of them active) — it is never the requested code standing in for the real one. |
+| `requestedCode` | The `bucketCode` this request named, echoed so the two can be compared without keeping state. |
+| `tierFallback` | The booking named in the response was placed a rung down from the tier that was asked for. |
+| `rungsDropped` | How far down. `0` when `tierFallback` is false. |
+
+On a `deduped` outcome the booking returned is the one the lead **already held**,
+so `bucket.code` is the team they are still in and `tierFallback` describes how
+that earlier booking was routed, not this request. That is the point: when a
+bucket change is refused, `bucket.code` names where the lead really is while
+`bucketChangeDeclined` names what was dropped.
 
 ### Errors
 

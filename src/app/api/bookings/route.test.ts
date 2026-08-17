@@ -55,7 +55,7 @@ import {
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 
-function result(outcome: string) {
+function result(outcome: string, routingTrace: unknown = { bucket_code: "411" }) {
   return {
     outcome,
     booking: {
@@ -66,6 +66,9 @@ function result(outcome: string) {
       status: "confirmed",
       agent_name: "Agent A",
       agent_email: "a@x.com",
+      // #1515: the booking's own trace records the bucket it actually LANDED in,
+      // which is not the requested one after a tier drop or a cross bucket rebook.
+      routing_trace: routingTrace,
     },
     manageUrl: "https://slate.test/booking/manage/tok",
   };
@@ -505,5 +508,76 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
     expect(body.outcome).toBe("deduped");
     expect("bucketChangeDeclined" in body).toBe(false);
     expect(monitor.recordApiOutcome).toHaveBeenCalledWith("deduped", "411", null);
+  });
+});
+// #1515: the caller is the system of record for which team owns a lead, and the
+// response named an agent and nothing else. Two things move a lead away from the
+// bucket that was asked for, and neither was visible: a cross bucket rebook
+// (#364, #1465) and a tier drop down a rung. Inferring the team from the agent
+// breaks the moment an agent serves more than one bucket, and it can never show a
+// tier drop at all.
+describe("POST /api/bookings: the bucket the lead actually landed in (#1515)", () => {
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("secret");
+  });
+
+  it("reports the effective bucket beside the one that was requested", async () => {
+    // A tier drop: the caller asked for 411 and the booking was placed in 421.
+    service.bookViaApi.mockResolvedValue(
+      result("created", {
+        bucket_code: "421",
+        tier_fallback: true,
+        rungs_dropped: 1,
+      }),
+    );
+
+    const body = await (await post("Bearer secret", VALID_BODY)).json();
+
+    expect(body.bucket.code).toBe("421");
+    expect(body.bucket.requestedCode).toBe("411");
+    expect(body.bucket.tierFallback).toBe(true);
+    expect(body.bucket.rungsDropped).toBe(1);
+  });
+
+  it("reports the requested bucket as the effective one when nothing moved", async () => {
+    service.bookViaApi.mockResolvedValue(result("created"));
+
+    const body = await (await post("Bearer secret", VALID_BODY)).json();
+
+    expect(body.bucket.code).toBe("411");
+    expect(body.bucket.requestedCode).toBe("411");
+    // Absent from the trace means it did not happen, not that it is unknown:
+    // every trace this path can return is written by the routing that placed the
+    // booking, so a missing flag is a real false.
+    expect(body.bucket.tierFallback).toBe(false);
+    expect(body.bucket.rungsDropped).toBe(0);
+  });
+
+  it("names the bucket the lead is left in when the move was declined", async () => {
+    // The case the field exists for: the caller asked for 411, the move was
+    // refused, and the lead is still in 311. Reporting 411 here would say the
+    // routing request landed when it was dropped.
+    service.bookViaApi.mockResolvedValue({
+      ...result("deduped", { bucket_code: "311" }),
+      bucketChangeDeclined: "no_eligible_agents",
+    });
+
+    const body = await (await post("Bearer secret", VALID_BODY)).json();
+
+    expect(body.bucket.code).toBe("311");
+    expect(body.bucket.requestedCode).toBe("411");
+    expect(body.bucketChangeDeclined.requestedBucketCode).toBe("411");
+  });
+
+  it("says the effective bucket is unknown rather than echoing the request", async () => {
+    // Two of 1,146 production bookings predate the routing trace (both June 3rd,
+    // neither active). Substituting the requested code would hand the caller a
+    // team the lead may not be in, dressed as fact (L75); null says so instead.
+    service.bookViaApi.mockResolvedValue(result("deduped", null));
+
+    const body = await (await post("Bearer secret", VALID_BODY)).json();
+
+    expect(body.bucket.code).toBeNull();
+    expect(body.bucket.requestedCode).toBe("411");
   });
 });
