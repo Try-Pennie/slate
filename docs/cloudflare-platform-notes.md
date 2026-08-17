@@ -125,6 +125,11 @@ rows** from data that is actually present, so none of them can be told apart fro
   (`expected string, received undefined` at `$workers.outcome`) because app log
   rows carry no `outcome`, only invocation records do. The error means your query
   *matched* rows. Use the `calculations` view with a `count`.
+  Note the boundary: this is the **MCP tool's** validation, not the API's. A
+  `view: "events"` query sent straight to
+  `/accounts/{id}/workers/observability/telemetry/query` returned app log rows
+  normally on 2026-08-17, with the line in `source.message`, so the raw API is a
+  way to read actual message text when you need it.
 - **A timeframe in the future silently returns zero rows.** Check `date -u` first.
 - **Ingestion lags a minute or two, and a too-narrow window drops late arrivals.**
   A count taken immediately after emitting returns 0, and a window that ends too
@@ -134,6 +139,40 @@ rows** from data that is actually present, so none of them can be told apart fro
 **Always run a positive control before believing a zero.** Query for something you
 know is in the window (the every-minute `tag=recompute` line is a good one). If
 the control also returns zero, your query is wrong, not the platform.
+
+**And check the control is RECENT, not merely present (#1533).** A passing control
+proves the query shape, the credentials and the field names. It does not prove the
+query can see the part of the window you care about, because a line from hours ago
+satisfies it just as well as one from a minute ago. Measured on 2026-08-17, the
+query pipeline ran about **three hours** behind:
+
+| query | window | count |
+|-------|--------|-------|
+| `tag=recompute` | 1h | **0** |
+| `tag=recompute` | 4h | 50 |
+| `tag=recompute` | 8h | 290 |
+
+for a lane that emits every minute, where a healthy 1h window is about 60. In the
+same minutes `npx wrangler tail` captured
+`slate tag=edge-limiter msg="monitor edge-limiter: healthy runtime=Cloudflare-Workers bindings=6"`
+and a cycle line carrying `ms_edge_limiters=235 steps=24` live from production,
+while the query API returned **0** for both over a 4h window. The Worker was
+emitting; the API was behind.
+
+That cost a wrong conclusion the same day: a 4h window covering 14:44 returned zero
+for the needle and 101 for the control, which read as a trustworthy absence when the
+recent end of the window simply held nothing yet.
+
+So the ingestion lag is not "a minute or two" as a rule you can plan around; it is
+usually small and can be hours. Two practical consequences:
+
+- **For anything within the last few hours, use `npx wrangler tail`**, which streams
+  live from the deployed Worker and was accurate every time it was checked. It only
+  shows traffic while it is attached, so for a cron lane, attach and wait one cadence.
+- **`scripts/logs.ts` now enforces this**: it reads the control's newest non-empty
+  bucket and reports **UNVERIFIABLE** when that is more than `CONTROL_FRESHNESS_MS`
+  behind the window's end, with its own wording so a lagging pipeline is never
+  mistaken for a broken query.
 
 ### The sync lane's cycle line
 

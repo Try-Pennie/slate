@@ -24,7 +24,17 @@
 //   - console.log lands with NO `level`, so ANY level filter or group-by hides it
 //   - a `groupBys` on level returns an empty aggregation even when a level filter
 //     matches those same rows
-//   - a window in the future returns zero, and ingestion lags a minute or two
+//   - a window in the future returns zero
+//   - ingestion lag is usually a minute or two and CAN BE HOURS (#1533): measured
+//     three hours behind on 2026-08-17, which is why the control must prove the
+//     window's recent END and not merely the window. For anything within the last
+//     few hours, `npx wrangler tail` is the accurate instrument.
+//
+// One trap above needs a boundary drawn on it: the events-view schema error is the
+// MCP TOOL's validation, not the API's. A `view: "events"` query sent straight to the
+// API returned app log rows normally on 2026-08-17, with the line in `source.message`.
+// This tool still counts via `calculations`, which also gives it the per-bucket series
+// the freshness rule reads.
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 
@@ -125,6 +135,39 @@ export function countFromResponse(body: unknown): number {
   return value;
 }
 
+/**
+ * The time of the newest bucket that actually CARRIES data, or null (#1533).
+ *
+ * This is the pipeline's frontier: how recent the data a query can see actually is, as
+ * opposed to how recent the window asked for. The `calculations` view returns a `series`
+ * with one entry per bucket and an EMPTY `data` array for a bucket it has nothing for, so
+ * the last non-empty bucket answers it without needing the events view.
+ *
+ * Returns null rather than a guess for every shape it cannot read (no series, no non-empty
+ * bucket, an unparseable time), because the caller maps null to the fail-safe side. A guess
+ * here would restore exactly the false confidence the frontier exists to remove, and an
+ * unparseable time must never reach a comparison as NaN, which compares false against every
+ * threshold and lands on the permissive side (L50).
+ */
+export function newestBucketMsFromResponse(body: unknown): number | null {
+  const series = (
+    body as {
+      result?: { calculations?: { series?: { time?: string; data?: unknown[] }[] }[] };
+    }
+  )?.result?.calculations?.[0]?.series;
+  if (!Array.isArray(series)) return null;
+  let newest: number | null = null;
+  for (const bucket of series) {
+    if (!Array.isArray(bucket?.data) || bucket.data.length === 0) continue;
+    // The API returns bucket times without a zone; they are UTC.
+    const raw = typeof bucket.time === "string" ? bucket.time : "";
+    const ms = Date.parse(/[Zz]|[+-]\d\d:?\d\d$/.test(raw) ? raw : `${raw}Z`);
+    if (!Number.isFinite(ms)) continue;
+    if (newest === null || ms > newest) newest = ms;
+  }
+  return newest;
+}
+
 export interface WindowCheck {
   fromIso: string;
   toIso: string;
@@ -159,22 +202,148 @@ export interface Judgement {
   trustworthy: boolean;
   needleCount: number;
   controlCount: number;
+  /** Why, in words. Each cause is its own sentence: they need different actions (L11). */
+  reason: string;
+  /**
+   * How far behind the window's end the control's newest line is, when that is BOTH known
+   * and past `CONTROL_FRESHNESS_MS`. Present on a warned absence so a caller can see the
+   * caveat as a value rather than having to parse it out of the prose (#1535).
+   */
+  staleControlMinutes?: number;
 }
 
 /**
- * The rule this tool exists for: a result is only believable if the positive
- * control found something in the SAME window. A dead control means the query,
- * window or credentials are wrong, so it poisons every answer, including a
- * non-zero one.
+ * How far behind the window's end the control's newest line may be before an ABSENCE
+ * stops being vouchable (#1533).
+ *
+ * Deliberately generous. `INGESTION_LAG_MS` above describes the ordinary couple of
+ * minutes; this is the point past which the pipeline is not merely lagging but is behind
+ * enough that a period of interest can sit entirely inside the gap. Measured on
+ * 2026-08-17 the lag reached roughly three hours, so a bound in minutes is the honest
+ * one: anything larger and the tool goes back to vouching for silence it cannot see.
  */
-export function judge(input: { needleCount: number; controlCount: number }): Judgement {
+export const CONTROL_FRESHNESS_MS = 15 * 60_000;
+
+/**
+ * WARN or ENFORCE on a stale control. Deliberately WARN for now (#1535).
+ *
+ * The 15 minutes above is a judgement, not a measurement, and it could not be calibrated
+ * when it was written: Cloudflare's pipeline was not merely lagging but STUCK, frozen at
+ * 14:00 UTC and still frozen 216 minutes later, so there was no normal to measure against.
+ * Shipping the refusal straight away would have made its first live run also its first
+ * enforcing run, against a threshold nobody has checked, which is the shape that has
+ * already caused an outage here once (L56).
+ *
+ * So an absence during a lag is still REPORTED as an absence, and the staleness rides
+ * along as a loud warning and a field on the verdict. That direction is the riskier one
+ * for correctness, which is the point of saying so plainly: the whole reason this tool
+ * exists is that a wrong "absent" is believed. It is temporary on purpose, and #1535 is
+ * the issue that measures the normal lag and flips this to "enforce", so the observe-only
+ * state cannot become invisible once the reason for it is forgotten (L65).
+ */
+export const CONTROL_FRESHNESS_MODE: "warn" | "enforce" = "warn";
+
+/**
+ * The rule this tool exists for, in two halves.
+ *
+ * FIRST, a result is only believable if the positive control found something in the SAME
+ * window. A dead control means the query, window or credentials are wrong, so it poisons
+ * every answer, including a non-zero one.
+ *
+ * SECOND (#1533), an ABSENCE additionally needs the control to prove the query can see the
+ * RECENT END of that window. The count-only rule was satisfied by a control line from
+ * hours earlier: on 2026-08-17, asking at 16:19 whether `tag=rate-limit` appeared around
+ * 14:44 returned needle 0 and control 101 and was scored a trustworthy absence, while
+ * Cloudflare's pipeline was about three hours behind and `wrangler tail` could see lines
+ * the API reported zero of. The control was working the whole time; what it could not do
+ * is prove the query reached the part of the window in question.
+ *
+ * A HIT is deliberately still trustworthy during a lag: the rows it counted exist, and
+ * only the claim "there were none" depends on recency. Poisoning successful searches too
+ * would make the tool cry wolf on every hit during a lag, which is how a guard stops being
+ * read (L36).
+ *
+ * `controlNewestMs` null means the frontier could not be established, which is mapped to
+ * the fail-safe side rather than assumed fresh.
+ */
+export function judge(input: {
+  needleCount: number;
+  controlCount: number;
+  controlNewestMs?: number | null;
+  windowEndMs?: number;
+  /**
+   * Overrides `CONTROL_FRESHNESS_MODE`. It exists so BOTH outcomes are exercised by the
+   * test suite whichever one is currently shipping: the enforce branch is dormant today,
+   * and a branch nobody constructs can be unreachable while the guard reads as thoroughly
+   * tested (L151). Production never passes this.
+   */
+  freshnessMode?: "warn" | "enforce";
+}): Judgement {
   const base = { needleCount: input.needleCount, controlCount: input.controlCount };
   if (input.controlCount === 0) {
-    return { ...base, verdict: "unverifiable", trustworthy: false };
+    return {
+      ...base,
+      verdict: "unverifiable",
+      trustworthy: false,
+      reason:
+        "the positive control found NOTHING in this window, so the query itself could not " +
+        "answer (wrong window, wrong field, wrong credentials). Fix the query; this says " +
+        "nothing about whether the needle is there.",
+    };
   }
-  return input.needleCount > 0
-    ? { ...base, verdict: "present", trustworthy: true }
-    : { ...base, verdict: "absent", trustworthy: true };
+
+  if (input.needleCount > 0) {
+    return {
+      ...base,
+      verdict: "present",
+      trustworthy: true,
+      reason: `found ${input.needleCount} matching line(s).`,
+    };
+  }
+
+  // Only an absence needs the recent end proven.
+  if (input.windowEndMs !== undefined) {
+    const newest = input.controlNewestMs;
+    if (newest === null || newest === undefined) {
+      return {
+        ...base,
+        verdict: "unverifiable",
+        trustworthy: false,
+        reason:
+          "the control was found but HOW RECENT it is could not be established, so an " +
+          "absence cannot be vouched for. Re-run, or read the live stream with " +
+          "`npx wrangler tail`.",
+      };
+    }
+    const lagMs = input.windowEndMs - newest;
+    if (lagMs > CONTROL_FRESHNESS_MS) {
+      const mins = Math.round(lagMs / 60_000);
+      const behind =
+        `the query works, but it is running BEHIND: the control's newest line is ${mins} ` +
+        "minutes older than the end of the window, so the recent part of this window " +
+        "holds nothing queryable yet and an absence there means nothing. Read the live " +
+        "stream with `npx wrangler tail` before believing this.";
+      if ((input.freshnessMode ?? CONTROL_FRESHNESS_MODE) === "enforce") {
+        return { ...base, verdict: "unverifiable", trustworthy: false, reason: behind };
+      }
+      // Warn mode (#1535). The absence is still reported, and the caveat travels with it
+      // as both prose and a field, so it cannot be lost by a caller that reads only one.
+      return {
+        ...base,
+        verdict: "absent",
+        trustworthy: true,
+        staleControlMinutes: mins,
+        reason: `no matching line, BUT ${behind}`,
+      };
+    }
+  }
+
+  return {
+    ...base,
+    verdict: "absent",
+    trustworthy: true,
+    reason: "no matching line, with a live control whose newest data reaches this window's end.",
+  };
 }
 
 /** grep-like, with a DISTINCT code for "do not trust me" so a caller cannot
@@ -184,13 +353,20 @@ export function exitCodeFor(j: Judgement): 0 | 1 | 2 {
   return j.verdict === "present" ? 0 : 1;
 }
 
+/** One query's answer: how many, and how recent the newest data the query could SEE is. */
+export interface QueryResult {
+  count: number;
+  /** The pipeline's frontier for this query, or null when it could not be read (#1533). */
+  newestMs: number | null;
+}
+
 /** Injectable HTTP boundary, so the core above is testable with a fake. */
-export type QueryFn = (q: CountQuery) => Promise<number>;
+export type QueryFn = (q: CountQuery) => Promise<QueryResult>;
 
 /** Run one count against Cloudflare's observability API. */
 export const cloudflareCount =
   (token: string): QueryFn =>
-  async (q: CountQuery): Promise<number> => {
+  async (q: CountQuery): Promise<QueryResult> => {
     const res = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/observability/telemetry/query`,
       {
@@ -202,7 +378,11 @@ export const cloudflareCount =
     if (!res.ok) {
       throw new Error(`observability query failed: HTTP ${res.status} ${await res.text()}`);
     }
-    return countFromResponse(await res.json());
+    // One parse, two readings: the count (which THROWS on an unrecognised shape rather
+    // than defaulting to 0) and the frontier (which returns null, because the caller maps
+    // null to the fail-safe side).
+    const body = await res.json();
+    return { count: countFromResponse(body), newestMs: newestBucketMsFromResponse(body) };
   };
 
 /** Count the needle AND the control in the same window, then judge. */
@@ -213,11 +393,18 @@ export async function search(input: {
   toIso: string;
   query: QueryFn;
 }): Promise<Judgement> {
-  const [needleCount, controlCount] = await Promise.all([
+  const [needle, control] = await Promise.all([
     input.query(buildCountQuery({ needle: input.needle, fromIso: input.fromIso, toIso: input.toIso })),
     input.query(buildCountQuery({ needle: input.control, fromIso: input.fromIso, toIso: input.toIso })),
   ]);
-  return judge({ needleCount, controlCount });
+  // The CONTROL's frontier decides recency, never the needle's: a needle with no matches
+  // has no frontier at all, and that is precisely the case being judged (#1533).
+  return judge({
+    needleCount: needle.count,
+    controlCount: control.count,
+    controlNewestMs: control.newestMs,
+    windowEndMs: Date.parse(input.toIso),
+  });
 }
 
 async function main(): Promise<void> {
@@ -260,19 +447,31 @@ async function main(): Promise<void> {
   });
 
   if (!j.trustworthy) {
+    // The REASON comes from judge, not from a second copy of the wording here: there is
+    // more than one way to be unverifiable now (a dead control, and a control that is
+    // alive but behind), and they need different actions. Printing one canned cause for
+    // both would send the reader to fix a query that is working (L11).
     console.error(
-      `UNVERIFIABLE: the positive control ("${control}") returned 0 rows in this window, so this query cannot find\n` +
-        `a line that is definitely there. Do NOT read the needle count (${j.needleCount}) as absence: the query,\n` +
-        "window, or credentials are wrong. (Is the deploy live? Is the window in the past? Is the token scoped\n" +
-        "to Workers Observability read?)",
+      `UNVERIFIABLE (control "${control}", ${j.controlCount} line(s)): ${j.reason}\n` +
+        `Do NOT read the needle count (${j.needleCount}) as absence.`,
     );
     process.exit(exitCodeFor(j));
   }
 
+  if (j.staleControlMinutes !== undefined) {
+    // stderr, and before the verdict, so it is seen even when stdout is piped somewhere
+    // and even when only the last line is read.
+    console.error(
+      `WARNING: the log data is ${j.staleControlMinutes} minutes behind the end of this window, ` +
+        "so this result does NOT cover its recent part. Do not read it as an absence there; " +
+        "use `npx wrangler tail` for anything recent. (#1535 will turn this into a refusal " +
+        "once the normal lag has been measured.)",
+    );
+  }
   console.log(
     `${j.verdict.toUpperCase()}: "${needle}" matched ${j.needleCount} line(s) between ${win.fromIso} and ${win.toIso}.`,
   );
-  console.log(`control ("${control}") matched ${j.controlCount}, so this result is trustworthy.`);
+  console.log(`control ("${control}") matched ${j.controlCount}: ${j.reason}`);
   process.exit(exitCodeFor(j));
 }
 
