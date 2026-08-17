@@ -10,6 +10,7 @@ import {
   rejectOoo,
   retryOooSideEffects,
   submitOoo,
+  EFFECTS,
   type OooDeps,
 } from "../src/lib/ooo/orchestration.ts";
 import {
@@ -137,6 +138,10 @@ interface World {
   /** What the cal.com dual-write returns, so a test can drive the skip and the
    *  failure paths apart (#1249/#1250). */
   calcomOutcome: string;
+  /** Coverage sweeps enqueued, with the exact bounds each was given (#1237). */
+  sweeps: { requestId: string; startIso: string; endIso: string; queued: number }[];
+  /** How the sweep answers: a count, or a throw, so the failure path is reachable. */
+  sweepResult: number | "throw";
 }
 
 function makeWorld(): World {
@@ -162,6 +167,8 @@ function makeWorld(): World {
     /** Every client id the orchestration sent, in order (#1469 idempotency). */
     clientIds: [] as (string | undefined)[],
     calcomOutcome: "skipped",
+    sweeps: [],
+    sweepResult: 0,
     /** The roster getUser reads, exposed so a test can add its own fixture user. */
     users: new Map<string, User>(
       [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
@@ -286,6 +293,11 @@ function makeWorld(): World {
       }
     },
     calcomAddOverrides: async () => world.calcomOutcome,
+    startCoverageSweep: async ({ requestId, startIso, endIso }) => {
+      if (world.sweepResult === "throw") throw new Error("sweep store unreachable");
+      world.sweeps.push({ requestId, startIso, endIso, queued: world.sweepResult });
+      return world.sweepResult;
+    },
     calcomRemoveOverrides: async () => "skipped",
     dmUserByEmail: async (email, text) => {
       world.dms.push({ email, text });
@@ -1229,6 +1241,127 @@ const input = {
   assert(
     w.clientIds[0] !== w.clientIds[1],
     "#1469: each request gets its own client id",
+  );
+}
+
+// --- #1237: approving time off enqueues a coverage sweep -----------------------
+//
+// The advisor is definitely absent, so every appointment still ahead of them inside the
+// window has to move. This is the step that starts that, and the shape matters more than the
+// counting: it must never be able to roll back an approval or lose the calendar work already
+// done, because those are what actually stop the agent being booked again.
+{
+  const w = makeWorld();
+  w.sweepResult = 3;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  const res = await approveOoo(id, manager, w.deps);
+  assert(res.ok, "the approval succeeds");
+
+  assert(w.sweeps.length === 1, `exactly one sweep is enqueued (got ${w.sweeps.length})`);
+  const sweep = w.sweeps[0]!;
+  // EXACT timestamps, not whole days. A half day absence must not pull in the morning's
+  // appointments, and the window here is 13:00 to 21:00 rather than a date.
+  assert(
+    sweep.startIso === input.startIso && sweep.endIso === input.endIso,
+    `the sweep gets the request's own bounds (got ${sweep.startIso} to ${sweep.endIso})`,
+  );
+  assert(sweep.requestId === id, "and is tied to the request, so the enqueue is idempotent by key");
+
+  const stored = w.requests.get(id)!;
+  const effects = (stored.side_effects ?? {}) as Record<string, string>;
+  assert(
+    effects[EFFECTS.coverage] === "ok (3 queued)",
+    `the outcome records how many moved (got ${effects[EFFECTS.coverage]})`,
+  );
+}
+
+{
+  // Nothing to move is a real, measured answer and must read differently from a failure: one
+  // needs no action and the other is retryable (L11).
+  const w = makeWorld();
+  w.sweepResult = 0;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const effects = (w.requests.get(id)!.side_effects ?? {}) as Record<string, string>;
+  assert(
+    effects[EFFECTS.coverage] === "ok (none in window)",
+    `an empty window says so in its own words (got ${effects[EFFECTS.coverage]})`,
+  );
+}
+
+{
+  // A throwing sweep must NOT roll back the approval or undo the calendar work. The agent
+  // being blocked is what stops new bookings landing; losing that to save a reassignment
+  // would make the absence worse than not sweeping at all.
+  const w = makeWorld();
+  w.sweepResult = "throw";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+
+  // Caught explicitly. Letting it propagate DOES fail the suite, but as a crash that names
+  // no property, and this is the single most important thing about this step: a sweep
+  // failure must never cost the approval or the calendar work that stops the agent being
+  // booked again. A named assertion says which invariant broke (L140, inverted).
+  let threw: unknown = null;
+  const res = await approveOoo(id, manager, w.deps).catch((e) => {
+    threw = e;
+    return { ok: false as const, error: String(e) };
+  });
+  assert(threw === null, `the sweep failure never escapes runPostApproval (threw: ${String(threw)})`);
+  assert(res.ok, "the approval still succeeds when the sweep throws");
+  const stored = w.requests.get(id)!;
+  assert(stored.status === "approved", "and the request is approved");
+  assert(stored.busy_block_id !== null, "and the busy block that blocks availability survives");
+  const effects = (stored.side_effects ?? {}) as Record<string, string>;
+  assert(
+    (effects[EFFECTS.coverage] ?? "").startsWith("failed"),
+    `the failure is recorded so the retry path can pick it up (got ${effects[EFFECTS.coverage]})`,
+  );
+  assert(
+    !(effects[EFFECTS.coverage] ?? "").includes("sweep store unreachable\n"),
+    "and the recorded reason is short, not a pasted stack",
+  );
+}
+
+{
+  // Idempotence at THIS layer, on top of the database key. A retry after a successful sweep
+  // must not enqueue a second one: the sweep moves customers' bookings, so doing it twice is
+  // not a harmless duplicate.
+  const w = makeWorld();
+  w.sweepResult = 2;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  assert(w.sweeps.length === 1, "the approval enqueues once");
+
+  const retried = await retryOooSideEffects(id, admin, w.deps);
+  assert(retried.ok, "the retry is accepted (a manager is refused, so this must use an admin)");
+  assert(
+    w.sweeps.length === 1,
+    `a retry after success does NOT enqueue again (got ${w.sweeps.length})`,
+  );
+}
+
+{
+  // And the other half: a retry after a FAILURE must try again, or the retry control is
+  // decoration on the one outcome it exists for.
+  const w = makeWorld();
+  w.sweepResult = "throw";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  assert(w.sweeps.length === 0, "the throwing sweep enqueued nothing");
+
+  w.sweepResult = 1;
+  const again = await retryOooSideEffects(id, admin, w.deps);
+  assert(again.ok, "the retry is accepted");
+  assert(w.sweeps.length === 1, "the retry enqueues it");
+  const effects = (w.requests.get(id)!.side_effects ?? {}) as Record<string, string>;
+  assert(
+    effects[EFFECTS.coverage] === "ok (1 queued)",
+    `and the outcome converges to ok (got ${effects[EFFECTS.coverage]})`,
   );
 }
 

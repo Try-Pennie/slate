@@ -35,6 +35,7 @@ export const EFFECT_LABELS: Record<string, string> = {
   [EFFECTS.busyBlock]: "the block that stops the booker offering those hours",
   [EFFECTS.calcom]: "the cal.com block, while cal.com is still taking bookings",
   [EFFECTS.agentDm]: "the Slack message telling the agent it was approved",
+  [EFFECTS.coverage]: "moving their upcoming appointments to another advisor",
 };
 
 /** One step, as a person reads it. */

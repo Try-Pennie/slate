@@ -53,7 +53,28 @@ describe("startBulkReassign", () => {
       reasonDetail: null,
       createdBy: "mgr1",
       actingAsUserId: null,
+      // #1237: null for an admin-started sweep, which has no request to key on.
+      oooRequestId: null,
     });
+  });
+
+  it("passes the time off request through, which is what makes the enqueue idempotent (#1237)", async () => {
+    // The unique key is on (ooo_request_id, range_start, range_end). Without the id the
+    // approval path would create a SECOND sweep on every retry or re-approval, and a sweep
+    // moves real customers' bookings, so that is not a harmless duplicate.
+    store.loadUserOrgId.mockResolvedValueOnce("org9");
+    store.createBulkReassignJob.mockResolvedValueOnce({ jobId: "job2", itemCount: 1 });
+    await startBulkReassign({
+      outUserId: "out1",
+      rangeStartIso: "2026-07-25T13:00:00.000Z",
+      rangeEndIso: "2026-07-25T21:00:00.000Z",
+      reason,
+      actor,
+      oooRequestId: "req-7",
+    });
+    expect(store.createBulkReassignJob).toHaveBeenCalledWith(
+      expect.objectContaining({ oooRequestId: "req-7" }),
+    );
   });
 
   it("throws when the out agent does not exist (no job is created)", async () => {

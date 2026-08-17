@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import { enqueueCoverageSweep } from "@/lib/booking/coverage-sweep-enqueue";
+import { coverageSelectionBounds } from "@/lib/booking/coverage-selection";
 import type { BookingStatus, BulkReassignItem, BulkReassignJob } from "@/lib/db/types";
 
 /**
@@ -15,19 +16,30 @@ import type { BookingStatus, BulkReassignItem, BulkReassignJob } from "@/lib/db/
 export const ACTIVE_BOOKING_STATUSES: BookingStatus[] = ["confirmed", "rescheduled"];
 
 /**
- * The booking ids currently assigned to `outUserId` that fall inside a coverage
- * window: active, still upcoming (start floored at now so a past booking is never
- * moved), and starting within [range_start, range_end). Paginated so an out agent
- * with many upcoming bookings is fully covered rather than truncated to one
- * PostgREST page (the count drives both the preview and the item snapshot).
+ * The booking ids currently assigned to `outUserId` that need covering.
+ *
+ * The rule itself lives in `coverage-selection.ts` and is shared with the pure predicate, so
+ * this query and anything that counts or previews the same gap cannot drift into meaning
+ * different things by "needs covering" (L16).
+ *
+ * #1237 corrected the third bound. This used to floor the start at the window start, so an
+ * appointment that BEGINS before the absence and runs into it was never selected, and the
+ * customer kept a slot with an advisor who is away for part of it. The floor is now NOW (never
+ * touch one already under way) and the overlap is expressed on `ends_at`, which is the field
+ * that actually answers "is this still running when the absence begins".
+ *
+ * Paginated so an out agent with many upcoming bookings is fully covered rather than truncated
+ * to one PostgREST page; the count drives both the preview and the item snapshot.
  */
 export async function coverageBookingIds(
   outUserId: string,
   rangeStartIso: string,
   rangeEndIso: string | null,
 ): Promise<string[]> {
-  const nowIso = new Date().toISOString();
-  const startFloor = rangeStartIso > nowIso ? rangeStartIso : nowIso;
+  const bounds = coverageSelectionBounds(
+    { startIso: rangeStartIso, endIso: rangeEndIso },
+    new Date().toISOString(),
+  );
   const rows = await selectAllPages<{ id: string }>("bulk-reassign-coverage-bookings", (from, to) => {
     let q = supabaseAdmin()
       // cap-safe: read every page via selectAllPages (.range below), so an out
@@ -36,10 +48,13 @@ export async function coverageBookingIds(
       .select("id")
       .eq("assigned_user_id", outUserId)
       .in("status", ACTIVE_BOOKING_STATUSES)
-      .gte("starts_at", startFloor)
+      // Strictly after now: one already under way is never moved out from under the customer.
+      .gt("starts_at", bounds.startsAfterIso)
+      // Still running when the absence begins. The bound that was missing.
+      .gt("ends_at", bounds.endsAfterIso)
       .order("starts_at", { ascending: true })
       .order("id", { ascending: true });
-    if (rangeEndIso) q = q.lt("starts_at", rangeEndIso);
+    if (bounds.startsBeforeIso) q = q.lt("starts_at", bounds.startsBeforeIso);
     return q.range(from, to);
   });
   return rows.map((r) => r.id);
