@@ -19,6 +19,7 @@ import {
   exitCodeFor,
   countFromResponse,
   newestBucketMsFromResponse,
+  CONTROL_FRESHNESS_MODE,
   CONTROL_NEEDLE,
   type Judgement,
 } from "./logs.ts";
@@ -152,9 +153,51 @@ assert(
     controlNewestMs: stale,
     windowEndMs: toMs,
   });
+  // BOTH modes are exercised, whichever one is currently shipping. The enforce branch is
+  // dormant today (#1535 turns it on once the normal lag has been measured), and a branch
+  // nobody constructs can be unreachable while the guard reads as thoroughly tested (L151).
+  const warned = judge({
+    needleCount: 0,
+    controlCount: 101,
+    controlNewestMs: stale,
+    windowEndMs: toMs,
+    freshnessMode: "warn",
+  });
   assert(
-    lagged.verdict === "unverifiable" && lagged.trustworthy === false,
-    "a live control whose newest line is HOURS old cannot make a zero trustworthy",
+    warned.verdict === "absent" && warned.staleControlMinutes === 180,
+    "warn mode still reports the absence, carrying the lag as a value a caller can act on",
+  );
+  assert(
+    /BEHIND/.test(warned.reason) && /wrangler tail/.test(warned.reason),
+    "and its reason says it is behind and names the instrument that is not",
+  );
+
+  const enforced = judge({
+    needleCount: 0,
+    controlCount: 101,
+    controlNewestMs: stale,
+    windowEndMs: toMs,
+    freshnessMode: "enforce",
+  });
+  assert(
+    enforced.verdict === "unverifiable" && enforced.trustworthy === false,
+    "enforce mode refuses: a control whose newest line is HOURS old cannot make a zero trustworthy",
+  );
+  assert(exitCodeFor(enforced) === 2, "and it exits with the do-not-trust-me code");
+
+  // The mode that actually ships is stated, so flipping the constant is a deliberate act
+  // that shows up in a diff of this file too, not a silent change of behaviour.
+  assert(
+    CONTROL_FRESHNESS_MODE === "warn",
+    "the shipping mode is warn today, held back until the normal lag is measured (#1535)",
+  );
+
+  // The staleness field is the half a script can act on, so it must be ABSENT on a healthy
+  // absence rather than present-and-zero, which would read as a measured lag of none.
+  assert(
+    judge({ needleCount: 0, controlCount: 101, controlNewestMs: fresh, windowEndMs: toMs })
+      .staleControlMinutes === undefined,
+    "and a fresh control carries no staleness field at all",
   );
   // Distinct from a dead control, because the actions differ: one means fix the query,
   // the other means the data has not landed yet, so wait or use wrangler tail (L11).
@@ -211,6 +254,10 @@ assert(
     controlNewestMs: null,
     windowEndMs: toMs,
   });
+  // Unchanged by the warn switch, deliberately: a frontier we could not READ is a different
+  // thing from one we read and found old. The first means the check could not run at all, so
+  // there is nothing to soften, and softening it would be the one shape that reintroduces a
+  // silent false absence.
   assert(
     unknownFrontier.trustworthy === false,
     "an unknown control frontier makes an absence untrustworthy rather than assuming freshness",
@@ -221,7 +268,7 @@ assert(
   // outcome would be right for a reason the check never measured, which is the failure mode
   // an instrument hides best (L11, L154).
   assert(
-    unknownFrontier.reason !== lagged.reason,
+    unknownFrontier.reason !== enforced.reason,
     "and says recency could not be ESTABLISHED, not that the pipeline is behind by some measured amount",
   );
   assert(
@@ -388,8 +435,8 @@ const e2eLagged = await search({
   },
 });
 assert(
-  e2eLagged.verdict === "unverifiable" && exitCodeFor(e2eLagged) === 2,
-  "a LAGGING control turns a zero into UNVERIFIABLE, end to end",
+  e2eLagged.staleControlMinutes === 180,
+  "a LAGGING control surfaces the lag end to end, through the real search path",
 );
 assert(
   /behind|lag/i.test(e2eLagged.reason),

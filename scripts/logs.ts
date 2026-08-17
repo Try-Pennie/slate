@@ -204,6 +204,12 @@ export interface Judgement {
   controlCount: number;
   /** Why, in words. Each cause is its own sentence: they need different actions (L11). */
   reason: string;
+  /**
+   * How far behind the window's end the control's newest line is, when that is BOTH known
+   * and past `CONTROL_FRESHNESS_MS`. Present on a warned absence so a caller can see the
+   * caveat as a value rather than having to parse it out of the prose (#1535).
+   */
+  staleControlMinutes?: number;
 }
 
 /**
@@ -217,6 +223,25 @@ export interface Judgement {
  * one: anything larger and the tool goes back to vouching for silence it cannot see.
  */
 export const CONTROL_FRESHNESS_MS = 15 * 60_000;
+
+/**
+ * WARN or ENFORCE on a stale control. Deliberately WARN for now (#1535).
+ *
+ * The 15 minutes above is a judgement, not a measurement, and it could not be calibrated
+ * when it was written: Cloudflare's pipeline was not merely lagging but STUCK, frozen at
+ * 14:00 UTC and still frozen 216 minutes later, so there was no normal to measure against.
+ * Shipping the refusal straight away would have made its first live run also its first
+ * enforcing run, against a threshold nobody has checked, which is the shape that has
+ * already caused an outage here once (L56).
+ *
+ * So an absence during a lag is still REPORTED as an absence, and the staleness rides
+ * along as a loud warning and a field on the verdict. That direction is the riskier one
+ * for correctness, which is the point of saying so plainly: the whole reason this tool
+ * exists is that a wrong "absent" is believed. It is temporary on purpose, and #1535 is
+ * the issue that measures the normal lag and flips this to "enforce", so the observe-only
+ * state cannot become invisible once the reason for it is forgotten (L65).
+ */
+export const CONTROL_FRESHNESS_MODE: "warn" | "enforce" = "warn";
 
 /**
  * The rule this tool exists for, in two halves.
@@ -246,6 +271,13 @@ export function judge(input: {
   controlCount: number;
   controlNewestMs?: number | null;
   windowEndMs?: number;
+  /**
+   * Overrides `CONTROL_FRESHNESS_MODE`. It exists so BOTH outcomes are exercised by the
+   * test suite whichever one is currently shipping: the enforce branch is dormant today,
+   * and a branch nobody constructs can be unreachable while the guard reads as thoroughly
+   * tested (L151). Production never passes this.
+   */
+  freshnessMode?: "warn" | "enforce";
 }): Judgement {
   const base = { needleCount: input.needleCount, controlCount: input.controlCount };
   if (input.controlCount === 0) {
@@ -286,15 +318,22 @@ export function judge(input: {
     const lagMs = input.windowEndMs - newest;
     if (lagMs > CONTROL_FRESHNESS_MS) {
       const mins = Math.round(lagMs / 60_000);
+      const behind =
+        `the query works, but it is running BEHIND: the control's newest line is ${mins} ` +
+        "minutes older than the end of the window, so the recent part of this window " +
+        "holds nothing queryable yet and an absence there means nothing. Read the live " +
+        "stream with `npx wrangler tail` before believing this.";
+      if ((input.freshnessMode ?? CONTROL_FRESHNESS_MODE) === "enforce") {
+        return { ...base, verdict: "unverifiable", trustworthy: false, reason: behind };
+      }
+      // Warn mode (#1535). The absence is still reported, and the caveat travels with it
+      // as both prose and a field, so it cannot be lost by a caller that reads only one.
       return {
         ...base,
-        verdict: "unverifiable",
-        trustworthy: false,
-        reason:
-          `the query works, but it is running BEHIND: the control's newest line is ${mins} ` +
-          "minutes older than the end of the window, so the recent part of this window " +
-          "holds nothing queryable yet and an absence there means nothing. Wait for " +
-          "ingestion to catch up, or read the live stream with `npx wrangler tail`.",
+        verdict: "absent",
+        trustworthy: true,
+        staleControlMinutes: mins,
+        reason: `no matching line, BUT ${behind}`,
       };
     }
   }
@@ -419,6 +458,16 @@ async function main(): Promise<void> {
     process.exit(exitCodeFor(j));
   }
 
+  if (j.staleControlMinutes !== undefined) {
+    // stderr, and before the verdict, so it is seen even when stdout is piped somewhere
+    // and even when only the last line is read.
+    console.error(
+      `WARNING: the log data is ${j.staleControlMinutes} minutes behind the end of this window, ` +
+        "so this result does NOT cover its recent part. Do not read it as an absence there; " +
+        "use `npx wrangler tail` for anything recent. (#1535 will turn this into a refusal " +
+        "once the normal lag has been measured.)",
+    );
+  }
   console.log(
     `${j.verdict.toUpperCase()}: "${needle}" matched ${j.needleCount} line(s) between ${win.fromIso} and ${win.toIso}.`,
   );
