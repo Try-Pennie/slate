@@ -130,6 +130,24 @@ export interface OooDeps {
   patchRequest(id: string, patch: Partial<OooRequest>): Promise<void>;
   getUser(userId: string): Promise<User | null>;
 
+  /**
+   * Enqueue the coverage sweep for an approved absence (#1237): move the bookings this agent
+   * cannot now take. Returns how many were queued.
+   *
+   * Injected rather than called directly so the orchestration stays drivable with in-memory
+   * fakes, including the branch where it throws, which is the one that must not be allowed to
+   * cost the approval.
+   */
+  startCoverageSweep(args: {
+    requestId: string;
+    outUserId: string;
+    startIso: string;
+    endIso: string;
+    /** The approving or retrying actor. Never null: both call sites have one, and a sweep
+     *  that moves customers' bookings should name a person in its audit trail. */
+    createdBy: string;
+  }): Promise<number>;
+
   /** The agent's primary calendar id from agent_calendars (fallback "primary"). */
   agentPrimaryCalendarId(userId: string): Promise<string>;
   /**
@@ -451,6 +469,7 @@ export const EFFECTS = {
   busyBlock: "busy_block",
   calcom: "calcom",
   agentDm: "agent_dm",
+  coverage: "coverage",
 } as const;
 
 /**
@@ -511,7 +530,9 @@ async function runPostApproval(
   request: OooRequest,
   agent: User,
   deps: OooDeps,
-  opts: { notifyAgent: boolean },
+  /** `actorId` is who approved or retried, recorded as the sweep's creator so the reassign
+   *  audit names a person rather than the system (#1237). */
+  opts: { notifyAgent: boolean; actorId: string },
 ): Promise<OooRequest> {
   const effects: Record<string, string> = { ...request.side_effects };
   const patch: Partial<OooRequest> = {};
@@ -726,9 +747,48 @@ async function runPostApproval(
     }
   }
 
+  // 6. Coverage sweep (#1237): the agent is definitely absent, so every appointment still
+  //    ahead of them inside the window has to move to somebody who is not.
+  //
+  //    LAST, and never able to throw. The steps above are what stop the agent being booked
+  //    again; losing them to a sweep failure would make the absence worse than not sweeping at
+  //    all. A `failed` outcome is recorded and is retryable through the existing admin path.
+  //
+  //    Skipped once the effect starts with "ok", which is the right test HERE and not the
+  //    #1464 mistake it may resemble: the artifact is a job row this function does not hold an
+  //    id for, and the enqueue is idempotent by a database key on (request, window) anyway, so
+  //    the marker is a cheap first gate rather than the only guard. Re-running would also move
+  //    customers' bookings a second time, which is not a harmless duplicate.
+  if (!effects[EFFECTS.coverage]?.startsWith("ok")) {
+    try {
+      const queued = await deps.startCoverageSweep({
+        requestId: request.id,
+        outUserId: agent.id,
+        // The request's OWN bounds, exact timestamps rather than whole days, so a half day
+        // absence does not pull in the whole day's appointments.
+        startIso: request.starts_at,
+        endIso: request.ends_at,
+        createdBy: opts.actorId,
+      });
+      // Nothing to move is a measured answer and reads differently from a failure: one needs
+      // no action, the other is retryable (L11).
+      effects[EFFECTS.coverage] =
+        queued > 0 ? `ok (${queued} queued)` : "ok (none in window)";
+    } catch (e) {
+      effects[EFFECTS.coverage] = `failed: ${shortReason(e)}`;
+    }
+  }
+
   patch.side_effects = effects;
   await deps.patchRequest(request.id, patch);
   return { ...request, ...patch };
+}
+
+/** One line, no stack: side_effects is read by a person in an admin panel, and a pasted
+ *  Google or Postgres stack there is unreadable and pushes the actual reason off screen. */
+function shortReason(e: unknown): string {
+  const text = e instanceof Error ? e.message : String(e);
+  return text.split("\n")[0]!.slice(0, 200);
 }
 
 /** Undo of every approval artifact (cancel + modify-of-approved share this). */
@@ -818,6 +878,7 @@ export async function approveOoo(
   if (!agent) return fail("The requesting agent no longer exists.");
   const updated = await runPostApproval(flipped.request, agent, deps, {
     notifyAgent: true,
+    actorId: actor.id,
   });
   await updateManagerStatus(request, agent, deps, "approved");
   return { ok: true, request: updated };
@@ -1054,6 +1115,7 @@ export async function retryOooSideEffects(
   });
   const updated = await runPostApproval(request, agent, deps, {
     notifyAgent: false,
+    actorId: actor.id,
   });
   return { ok: true, request: updated };
 }

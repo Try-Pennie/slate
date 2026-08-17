@@ -2173,6 +2173,11 @@ export interface StartBulkReassignInput {
   rangeEndIso: string | null;
   reason: ValidatedReason;
   actor: BookingActor;
+  /** The approved time off this sweep covers, when it came from one (#1237). Present makes
+   *  the enqueue idempotent by database key on (request, window), so re-approving or retrying
+   *  converges on ONE sweep rather than moving customers' bookings twice. Absent for an
+   *  admin-initiated sweep, which has no request to key on. */
+  oooRequestId?: string | null;
 }
 
 /**
@@ -2194,6 +2199,7 @@ export async function startBulkReassign(
     reasonDetail: input.reason.detail,
     createdBy: input.actor.userId,
     actingAsUserId: input.actor.actingAsUserId ?? null,
+    oooRequestId: input.oooRequestId ?? null,
   });
 }
 

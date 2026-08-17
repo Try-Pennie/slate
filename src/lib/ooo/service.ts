@@ -10,6 +10,7 @@ import {
   deleteEventOnCalendar,
 } from "@/lib/google/calendar";
 import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
+import { startBulkReassign } from "@/lib/booking/service";
 import {
   dmSlackUserByEmail,
   postSlack,
@@ -184,6 +185,23 @@ function realDeps(): OooDeps {
 
     // Cal.com dual-write only during the cutover transition; flag off records
     // "skipped" so side_effects stays honest.
+    // #1237: the agent is definitely absent, so their upcoming appointments move. Goes
+    // through the SAME sweep an admin starts from the coverage panel, so there is one
+    // implementation of "move this agent's bookings" rather than a second that drifts.
+    // `oooRequestId` is what makes it idempotent: re-approving or retrying converges on one
+    // sweep rather than moving customers' bookings twice.
+    startCoverageSweep: async ({ requestId, outUserId, startIso, endIso, createdBy }) => {
+      const { itemCount } = await startBulkReassign({
+        outUserId,
+        rangeStartIso: startIso,
+        rangeEndIso: endIso,
+        reason: { code: "coverage", detail: null },
+        actor: { userId: createdBy, actingAsUserId: null },
+        oooRequestId: requestId,
+      });
+      return itemCount;
+    },
+
     calcomAddOverrides: async (email, startIso, endIso) =>
       oooCalcomDualWrite()
         ? addOooOverrides(email, startIso, endIso)
