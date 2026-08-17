@@ -88,6 +88,10 @@ import {
 } from "@/lib/monitor/migration-drift";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
+import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
+import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
+import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { WEBHOOK_EVENTS, deliberatelyUnsubscribedReason } from "@/lib/webhooks/events";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
@@ -1248,6 +1252,71 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // Are the request rate limits actually usable in the running deployment? (#1529)
+    //
+    // The hot path already reports a fail-open per request, but it can only ever speak
+    // when something failed, and its silence is produced by a cooldown, a deliberately
+    // swallowed alert, and an absence of traffic all at once. So a recovered limiter and a
+    // permanently broken one read identically, which is what #1525 cost an afternoon to
+    // establish by hand. This measures the same predicate from inside the deployed Worker
+    // and owns the CONDITION, so the state can end.
+    //
+    // Costs no DB read and no subrequest: resolving the bindings is a property read off the
+    // request env, and the one real call goes to the in-datacenter limiter rather than over
+    // the network. It matters because four minute lanes share one invocation budget (#1246).
+    const edgeLimiters = await steps.run("edge_limiters", null, () =>
+      runEdgeLimiterCheck({
+        expected: EDGE_LIMITER_BINDINGS,
+        read: async () => {
+          const onWorkersRuntime = isWorkersRuntime();
+          const runtime = workersRuntimeMarker();
+          // Off the platform there are no bindings to look for, and saying so is the
+          // difference between this lane skipping and it clearing a live page.
+          if (!onWorkersRuntime) {
+            return { onWorkersRuntime, runtime, presentBindings: null, serviceAnswered: null };
+          }
+          let env: Record<string, unknown> | null = null;
+          try {
+            env = getCloudflareContext().env as unknown as Record<string, unknown>;
+          } catch {
+            // ON the platform, inside a request handler: an unreadable context is the
+            // fault itself, not a failure to measure. presentBindings stays null and the
+            // verdict reports it as its own cause.
+            return { onWorkersRuntime, runtime, presentBindings: null, serviceAnswered: null };
+          }
+          const presentBindings = EDGE_LIMITER_BINDINGS.filter((name) => Boolean(env?.[name]));
+          // Presence is free, but only a real call proves the SERVICE answers, so exactly
+          // one binding is called: the public availability lookup, the one endpoint anybody
+          // on the internet can reach. A refusal counts as answering, because a limiter
+          // that turns a call away is a limiter that works. The key is the monitor's own,
+          // so it can never spend a real visitor's budget, and one call a minute is far
+          // inside a 30-per-minute window.
+          const probe = env?.["AVAIL_RATE_LIMITER"] as
+            | { limit?: (opts: { key: string }) => Promise<{ success: boolean }> }
+            | undefined;
+          const serviceAnswered = probe?.limit
+            ? await probe
+                .limit({ key: "slate-monitor-edge-limiter-probe" })
+                .then(() => true)
+                .catch(() => false)
+            : null;
+          return { onWorkersRuntime, runtime, presentBindings, serviceAnswered };
+        },
+        // alert-key: edge_limiter_unusable
+        // alert-text-ok: our own copy from edge-limiter-health.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // A condition: it stays true until a deploy puts the ceilings back, so it has to be
+        // able to end. This is the all-clear #1529 asked for.
+        // alert-key: edge_limiter_unusable
+        // all-clear-proof: scripts/test-edge-limiter-health.ts - an unmeasured tick (off
+        // the Workers runtime, or a read that threw) clears nothing, because it measured
+        // nothing.
+        resolve: resolveAlert,
+        cooldownMs: settings.cooldownMs.edge_limiter_unusable,
+        log: (msg) => log.info("edge-limiter", { msg }),
+      }),
+    );
+
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
@@ -1390,6 +1459,11 @@ export async function GET(req: NextRequest) {
       // failed: "no event is unsubscribed" and "could not tell" must not render the
       // same, since the second is the state this check exists to notice (#1459).
       webhookSubscribers,
+      // null when the step failed; status "unmeasured" inside when the tick could not
+      // look. Carries the runtime marker it observed on the HEALTHY path too, which is
+      // the only place the assumption behind the hot path's runtime gate can be read
+      // back off production rather than off Cloudflare's documentation (L82).
+      edgeLimiters,
       truncated,
       volume,
       failureRate,

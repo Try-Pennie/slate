@@ -1,8 +1,9 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import type { RateLimitRule } from "@/lib/rate-limit-core";
+import type { RateLimitRule, EdgeLimiterBinding } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
+import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 
 export {
   clientIp,
@@ -109,14 +110,6 @@ interface EdgeLimiter {
   limit(opts: { key: string }): Promise<{ success: boolean }>;
 }
 
-type EdgeLimiterBinding =
-  | "AVAIL_RATE_LIMITER"
-  | "BOOKING_RATE_LIMITER"
-  | "ROUTING_RATE_LIMITER"
-  | "BOOKINGAPI_RATE_LIMITER"
-  | "BOOKINGAPI_IP_RATE_LIMITER"
-  | "BOOKINGAPI_READ_RATE_LIMITER";
-
 interface EdgeLimiterConfig {
   binding: EdgeLimiterBinding;
   /** Token-safe area name; used to key the fail-open / block alert throttle. */
@@ -182,16 +175,59 @@ async function edgeWithinLimit(key: string, cfg: EdgeLimiterConfig): Promise<boo
  *  duplicate attempts across isolates are harmless); alert_state still makes the alert correct. */
 const lastEdgeAlertAttemptMs = new Map<string, number>();
 
+/** Last time THIS isolate LOGGED a fail-open, keyed by area. Deliberately a separate,
+ *  far looser gate than the alert's (#1525).
+ *
+ *  The log used to sit BELOW the alert gate above, so a sustained outage recorded one line
+ *  per isolate per 30 minutes. #1525's own direction was "check the Cloudflare logs for
+ *  tag=rate-limit", and against that record an outage lasting a shift is indistinguishable
+ *  from a single request having a bad moment. What needed bounding on a hot path was the
+ *  DB round-trip, not a console line, so the two are bounded separately: the log often
+ *  enough to show the outage's shape, and still bounded, because a limiter failing under
+ *  the flood it exists to absorb would otherwise write a line per unbounded request. */
+const lastEdgeLogMs = new Map<string, number>();
+const LIMITER_LOG_COOLDOWN_MS = 10_000;
+
+/** Why a limiter check could not be answered. The two are NOT the same news (L11). */
+type EdgeLimiterFailure =
+  /** On Cloudflare, but the binding is absent or the limiter threw: the throttle is
+   *  genuinely off for requests we are genuinely serving. */
+  | "outage"
+  /** Not on the Workers runtime at all (`next dev`, a node script): there is no limiter
+   *  here to be broken and no production request being served. */
+  | "no-platform";
+
 async function alertEdgeLimiterDown(
   cfg: { area: string; friendly: string },
   reason: string,
 ): Promise<void> {
+  // #1525: decide FIRST whether this is even about production. Off the Workers runtime
+  // the fail-open is expected and says nothing about the deployed limiter, so paging on
+  // it is a false alarm sent from a laptop to a real on-call, and the live alert store is
+  // what a dev server writes to. Silent to Slack, never silent full stop, and under its
+  // own wording rather than borrowed outage copy.
+  const failure: EdgeLimiterFailure = isWorkersRuntime() ? "outage" : "no-platform";
   const now = Date.now();
+
+  // The raw reason (a missing binding, or String(err) that off-platform is a Next.js
+  // config stack trace) goes to the LOGS, never to the human-facing Slack line.
+  if (now - (lastEdgeLogMs.get(cfg.area) ?? 0) >= LIMITER_LOG_COOLDOWN_MS) {
+    lastEdgeLogMs.set(cfg.area, now);
+    if (failure === "no-platform") {
+      log.error("rate-limit", {
+        msg: "not running on the Cloudflare runtime, so the throttle is not enforced here",
+        area: cfg.area,
+        runtime: workersRuntimeMarker(),
+        reason,
+      });
+    } else {
+      log.error("rate-limit", { msg: "limiter failing open", area: cfg.area, reason });
+    }
+  }
+
+  if (failure === "no-platform") return;
   if (now - (lastEdgeAlertAttemptMs.get(cfg.area) ?? 0) < LIMITER_BROKEN_COOLDOWN_MS) return;
   lastEdgeAlertAttemptMs.set(cfg.area, now);
-  // The raw reason (a missing binding, or String(err) that in dev is a Next.js
-  // config stack trace) goes to the LOGS, never to the human-facing Slack line.
-  log.error("rate-limit", { msg: "limiter failing open", area: cfg.area, reason });
   await alertBestEffort(
     `rate_limit_broken:${cfg.area}`,
     limiterFailOpenAlert(cfg.friendly),

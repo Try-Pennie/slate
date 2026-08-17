@@ -16,10 +16,21 @@ const sendThrottledAlert = vi.hoisted(() =>
 const limit = vi.hoisted(() => vi.fn(async (_opts: { key: string }) => ({ success: true })));
 const cf = vi.hoisted(() => ({ env: {} as Record<string, unknown> }));
 const getCloudflareContext = vi.hoisted(() => vi.fn(() => ({ env: cf.env })));
+const isWorkersRuntime = vi.hoisted(() => vi.fn(() => true));
+// The marker is REPORTED, never decided on, so the real one is fine here: under
+// vitest it reads back node's user agent, which is exactly the value a dev server
+// would log.
+const workersRuntimeMarker = vi.hoisted(() => () => globalThis.navigator?.userAgent ?? null);
 
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
 vi.mock("@opennextjs/cloudflare", () => ({ getCloudflareContext }));
+// #1525: the fail-open ALERT is gated on actually running on the Workers runtime,
+// because the same code path runs under `next dev` against the LIVE alert store, and
+// a laptop paging the on-call about a production abuse control being off is a false
+// alarm that costs an investigation. Defaults to true here so every existing case
+// still asserts production behaviour; the off-platform case sets it false explicitly.
+vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime, workersRuntimeMarker }));
 
 import {
   allowRequest,
@@ -41,6 +52,7 @@ const RULES: RateLimitRule[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   rpc.mockResolvedValue({ data: true, error: null });
+  isWorkersRuntime.mockReturnValue(true);
 });
 
 describe("allowRequest (#597)", () => {
@@ -256,6 +268,93 @@ describe("availabilityWithinLimit (#796)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+  });
+
+  // #1525. On 2026-08-17 `rate_limit_broken:availability` paged at 14:44 UTC saying the
+  // only abuse control on the one endpoint anybody on the internet can reach was OFF.
+  // Production's limiter was enforcing correctly the whole time (measured: 45 sequential
+  // requests over one socket, the first 29 served and #30 onward 429), and Cloudflare's
+  // logs held ZERO `tag=rate-limit` lines across the window while the positive control
+  // (`tag=recompute`) returned 101. The alert came from a machine running `next dev`:
+  // next.config.ts does not call initOpenNextCloudflareForDev, so getCloudflareContext
+  // THROWS there, and .env.local points at the live alert store and the live Slack channel.
+  //
+  // Off the Workers runtime there is no limiter to be broken and no production request
+  // being served, so the claim the alert makes is not just unproven, it is not even
+  // about anything. It must not be made (L36: an alert that cries wolf gets ignored).
+  it("#1525 does NOT page when there is no Cloudflare platform at all (a dev server)", async () => {
+    isWorkersRuntime.mockReturnValue(false);
+    getCloudflareContext.mockImplementation(() => {
+      throw new Error("`getCloudflareContext` has been called without having called `initOpenNextCloudflareForDev`");
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Still fails open: dev must keep working.
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    // Silent to Slack, never silent full stop, and it says WHICH cause this is rather
+    // than borrowing the production outage wording (L11).
+    const logged = JSON.stringify(consoleErr.mock.calls);
+    expect(logged).toMatch(/not running on the Cloudflare runtime/i);
+    expect(logged).not.toMatch(/failing open/);
+    consoleErr.mockRestore();
+  });
+
+  // The other half, and the reason the gate is a runtime check rather than a match on the
+  // error text: ON the platform, an unreadable context means the throttle really is off
+  // for requests we are really serving, and that must still page.
+  it("#1525 DOES page when the platform is Cloudflare and the context cannot be read", async () => {
+    getCloudflareContext.mockImplementation(() => {
+      throw new Error("context unavailable");
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  // #1525 asked the reader to "check the Cloudflare logs for tag=rate-limit". That
+  // instruction only works if the log records the outage. It did not: the log line sat
+  // BELOW the 30-minute alert gate, so a sustained outage wrote one line per isolate per
+  // half hour and the logs undercounted it by orders of magnitude. The DB round-trip is
+  // what needed bounding on a hot path, not a console line.
+  it("#1525 logs every fail-open, not only the ones that clear the alert cooldown", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await availabilityWithinLimit("1.2.3.4");
+    vi.setSystemTime(clock + 11_000);
+    await availabilityWithinLimit("1.2.3.4");
+    vi.setSystemTime(clock + 22_000);
+    await availabilityWithinLimit("1.2.3.4");
+
+    // One alert (the DB round-trip stays bounded)...
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    // ...but three records of the outage.
+    const failOpenLines = consoleErr.mock.calls.filter((c) =>
+      String(c[0] ?? "").includes("limiter failing open"),
+    );
+    expect(failOpenLines).toHaveLength(3);
+    consoleErr.mockRestore();
+  });
+
+  // The log is throttled too, just far more loosely, because a limiter is likeliest to
+  // fail under the very flood it exists to absorb and an unbounded line per request is a
+  // second outage. Bounded per isolate per area, not per 30 minutes.
+  it("#1525 still bounds the log, so a flood cannot write a line per request", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    for (let i = 0; i < 40; i++) await availabilityWithinLimit("1.2.3.4");
+
+    const failOpenLines = consoleErr.mock.calls.filter((c) =>
+      String(c[0] ?? "").includes("limiter failing open"),
+    );
+    expect(failOpenLines).toHaveLength(1);
+    consoleErr.mockRestore();
   });
 });
 

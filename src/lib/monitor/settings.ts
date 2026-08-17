@@ -28,7 +28,8 @@ export type MonitorAlertKey =
   | "booker_empty_reason"
   | "roster_coverage_gap"
   | "ooo_protection_lost"
-  | "webhook_event_no_subscriber";
+  | "webhook_event_no_subscriber"
+  | "edge_limiter_unusable";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -50,6 +51,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "roster_coverage_gap",
   "ooo_protection_lost",
   "webhook_event_no_subscriber",
+  "edge_limiter_unusable",
 ];
 
 /**
@@ -150,6 +152,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Page when a booking event Slate sends has no active webhook endpoint subscribed to it, so the delivery is recorded and reaches no downstream system.",
   },
   {
+    key: "edge_limiter_unusable",
+    label: "Request rate limits not being enforced",
+    help: "Page when the running deployment cannot use its request rate limits, so the public endpoints are open to unlimited traffic from one source. Clears itself once they are enforced again.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -232,6 +239,11 @@ export const MONITOR_DEFAULTS = {
     // daily rather than hourly: the fix is not urgent to the minute, and the state
     // can legitimately last as long as the person who has to make that edit is away.
     webhook_event_no_subscriber: 24 * 60 * 60_000,
+    // The request ceilings being off (#1529) persists until a deploy puts them back, and
+    // nothing self-heals it, so repeat while it lasts. Hourly rather than daily: unlike an
+    // unsubscribed webhook event, the state leaves a public endpoint unprotected, and
+    // unlike the fail-open incident it replaces, this one can say when it is over.
+    edge_limiter_unusable: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

@@ -148,6 +148,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "the drift check sees the applied version catch up.",
   },
   {
+    key: "edge_limiter_unusable",
+    kind: "condition",
+    why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",
+  },
+  {
     key: "webhook_event_no_subscriber",
     kind: "condition",
     why:
@@ -376,7 +381,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "rate_limit_broken:*",
     kind: "incident",
-    why: "The limiter failed open for specific requests already served; a later request simply works.",
+    // Still an incident, and #1529 asked whether it should be a condition. It should not,
+    // but only because the ONGOING state was given its own key rather than folded in here.
+    // This key reports a fail-open on specific requests already served, per IP and per
+    // datacenter, and one colo having a bad minute is a finished event with no healthy
+    // state to observe: the limiter succeeding does not call anything, and making it do so
+    // would put a database round-trip on the booker's hot path, which is exactly what the
+    // edge limiter exists to avoid. So the durable half lives in edge_limiter_unusable,
+    // which the monitor lane measures once a minute and CAN clear.
+    why: "The limiter failed open for specific requests already served; a later request simply works. The ongoing state, a limiter that is unusable in the running deployment, is a separate condition (edge_limiter_unusable) that resolves.",
   },
   {
     key: "rate_limit_refund_broken:*",

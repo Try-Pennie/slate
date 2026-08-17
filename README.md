@@ -163,6 +163,7 @@ src/lib/offboarding    deactivate / reactivate departed agents
 src/lib/bookable       move an agent in/out of the booking pool (bookable flag) + activation guard
 src/lib/auth           login provisioning + role/RBAC + admin impersonation
 src/lib/http           edge-level request handling (http->https redirect, served by worker/index.ts)
+src/lib/platform       which runtime we are on, so a dev machine never pages about production
 src/lib/{calcom,date,db,embed,supabase}   cal.com dual-write, Luxon helpers, hand-written DB types, embed origin, Supabase clients
 src/app/api            availability, bookings, auth callback, google push, cron/* lanes, keyed reassign/booking/offboarding APIs
 src/app/admin          admin: agents, hours, event types, buckets, webhook, settings, monitor tuning
