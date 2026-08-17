@@ -43,6 +43,11 @@ import {
   bookingApiReadWithinLimit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
+import { UNIDENTIFIED_IP } from "@/lib/rate-limit-core";
+import {
+  BURST_CEILING_PER_MINUTE,
+  BURST_ESCALATE_AT,
+} from "@/lib/rate-limit-burst";
 
 const RULES: RateLimitRule[] = [
   { prefix: "test:m", windowSeconds: 60, max: 5 },
@@ -179,6 +184,26 @@ describe("refundRequest (#796)", () => {
 //
 // Fail open, as before: a limiter hiccup must never break a legitimate Booker load. But
 // fail LOUD, because a rate limiter nobody knows is dead is worse than no rate limiter.
+/**
+ * The shared burst counter (#1536), as a Durable Object namespace fake.
+ *
+ * `burstCount` is what the object answers, so a test can put an address over the ceiling
+ * without driving hundreds of requests through the escalation threshold first.
+ */
+let burstCount = 1;
+let burstFetches = 0;
+const burstNamespace = () => ({
+  idFromName: (name: string) => ({ name }),
+  get: () => ({
+    fetch: async () => {
+      burstFetches += 1;
+      return new Response(JSON.stringify({ count: burstCount }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  }),
+});
+
 describe("availabilityWithinLimit (#796)", () => {
   // The in-isolate alert gate is time-based, so each test starts past the last one's
   // cooldown rather than reaching into module state to reset it.
@@ -188,7 +213,12 @@ describe("availabilityWithinLimit (#796)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     clock += 60 * 60_000;
     vi.setSystemTime(clock);
-    cf.env = { AVAIL_RATE_LIMITER: { limit } };
+    // BOTH bindings, because production binds both and a fake that binds one is a fake
+    // that agrees with an assumption nothing checks (L143): with the burst namespace
+    // absent, every case here would run through the missing-binding alarm instead of
+    // through the path it names.
+    burstCount = 1;
+    cf.env = { AVAIL_RATE_LIMITER: { limit }, AVAIL_BURST_LIMITER: burstNamespace() };
     limit.mockResolvedValue({ success: true });
     getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
   });
@@ -200,6 +230,86 @@ describe("availabilityWithinLimit (#796)", () => {
   it("allows a request the limiter permits", async () => {
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
     expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // --- the second ceiling (#1536) ---------------------------------------------
+  // The decision logic is pinned in scripts/test-burst-ceiling.ts against an injected
+  // counter. What can only be checked HERE is the wiring: that the availability path
+  // actually reaches it, that a refusal from it refuses the request, and that a counter
+  // we cannot reach fails open and loud like every other limiter on this path (L3: built
+  // is not wired, and wired is not proven).
+
+  it("costs no round trip to the shared counter on an ordinary request", async () => {
+    burstFetches = 0;
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    expect(burstFetches).toBe(0);
+  });
+
+  it("refuses a request once the shared counter puts the address past the ceiling", async () => {
+    burstCount = BURST_CEILING_PER_MINUTE + 1;
+    let allowed = true;
+    // Past the escalation threshold, which is where the shared counter is consulted at all.
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      allowed = await availabilityWithinLimit("9.9.9.9");
+    }
+    expect(allowed).toBe(false);
+    // And a throttled visitor is still not an incident, exactly as for the edge check.
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("serves the request, loudly, when the shared counter cannot be reached", async () => {
+    cf.env = {
+      AVAIL_RATE_LIMITER: { limit },
+      AVAIL_BURST_LIMITER: {
+        idFromName: (name: string) => ({ name }),
+        get: () => ({
+          fetch: async () => new Response("nope", { status: 500 }),
+        }),
+      },
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    let allowed = false;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      allowed = await availabilityWithinLimit("8.8.8.8");
+    }
+    expect(allowed).toBe(true);
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
+    // Plain language, no internal binding name, same contract as the edge limiter's.
+    expect(text).toMatch(/availability/i);
+    expect(text).not.toMatch(/AVAIL_BURST_LIMITER/);
+    consoleErr.mockRestore();
+  });
+
+  it("serves the request, loudly, when the burst binding is missing entirely", async () => {
+    cf.env = { AVAIL_RATE_LIMITER: { limit } };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    // wrangler.jsonc always binds it, so absent means broken rather than unconfigured, and
+    // the specific cause is still recoverable from the logs.
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/AVAIL_BURST_LIMITER/);
+    consoleErr.mockRestore();
+  });
+
+  it("declines to judge a request with no identifiable address, and says so", async () => {
+    // "unknown" is a SHARED bucket, not an address: counting unrelated callers against one
+    // counter would turn a per-address ceiling into a global one, and the first thing it
+    // would refuse is real leads (L75). Behind Cloudflare this cannot happen, which is
+    // exactly why reaching it is worth reporting.
+    burstFetches = 0;
+    burstCount = BURST_CEILING_PER_MINUTE + 1;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    let allowed = false;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      allowed = await availabilityWithinLimit(UNIDENTIFIED_IP);
+    }
+    expect(allowed).toBe(true);
+    expect(burstFetches).toBe(0);
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    consoleErr.mockRestore();
   });
 
   it("blocks when the limiter says the IP is over, and stays silent (a throttled visitor is not an incident)", async () => {

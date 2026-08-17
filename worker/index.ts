@@ -16,6 +16,11 @@ import { httpsRedirect } from "@/lib/http/https-redirect";
 import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
 
+// The shared per-address burst counter (#1536). A Durable Object is the only
+// primitive that can hold ONE count across isolates, which is what the native
+// rate limiter cannot do and why a parallel burst sailed through its ceiling.
+export { BurstLimiter } from "./burst-limiter";
+
 // Durable Object classes the generated worker exports must be re-exported
 // from the entry wrangler actually loads.
 export {

@@ -165,8 +165,20 @@ export function clientIp(headers: Headers): string {
   if (cf) return cf.trim();
   const xff = headers.get("x-forwarded-for");
   if (xff) return xff.split(",")[0]!.trim();
-  return "unknown";
+  return UNIDENTIFIED_IP;
 }
+
+/**
+ * The key `clientIp` returns when it cannot identify the caller.
+ *
+ * Named, and exported, because it is not just a label: it is a SHARED bucket. Behind Cloudflare
+ * `cf-connecting-ip` is always set, so this should never occur in production, but any
+ * enforcement keyed on it counts unrelated callers against one counter, so a per-address ceiling
+ * becomes a global one. `availabilityWithinBurstCeiling` declines to judge it for exactly that
+ * reason (#1536, L75): refusing a real lead because we could not tell who they were is worse
+ * than serving one, and the per-datacenter check above still applies.
+ */
+export const UNIDENTIFIED_IP = "unknown";
 
 /**
  * Human-readable alert copy for the rate-limit alerts. A limiter alert lands in

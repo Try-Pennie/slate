@@ -83,6 +83,43 @@ The rule it implies for a new monitor check: make the first read the cheap one a
 skip the rest when it comes back empty. #1238's coverage-gap check does exactly
 that, so an ordinary tick with no approved absences pays for one query.
 
+## The native rate limiter does not bound a concurrent burst
+
+The `ratelimits` bindings are enforced **per datacenter** and counted
+**approximately**, which the docs say and the code comment already called
+permissive. The size of the gap is the part worth writing down. Measured against
+production on 2026-08-17, from one machine, same address, same second, against
+`/api/availability` and its 30 a minute ceiling:
+
+| shape | requests | blocked |
+|---|---|---|
+| 45 sequential down one keep-alive socket, 1.06s | 45 | 16, first 429 at request **30** |
+| 60 fired in parallel into one datacenter (EWR), 1.1s | 60 | **0** |
+
+Sequential is enforced at exactly the configured number. Parallel sails straight
+through. So the practical guarantee is not 30 a minute, it is 30 a minute **per
+isolate**, which a burst spreads across for free. Read `wrangler.jsonc`'s numbers
+as "the sustained ceiling for a well behaved caller", never as a bound on abuse.
+
+**What closes it is a Durable Object**, because it is the only primitive here
+that holds ONE count across isolates (#1536). `AVAIL_BURST_LIMITER` /
+`BurstLimiter` is the first DO this project binds. Two things about its shape are
+deliberate and are the parts to preserve if it is ever changed:
+
+- it sits **behind** the fast check, and is consulted only once an address has
+  crossed an escalation threshold **in one isolate**, where counting is exact
+  because JavaScript is single threaded. So an ordinary booker load still pays no
+  round trip, which is the property the whole cache-first design rests on.
+- its ceiling (300 a minute per address) is **ten times** the edge limiter's, on
+  purpose. A large office behind one NAT address is a real lead source, and the
+  gap above is the only reason those leads are not already being refused, so
+  making 30 real would ship a refusal to them. This is a flood backstop, not a
+  tightening.
+
+It fails **open and loud** like every other limiter here, and it declines to
+judge a request whose address could not be identified at all, because `"unknown"`
+is a shared bucket rather than an address.
+
 ## Subrequests are NOT a constraint
 
 Cloudflare **removed the old 1,000 subrequest cap on 2026-02-11**. Workers Paid is
