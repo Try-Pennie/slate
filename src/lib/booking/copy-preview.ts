@@ -208,16 +208,22 @@ export function bookerCopyScreens(): CopyScreen[] {
       ],
     },
     {
-      screen: "Booker: the soonest times still open",
+      screen: "Booker and manage: the soonest times still open",
       purpose:
-        "What sits UNDER a refused confirm (#1319). The lead has filled in every field and " +
-        "pressed the final button, so a refusal with nothing beneath it is where they give " +
-        "up. Read the five states together: two of them are the ones that quietly turn a " +
-        "recovery back into a dead end.",
+        "What sits UNDER a refusal (#1319, #1549). The lead has filled in every field and " +
+        "pressed the final button, or has come from their confirmation email to move the " +
+        "call they already have, so a refusal with nothing beneath it is where they give " +
+        "up. Read the six states together: two of them are the ones that quietly turn a " +
+        "recovery back into a dead end, and the two hints are the same place saying " +
+        "different things to two different people.",
       lines: [
         { state: "still fetching the fresh times", text: NEAREST_TIMES_COPY.looking },
         { state: "there are alternatives", text: NEAREST_TIMES_COPY.heading },
         { state: "under the list, so a tap is not a booking", text: NEAREST_TIMES_COPY.hint },
+        {
+          state: "under the list, for a lead moving a call they already have",
+          text: NEAREST_TIMES_COPY.hintMove,
+        },
         { state: "we looked and there is genuinely nothing", text: NEAREST_TIMES_COPY.none },
         { state: "we could NOT look, which is not the same thing", text: NEAREST_TIMES_COPY.lookupFailed },
       ],

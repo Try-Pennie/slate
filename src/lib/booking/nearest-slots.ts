@@ -52,3 +52,42 @@ export function nearestSlots(
   readable.sort((a, b) => a.ms - b.ms);
   return readable.slice(0, count).map((s) => s.iso);
 }
+
+/**
+ * The refusal reasons the reschedule endpoint answers with that mean "that time is not
+ * available", and so are the ones the alternatives above belong under (#1549).
+ *
+ * Held as a set rather than tested inline because both lead-facing surfaces that move an
+ * existing call (the manage page, and the booker's offer to move the call a lead already
+ * has) go through the same endpoint and must answer a refusal the same way.
+ */
+const RESCHEDULE_TIME_GONE_REASONS: ReadonlySet<string> = new Set([
+  "reschedule_slot_taken",
+  "reschedule_no_eligible_agents",
+]);
+
+/**
+ * Whether a refused reschedule should offer the soonest times still open (#1549).
+ *
+ * The endpoint answers 409 for two different things and they need opposite responses. A time
+ * that went while the lead was deciding is exactly what the alternatives are for. A booking
+ * that MOVED under them (`reschedule_conflict`, #439) is not: the page is still showing a time
+ * that is no longer the booking's, so offering to move it from that stale view walks them into
+ * the same refusal again, wearing a helpful face. The honest answer there is to refresh, and it
+ * has to stand alone.
+ *
+ * The status cannot tell those apart, and branching on the message text would make the copy
+ * load-bearing (L35). So the route names its reason and this is the only judge of it.
+ *
+ * An unnamed or unrecognised reason offers nothing. The route and this client ship in one
+ * Worker, so a missing reason is a shape we do not recognise rather than an older deploy;
+ * withholding leaves the honest error, which is today's behaviour, where guessing could show
+ * the misleading panel above.
+ */
+export function rescheduleOffersAlternatives(
+  status: number,
+  reason?: string | null,
+): boolean {
+  if (status !== 409) return false;
+  return reason != null && RESCHEDULE_TIME_GONE_REASONS.has(reason);
+}

@@ -83,15 +83,28 @@ export async function POST(
     }
     // A concurrent reschedule moved this booking under us (#439). 409 like a slot
     // conflict; the distinct message tells the actor to refresh.
+    // Every 409 names its reason (#1549). Three of them share this status and the
+    // lead-facing surfaces answer two of them one way and one the other: a time that
+    // went gets the soonest times still open beneath it, a booking that moved under
+    // the reader must not, because the page is showing a time that is no longer the
+    // booking's. Branching on the message would make the copy load-bearing (L35), so
+    // the reason travels as its own field. `rescheduleOffersAlternatives` is the only
+    // judge of it; these ids are the refusal-catalog ids already recorded above.
     if (err instanceof RescheduleConflictError) {
       recordApiOutcome("error", "", "reschedule_conflict");
       // refusal: reschedule_conflict
-      return NextResponse.json({ error: err.message }, { status: 409 });
+      return NextResponse.json(
+        { error: err.message, reason: "reschedule_conflict" },
+        { status: 409 },
+      );
     }
     if (err instanceof SlotUnavailableError) {
       recordApiOutcome("error", "", "reschedule_slot_taken");
       // refusal: reschedule_slot_taken
-      return NextResponse.json({ error: err.message }, { status: 409 });
+      return NextResponse.json(
+        { error: err.message, reason: "reschedule_slot_taken" },
+        { status: 409 },
+      );
     }
     // The target time has no free agent in the bucket (#484): a legitimately
     // full slot, not a crash. 409 like the other unavailable cases so the caller
@@ -99,7 +112,10 @@ export async function POST(
     if (err instanceof NoEligibleAgentsError) {
       recordApiOutcome("error", "", "reschedule_no_eligible_agents");
       // refusal: reschedule_no_eligible_agents
-      return NextResponse.json({ error: err.message }, { status: 409 });
+      return NextResponse.json(
+        { error: err.message, reason: "reschedule_no_eligible_agents" },
+        { status: 409 },
+      );
     }
     recordApiOutcome("error", "", "reschedule_internal");
     // refusal: reschedule_internal

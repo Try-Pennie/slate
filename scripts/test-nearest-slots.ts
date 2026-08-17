@@ -12,7 +12,12 @@
 //
 // Run: node --experimental-strip-types scripts/test-nearest-slots.ts
 import { assert, eq, finish } from "./lib/harness.ts";
-import { nearestSlots, NEAREST_SLOT_COUNT } from "@/lib/booking/nearest-slots";
+import {
+  nearestSlots,
+  NEAREST_SLOT_COUNT,
+  rescheduleOffersAlternatives,
+} from "@/lib/booking/nearest-slots";
+import { REFUSAL_CATALOG } from "@/lib/booking/refusal-catalog";
 
 const iso = (h: number, d = 18) => `2026-08-${String(d).padStart(2, "0")}T${String(h).padStart(2, "0")}:00:00.000Z`;
 
@@ -74,6 +79,61 @@ const iso = (h: number, d = 18) => `2026-08-${String(d).padStart(2, "0")}T${Stri
     NEAREST_SLOT_COUNT >= 2 && NEAREST_SLOT_COUNT <= 5,
     "the shipped count is a handful: enough to be a real choice, few enough to scan under an error",
   );
+}
+
+// --- which refusals may offer alternatives at all (#1549) ---------------------
+// The reschedule endpoint answers 409 for two different things, and the two need
+// opposite responses (L11). A time that went is exactly what alternatives are for.
+// A booking that MOVED under the reader is not: the page is showing a time that is
+// no longer the booking's, so offering to move it from that stale view sends them
+// round the same refusal, wearing a helpful face. The status alone cannot tell them
+// apart, which is why the route names its reason and this is the only judge of it.
+{
+  eq(
+    rescheduleOffersAlternatives(409, "reschedule_slot_taken"),
+    true,
+    "the time was taken while they decided: alternatives are the whole point",
+  );
+  eq(
+    rescheduleOffersAlternatives(409, "reschedule_no_eligible_agents"),
+    true,
+    "nobody is free at that time either: the same dead end, so the same recovery",
+  );
+  eq(
+    rescheduleOffersAlternatives(409, "reschedule_conflict"),
+    false,
+    "the booking moved under them: the honest answer is refresh, not a list of times",
+  );
+  eq(
+    rescheduleOffersAlternatives(503, "reschedule_verify_unavailable"),
+    false,
+    "we could not check, so we do not know any time is gone and must not imply one is",
+  );
+  eq(
+    rescheduleOffersAlternatives(500, "reschedule_internal"),
+    false,
+    "a crash is not a full slot",
+  );
+  // Fail closed on an unnamed reason. The route and this client ship in one Worker,
+  // so an absent reason means a shape we do not recognise rather than an old deploy;
+  // withholding the panel leaves the honest error, which is the status quo, while
+  // guessing could show the misleading one above.
+  eq(rescheduleOffersAlternatives(409, undefined), false, "an unnamed 409 offers nothing");
+  eq(rescheduleOffersAlternatives(409, null), false, "and neither does a null reason");
+  eq(
+    rescheduleOffersAlternatives(409, "something_invented"),
+    false,
+    "an unrecognised reason offers nothing",
+  );
+  // Every reason this judge says yes to must be a real refusal id, or a rename would
+  // silently turn the panel off and look like a product that simply never offers it
+  // (the same reason `test-refusal-catalog.ts` reads its annotations both ways).
+  for (const reason of ["reschedule_slot_taken", "reschedule_no_eligible_agents"]) {
+    assert(
+      REFUSAL_CATALOG.some((r) => r.id === reason),
+      `${reason} is a real refusal id, so the route can actually send it`,
+    );
+  }
 }
 
 finish();

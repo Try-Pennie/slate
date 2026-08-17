@@ -17,6 +17,8 @@ import { AlertIcon } from "@/components/icons";
 import { BookerStrip } from "@/components/BookerStrip";
 import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
+import { NearestTimesPanel } from "@/components/NearestTimes";
+import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
@@ -172,6 +174,9 @@ export default function ManageBooking({
   const [error, setError] = useState<string | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [pendingIso, setPendingIso] = useState<string | null>(null);
+  // #1549: the time a move was just refused for, or null. Set only when the refusal
+  // means that time is not available, so the alternatives can leave it out.
+  const [refusedSlot, setRefusedSlot] = useState<string | null>(null);
 
   // #1341: the number the advisor rings, corrected in place. Held in state (not
   // read from the prop) so a successful save is reflected without a reload.
@@ -221,9 +226,14 @@ export default function ManageBooking({
   async function reschedule(newStart: string) {
     setBusy(true);
     setError(null);
+    setRefusedSlot(null);
     setPendingIso(newStart);
     try {
-      const { ok, data } = await postJson<{ startsAt?: string; error?: string }>(
+      const { ok, status, data } = await postJson<{
+        startsAt?: string;
+        error?: string;
+        reason?: string;
+      }>(
         `/api/bookings/${token}/reschedule`,
         {
           start: newStart,
@@ -239,6 +249,16 @@ export default function ManageBooking({
         setRescheduling(false);
       } else {
         setError(data.error ?? RESCHEDULE_COPY.failed);
+        // #1549: the honest error stays and the soonest times still open go beneath it,
+        // but only when the refusal actually means that time is not available. A booking
+        // that moved under this page needs "refresh" to stand alone, and a failure that
+        // never measured the time must not imply one went (L11).
+        if (rescheduleOffersAlternatives(status, data.reason)) {
+          setRefusedSlot(newStart);
+          // Re-run the load so the stale list is swapped for the loading state rather
+          // than left tappable with a time that has gone.
+          picker.retry();
+        }
       }
     } finally {
       setPendingIso(null);
@@ -724,15 +744,34 @@ export default function ManageBooking({
                 </p>
               )}
               {error && (
-                <p
-                  role="alert"
-                  className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]"
-                >
-                  <span className="mt-0.5 shrink-0">
-                    <AlertIcon width={15} height={15} />
-                  </span>
-                  {error}
-                </p>
+                <div className="mt-4">
+                  <p
+                    role="alert"
+                    className="flex items-start gap-2 text-sm text-[var(--error)]"
+                  >
+                    <span className="mt-0.5 shrink-0">
+                      <AlertIcon width={15} height={15} />
+                    </span>
+                    {error}
+                  </p>
+                  {/* #1549: the same panel the booker shows under a refused confirm.
+                      A lead who came from their confirmation email to move a call and
+                      lost the time was left with a message and nowhere to go, which
+                      risks them not rescheduling at all. The tap puts the picker on
+                      that time's own day; moving the call is still their choice. */}
+                  <NearestTimesPanel
+                    refused={refusedSlot}
+                    slots={picker.slots}
+                    view={picker.view}
+                    zone={timeZone}
+                    variant="move"
+                    onSelect={(iso) => {
+                      picker.selectDay(DateTime.fromISO(iso, { zone: timeZone }).toISODate());
+                      setRefusedSlot(null);
+                      setError(null);
+                    }}
+                  />
+                </div>
               )}
             </div>
 

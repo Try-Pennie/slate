@@ -28,6 +28,7 @@ import {
   CONFIRMED_COPY,
   DETAILS_COPY,
   contactDisclosure,
+  NEAREST_TIMES_COPY,
   NEXT_DAYS_COPY,
   PICKER_COPY,
   allTimesTaken,
@@ -195,6 +196,44 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     expect(pageText()).toContain(BEFORE_COPY.heading);
     expect(pageText()).toContain(BEFORE_COPY.body);
     expect(screen.getByRole("button", { name: LIVE_COPY.cancel })).toBeTruthy();
+  });
+
+  // #1549: the soonest times still open, under a refused move. The preview lists two
+  // hints for this one panel, and the whole point of the second is that the manage
+  // page renders IT rather than the booker's. A static scan cannot tell which one a
+  // component reaches for, so this is the half that can.
+  it("uses the builder's move wording when a move is refused, not the booking one", async () => {
+    const SLOTS = [
+      "2026-06-21T15:00:00.000Z",
+      "2026-06-21T16:00:00.000Z",
+      "2026-06-21T17:00:00.000Z",
+    ];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/reschedule")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "That time was just taken.",
+            reason: "reschedule_slot_taken",
+          }),
+        } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ slots: SLOTS }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<ManageBooking {...manageProps} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: /^(MON|TUE|WED|THU|FRI|SAT|SUN|TODAY)/ }))[0]);
+    fireEvent.click((await screen.findAllByRole("button", { name: /:\d{2}/ }))[0]);
+
+    await screen.findAllByTestId("nearest-time");
+    expect(pageText()).toContain(NEAREST_TIMES_COPY.heading);
+    expect(pageText()).toContain(NEAREST_TIMES_COPY.hintMove);
+    expect(pageText()).not.toContain(NEAREST_TIMES_COPY.hint);
   });
 
   it("uses the builder's words when confirming a cancel", async () => {
