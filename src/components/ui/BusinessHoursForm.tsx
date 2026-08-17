@@ -6,6 +6,8 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { labelCls, btnCls } from "@/components/ui/styles";
 import type { BusinessHoursFormState } from "@/app/admin/actions";
 import type { CoverageReadout } from "@/lib/booking/business-hours-coverage";
+import { coverageGapPhrases, gapsFromCoverage } from "@/lib/monitor/roster-coverage";
+import { Pill } from "@/components/ui/Pill";
 
 const DAYS: [number, string][] = [
   [1, "Monday"],
@@ -23,26 +25,6 @@ export interface BusinessHoursDay {
   /** "HH:MM" in the org's zone. */
   start: string;
   end: string;
-}
-
-const hourLabel = (hour: number): string => {
-  const h = hour % 12 || 12;
-  return `${h}${hour < 12 ? "am" : "pm"}`;
-};
-
-/** The uncovered hours of one day, as a readable range list ("8am, 5pm to 8pm"). */
-function gapText(hours: { hour: number; agents: number }[]): string | null {
-  const gaps = hours.filter((h) => h.agents === 0).map((h) => h.hour);
-  if (gaps.length === 0) return null;
-  const runs: [number, number][] = [];
-  for (const h of gaps) {
-    const last = runs[runs.length - 1];
-    if (last && h === last[1] + 1) last[1] = h;
-    else runs.push([h, h]);
-  }
-  return runs
-    .map(([a, b]) => (a === b ? hourLabel(a) : `${hourLabel(a)} to ${hourLabel(b + 1)}`))
-    .join(", ");
 }
 
 /**
@@ -100,7 +82,25 @@ export function BusinessHoursForm({
         </div>
       )}
 
-      {state.ok && (
+      {/* #1458: a save that opened hours nobody covers still SAVED, so the notice
+          leads with that and then says what it did. A warning, not a refusal:
+          opening hours ahead of rostering them is a legitimate order of
+          operations. The words come from the same builder the Slack page uses, so
+          an admin cannot meet two spellings of one finding. */}
+      {state.ok && state.warning && (
+        <div
+          role="status"
+          className="flex flex-wrap items-start gap-3 rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg"
+        >
+          {/* The pill carries the meaning, not a colour: colour is never the sole
+              signal, and there is no warning token in the palette to reach for
+              (sky is reserved for actions). */}
+          <Pill variant="status-pending">Coverage</Pill>
+          <p className="min-w-[16rem] flex-1">{state.warning}</p>
+        </div>
+      )}
+
+      {state.ok && !state.warning && (
         <p
           role="status"
           className="rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg"
@@ -188,10 +188,10 @@ function CoveragePanel({ coverage }: { coverage: CoverageReadout }) {
     );
   }
 
-  const openDays = coverage.days.filter((d) => d.is_open);
-  const withGaps = openDays
-    .map((d) => ({ weekday: d.weekday, text: gapText(d.hours) }))
-    .filter((d): d is { weekday: number; text: string } => d.text !== null);
+  // #1458: the SAME grouping and phrasing the roster alarm uses, so this readout
+  // and the Slack page cannot describe one finding two ways. It also collapses
+  // five identical weekday gaps into one line, which a per day list could not.
+  const phrases = coverageGapPhrases(gapsFromCoverage(coverage) ?? []);
 
   return (
     <div className="rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm">
@@ -203,24 +203,21 @@ function CoveragePanel({ coverage }: { coverage: CoverageReadout }) {
           ? "No agents are in the booking pool at the moment, so no hour has anyone on. That is expected while the pool is switched off."
           : `${coverage.bookableAgents} ${coverage.bookableAgents === 1 ? "agent is" : "agents are"} in the booking pool.`}
       </p>
-      {coverage.bookableAgents > 0 && withGaps.length > 0 && (
+      {coverage.bookableAgents > 0 && phrases.length > 0 && (
         <>
           <p className="mt-2 text-fg-muted">
             These hours are open with nobody rostered, so no times are offered in them:
           </p>
-          <ul className="mt-1 space-y-0.5 text-fg-muted">
-            {withGaps.map((d) => (
-              <li key={d.weekday}>
-                <span className="font-semibold text-fg">
-                  {DAYS.find(([w]) => w === d.weekday)?.[1]}
-                </span>{" "}
-                {d.text}
+          <ul className="mt-1 space-y-0.5">
+            {phrases.map((text) => (
+              <li key={text} className="text-fg">
+                {text}
               </li>
             ))}
           </ul>
         </>
       )}
-      {coverage.bookableAgents > 0 && withGaps.length === 0 && (
+      {coverage.bookableAgents > 0 && phrases.length === 0 && (
         <p className="mt-2 text-fg-muted">Every open hour has someone rostered.</p>
       )}
     </div>

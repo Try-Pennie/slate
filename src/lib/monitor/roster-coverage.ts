@@ -167,12 +167,25 @@ function groupGaps(gaps: CoverageGap[]): {
  * hours are either under-rostered or over-advertised, and a message naming only
  * the first has quietly assumed the answer.
  */
-export function formatRosterCoverageAlert(gaps: CoverageGap[]): string {
-  const clauses = groupGaps(gaps).map((g) => {
+/**
+ * The uncovered stretches as readable phrases, one per group.
+ *
+ * Exported because the business hours SCREEN says the same thing (#1458), and
+ * the screen and the page must not each own a spelling of it: an admin reading
+ * "5:00 PM to 8:00 PM Monday to Friday" on the settings page and something else
+ * in Slack would have to work out whether they are the same finding. One
+ * grouping, one phrasing, whoever asks (L41).
+ */
+export function coverageGapPhrases(gaps: CoverageGap[]): string[] {
+  return groupGaps(gaps).map((g) => {
     const days = weekdayPhrase(g.weekdays);
     const window = `${minutesToTime(g.startMinute)} to ${minutesToTime(g.endMinute)}`;
     return g.wholeDay ? `all day ${days} (${window})` : `${window} ${days}`;
   });
+}
+
+export function formatRosterCoverageAlert(gaps: CoverageGap[]): string {
+  const clauses = coverageGapPhrases(gaps);
   const list =
     clauses.length <= 1
       ? (clauses[0] ?? "")
@@ -184,6 +197,72 @@ export function formatRosterCoverageAlert(gaps: CoverageGap[]): string {
     `hours so we stop advertising them.`
   );
 }
+
+/**
+ * The gaps in `after` that were not already uncovered in `before` (#1458).
+ *
+ * The business hours editor is where the gap is CREATED: somebody extends the
+ * day to 20:00 or opens Saturday, and the screen accepts it without comment even
+ * though it is already rendering the readout that proves nobody is there. The
+ * person who caused it is standing in front of the answer and is told nothing.
+ *
+ * Compared by uncovered HOUR, not by stretch, because the shapes change: opening
+ * 17:00 to 20:00 on a day that already had 17:00 to 18:00 uncovered is a new hole
+ * from 18:00, and a stretch-level comparison would either report the whole thing
+ * as new or miss it entirely.
+ *
+ * Null when either week could not be measured, never an empty list: an unreadable
+ * roster and a change that adds nothing look the same to the caller otherwise,
+ * and the safe thing is to say so rather than to stay quiet (L11, L98).
+ */
+export function newlyUncoveredGaps(
+  before: CoverageReadout,
+  after: CoverageReadout,
+): CoverageGap[] | null {
+  const beforeGaps = gapsFromCoverage(before);
+  const afterGaps = gapsFromCoverage(after);
+  if (beforeGaps === null || afterGaps === null) return null;
+  const wasUncovered = new Set<string>();
+  for (const g of beforeGaps) {
+    for (let m = g.startMinute; m < g.endMinute; m += 60) wasUncovered.add(`${g.weekday}:${m}`);
+  }
+  // A stretch counts as new when ANY hour in it was covered before. The person is
+  // being told what their change did, and a stretch that grew is something their
+  // change did.
+  return afterGaps.filter((g) => {
+    for (let m = g.startMinute; m < g.endMinute; m += 60) {
+      if (!wasUncovered.has(`${g.weekday}:${m}`)) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * What the admin is told at the moment they widen the week (#1458).
+ *
+ * A WARNING, never a refusal. Opening hours ahead of rostering them is a
+ * legitimate order of operations, and a guard may refuse only what the system
+ * genuinely cannot do (L54). So it says what will happen and names both remedies,
+ * exactly as the Slack page does, and the save has already gone through.
+ */
+export function newlyUncoveredWarning(gaps: CoverageGap[]): string {
+  const clauses = coverageGapPhrases(gaps);
+  const list =
+    clauses.length <= 1
+      ? (clauses[0] ?? "")
+      : `${clauses.slice(0, -1).join(", ")}, and ${clauses[clauses.length - 1]}`;
+  return (
+    `Saved. These hours are now open with no bookable agent rostered: ${list}. ` +
+    `A lead asking for one of those times is offered nothing and is not told why. ` +
+    `Set agents' working hours to cover them, or narrow the business hours again.`
+  );
+}
+
+/** Said when the roster could not be read, so nothing was compared. */
+export const COVERAGE_UNCHECKED_WARNING =
+  "Saved. The roster could not be read just now, so this did not check whether the " +
+  "new hours leave any time with nobody rostered. The coverage readout below will " +
+  "show it once the roster is readable again.";
 
 /** The all-clear. It answers the page's claim directly: every advertised hour has
  *  somebody able to take the call again. */

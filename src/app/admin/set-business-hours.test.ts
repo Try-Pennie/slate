@@ -33,6 +33,12 @@ const redirect = vi.hoisted(() =>
 );
 const markAllBucketSlotsStale = vi.hoisted(() => vi.fn(async () => 3));
 const loadBusinessHoursRows = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+/** #1458: the roster the coverage warning is measured against. Mocked so the
+ *  action drives the REAL coverageForWeek predicate over a roster this file
+ *  controls, rather than a second copy of the comparison (L107). */
+const loadCoverageAgents = vi.hoisted(() =>
+  vi.fn(async () => [] as { timezone: string; rules: unknown[] }[]),
+);
 
 /** Records every upsert, and serves the paged bookings read. */
 const db = vi.hoisted(() => ({
@@ -74,6 +80,10 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/availability/precompute", () => ({ markAllBucketSlotsStale }));
 vi.mock("@/lib/booking/business-hours-load", () => ({ loadBusinessHoursRows }));
+vi.mock("@/lib/booking/business-hours-coverage-load", () => ({
+  loadCoverageAgents,
+  currentWeekStartIso: () => "2026-08-10",
+}));
 vi.mock("@/lib/webhooks/emit", () => ({ resendDelivery: vi.fn(), replayDeadLetteredDeliveries: vi.fn() }));
 vi.mock("@/lib/locks", () => ({ acquireLock: vi.fn(), releaseLock: vi.fn() }));
 vi.mock("@/lib/offboarding/service", () => ({ applyLifecycleByUserId: vi.fn(), applyLifecycleByEmail: vi.fn() }));
@@ -82,6 +92,18 @@ vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
 import { setBusinessHours } from "./actions";
+import { COVERAGE_UNCHECKED_WARNING } from "@/lib/monitor/roster-coverage";
+
+/** One bookable agent, Eastern, Monday to Friday 09:00 to 17:00. Every live agent
+ *  is Eastern, so this is the shape production actually has. */
+const EASTERN_NINE_TO_FIVE = {
+  timezone: "America/New_York",
+  rules: [1, 2, 3, 4, 5].map((weekday) => ({
+    weekday,
+    start_minute: 9 * 60,
+    end_minute: 17 * 60,
+  })),
+};
 
 /** A full open week as the form posts it, 08:00 to 20:00. */
 function weekForm(over: Record<string, string | null> = {}): FormData {
@@ -112,6 +134,7 @@ beforeEach(() => {
   db.bookingPages = 0;
   auth.requireAdmin.mockResolvedValue({ id: "admin1", role: "admin", org_id: "o1" });
   loadBusinessHoursRows.mockResolvedValue(openWeek);
+  loadCoverageAgents.mockResolvedValue([EASTERN_NINE_TO_FIVE]);
 });
 
 describe("setBusinessHours", () => {
@@ -219,6 +242,83 @@ describe("setBusinessHours", () => {
 
       expect(db.bookingPages).toBeGreaterThan(1);
       expect(state.confirm?.message).toMatch(/1500 appointments/);
+    });
+  });
+  // ---------------------------------------------------------------- #1458
+  //
+  // The wiring, which the pure comparison in scripts/test-roster-coverage-gap.ts
+  // cannot see: that a save which widens the week past its roster comes back
+  // CARRYING the warning, that a save which does not stays silent, and that a
+  // coverage read which fails says so instead of reading as "nothing added".
+  //
+  // Every case here goes through the real coverageForWeek / newlyUncoveredGaps,
+  // so this can only pass while the action is really consulting them.
+  describe("warning when the save opens hours nobody covers", () => {
+    beforeEach(() => {
+      // Before: Monday to Friday 09:00 to 17:00, exactly matching the roster, so
+      // the week starts fully covered and any gap reported is one this save made.
+      loadBusinessHoursRows.mockResolvedValue(
+        [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+          weekday,
+          is_open: weekday <= 5,
+          start_minute: 9 * 60,
+          end_minute: 17 * 60,
+        })),
+      );
+    });
+
+    /** Monday to Friday 08:00 to 20:00, weekend left shut. */
+    const widerWeek = () => weekForm({ bh_open_6: null, bh_open_7: null });
+
+    it("names the stretches the change opened, and still saves", async () => {
+      const state = await setBusinessHours({ error: null }, widerWeek());
+
+      expect(state.ok).toBe(true);
+      expect(state.error).toBeNull();
+      // The save is not held back: a warning, never a refusal (L54).
+      expect(db.upserts).toHaveLength(1);
+      expect(state.warning).toMatch(/^Saved\./);
+      expect(state.warning).toContain("08:00 to 09:00 Monday to Friday");
+      expect(state.warning).toContain("17:00 to 20:00 Monday to Friday");
+      // It says what a lead experiences, and both ways out.
+      expect(state.warning).toMatch(/offered nothing/);
+      expect(state.warning).toMatch(/working hours/);
+    });
+
+    it("stays silent when the save adds no uncovered time", async () => {
+      // The same week back again: nothing widened, so nothing to say.
+      const sameWeek = weekForm({
+        bh_open_6: null,
+        bh_open_7: null,
+        bh_start_1: "09:00",
+        bh_end_1: "17:00",
+        bh_start_2: "09:00",
+        bh_end_2: "17:00",
+        bh_start_3: "09:00",
+        bh_end_3: "17:00",
+        bh_start_4: "09:00",
+        bh_end_4: "17:00",
+        bh_start_5: "09:00",
+        bh_end_5: "17:00",
+      });
+      const state = await setBusinessHours({ error: null }, sameWeek);
+
+      expect(state.ok).toBe(true);
+      expect(state.warning).toBeFalsy();
+    });
+
+    it("says the roster could not be read rather than reading as nothing added", async () => {
+      // The failure mode that matters: an unreadable roster and a change that adds
+      // nothing both produce no gaps, and only one of them is safe to render as
+      // silence (L11, L98). The save itself must still stand.
+      loadCoverageAgents.mockRejectedValueOnce(new Error("pool read failed"));
+      const state = await setBusinessHours({ error: null }, widerWeek());
+
+      expect(state.ok).toBe(true);
+      expect(state.error).toBeNull();
+      expect(db.upserts).toHaveLength(1);
+      expect(state.warning).toBe(COVERAGE_UNCHECKED_WARNING);
+      expect(state.warning).not.toBe(null);
     });
   });
 });

@@ -63,6 +63,16 @@ import {
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
 import { updateEventType } from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
+import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
+import {
+  loadCoverageAgents,
+  currentWeekStartIso,
+} from "@/lib/booking/business-hours-coverage-load";
+import {
+  COVERAGE_UNCHECKED_WARNING,
+  newlyUncoveredGaps,
+  newlyUncoveredWarning,
+} from "@/lib/monitor/roster-coverage";
 import { __clearChannelCache } from "@/lib/notify/channels";
 import { planScheduleReplacement } from "@/lib/schedule-replacement";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
@@ -1042,6 +1052,14 @@ export type BusinessHoursFormState = {
    */
   confirm?: { message: string } | null;
   ok?: boolean;
+  /**
+   * Set on a SAVE THAT WENT THROUGH which opened hours no bookable agent covers
+   * (#1458). A warning, never a refusal: opening hours ahead of rostering them is
+   * a legitimate order of operations, so this says what will happen rather than
+   * standing in the way (L54). The roster alarm still notices it later; this
+   * reaches the person who caused it, while they are looking at the screen.
+   */
+  warning?: string | null;
 };
 
 /**
@@ -1134,5 +1152,25 @@ export async function setBusinessHours(
   });
 
   revalidatePath("/admin/settings");
-  return { error: null, ok: true };
+
+  // #1458: measured AFTER the write, so it can only ever describe hours that are
+  // really saved. Wrapped, because a coverage read that fails must not turn a
+  // successful save into an error the admin will try to repeat.
+  let warning: string | null = null;
+  try {
+    const agents = await loadCoverageAgents(db);
+    const weekStartIso = currentWeekStartIso();
+    const readout = (rows: typeof current) =>
+      coverageForWeek({ businessHours: rows, zone: BUSINESS_ZONE, agents, weekStartIso });
+    const added = newlyUncoveredGaps(readout(current), readout(parsed.rows));
+    // Null is "could not check", which is a different thing from "nothing added"
+    // and must not render as silence (L11).
+    if (added === null) warning = COVERAGE_UNCHECKED_WARNING;
+    else if (added.length > 0) warning = newlyUncoveredWarning(added);
+  } catch (err) {
+    log.warn("business-hours", { msg: "coverage check after save failed" }, err);
+    warning = COVERAGE_UNCHECKED_WARNING;
+  }
+
+  return { error: null, ok: true, warning };
 }
