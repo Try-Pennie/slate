@@ -5,6 +5,7 @@ import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
 import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
+import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -25,12 +26,59 @@ import { log } from "@/lib/log";
  */
 export const firingKey = (key: string) => `alert_firing:${key}`;
 
+/**
+ * Deliberate opt-in for sending alerts from OFF the Workers runtime (#1537).
+ *
+ * Off by default, and the default is the safe one on purpose: forgetting to set this
+ * produces silence from a laptop, while forgetting to UNSET it produces the state this whole
+ * guard exists to prevent (L72). It is here so somebody testing alert wiring locally has a
+ * deliberate way to do it, rather than reaching for a code change they might forget to undo.
+ */
+const OFFPLATFORM_OPT_IN = "SLATE_ALLOW_OFFPLATFORM_ALERTS";
+
+/**
+ * May this process WRITE an alert? (#1537)
+ *
+ * `.env.local` points a dev server at the LIVE Supabase project and the LIVE Slack channel,
+ * so anything a laptop raises reaches whoever is on call. On 2026-08-17 that cost an
+ * afternoon: `rate_limit_broken:availability` paged claiming the only abuse control on the
+ * public availability endpoint was off, and production's limiter had been enforcing
+ * correctly the whole time. #1530 gated that one alert; this is the class (L30).
+ *
+ * TWO harms, and the second is the quieter one. A dev server also writes `alert_state`, so it
+ * burns the cooldown and a genuine production occurrence inside that window is silently
+ * suppressed. And a dev server calling `resolveAlert` can CLEAR a live page, which is worse
+ * than raising a false one: the page goes away and the condition does not.
+ *
+ * Scoped to WRITES. Reads stay open, because reading alert state from a laptop is useful and
+ * harms nothing.
+ *
+ * It does NOT silence the canary or the deploy-failure notifier, which legitimately alert
+ * from GitHub Actions: those post through `postSlack` directly and never reach this module.
+ * That was checked rather than assumed before this gate was added.
+ */
+function mayWriteAlerts(key: string, what: string): boolean {
+  if (isWorkersRuntime()) return true;
+  if ((process.env[OFFPLATFORM_OPT_IN] ?? "") !== "") return true;
+  // Never silent, and it names the key so a developer can see WHICH alert their local run
+  // would have sent, rather than wondering why nothing happened.
+  log.warn("alert-dispatch", {
+    msg: "not running on the Cloudflare runtime, so this alert was not sent",
+    key,
+    withheld: what,
+    runtime: workersRuntimeMarker(),
+    opt_in: OFFPLATFORM_OPT_IN,
+  });
+  return false;
+}
+
 export async function sendThrottledAlert(
   key: string,
   cooldownMs: number,
   text: string,
   channel?: string,
 ): Promise<void> {
+  if (!mayWriteAlerts(key, "page")) return;
   if (!slackConfigured()) return;
   const db = supabaseAdmin();
   const { data } = await db
@@ -211,6 +259,9 @@ export async function resolveAlert(
   text: string,
   channel?: string,
 ): Promise<boolean> {
+  // The worst of the three to let a laptop do: clearing a live page leaves the condition
+  // true and the page gone.
+  if (!mayWriteAlerts(key, "all-clear")) return false;
   if (!slackConfigured()) return false;
   const db = supabaseAdmin();
   // error-ok: a read error defers the recovery notice to the next tick, which is
@@ -255,6 +306,9 @@ export async function resolveAlert(
  */
 export async function settleAlertsSilently(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
+  // Deletes the firing markers and the cooldown rows, so a laptop running this would leave a
+  // real page able to re-fire immediately and its recovery notice never sent.
+  if (!mayWriteAlerts(keys[0] ?? "(none)", `silent settle of ${keys.length} key(s)`)) return;
   const db = supabaseAdmin();
   // Both rows per key: the firing marker (so no recovery notice fires later) and
   // the cooldown row (so a genuinely new page is not muted by the old cooldown),

@@ -18,6 +18,13 @@ const slack = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/notify/slack", () => slack);
 
+// #1537: every dispatcher that WRITES is gated on actually running on the Workers runtime.
+// Defaults to true here so every existing case still asserts production behaviour; the
+// off-platform cases set it false explicitly.
+const isWorkersRuntime = vi.hoisted(() => vi.fn(() => true));
+const workersRuntimeMarker = vi.hoisted(() => () => "Cloudflare-Workers");
+vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime, workersRuntimeMarker }));
+
 // alert_state stands in as a real in-memory key -> last_sent_at store rather than
 // a fixed shape, so the #1133 recovery tests can actually observe rows appearing
 // and being cleared instead of asserting against their own mock. Empty by default,
@@ -92,6 +99,7 @@ beforeEach(() => {
   rows.clear();
   failReads.value = false;
   failDeletes.value = false;
+  isWorkersRuntime.mockReturnValue(true);
   process.env = { ...ENV };
   // #571: the info channel now comes from a store-aware, briefly-cached resolver;
   // clear it so each test's env is honored (the mocked config table is empty).
@@ -403,5 +411,82 @@ describe("settleAlertsSilently", () => {
     expect(fields.msg).toMatch(/settle/i);
     // Nothing was deleted, so the next sweep sees the marker and tries again.
     expect(rows.has(firingKey("empty_buckets:411"))).toBe(true);
+  });
+});
+
+describe("off the Workers runtime, a write dispatcher does nothing (#1537)", () => {
+  // WHY. `.env.local` points a dev server at the LIVE Supabase project and the LIVE Slack
+  // channel, so anything a laptop raises reaches whoever is on call. On 2026-08-17 that cost
+  // an afternoon: a rate-limiter page claimed the only abuse control on the public
+  // availability endpoint was off, and production's limiter had been enforcing correctly the
+  // whole time. #1530 gated that ONE alert. This is the class (L30).
+  //
+  // There are two harms and the second is quieter. A dev server also WRITES alert_state, so
+  // it burns the cooldown: a genuine production occurrence inside that window is then
+  // silently suppressed. And a dev server calling resolveAlert can CLEAR a real page, which
+  // is worse than raising a false one.
+  //
+  // This gates the WRITES only. Reads stay open, because reading from a laptop is useful and
+  // harms nothing.
+
+  beforeEach(() => {
+    isWorkersRuntime.mockReturnValue(false);
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
+    process.env.SLACK_ALERTS_CHANNEL = "#alerts";
+    __clearChannelCache();
+  });
+
+  it("does not post a page, and does not touch the cooldown", async () => {
+    await sendThrottledAlert("some_key", 60_000, "a page from a laptop");
+
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    // The second harm: writing the stamp here would mute the real alert for a full cooldown.
+    expect(upsert).not.toHaveBeenCalled();
+    expect(rows.size).toBe(0);
+  });
+
+  it("does not post an info notice either", async () => {
+    process.env.SLACK_INFO_CHANNEL = "#info";
+    __clearChannelCache();
+    await sendThrottledInfo("some_key", 60_000, "a whisper from a laptop");
+
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("does NOT clear a live production page", async () => {
+    // The worst of the three. A laptop announcing that a real, still-broken condition has
+    // recovered is worse than a laptop raising a false one: the page goes away and the
+    // condition does not.
+    rows.set(firingKey("some_key"), new Date().toISOString());
+    rows.set("some_key", new Date().toISOString());
+
+    await resolveAlert("some_key", "all clear from a laptop");
+
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    expect(rows.has(firingKey("some_key"))).toBe(true);
+    expect(rows.has("some_key")).toBe(true);
+  });
+
+  it("says so in the logs, so it is never silent, and names the alert it withheld", async () => {
+    await sendThrottledAlert("some_key", 60_000, "a page from a laptop");
+    const lines = JSON.stringify(warn.mock.calls);
+    expect(lines).toMatch(/not running on the Cloudflare runtime/i);
+    // The key, so a developer can see WHICH alert their local run would have sent.
+    expect(lines).toMatch(/some_key/);
+  });
+
+  it("still sends when an operator deliberately opts in", async () => {
+    // An escape hatch for testing alert wiring from a laptop on purpose. Off by default,
+    // because the default has to be the safe one: forgetting to set it produces silence, and
+    // forgetting to UNSET it is the state this whole issue is about (L72).
+    process.env.SLATE_ALLOW_OFFPLATFORM_ALERTS = "1";
+    await sendThrottledAlert("some_key", 60_000, "a deliberate test page");
+    expect(slack.postSlack).toHaveBeenCalled();
+  });
+
+  it("leaves READS alone, so a laptop can still inspect alert state", async () => {
+    rows.set(firingKey("some_key"), new Date().toISOString());
+    await expect(isAlertFiring("some_key")).resolves.toBe(true);
   });
 });
