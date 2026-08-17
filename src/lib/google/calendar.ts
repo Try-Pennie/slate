@@ -522,7 +522,11 @@ export async function syncEvents(
    */
   timeMaxForBootstrap: string,
 ): Promise<SyncResult> {
-  if (LOADTEST) return stubSyncEvents(syncToken, Date.now());
+  if (LOADTEST)
+    return stubSyncEvents(syncToken, Date.now(), {
+      timeMinIso: timeMinForBootstrap,
+      timeMaxIso: timeMaxForBootstrap,
+    });
   const events: GoogleEvent[] = [];
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
