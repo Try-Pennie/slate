@@ -56,10 +56,16 @@ jobs:
           # direct push looks like, so a GitHub outage paged saying somebody had
           # bypassed review. The failure is recorded instead, and the classifier
           # reports it as a check that could not run.
+          #
+          # #1519: the read RETRIES, in scripts/lib/read-commit-pulls.sh, because
+          # one attempt let a momentary GitHub blip blind the guard. It lives in a
+          # script rather than inline here so scripts/test-commit-pulls-retry.ts
+          # can drive it with a fake `gh`, no remote and no push to main. It still
+          # fails closed: exhausting the attempts exits non-zero and lands here.
           PRS_READ_ERROR=""
-          if ! pulls="$(gh api "/repos/$REPO/commits/$HEAD_SHA/pulls" 2>&1)"; then
+          if ! pulls="$(bash scripts/lib/read-commit-pulls.sh "$REPO" "$HEAD_SHA")"; then
             PRS_READ_ERROR="gh api could not read the commit's pull requests"
-            echo "::warning::main-push-guard: $PRS_READ_ERROR: $(head -n 1 <<<"$pulls")"
+            echo "::warning::main-push-guard: $PRS_READ_ERROR (see the attempt lines above)"
             pulls='[]'
           fi
           export PRS_READ_ERROR
