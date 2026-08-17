@@ -254,6 +254,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A coverage sweep gave up on appointments that are still with an absent agent; they stay stranded until a person places them or they pass, and the monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "ooo_coverage_gap",
+    kind: "condition",
+    why: "An agent on approved time off is holding an appointment inside 48 hours that no coverage sweep ever saw, so that customer meets nobody. It stays true until a person places it or it passes, and the monitor lane re-measures every 5 minutes.",
+  },
+  {
     key: "ooo_calcom",
     kind: "condition",
     why:
@@ -437,6 +442,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
 
   // --- Info: never needed action, so never announces recovery ---------------
+  {
+    key: "ooo_coverage_gap_later",
+    kind: "info",
+    why:
+      "The same gap further out than 48 hours: real, and there is time to place it " +
+      "from the coverage panel, so it is a once-a-day worklist rather than something " +
+      "to act on tonight. Its page sibling owns the urgent half and clears on its own " +
+      "measured zero; this half has nothing to end.",
+  },
   {
     key: "thin_tier_staffing",
     kind: "info",

@@ -21,6 +21,7 @@ export type MonitorAlertKey =
   | "sync_staleness"
   | "inactive_agent_bookings"
   | "coverage_needs_human"
+  | "ooo_coverage_gap"
   | "ooo_calcom_unprotected"
   | "empty_buckets"
   | "booking_failure_rate"
@@ -44,6 +45,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "sync_staleness",
   "inactive_agent_bookings",
   "coverage_needs_human",
+  "ooo_coverage_gap",
   "ooo_calcom_unprotected",
   "empty_buckets",
   "booking_failure_rate",
@@ -117,6 +119,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     key: "coverage_needs_human",
     label: "Stranded-appointment alert cooldown",
     help: "Alert when a coverage sweep could not move an appointment and gave up, so it is still with an agent who will not be there and only a person can place it.",
+  },
+  {
+    key: "ooo_coverage_gap",
+    label: "Time off nobody has covered",
+    help: "Page when an agent on approved time off still holds an appointment starting within 48 hours that no coverage sweep has picked up, so that customer is booked with somebody who will not be there.",
   },
   {
     key: "ooo_calcom_unprotected",
@@ -204,6 +211,10 @@ export const MONITOR_DEFAULTS = {
     // is terminal and stays wrong until a human places it. Repeat while it lasts,
     // hourly, like the orphaned-appointment page it sits beside.
     coverage_needs_human: 60 * 60_000,
+    // An approved absence nobody has covered (#1238): the appointment is inside two
+    // days, no sweep is on it, and nothing repairs it on its own, so it stays wrong
+    // until a person places it. Hourly, like the two coverage pages it sits beside.
+    ooo_coverage_gap: 60 * 60_000,
     // Time off not blocked in cal.com (#1253): the agent is away NOW and cal.com can
     // still book them, and the sweep is already retrying every 5 minutes, so a
     // shorter repeat than its neighbours. Half an hour keeps it present without

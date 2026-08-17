@@ -156,6 +156,11 @@ import {
   formatCoverageNeedsHumanRecovery,
 } from "@/lib/monitor/coverage-needs-human";
 import {
+  formatOooCoverageGapAlert,
+  formatOooCoverageGapRecovery,
+  formatOooCoverageGapWhisper,
+} from "@/lib/monitor/ooo-coverage-gap";
+import {
   formatUnprotectedAlert,
   formatOverrideRecovery,
   formatUnprotectedRecovery,
@@ -790,6 +795,90 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "everything placed or passed",
     channel: "recovery",
     text: formatCoverageNeedsHumanRecovery(),
+  },
+
+  // --- an approved absence nobody has covered (#1238) -------------------------
+  {
+    key: "ooo_coverage_gap",
+    state: "one appointment, one agent, inside 48 hours",
+    channel: "alert",
+    text: formatOooCoverageGapAlert([
+      {
+        userId: "u1",
+        name: "Dana Ruiz",
+        email: "dana.ruiz@example.com",
+        imminent: 1,
+        later: 0,
+        soonestStartIso: "2026-08-18T14:00:00.000Z",
+      },
+    ]),
+  },
+  {
+    key: "ooo_coverage_gap",
+    state: "several agents, one with no name on the roster read",
+    channel: "alert",
+    text: formatOooCoverageGapAlert([
+      {
+        userId: "u1",
+        name: "Dana Ruiz",
+        email: "dana.ruiz@example.com",
+        imminent: 3,
+        later: 2,
+        soonestStartIso: "2026-08-18T14:00:00.000Z",
+      },
+      {
+        userId: "u2",
+        name: null,
+        email: "sam.okafor@example.com",
+        imminent: 1,
+        later: 0,
+        soonestStartIso: "2026-08-18T18:00:00.000Z",
+      },
+    ]),
+  },
+  {
+    key: "ooo_coverage_gap",
+    state: "more agents than the list cap",
+    channel: "alert",
+    text: formatOooCoverageGapAlert(
+      Array.from({ length: 11 }, (_, i) => ({
+        userId: `u${i}`,
+        name: `Agent ${i}`,
+        email: `agent${i}@example.com`,
+        imminent: 11 - i,
+        later: 0,
+        soonestStartIso: "2026-08-18T14:00:00.000Z",
+      })),
+    ),
+  },
+  {
+    key: "ooo_coverage_gap",
+    state: "every imminent one covered or passed",
+    channel: "recovery",
+    text: formatOooCoverageGapRecovery(),
+  },
+  {
+    key: "ooo_coverage_gap_later",
+    state: "the further-out worklist, which is not urgent",
+    channel: "info",
+    text: formatOooCoverageGapWhisper([
+      {
+        userId: "u1",
+        name: "Dana Ruiz",
+        email: "dana.ruiz@example.com",
+        imminent: 0,
+        later: 4,
+        soonestStartIso: "2026-08-24T14:00:00.000Z",
+      },
+      {
+        userId: "u2",
+        name: "Sam Okafor",
+        email: "sam.okafor@example.com",
+        imminent: 0,
+        later: 1,
+        soonestStartIso: "2026-08-25T18:00:00.000Z",
+      },
+    ]),
   },
 
   // --- saturated sweeps ------------------------------------------------------

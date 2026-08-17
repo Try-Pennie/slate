@@ -132,6 +132,11 @@ import {
   type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
+import {
+  runOooCoverageGapCheck,
+  oooCoverageHolders,
+  type CoverageGapAgent,
+} from "@/lib/monitor/ooo-coverage-gap";
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
@@ -1170,6 +1175,127 @@ export async function GET(req: NextRequest) {
         }),
     );
 
+    // --- An approved absence still holding an appointment NO sweep ever saw (#1238).
+    // The third member of the coverage family, and the boundary between them is what
+    // keeps them from disagreeing: #1215 measures agents out of the POOL, #1242
+    // measures the sweep's own recorded give-ups, and this measures the appointments
+    // with no `bulk_reassign_items` row at all. That is the set nothing else can see:
+    // an approval whose sweep never ran, a retroactive approval, a booking made into
+    // an already-approved window, and the straddler that begins before the window.
+    //
+    // Cost: ONE read on an ordinary tick. Approved absences overlapping the next few
+    // days are rare, and every read after the first is skipped when there are none,
+    // which matters because this lane shares its invocation with three others. When
+    // there ARE absences it is four bounded reads regardless of how many, because
+    // each is one batched `in()` rather than a query per agent.
+    //
+    // Every read goes through `unwrap` / `selectAllPages`, because a read that failed
+    // comes back empty and an empty result here is indistinguishable from "every
+    // absence is covered", which would post an all-clear over a real gap. ---
+    const loadOooCoverageGaps = async () => {
+      const nowIso = new Date(now).toISOString();
+      // Approved and not cancelled, still running: an absence whose end has passed can
+      // no longer strand anybody.
+      const absences = await selectAllPages<{
+        id: string;
+        user_id: string;
+        starts_at: string;
+        ends_at: string;
+      }>("monitor ooo coverage absences", (from, to) =>
+        db
+          .from("ooo_requests")
+          .select("id, user_id, starts_at, ends_at")
+          .eq("status", "approved")
+          .is("cancelled_at", null)
+          .gte("ends_at", nowIso)
+          .range(from, to),
+      );
+      if (absences.length === 0) return [];
+      const userIds = [...new Set(absences.map((r) => r.user_id))];
+      // Every page: an agent with a long absence can hold more than one page of
+      // upcoming bookings, and a truncated page would under-report the gap.
+      const bookings = await selectAllPages<{
+        id: string;
+        assigned_user_id: string;
+        starts_at: string;
+        ends_at: string;
+      }>("monitor ooo coverage bookings", (from, to) =>
+        db
+          .from("bookings")
+          .select("id, assigned_user_id, starts_at, ends_at")
+          .in("assigned_user_id", userIds)
+          .in("status", ACTIVE_BOOKING_STATUSES)
+          .eq("is_test", false)
+          // `ends_at`, NOT `starts_at`. The straddler begins before the absence and
+          // runs into it, so flooring on the start is the exact miss this check exists
+          // to catch, and a prefilter that repeats it would hide it again (#1237).
+          .gte("ends_at", nowIso)
+          .range(from, to),
+      );
+      if (bookings.length === 0) return [];
+      // Which of those already have a sweep row, in one batched lookup. Any status
+      // counts: a row means #1242 owns the outcome, so this check says nothing.
+      const snapshotted = await selectAllPages<{ booking_id: string }>(
+        "monitor ooo coverage snapshotted",
+        (from, to) =>
+          db
+            .from("bulk_reassign_items")
+            .select("booking_id")
+            .in("booking_id", bookings.map((b) => b.id))
+            .range(from, to),
+      );
+      const hasRow = new Set(snapshotted.map((s) => s.booking_id));
+      // An ACTIVE job is the pending-count signal: the engine flips a job to done only
+      // once nothing is pending, so while one is active that agent's sweep is working.
+      // Paginated rather than annotated cap-safe: a truncated page would drop an
+      // agent whose sweep IS working, and this read's only job is to keep the check
+      // quiet about them. Getting that wrong pages about a healthy sweep, which is
+      // precisely the false alarm the suppression exists to prevent.
+      const activeJobs = await selectAllPages<{ out_user_id: string }>(
+        "monitor ooo coverage active jobs",
+        (from, to) =>
+          db
+            .from("bulk_reassign_jobs")
+            .select("out_user_id")
+            .eq("status", "active")
+            .in("out_user_id", userIds)
+            .range(from, to),
+      );
+      const agents = (unwrap(
+        await db
+          .from("users")
+          // cap-safe: primary-key lookup of the (few) agents with approved time off.
+          .select("id, name, email")
+          .in("id", userIds),
+        "monitor ooo coverage agents",
+      ) ?? []) as CoverageGapAgent[];
+      return oooCoverageHolders({
+        absences: absences.map((r) => ({
+          requestId: r.id,
+          userId: r.user_id,
+          startIso: r.starts_at,
+          endIso: r.ends_at,
+        })),
+        bookings: bookings.map((b) => ({
+          bookingId: b.id,
+          assignedUserId: b.assigned_user_id,
+          startsAtIso: b.starts_at,
+          endsAtIso: b.ends_at,
+          snapshotted: hasRow.has(b.id),
+        })),
+        agents,
+        sweepingUserIds: activeJobs.map((j) => j.out_user_id),
+        nowIso,
+      });
+    };
+    const oooCoverageGap = await steps.run("ooo_coverage_gap", null, () =>
+      runOooCoverageGapCheck({
+        loadHolders: loadOooCoverageGaps,
+        cooldownMs: settings.cooldownMs.ooo_coverage_gap,
+        log: (fields) => log.info("ooo-coverage-gap", { msg: "tick", ...fields }),
+      }),
+    );
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -1454,6 +1580,10 @@ export async function GET(req: NextRequest) {
       overrideSweep,
       inactiveBookings,
       strandedCoverage,
+      // null when the step failed, never a clear-looking zero: this check's whole
+      // subject is a gap nothing else records, so "could not look" must not read as
+      // "every approved absence is covered" (#1238).
+      oooCoverageGap,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       // null when the step failed, and measured:false inside when the endpoint read
       // failed: "no event is unsubscribed" and "could not tell" must not render the
