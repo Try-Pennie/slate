@@ -1,0 +1,56 @@
+# TEMPORARY probe for #1519. Deleted before this branch merges.
+#
+# The main-push guard's association read began answering 403 "Resource not
+# accessible by integration" on 2026-08-17 with `pull-requests: read` declared.
+# Guessing at the missing permission is worthless; this measures it, with a
+# control, by asking the same endpoint from jobs whose ONLY difference is the
+# permission block.
+name: tmp probe 403
+on:
+  push:
+    branches:
+      - fix/1519-guard-claim-rescue
+
+jobs:
+  as-shipped:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - name: association read with the permissions the guard declares today
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "--- /commits/<sha>/pulls ---"
+          gh api /repos/${{ github.repository }}/commits/ca45f9e22dcb0cb138307badce856e04d9fd6e94/pulls 2>&1 | head -c 400 || true
+          echo
+          echo "--- control: /pulls/1518 (known to work) ---"
+          gh api /repos/${{ github.repository }}/pulls/1518 --jq .merge_commit_sha 2>&1 | head -c 200 || true
+
+  plus-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      issues: read
+    steps:
+      - name: association read with issues read added
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "--- /commits/<sha>/pulls ---"
+          gh api /repos/${{ github.repository }}/commits/ca45f9e22dcb0cb138307badce856e04d9fd6e94/pulls 2>&1 | head -c 400 || true
+
+  write-all:
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: association read with everything, to prove the endpoint is reachable at all
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "--- /commits/<sha>/pulls ---"
+          gh api /repos/${{ github.repository }}/commits/ca45f9e22dcb0cb138307badce856e04d9fd6e94/pulls 2>&1 | head -c 400 || true

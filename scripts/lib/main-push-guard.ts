@@ -46,9 +46,10 @@ export interface PushContext {
   prs: AssociatedPr[];
   /**
    * PRs named in the commit SUBJECT whose own record claims this commit as their
-   * merge commit (#1447). Only consulted when the association read came back empty:
-   * it is a fallback route to establishing that a merge HAPPENED, never a second
-   * opinion on whether the merge was acceptable.
+   * merge commit (#1447). Consulted whenever the association established no merge,
+   * which is BOTH an empty index and a read that FAILED (#1519): it is a fallback
+   * route to establishing that a merge HAPPENED, never a second opinion on whether
+   * the merge was acceptable, and a red CI is still refused on it.
    */
   claimedBy?: MergeCommitClaim[];
   /**
@@ -77,8 +78,9 @@ export interface Verdict {
  *
  * Legitimate  = it came from a merged PR AND that PR's CI did not fail. "Came from a
  *               merged PR" is established by GitHub's commit association, or, when
- *               that index is empty, by a PR named in the commit subject whose own
- *               record claims this commit as its merge commit (#1447).
+ *               that index establishes nothing (empty, or unreadable), by a PR named
+ *               in the commit subject whose own record claims this commit as its
+ *               merge commit (#1447, #1519).
  * Violation   = a direct push with no merged PR (bypassed review), OR a merged
  *               PR whose CI concluded failure (a red merge).
  * Bypass      = the commit message carries BYPASS_MARKER (a deliberate hotfix).
@@ -87,23 +89,60 @@ export interface Verdict {
  * transient inability to read checks never pages; the hard signal is "no merged
  * PR at all", which the free plan leaves completely unguarded today.
  *
- * Unverifiable = the PR list could not be read at all (#1436). That fails, like
- * every other not-ok verdict, but it is reported as what it is rather than as a
- * direct push, because an empty list and an unreadable one are indistinguishable
- * from here and only one of them is somebody bypassing review.
+ * Unverifiable = the PR list could not be read at all (#1436) AND no PR named in the
+ * subject claims this commit. That fails, like every other not-ok verdict, but it is
+ * reported as what it is rather than as a direct push, because an empty list and an
+ * unreadable one are indistinguishable from here and only one of them is somebody
+ * bypassing review. When a claim IS present the merge is established and the run
+ * passes, saying that the primary read is down (#1519).
  */
 export function classifyPush(ctx: PushContext): Verdict {
   if (ctx.commitMessage.includes(BYPASS_MARKER)) {
     return { ok: true, reason: `bypass marker ${BYPASS_MARKER} present` };
   }
 
+  // #1447/#1519: the pull requests named in the commit subject that claim this
+  // very commit as their merge commit. This is the INDEPENDENT route, read from
+  // each PR's own record rather than from GitHub's derived association index, and
+  // it is consulted whenever the association has not established a merge, whether
+  // it came back empty or could not be read at all.
+  const claimed = (ctx.claimedBy ?? []).filter((c) => c.isMergeCommitOfThisPush);
+
   if (!ctx.prsReadable) {
+    // #1519: an unreadable association used to return here immediately, above the
+    // claim route. The route was written for the association answering EMPTY,
+    // which is what the 2026-08-13 incident produced, and a read that FAILS is the
+    // harder version of the same failure and the one a second route exists for. On
+    // 2026-08-17 the endpoint began answering 403 to the workflow token, and the
+    // guard fetched the proof, logged it, and threw it away: every merge to main
+    // failed and paged, and no re-run could help. A route reachable only when the
+    // primary answers is not a fallback (L161).
+    //
+    // It still FAILS CLOSED. With no claim there is nothing to stand on and the
+    // verdict is the same unverified one as before; this only stops the guard
+    // discarding proof it is already holding.
+    if (claimed.length === 0) {
+      return {
+        ok: false,
+        unverified: true,
+        reason:
+          "could not read the pull requests for this commit, so whether it arrived through a " +
+          "merged PR is UNKNOWN. This is not a direct push; it is a check that could not run",
+      };
+    }
+    const redBlind = claimed.find((c) => c.ciConclusion === "failure");
+    if (redBlind) {
+      return { ok: false, reason: `merged PR #${redBlind.number} had failing CI` };
+    }
+    // L65: the primary route is DOWN, and a run rescued by the fallback must say
+    // so. Passing silently would leave the guard running on one leg indefinitely,
+    // indistinguishable from a healthy one, which is how the 403 stays invisible.
     return {
-      ok: false,
-      unverified: true,
+      ok: true,
       reason:
-        "could not read the pull requests for this commit, so whether it arrived through a " +
-        "merged PR is UNKNOWN. This is not a direct push; it is a check that could not run",
+        `legitimate merge of PR #${claimed[0]!.number}, confirmed from that PR's own merge ` +
+        `commit because GitHub's commit association could not be read. That primary read is ` +
+        `DOWN and wants fixing: this run passed on the fallback route alone`,
     };
   }
 
@@ -113,7 +152,6 @@ export function classifyPush(ctx: PushContext): Verdict {
     // subject whether one of them claims this commit as its merge commit. GitHub's
     // association index can be permanently missing the entry, and an empty index is
     // indistinguishable from a real direct push (L119).
-    const claimed = (ctx.claimedBy ?? []).filter((c) => c.isMergeCommitOfThisPush);
     if (claimed.length === 0) {
       return {
         ok: false,

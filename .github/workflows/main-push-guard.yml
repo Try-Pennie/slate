@@ -106,9 +106,13 @@ jobs:
           # API incident. An empty index is byte for byte what a direct push looks
           # like, so with one lookup the guard accuses on a missing record.
           #
-          # Only reached when the association is empty, so the common path costs no
-          # extra request. Only the SUBJECT is read: a squash body carries every
-          # branch commit message and could name dozens of unrelated PRs.
+          # Reached whenever the association established no merge, which is BOTH an
+          # empty index and a read that failed outright (#1519: that endpoint began
+          # answering 403 to the workflow token on 2026-08-17, and the classifier
+          # was discarding the claims this block had already gathered). The common
+          # path, where the association names a merged PR, still costs no extra
+          # request. Only the SUBJECT is read: a squash body carries every branch
+          # commit message and could name dozens of unrelated PRs.
           MERGE_CLAIMS_JSON='[]'
           if [ "$(jq '[.[] | select(.merged)] | length' <<<"$prs")" = "0" ]; then
             subject="$(head -n 1 <<<"$COMMIT_MESSAGE")"
@@ -160,7 +164,8 @@ jobs:
               fi
             done
             MERGE_CLAIMS_JSON="$claims"
-            echo "::notice::main-push-guard: the commit association was empty, so the pull requests named in the subject were asked directly: $MERGE_CLAIMS_JSON"
+            if [ -n "$PRS_READ_ERROR" ]; then why="could not be read ($PRS_READ_ERROR)"; else why="was empty"; fi
+            echo "::notice::main-push-guard: the commit association $why, so the pull requests named in the subject were asked directly: $MERGE_CLAIMS_JSON"
           fi
           export MERGE_CLAIMS_JSON
 

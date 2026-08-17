@@ -230,9 +230,20 @@ assert(/SLACK_BOT_TOKEN/.test(wf) && /SLACK_ALERTS_CHANNEL/.test(wf), "workflow 
   assert(/#42/.test(verdict.reason), "naming the associated PR rather than the claimant");
 }
 
-// An unreadable association is still unverified, not silently rescued by the
-// fallback: if we could not ask GitHub about the association, we did not measure
-// whether a merge happened, and the claim route is a different question.
+// #1519: an UNREADABLE association is answered by the claim route, exactly as an
+// empty one is.
+//
+// The claim route was written for the association coming back EMPTY, which is the
+// flavour of failure the 2026-08-13 incident produced, and it sat below an early
+// return for an association that could not be READ. On 2026-08-17 that endpoint
+// began answering 403 to the workflow token, which is the harder failure and the
+// one the second route exists for, and the guard fetched the proof, printed it to
+// its own log, and threw it away. Every merge to main failed and paged, and no
+// re-run could help.
+//
+// The association index is GitHub's DERIVED record; the pull request is the
+// PRIMARY one. A route that can only be consulted when the derived index answers
+// is not a fallback (L161).
 {
   const blindWithClaim = {
     ...base,
@@ -241,8 +252,60 @@ assert(/SLACK_BOT_TOKEN/.test(wf) && /SLACK_ALERTS_CHANNEL/.test(wf), "workflow 
     claimedBy: [{ number: 1446, isMergeCommitOfThisPush: true, ciConclusion: "success" }],
   };
   const verdict = classifyPush(blindWithClaim);
-  assert(!verdict.ok, "#1436 still holds: an unreadable association fails");
-  assert(verdict.unverified, "as unverified, whatever the claim route says");
+  assert(verdict.ok, "a merged PR claiming this very commit answers an unreadable association");
+  assert(!verdict.unverified, "and it is a real measurement, not an unverified one");
+  assert(
+    /1446/.test(verdict.reason),
+    "the reason names the PR the proof came from",
+  );
+  // L65: the primary route is DOWN and the run must say so, or a guard running on
+  // one leg is indistinguishable from a healthy one and nobody learns the 403 is
+  // there.
+  assert(
+    /could not be read|unreadable/i.test(verdict.reason),
+    "and says the association could not be read, so the degradation is visible",
+  );
+}
+
+// It still FAILS CLOSED. The change stops the guard discarding proof it holds; it
+// does not let an unproven push through. With no claim and nothing readable there
+// is nothing to stand on, and the verdict is the unverified one as before.
+{
+  const blindNoClaim = { ...base, prs: [], prsReadable: false, claimedBy: [] };
+  const verdict = classifyPush(blindNoClaim);
+  assert(!verdict.ok, "#1436 still holds when the claim route has nothing either");
+  assert(verdict.unverified, "reported as a check that could not run, not as a direct push");
+  assert(/UNKNOWN/.test(verdict.reason), "and says so in those words");
+}
+
+// A claim that does NOT name this commit cannot rescue an unreadable association.
+// The claim route's whole strength is that merge_commit_sha is written by GitHub,
+// so a claim failing that test is worth exactly nothing.
+{
+  const blindWeakClaim = {
+    ...base,
+    prs: [],
+    prsReadable: false,
+    claimedBy: [{ number: 1446, isMergeCommitOfThisPush: false, ciConclusion: "success" }],
+  };
+  const verdict = classifyPush(blindWeakClaim);
+  assert(!verdict.ok, "a PR merely NAMED in the subject rescues nothing");
+  assert(verdict.unverified, "the association is still what could not be read");
+}
+
+// A RED merge is caught on this route too, so an unreadable association cannot be
+// used to slip a failed CI past the gate.
+{
+  const blindRedClaim = {
+    ...base,
+    prs: [],
+    prsReadable: false,
+    claimedBy: [{ number: 1446, isMergeCommitOfThisPush: true, ciConclusion: "failure" }],
+  };
+  const verdict = classifyPush(blindRedClaim);
+  assert(!verdict.ok, "a merged PR whose CI failed is refused whichever route found it");
+  assert(!verdict.unverified, "and that is a measurement, not an inability to check");
+  assert(/failing CI/.test(verdict.reason), "named as a red merge");
 }
 
 // --- the claims env read, and what it refuses to carry -------------------
