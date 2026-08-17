@@ -1,5 +1,6 @@
 import { DateTime } from "luxon";
 import type { GoogleEvent } from "./calendar.ts";
+import { parseStampMs } from "@/lib/date/stamp";
 
 /**
  * Pure helpers for calendar sync (no IO), so the busy/stale logic is testable.
@@ -135,12 +136,48 @@ export function partitionBusyWrites(
  * Cached gcal blocks that no longer correspond to a present event — used after
  * a FULL resync to purge events that vanished while the sync token was stale
  * (a full resync returns the current set, with no per-event cancellation delta).
+ *
+ * SCOPED TO WHAT THE FETCH ASKED FOR (#1261). While the bootstrap was unbounded above,
+ * judging every cached block for the calendar was correct. The moment the fetch carries a
+ * `timeMax`, a block outside that window was never in the answer, so scoring it "not seen"
+ * would delete real busy time for a meeting still sitting in the calendar and leave the
+ * agent bookable during it. That is the only way this design can over-delete, which is why
+ * the window comes from the pass that actually fetched it and is never re-read from
+ * `sync_window_to`: a stored value larger than what was sent would extend the reconcile
+ * past the fetch.
+ *
+ * The two bounds apply to two DIFFERENT fields, quoted from Google's events.list reference:
+ * `timeMin` is the "Lower bound (exclusive) for an event's END time" and `timeMax` the
+ * "Upper bound (exclusive) for an event's START time". So the fetched set is
+ * `ends_at > timeMin AND starts_at < timeMax`. Scoping on `starts_at` for both instead
+ * would leave an event that began before `timeMin` but ends after it inside the fetch yet
+ * outside the judged range, and its block would then survive this reconcile AND the past
+ * prune permanently, over-blocking a readable slot with no code path able to clear it.
+ *
+ * An unreadable stamp means we cannot tell whether the block was fetched, so it is left
+ * alone. `Date.parse` yields NaN and every comparison with NaN is false, so this is stated
+ * as an explicit readable-check rather than relying on that accident (L50).
  */
 export function staleBlockIds(
-  blocks: { id: string; gcal_event_id: string | null }[],
+  blocks: { id: string; gcal_event_id: string | null; starts_at: string; ends_at: string }[],
   seenEventIds: Set<string>,
+  window: { timeMinIso: string; timeMaxIso: string },
 ): string[] {
+  const minMs = parseStampMs(window.timeMinIso);
+  const maxMs = parseStampMs(window.timeMaxIso);
+  // An unreadable WINDOW deletes nothing at all. It can only arrive from a caller bug, and
+  // the safe answer to "which blocks did this fetch cover" when the fetch is unknown is
+  // none of them.
+  if (minMs === null || maxMs === null) return [];
   return blocks
-    .filter((b) => b.gcal_event_id !== null && !seenEventIds.has(b.gcal_event_id))
+    .filter((b) => {
+      if (b.gcal_event_id === null || seenEventIds.has(b.gcal_event_id)) return false;
+      const startsMs = parseStampMs(b.starts_at);
+      const endsMs = parseStampMs(b.ends_at);
+      // null, not NaN: an unreadable stamp means we cannot tell whether this block was
+      // fetched, and the fail-safe answer to that is to leave it alone (L50).
+      if (startsMs === null || endsMs === null) return false;
+      return endsMs > minMs && startsMs < maxMs;
+    })
     .map((b) => b.id);
 }

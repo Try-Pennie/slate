@@ -66,6 +66,13 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     "/api/cron/prune-bookings-pii",
     "/api/cron/prune-busy-blocks",
   ],
+  // Calendar hydration rotation (#1261): re-bootstrap a slice of the calendars every 15
+  // minutes, sized from the live count so every calendar is refreshed at least once a day.
+  // Its OWN expression, never co-scheduled: the every-minute invocation is the one already
+  // short of CPU headroom (#1245), and this lane makes real Google calls per calendar.
+  // Hydration is load-bearing once anything filters or prunes the cache by window, so it
+  // stamps its own heartbeat with a matching bound in LANE_STALE_BOUNDS_MS.
+  "*/15 * * * *": "/api/cron/hydrate-calendars",
   // Snowflake archival mirror export (#1099): its OWN expression (every 10 min),
   // never co-scheduled, so it gets its own CPU/subrequest budget. Resumable via
   // export_cursor, so a 10-min gap just means the next tick catches up.

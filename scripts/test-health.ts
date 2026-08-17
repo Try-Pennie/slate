@@ -144,7 +144,7 @@ assert(
 }
 
 // The shipped config covers every 1-min and 5-min lane and excludes agents.
-for (const lane of ["sync", "recompute", "outbox", "selfheal", "complete", "watch", "monitor"]) {
+for (const lane of ["sync", "recompute", "outbox", "selfheal", "complete", "watch", "monitor", "hydrate-calendars"]) {
   assert(typeof LANE_STALE_BOUNDS_MS[lane] === "number", `LANE_STALE_BOUNDS_MS covers "${lane}"`);
 }
 assert(

@@ -509,6 +509,18 @@ export async function syncEvents(
   calendarId: string,
   syncToken: string | null,
   timeMinForBootstrap: string,
+  /**
+   * Upper bound for a BOOTSTRAP, so the cache stops claiming coverage it never fetched
+   * (#1261). Sent only on the bootstrap branch below: `timeMin`/`timeMax` alongside a
+   * `syncToken` is a documented 400 from Google, and the delta is not scoped by them
+   * anyway (measured, #1252).
+   *
+   * Required, not optional. Every caller now windows its bootstrap, and whatever is sent
+   * here is exactly what the reconcile is allowed to judge, so a caller that forgot it
+   * would silently widen what may be deleted. Making it required means tsc names every
+   * construction site instead.
+   */
+  timeMaxForBootstrap: string,
 ): Promise<SyncResult> {
   if (LOADTEST) return stubSyncEvents(syncToken, Date.now());
   const events: GoogleEvent[] = [];
@@ -524,6 +536,7 @@ export async function syncEvents(
     if (syncToken) params.set("syncToken", syncToken);
     else {
       params.set("timeMin", timeMinForBootstrap);
+      params.set("timeMax", timeMaxForBootstrap);
       params.set("maxResults", "2500");
     }
     if (pageToken) params.set("pageToken", pageToken);

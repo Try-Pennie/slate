@@ -72,6 +72,22 @@ export const SYNC_TICK_BUDGET_MS = 25_000;
  */
 export const BOOTSTRAP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How far AHEAD a bootstrap asks Google for events, and therefore how far ahead the
+ * `busy_blocks` cache is allowed to claim coverage (#1261).
+ *
+ * It lives beside the lookback because the same rule applies at both ends: whatever the
+ * fetch asks for is exactly what the reconcile may judge and what the prune may act on.
+ * A value larger than what was actually sent is the only way this design can over-delete,
+ * which is why the bound travels with the pass that used it rather than being re-read.
+ *
+ * Twenty one days is chosen against the furthest slot the booker can offer, not against a
+ * calendar's contents: HORIZON_MAX is 7, so this clears it by two weeks. That margin is
+ * asserted in scripts/test-calendar-hydration.ts rather than stated here, because a
+ * comment does not fail when somebody raises the horizon.
+ */
+export const BUSY_WINDOW_AHEAD_DAYS = 21;
+
 export function pastDeadline(nowMs: number, deadlineMs: number | null): boolean {
   return deadlineMs !== null && nowMs >= deadlineMs;
 }

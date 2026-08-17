@@ -48,6 +48,12 @@ export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
   watch: 20 * MIN,
   monitor: 20 * MIN,
   "bulk-reassign": 20 * MIN,
+  // #1261: the calendar hydration rotation, every 15 minutes. 45 minutes is three cadences,
+  // so ordinary jitter cannot page while a lane that has genuinely stopped does. It needs a
+  // bound at all because hydration is LOAD-BEARING once anything filters or prunes the
+  // cache by window: a stamp no bound watches looks like monitoring while nothing watches
+  // (#1123), and a silently stopped rotation means coverage quietly expiring everywhere.
+  "hydrate-calendars": 45 * MIN,
 };
 
 /**
