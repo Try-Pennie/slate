@@ -46,6 +46,43 @@ Current headroom for the every minute cron (7 days, 19,260 ticks):
 CPU is billed on **actual usage, not the limit**, so raising the ceiling costs
 nothing by itself. Raise it rather than let invocations get killed.
 
+### The `*/5` invocation has its own budget, and it is mostly one lane
+
+Everything above is the **every minute** cron. The `*/5` trigger is a SECOND shared
+invocation (`complete`, `watch`, `monitor`, `bulk-reassign`), with its own ceiling,
+and until #1238 nothing here said anything about it. Measured live off
+`wrangler tail` (`tag=cron msg="lane timings"`, which the worker emits for every
+cron expression, not just the minute one):
+
+| lane | tick 1 | tick 2 |
+|---|---|---|
+| monitor | 15,855 ms | 16,123 ms |
+| watch | 1,951 ms | 1,987 ms |
+| complete | 1,421 ms | 1,799 ms |
+| bulk-reassign | 868 ms | 1,188 ms |
+| `total_ms` | 15,855 ms | 16,123 ms |
+
+The lanes run **concurrently**, so `total_ms` equals the slowest lane rather than
+their sum, and the monitor lane IS the tick. At ~16s against the 120s ceiling that
+is about 13%, so there is real room; what there is not room for is treating the
+monitor lane as cheap, because a couple of dozen checks now share it and each one
+that adds an unconditional read adds it to the lane that already dominates.
+
+Three caveats, so this is not read as more than it is. **This is wall time, not CPU**
+(the runtime exposes no per request CPU reading), and most of it is waiting on
+PostgREST rather than burning CPU, so the CPU figure is well under the table. It is
+**two ticks**, not the 7 day distribution above, so use it to size a change rather
+than as a baseline to alert on; the two agreeing to within 2% is the only reason it
+is worth writing down at all. And `wrangler tail` is what produced it, because
+listing this from the query API needs a token the repo does not hold, and tail only
+sees what arrives while it is attached: 18 minutes of attachment yielded two `*/5`
+ticks, not the three or four the schedule implies, so treat the sample count as a
+floor. #1246 is the issue that turns this into a watched trend.
+
+The rule it implies for a new monitor check: make the first read the cheap one and
+skip the rest when it comes back empty. #1238's coverage-gap check does exactly
+that, so an ordinary tick with no approved absences pays for one query.
+
 ## Subrequests are NOT a constraint
 
 Cloudflare **removed the old 1,000 subrequest cap on 2026-02-11**. Workers Paid is
