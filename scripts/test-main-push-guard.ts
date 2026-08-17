@@ -8,8 +8,10 @@
 // This exercises the happy path AND both failure paths (direct push, merged red
 // PR) plus the Slack-unconfigured send failure, per the failure-path test rule.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-main-push-guard.ts
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   BYPASS_MARKER,
@@ -364,6 +366,176 @@ assert(/SLACK_BOT_TOKEN/.test(wf) && /SLACK_ALERTS_CHANNEL/.test(wf), "workflow 
   eq(prNumbersInSubject("Dupe (#7) and again (#7)"), [7], "a repeated reference is asked about once");
   eq(prNumbersInSubject("Zero (#0)"), [], "#0 is not a pull request, so it is not asked about");
   eq(prNumbersInSubject(""), [], "an empty message is handled rather than throwing");
+}
+
+// --- #1524: the guard must not need a dependency install to speak ----------
+//
+// On 2026-08-17 run 32039856279 died at `Failed to download action
+// 'pnpm/action-setup'` with a 429 after three retries, so the only control over main
+// never ran at all. Its whole job is to be the thing that still works when something
+// else has gone wrong, and it was carrying pnpm, setup-node and a full
+// `pnpm install --frozen-lockfile` purely to send one Slack message: the chain was
+// `postSlack` -> `defaultAlertsChannel` -> `supabaseAdmin` -> @supabase/supabase-js.
+{
+  // Strip comment lines before matching. The workflow now EXPLAINS why it carries no
+  // install, so a match on the raw text is answered by the comment describing the thing
+  // rather than by the thing (L103), in the direction that fails a correct file. The
+  // stripped copy is what every "must not contain" assertion below reads.
+  const code = wf
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+  assert(
+    !/pnpm install/.test(code),
+    "the workflow does not install dependencies (every one is another way for the guard to be unavailable)",
+  );
+  assert(
+    !/pnpm\/action-setup/.test(code),
+    "the workflow does not download the pnpm action, which is what took it out",
+  );
+  // The classification is pure and the poster is dependency free, so the `@/` alias
+  // hook is not needed either. Asserted because leaving it in the command line is
+  // harmless but hides that the guard could stop being self-contained.
+  assert(
+    !/register-paths/.test(code),
+    "the workflow does not need the module alias hook, so nothing under src/ is reachable from the guard",
+  );
+}
+
+// The strong version of the same claim, run rather than read: invoke the runner the
+// way the workflow does, on bare node with NO alias hook. Any surviving `@/` import
+// would fail to resolve and this would exit non-zero, so it proves the guard is
+// self-contained instead of asserting it from the shape of an import line (L1).
+{
+  const res = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", join(ROOT, "scripts", "check-main-push.ts")],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HEAD_SHA: "abcdef1234567890",
+        COMMIT_MESSAGE: "Add a thing (#42)",
+        ACTOR: "someone",
+        RUN_URL: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        PRS_JSON: JSON.stringify([{ number: 42, merged: true, ciConclusion: "success" }]),
+        MERGE_CLAIMS_JSON: "",
+        PRS_READ_ERROR: "",
+        GITHUB_OUTPUT: "",
+        // Deliberately absent: a legitimate push posts nothing, so this must pass
+        // with no Slack credentials at all.
+        SLACK_BOT_TOKEN: "",
+        SLACK_ALERTS_CHANNEL: "",
+      },
+    },
+  );
+  eq(res.status, 0, "the runner exits 0 on a legitimate merge with no dependencies installed");
+  assert(
+    /legitimate/i.test(`${res.stdout}${res.stderr}`),
+    "and reports the merge it recognised",
+  );
+  assert(
+    !/Cannot find package|ERR_MODULE_NOT_FOUND/.test(`${res.stdout}${res.stderr}`),
+    "and resolves every import on bare node, with no alias hook and no node_modules reachable from it",
+  );
+}
+
+// --- #1523: an infrastructure failure must not be silent -------------------
+//
+// The Slack alert was posted from the FINAL step, so every step before it (checkout,
+// the action downloads, the install) could fail with the run going red and NOTHING
+// sent anywhere. That is the same blind spot as #1519 one level up: there the guard
+// could not reach a verdict, here it could not reach the step that speaks.
+{
+  assert(
+    /if:\s*failure\(\)/.test(wf),
+    "the workflow has a step that runs when an earlier step failed",
+  );
+  // It must survive the failure it is reporting, so it cannot depend on the install
+  // having run. curl is on the runner image; a node script or an action is not
+  // guaranteed to be reachable in the conditions this step exists for.
+  // Slice from the marker, and fall back to the WHOLE file when it is absent, because
+  // `slice(-1)` on a missing marker leaves one character and every assertion below
+  // passes on nothing at all (L100: a match that found nothing reads as a pass).
+  const failureAt = wf.indexOf("if: failure()");
+  const failureStep = failureAt >= 0 ? wf.slice(failureAt) : wf;
+  assert(
+    /curl/.test(failureStep),
+    "and posts with plain curl rather than anything the failed steps had to provide",
+  );
+  assert(
+    !/uses:/.test(failureStep),
+    "and downloads no action of its own, since an action download is what took the guard out",
+  );
+  assert(
+    /RUN_URL|github\.run_id/.test(failureStep),
+    "and carries the run URL, which is the one actionable thing it can offer",
+  );
+  // Three states, not two: a clean pass, a real violation (which the guard itself
+  // alerts about), and an infrastructure failure. Without the gate a violation
+  // double-posts, and two alerts about one commit is how a reader learns to skim.
+  assert(
+    /steps\.classify\.outputs\.handled/.test(wf),
+    "and is gated on the guard not having already spoken, so a real violation is reported once",
+  );
+  assert(
+    /id:\s*classify/.test(wf),
+    "which requires the classify step to carry that id",
+  );
+}
+
+// The marker behind that gate. It must mean "the guard reached a verdict AND said
+// so", never merely "the script started": a violation whose Slack post failed has
+// told nobody, and that is exactly when the curl route has to fire.
+{
+  const outFile = join(tmpdir(), `main-push-handled-${process.pid}.txt`);
+  const readMarker = () => {
+    try {
+      return readFileSync(outFile, "utf8");
+    } catch {
+      return "";
+    }
+  };
+
+  rmSync(outFile, { force: true });
+  await run(async () => ({ ok: true }), {
+    ...envFor(base),
+    GITHUB_OUTPUT: outFile,
+  });
+  assert(/handled=true/.test(readMarker()), "a legitimate push records that the guard handled it");
+
+  rmSync(outFile, { force: true });
+  await run(async () => ({ ok: true }), {
+    ...envFor(directPush),
+    GITHUB_OUTPUT: outFile,
+  });
+  assert(
+    /handled=true/.test(readMarker()),
+    "a violation WITH a delivered alert also records it, so the curl route stays quiet",
+  );
+
+  rmSync(outFile, { force: true });
+  await run(async () => ({ ok: false, error: "channel_not_found" }), {
+    ...envFor(directPush),
+    GITHUB_OUTPUT: outFile,
+  });
+  eq(
+    readMarker(),
+    "",
+    "a violation whose alert did NOT send records nothing, so the curl route speaks for it",
+  );
+
+  // A missing GITHUB_OUTPUT (any local run) must not turn into a crash that fails
+  // the guard for a reason unrelated to the push.
+  let threw = false;
+  try {
+    await run(async () => ({ ok: true }), { ...envFor(base), GITHUB_OUTPUT: "" });
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "no GITHUB_OUTPUT is handled rather than throwing");
+
+  rmSync(outFile, { force: true });
 }
 
 finish();
