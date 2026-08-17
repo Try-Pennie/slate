@@ -65,6 +65,7 @@ import {
   loadSyncAgents,
   loadFailingAgents,
   cleanupOnPoolExit,
+  hydrateCalendar,
 } from "./sync";
 import { LANE_COLUMNS } from "./sync-health";
 import {
@@ -83,11 +84,19 @@ import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
  * ids)` records the ids it was asked to remove. `opts.error` makes every read
  * fail so the throw-on-error path can be exercised.
  */
+/** The bounds a bootstrap pass sent, and a block sitting inside them (#1261). */
+const WINDOW = { timeMinIso: "2026-06-08T00:00:00.000Z", timeMaxIso: "2026-06-29T00:00:00.000Z" };
+const IN_WINDOW = { starts_at: "2026-06-10T13:00:00.000Z", ends_at: "2026-06-10T13:30:00.000Z" };
+
 function pagingDb(
   tables: Record<string, Record<string, unknown>[]>,
   opts: { error?: { message: string }; deleteError?: { message: string } } = {},
 ) {
   const deleted: unknown[] = [];
+  // #1261: the window filters the read carries, recorded so a test can prove purgeVanished
+  // BOUNDS its read rather than only filtering afterwards. A double that silently accepts
+  // a call it does not model is a double that proves nothing about it (L143).
+  const bounds: { op: string; col: string; value: unknown }[] = [];
   // Each `.delete().in(...)` call as its own array, so a test can prove the ids were
   // sent in BOUNDED batches rather than one request PostgREST would reject on length.
   const deleteBatches: unknown[][] = [];
@@ -100,6 +109,14 @@ function pagingDb(
       eq: () => b,
       is: () => b,
       not: () => b,
+      gt: (col: string, value: unknown) => {
+        bounds.push({ op: "gt", col, value });
+        return b;
+      },
+      lt: (col: string, value: unknown) => {
+        bounds.push({ op: "lt", col, value });
+        return b;
+      },
       range: (f: number, t: number) => {
         range = [f, t];
         return b;
@@ -124,7 +141,7 @@ function pagingDb(
     };
     return b;
   };
-  return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, deleted, deleteBatches };
+  return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, deleted, deleteBatches, bounds };
 }
 
 /**
@@ -416,22 +433,44 @@ describe("purgeVanished (#834)", () => {
     const blocks = Array.from({ length: 1001 }, (_, i) => ({
       id: `b-${i}`,
       gcal_event_id: `evt-${i}`,
+      ...IN_WINDOW,
     }));
     const { db, deleted } = pagingDb({ busy_blocks: blocks });
     admin.current = db;
 
     // A full resync that returned NO current events: every cached block is stale
     // and must be purged. The 1,001st block only surfaces if the read paged.
-    await purgeVanished("agent-1", "primary", [], new Set());
+    await purgeVanished("agent-1", "primary", [], new Set(), WINDOW);
 
     expect(deleted).toHaveLength(1001);
     expect(deleted).toContain("b-1000");
   });
 
+  it("#1261 bounds its READ to the window the pass fetched, on the right two columns", async () => {
+    // Not only the judgement. Narrowing the read is what stops the reconcile paging every
+    // block an agent owns (one holds 22,137) and, more importantly, it is the query whose
+    // shape decides which rows are even candidates for deletion.
+    const { db, bounds } = pagingDb({
+      busy_blocks: [{ id: "b-1", gcal_event_id: "evt-1", ...IN_WINDOW }],
+    });
+    admin.current = db;
+
+    await purgeVanished("agent-1", "primary", [], new Set(), WINDOW);
+
+    // The two bounds apply to two DIFFERENT columns, matching Google's own semantics:
+    // timeMin bounds the event's END, timeMax bounds its START. Scoping both on starts_at
+    // would leave a straddling block inside the fetch but outside the judged range, and
+    // its stale row would then survive forever with nothing able to clear it.
+    expect(bounds).toContainEqual({ op: "gt", col: "ends_at", value: WINDOW.timeMinIso });
+    expect(bounds).toContainEqual({ op: "lt", col: "starts_at", value: WINDOW.timeMaxIso });
+    // And exactly those two, so a third bound cannot quietly narrow it further.
+    expect(bounds).toHaveLength(2);
+  });
+
   it("throws instead of silently leaving orphaned blocks when the read errors", async () => {
     const { db } = pagingDb({ busy_blocks: [] }, { error: { message: "read timeout" } });
     admin.current = db;
-    await expect(purgeVanished("agent-1", "primary", [], new Set())).rejects.toThrow(
+    await expect(purgeVanished("agent-1", "primary", [], new Set(), WINDOW)).rejects.toThrow(
       /read timeout/,
     );
   });
@@ -447,11 +486,12 @@ describe("purgeVanished sends its delete in bounded batches (#1259)", () => {
     const blocks = Array.from({ length: 1001 }, (_, i) => ({
       id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
       gcal_event_id: `evt-${i}`,
+      ...IN_WINDOW,
     }));
     const { db, deleted, deleteBatches } = pagingDb({ busy_blocks: blocks });
     admin.current = db;
 
-    await purgeVanished("agent-1", "primary", [], new Set());
+    await purgeVanished("agent-1", "primary", [], new Set(), WINDOW);
 
     expect(deleted).toHaveLength(1001);
     // Asserted in BYTES, which is the quantity PostgREST actually refuses on
@@ -469,11 +509,11 @@ describe("purgeVanished sends its delete in bounded batches (#1259)", () => {
     // An unchecked delete error leaves the stale blocks in place while the sync
     // reports success and advances its token, so the agent stays falsely busy with
     // nothing anywhere saying the cleanup failed.
-    const blocks = [{ id: "b-1", gcal_event_id: "evt-1" }];
+    const blocks = [{ id: "b-1", gcal_event_id: "evt-1", ...IN_WINDOW }];
     const { db } = pagingDb({ busy_blocks: blocks }, { deleteError: { message: "permission denied" } });
     admin.current = db;
 
-    await expect(purgeVanished("agent-1", "primary", [], new Set())).rejects.toThrow(
+    await expect(purgeVanished("agent-1", "primary", [], new Set(), WINDOW)).rejects.toThrow(
       /permission denied/,
     );
   });
@@ -1176,5 +1216,163 @@ describe("runIncrementalSync reports the calendars it backed off (#1187)", () =>
     const out = await runIncrementalSync("agent-1");
 
     expect(out.goneSkipped).toBe(0);
+  });
+});
+
+describe("hydrateCalendar write ordering (#1261)", () => {
+  /**
+   * Records every `.update()` in order, with the filters that accompanied it, so the
+   * ORDER and the CONDITIONS can be asserted rather than only the final state. The
+   * ordering is the design here: which write happens before the fetch, which happens only
+   * on success, and which is conditional.
+   */
+  function recordingDb() {
+    const updates: { table: string; values: Record<string, unknown>; filters: string[] }[] = [];
+    const from = (table: string) => {
+      const b: Record<string, unknown> = {
+        select: () => b,
+        eq: (col: string, val: unknown) => {
+          const last = updates[updates.length - 1];
+          if (last && last.table === table) last.filters.push(`eq:${col}=${String(val)}`);
+          return b;
+        },
+        is: (col: string, val: unknown) => {
+          const last = updates[updates.length - 1];
+          if (last && last.table === table) last.filters.push(`is:${col}=${String(val)}`);
+          return b;
+        },
+        gt: () => b,
+        lt: () => b,
+        in: () => b,
+        not: () => b,
+        limit: () => b,
+        range: () => b,
+        // The agent's mailbox, so hydrateCalendar gets past its no-mailbox guard. A fake
+        // that answered null would make every success-path assertion below pass for the
+        // wrong reason, by never reaching the code under test at all (L143).
+        maybeSingle: () =>
+          Promise.resolve({
+            data: table === "users" ? { email: "agent@trypennie.com" } : null,
+            error: null,
+          }),
+        upsert: () => Promise.resolve({ error: null }),
+        delete: () => b,
+        update: (values: Record<string, unknown>) => {
+          updates.push({ table, values, filters: [] });
+          return b;
+        },
+        then: (resolve: (v: { data: unknown[]; error: unknown }) => unknown) =>
+          Promise.resolve({ data: [], error: null }).then(resolve),
+      };
+      return b;
+    };
+    return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, updates };
+  }
+
+  const cal = (token: string | null) =>
+    ({
+      id: "cal-1",
+      user_id: "agent-1",
+      calendar_id: "primary",
+      sync_token: token,
+      consecutive_failures: 0,
+      last_success_at: null,
+      last_sync_error: null,
+      last_failure_kind: null,
+    }) as never;
+
+  type Recorded = { table: string; values: Record<string, unknown>; filters: string[] };
+  const attemptStamps = (u: Recorded[]) =>
+    u.filter((x) => "last_bootstrap_attempt_at" in x.values);
+  const windowWrites = (u: Recorded[]) => u.filter((x) => "sync_window_to" in x.values);
+  const tokenWrites = (u: Recorded[]) => u.filter((x) => "sync_token" in x.values);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    calMock.syncEvents.mockResolvedValue({
+      events: [],
+      nextSyncToken: "new-tok",
+      truncated: false,
+    } as never);
+  });
+
+  it("stamps the attempt BEFORE fetching, and stamps it even when the fetch fails", async () => {
+    // The fairness property. If the stamp only advanced on success, a calendar whose
+    // delegation has been revoked would stay the oldest forever, be selected first on
+    // every tick, and starve every healthy calendar behind it.
+    const { db, updates } = recordingDb();
+    admin.current = db;
+    calMock.syncEvents.mockRejectedValue(new Error("delegation revoked"));
+
+    const res = await hydrateCalendar(cal("old-tok"));
+
+    expect(res.ok).toBe(false);
+    expect(attemptStamps(updates)).toHaveLength(1);
+    // And nothing claimed coverage for a fetch that never happened.
+    expect(windowWrites(updates)).toHaveLength(0);
+    // A failed hydration does not take the lane down with it.
+    expect(res.events).toBe(0);
+  });
+
+  it("records coverage only on success, in its OWN write, never coupled to the token", async () => {
+    // Coupling them means every token write fails while code is deployed ahead of its
+    // migration, and then every calendar re-bootstraps every minute against Google. The
+    // token write is deliberately isolated for that reason and this must not undo it.
+    const { db, updates } = recordingDb();
+    admin.current = db;
+
+    await hydrateCalendar(cal("old-tok"));
+
+    const windows = windowWrites(updates);
+    const tokens = tokenWrites(updates);
+    expect(windows).toHaveLength(1);
+    expect(tokens).toHaveLength(1);
+    // Two separate updates, so neither can fail on account of the other.
+    expect(windows[0]).not.toBe(tokens[0]);
+    expect(Object.keys(windows[0]!.values)).toEqual(["sync_window_to"]);
+    expect(Object.keys(tokens[0]!.values)).toEqual(["sync_token"]);
+  });
+
+  it("writes the token CONDITIONALLY on the value the pass started with", async () => {
+    // A push-driven sync can advance the token while this fetch is in flight. Overwriting
+    // it would leave the stored coverage claiming a window the token does not correspond
+    // to. Losing the race is harmless: the conditional write simply does nothing and the
+    // next rotation re-establishes the window.
+    const { db, updates } = recordingDb();
+    admin.current = db;
+
+    await hydrateCalendar(cal("old-tok"));
+
+    expect(tokenWrites(updates)[0]!.filters).toContain("eq:sync_token=old-tok");
+  });
+
+  it("uses an IS comparison when the pass started with no token at all", async () => {
+    // `.eq` against null matches nothing in PostgREST, so a calendar that had never synced
+    // would silently never get its token written and would re-bootstrap forever.
+    const { db, updates } = recordingDb();
+    admin.current = db;
+
+    await hydrateCalendar(cal(null));
+
+    expect(tokenWrites(updates)[0]!.filters).toContain("is:sync_token=null");
+  });
+
+  it("claims NO coverage for a page-capped pass", async () => {
+    // A truncated pass read only part of the window, so recording the full window would
+    // authorize the prune over a range that was never actually read.
+    const { db, updates } = recordingDb();
+    admin.current = db;
+    calMock.syncEvents.mockResolvedValue({
+      events: [],
+      nextSyncToken: null,
+      truncated: true,
+    } as never);
+
+    await hydrateCalendar(cal("old-tok"));
+
+    expect(windowWrites(updates)).toHaveLength(0);
+    // But the attempt is still stamped, so the rotation moves on rather than retrying the
+    // same pathological calendar on every tick.
+    expect(attemptStamps(updates)).toHaveLength(1);
   });
 });

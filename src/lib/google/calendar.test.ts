@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const dwd = vi.hoisted(() => ({ getDelegatedToken: vi.fn() }));
 vi.mock("@/lib/google/dwd", () => dwd);
 
-import { listCalendars, createEventOnCalendar, updateEventDescription } from "./calendar";
+import { listCalendars, createEventOnCalendar, updateEventDescription, syncEvents } from "./calendar";
 import { EventGone } from "@/lib/booking/core";
 
 const event = {
@@ -160,5 +160,50 @@ describe("updateEventDescription (#1341)", () => {
   it("still throws on an unwell Google, so the caller can page about a stale invite", async () => {
     capture(503);
     await expect(updateEventDescription("agent@trypennie.com", "evt-1", "x")).rejects.toThrow();
+  });
+});
+
+describe("syncEvents windows a BOOTSTRAP and never a delta (#1261)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Capture the URL each call asked for, answering with one empty final page. */
+  function capture() {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      urls.push(String(url));
+      return Promise.resolve(
+        new Response(JSON.stringify({ items: [], nextSyncToken: "next" }), { status: 200 }),
+      );
+    });
+    return urls;
+  }
+
+  const MIN = "2026-06-08T00:00:00.000Z";
+  const MAX = "2026-06-29T00:00:00.000Z";
+
+  it("sends timeMin AND timeMax when there is no sync token", async () => {
+    const urls = capture();
+    await syncEvents("a@b.com", "primary", null, MIN, MAX);
+
+    const params = new URL(urls[0]!).searchParams;
+    expect(params.get("timeMin")).toBe(MIN);
+    // The bound that stops the cache claiming coverage it never fetched. Whatever is sent
+    // here is exactly what the reconcile is then allowed to judge and the prune to act on.
+    expect(params.get("timeMax")).toBe(MAX);
+    expect(params.get("syncToken")).toBeNull();
+  });
+
+  it("sends NEITHER bound alongside a sync token, which Google answers 400 to", async () => {
+    const urls = capture();
+    await syncEvents("a@b.com", "primary", "a-stored-token", MIN, MAX);
+
+    const params = new URL(urls[0]!).searchParams;
+    expect(params.get("syncToken")).toBe("a-stored-token");
+    // Both, not just timeMax: `timeMin` or `timeMax` with a `syncToken` is a documented
+    // 400 from Google, so getting this wrong does not degrade the delta, it stops every
+    // incremental sync in the fleet outright.
+    expect(params.get("timeMin")).toBeNull();
+    expect(params.get("timeMax")).toBeNull();
   });
 });

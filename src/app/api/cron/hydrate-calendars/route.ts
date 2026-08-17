@@ -1,0 +1,120 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { isAuthorizedCron } from "@/lib/cron";
+import { acquireLock, releaseLock } from "@/lib/locks";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
+import { withinBudget } from "@/lib/google/sync-pace";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { hydrateCalendar } from "@/lib/google/sync";
+import {
+  calendarsDueForHydration,
+  hydrationBatchSize,
+  type HydrationCandidate,
+} from "@/lib/google/hydration";
+import type { AgentCalendar } from "@/lib/db/types";
+import { log } from "@/lib/log";
+
+export const dynamic = "force-dynamic";
+
+const LOCK_TTL_MS = 120_000;
+/** Under the lock TTL, so a slow run can never outlive its own claim. */
+const HYDRATE_BUDGET_MS = 90_000;
+
+/**
+ * CALENDAR HYDRATION lane (#1261): re-bootstrap a slice of the calendars every tick, sized
+ * so every calendar is refreshed at least once a day.
+ *
+ * WHY IT EXISTS. Google's incremental delta is NOT scoped to the window a bootstrap asked
+ * for (measured, #1252), and an unchanged event is delivered exactly ONCE. So once anything
+ * filters or prunes the cache by window (#1264, #1265), a far future event created and never
+ * touched again would be dropped and never re-added when the horizon slid up to it. This
+ * lane is what makes that filter safe, which is why it ships FIRST and runs alone for a full
+ * rotation before the filter lands.
+ *
+ * ITS OWN CRON EXPRESSION, never the every-minute invocation, which is the one already short
+ * of CPU headroom (#1245) and whose budget four lanes already share. Its own lock, and its
+ * own heartbeat with a matching entry in LANE_STALE_BOUNDS_MS: a stamp no bound watches
+ * looks like monitoring while nothing watches (#1123), and this lane going quiet means
+ * coverage expiring everywhere with nothing saying so.
+ */
+export async function GET(req: NextRequest) {
+  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  const lock = await acquireLock("cron_hydrate_calendars", LOCK_TTL_MS);
+  if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
+  try {
+    const db = supabaseAdmin();
+    const deadlineMs = Date.now() + HYDRATE_BUDGET_MS;
+
+    // unwrap, not a bare destructure: a read error returning [] would look like "no
+    // calendars to refresh" and this lane would report a clean run forever while coverage
+    // quietly expired on every calendar. That is the exact shape the prune it authorizes
+    // must never be built on.
+    //
+    // cap-safe: agent_calendars is roster-bounded config (121 rows today, ~250 at the
+    // design target), so it cannot fill a PostgREST page.
+    const calendars = (unwrap(
+      await db
+        .from("agent_calendars")
+        .select(
+          "id, user_id, calendar_id, sync_token, last_failure_kind, consecutive_failures, last_bootstrap_attempt_at, last_success_at, last_sync_error",
+        ),
+      "hydrate-calendars calendar list",
+    ) ?? []) as AgentCalendar[];
+
+    // Derived from the LIVE count, never hardcoded: a fixed batch is right at today's
+    // roster and silently halves the refresh rate as the roster grows, with nothing
+    // reporting it.
+    const batchSize = hydrationBatchSize(calendars.length);
+    const due = calendarsDueForHydration(
+      calendars as unknown as HydrationCandidate[],
+      Date.now(),
+      batchSize,
+    );
+
+    let refreshed = 0;
+    let failed = 0;
+    let events = 0;
+    let budgetHit = false;
+    for (const candidate of due) {
+      if (!withinBudget(Date.now(), deadlineMs)) {
+        budgetHit = true;
+        break;
+      }
+      const cal = calendars.find((c) => c.id === candidate.id);
+      if (!cal) continue;
+      const res = await hydrateCalendar(cal);
+      if (res.ok) refreshed++;
+      else failed++;
+      events += res.events;
+    }
+
+    // Stamped on every completed tick, including one that refreshed nothing: the watchdog's
+    // question is whether this lane is RUNNING, and a tick that legitimately found nothing
+    // due is a healthy tick. What must never be silent is the lane stopping.
+    await recordHeartbeat("hydrate-calendars");
+
+    // `budget_hit` is logged rather than only returned: a tick that stopped on its budget
+    // and a tick that finished its batch both answer 200, and without saying which, a
+    // cadence too slow for the roster is indistinguishable from a healthy rotation.
+    log.info("hydrate-calendars", {
+      msg: "cycle",
+      calendars: calendars.length,
+      batch: batchSize,
+      due: due.length,
+      refreshed,
+      failed,
+      events,
+      budget_hit: budgetHit,
+    });
+    return NextResponse.json({
+      calendars: calendars.length,
+      batch: batchSize,
+      refreshed,
+      failed,
+      events,
+      budgetHit,
+    });
+  } finally {
+    await releaseLock("cron_hydrate_calendars", lock);
+  }
+}

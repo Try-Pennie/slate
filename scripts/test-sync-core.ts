@@ -49,16 +49,118 @@ assert(!isBusyEvent({ transparency: "transparent", start: { dateTime: "2026-06-0
 assert(!isBusyEvent({ start: {}, end: {} }), "timeless event is not busy");
 
 // staleBlockIds
-const blocks = [
-  { id: "b1", gcal_event_id: "e1" },
-  { id: "b2", gcal_event_id: "e2" },
-  { id: "b3", gcal_event_id: null },
-];
+//
+// #1261: this now judges only the blocks the fetch WOULD have returned. While the bootstrap
+// was unbounded above, judging every cached block for the calendar was correct. The moment
+// the fetch carries a timeMax, a block outside that window was never in the answer, so
+// scoring it "not seen" would delete real busy time for a meeting that is still in the
+// calendar and leave the agent bookable during it. That is the only way this design can
+// over-delete, which is why the bounds travel from the pass that fetched them.
+//
+// The two bounds apply to two DIFFERENT fields, quoted from Google's events.list reference:
+// timeMin is the "Lower bound (exclusive) for an event's END time" and timeMax the "Upper
+// bound (exclusive) for an event's START time". So the fetched set is
+// `ends_at > timeMin AND starts_at < timeMax`, and scoping on starts_at for both instead
+// would leave an event that began before timeMin but ends after it inside the fetch yet
+// outside the judged range: its block would then survive both this reconcile and the past
+// prune permanently, over-blocking a readable slot with nothing able to clear it.
+const WIN = { timeMinIso: "2026-06-08T00:00:00.000Z", timeMaxIso: "2026-06-29T00:00:00.000Z" };
+const inWindow = (id: string, eventId: string | null) => ({
+  id,
+  gcal_event_id: eventId,
+  starts_at: "2026-06-10T13:00:00.000Z",
+  ends_at: "2026-06-10T13:30:00.000Z",
+});
+const blocks = [inWindow("b1", "e1"), inWindow("b2", "e2"), inWindow("b3", null)];
 assert(
-  JSON.stringify(staleBlockIds(blocks, new Set(["e1"]))) === JSON.stringify(["b2"]),
+  JSON.stringify(staleBlockIds(blocks, new Set(["e1"]), WIN)) === JSON.stringify(["b2"]),
   "blocks whose event id wasn't seen are stale (null event id ignored)",
 );
-assert(staleBlockIds(blocks, new Set(["e1", "e2"])).length === 0, "all seen -> nothing stale");
+assert(
+  staleBlockIds(blocks, new Set(["e1", "e2"]), WIN).length === 0,
+  "all seen -> nothing stale",
+);
+
+// The behaviour the issue asks for, asserted as BEHAVIOUR. Comparing the reconcile's range
+// to the fetch's range would compare a value to itself and pass while the semantics were
+// wrong, so each case is built from a block and an answer instead.
+{
+  // Straddles the LOWER bound: began before timeMin, ends after it. Google returns it
+  // (timeMin bounds the END time), so it is in the judged set.
+  const straddlesLower = {
+    id: "lower",
+    gcal_event_id: "eL",
+    starts_at: "2026-06-07T22:00:00.000Z",
+    ends_at: "2026-06-08T02:00:00.000Z",
+  };
+  assert(
+    staleBlockIds([straddlesLower], new Set(["eL"]), WIN).length === 0,
+    "a block straddling the lower bound whose event is STILL PRESENT survives",
+  );
+  assert(
+    JSON.stringify(staleBlockIds([straddlesLower], new Set(), WIN)) === JSON.stringify(["lower"]),
+    "and the same block is removed once its event has VANISHED",
+  );
+
+  // Straddles the UPPER bound: starts before timeMax, ends after it. Google returns it
+  // (timeMax bounds the START time), so it is judged too.
+  const straddlesUpper = {
+    id: "upper",
+    gcal_event_id: "eU",
+    starts_at: "2026-06-28T22:00:00.000Z",
+    ends_at: "2026-06-29T02:00:00.000Z",
+  };
+  assert(
+    staleBlockIds([straddlesUpper], new Set(["eU"]), WIN).length === 0,
+    "a block straddling the upper bound whose event is still present survives",
+  );
+  assert(
+    JSON.stringify(staleBlockIds([straddlesUpper], new Set(), WIN)) === JSON.stringify(["upper"]),
+    "and is removed once its event has vanished",
+  );
+
+  // ENTIRELY OUTSIDE the window, in both directions. The fetch never asked about these, so
+  // an empty answer says nothing about them and they must be left alone. This is the case
+  // that turns a bounded fetch into deleted busy time if it is got wrong.
+  const beforeWindow = {
+    id: "before",
+    gcal_event_id: "eB",
+    starts_at: "2026-06-01T09:00:00.000Z",
+    ends_at: "2026-06-01T10:00:00.000Z",
+  };
+  const afterWindow = {
+    id: "after",
+    gcal_event_id: "eA",
+    starts_at: "2026-07-15T09:00:00.000Z",
+    ends_at: "2026-07-15T10:00:00.000Z",
+  };
+  assert(
+    staleBlockIds([beforeWindow, afterWindow], new Set(), WIN).length === 0,
+    "blocks entirely outside the fetched window are NEVER stale, however empty the answer",
+  );
+  // And the positive control for that claim, in the same fixture: an in-window block with
+  // the same empty answer IS removed. Without this the assertion above would pass on a
+  // function that had simply stopped deleting anything (L159).
+  assert(
+    JSON.stringify(staleBlockIds([beforeWindow, afterWindow, inWindow("mid", "eM")], new Set(), WIN)) ===
+      JSON.stringify(["mid"]),
+    "while an in-window block with the same empty answer IS removed",
+  );
+
+  // A block with an unreadable stamp is left alone. Date.parse gives NaN, every comparison
+  // with NaN is false, and the fail-safe side of "is this inside the fetched window" is to
+  // treat it as outside and not delete it (L50).
+  const unreadable = {
+    id: "bad",
+    gcal_event_id: "eX",
+    starts_at: "not-a-date",
+    ends_at: "not-a-date",
+  };
+  assert(
+    staleBlockIds([unreadable], new Set(), WIN).length === 0,
+    "a block with an unreadable time is never deleted, because we cannot tell it was fetched",
+  );
+}
 
 // partitionBusyWrites — busy events become upsert rows, the rest become deletes
 {

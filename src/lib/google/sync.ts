@@ -24,8 +24,8 @@ import {
   shouldRerun,
   CALENDAR_CLAIM_TTL_MS,
   MAX_SYNC_PASSES,
-  BOOTSTRAP_LOOKBACK_MS,
 } from "@/lib/google/sync-coalesce";
+import { hydrationWindow } from "@/lib/google/hydration";
 import {
   toSyncAgents,
   type SyncAgent,
@@ -452,6 +452,12 @@ export async function purgeVanished(
   calendarId: string,
   events: GoogleEvent[],
   slateEventIds: Set<string>,
+  /**
+   * The bounds the pass that produced `events` actually sent (#1261). Passed in, never
+   * re-read from `sync_window_to`: a stored value larger than what was sent would extend
+   * the reconcile past the fetch, which is the only way this can over-delete.
+   */
+  window: { timeMinIso: string; timeMaxIso: string },
 ): Promise<void> {
   const db = supabaseAdmin();
   // Exclude Slate-owned events from `seen` (#166): they should never have a
@@ -463,25 +469,43 @@ export async function purgeVanished(
       .filter((e) => e.id && isBusyEvent(e) && !slateEventIds.has(e.id))
       .map((e) => e.id as string),
   );
-  // Reconcile against EVERY cached gcal block for this calendar, paged (#834). The
-  // read must see the whole set to find stale rows: a stale block sitting past
-  // PostgREST's 1,000-row page would otherwise never be seen and would over-block
-  // the agent forever (the orphaned-block bug this function exists to prevent). A
-  // time-window filter can't stand in here, since a vanished event's stale block
-  // may lie outside any window. selectAllPages throws on a read error rather than
-  // returning a short list that would leave real orphans behind.
-  const blocks = await selectAllPages<{ id: string; gcal_event_id: string | null }>(
-    "sync purge vanished busy_blocks",
-    (from, to) =>
-      db
-        .from("busy_blocks")
-        .select("id, gcal_event_id")
-        .eq("user_id", userId)
-        .eq("calendar_id", calendarId)
-        .eq("source", "gcal")
-        .range(from, to),
+  // Reconcile against the cached gcal blocks the fetch COVERED, paged (#834). Paged
+  // because the set must be seen whole: a stale block sitting past PostgREST's 1,000-row
+  // page would never be seen and would over-block the agent forever, which is the
+  // orphaned-block bug this function exists to prevent. selectAllPages throws on a read
+  // error rather than returning a short list that would leave real orphans behind.
+  //
+  // #1261 narrowed the read to the fetched window. The old comment here said a time filter
+  // "can't stand in, since a vanished event's stale block may lie outside any window", and
+  // that was correct while the bootstrap was unbounded above: everything was fetched, so
+  // everything could be judged. Now the fetch carries a timeMax, blocks outside it were
+  // never in the answer, and judging them would delete busy time for meetings still in the
+  // calendar. Narrowing here also bounds the read itself, which matters: one agent holds
+  // 22,137 blocks.
+  //
+  // The bounds map to the SAME two fields Google uses, so this set is exactly the fetch's:
+  // timeMin bounds the END time, timeMax bounds the START time.
+  const blocks = await selectAllPages<{
+    id: string;
+    gcal_event_id: string | null;
+    starts_at: string;
+    ends_at: string;
+  }>("sync purge vanished busy_blocks", (from, to) =>
+    db
+      .from("busy_blocks")
+      .select("id, gcal_event_id, starts_at, ends_at")
+      .eq("user_id", userId)
+      .eq("calendar_id", calendarId)
+      .eq("source", "gcal")
+      .gt("ends_at", window.timeMinIso)
+      .lt("starts_at", window.timeMaxIso)
+      .range(from, to),
   );
-  const stale = staleBlockIds(blocks, seen);
+  // The window is applied AGAIN, in the pure judge. Not redundant defensively: the filter
+  // above bounds the READ (and its cost), while this is the rule that decides a DELETE, and
+  // it is the half that is unit-tested against straddling and out-of-window blocks. A
+  // mistake in the query shape therefore cannot widen what gets deleted.
+  const stale = staleBlockIds(blocks, seen, window);
   // Chunked by BYTES, not by a row count (#1321), because the ids travel in the
   // query string and an oversized batch is REFUSED, not merely slow (#1259: 350
   // uuids measured accepted, 400 refused). A count only holds while every id is
@@ -561,20 +585,33 @@ async function syncCalendar(
   cal: AgentCalendar,
   timeZone: string,
 ): Promise<number> {
-  const bootstrapMin = new Date(
-    Date.now() - BOOTSTRAP_LOOKBACK_MS,
-  ).toISOString();
+  // ONE window for this pass, computed once and passed to both the fetch and the reconcile
+  // that judges it (#1261). Computing it twice would let the two drift by however long the
+  // fetch took, and the reconcile may only ever judge what the fetch actually asked for.
+  const window = hydrationWindow(Date.now());
   const prev = healthOf(cal, "sync");
 
   try {
     let result;
     let full = !cal.sync_token; // bootstrap (no token) is a full sync
     try {
-      result = await syncEvents(email, cal.calendar_id, cal.sync_token, bootstrapMin);
+      result = await syncEvents(
+        email,
+        cal.calendar_id,
+        cal.sync_token,
+        window.timeMinIso,
+        window.timeMaxIso,
+      );
     } catch (err: unknown) {
       if (err instanceof SyncTokenExpired) {
         full = true;
-        result = await syncEvents(email, cal.calendar_id, null, bootstrapMin);
+        result = await syncEvents(
+          email,
+          cal.calendar_id,
+          null,
+          window.timeMinIso,
+          window.timeMaxIso,
+        );
       } else {
         throw err;
       }
@@ -606,7 +643,13 @@ async function syncCalendar(
     // looking free during real meetings. The stored token is retained above, so the
     // next pass re-reads the same delta and the reconcile happens once it is complete.
     if (full && !result.truncated)
-      await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds);
+      await purgeVanished(
+        cal.user_id,
+        cal.calendar_id,
+        result.events,
+        slateEventIds,
+        window,
+      );
 
     // A sync that wrote events may have just mirrored an external Google booking
     // that collides with a Slate booking (#316). Check now (best-effort) so a
@@ -639,6 +682,118 @@ async function syncCalendar(
       kind: reachabilityFromError(err),
     });
     throw err;
+  }
+}
+
+/**
+ * Re-bootstrap ONE calendar over the current window (#1261).
+ *
+ * The rotation lane's unit of work. Deliberately separate from `syncCalendar` rather than a
+ * flag on it: this always forces a FULL fetch (a token would give a delta, which is the very
+ * thing that cannot re-add an event it already delivered once), and it owns two writes
+ * `syncCalendar` has no business making.
+ *
+ * THE ORDER OF THE WRITES IS THE DESIGN.
+ *
+ * 1. `last_bootstrap_attempt_at` is stamped BEFORE the fetch, so it moves whether or not the
+ *    fetch works. It drives rotation fairness only, and a stamp that advanced solely on
+ *    success would let a calendar whose delegation is revoked stay the oldest forever and be
+ *    selected first on every tick, starving every healthy calendar behind it.
+ *
+ * 2. `sync_window_to` is written ONLY on success, and in its OWN write, never coupled to the
+ *    token. Coupling them means every token write fails while code is deployed ahead of its
+ *    migration, and then every calendar re-bootstraps every minute against Google. The token
+ *    write is deliberately isolated for exactly that reason and this must not undo it.
+ *
+ * 3. The token is written CONDITIONALLY on the value this pass started with. A push-driven
+ *    sync can advance the token while this fetch is in flight; overwriting it would leave the
+ *    stored coverage claiming a window the token does not correspond to. Losing the race is
+ *    harmless (the other pass's token is newer and the next rotation re-establishes the
+ *    window), so the conditional write simply does nothing.
+ */
+export async function hydrateCalendar(
+  cal: AgentCalendar,
+): Promise<{ ok: boolean; events: number }> {
+  const db = supabaseAdmin();
+  const window = hydrationWindow(Date.now());
+  const startingToken = cal.sync_token;
+  const prev = healthOf(cal, "sync");
+
+  // Before the fetch, deliberately (see 1 above). Best effort: a failed stamp costs
+  // fairness on one tick, and must not stop the hydration it precedes.
+  await db
+    .from("agent_calendars")
+    .update({ last_bootstrap_attempt_at: new Date().toISOString() })
+    .eq("id", cal.id);
+
+  const email = await loadAgentEmail(cal.user_id);
+  if (!email) {
+    // Not a Google failure, so it must not touch the sync failure streak: doing so would
+    // let a missing mailbox back off a calendar that is perfectly reachable.
+    log.warn("hydrate-calendars", {
+      msg: "no mailbox for agent, skipping",
+      user_id: cal.user_id,
+    });
+    return { ok: false, events: 0 };
+  }
+
+  try {
+    const timeZone = await loadAgentTimezone(cal.user_id);
+    // null token, always: this is a re-bootstrap, not a delta.
+    const result = await syncEvents(
+      email,
+      cal.calendar_id,
+      null,
+      window.timeMinIso,
+      window.timeMaxIso,
+    );
+    const slateEventIds =
+      result.events.length > 0
+        ? await loadSlateBookingEventIds(cal.user_id)
+        : new Set<string>();
+    await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
+    // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
+    // pages, so everything beyond them looks vanished and its cached busy time would be
+    // deleted, leaving the agent looking free during real meetings.
+    if (!result.truncated) {
+      await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds, window);
+    }
+
+    // Coverage is only claimed for a pass that actually completed. A truncated pass fetched
+    // part of the window, so recording the full window would authorize the prune over a
+    // range that was never read.
+    if (!result.truncated) {
+      await db
+        .from("agent_calendars")
+        .update({ sync_window_to: window.timeMaxIso })
+        .eq("id", cal.id);
+    }
+
+    if (result.nextSyncToken) {
+      // Conditional on the value this pass started with (see 3 above). `.is` for null,
+      // because `.eq` against null matches nothing in PostgREST.
+      const q = db
+        .from("agent_calendars")
+        .update({ sync_token: result.nextSyncToken })
+        .eq("id", cal.id);
+      await (startingToken === null
+        ? q.is("sync_token", null)
+        : q.eq("sync_token", startingToken));
+    }
+
+    await recordCalHealth(cal.id, "sync", prev, { ok: true });
+    return { ok: true, events: result.events.length };
+  } catch (err) {
+    await recordCalHealth(cal.id, "sync", prev, {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      kind: reachabilityFromError(err),
+    });
+    log.warn("hydrate-calendars", {
+      msg: "calendar hydration failed",
+      calendar_id: cal.calendar_id,
+    }, err);
+    return { ok: false, events: 0 };
   }
 }
 
