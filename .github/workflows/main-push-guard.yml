@@ -25,17 +25,24 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 10
+      # #1524: NO dependency install. The classification is pure
+      # (scripts/lib/main-push-guard.ts imports nothing) and the Slack post now goes
+      # through scripts/lib/slack-post.ts, which also imports nothing, so the guard needs
+      # node and this checkout and that is all. It used to carry pnpm/action-setup plus a
+      # full `pnpm install --frozen-lockfile`, purely to reach the app's notifier and
+      # through it the tunable-channel lookup and the Supabase client. On 2026-08-17 run
+      # 32039856279 died at `Failed to download action 'pnpm/action-setup'` with a 429
+      # after three retries and the only control over main never ran. Every dependency
+      # this workflow carries is another way for it to be unavailable in exactly the
+      # conditions it exists for, which is why setup-node is the one that stays: it pins
+      # the node version the type-stripping flag needs, rather than trusting whatever the
+      # runner image happens to ship.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-          cache: pnpm
-      - name: Install
-        run: pnpm install --frozen-lockfile
 
       - name: Classify the push and alert on a violation
+        id: classify
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -175,4 +182,118 @@ jobs:
           fi
           export MERGE_CLAIMS_JSON
 
-          node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-main-push.ts
+          # No alias hook: nothing under src/ is reachable from here any more, and
+          # scripts/test-main-push-guard.ts runs this exact command line to prove it.
+          node --experimental-strip-types scripts/check-main-push.ts
+
+      # #1523: say so when the guard itself could not run.
+      #
+      # The Slack alert is posted from the classify step, so until now every step before
+      # it (the checkout, the action download, the install) could fail with the run going
+      # red and NOTHING sent anywhere. That is the same blind spot as #1519 one level up:
+      # there the guard could not reach a verdict, here it could not reach the step that
+      # speaks. Observed on 2026-08-17: run 32039856279 went red on a 429 and was found
+      # only because somebody happened to be reading the run list. A red run nobody is
+      # told about is the same as no guard, with the added problem that it looks like it
+      # ran.
+      #
+      # THREE states, not two: a clean pass (silent), a real violation (the classify step
+      # alerts and records `handled=true`), and this one. The gate on that marker is what
+      # keeps a violation from double-posting, and two alerts about one commit is how a
+      # reader learns to skim.
+      #
+      # It must survive the failure it is reporting, so it uses plain curl and downloads
+      # no action of its own: an action download is what took the guard out, and anything
+      # the install had to provide is unavailable exactly when this step matters.
+      # #1523: say so when the guard itself could not run.
+      #
+      # The violation alert is posted from the classify step, so until now every step
+      # before it could fail with the run going red and NOTHING sent anywhere. Native
+      # branch protection needs a paid org plan, so this workflow is the only control over
+      # main, and the whole design rests on it failing the run AND telling a human (#1027).
+      # When it dies early only the first half happens, and a red run nobody is told about
+      # is the same as no guard, with the added problem that it looks like it ran. Observed
+      # on 2026-08-17: run 32039856279 died on a 429 downloading an action and was found
+      # only because somebody happened to be reading the run list. Same blind spot as #1519
+      # one level up: there the guard could not reach a verdict, here it could not reach
+      # the step that speaks.
+      #
+      # THREE states, not two: a clean pass (silent), a real violation (the classify step
+      # alerts and records handled=true), and this. The gate on that marker is what keeps a
+      # violation from double-posting, and two alerts about one commit is how a reader
+      # learns to skim.
+      #
+      # WHY THE SHELL IS INLINE rather than in scripts/, which is where this repo normally
+      # puts testable shell: it must not need ANY earlier step to have succeeded, and the
+      # checkout is an earlier step. A script in the repository cannot run when the thing
+      # that failed was fetching the repository, which is the most basic failure there is.
+      # It is still tested: scripts/test-guard-unrun-alert.ts extracts this exact block out
+      # of this file and runs it against a fake curl, so what is proven is what ships, and
+      # the extraction refuses to pass on an empty match.
+      #
+      # It uses curl and jq, both on the runner image, and downloads no action of its own,
+      # since an action download is what took the guard out.
+      #
+      # WHAT THIS STILL DOES NOT COVER, deliberately: a push to main that never triggers a
+      # run at all. #1523 suggested a heartbeat the lane watchdog reads, and that does not
+      # fit a push-triggered workflow: a staleness bound would page every time nobody
+      # pushed to main for a while, which is an ordinary weekend, and an alert that cries
+      # wolf is the one everybody learns to ignore (L36). Noticing a dropped event needs a
+      # different mechanism, comparing main's commits against this workflow's runs, which
+      # is #1531.
+      - name: Say so when the guard itself could not run
+        if: failure() && steps.classify.outputs.handled != 'true'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+        run: |
+          set -uo pipefail
+
+          RUN_URL="${RUN_URL:-}"
+          HEAD_SHA="${HEAD_SHA:-}"
+          ACTOR="${ACTOR:-}"
+
+          # An unset repo variable interpolates to the EMPTY STRING rather than failing the run
+          # (#1500), so an empty channel is the expected shape of a missing one and has to be
+          # checked for. There is deliberately no database fallback here: reaching the tunable
+          # channel is what made this guard need a dependency install in the first place (#1524).
+          # Each half names itself, because the fixes differ: one is a secret, one is a variable.
+          missing=""
+          [ -n "${SLACK_BOT_TOKEN:-}" ] || missing="the SLACK_BOT_TOKEN secret"
+          if [ -z "${SLACK_ALERTS_CHANNEL:-}" ]; then
+            if [ -n "$missing" ]; then missing="$missing and the SLACK_ALERTS_CHANNEL variable"
+            else missing="the SLACK_ALERTS_CHANNEL variable"; fi
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error title=main-push guard could not alert::The guard failed before it could check this push, and $missing is not configured, so nobody was told automatically. Main is unguarded for commit ${HEAD_SHA}. Re-run the job: ${RUN_URL}"
+            exit 1
+          fi
+
+          # Deliberately NOT the violation wording. This is not an accusation about the commit, it
+          # is a report that nothing was checked, and telling somebody to revert over an
+          # infrastructure failure is advice that cannot fix the state they are in (L11, L111).
+          text="The main-push guard could not run, so this push to main was never checked. Nothing here says the commit is bad: the guard failed before it could look, which on the last occurrence was a rate limited action download during a GitHub incident. Main is unguarded for commit ${HEAD_SHA} by ${ACTOR}. Re-run the job to check it: ${RUN_URL}"
+
+          payload="$(jq -nc --arg channel "$SLACK_ALERTS_CHANNEL" --arg text "$text" \
+            '{channel: $channel, text: $text}')"
+
+          # --fail-with-body so a non-2xx is a non-zero exit that still prints the body. `|| true`
+          # so a curl failure reaches the check below as a body rather than killing the script under
+          # pipefail, which would skip the error line that is the whole point of this file.
+          body="$(curl --silent --show-error --fail-with-body --max-time 20 \
+            -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$payload" 2>&1)" || true
+
+          if printf '%s' "$body" | jq -e '.ok == true' >/dev/null 2>&1; then
+            echo "::notice::main-push guard: the run failed before it could check this push, and that was reported to Slack"
+          else
+            echo "::error title=main-push guard could not alert::The guard failed before it could check ${HEAD_SHA}, AND the Slack post about that failed too, so nobody was told automatically. Main is unguarded for this commit. Re-run the job: ${RUN_URL}. Slack said: ${body}"
+          fi
+
+          # Always red: the push was not checked.
+          exit 1

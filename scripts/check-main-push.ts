@@ -8,8 +8,13 @@
 // app's Slack notifier rather than a second implementation, exactly like
 // scripts/notify-deploy-failure.ts.
 import { fileURLToPath } from "node:url";
-import { realpathSync } from "node:fs";
-import { postSlack } from "@/lib/notify/slack";
+import { realpathSync, appendFileSync } from "node:fs";
+// #1524: a poster with no dependencies. The app's own notifier reaches Slack through the
+// tunable-channel lookup, which reaches Supabase, so importing it made this guard need a
+// full `pnpm install` purely to send one message. On 2026-08-17 a 429 downloading
+// pnpm/action-setup meant it never ran at all. The WORDING is still shared
+// (buildViolationMessage below), so nothing about the copy is duplicated (L41).
+import { makeSlackPoster } from "./lib/slack-post.ts";
 import {
   classifyPush,
   buildViolationMessage,
@@ -17,6 +22,28 @@ import {
   type MergeCommitClaim,
   type PushContext,
 } from "./lib/main-push-guard.ts";
+
+/**
+ * Tell the workflow this guard reached a verdict AND said so, so the `if: failure()`
+ * route added in #1523 knows whether it needs to speak (#1523).
+ *
+ * The marker deliberately does NOT mean "the script started". A violation whose Slack
+ * post failed has told nobody, and that is precisely when the curl route has to fire, so
+ * it is written only when the push was legitimate or the alert was delivered.
+ *
+ * Best effort: a guard must never fail because it could not write its own bookkeeping,
+ * and GITHUB_OUTPUT is absent on every local run.
+ */
+function recordHandled(env: Record<string, string | undefined>): void {
+  const out = env.GITHUB_OUTPUT?.trim();
+  if (!out) return;
+  try {
+    appendFileSync(out, "handled=true\n");
+  } catch {
+    // If this cannot be written the failure route posts a second alert about a commit
+    // that was already reported. Noisy, and strictly better than silent.
+  }
+}
 
 /** Injectable poster so the core is testable with a hand-written fake. */
 export type PostFn = (msg: {
@@ -101,12 +128,16 @@ export async function run(
   const ctx = readContextFromEnv(env);
   const verdict = classifyPush(ctx);
   if (verdict.ok) {
+    recordHandled(env);
     return { ok: true, alerted: false, reason: verdict.reason };
   }
 
   const text = buildViolationMessage(ctx, verdict);
   const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
   const res = await post({ text, ...(channel ? { channel } : {}) });
+  // Only a DELIVERED alert counts as handled. Everything else leaves the marker unset so
+  // the failure route speaks for this commit.
+  if (res.ok) recordHandled(env);
   return {
     ok: false,
     alerted: res.ok,
@@ -120,7 +151,10 @@ const isMain =
   realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
-  run(postSlack, process.env).then((res) => {
+  run(
+    makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }),
+    process.env,
+  ).then((res) => {
     if (res.ok) {
       console.log(`main-push-guard: ${res.reason}`);
       process.exit(0);
