@@ -5,6 +5,16 @@ import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { appUrl, reassignApiKey, oooOnlyFor } from "@/lib/env";
 import { paginateRows } from "@/lib/paginate-rows";
+import {
+  parseAuditFilters,
+  auditFilterHref,
+  describeAuditFilters,
+  auditActionChoices,
+  AUDIT_PAGE_SIZE,
+} from "@/lib/audit-filter";
+import { AUDIT_ACTIONS } from "@/lib/audit";
+import { unwrap, unwrapCount } from "@/lib/db/result";
+import { log } from "@/lib/log";
 import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
 import { CronLaneHealth } from "@/components/CronLaneHealth";
 import { loadLaneHealth } from "@/lib/monitor/lane-health-view";
@@ -277,6 +287,14 @@ export default async function AdminPage({
     /** #1076: the outcome of a webhook resend, so the button is never silent. */
     resend?: string;
     webhook_error?: string;
+    /** #1222: the audit trail's own filter and pager, namespaced so it cannot
+     *  collide with the agents table's `page`. */
+    action?: string;
+    actor?: string;
+    from?: string;
+    to?: string;
+    routine?: string;
+    auditPage?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -383,17 +401,85 @@ export default async function AdminPage({
     }
   }
 
-  // Audit log (admin only): recent privileged actions.
+  // Audit log (admin only): the privileged actions, filtered and paged (#1222).
+  //
+  // Measured 2026-08-17: 373 of 378 rows were time off decisions, so the newest 25
+  // were routine approvals and the impersonations, PII actions and settings changes
+  // the trail exists for sat far outside the window. `parseAuditFilters` therefore
+  // HIDES the routine family unless it is asked for.
+  //
+  // Filtered and paged in the DATABASE rather than in memory. `audit_log` is a
+  // growth table (roughly 80 rows a month), so a single unbounded read would pass
+  // today and silently truncate at one PostgREST page later, under-reporting the
+  // trail exactly as it got long enough to need this panel.
+  //
+  // Both reads go through unwrap/unwrapCount (#1526): an unreadable trail rendered
+  // as an empty one is the reassuring direction to fail, on the surface somebody
+  // opens precisely when they suspect something happened.
+  const auditFilters = parseAuditFilters({
+    action: sp.action,
+    actor: sp.actor,
+    from: sp.from,
+    to: sp.to,
+    routine: sp.routine,
+    page: sp.auditPage,
+  });
   let auditEntries: AuditEntry[] = [];
+  let auditTotal = 0;
+  let auditUnreadable = false;
   if (isAdmin) {
-    const { data } = await db
-      .from("audit_log")
-      .select("*")
-      .eq("org_id", me.org_id)
-      .order("created_at", { ascending: false })
-      .limit(25);
-    auditEntries = (data ?? []) as AuditEntry[];
+    // The same predicate for the COUNT and for the ROWS, so the number above the
+    // table and the rows in it can never describe different sets (L16).
+    type Filterable = {
+      eq: (c: string, v: string) => Filterable;
+      in: (c: string, v: string[]) => Filterable;
+      not: (c: string, op: string, v: string) => Filterable;
+      gte: (c: string, v: string) => Filterable;
+      lte: (c: string, v: string) => Filterable;
+    };
+    const scoped = <T,>(q: T): T => {
+      let b = q as Filterable;
+      b = b.eq("org_id", me.org_id);
+      if (auditFilters.actions?.length) b = b.in("action", auditFilters.actions);
+      else if (!auditFilters.includeRoutine) b = b.not("action", "like", "ooo.%");
+      if (auditFilters.actorId) b = b.eq("actor_id", auditFilters.actorId);
+      if (auditFilters.fromIso) b = b.gte("created_at", `${auditFilters.fromIso}T00:00:00Z`);
+      // Inclusive of the whole end day, which is what a person picking a date means.
+      if (auditFilters.toIso) b = b.lte("created_at", `${auditFilters.toIso}T23:59:59.999Z`);
+      return b as T;
+    };
+
+    try {
+      auditTotal = unwrapCount(
+        await scoped(db.from("audit_log").select("id", { count: "exact", head: true })),
+        "audit log count",
+      );
+      const pageCount = Math.max(1, Math.ceil(auditTotal / AUDIT_PAGE_SIZE));
+      const page = Math.min(auditFilters.page, pageCount);
+      const from = (page - 1) * AUDIT_PAGE_SIZE;
+      auditEntries = (unwrap(
+        await scoped(db.from("audit_log").select("*"))
+          .order("created_at", { ascending: false })
+          .range(from, from + AUDIT_PAGE_SIZE - 1),
+        "audit log page",
+      ) ?? []) as AuditEntry[];
+    } catch (err) {
+      // Distinct from "nothing to show": the panel says it could not read rather
+      // than reporting an empty trail it never measured (L10, L11).
+      log.error("admin", { msg: "audit log read failed" }, err);
+      auditUnreadable = true;
+    }
   }
+  // Every action the trail can hold, application-written and database-written
+  // alike (pii.erasure comes from erase_booking_pii, not from recordAudit).
+  const auditActionOptions = auditActionChoices(AUDIT_ACTIONS);
+  // Who can be filtered for. Only people who could plausibly appear as an actor,
+  // taken from the roster this page already loaded, so it costs no extra read.
+  const auditActorChoices = [...users].sort((a, b) =>
+    (a.name ?? a.email).localeCompare(b.name ?? b.email),
+  );
+  const auditPageCount = Math.max(1, Math.ceil(auditTotal / AUDIT_PAGE_SIZE));
+  const auditPage = Math.min(Math.max(1, auditFilters.page), auditPageCount);
 
   // Push health: how many bookable agents have at least one live Google watch
   // channel across their calendars. A shortfall means external calendar edits
@@ -1213,17 +1299,72 @@ export default async function AdminPage({
 
       {/* Audit log (admin only) */}
       {isAdmin && (
-        <section className={cardCls}>
+        <section className={cardCls} id="audit">
           <h2 className="mb-1 text-sm font-semibold">Audit log</h2>
+          {/* #1222: what this view is actually showing. A filtered table that reads
+              like the whole trail is how somebody concludes nothing happened. */}
           <p className="mb-3 text-xs text-fg-muted">
-            The last {auditEntries.length} privileged actions (role changes, agent
-            edits, time off decisions, and settings changes). Rows marked as
-            rebuilt were reconstructed from the request record after a fault left
-            them unrecorded at the time.
+            {auditUnreadable
+              ? "The audit trail could not be read just now, so this is showing nothing rather than nothing having happened. Reload to try again."
+              : describeAuditFilters(auditFilters, auditTotal)}{" "}
+            Rows marked as rebuilt were reconstructed from the request record after
+            a fault left them unrecorded at the time.
           </p>
-          {auditEntries.length === 0 ? (
-            <p className="text-sm text-fg-muted">No activity yet.</p>
-          ) : (
+
+          {/* The filter. A GET form, so every view is a URL somebody can link to
+              or come back to, and so it works with no JavaScript. */}
+          <form method="GET" action="/admin#audit" className="mb-3 flex flex-wrap items-end gap-2">
+            <label className="flex flex-col gap-1 text-xs text-fg-muted">
+              Action
+              <select name="action" defaultValue={auditFilters.actions?.[0] ?? ""} className={inputCls}>
+                <option value="">Any</option>
+                {auditActionOptions.map((a) => (
+                  <option key={a} value={a}>
+                    {auditActionLabel(a)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-fg-muted">
+              Person
+              <select name="actor" defaultValue={auditFilters.actorId ?? ""} className={inputCls}>
+                <option value="">Anyone</option>
+                {auditActorChoices.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name ?? u.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-fg-muted">
+              From
+              <input type="date" name="from" defaultValue={auditFilters.fromIso ?? ""} className={inputCls} />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-fg-muted">
+              To
+              <input type="date" name="to" defaultValue={auditFilters.toIso ?? ""} className={inputCls} />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-fg-muted">
+              <input
+                type="checkbox"
+                name="routine"
+                value="1"
+                defaultChecked={auditFilters.includeRoutine}
+                className="h-4 w-4"
+              />
+              Include time off decisions
+            </label>
+            <button type="submit" className={btnSecondaryCls}>
+              Apply
+            </button>
+            {(auditFilters.actions || auditFilters.actorId || auditFilters.fromIso || auditFilters.toIso) && (
+              <InPlaceLink href="/admin#audit" className={btnSecondaryCls}>
+                Clear
+              </InPlaceLink>
+            )}
+          </form>
+
+          {auditUnreadable ? null : auditEntries.length === 0 ? null : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="text-fg-muted">
@@ -1255,6 +1396,49 @@ export default async function AdminPage({
                 </tbody>
               </table>
             </div>
+          )}
+
+          {/* An empty RESULT and an unreadable trail are different screens, and
+              neither may read as "nothing has ever happened here" (L10, L11). */}
+          {!auditUnreadable && auditEntries.length === 0 && (
+            <p className="text-sm text-fg-muted">
+              {describeAuditFilters(auditFilters, 0)}
+            </p>
+          )}
+
+          {!auditUnreadable && auditPageCount > 1 && (
+            <nav
+              aria-label="Audit log pages"
+              className="mt-3 flex items-center justify-between text-sm"
+            >
+              {auditPage > 1 ? (
+                <InPlaceLink
+                  href={auditFilterHref(auditFilters, { page: auditPage - 1 })}
+                  className={btnSecondaryCls}
+                >
+                  Previous
+                </InPlaceLink>
+              ) : (
+                <span className={`${btnSecondaryCls} pointer-events-none opacity-40`} aria-disabled="true">
+                  Previous
+                </span>
+              )}
+              <span className="text-xs text-fg-muted tabular-nums">
+                Page {auditPage} of {auditPageCount}
+              </span>
+              {auditPage < auditPageCount ? (
+                <InPlaceLink
+                  href={auditFilterHref(auditFilters, { page: auditPage + 1 })}
+                  className={btnSecondaryCls}
+                >
+                  Next
+                </InPlaceLink>
+              ) : (
+                <span className={`${btnSecondaryCls} pointer-events-none opacity-40`} aria-disabled="true">
+                  Next
+                </span>
+              )}
+            </nav>
           )}
         </section>
       )}
