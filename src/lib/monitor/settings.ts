@@ -29,7 +29,8 @@ export type MonitorAlertKey =
   | "roster_coverage_gap"
   | "ooo_protection_lost"
   | "webhook_event_no_subscriber"
-  | "edge_limiter_unusable";
+  | "edge_limiter_unusable"
+  | "hydration_all_failing";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -52,6 +53,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "ooo_protection_lost",
   "webhook_event_no_subscriber",
   "edge_limiter_unusable",
+  "hydration_all_failing",
 ];
 
 /**
@@ -157,6 +159,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     help: "Page when the running deployment cannot use its request rate limits, so the public endpoints are open to unlimited traffic from one source. Clears itself once they are enforced again.",
   },
   {
+    key: "hydration_all_failing",
+    label: "Calendar refresh failing on every calendar",
+    help: "Page when the daily calendar refresh has failed on every calendar it tried, several runs in a row. Bookings are unaffected while this lasts; what stops is the cached cover being renewed.",
+  },
+  {
     key: "empty_buckets",
     label: "Bucket with nobody to route to",
     help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
@@ -244,6 +251,11 @@ export const MONITOR_DEFAULTS = {
     // unsubscribed webhook event, the state leaves a public endpoint unprotected, and
     // unlike the fail-open incident it replaces, this one can say when it is over.
     edge_limiter_unusable: 60 * 60_000,
+    // The refresh failing everywhere (#1544) persists until somebody fixes the cause, and
+    // nothing self-heals it, so repeat while it lasts. Every 6 hours rather than hourly:
+    // cached cover has weeks of margin before it stops reaching the booking horizon, so this
+    // is a maintenance problem to pick up in the working day, not an outage to page on.
+    hydration_all_failing: 6 * 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

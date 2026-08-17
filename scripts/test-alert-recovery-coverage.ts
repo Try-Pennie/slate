@@ -51,6 +51,10 @@ function tsFiles(dir: string): string[] {
 }
 
 // --- fixtures: the reader itself must work ------------------------------------
+//
+// Including the file-level PRE-FILTER, not only the scanner. The filter is what decides
+// whether a file is read at all, so a scanner that handles a shape correctly proves nothing
+// if the filter drops the file first.
 // Checked before the real tree, so a failure here reads as "the scanner broke",
 // not as "the codebase changed".
 {
@@ -67,6 +71,26 @@ function tsFiles(dir: string): string[] {
 
   const template = fx('await sendThrottledAlert(`webhook_dead:${id}`, MS, text);');
   assert(template[0]?.key === "webhook_dead:*", "collapses a template key to its family");
+
+  // A file whose only use of the dispatchers is a bare-reference wiring must be READ, not
+  // skipped. This is the pre-filter, expressed exactly as the loop below applies it.
+  const referenceOnly = [
+    'const K = "some_condition";',
+    "await runCheck({",
+    "  // alert-key: some_condition",
+    "  notify: sendThrottledAlert,",
+    "  // alert-key: some_condition",
+    "  resolve: resolveAlert,",
+    "});",
+  ].join("\n");
+  assert(
+    /sendThrottled(Alert|Info)|resolveAlert/.test(referenceOnly),
+    "the pre-filter reads a file that only WIRES the dispatchers, never calling them here",
+  );
+  assert(
+    !/sendThrottled(Alert|Info)\(|resolveAlert\(/.test(referenceOnly),
+    "and that same file is invisible to a filter that demands a call, which is the bug this fixture pins",
+  );
 
   const builder = fx(
     "const laneKey = (lane: string) => `cron_lane_stale:${lane}`;\n" +
@@ -127,7 +151,14 @@ const sites: AlertSite[] = [];
 for (const file of tsFiles(SRC)) {
   if (file.endsWith(DEFINITION)) continue;
   const src = readFileSync(file, "utf8");
-  if (!/sendThrottled(Alert|Info)\(|resolveAlert\(/.test(src)) continue;
+  // The identifier, NOT the identifier followed by "(". #1400 taught the scanner to read a
+  // bare REFERENCE wiring (`notify: sendThrottledAlert`), but this pre-filter still demanded
+  // a call, so a file whose ONLY use is that wiring was skipped before the scanner ever saw
+  // it and every key it sends went invisible. Found when a new lane wired both dispatchers
+  // by reference and nothing else: the scanner read both sites correctly when handed the
+  // file, and the file never reached it. A cheap skip that silently narrows what a guard
+  // covers is the guard's own blind spot (#1544).
+  if (!/sendThrottled(Alert|Info)|resolveAlert/.test(src)) continue;
   sites.push(...scanAlertSites(src, file.slice(ROOT.length + 1)));
 }
 
