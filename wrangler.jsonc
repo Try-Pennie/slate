@@ -149,22 +149,27 @@
 			"simple": { "limit": 600, "period": 60 }
 		}
 	],
-	// The second availability ceiling (#1536). Every limiter above is enforced
-	// PER DATACENTER and counted approximately, which bounds a sequential hammer
-	// and does not bound a concurrent burst: measured against production on
-	// 2026-08-17, 45 sequential requests were blocked at exactly 30 while 60
-	// fired in parallel into one datacenter were blocked zero times. A Durable
-	// Object is the only primitive here that holds ONE count for an address
-	// across isolates, so it is the backstop behind the fast in-datacenter check
-	// rather than a replacement for it. It is asked only about addresses that
-	// have already crossed the escalation threshold, so an ordinary booker load
-	// never reaches it. The ceiling it enforces (300/min per address) is
-	// deliberately far above the 30 above: a large office behind one NAT address
-	// is a real lead source, and this is a flood backstop, not a tightening.
+	// The second ceiling behind EVERY limiter above (#1536 for availability, #1556
+	// for the rest). Each of those is enforced PER DATACENTER and counted
+	// approximately, which bounds a sequential hammer and does not bound a
+	// concurrent burst: measured against production on 2026-08-17, 45 sequential
+	// requests were blocked at exactly 30 while 60 fired in parallel into one
+	// datacenter were blocked zero times. A Durable Object is the only primitive
+	// here that holds ONE count for a caller across isolates, so it is the
+	// backstop behind the fast in-datacenter check rather than a replacement for
+	// it. It is asked only about callers that have already crossed the escalation
+	// threshold, so an ordinary booker load never reaches it.
+	//
+	// ONE namespace serves all six: the object id is derived from a key carrying
+	// the endpoint as well as the caller, so no two endpoints share a count. Each
+	// endpoint's own ceiling lives beside its sustained limit in EDGE_LIMITERS
+	// (src/lib/rate-limit-core.ts) and is a large multiple of it, never equal:
+	// a large office behind one NAT address is a real lead source, and this is a
+	// flood backstop, not a tightening.
 	"durable_objects": {
 		"bindings": [
 			{
-				"name": "AVAIL_BURST_LIMITER",
+				"name": "BURST_LIMITER",
 				"class_name": "BurstLimiter"
 			}
 		]

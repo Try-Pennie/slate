@@ -243,26 +243,150 @@ export function refundFailedAlert(area: string): string {
 }
 
 /**
- * Every Workers rate-limit binding Slate declares, in ONE list (#1525).
+ * Everything Slate knows about one Workers rate-limit binding, in ONE place (#1525, #1556).
  *
- * The names also live in `wrangler.jsonc`, which is what actually creates them, and a
- * hand-kept second copy beside a source of truth drifts the moment somebody updates one
- * and not the other (L41). Two things depend on this list being complete: the
- * `EdgeLimiterBinding` type that stops a typo reaching a binding lookup, and the monitor
- * lane's health check, which reports a binding missing from the deployment. A limiter
- * added to wrangler.jsonc and forgotten here would be typed loosely AND unmonitored, so
- * `scripts/test-edge-limiter-bindings.ts` compares the two in both directions.
+ * It started as a bare list of binding names. It is a table now because five facts about each
+ * limiter were living apart from each other, and every pair of them could disagree in silence:
+ * the sustained limit was in `wrangler.jsonc` and restated in prose comments here, the
+ * plain-language area name was at the call site, the block-alert window was hand-passed as a
+ * literal beside a binding whose limit it was supposed to describe, and after #1556 there is a
+ * burst ceiling per endpoint that only means anything relative to the sustained limit it backs
+ * up. A ceiling stated ten lines away from the number it is a multiple of is a number nobody
+ * can check (L41).
+ *
+ * `scripts/test-edge-limiter-bindings.ts` compares this table against `wrangler.jsonc` in both
+ * directions, names included and `perMinute` against the real `simple.limit`, so the copy here
+ * cannot drift from the thing that actually creates the binding.
  *
  * It lives in this file rather than beside the limiter calls because this half has no
  * Cloudflare imports, so a node test can read it without pulling the runtime in behind it.
  */
-export const EDGE_LIMITER_BINDINGS = [
-  "AVAIL_RATE_LIMITER",
-  "BOOKING_RATE_LIMITER",
-  "ROUTING_RATE_LIMITER",
-  "BOOKINGAPI_RATE_LIMITER",
-  "BOOKINGAPI_IP_RATE_LIMITER",
-  "BOOKINGAPI_READ_RATE_LIMITER",
+export interface EdgeLimiterSpec {
+  /** The binding name in `wrangler.jsonc`, and the key the Worker env is looked up by. */
+  binding: string;
+  /**
+   * Token-safe name for this limiter's own key space. It keys the alert throttle AND, since
+   * #1556, the burst counter, so two limiters sharing an area would share one count and the
+   * tighter ceiling would be spent by the looser endpoint's traffic.
+   */
+  area: string;
+  /** Plain-language area name for the human-facing Slack alert. Never a binding name. */
+  friendly: string;
+  /**
+   * What the key IS. A per-key limiter is keyed on an API key id that came from auth, which
+   * can never be the unidentified-address fallback, so an address rule must not be applied
+   * to it (#1557 turns on this distinction).
+   */
+  keyKind: "ip" | "api-key";
+  /** The sustained ceiling `wrangler.jsonc` configures, per minute, per datacenter. */
+  perMinute: number;
+  /**
+   * The burst ceiling (#1556): the count across every isolate and datacenter that a
+   * concurrent burst cannot spread across, per key per minute.
+   *
+   * Always a large multiple of `perMinute`, never equal to it. The native limiter counts
+   * approximately, so making its number exact would be a TIGHTENING that real callers feel:
+   * a large office behind one NAT address is a real Pennie lead source, and today's gap is
+   * the only reason those leads are not already being turned away. This is the backstop
+   * against a flood shaped like a flood, which passes ten times the sustained limit in its
+   * first second. `scripts/test-burst-ceiling.ts` asserts the ratio for every entry.
+   */
+  burstCeilingPerMinute: number;
+  /**
+   * When true, a BLOCK (not just an outage) is itself news, mirroring the DB path's
+   * `alertOnBlock` rule (#796): the caller is meant to be our own bot well inside budget, so
+   * a rejection means the ceiling is too tight or a key leaked. The alert copy states
+   * `perMinute` above rather than a hand-passed literal.
+   */
+  alertOnBlock?: boolean;
+}
+
+/** Availability (#56). The one endpoint anybody on the internet can reach unauthenticated. */
+export const AVAILABILITY_LIMITER = {
+  binding: "AVAIL_RATE_LIMITER",
+  area: "availability",
+  friendly: "booking availability",
+  keyKind: "ip",
+  perMinute: 30,
+  burstCeilingPerMinute: 300,
+} as const satisfies EdgeLimiterSpec;
+
+/**
+ * The public booking confirm (#237).
+ *
+ * The burst ceiling is the least load-bearing of the six, and deliberately so: the strict
+ * hourly cap behind it (10/hour per address, `BOOKING_HOURLY_RATE_RULES`) lives in Postgres
+ * and IS exact, so a burst has never been able to create more than ten bookings from one
+ * address in an hour. What the gap did allow was the WORK: sixty confirms in a second each
+ * running verify-on-book against Google before the exact cap turned them away. 30/min bounds
+ * that, and sits three times above the hourly cap, so it can never be the thing that refuses
+ * a lead the exact cap would have allowed.
+ */
+export const BOOKING_LIMITER = {
+  binding: "BOOKING_RATE_LIMITER",
+  area: "booking",
+  friendly: "public booking",
+  keyKind: "ip",
+  perMinute: 3,
+  burstCeilingPerMinute: 30,
+} as const satisfies EdgeLimiterSpec;
+
+/** The routing preview (#596/#961): unauthenticated, a DB resolve per call, no lead behind it. */
+export const ROUTING_LIMITER = {
+  binding: "ROUTING_RATE_LIMITER",
+  area: "routing",
+  friendly: "routing lookup",
+  keyKind: "ip",
+  perMinute: 20,
+  burstCeilingPerMinute: 200,
+} as const satisfies EdgeLimiterSpec;
+
+/** Direct booking API writes (#961), keyed per API key. */
+export const BOOKING_API_WRITE_LIMITER = {
+  binding: "BOOKINGAPI_RATE_LIMITER",
+  area: "booking-api",
+  friendly: "booking API",
+  keyKind: "api-key",
+  perMinute: 120,
+  burstCeilingPerMinute: 1200,
+} as const satisfies EdgeLimiterSpec;
+
+/** The per-address backstop under the per-key ceiling (#597), so one leaked key on one host
+ *  cannot spend the whole key budget. A block here is itself a signal. */
+export const BOOKING_API_IP_LIMITER = {
+  binding: "BOOKINGAPI_IP_RATE_LIMITER",
+  area: "booking-api-ip",
+  friendly: "booking API",
+  keyKind: "ip",
+  perMinute: 60,
+  burstCeilingPerMinute: 600,
+  alertOnBlock: true,
+} as const satisfies EdgeLimiterSpec;
+
+/** Direct booking API reads (#393), keyed per API key. Status polling is cheap and bursty, so
+ *  this window is ~5x the write one and must never starve the booking path. */
+export const BOOKING_API_READ_LIMITER = {
+  binding: "BOOKINGAPI_READ_RATE_LIMITER",
+  area: "booking-api-read",
+  friendly: "booking API",
+  keyKind: "api-key",
+  perMinute: 600,
+  burstCeilingPerMinute: 6000,
+} as const satisfies EdgeLimiterSpec;
+
+/** Every edge limiter, in the one list the tests and the monitor lane walk. */
+export const EDGE_LIMITERS = [
+  AVAILABILITY_LIMITER,
+  BOOKING_LIMITER,
+  ROUTING_LIMITER,
+  BOOKING_API_WRITE_LIMITER,
+  BOOKING_API_IP_LIMITER,
+  BOOKING_API_READ_LIMITER,
 ] as const;
 
-export type EdgeLimiterBinding = (typeof EDGE_LIMITER_BINDINGS)[number];
+export type EdgeLimiterBinding = (typeof EDGE_LIMITERS)[number]["binding"];
+
+/** The binding names alone, which is what the monitor lane's health check walks (#1525). */
+export const EDGE_LIMITER_BINDINGS: readonly EdgeLimiterBinding[] = EDGE_LIMITERS.map(
+  (l) => l.binding,
+);

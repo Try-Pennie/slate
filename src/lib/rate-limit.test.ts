@@ -43,11 +43,14 @@ import {
   bookingApiReadWithinLimit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
-import { UNIDENTIFIED_IP } from "@/lib/rate-limit-core";
+import { BURST_ESCALATE_AT } from "@/lib/rate-limit-burst";
 import {
-  BURST_CEILING_PER_MINUTE,
-  BURST_ESCALATE_AT,
-} from "@/lib/rate-limit-burst";
+  UNIDENTIFIED_IP,
+  AVAILABILITY_LIMITER,
+  BOOKING_LIMITER,
+  BOOKING_API_WRITE_LIMITER,
+  EDGE_LIMITERS,
+} from "@/lib/rate-limit-core";
 
 const RULES: RateLimitRule[] = [
   { prefix: "test:m", windowSeconds: 60, max: 5 },
@@ -218,7 +221,7 @@ describe("availabilityWithinLimit (#796)", () => {
     // absent, every case here would run through the missing-binding alarm instead of
     // through the path it names.
     burstCount = 1;
-    cf.env = { AVAIL_RATE_LIMITER: { limit }, AVAIL_BURST_LIMITER: burstNamespace() };
+    cf.env = { AVAIL_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     limit.mockResolvedValue({ success: true });
     getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
   });
@@ -246,7 +249,7 @@ describe("availabilityWithinLimit (#796)", () => {
   });
 
   it("refuses a request once the shared counter puts the address past the ceiling", async () => {
-    burstCount = BURST_CEILING_PER_MINUTE + 1;
+    burstCount = AVAILABILITY_LIMITER.burstCeilingPerMinute + 1;
     let allowed = true;
     // Past the escalation threshold, which is where the shared counter is consulted at all.
     for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
@@ -260,7 +263,7 @@ describe("availabilityWithinLimit (#796)", () => {
   it("serves the request, loudly, when the shared counter cannot be reached", async () => {
     cf.env = {
       AVAIL_RATE_LIMITER: { limit },
-      AVAIL_BURST_LIMITER: {
+      BURST_LIMITER: {
         idFromName: (name: string) => ({ name }),
         get: () => ({
           fetch: async () => new Response("nope", { status: 500 }),
@@ -277,7 +280,7 @@ describe("availabilityWithinLimit (#796)", () => {
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
     // Plain language, no internal binding name, same contract as the edge limiter's.
     expect(text).toMatch(/availability/i);
-    expect(text).not.toMatch(/AVAIL_BURST_LIMITER/);
+    expect(text).not.toMatch(/BURST_LIMITER/);
     consoleErr.mockRestore();
   });
 
@@ -290,7 +293,7 @@ describe("availabilityWithinLimit (#796)", () => {
     expect(sendThrottledAlert).toHaveBeenCalled();
     // wrangler.jsonc always binds it, so absent means broken rather than unconfigured, and
     // the specific cause is still recoverable from the logs.
-    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/AVAIL_BURST_LIMITER/);
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/BURST_LIMITER/);
     consoleErr.mockRestore();
   });
 
@@ -300,7 +303,7 @@ describe("availabilityWithinLimit (#796)", () => {
     // would refuse is real leads (L75). Behind Cloudflare this cannot happen, which is
     // exactly why reaching it is worth reporting.
     burstFetches = 0;
-    burstCount = BURST_CEILING_PER_MINUTE + 1;
+    burstCount = AVAILABILITY_LIMITER.burstCeilingPerMinute + 1;
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     let allowed = false;
     for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
@@ -477,7 +480,8 @@ describe("bookingWithinLimit (#237)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     clock += 60 * 60_000;
     vi.setSystemTime(clock);
-    cf.env = { BOOKING_RATE_LIMITER: { limit } };
+    burstCount = 1;
+    cf.env = { BOOKING_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     limit.mockResolvedValue({ success: true });
     getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
   });
@@ -543,6 +547,7 @@ describe("edge per-minute limiters (#961)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     clock += 60 * 60_000;
     vi.setSystemTime(clock);
+    burstCount = 1;
     limit.mockResolvedValue({ success: true });
     getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
   });
@@ -552,7 +557,7 @@ describe("edge per-minute limiters (#961)", () => {
   });
 
   it("routingWithinLimit allows, blocks silently, and fails open + alerts when it throws", async () => {
-    cf.env = { ROUTING_RATE_LIMITER: { limit } };
+    cf.env = { ROUTING_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(true);
     expect(sendThrottledAlert).not.toHaveBeenCalled();
 
@@ -568,7 +573,7 @@ describe("edge per-minute limiters (#961)", () => {
   });
 
   it("bookingApiWriteWithinLimit keys on the API key id and blocks SILENTLY (a per-key throttle is not an incident)", async () => {
-    cf.env = { BOOKINGAPI_RATE_LIMITER: { limit } };
+    cf.env = { BOOKINGAPI_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     await expect(bookingApiWriteWithinLimit("primary")).resolves.toBe(true);
     expect(limit).toHaveBeenCalledWith({ key: "primary" });
 
@@ -578,13 +583,13 @@ describe("edge per-minute limiters (#961)", () => {
   });
 
   it("bookingApiReadWithinLimit keys on the API key id (its own binding, separate from writes)", async () => {
-    cf.env = { BOOKINGAPI_READ_RATE_LIMITER: { limit } };
+    cf.env = { BOOKINGAPI_READ_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     await expect(bookingApiReadWithinLimit("secondary")).resolves.toBe(true);
     expect(limit).toHaveBeenCalledWith({ key: "secondary" });
   });
 
   it("bookingApiIpWithinLimit ALERTS in plain language when it blocks, naming the IP (#796)", async () => {
-    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit } };
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     limit.mockResolvedValue({ success: false });
 
     await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(false);
@@ -599,16 +604,172 @@ describe("edge per-minute limiters (#961)", () => {
   });
 
   it("bookingApiIpWithinLimit stays silent when the limiter permits the request", async () => {
-    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit } };
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(true);
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   it("bookingApiIpWithinLimit still BLOCKS even when the block alert itself throws", async () => {
-    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit } };
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     limit.mockResolvedValue({ success: false });
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(false);
+  });
+});
+
+// #1556. #1536 closed the concurrent-burst hole on /api/availability and left it open on the
+// other five limiters, which was never a different defect: the native binding counts the same
+// way for all of them (45 sequential blocked at the ceiling, 60 parallel blocked zero times).
+//
+// The decision logic is pinned offline in scripts/test-burst-ceiling.ts. What can only be
+// checked HERE is the wiring, which is the actual content of the issue (L3: built is not wired,
+// and wired is not proven). Each case drives a DIFFERENT endpoint, because "the shared function
+// has it" is exactly the claim that was true of availability while five endpoints had nothing.
+describe("the burst ceiling reaches every edge limiter (#1556)", () => {
+  let clock = Date.UTC(2026, 7, 18);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    burstCount = 1;
+    burstFetches = 0;
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refuses a public booking confirm once the shared counter puts the address past ITS ceiling", async () => {
+    cf.env = { BOOKING_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    // Over booking's ceiling and well UNDER availability's, so a shared number would serve
+    // this and the case would prove nothing.
+    burstCount = BOOKING_LIMITER.burstCeilingPerMinute + 1;
+    expect(burstCount).toBeLessThan(AVAILABILITY_LIMITER.burstCeilingPerMinute);
+
+    let allowed = true;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await bookingWithinLimit("9.9.9.9");
+
+    expect(allowed).toBe(false);
+    // A throttled visitor is still not an incident.
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("refuses a routing lookup past its ceiling, and a booking API key past its own", async () => {
+    cf.env = { ROUTING_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    burstCount = 100_000;
+    let allowed = true;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await routingWithinLimit("9.9.9.9");
+    expect(allowed).toBe(false);
+
+    cf.env = { BOOKINGAPI_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    let keyAllowed = true;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      keyAllowed = await bookingApiWriteWithinLimit("leaked-key");
+    }
+    expect(keyAllowed).toBe(false);
+  });
+
+  it("counts each endpoint separately, so one endpoint's traffic cannot spend another's ceiling", async () => {
+    // The shape decision: ONE Durable Object namespace with the endpoint in the key. If the
+    // key were the address alone, these two would share a count and the same address loading
+    // the booker would push its own confirm over the lower ceiling.
+    const keysAsked: string[] = [];
+    cf.env = {
+      BOOKING_RATE_LIMITER: { limit },
+      AVAIL_RATE_LIMITER: { limit },
+      BURST_LIMITER: {
+        idFromName: (name: string) => {
+          keysAsked.push(name);
+          return { name };
+        },
+        get: () => ({
+          fetch: async () =>
+            new Response(JSON.stringify({ count: 1 }), {
+              headers: { "content-type": "application/json" },
+            }),
+        }),
+      },
+    };
+
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) await availabilityWithinLimit("1.2.3.4");
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) await bookingWithinLimit("1.2.3.4");
+
+    expect(keysAsked.length).toBeGreaterThanOrEqual(2);
+    const distinct = new Set(keysAsked);
+    expect(distinct.size).toBe(2);
+    for (const k of distinct) expect(k).toContain("1.2.3.4");
+  });
+
+  it("still applies the ceiling when the NATIVE binding is missing (two controls, not one)", async () => {
+    // A missing rate-limit binding used to switch the burst ceiling off with it, because the
+    // burst step only ran after the native check had SUCCEEDED. They are independent controls
+    // (L53), so the endpoint whose native throttle is off is exactly the one that still needs
+    // the backstop.
+    cf.env = { BURST_LIMITER: burstNamespace() };
+    burstCount = BOOKING_LIMITER.burstCeilingPerMinute + 1;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    let allowed = true;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await bookingWithinLimit("9.9.9.9");
+
+    expect(allowed).toBe(false);
+    consoleErr.mockRestore();
+  });
+
+  it("does not pay a round trip for a request the native limiter has already refused", async () => {
+    cf.env = { BOOKING_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    limit.mockResolvedValue({ success: false });
+
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      await expect(bookingWithinLimit("9.9.9.9")).resolves.toBe(false);
+    }
+
+    expect(burstFetches).toBe(0);
+  });
+
+  it("does NOT apply the unidentified-address rule to a per-KEY limiter", async () => {
+    // The fallback is an ADDRESS that could not be read. An API key id comes from auth and can
+    // never be it, so an integrator whose key happened to be named that must still be counted,
+    // and nothing should be reported about a missing client address.
+    cf.env = { BOOKINGAPI_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    burstCount = BOOKING_API_WRITE_LIMITER.burstCeilingPerMinute + 1;
+
+    let allowed = true;
+    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      allowed = await bookingApiWriteWithinLimit(UNIDENTIFIED_IP);
+    }
+
+    expect(allowed).toBe(false);
+    expect(burstFetches).toBeGreaterThan(0);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("every limiter in the table is reachable through a wrapper that applies the ceiling", async () => {
+    // The completeness half. A seventh limiter added to the table with no wrapper carrying the
+    // ceiling would leave this suite green while shipping the exact gap #1556 is about, so the
+    // check enumerates the table rather than the cases above (L96).
+    const wrappers: Record<string, (k: string) => Promise<boolean>> = {
+      availability: availabilityWithinLimit,
+      booking: bookingWithinLimit,
+      routing: routingWithinLimit,
+      "booking-api": bookingApiWriteWithinLimit,
+      "booking-api-ip": bookingApiIpWithinLimit,
+      "booking-api-read": bookingApiReadWithinLimit,
+    };
+    expect(Object.keys(wrappers).sort()).toEqual(EDGE_LIMITERS.map((l) => l.area).sort());
+
+    for (const spec of EDGE_LIMITERS) {
+      burstCount = spec.burstCeilingPerMinute + 1;
+      cf.env = { [spec.binding]: { limit }, BURST_LIMITER: burstNamespace() };
+      let allowed = true;
+      for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+        allowed = await wrappers[spec.area]!(`198.51.100.${EDGE_LIMITERS.indexOf(spec)}`);
+      }
+      expect(allowed, `${spec.binding} enforces its burst ceiling`).toBe(false);
+    }
   });
 });

@@ -1,6 +1,6 @@
 /**
- * The second ceiling on `/api/availability`, the one a concurrent burst cannot spread across
- * (#1536).
+ * The second ceiling on every public edge limiter, the one a concurrent burst cannot spread
+ * across (#1536 for availability, #1556 for the rest).
  *
  * Measured against production on 2026-08-17, from one machine, same address, same second:
  *
@@ -27,12 +27,14 @@
  *      restricting it to hot addresses is what keeps the hot path's no-round-trip property:
  *      an ordinary lead's page loads never reach it.
  *
- * Three numbers decide whether this is safe rather than merely strict, and the reasoning for
- * each is below rather than in a plan nobody will read again. The one worth arguing about is
- * the ceiling: it sits far ABOVE the edge limiter's 30 deliberately, because a large office
- * behind one NAT address is a real Pennie lead source, and today's gap is the only reason those
- * leads are not already being turned away. Making 30 real would ship a refusal to them. This is
- * a flood backstop, not a tightening.
+ * The numbers that decide whether this is safe rather than merely strict have their reasoning
+ * beside them rather than in a plan nobody will read again. The one worth arguing about is the
+ * ceiling, and it is deliberately NOT in this file: it is per endpoint, on that endpoint's entry
+ * in `EDGE_LIMITERS` (`@/lib/rate-limit-core`), because its whole safety argument is its ratio
+ * to the sustained limit it backs up. Each sits far ABOVE that limit on purpose, because a large
+ * office behind one NAT address is a real Pennie lead source, and today's gap is the only reason
+ * those leads are not already being turned away. Making the sustained number exact would ship a
+ * refusal to them. This is a flood backstop, not a tightening.
  */
 
 /** The window every count and ceiling here is stated in. */
@@ -49,12 +51,15 @@ export const BURST_WINDOW_MS = 60_000;
 export const BURST_ESCALATE_AT = 20;
 
 /**
- * The real ceiling, across every isolate and datacenter, per address per minute.
+ * The ceiling itself is NOT here. It is per endpoint, and it lives on that endpoint's entry in
+ * `EDGE_LIMITERS` (`@/lib/rate-limit-core`), beside the sustained limit it is a multiple of.
  *
- * Ten times the edge limiter's 30 on purpose (see the note above about NAT). Nothing legitimate
- * reaches it; a flood shaped like a flood passes it in its first second.
+ * #1556 is why: a single constant was right while only availability had a ceiling, and became
+ * wrong the moment five more endpoints did, because the whole safety argument for a ceiling is
+ * its RATIO to the sustained limit it backs up, and 300 means "ten times" next to availability's
+ * 30 and "a hundred times" next to the booking confirm's 3. Stated apart from the number it is a
+ * multiple of, it is a number nobody can check. `allow` therefore takes the ceiling per call.
  */
-export const BURST_CEILING_PER_MINUTE = 300;
 
 /**
  * How long a verdict may be reused before asking again.
@@ -138,21 +143,36 @@ export class BurstTracker {
   private readonly counts = new Map<string, WindowCount>();
   private readonly escalations = new Map<string, Escalation>();
   private readonly ask: (key: string, bump: number) => Promise<BurstAskResult>;
-  private readonly onFailure?: (err: unknown) => void;
 
   constructor(deps: {
     /** Report `bump` requests for this key and read back the shared count. */
     ask: (key: string, bump: number) => Promise<BurstAskResult>;
-    /** Called on an unreachable shared counter, so the caller can fail LOUD while this fails
-     *  open. Never given the decision: this class always serves the request. */
-    onFailure?: (err: unknown) => void;
   }) {
     this.ask = deps.ask;
-    this.onFailure = deps.onFailure;
   }
 
-  /** May this request be served? */
-  async allow(key: string, nowMs: number): Promise<boolean> {
+  /**
+   * May this request be served?
+   *
+   * `key` carries the endpoint as well as the caller (see `burstKey`), and `ceilingPerMinute` is
+   * that endpoint's own ceiling. Both are passed per call rather than fixed on the tracker, so
+   * one tracker per isolate serves every endpoint while none of them can spend another's
+   * allowance.
+   */
+  async allow(
+    key: string,
+    nowMs: number,
+    ceilingPerMinute: number,
+    /**
+     * Called on an unreachable shared counter, so the caller can fail LOUD while this fails
+     * open. Never given the decision: this class always serves the request.
+     *
+     * Per call rather than per tracker (#1556) because one tracker now serves every endpoint,
+     * and a report that could not name which endpoint's ceiling stopped counting would send
+     * the reader to the wrong one (L11).
+     */
+    onFailure?: (err: unknown) => void,
+  ): Promise<boolean> {
     const count = burstWindowCount(this.counts, key, nowMs, BURST_WINDOW_MS);
     if (count <= BURST_ESCALATE_AT) {
       // The ordinary case, and the reason the hot path keeps its no-round-trip property.
@@ -188,10 +208,10 @@ export class BurstTracker {
         // Only clear what was actually reported: requests that arrived DURING the flight are
         // still owed to the next report.
         state!.unreported -= bump;
-        state!.memo = { allowed: shared <= BURST_CEILING_PER_MINUTE, atMs: nowMs };
+        state!.memo = { allowed: shared <= ceilingPerMinute, atMs: nowMs };
       } catch (err) {
         // Fail open, and keep the unreported count so an outage leaves no hole in it.
-        this.onFailure?.(err);
+        onFailure?.(err);
         state!.memo = { allowed: true, atMs: nowMs };
       } finally {
         state!.inFlight = null;
@@ -224,12 +244,33 @@ export function bumpSharedWindow(
 }
 
 /**
+ * The shared counter's key: the endpoint, then the caller.
+ *
+ * The Durable Object id is derived from this string, so the prefix is the entire reason two
+ * endpoints do not share one count. #1556 chose one namespace with a prefixed key over a
+ * namespace per endpoint: a namespace each would mean six Durable Object bindings, six
+ * migration entries and six things for the monitor lane to check, for a separation a prefix
+ * already gives completely. Without the prefix a lead's availability reads and their Confirm
+ * tap would draw on ONE count, and the lower of the two ceilings would be spent by the other
+ * endpoint's traffic (the same defect the unique `namespace_id` check catches for the native
+ * bindings).
+ */
+export function burstKey(area: string, callerKey: string): string {
+  return `${area}:${callerKey}`;
+}
+
+/**
  * The binding name the app looks up, and the class name wrangler binds it to.
  *
  * Constants rather than literals at the call site because four places have to agree on them
  * (wrangler.jsonc's binding, its migrations block, the worker entry's re-export, and the
  * lookup in `rate-limit.ts`) and none of the four can see the others.
  * `scripts/test-burst-ceiling.ts` compares them.
+ *
+ * Named `BURST_LIMITER` rather than `AVAIL_BURST_LIMITER` since #1556: it counts for every
+ * edge limiter now, and a name saying otherwise is the kind of comment that outlives the thing
+ * it describes. Renaming the BINDING is safe for the counts, because a Durable Object id is
+ * derived within the namespace its CLASS defines, which is unchanged.
  */
-export const BURST_LIMITER_BINDING = "AVAIL_BURST_LIMITER";
+export const BURST_LIMITER_BINDING = "BURST_LIMITER";
 export const BURST_LIMITER_CLASS = "BurstLimiter";

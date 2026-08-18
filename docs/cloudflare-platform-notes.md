@@ -102,19 +102,29 @@ isolate**, which a burst spreads across for free. Read `wrangler.jsonc`'s number
 as "the sustained ceiling for a well behaved caller", never as a bound on abuse.
 
 **What closes it is a Durable Object**, because it is the only primitive here
-that holds ONE count across isolates (#1536). `AVAIL_BURST_LIMITER` /
-`BurstLimiter` is the first DO this project binds. Two things about its shape are
-deliberate and are the parts to preserve if it is ever changed:
+that holds ONE count across isolates (#1536 for availability, #1556 for the other
+five limiters). `BURST_LIMITER` / `BurstLimiter` is the only DO this project
+binds, and ONE namespace serves every endpoint: the object id is derived from a
+key carrying the endpoint as well as the caller, so no two endpoints share a
+count. Three things about its shape are deliberate and are the parts to preserve
+if it is ever changed:
 
 - it sits **behind** the fast check, and is consulted only once an address has
   crossed an escalation threshold **in one isolate**, where counting is exact
   because JavaScript is single threaded. So an ordinary booker load still pays no
   round trip, which is the property the whole cache-first design rests on.
-- its ceiling (300 a minute per address) is **ten times** the edge limiter's, on
-  purpose. A large office behind one NAT address is a real lead source, and the
-  gap above is the only reason those leads are not already being refused, so
-  making 30 real would ship a refusal to them. This is a flood backstop, not a
-  tightening.
+- each ceiling is **ten times** its own endpoint's sustained limit, on purpose,
+  and lives beside that limit in `EDGE_LIMITERS` (`src/lib/rate-limit-core.ts`)
+  rather than as one shared number, because the ratio is the entire safety
+  argument and 300 means "ten times" next to availability's 30 and "a hundred
+  times" next to the booking confirm's 3. A large office behind one NAT address is
+  a real lead source, and the gap above is the only reason those leads are not
+  already being refused, so making the sustained number exact would ship a refusal
+  to them. This is a flood backstop, not a tightening.
+- it is asked only **after** the native check has allowed the request. A native
+  block skips it (the request is already refused), but a native check that failed
+  OPEN does not: the two are independent controls, so one missing binding must not
+  switch both off.
 
 It fails **open and loud** like every other limiter here, and it declines to
 judge a request whose address could not be identified at all, because `"unknown"`

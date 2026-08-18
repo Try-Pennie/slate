@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
-import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
+import { EDGE_LIMITER_BINDINGS, EDGE_LIMITERS } from "@/lib/rate-limit-core";
 
 const ROOT = join(import.meta.dirname, "..");
 const raw = readFileSync(join(ROOT, "wrangler.jsonc"), "utf8");
@@ -72,5 +72,26 @@ assert(
   (config.ratelimits ?? []).every((r) => r.simple?.period === 10 || r.simple?.period === 60),
   "every binding declares a period the platform accepts (10 or 60)",
 );
+
+// #1556: the code now records each limiter's SUSTAINED limit as well as its name, because the
+// burst ceiling behind it is only safe as a multiple of that number, and the alert copy names it
+// to the reader. Before this it lived in wrangler.jsonc and was restated in prose comments in
+// three other files, which is the arrangement that lets a limit be tightened in one place and
+// described as the old number everywhere else (L32). wrangler.jsonc is the authority: it is what
+// actually creates the binding.
+for (const spec of EDGE_LIMITERS) {
+  const declaredLimiter = (config.ratelimits ?? []).find((r) => r.name === spec.binding);
+  assert(declaredLimiter !== undefined, `${spec.binding} is declared in wrangler.jsonc`);
+  eq(
+    declaredLimiter?.simple?.limit,
+    spec.perMinute,
+    `${spec.binding}'s perMinute matches the limit wrangler.jsonc actually configures`,
+  );
+  eq(
+    declaredLimiter?.simple?.period,
+    60,
+    `${spec.binding} is a per-MINUTE window, which is the unit perMinute is stated in`,
+  );
+}
 
 finish();
