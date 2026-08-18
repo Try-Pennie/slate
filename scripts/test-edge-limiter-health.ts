@@ -45,6 +45,7 @@ const healthyReading = (): EdgeLimiterReading => ({
   runtime: "Cloudflare-Workers",
   presentBindings: [...EXPECTED],
   serviceAnswered: true,
+  burstNamespacePresent: true,
 });
 
 // ---------------------------------------------------------------- the verdict
@@ -120,6 +121,155 @@ const healthyReading = (): EdgeLimiterReading => ({
     h.status === "unusable" && h.serviceUnreachable && h.missing.length === 0,
     "a throwing service is its own cause, distinct from a missing binding",
   );
+}
+
+// --- the burst ceiling (#1558) ----------------------------------------------
+//
+// The ceiling added in #1536 and generalised in #1556 is a Durable Object binding, not a
+// rate-limit binding, so it sat outside the walk above entirely. If it vanished from a
+// deploy the backstop would be OFF, and the only signal is the fail-open alert raised the
+// first time one address gets hot enough to be counted properly, which before cutover
+// could be months away. That is the same shape #1529 already fixed once for the other
+// bindings: a protective control that is off, with the absence indistinguishable from
+// nothing needing protection.
+
+{
+  const reading = healthyReading();
+  reading.burstNamespacePresent = false;
+  const h = edgeLimiterHealth({ expected: EXPECTED, reading });
+  eq(h.status, "unusable", "the burst counter missing from the deployment is unusable");
+  assert(
+    h.status === "unusable" && h.burstCeilingMissing,
+    "and is reported as its OWN cause",
+  );
+  assert(
+    h.status === "unusable" && h.missing.length === 0,
+    "not as a missing request ceiling: the sustained ceilings are all still there",
+  );
+}
+
+{
+  // The distinction the issue insists on. An unreadable context means we could not LOOK
+  // for the burst counter, which is not the same finding as having looked and not found it,
+  // and a verdict that conflated them would send the reader to redeploy a durable_objects
+  // block that is perfectly fine (L11).
+  const h = edgeLimiterHealth({
+    expected: EXPECTED,
+    reading: {
+      ...healthyReading(),
+      presentBindings: null,
+      serviceAnswered: null,
+      burstNamespacePresent: null,
+    },
+  });
+  eq(h.status, "unusable", "an unreadable context is still a measured fault");
+  assert(
+    h.status === "unusable" && h.contextUnreadable,
+    "reported as an unreadable context",
+  );
+  assert(
+    h.status === "unusable" && !h.burstCeilingMissing,
+    "and NOT as the burst counter being missing, because nothing looked for it",
+  );
+}
+
+{
+  // Both at once, which is what a deploy carrying a truncated config produces.
+  const reading = healthyReading();
+  reading.presentBindings = [...EXPECTED].filter((b) => b !== "BOOKING_RATE_LIMITER");
+  reading.burstNamespacePresent = false;
+  const h = edgeLimiterHealth({ expected: EXPECTED, reading });
+  eq(h.status, "unusable", "both missing is unusable");
+  assert(
+    h.status === "unusable" && h.burstCeilingMissing && h.missing.length === 1,
+    "and both are named, because a reader told about one will fix one and stop",
+  );
+}
+
+{
+  const h = edgeLimiterHealth({
+    expected: EXPECTED,
+    reading: {
+      onWorkersRuntime: false,
+      runtime: "Node.js/24",
+      presentBindings: null,
+      serviceAnswered: null,
+      burstNamespacePresent: null,
+    },
+  });
+  eq(
+    h.status,
+    "unmeasured",
+    "off the Workers runtime there is no burst binding to be missing either",
+  );
+}
+
+{
+  // The completeness half: a healthy verdict must require the burst counter, or the check
+  // would report health while the backstop was absent, which is the exact defect (L98).
+  const reading = healthyReading();
+  reading.burstNamespacePresent = false;
+  assert(
+    edgeLimiterHealth({ expected: EXPECTED, reading }).status !== "healthy",
+    "a deployment without the burst counter is never scored as healthy",
+  );
+}
+
+{
+  const reading = healthyReading();
+  reading.burstNamespacePresent = false;
+  const text = formatEdgeLimiterUnusableAlert(
+    edgeLimiterHealth({ expected: EXPECTED, reading }),
+  );
+  assert(text.length > 0, "the burst-counter fault produces copy");
+  // The impact has to AGREE with what is actually off. The sustained per-minute ceilings
+  // are still enforced, so copy saying an endpoint "has no ceiling at all" would overstate
+  // it and get this treated as an open door (L21).
+  assert(
+    !/no ceiling at all|unlimited traffic/i.test(text),
+    "it does not claim the endpoints are uncapped, because they are not",
+  );
+  assert(
+    /burst|simultaneous|at once|flood/i.test(text),
+    "it says what IS off: the backstop a burst cannot spread across",
+  );
+  assert(
+    /deploy|redeploy|wrangler/i.test(text),
+    "and names an action that changes the state the reader is in (L111)",
+  );
+  assert(!text.startsWith("Slate"), "and does not open with the word Slate");
+}
+
+{
+  // A reader told about the request ceiling and not the backstop fixes one and stops.
+  const reading = healthyReading();
+  reading.presentBindings = [...EXPECTED].filter((b) => b !== "BOOKING_RATE_LIMITER");
+  reading.burstNamespacePresent = false;
+  const text = formatEdgeLimiterUnusableAlert(
+    edgeLimiterHealth({ expected: EXPECTED, reading }),
+  );
+  assert(/confirm/i.test(text), "the combined copy names the endpoint whose ceiling is gone");
+  assert(/burst|simultaneous|at once|flood/i.test(text), "and the backstop as well");
+}
+
+{
+  // The all-clear may claim only what was measured. It must not say the counter answered,
+  // because presence is all this check looks at.
+  const text = formatEdgeLimiterRecovery();
+  assert(/present|in the running deployment/i.test(text), "the all-clear says what it saw");
+  assert(
+    !/burst counter answered|counter is answering/i.test(text),
+    "and never claims the burst counter answered a call, which nothing here measures",
+  );
+}
+
+{
+  const reading = healthyReading();
+  reading.burstNamespacePresent = false;
+  const { deps, notified, resolved } = stubDepsFwd(reading);
+  await runEdgeLimiterCheck(deps);
+  eq(notified.length, 1, "the step pages when the burst counter is missing");
+  eq(resolved.length, 0, "and clears nothing");
 }
 
 {
@@ -217,6 +367,10 @@ const healthyReading = (): EdgeLimiterReading => ({
 
 // -------------------------------------------------------------- the step
 
+function stubDepsFwd(reading: EdgeLimiterReading | (() => Promise<EdgeLimiterReading>)) {
+  return stubDeps(reading);
+}
+
 function stubDeps(reading: EdgeLimiterReading | (() => Promise<EdgeLimiterReading>)) {
   const notified: string[] = [];
   const resolved: string[] = [];
@@ -261,6 +415,7 @@ function stubDeps(reading: EdgeLimiterReading | (() => Promise<EdgeLimiterReadin
     runtime: "Node.js/24",
     presentBindings: null,
     serviceAnswered: null,
+    burstNamespacePresent: null,
   });
   await runEdgeLimiterCheck(deps);
   eq(notified.length, 0, "an unmeasured tick pages nobody");

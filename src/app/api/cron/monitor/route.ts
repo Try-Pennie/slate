@@ -90,6 +90,7 @@ import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
+import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { WEBHOOK_EVENTS, deliberatelyUnsubscribedReason } from "@/lib/webhooks/events";
@@ -1399,7 +1400,13 @@ export async function GET(req: NextRequest) {
           // Off the platform there are no bindings to look for, and saying so is the
           // difference between this lane skipping and it clearing a live page.
           if (!onWorkersRuntime) {
-            return { onWorkersRuntime, runtime, presentBindings: null, serviceAnswered: null };
+            return {
+              onWorkersRuntime,
+              runtime,
+              presentBindings: null,
+              serviceAnswered: null,
+              burstNamespacePresent: null,
+            };
           }
           let env: Record<string, unknown> | null = null;
           try {
@@ -1407,8 +1414,16 @@ export async function GET(req: NextRequest) {
           } catch {
             // ON the platform, inside a request handler: an unreadable context is the
             // fault itself, not a failure to measure. presentBindings stays null and the
-            // verdict reports it as its own cause.
-            return { onWorkersRuntime, runtime, presentBindings: null, serviceAnswered: null };
+            // verdict reports it as its own cause. The burst binding stays null rather than
+            // false: nothing looked for it, and "we could not look" is a different finding
+            // from "it is not there", with a different remedy (#1558).
+            return {
+              onWorkersRuntime,
+              runtime,
+              presentBindings: null,
+              serviceAnswered: null,
+              burstNamespacePresent: null,
+            };
           }
           const presentBindings = EDGE_LIMITER_BINDINGS.filter((name) => Boolean(env?.[name]));
           // Presence is free, but only a real call proves the SERVICE answers, so exactly
@@ -1426,7 +1441,22 @@ export async function GET(req: NextRequest) {
                 .then(() => true)
                 .catch(() => false)
             : null;
-          return { onWorkersRuntime, runtime, presentBindings, serviceAnswered };
+          // #1558: the burst ceiling behind every limiter above is a Durable Object binding
+          // rather than a rate-limit binding, so it was outside the walk and could vanish
+          // from a deploy with nothing to say so. A PRESENCE read only: resolving the
+          // namespace is a property lookup that creates no object and spends no subrequest,
+          // whereas asking the object whether it answers would create it and give it an
+          // alarm to clean up, once a minute forever, out of the budget four minute lanes
+          // share (#1246). So this reports that the counter is BOUND, and the copy is
+          // careful not to claim it answers.
+          const burstNamespacePresent = Boolean(env?.[BURST_LIMITER_BINDING]);
+          return {
+            onWorkersRuntime,
+            runtime,
+            presentBindings,
+            serviceAnswered,
+            burstNamespacePresent,
+          };
         },
         // alert-key: edge_limiter_unusable
         // alert-text-ok: our own copy from edge-limiter-health.ts, never a raw error.
