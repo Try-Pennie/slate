@@ -12,7 +12,8 @@
  * So a recovered limiter and a permanently broken one read identically from outside, which
  * is the property that teaches people to stop reading the channel (L36).
  *
- * This is the half that can say. It runs once a minute inside the deployed Worker, so it
+ * This is the half that can say. It runs on every monitor tick inside the deployed Worker,
+ * on whatever schedule `worker/cron-routes.ts` puts this lane on (five minutes today), so it
  * measures the same predicate the request path uses, and it owns a CONDITION with an
  * all-clear hanging off a MEASURED success (#1151, #1134, #1152).
  *
@@ -68,9 +69,10 @@ export interface EdgeLimiterReading {
    *
    * This is a PRESENCE read and nothing more, on purpose. Resolving the namespace costs
    * nothing, while asking the object whether it answers would create it, spend a subrequest
-   * from the budget four minute lanes share (#1246), and give it an alarm to clean up,
-   * every minute forever. So this check can say the counter is BOUND; it cannot say the
-   * counter ANSWERS, and the copy below is careful not to claim it does.
+   * out of the invocation this lane shares with every other lane on its schedule, and give
+   * it an alarm to clean up on every tick forever. So this check can say the counter is
+   * BOUND; it cannot say the counter ANSWERS, and the copy below is careful not to claim
+   * it does.
    */
   burstNamespacePresent: boolean | null;
 }
