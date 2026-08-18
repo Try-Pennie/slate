@@ -1140,6 +1140,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       missing: ["AVAIL_RATE_LIMITER"],
       contextUnreadable: false,
       serviceUnreachable: false,
+      burstCeilingMissing: false,
     }),
   },
   {
@@ -1154,6 +1155,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       missing: [...EDGE_LIMITER_BINDINGS],
       contextUnreadable: false,
       serviceUnreachable: false,
+      burstCeilingMissing: false,
     }),
   },
   {
@@ -1168,6 +1170,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       missing: [],
       contextUnreadable: true,
       serviceUnreachable: false,
+      burstCeilingMissing: false,
     }),
   },
   {
@@ -1180,6 +1183,39 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       missing: [],
       contextUnreadable: false,
       serviceUnreachable: true,
+      burstCeilingMissing: false,
+    }),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "only the burst backstop is missing from the deploy",
+    channel: "alert",
+    // #1558. Read this one for whether it is clear that no endpoint is UNCAPPED here: every
+    // per minute ceiling is still enforced and what is gone is the one count held across
+    // datacenters. Borrowing the "no ceiling at all" wording from the states above would
+    // read as an open door and get this treated as a drop-everything page.
+    text: formatEdgeLimiterUnusableAlert({
+      status: "unusable",
+      runtime: "Cloudflare-Workers",
+      missing: [],
+      contextUnreadable: false,
+      serviceUnreachable: false,
+      burstCeilingMissing: true,
+    }),
+  },
+  {
+    key: "edge_limiter_unusable",
+    state: "a ceiling AND the burst backstop are missing",
+    channel: "alert",
+    // The shape a truncated config produces. Read it for whether both faults survive in one
+    // message: a reader told about only one will fix that one and stop.
+    text: formatEdgeLimiterUnusableAlert({
+      status: "unusable",
+      runtime: "Cloudflare-Workers",
+      missing: ["BOOKING_RATE_LIMITER"],
+      contextUnreadable: false,
+      serviceUnreachable: false,
+      burstCeilingMissing: true,
     }),
   },
   {

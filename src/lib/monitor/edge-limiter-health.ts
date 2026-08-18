@@ -53,6 +53,26 @@ export interface EdgeLimiterReading {
    * we never got as far as calling it.
    */
   serviceAnswered: boolean | null;
+  /**
+   * Is the burst counter's Durable Object namespace bound in this deployment? (#1558)
+   *
+   * The ceiling behind every request ceiling (#1536, #1556) is a Durable Object binding
+   * rather than a rate-limit binding, so it sat outside the walk above and could vanish
+   * from a deploy with nothing to say so. The only other signal is the fail-open alert
+   * raised the first time an address gets hot enough to be counted properly, which before
+   * cutover could be months away.
+   *
+   * Null means we never looked (off the platform, or the context was unreadable) and is
+   * deliberately NOT false: having looked and not found it, and not having looked, are
+   * different findings with different remedies, and only one of them is a deploy.
+   *
+   * This is a PRESENCE read and nothing more, on purpose. Resolving the namespace costs
+   * nothing, while asking the object whether it answers would create it, spend a subrequest
+   * from the budget four minute lanes share (#1246), and give it an alarm to clean up,
+   * every minute forever. So this check can say the counter is BOUND; it cannot say the
+   * counter ANSWERS, and the copy below is careful not to claim it does.
+   */
+  burstNamespacePresent: boolean | null;
 }
 
 export type EdgeLimiterHealth =
@@ -67,6 +87,14 @@ export type EdgeLimiterHealth =
       contextUnreadable: boolean;
       /** A binding resolved but the limiter service threw when called. */
       serviceUnreachable: boolean;
+      /**
+       * The burst counter's namespace is absent from the running deployment (#1558), so the
+       * backstop a concurrent burst cannot spread across is OFF. Distinct from `missing`
+       * because the impact is different: the sustained per-minute ceilings are all still
+       * being enforced, so this is a weakened control rather than an open door, and saying
+       * otherwise would get it treated as one.
+       */
+      burstCeilingMissing: boolean;
     };
 
 /**
@@ -96,20 +124,27 @@ export function edgeLimiterHealth(input: {
       missing: [],
       contextUnreadable: true,
       serviceUnreachable: false,
+      // Nothing looked for the burst counter on this path, so it is not reported missing.
+      // An unreadable context already sends the reader to the right place; adding a claim
+      // about a binding nobody inspected would send them to a second, innocent one (L11).
+      burstCeilingMissing: false,
     };
   }
 
   const present = new Set(reading.presentBindings);
   const missing = input.expected.filter((name) => !present.has(name));
   const serviceUnreachable = reading.serviceAnswered === false;
+  // Only an observed absence counts. Null is "we did not look".
+  const burstCeilingMissing = reading.burstNamespacePresent === false;
 
-  if (missing.length > 0 || serviceUnreachable) {
+  if (missing.length > 0 || serviceUnreachable || burstCeilingMissing) {
     return {
       status: "unusable",
       runtime: reading.runtime,
       missing: [...missing],
       contextUnreadable: false,
       serviceUnreachable,
+      burstCeilingMissing,
     };
   }
 
@@ -165,6 +200,29 @@ export function formatEdgeLimiterUnusableAlert(health: EdgeLimiterHealth): strin
     "Nothing is failing for a real customer, which is why this is quiet from every other " +
     "angle.";
 
+  // #1558. Its own sentence, appended rather than folded into the ones above, because it is
+  // a different fault with a different remedy (a different block of the same file) and a
+  // reader told about one missing thing fixes that one and stops. It never says the
+  // endpoints are uncapped: the sustained ceilings are all still being enforced when this
+  // is the only thing wrong, so borrowing that wording would overstate it into an open door.
+  const burstSentence = health.burstCeilingMissing
+    ? " The backstop that bounds a burst of simultaneous requests is also missing, which is " +
+      "a separate binding in the durable_objects block of the same file."
+    : "";
+
+  if (health.burstCeilingMissing && health.missing.length === 0 && !health.serviceUnreachable) {
+    return (
+      "The backstop that bounds a burst of simultaneous requests is missing from the running " +
+      "deployment. Every per minute ceiling is still being enforced, so no endpoint is " +
+      "uncapped, but those ceilings are counted separately in each datacenter, and the " +
+      "backstop is the only thing that holds one count for a caller across all of them. " +
+      "While it is gone, a source sending many requests at once can get more of them served " +
+      `than the ceiling is meant to allow. ${notBroken} The backstop is declared in the ` +
+      "durable_objects block of wrangler.jsonc, so this is a deploy that shipped without it: " +
+      "compare that block against what the deployed version reports and redeploy."
+    );
+  }
+
   if (health.contextUnreadable) {
     return (
       "The running Worker cannot read its own request context, so every rate limit binding " +
@@ -180,7 +238,8 @@ export function formatEdgeLimiterUnusableAlert(health: EdgeLimiterHealth): strin
       `The request ceiling on ${describe(health.missing)} is missing from the running ` +
       "deployment, and the rate limit service also refused a test call, so more than one " +
       `thing is wrong at once. ${impact} ${notBroken} Check the ratelimits block in ` +
-      "wrangler.jsonc against the bindings the deployed version reports, then redeploy."
+      "wrangler.jsonc against the bindings the deployed version reports, then redeploy." +
+      burstSentence
     );
   }
 
@@ -191,14 +250,16 @@ export function formatEdgeLimiterUnusableAlert(health: EdgeLimiterHealth): strin
       `${plural ? "are" : "is"} missing from the running deployment. ${impact} ` +
       `${notBroken} The bindings are declared in the ratelimits block of wrangler.jsonc, ` +
       `so this is a deploy that shipped without ${plural ? "them" : "it"}: compare that ` +
-      "block against what the deployed version reports and redeploy."
+      "block against what the deployed version reports and redeploy." +
+      burstSentence
     );
   }
 
   return (
     "The rate limit service refused a test call, so the request ceilings are present but " +
     `not answering. ${impact} ${notBroken} This is on Cloudflare's side rather than ours, ` +
-    "so check their status page before redeploying anything."
+    "so check their status page before redeploying anything." +
+    burstSentence
   );
 }
 
@@ -206,7 +267,8 @@ export function formatEdgeLimiterUnusableAlert(health: EdgeLimiterHealth): strin
 export function formatEdgeLimiterRecovery(): string {
   return (
     "The request rate limits are being enforced again. Every ceiling is present in the " +
-    "running deployment and the rate limit service answered a test call."
+    "running deployment and the rate limit service answered a test call. The backstop that " +
+    "bounds a burst of simultaneous requests is present too."
   );
 }
 
@@ -259,7 +321,8 @@ export async function runEdgeLimiterCheck(deps: {
     deps.log?.(
       `monitor edge-limiter: UNUSABLE runtime=${health.runtime ?? "unknown"} ` +
         `missing=${health.missing.length} contextUnreadable=${health.contextUnreadable} ` +
-        `serviceUnreachable=${health.serviceUnreachable}`,
+        `serviceUnreachable=${health.serviceUnreachable} ` +
+        `burstCeilingMissing=${health.burstCeilingMissing}`,
     );
     return health;
   }
