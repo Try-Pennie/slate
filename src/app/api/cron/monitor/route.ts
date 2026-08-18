@@ -164,7 +164,7 @@ const FRESH_WINDOW_MS = 6 * 60_000;
 // #573: on a data anomaly the monitor rewrites the fresh row so the booker recovers
 // at once, but only ONCE per bucket per this window (a DB lock we deliberately do
 // NOT release), so a persistent fault keeps paging instead of being silently
-// re-masked every minute.
+// re-masked on every tick.
 const ANOMALY_SELFHEAL_WINDOW_MS = 15 * 60_000;
 
 // #1167: a suspected anomaly is re-checked this many more times before it pages,
@@ -1390,7 +1390,10 @@ export async function GET(req: NextRequest) {
     //
     // Costs no DB read and no subrequest: resolving the bindings is a property read off the
     // request env, and the one real call goes to the in-datacenter limiter rather than over
-    // the network. It matters because four minute lanes share one invocation budget (#1246).
+    // the network. It matters because every lane on this cron's schedule shares ONE invocation
+    // budget, the same property that made the every-minute lanes' cost worth watching (#1246).
+    // Which schedule that is lives in `worker/cron-routes.ts` and is deliberately not restated
+    // here: a cadence written into a comment is a number that drifts the next time it moves.
     const edgeLimiters = await steps.run("edge_limiters", null, () =>
       runEdgeLimiterCheck({
         expected: EDGE_LIMITER_BINDINGS,
@@ -1446,9 +1449,9 @@ export async function GET(req: NextRequest) {
           // from a deploy with nothing to say so. A PRESENCE read only: resolving the
           // namespace is a property lookup that creates no object and spends no subrequest,
           // whereas asking the object whether it answers would create it and give it an
-          // alarm to clean up, once a minute forever, out of the budget four minute lanes
-          // share (#1246). So this reports that the counter is BOUND, and the copy is
-          // careful not to claim it answers.
+          // alarm to clean up, on every tick forever, out of the invocation this lane
+          // shares with the others on its schedule. So this reports that the counter is
+          // BOUND, and the copy is careful not to claim it answers.
           const burstNamespacePresent = Boolean(env?.[BURST_LIMITER_BINDING]);
           return {
             onWorkersRuntime,
