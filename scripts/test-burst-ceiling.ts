@@ -30,18 +30,25 @@ import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   BurstTracker,
-  BURST_CEILING_PER_MINUTE,
   BURST_ESCALATE_AT,
   BURST_MEMO_MS,
   BURST_TRACKED_KEY_CAP,
   BURST_WINDOW_MS,
   burstWindowCount,
   bumpSharedWindow,
+  burstKey,
   BURST_LIMITER_BINDING,
   BURST_LIMITER_CLASS,
 } from "@/lib/rate-limit-burst";
+import { EDGE_LIMITERS } from "@/lib/rate-limit-core";
 
 const T0 = 1_760_000_000_000;
+
+/** The availability ceiling, used to drive the tracker in the cases below. Read off the
+ *  shared table rather than restated, so a test cannot pass against a number the product
+ *  no longer enforces (L41). */
+const AVAILABILITY = EDGE_LIMITERS.find((l) => l.area === "availability")!;
+const CEILING = AVAILABILITY.burstCeilingPerMinute;
 
 /** A tracker whose clock and DO answers are both injected, so nothing here is timing dependent. */
 function tracker(answers: { count: number }[] | ((bump: number) => { count: number })) {
@@ -60,15 +67,43 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
 // --- the numbers themselves ---------------------------------------------------
 
 {
-  assert(
-    BURST_CEILING_PER_MINUTE > 30,
-    "the second ceiling sits ABOVE the edge limiter's 30, so it is a flood backstop and not a " +
-      "quiet tightening of the limit real leads are served under",
-  );
-  assert(
-    BURST_ESCALATE_AT < BURST_CEILING_PER_MINUTE,
-    "and escalation happens before the ceiling, or the ceiling could never be measured",
-  );
+  // #1556: every edge limiter carries a burst ceiling now, not just availability, so the
+  // property is asserted for each rather than for the one that happened to have it. The
+  // ratio is the whole safety argument: a ceiling AT the sustained limit would make the
+  // native limiter's approximate 30 exact, which is a tightening real leads would feel
+  // (a large office behind one NAT address is a real Pennie lead source). Ten times it is
+  // a flood backstop nothing legitimate reaches.
+  assert(EDGE_LIMITERS.length > 0, "there are edge limiters to check");
+  for (const spec of EDGE_LIMITERS) {
+    assert(
+      spec.burstCeilingPerMinute >= spec.perMinute * 10,
+      `${spec.binding}'s burst ceiling (${spec.burstCeilingPerMinute}/min) is at least ten times ` +
+        `its sustained limit (${spec.perMinute}/min), so it is a flood backstop and never a ` +
+        "quiet tightening of the limit real callers are served under",
+    );
+    assert(
+      BURST_ESCALATE_AT < spec.burstCeilingPerMinute,
+      `${spec.binding} escalates before its ceiling, or the ceiling could never be measured`,
+    );
+  }
+
+  // Two limiters sharing an area would share ONE burst counter, so the tighter endpoint's
+  // ceiling would be spent by the looser one's traffic: the same defect the unique
+  // namespace_id check catches for the native bindings.
+  const areas = EDGE_LIMITERS.map((l) => l.area);
+  eq(new Set(areas).size, areas.length, "every limiter has its own burst key space");
+  const bindings = EDGE_LIMITERS.map((l) => l.binding);
+  eq(new Set(bindings).size, bindings.length, "and its own binding");
+
+  // The key kind decides whether an unidentifiable-caller rule can even apply: a per-key
+  // limiter's key is an API key id from auth, which is never the unidentified-address
+  // fallback. A limiter that declared the wrong kind would apply an address rule to a key.
+  for (const spec of EDGE_LIMITERS) {
+    assert(
+      spec.keyKind === "ip" || spec.keyKind === "api-key",
+      `${spec.binding} says what its key IS, so an address rule cannot be applied to a key id`,
+    );
+  }
   assert(
     BURST_ESCALATE_AT > 5,
     "escalation is well clear of what one lead's page loads cost, so ordinary traffic never " +
@@ -123,7 +158,7 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   const { t, asked } = tracker([{ count: 1 }]);
   let allowed = true;
   for (let i = 0; i < BURST_ESCALATE_AT; i++) {
-    allowed = await t.allow("1.2.3.4", T0);
+    allowed = await t.allow("1.2.3.4", T0, CEILING);
   }
   eq(allowed, true, "an ordinary address is allowed");
   eq(asked.length, 0, "and costs no round trip at all: the whole point of the escalation");
@@ -133,7 +168,7 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
 
 {
   const { t, asked } = tracker([{ count: BURST_ESCALATE_AT + 1 }]);
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, CEILING);
   eq(asked.length, 1, "crossing the escalation point asks the shared counter, once");
   eq(
     asked[0]!.bump,
@@ -148,11 +183,11 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   // covers must still be reported on the NEXT ask, or the shared count silently under-counts
   // exactly the traffic the ceiling exists to measure.
   const { t, asked } = tracker(() => ({ count: 40 }));
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, CEILING);
   eq(asked.length, 1, "one ask so far");
-  for (let i = 0; i < 5; i++) await t.allow("1.2.3.4", T0 + 10);
+  for (let i = 0; i < 5; i++) await t.allow("1.2.3.4", T0 + 10, CEILING);
   eq(asked.length, 1, "requests inside the memo window reuse the verdict");
-  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1);
+  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1, CEILING);
   eq(asked.length, 2, "and the memo expires");
   eq(asked[1]!.bump, 6, "the six requests it covered are reported on the next ask, not lost");
 }
@@ -160,24 +195,24 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
 // --- the ceiling actually refuses -------------------------------------------
 
 {
-  const { t } = tracker(() => ({ count: BURST_CEILING_PER_MINUTE + 1 }));
+  const { t } = tracker(() => ({ count: CEILING + 1 }));
   let allowed = true;
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0, CEILING);
   eq(allowed, false, "past the ceiling the request is refused");
 
-  const { t: t2 } = tracker(() => ({ count: BURST_CEILING_PER_MINUTE }));
+  const { t: t2 } = tracker(() => ({ count: CEILING }));
   let allowed2 = false;
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed2 = await t2.allow("1.2.3.4", T0);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed2 = await t2.allow("1.2.3.4", T0, CEILING);
   eq(allowed2, true, "exactly at the ceiling is still served: the ceiling is what is allowed");
 }
 
 {
   // A refusal is memoed too, so a flood does not buy a round trip per request by being blocked.
-  const { t, asked } = tracker(() => ({ count: BURST_CEILING_PER_MINUTE + 1 }));
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("9.9.9.9", T0);
+  const { t, asked } = tracker(() => ({ count: CEILING + 1 }));
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("9.9.9.9", T0, CEILING);
   const asksAfterFirstBlock = asked.length;
   for (let i = 0; i < 20; i++) {
-    eq(await t.allow("9.9.9.9", T0 + 5), false, "still refused");
+    eq(await t.allow("9.9.9.9", T0 + 5, CEILING), false, "still refused");
   }
   eq(asked.length, asksAfterFirstBlock, "and refusing costs nothing more while the memo holds");
 }
@@ -196,7 +231,7 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
     },
   });
   let allowed = false;
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0, CEILING);
   eq(allowed, true, "an unreachable shared counter serves the request");
   assert(asked.length > 0, "and it really did try, so this is not passing on a skipped call");
 }
@@ -214,8 +249,8 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
       return { count: 1 };
     },
   });
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0);
-  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, CEILING);
+  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1, CEILING);
   eq(seen.length, 2, "it asked again after the failure");
   eq(
     seen[1],
@@ -242,9 +277,55 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
     },
   });
   await Promise.all(
-    Array.from({ length: 30 }, () => t.allow("1.2.3.4", T0)),
+    Array.from({ length: 30 }, () => t.allow("1.2.3.4", T0, CEILING)),
   );
   eq(maxInFlight, 1, "concurrent requests for one address share a single round trip");
+}
+
+// --- one counter per endpoint, not one counter (#1556) ------------------------
+
+{
+  // The shape decision behind #1556: ONE Durable Object namespace, with the endpoint in the
+  // key, rather than a namespace per endpoint. The object id is derived from this key, so the
+  // prefix is what keeps two endpoints' counts apart. Without it a lead's availability reads
+  // and their confirm tap would draw on ONE count, and whichever ceiling is lower would be
+  // spent by the other endpoint's traffic.
+  const a = burstKey("availability", "1.2.3.4");
+  const b = burstKey("booking", "1.2.3.4");
+  assert(a !== b, "the same address on two endpoints is two counters, never one");
+  assert(a.includes("1.2.3.4"), "and the address is still in the key");
+  assert(a.includes("availability"), "and so is the endpoint it is counted for");
+
+  // Proven through the tracker, not only through the helper: the in-isolate count is keyed
+  // the same way, so a shared prefix would also let one endpoint escalate the other.
+  const { t, asked } = tracker(() => ({ count: 1 }));
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow(a, T0, CEILING);
+  eq(asked.length, 1, "the availability key escalated");
+  await t.allow(b, T0, CEILING);
+  eq(asked.length, 1, "and one request on the booking key has not, so the counts are separate");
+}
+
+{
+  // The ceiling is per call now, so a limiter with a low one must actually be judged against
+  // it. Availability's 300 would have served this.
+  const booking = EDGE_LIMITERS.find((l) => l.area === "booking")!;
+  assert(
+    booking.burstCeilingPerMinute < CEILING,
+    "the booking ceiling really is lower than availability's, so this case is not vacuous",
+  );
+  const { t } = tracker(() => ({ count: booking.burstCeilingPerMinute + 1 }));
+  let allowed = true;
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+    allowed = await t.allow(burstKey("booking", "1.2.3.4"), T0, booking.burstCeilingPerMinute);
+  }
+  eq(allowed, false, "a count over THIS endpoint's ceiling is refused");
+
+  const { t: t2 } = tracker(() => ({ count: booking.burstCeilingPerMinute + 1 }));
+  let allowed2 = false;
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+    allowed2 = await t2.allow(burstKey("availability", "1.2.3.4"), T0, CEILING);
+  }
+  eq(allowed2, true, "and the same count under availability's higher ceiling is served");
 }
 
 // --- the shared counter's own arithmetic --------------------------------------

@@ -1,11 +1,19 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import type { RateLimitRule, EdgeLimiterBinding } from "@/lib/rate-limit-core";
+import type { RateLimitRule, EdgeLimiterSpec } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
-import { BurstTracker, BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
-import { UNIDENTIFIED_IP } from "@/lib/rate-limit-core";
+import { BurstTracker, BURST_LIMITER_BINDING, burstKey } from "@/lib/rate-limit-burst";
+import {
+  UNIDENTIFIED_IP,
+  AVAILABILITY_LIMITER,
+  BOOKING_LIMITER,
+  ROUTING_LIMITER,
+  BOOKING_API_WRITE_LIMITER,
+  BOOKING_API_IP_LIMITER,
+  BOOKING_API_READ_LIMITER,
+} from "@/lib/rate-limit-core";
 
 export {
   clientIp,
@@ -33,72 +41,13 @@ import {
  * off. It now says so. A missing binding is treated as an outage rather than as "no limiter
  * configured", because in this project there is no such thing: wrangler.jsonc always binds
  * it, so absent means broken.
+ *
+ * #1556: the burst ceiling behind it is no longer wired here. It is part of `edgeWithinLimit`,
+ * so every endpoint gets it rather than only this one, and this function is now exactly what
+ * its four siblings below are.
  */
 export async function availabilityWithinLimit(ip: string): Promise<boolean> {
-  const withinEdge = await edgeWithinLimit(ip, {
-    binding: "AVAIL_RATE_LIMITER",
-    area: "availability",
-    friendly: "booking availability",
-  });
-  if (!withinEdge) return false;
-  return availabilityWithinBurstCeiling(ip);
-}
-
-/**
- * The second ceiling, the one a concurrent burst cannot spread across (#1536).
- *
- * The check above is enforced per datacenter and counted approximately, which is Cloudflare's
- * design and was already described here as permissive. Measured against production on
- * 2026-08-17 from one machine, though, the gap is much larger than permissive suggests: 45
- * sequential requests down one socket were blocked at exactly 30, and 60 fired in parallel into
- * the same datacenter in 1.1 seconds were blocked ZERO times. Same address, same second, same
- * configured ceiling. So the practical guarantee on the one endpoint anybody on the internet can
- * reach without authentication was 30 a minute PER ISOLATE.
- *
- * This runs after the fast check and behind an escalation threshold, so an ordinary booker load
- * pays nothing for it: see `@/lib/rate-limit-burst` for the three numbers and why the ceiling is
- * ten times the one above rather than equal to it.
- *
- * Fails OPEN and LOUD, exactly like the check above. The whole reason this endpoint is worth
- * protecting is that leads load it, so a counter we cannot reach must never be the thing that
- * stops one.
- */
-async function availabilityWithinBurstCeiling(ip: string): Promise<boolean> {
-  // An address we could not identify is a SHARED bucket, not an address (L75). Counting every
-  // such request against one counter would turn a per-address ceiling into a global one, and the
-  // first thing it would refuse is real leads. Behind Cloudflare `cf-connecting-ip` is always
-  // set, so reaching here at all is itself news: it is reported rather than silently allowed,
-  // because requests arriving without it means something is in front of us that should not be.
-  if (ip === UNIDENTIFIED_IP) {
-    await alertEdgeLimiterDown(
-      { area: "availability-burst-unidentified", friendly: "booking availability" },
-      "a request arrived with no client address, so the burst ceiling cannot be applied to it",
-    );
-    return true;
-  }
-  try {
-    const env = getCloudflareContext().env as unknown as Record<
-      string,
-      DurableObjectishNamespace | undefined
-    >;
-    const ns = env[BURST_LIMITER_BINDING];
-    if (!ns) {
-      // Same reading as a missing rate-limit binding: wrangler.jsonc always binds it, so
-      // absent means broken rather than "not configured".
-      await alertEdgeLimiterDown(
-        { area: "availability-burst", friendly: "booking availability" },
-        `the ${BURST_LIMITER_BINDING} binding is missing, so the burst ceiling is OFF`,
-      );
-      return true;
-    }
-    return burstTracker(ns).allow(ip, Date.now());
-  } catch (err) {
-    await alertEdgeLimiterDown(
-      { area: "availability-burst", friendly: "booking availability" },
-      `the burst ceiling threw: ${String(err)}`,
-    );
-    return true;
-  }
+  return edgeWithinLimit(ip, AVAILABILITY_LIMITER);
 }
 
 /** The Durable Object namespace shape this uses, named locally because
@@ -134,17 +83,90 @@ function burstTracker(ns: DurableObjectishNamespace): BurstTracker {
       if (!res.ok) throw new Error(`burst limiter answered ${res.status}`);
       return (await res.json()) as { count: number };
     },
-    // Fail LOUD while the tracker fails open. Routed through the same alerting the edge
-    // limiters use, so a burst ceiling that has quietly stopped counting reads the same way as
-    // an edge limiter that has (#796).
-    onFailure: (err) => {
-      void alertEdgeLimiterDown(
-        { area: "availability-burst", friendly: "booking availability" },
-        `the burst ceiling could not be reached: ${String(err)}`,
-      );
-    },
   });
   return sharedBurstTracker;
+}
+
+/**
+ * The second ceiling, the one a concurrent burst cannot spread across (#1536, #1556).
+ *
+ * The native check is enforced per datacenter and counted approximately, which is Cloudflare's
+ * design and was already described here as permissive. Measured against production on
+ * 2026-08-17 from one machine, though, the gap is much larger than permissive suggests: 45
+ * sequential requests down one socket were blocked at exactly 30, and 60 fired in parallel into
+ * the same datacenter in 1.1 seconds were blocked ZERO times. Same address, same second, same
+ * configured ceiling. So the practical guarantee on the one endpoint anybody on the internet can
+ * reach without authentication was 30 a minute PER ISOLATE.
+ *
+ * #1536 closed that on availability alone. #1556 is the same gap on the other five, which was
+ * never a different defect, only a smaller blast radius: the booking confirm is the one that
+ * would hurt, because a confirm creates a record and sends a calendar invite rather than reading
+ * a cache.
+ *
+ * This runs after the fast check and behind an escalation threshold, so an ordinary request pays
+ * nothing for it: see `@/lib/rate-limit-burst` for the numbers and why each ceiling is a large
+ * multiple of the sustained limit rather than equal to it.
+ *
+ * Fails OPEN and LOUD, exactly like the check in front of it. The whole reason these endpoints
+ * are worth protecting is that leads reach them, so a counter we cannot reach must never be the
+ * thing that stops one.
+ */
+async function withinBurstCeiling(
+  env: Record<string, unknown>,
+  key: string,
+  spec: EdgeLimiterSpec,
+): Promise<boolean> {
+  const area = `${spec.area}-burst`;
+  // An address we could not identify is a SHARED bucket, not an address (L75). Counting every
+  // such request against one counter would turn a per-address ceiling into a global one, and the
+  // first thing it would refuse is real leads. Behind Cloudflare `cf-connecting-ip` is always
+  // set, so reaching here at all is itself news: it is reported rather than silently allowed,
+  // because requests arriving without it means something is in front of us that should not be.
+  //
+  // Only for a limiter keyed on an ADDRESS. A per-key limiter's key is an API key id that came
+  // from auth, so the fallback is not a value it can ever hold, and applying an address rule to
+  // it would mean an integrator who happened to name a key "unknown" was never counted at all.
+  if (spec.keyKind === "ip" && key === UNIDENTIFIED_IP) {
+    await alertEdgeLimiterDown(
+      { area: `${area}-unidentified`, friendly: spec.friendly },
+      "a request arrived with no client address, so the burst ceiling cannot be applied to it",
+    );
+    return true;
+  }
+  const ns = env[BURST_LIMITER_BINDING] as DurableObjectishNamespace | undefined;
+  if (!ns) {
+    // Same reading as a missing rate-limit binding: wrangler.jsonc always binds it, so
+    // absent means broken rather than "not configured".
+    await alertEdgeLimiterDown(
+      { area, friendly: spec.friendly },
+      `the ${BURST_LIMITER_BINDING} binding is missing, so the burst ceiling is OFF`,
+    );
+    return true;
+  }
+  try {
+    return await burstTracker(ns).allow(
+      burstKey(spec.area, key),
+      Date.now(),
+      spec.burstCeilingPerMinute,
+      // Fail LOUD while the tracker fails open, and say WHICH endpoint's ceiling stopped
+      // counting: one tracker serves them all, so a report that just said "the burst ceiling"
+      // would send the reader to the wrong endpoint. Routed through the same alerting the edge
+      // limiters use, so a burst ceiling that has quietly stopped counting reads the same way
+      // as an edge limiter that has (#796).
+      (err) => {
+        void alertEdgeLimiterDown(
+          { area, friendly: spec.friendly },
+          `the burst ceiling could not be reached: ${String(err)}`,
+        );
+      },
+    );
+  } catch (err) {
+    await alertEdgeLimiterDown(
+      { area, friendly: spec.friendly },
+      `the burst ceiling threw: ${String(err)}`,
+    );
+    return true;
+  }
 }
 
 /**
@@ -156,11 +178,7 @@ function burstTracker(ns: DurableObjectishNamespace): BurstTracker {
  * unique-slot index still bound the damage), but it fails LOUD (#796).
  */
 export async function bookingWithinLimit(ip: string): Promise<boolean> {
-  return edgeWithinLimit(ip, {
-    binding: "BOOKING_RATE_LIMITER",
-    area: "booking",
-    friendly: "public booking",
-  });
+  return edgeWithinLimit(ip, BOOKING_LIMITER);
 }
 
 /**
@@ -169,11 +187,7 @@ export async function bookingWithinLimit(ip: string): Promise<boolean> {
  * (ROUTING_HOURLY_RATE_RULES) stays in the DB. Fails OPEN + LOUD like the rest.
  */
 export async function routingWithinLimit(ip: string): Promise<boolean> {
-  return edgeWithinLimit(ip, {
-    binding: "ROUTING_RATE_LIMITER",
-    area: "routing",
-    friendly: "routing lookup",
-  });
+  return edgeWithinLimit(ip, ROUTING_LIMITER);
 }
 
 /**
@@ -188,28 +202,15 @@ export async function routingWithinLimit(ip: string): Promise<boolean> {
  *   - read path, keyed per API key (600/min): bookingApiReadWithinLimit
  */
 export async function bookingApiWriteWithinLimit(keyId: string): Promise<boolean> {
-  return edgeWithinLimit(keyId, {
-    binding: "BOOKINGAPI_RATE_LIMITER",
-    area: "booking-api",
-    friendly: "booking API",
-  });
+  return edgeWithinLimit(keyId, BOOKING_API_WRITE_LIMITER);
 }
 
 export async function bookingApiIpWithinLimit(ip: string): Promise<boolean> {
-  return edgeWithinLimit(ip, {
-    binding: "BOOKINGAPI_IP_RATE_LIMITER",
-    area: "booking-api-ip",
-    friendly: "booking API",
-    alertOnBlock: { max: 60, windowSeconds: 60 },
-  });
+  return edgeWithinLimit(ip, BOOKING_API_IP_LIMITER);
 }
 
 export async function bookingApiReadWithinLimit(keyId: string): Promise<boolean> {
-  return edgeWithinLimit(keyId, {
-    binding: "BOOKINGAPI_READ_RATE_LIMITER",
-    area: "booking-api-read",
-    friendly: "booking API",
-  });
+  return edgeWithinLimit(keyId, BOOKING_API_READ_LIMITER);
 }
 
 /** The Cloudflare edge rate-limit binding shape (`.limit({ key }) -> { success }`). */
@@ -217,57 +218,70 @@ interface EdgeLimiter {
   limit(opts: { key: string }): Promise<{ success: boolean }>;
 }
 
-interface EdgeLimiterConfig {
-  binding: EdgeLimiterBinding;
-  /** Token-safe area name; used to key the fail-open / block alert throttle. */
-  area: string;
-  /** Plain-language area name for the human-facing Slack alert. */
-  friendly: string;
-  /**
-   * When set, a BLOCK (not just an outage) is itself news, mirroring the DB
-   * path's `alertOnBlock` rule (#796): the caller is meant to be our own bot well
-   * inside budget, so a rejection means the ceiling is too tight or a key leaked.
-   * The window is passed through only so the alert copy names the real limit.
-   */
-  alertOnBlock?: { max: number; windowSeconds: number };
+/**
+ * Shared edge-limiter check for every hot path that uses one (#237, #961, #1556).
+ *
+ * Resolve the named Workers rate-limit binding, count this key (an IP, or an API key id for the
+ * per-key ceilings), and fail OPEN + LOUD if the binding is missing or throws. Kept as one
+ * implementation so the fail-open and alerting contract can't drift between endpoints, and since
+ * #1556 so that the BURST ceiling cannot either: it used to hang off `availabilityWithinLimit`,
+ * which is how five endpoints ended up without one.
+ *
+ * The two ceilings are INDEPENDENT. A missing native binding no longer switches the burst
+ * ceiling off with it, because they are separate controls that happen to share a context read
+ * (L53: two checks must never share one status). A native BLOCK does skip the burst step, which
+ * is not the same thing: the request is already refused, so paying a round trip to count it more
+ * precisely would buy nothing.
+ *
+ * `spec.alertOnBlock` also fires a best-effort alert when the limiter turns a request away, for
+ * the machine-to-machine backstops where a block is itself a signal.
+ */
+async function edgeWithinLimit(key: string, spec: EdgeLimiterSpec): Promise<boolean> {
+  let env: Record<string, unknown>;
+  try {
+    env = getCloudflareContext().env as unknown as Record<string, unknown>;
+  } catch (err) {
+    // ONE report, not one per ceiling: the context is what both checks need, so an unreadable
+    // one is a single fact about this request rather than two independent failures.
+    await alertEdgeLimiterDown(spec, `the limiter threw: ${String(err)}`);
+    return true; // fail open
+  }
+
+  const nativeOk = await nativeWithinLimit(env, key, spec);
+  if (!nativeOk) return false;
+  return withinBurstCeiling(env, key, spec);
 }
 
-/**
- * Shared edge-limiter check for every hot path that uses one (#237, #961):
- * resolve the named Workers rate-limit binding, count this key (an IP, or an API
- * key id for the per-key ceilings), and fail OPEN + LOUD if the binding is missing
- * or throws. Kept as one implementation so the fail-open and alerting contract
- * can't drift between endpoints. `alertOnBlock` also fires a best-effort alert
- * when the limiter turns a request away, for the machine-to-machine backstops
- * where a block is itself a signal.
- */
-async function edgeWithinLimit(key: string, cfg: EdgeLimiterConfig): Promise<boolean> {
+/** The fast, free half: Cloudflare's own in-datacenter counter. */
+async function nativeWithinLimit(
+  env: Record<string, unknown>,
+  key: string,
+  spec: EdgeLimiterSpec,
+): Promise<boolean> {
   try {
-    const env = getCloudflareContext().env as unknown as Record<
-      string,
-      EdgeLimiter | undefined
-    >;
-    const limiter = env[cfg.binding];
+    const limiter = env[spec.binding] as EdgeLimiter | undefined;
     if (!limiter) {
       await alertEdgeLimiterDown(
-        cfg,
-        `the ${cfg.binding} binding is missing, so the ${cfg.area} throttle is OFF`,
+        spec,
+        `the ${spec.binding} binding is missing, so the ${spec.area} throttle is OFF`,
       );
       return true;
     }
     const { success } = await limiter.limit({ key });
-    if (!success && cfg.alertOnBlock) {
+    if (!success && spec.alertOnBlock) {
       // Best-effort, like the DB path: the alert writes to alert_state, so a
       // failed alert must never turn a block into a thrown error for the caller.
       await alertBestEffort(
-        `rate_limit_blocked:${cfg.area}`,
-        limiterBlockedAlert(cfg.friendly, key, cfg.alertOnBlock.max, cfg.alertOnBlock.windowSeconds),
-        cfg.area,
+        `rate_limit_blocked:${spec.area}`,
+        // The window is the spec's own `perMinute` rather than a literal passed in beside it,
+        // so the copy can never name a limit the binding does not enforce.
+        limiterBlockedAlert(spec.friendly, key, spec.perMinute, 60),
+        spec.area,
       );
     }
     return success;
   } catch (err) {
-    await alertEdgeLimiterDown(cfg, `the limiter threw: ${String(err)}`);
+    await alertEdgeLimiterDown(spec, `the limiter threw: ${String(err)}`);
     return true; // fail open
   }
 }
