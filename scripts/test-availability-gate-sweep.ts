@@ -42,8 +42,7 @@ function weekdayHours(): BusinessHoursRules {
       weekday,
       start_minute: 9 * 60,
       end_minute: 17 * 60,
-    })),
-  };
+    })), exceptions: [] };
 }
 
 function rules(businessHours: BusinessHoursRules, durationMin = 30): SlotRules {
@@ -143,12 +142,10 @@ const LONG_AGO = at("2026-01-01T00:00");
   const MON = "2026-08-10";
   const wide: BusinessHoursRules = {
     zone: ZONE,
-    rules: [{ weekday: weekdayOf(MON), start_minute: 8 * 60, end_minute: 20 * 60 }],
-  };
+    rules: [{ weekday: weekdayOf(MON), start_minute: 8 * 60, end_minute: 20 * 60 }], exceptions: [] };
   const narrowed: BusinessHoursRules = {
     zone: ZONE,
-    rules: [{ weekday: weekdayOf(MON), start_minute: 9 * 60, end_minute: 17 * 60 }],
-  };
+    rules: [{ weekday: weekdayOf(MON), start_minute: 9 * 60, end_minute: 17 * 60 }], exceptions: [] };
   const agent = alwaysOnAgent();
 
   // What the old window produced, as ISO instants, exactly as the cache stores them.

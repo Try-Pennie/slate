@@ -35,7 +35,7 @@ const base = {
   // Gate 1 (#1295) held open all week, so every assertion in this file stays about
   // the rule it was written for. The org gate has its own suite:
   // scripts/test-business-hours-gate.ts.
-  businessHours: { zone: tz, rules: ALL_DAY_EVERY_DAY },
+  businessHours: { zone: tz, rules: ALL_DAY_EVERY_DAY, exceptions: [] },
   nowMs: Date.parse("2026-06-01T00:00:00.000Z"), // well before window
 };
 
@@ -193,7 +193,7 @@ assert(slotsNotice.length === 0, `excessive min-notice yields no slots (got ${sl
     bufferAfterMin: 0,
     minNoticeMin: 0,
     dailyCap: null,
-    businessHours: { zone: tz, rules: ALL_DAY_EVERY_DAY },
+    businessHours: { zone: tz, rules: ALL_DAY_EVERY_DAY, exceptions: [] },
   };
   const earlyNow = ms("2026-06-01T00:00:00.000Z"); // well before the window
   // Mon 2026-06-08 09:00 NY = 13:00 UTC.

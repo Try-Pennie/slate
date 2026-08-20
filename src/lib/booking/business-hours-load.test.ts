@@ -14,12 +14,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const rows = vi.hoisted(() => ({
   data: [] as unknown[],
   error: null as { message: string } | null,
+  // #1363: the date exceptions read, which shares the loader. Its own failure
+  // direction has its own cases below.
+  exceptions: [] as unknown[],
+  exceptionsError: null as { message: string } | null,
 }));
 const warn = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
-    from: () => ({ select: async () => ({ data: rows.data, error: rows.error }) }),
+    from: (table: string) =>
+      table === "business_hours_exceptions"
+        ? {
+            select: () => ({
+              gte: () => ({
+                order: () => ({
+                  limit: async () => ({ data: rows.exceptions, error: rows.exceptionsError }),
+                }),
+              }),
+            }),
+          }
+        : { select: async () => ({ data: rows.data, error: rows.error }) },
   }),
 }));
 vi.mock("@/lib/log", () => ({ log: { warn, info: vi.fn(), error: vi.fn() } }));
@@ -38,6 +53,8 @@ const week = (over: Partial<Record<number, { is_open?: boolean; start_minute?: n
 beforeEach(() => {
   vi.clearAllMocks();
   rows.data = week();
+  rows.exceptions = [];
+  rows.exceptionsError = null;
   rows.error = null;
 });
 
@@ -78,5 +95,42 @@ describe("loadBusinessHours", () => {
     expect(hours.source).toBe("stored");
     expect(hours.rules).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+// #1363: the date exceptions ride the same read, and they fail the same way for a
+// sharper reason. An exception is nearly always a CLOSURE, so a swallowed error
+// would leave the org advertising times on a day it is shut and a lead would be
+// booked into an empty office.
+describe("date exceptions (#1363)", () => {
+  it("returns the stored dates alongside the week", async () => {
+    rows.exceptions = [
+      { on_date: "2026-12-25", is_open: false, start_minute: null, end_minute: null, note: "Christmas Day" },
+    ];
+
+    const hours = await loadBusinessHours();
+
+    expect(hours.exceptions).toHaveLength(1);
+    expect(hours.exceptions[0].on_date).toBe("2026-12-25");
+  });
+
+  it("throws rather than serving the weekly pattern when the dates cannot be read", async () => {
+    rows.exceptionsError = { message: "relation does not exist" };
+
+    await expect(loadBusinessHours()).rejects.toThrow();
+  });
+
+  it("says so, loudly, when a stored date cannot be understood", async () => {
+    // The row that matters most: it matches no date, so it shuts NOTHING, and the
+    // day it was meant to close stays open and bookable.
+    rows.exceptions = [
+      { on_date: "25/12/2026", is_open: false, start_minute: null, end_minute: null, note: null },
+    ];
+
+    const hours = await loadBusinessHours();
+
+    expect(hours.exceptions).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls.at(-1)?.[1]?.msg)).toMatch(/unreadable/i);
   });
 });

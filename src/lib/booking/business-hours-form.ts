@@ -152,3 +152,89 @@ export function countBookingsOnWeekdays(
   }
   return count;
 }
+
+
+/**
+ * A date exception as `business_hours_exceptions` stores it (#1363). A `type`, for
+ * the same reason its weekly sibling above is one.
+ */
+export type BusinessHoursExceptionRow = {
+  on_date: string;
+  is_open: boolean;
+  start_minute: number | null;
+  end_minute: number | null;
+  note: string | null;
+};
+
+export interface ExceptionFormResult {
+  row: BusinessHoursExceptionRow | null;
+  errors: string[];
+}
+
+/** yyyy-mm-dd, and a real date: Luxon rejects 2026-02-30, a regex would not. */
+function readIsoDate(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const dt = DateTime.fromISO(trimmed);
+  return dt.isValid && dt.toISODate() === trimmed ? trimmed : null;
+}
+
+/**
+ * Parse the add-a-date form (#1363).
+ *
+ * The asymmetry mirrors the weekly form's third rule, and the table's own
+ * constraint: an OPEN exception must carry a usable window, because a blank time
+ * silently becoming midnight would open the org at midnight and report success
+ * (L50); a CLOSED one must carry no window at all, because a stored pair on a
+ * closed date would let a later reader treat the closure as odd opening hours.
+ *
+ * The note is optional and trimmed to null, because an empty string in the column
+ * would render as a blank line in the admin list rather than as no note.
+ */
+export function parseExceptionForm(raw: Record<string, string>): ExceptionFormResult {
+  const errors: string[] = [];
+  const on_date = readIsoDate(raw.on_date ?? "");
+  if (!on_date) errors.push("Enter the date as a real calendar date.");
+
+  const is_open = (raw.state ?? "closed") === "open";
+  let start_minute: number | null = null;
+  let end_minute: number | null = null;
+
+  if (is_open) {
+    start_minute = parseTime(raw.start);
+    end_minute = parseTime(raw.end);
+    if (start_minute === null || end_minute === null) {
+      errors.push("An open date needs a start and an end time, as HH:MM.");
+    } else if (end_minute <= start_minute) {
+      errors.push("An open date has to end after it starts.");
+    }
+  }
+
+  if (errors.length > 0 || !on_date) return { row: null, errors };
+  const note = (raw.note ?? "").trim();
+  return {
+    row: { on_date, is_open, start_minute, end_minute, note: note === "" ? null : note },
+    errors: [],
+  };
+}
+
+/**
+ * How many future bookings fall on a given date, in the ORG's zone (#1363).
+ *
+ * Mirrors `countBookingsOnWeekdays`, including its one deliberate oddity: an
+ * unreadable stamp COUNTS. The number exists to warn somebody before they shut a
+ * day, so a stamp we cannot read has to inflate the warning rather than quietly
+ * shrink it (L50).
+ */
+export function countBookingsOnDate(startIsos: string[], zone: string, isoDate: string): number {
+  let count = 0;
+  for (const iso of startIsos) {
+    const dt = DateTime.fromISO(iso, { zone });
+    if (!dt.isValid) {
+      count++;
+      continue;
+    }
+    if (dt.toISODate() === isoDate) count++;
+  }
+  return count;
+}

@@ -48,6 +48,8 @@ function fakeDb(
       lte: () => b,
       gte: () => b,
       is: () => b,
+      order: () => b,
+      limit: () => b,
       range: (from: number, to: number) => {
         range = [from, to];
         return b;

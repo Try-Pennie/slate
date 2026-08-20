@@ -14,6 +14,9 @@ const hours = vi.hoisted(() => ({
   loadBusinessHours: vi.fn(async () => ({
     zone: "America/New_York",
     source: "stored" as const,
+    // #1363: no date exceptions in this fixture; the date-override cases live in
+    // scripts/test-business-hours-exceptions.ts.
+    exceptions: [],
     // Open Monday to Friday, 09:00 to 11:00, so the grid has two hours a day.
     rules: [1, 2, 3, 4, 5].map((weekday) => ({
       weekday,

@@ -37,8 +37,7 @@ const ROWS: SlotHealthRow[] = [
 
 const NARROWED: BusinessHoursRules = {
   zone: "America/New_York",
-  rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 15 * 60 }],
-};
+  rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 15 * 60 }], exceptions: [] };
 
 // --- a readable week: count what the booker serves ---------------------------------
 {

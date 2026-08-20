@@ -50,6 +50,9 @@ const hours = vi.hoisted(() => ({
   loadBusinessHoursCached: vi.fn(async () => ({
     zone: "America/New_York",
     rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+    // #1363: no date exceptions in this fixture; the holiday-shutdown case has its
+    // own suite (scripts/test-business-hours-exceptions.ts).
+    exceptions: [],
     source: "stored" as const,
   })),
 }));
@@ -257,6 +260,7 @@ describe("GET /api/availability empty-state reason (#1328)", () => {
     hours.loadBusinessHoursCached.mockResolvedValue({
       zone: "America/New_York",
       rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+      exceptions: [],
       source: "stored" as const,
     });
     settings.loadBookingHorizonDays.mockResolvedValue(4);
@@ -294,6 +298,7 @@ describe("GET /api/availability empty-state reason (#1328)", () => {
     hours.loadBusinessHoursCached.mockResolvedValue({
       zone: "America/New_York",
       rules: [],
+      exceptions: [],
       source: "stored" as const,
     });
     cache.getBucketSlotsWithFallback.mockResolvedValue(emptyResult);

@@ -348,8 +348,7 @@ async function run() {
     // be false. Only the org's own hours make this unbookable.
     const mondayAfternoonOnly = {
       zone: "America/New_York",
-      rules: [{ weekday: 1, start_minute: 14 * 60, end_minute: 18 * 60 }],
-    };
+      rules: [{ weekday: 1, start_minute: 14 * 60, end_minute: 18 * 60 }], exceptions: [] };
     const { deps, calls } = makeDeps({
       candidates: ["a"],
       freeEmails: new Set(["a@x.com"]),
@@ -375,8 +374,7 @@ async function run() {
       freeEmails: new Set(),
       businessHours: {
         zone: "America/New_York",
-        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
-      },
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }], exceptions: [] },
     });
     const r = await checkBookable({ bucketCode: "411", startIso: input.startIso }, deps);
     assert(

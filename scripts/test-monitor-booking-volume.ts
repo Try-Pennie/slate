@@ -32,8 +32,7 @@ const CFG: BusinessHoursConfig = {
     weekday,
     start_minute: 8 * 60,
     end_minute: 20 * 60,
-  })),
-};
+  })), exceptions: [] };
 
 // --- isBusinessHours (Eastern, DST aware) ---
 {
@@ -58,7 +57,7 @@ const CFG: BusinessHoursConfig = {
   // An empty week is shut everywhere, which is a legitimate stored answer and is
   // why the caller must skip rather than pass an empty list for a read it could
   // not make: that would silence the alarm instead of reporting it unmeasured.
-  const closedOrg: BusinessHoursConfig = { zone: "America/New_York", rules: [] };
+  const closedOrg: BusinessHoursConfig = { zone: "America/New_York", rules: [], exceptions: [] };
   assert(
     !isBusinessHours(Date.UTC(2026, 5, 23, 16, 0, 0), closedOrg),
     "an org with no stored windows is shut, even at what would be midday",

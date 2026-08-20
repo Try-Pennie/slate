@@ -108,6 +108,7 @@ function makeTierDropDeps(): BookingDeps {
     businessHours: async () => ({
       zone: "America/New_York",
       rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+      exceptions: [],
     }),
     busyIntervalsForAgent: async () => [],
     agentActiveBookingStartsMs: async () => [],

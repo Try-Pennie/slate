@@ -249,6 +249,19 @@ export interface BusinessHoursRow {
   updated_by: string | null;
 }
 
+/** A specific date that overrides the weekly pattern (#1363, migration 0106). The
+ *  window is null on a closed date; the table's own constraint enforces the pair. */
+export interface BusinessHoursExceptionRow {
+  on_date: string;
+  is_open: boolean;
+  start_minute: number | null;
+  end_minute: number | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 /** Cross-request lock row (#30); a claim is stale after its TTL. */
 export interface SyncLock {
   key: string;

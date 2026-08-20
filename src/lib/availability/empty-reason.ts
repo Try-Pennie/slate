@@ -9,7 +9,11 @@
  * Pure (luxon only, no `@/` imports) so the node suite drives it directly.
  */
 import { DateTime } from "luxon";
-import type { BusinessWindow } from "../booking/business-hours.ts";
+import {
+  windowOnDate,
+  type BusinessHoursException,
+  type BusinessWindow,
+} from "../booking/business-hours.ts";
 import { searchWindowDays } from "./bookable-days.ts";
 
 export type EmptyReason =
@@ -43,18 +47,29 @@ const REOPEN_SEARCH_DAYS = 31;
 export function emptyReason(input: {
   /** Open windows only, as `loadBusinessHours` returns them. */
   businessHours: BusinessWindow[];
+  /**
+   * The date exceptions (#1363). A holiday shutdown is the case this whole
+   * message was written for and the one the weekly pattern alone could never
+   * see: during Christmas week the weekdays are open, so the emptiness read as
+   * demand and the lead was told every time was taken.
+   */
+  exceptions: BusinessHoursException[];
   /** Start of the searched window, an ISO date in the org's zone. */
   fromDay: string;
   /** How many calendar days were searched, inclusive of `fromDay`. */
   searchedDays: number;
   zone: string;
 }): EmptyReason {
-  const openWeekdays = new Set(input.businessHours.map((w) => w.weekday));
+  const hours = { rules: input.businessHours, exceptions: input.exceptions };
   const start = DateTime.fromISO(input.fromDay, { zone: input.zone });
   if (!start.isValid || input.searchedDays <= 0) return { kind: "busy" };
+  // One judge for "is the org open on this date", the same one the gate and the
+  // read-time filter use, so a date the booker refuses can never be a date this
+  // message calls open (L107).
+  const openOn = (d: DateTime) => windowOnDate(hours, d.toISODate() ?? "", d.weekday) !== null;
 
   for (let i = 0; i < input.searchedDays; i++) {
-    if (openWeekdays.has(start.plus({ days: i }).weekday)) {
+    if (openOn(start.plus({ days: i }))) {
       // At least one searched day was open, so this is supply, not a closure.
       return { kind: "busy" };
     }
@@ -64,7 +79,7 @@ export function emptyReason(input: {
   // fact that makes the message actionable rather than just honest.
   for (let i = input.searchedDays; i < REOPEN_SEARCH_DAYS; i++) {
     const day = start.plus({ days: i });
-    if (openWeekdays.has(day.weekday)) {
+    if (openOn(day)) {
       return { kind: "closed", reopensOn: day.toISODate() };
     }
   }
@@ -79,7 +94,7 @@ export function emptyReason(input: {
  * may be absent because the read that produces it failed.
  */
 export interface EmptyWindowInputs {
-  hours: { zone: string; rules: BusinessWindow[] } | null;
+  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] } | null;
   horizonDays: number | null;
   nowMs: number;
 }
@@ -135,6 +150,7 @@ export function explainEmptyWindow(input: EmptyWindowInputs): EmptyWindowExplana
   return {
     reason: emptyReason({
       businessHours: hours.rules,
+      exceptions: hours.exceptions,
       fromDay,
       // The same window the slots were searched over, so "every day we looked at
       // was shut" means exactly that rather than some other span.

@@ -2,9 +2,12 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { makeCachedHoursReader } from "@/lib/booking/business-hours-cache";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
+import { DateTime } from "luxon";
 import {
   resolveBusinessHours,
+  resolveBusinessHoursExceptions,
   BUSINESS_ZONE,
+  type BusinessHoursException,
   type BusinessHoursRow,
   type BusinessWindow,
 } from "@/lib/booking/business-hours";
@@ -28,6 +31,16 @@ export interface BusinessHours {
   zone: string;
   /** Open windows only, one per open weekday, in the agent-rule shape. */
   rules: BusinessWindow[];
+  /**
+   * Specific dates that override the weekly pattern (#1363). Read here rather
+   * than by each caller so the gate, the read-time filter, the empty-reason copy
+   * and the admin editor all see ONE answer about whether a given day is open.
+   *
+   * Only dates from today onward: the table is a small operator list, but it
+   * accumulates a row per holiday forever, and nothing anywhere asks whether the
+   * office was shut last Christmas.
+   */
+  exceptions: BusinessHoursException[];
   /** Whether this came from the store or from the coded fallback. */
   source: "stored" | "seeded";
 }
@@ -56,6 +69,42 @@ export async function loadBusinessHoursRows(): Promise<BusinessHoursRow[]> {
   ) ?? []) as BusinessHoursRow[];
 }
 
+/**
+ * The date exceptions from today onward (#1363).
+ *
+ * THROWS on a read error, like the week itself and for the sharper reason: an
+ * exception is nearly always a CLOSURE, so a swallowed error would leave the org
+ * advertising times on a day it is shut, and a lead would be booked into an empty
+ * office. Serving the weekly pattern on a failed read is precisely the outcome
+ * this table exists to prevent.
+ */
+export async function loadBusinessHoursExceptions(
+  fromIsoDate: string,
+): Promise<BusinessHoursException[]> {
+  const db = supabaseAdmin();
+  // cap-safe: bounded by the booking horizon plus the reopening search, and the
+  // limit is an explicit page bound rather than an assumption about volume.
+  const rows = (unwrap(
+    await db
+      .from("business_hours_exceptions")
+      .select("on_date, is_open, start_minute, end_minute, note")
+      .gte("on_date", fromIsoDate)
+      .order("on_date")
+      .limit(400),
+    "business_hours_exceptions",
+  ) ?? []) as BusinessHoursException[];
+  const { exceptions, unreadable } = resolveBusinessHoursExceptions(rows);
+  if (unreadable.length > 0) {
+    // Loud, because an unreadable row shuts NOTHING: the day it was meant to
+    // close stays open and the booker keeps offering it.
+    log.warn("business-hours", {
+      msg: "unreadable date exceptions ignored",
+      count: unreadable.length,
+    });
+  }
+  return exceptions;
+}
+
 export async function loadBusinessHours(): Promise<BusinessHours> {
   const db = supabaseAdmin();
   // cap-safe: business_hours holds exactly one row per weekday, a fixed 1..7 key
@@ -78,7 +127,9 @@ export async function loadBusinessHours(): Promise<BusinessHours> {
       rows: rows.length,
     });
   }
-  return { zone: BUSINESS_ZONE, rules: resolved.rules, source: resolved.source };
+  const today = DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01";
+  const exceptions = await loadBusinessHoursExceptions(today);
+  return { zone: BUSINESS_ZONE, rules: resolved.rules, exceptions, source: resolved.source };
 }
 
 /**

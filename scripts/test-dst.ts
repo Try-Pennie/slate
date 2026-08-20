@@ -25,8 +25,7 @@ const base = {
       weekday,
       start_minute: 0,
       end_minute: 1440,
-    })),
-  },
+    })), exceptions: [] },
   nowMs: Date.parse("2026-01-01T00:00:00.000Z"), // well before every window
 };
 

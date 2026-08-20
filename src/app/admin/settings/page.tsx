@@ -9,10 +9,19 @@ import {
   setBookingHorizon,
   setEventDescription,
   setBusinessHours,
+  setBusinessHoursException,
+  removeBusinessHoursException,
   setOrgDefaultHours,
 } from "@/app/admin/actions";
-import { loadBusinessHoursRows } from "@/lib/booking/business-hours-load";
-import { BUSINESS_ZONE, SEEDED_BUSINESS_HOURS } from "@/lib/booking/business-hours";
+import {
+  loadBusinessHoursRows,
+  loadBusinessHoursExceptions,
+} from "@/lib/booking/business-hours-load";
+import {
+  BUSINESS_ZONE,
+  SEEDED_BUSINESS_HOURS,
+  type BusinessHoursException,
+} from "@/lib/booking/business-hours";
 import { coverageForWeek, type CoverageReadout } from "@/lib/booking/business-hours-coverage";
 import {
   loadCoverageAgents,
@@ -20,7 +29,9 @@ import {
 } from "@/lib/booking/business-hours-coverage-load";
 import { minutesToTime } from "@/lib/schedule-core";
 import { humanizeZone } from "@/lib/booking/timezones";
+import { DateTime } from "luxon";
 import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/BusinessHoursForm";
+import { BusinessHoursExceptions } from "@/components/ui/BusinessHoursExceptions";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
 import {
@@ -173,6 +184,10 @@ export default async function MonitorSettingsPage({
   // reads as a staffing problem someone would go and fix. So a failure becomes the
   // could-not-check state, never a zero.
   let businessDays: BusinessHoursDay[] = [];
+  // #1363: the dates that override the weekly pattern. Read here rather than
+  // inside the component so a failure lands in the same catch the week's does,
+  // and the screen shows a seeded week with no exceptions rather than throwing.
+  let exceptions: BusinessHoursException[] = [];
   let coverage: CoverageReadout = { ok: false };
   type OrgDefaults = {
     default_timezone: string;
@@ -183,8 +198,11 @@ export default async function MonitorSettingsPage({
   let org: OrgDefaults | null = null;
   try {
     const db = supabaseAdmin();
-    const [rowsRaw, orgRes] = await Promise.all([
+    const [rowsRaw, exceptionRows, orgRes] = await Promise.all([
       loadBusinessHoursRows(),
+      loadBusinessHoursExceptions(
+        DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01",
+      ),
       db
         .from("organizations")
         .select("default_timezone, default_start_minute, default_end_minute, default_weekdays")
@@ -200,6 +218,7 @@ export default async function MonitorSettingsPage({
         : SEEDED_BUSINESS_HOURS.map((r) => ({ ...r, is_open: true })).concat(
             [7].map((weekday) => ({ weekday, is_open: false, start_minute: 480, end_minute: 1200 })),
           );
+    exceptions = exceptionRows;
     businessDays = [...week]
       .sort((a, b) => a.weekday - b.weekday)
       .map((r) => ({
@@ -554,6 +573,24 @@ export default async function MonitorSettingsPage({
             days={businessDays}
             zoneLabel={humanizeZone(BUSINESS_ZONE)}
             coverage={coverage}
+          />
+        </section>
+
+        {/* Specific dates, adjacent to the weekly pattern they override (#1363). */}
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Specific dates</h2>
+          <p className="mb-4 max-w-prose text-xs text-fg-muted">
+            Dates that do not follow the weekly pattern above: a holiday shutdown, or
+            a one off day open when Pennie normally is not. A closed date is offered
+            to nobody, and the booker tells a lead we are closed and when we are back
+            rather than that every time is taken. Appointments already in the diary
+            stay put.
+          </p>
+          <BusinessHoursExceptions
+            action={setBusinessHoursException}
+            removeAction={removeBusinessHoursException}
+            exceptions={exceptions}
+            zoneLabel={humanizeZone(BUSINESS_ZONE)}
           />
         </section>
 

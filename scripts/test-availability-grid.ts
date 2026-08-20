@@ -148,8 +148,7 @@ const day = (over: Partial<GridDayInput> = {}): GridDayInput => ({
 {
   const hours = {
     zone: ZONE,
-    rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })),
-  };
+    rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })), exceptions: [] };
   const slot = (t: string) => `2026-08-25T${t}:00.000-04:00`;
   const counts = bucketsOfferingByHour(
     [

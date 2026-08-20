@@ -27,6 +27,28 @@ export interface BusinessWindow {
   end_minute: number;
 }
 
+/**
+ * A specific date the org is shut, or open, whatever the weekly pattern says (#1363).
+ *
+ * The weekly rows alone could not express "shut for Christmas week", which is the
+ * case the honest closure copy (#1328) and the days-back button (#1329) were most
+ * obviously written for and the one they could never fire on: during a holiday
+ * shutdown the booker would have reported the emptiness as demand.
+ *
+ * An exception can OPEN a normally shut day as well as close an open one. It is
+ * the same table either way, and a one off Saturday is as real a need as a holiday.
+ */
+export interface BusinessHoursException {
+  /** yyyy-mm-dd in the ORG's zone, never in a lead's or an agent's. */
+  on_date: string;
+  is_open: boolean;
+  /** The window that REPLACES the weekday's on an open exception; null when shut. */
+  start_minute: number | null;
+  end_minute: number | null;
+  /** Why, so the admin list reads as a list of holidays rather than of dates. */
+  note: string | null;
+}
+
 /** A stored row, as read from `business_hours`. */
 export interface BusinessHoursRow {
   weekday: number;
@@ -63,6 +85,70 @@ export const SEEDED_BUSINESS_HOURS: BusinessWindow[] = [1, 2, 3, 4, 5, 6].map((w
 }));
 
 const isWholeNumber = (n: number): boolean => Number.isInteger(n);
+
+/** yyyy-mm-dd, which is the only shape the date key is ever compared as. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The org's window on ONE date, after exceptions, or null when it is shut (#1363).
+ *
+ * This is the single judge of whether the org is open at a given moment, and every
+ * caller has to reach the org's hours through it: consulting `rules` directly
+ * answers the weekly pattern, which is the question the exceptions exist to stop
+ * anybody asking. `scripts/test-business-hours-exceptions.ts` fails the build on a
+ * site that goes around it.
+ *
+ * An UNREADABLE exception is treated as CLOSED rather than ignored. That is the
+ * fail-safe direction here and it is the opposite of the usual one: the rows are
+ * only ever written to shut a day or to move its hours, so a row we cannot parse
+ * is far likelier to be a closure somebody entered than a day they meant to open,
+ * and offering a lead a time on a day the office is dark is the expensive mistake.
+ * The database constraint makes the state unreachable through the app; this covers
+ * a hand written row.
+ */
+export function windowOnDate(
+  hours: { rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
+  isoDate: string,
+  weekday: number,
+): { start_minute: number; end_minute: number } | null {
+  const exception = hours.exceptions.find((e) => e.on_date === isoDate);
+  if (exception) {
+    if (!exception.is_open) return null;
+    const { start_minute: start, end_minute: end } = exception;
+    if (start === null || end === null) return null;
+    if (!isWholeNumber(start) || !isWholeNumber(end)) return null;
+    if (start < 0 || start >= DAY_END_MINUTE || end > DAY_END_MINUTE || end <= start) return null;
+    return { start_minute: start, end_minute: end };
+  }
+  const rule = hours.rules.find((r) => r.weekday === weekday);
+  return rule ? { start_minute: rule.start_minute, end_minute: rule.end_minute } : null;
+}
+
+/**
+ * Validate the stored exceptions, dropping nothing silently.
+ *
+ * Returns the rows to use plus the ones that could not be read, so a caller can
+ * say so rather than serving a week that quietly ignored a closure. A row with an
+ * unusable date is the one that MUST be reported: it does not match any date, so
+ * it shuts nothing, and the day it was meant to close stays open.
+ */
+export function resolveBusinessHoursExceptions(rows: BusinessHoursException[]): {
+  exceptions: BusinessHoursException[];
+  unreadable: BusinessHoursException[];
+} {
+  const exceptions: BusinessHoursException[] = [];
+  const unreadable: BusinessHoursException[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (typeof row.on_date !== "string" || !ISO_DATE.test(row.on_date) || seen.has(row.on_date)) {
+      unreadable.push(row);
+      continue;
+    }
+    seen.add(row.on_date);
+    exceptions.push(row);
+  }
+  return { exceptions, unreadable };
+}
 
 export function resolveBusinessHours(rows: BusinessHoursRow[]): BusinessHoursResolution {
   if (rows.length === 0) {

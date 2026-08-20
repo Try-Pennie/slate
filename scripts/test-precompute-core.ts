@@ -22,8 +22,7 @@ const WROTE_AT = "2026-06-19T12:00:00.000Z";
 // cache orchestration. The filter's own behaviour is the block at the end.
 const OPEN_ALL_WEEK = {
   zone: "America/New_York",
-  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
-};
+  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })), exceptions: [] };
 
 // Spy deps: count every call so we can assert what the read path did NOT do.
 function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): ReadDeps {
@@ -118,8 +117,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   });
   const narrowed = {
     zone: "America/New_York",
-    rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 15 * 60 }],
-  };
+    rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 15 * 60 }], exceptions: [] };
 
   // -- a warm L1 hit, computed under the wider week
   {
