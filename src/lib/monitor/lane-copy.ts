@@ -16,6 +16,7 @@ import {
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
+  parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
 /** Minutes, rounded, for the copy. */
@@ -216,4 +217,62 @@ export function mirrorAlertText(lane: StaleLane, boundMin: number): string {
     return `The check that proves an erased person's data is really gone from the Snowflake warehouse ${quiet}, so a deletion request could be sitting half finished with nobody watching (the app itself is unaffected). This is the only automated check on the operator's manual warehouse purge step. Check the cron_erasure_audit lock and the Worker outcome for the 6h lane.`;
   }
   return `The Snowflake mirror export lane ${quiet}, so the analytics warehouse is going stale (the app itself is unaffected). Check the cron_snowflake_export lock and the Worker outcome for the */10 lane.`;
+}
+
+/**
+ * The recurring whisper that a safety net is deliberately off (#1561).
+ *
+ * A parked detector is a net nobody is holding, and the failure this whole family
+ * exists to catch is exactly that being invisible. Silence would fix the noise and
+ * recreate the #1394 defect one level up, so the park says itself out loud on a
+ * slow cadence: often enough that it cannot be forgotten before cutover, rarely
+ * enough that it is never the thing anyone scrolls past.
+ *
+ * It carries each detector's REASON and the issue that arms it, because the only
+ * useful response to this whisper is to decide whether the reason still holds.
+ */
+export function verdictParkedInfoText(lanes: string[]): string {
+  const items = lanes.map((lane) => {
+    const subject = VERDICT_SUBJECT[lane];
+    const parked = parkedDetector(lane);
+    return (
+      `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is parked because ` +
+      `${parked?.reason}. While it is parked, ${subject.cost}. Arm it in #${parked?.issue}.`
+    );
+  });
+  return (
+    `${lanes.length} monitoring ${lanes.length === 1 ? "check is" : "checks are"} parked, ` +
+    `so ${lanes.length === 1 ? "it is" : "they are"} not watching anything today. ` +
+    `This is on purpose and nothing is broken; it is repeated so the missing cover ` +
+    `stays visible rather than silent. ${items.join(" ")}`
+  );
+}
+
+/**
+ * A parked detector has reached a verdict anyway, so the park is over (#1561).
+ *
+ * This is the good direction: cutover looks precisely like this, and it is the
+ * reason the park does not need anyone to remember it. The message is a page
+ * rather than a whisper because the detector is now capable of watching and is
+ * still switched off, which is the state the reader has to end.
+ */
+export function verdictUnparkAlertText(lane: string): string {
+  const subject = VERDICT_SUBJECT[lane];
+  const parked = parkedDetector(lane);
+  return (
+    `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict, ` +
+    `so the reason it was parked has stopped being true and it is now switched off ` +
+    `while able to watch. Until it is armed, ${subject.cost}. Take it out of ` +
+    `PARKED_VERDICT_DETECTORS in src/lib/monitor/verdict-freshness.ts and close #${parked?.issue}.`
+  );
+}
+
+/** All-clear for an un-park page: the detector has been armed. */
+export function verdictUnparkRecoveryText(lane: string): string {
+  const subject = VERDICT_SUBJECT[lane];
+  return (
+    `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is armed again, so it is ` +
+    `being watched against its own bound like every other detector and the earlier ` +
+    `page is cleared. No action is needed.`
+  );
 }

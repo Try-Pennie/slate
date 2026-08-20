@@ -30,6 +30,7 @@ import {
   type FailingAgent,
 } from "@/lib/notify/alerts";
 import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
 import {
   formatSyncStalenessAlert,
   formatSyncStalenessRecovery,
@@ -140,7 +141,10 @@ import {
   mirrorRecoveryText,
   retentionRecoveryText,
   verdictBlindAlertText,
+  verdictParkedInfoText,
   verdictRecoveryText,
+  verdictUnparkAlertText,
+  verdictUnparkRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
   formatInactiveAgentBookingsAlert,
@@ -1415,6 +1419,33 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a detector is measuring again",
     channel: "recovery",
     text: verdictRecoveryText("verdict:low-booking-volume"),
+  },
+  // #1561: the third thing that can be true of a detector. Not blind by fault and
+  // not measuring, but deliberately switched off, which needs its own voice: the
+  // whisper must not read as an incident, and the page must not read as a fault.
+  {
+    key: "detector_parked",
+    state: "the checks that cannot conclude before cutover",
+    channel: "info",
+    text: verdictParkedInfoText(Object.keys(PARKED_VERDICT_DETECTORS)),
+  },
+  {
+    key: "detector_parked",
+    state: "a single parked check",
+    channel: "info",
+    text: verdictParkedInfoText(["verdict:availability-truth"]),
+  },
+  {
+    key: "detector_unpark:*",
+    state: "a parked check has started concluding",
+    channel: "alert",
+    text: verdictUnparkAlertText("verdict:booking-failure-rate"),
+  },
+  {
+    key: "detector_unpark:*",
+    state: "a parked check has been armed",
+    channel: "recovery",
+    text: verdictUnparkRecoveryText("verdict:booking-failure-rate"),
   },
 
   // --- the booking layer's incidents ----------------------------------------

@@ -84,10 +84,13 @@ const healthy = () => ({
   // The detector verdict stamps (#1394), also judged with neverIsStale ON: a
   // detector that has NEVER concluded is the exact state they exist to notice, so
   // omitting one from a fixture reads as blind and pages.
-  "verdict:availability-truth": ago(60 * MIN),
-  "verdict:booking-failure-rate": ago(6 * 60 * MIN),
   "verdict:low-booking-volume": ago(6 * 60 * MIN),
   "verdict:ooo-protection": ago(10 * MIN),
+  // The two PARKED detectors (#1561) are deliberately absent, because that is
+  // what production looks like: neither has ever reached a verdict, and while
+  // they are parked that is a known, accepted gap rather than a page. Stamping
+  // them here would describe a fleet where the park is over, which is its own
+  // alert and has its own tests below.
 });
 
 beforeEach(() => {
@@ -124,6 +127,101 @@ describe("alertOnStaleLanes (#803)", () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(5 * MIN) });
     const stale = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).not.toContain("snowflake-export");
+  });
+
+  // #1561: a detector that CANNOT conclude yet. Before cutover the availability
+  // truth probe finds no bucket offering times and the failure rate check never
+  // sees 20 attempts in an hour, so the blind page fired every 24 hours naming an
+  // action nobody could take. Parking is quiet about the blindness, loud about
+  // the park, and loud again the moment a parked detector concludes anyway.
+  describe("detectors parked because they cannot conclude yet (#1561)", () => {
+    const PARKED = "verdict:availability-truth";
+    const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
+
+    it("does not page a parked detector that has never reached a verdict", async () => {
+      // The exact production state: no stamp at all, and a first sighting old
+      // enough that an armed detector would have paged out of its grace window.
+      marker.firstSeenAt = new Date(ago(30 * 60 * MIN)).toISOString();
+
+      await alertOnStaleLanes();
+
+      expect(
+        dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(PARKED)),
+      ).toBeUndefined();
+    });
+
+    it("says which detectors are parked instead of going silent about them", async () => {
+      await alertOnStaleLanes();
+
+      const call = dispatch.sendThrottledInfo.mock.calls.find((c) => c[0] === "detector_parked");
+      expect(call).toBeDefined();
+      // The whisper has to carry what is not being watched and how the park ends,
+      // or it is the #1394 blindness one level up: a safety net off, and silence.
+      expect(String(call?.[2])).toMatch(/parked/i);
+      expect(String(call?.[2])).toMatch(/#1562/);
+      // Slow enough that it is never the thing anyone scrolls past.
+      expect(call?.[1]).toBeGreaterThanOrEqual(7 * 24 * 60 * MIN);
+    });
+
+    // The half that stops the park outliving its reason. Cutover looks exactly
+    // like this, and nobody has to remember anything for it to be noticed.
+    it("pages to arm a parked detector that has started concluding", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: ago(30 * MIN) });
+
+      await alertOnStaleLanes();
+
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === `detector_unpark:${PARKED}`,
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[2])).toMatch(/reached a verdict/i);
+      expect(String(call?.[2])).toMatch(/#1562/);
+    });
+
+    it("treats an unreadable verdict record as still parked, not as concluding", async () => {
+      // #1172: the epoch-0 sentinel is a record that could not be READ. Reading it
+      // as a verdict would arm a detector off a corrupt row.
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: 0 });
+
+      await alertOnStaleLanes();
+
+      expect(
+        dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `detector_unpark:${PARKED}`),
+      ).toBeUndefined();
+    });
+
+    it("all-clears the un-park page once the detector is armed", async () => {
+      // "Armed" means the registry entry is gone, so the lane is no longer parked;
+      // ooo-protection stands in for that state here.
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["alert_firing:detector_unpark:verdict:ooo-protection"]),
+      );
+
+      await alertOnStaleLanes();
+
+      const call = dispatch.resolveAlert.mock.calls.find(
+        (c) => c[0] === "detector_unpark:verdict:ooo-protection",
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/armed again/i);
+    });
+
+    // The park must silence exactly what it names and nothing else, or it becomes
+    // a way to switch off the whole family by accident.
+    it("still pages an armed detector that has gone blind", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "verdict:ooo-protection": ago(30 * 60 * MIN),
+      });
+
+      await alertOnStaleLanes();
+
+      expect(
+        dispatch.sendThrottledAlert.mock.calls.find(
+          (c) => c[0] === laneKey("verdict:ooo-protection"),
+        ),
+      ).toBeDefined();
+    });
   });
 
   // #1123: the two 6h checks ON the mirror were unwatched. Reconcile stamped into a
@@ -540,16 +638,18 @@ describe("alertOnStaleLanes (#803)", () => {
   // while never once comparing a real calendar (#1377).
   describe("detectors that have stopped reaching a verdict (#1394)", () => {
     const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
-    const TRUTH = "verdict:availability-truth";
+    // An ARMED detector: the parked two (#1561) are deliberately not paged for
+    // blindness, so testing that path through one of them would assert nothing.
+    const ARMED = "verdict:ooo-protection";
 
     it("pages when a detector has not concluded for longer than its own bound", async () => {
-      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [TRUTH]: ago(30 * 60 * MIN) });
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [ARMED]: ago(30 * 60 * MIN) });
       marker.firstSeenAt = null;
 
       const stale = await alertOnStaleLanes();
 
-      expect(stale.map((l) => l.lane)).toContain(TRUTH);
-      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      expect(stale.map((l) => l.lane)).toContain(ARMED);
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
       expect(call).toBeDefined();
       expect(String(call?.[2])).toMatch(/verdict/i);
       // The distinction the whole feature rests on: this lane is NOT quiet, so the
@@ -567,33 +667,33 @@ describe("alertOnStaleLanes (#803)", () => {
     // leniency for a never-stamped lane would make this feature structurally
     // unable to see the one state it exists for.
     it("pages a detector that has NEVER once concluded, after its grace window", async () => {
-      const { [TRUTH]: _never, ...rest } = healthy();
+      const { [ARMED]: _never, ...rest } = healthy();
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
       marker.firstSeenAt = new Date(ago(30 * 60 * MIN)).toISOString();
 
       const stale = await alertOnStaleLanes();
 
-      expect(stale.map((l) => l.lane)).toContain(TRUTH);
-      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      expect(stale.map((l) => l.lane)).toContain(ARMED);
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
       expect(String(call?.[2])).toMatch(/NEVER/);
       expect(String(call?.[2])).not.toMatch(/Infinity|NaN/);
     });
 
     it("gives a freshly deployed detector its grace window instead of paging on deploy", async () => {
-      const { [TRUTH]: _never, ...rest } = healthy();
+      const { [ARMED]: _never, ...rest } = healthy();
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
       marker.firstSeenAt = null;
 
       await alertOnStaleLanes();
 
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
-      expect(marker.written).toContain(`lane_never_seen:${TRUTH}`);
+      expect(marker.written).toContain(`lane_never_seen:${ARMED}`);
     });
 
     it("re-pages a blind detector daily rather than hourly", async () => {
-      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [TRUTH]: ago(30 * 60 * MIN) });
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [ARMED]: ago(30 * 60 * MIN) });
       await alertOnStaleLanes();
-      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
       // A detector stays blind until somebody changes something, and before cutover
       // that can legitimately be days. An hourly re-page trains people to ignore it.
       expect(call?.[1]).toBeGreaterThanOrEqual(24 * 60 * MIN);
@@ -602,19 +702,19 @@ describe("alertOnStaleLanes (#803)", () => {
     it("says the record is unreadable rather than quoting an age it never measured", async () => {
       // #1169 / #1172: an unparseable stamp reads as epoch 0, which is stale (fail
       // closed) but whose "age" is 56 years of arithmetic, not a measurement.
-      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [TRUTH]: 0 });
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [ARMED]: 0 });
       await alertOnStaleLanes();
-      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
       expect(String(call?.[2])).toMatch(/cannot be read/i);
       expect(String(call?.[2])).not.toMatch(/\d{4,}\s*days/);
     });
 
     it("all-clears a detector that is concluding again, in its own words", async () => {
-      dispatch.existingAlertStateKeys.mockResolvedValue(new Set([`alert_firing:${laneKey(TRUTH)}`]));
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set([`alert_firing:${laneKey(ARMED)}`]));
 
       await alertOnStaleLanes();
 
-      const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === laneKey(TRUTH));
+      const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
       expect(call).toBeDefined();
       expect(String(call?.[1])).toMatch(/verdict again|measuring/i);
       expect(String(call?.[1])).toMatch(/no action/i);
@@ -624,7 +724,7 @@ describe("alertOnStaleLanes (#803)", () => {
     // it must not announce that a detector started concluding again.
     it("all-clears nothing when the heartbeat read failed", async () => {
       heartbeat.readAllHeartbeatMs.mockRejectedValue(new Error("supabase unreachable"));
-      dispatch.existingAlertStateKeys.mockResolvedValue(new Set([`alert_firing:${laneKey(TRUTH)}`]));
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set([`alert_firing:${laneKey(ARMED)}`]));
 
       await alertOnStaleLanes();
 

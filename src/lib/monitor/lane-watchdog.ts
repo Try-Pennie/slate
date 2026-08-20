@@ -8,7 +8,10 @@ import {
   mirrorRecoveryText,
   retentionRecoveryText,
   verdictBlindAlertText,
+  verdictParkedInfoText,
   verdictRecoveryText,
+  verdictUnparkAlertText,
+  verdictUnparkRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
   findStaleLanes,
@@ -21,8 +24,10 @@ import {
   neverStampedVerdict,
   type StaleLane,
 } from "@/lib/monitor/health";
+import { detectorParkState, parkedDetector } from "@/lib/monitor/verdict-freshness";
 import {
   sendThrottledAlert,
+  sendThrottledInfo,
   resolveAlert,
   existingAlertStateKeys,
   firingKey,
@@ -47,6 +52,25 @@ const STALE_LANE_COOLDOWN_MS = 60 * 60_000;
  * nobody can clear today is how an alert trains people to ignore it (L36).
  */
 const BLIND_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/**
+ * How often the parked detectors say they are parked (#1561).
+ *
+ * Weekly, deliberately. This is a whisper about a safety net that is off ON
+ * PURPOSE, so it must never read as an incident, and the only useful response is
+ * to ask whether the reason still holds. Daily would be the noise the park was
+ * created to stop; never would be the invisibility #1394 exists to catch.
+ */
+const PARKED_DETECTOR_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * A parked detector that has started concluding stays that way until somebody
+ * edits the registry, so this repeats daily rather than every minute.
+ */
+const UNPARK_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/** Per detector, so one lane's un-park page cannot throttle away another's. */
+const unparkAlertKey = (lane: string) => `detector_unpark:${lane}`;
 
 const minutes = (ms: number) => Math.round(ms / 60_000);
 
@@ -115,6 +139,21 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   // it structurally unable to see it. Slack only, like the mirror lanes: a blind
   // detector is a missing safety net, not an outage.
   const verdictStale = findStaleLanes(heartbeats, now, VERDICT_STALE_BOUNDS_MS, true);
+  // #1561: two of those detectors cannot conclude at all before cutover, so the
+  // blind page named an action nobody could take and repeated every 24 hours.
+  // They are PARKED: quiet about being blind, loud about being parked, and loud
+  // again the moment one of them concludes anyway, which is what cutover looks
+  // like. Derived from the same heartbeat read, so it costs no extra query.
+  const parkStates = Object.entries(VERDICT_STALE_BOUNDS_MS).map(([lane, maxStaleMs]) => ({
+    lane,
+    state: detectorParkState(lane, heartbeats[lane], now, maxStaleMs),
+  }));
+  const parkedLanes = parkStates.filter((p) => p.state === "parked").map((p) => p.lane);
+  const unparkLanes = parkStates.filter((p) => p.state === "unpark").map((p) => p.lane);
+  // A parked lane is excluded from the blind page, and ONLY from that: it is
+  // still judged, still logged, and still all-cleared by the recovery pass below
+  // if it starts stamping.
+  const armedVerdictStale = verdictStale.filter((l) => !parkedDetector(l.lane));
 
   // #1134: NO early return on the all-healthy tick. There used to be one here, and
   // it would have made the recovery notice below unreachable on the single path
@@ -174,7 +213,7 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     ),
   );
 
-  await pageWithGraceWindow(verdictStale, now, "detector", (lane) =>
+  await pageWithGraceWindow(armedVerdictStale, now, "detector", (lane) =>
     sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
       BLIND_DETECTOR_COOLDOWN_MS,
@@ -182,17 +221,50 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     ),
   );
 
+  if (parkedLanes.length > 0) {
+    log.info("lane-watchdog", {
+      msg: "detectors parked, not paging on their blindness",
+      lanes: parkedLanes.join(","),
+    });
+    // alert-key: detector_parked
+    await sendThrottledInfo(
+      "detector_parked",
+      PARKED_DETECTOR_COOLDOWN_MS,
+      verdictParkedInfoText(parkedLanes),
+    ).catch((err) => {
+      log.error("lane-watchdog", { msg: "parked whisper failed" }, err);
+    });
+  }
+
+  for (const lane of unparkLanes) {
+    log.warn("lane-watchdog", { msg: "parked detector reached a verdict", lane });
+    // alert-key: detector_unpark:*
+    await sendThrottledAlert(
+      unparkAlertKey(lane),
+      UNPARK_DETECTOR_COOLDOWN_MS,
+      verdictUnparkAlertText(lane),
+    ).catch((err) => {
+      log.error("lane-watchdog", { msg: "un-park alert failed", lane }, err);
+    });
+  }
+
   await resolveRecoveredLanes(
     heartbeats,
     now,
     new Set(
-      [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...verdictStale].map(
+      [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale].map(
         (l) => l.lane,
       ),
     ),
+    // Every detector that is NOT parked settles its un-park page, so arming one
+    // (deleting its registry entry) clears the page that asked for it. Folded
+    // into the recovery pass's single alert_state read rather than adding one.
+    parkStates
+      .filter((p) => p.state === "armed")
+      .map((p) => ({ key: unparkAlertKey(p.lane), text: verdictUnparkRecoveryText(p.lane) })),
   );
 
-  return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...verdictStale];
+  return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale];
 }
 
 
@@ -290,8 +362,18 @@ async function resolveRecoveredLanes(
   heartbeats: Record<string, number | null>,
   now: number,
   staleLanes: Set<string>,
+  /**
+   * Extra keys to settle in the SAME read (#1561): conditions whose end is not a
+   * heartbeat coming back but a person changing something, so nothing above can
+   * derive them. Folded in here because the alternative is a second
+   * `alert_state` read every minute on the budget four cron lanes share.
+   */
+  alsoSettle: { key: string; text: string }[] = [],
 ): Promise<void> {
   const recovered: { key: string; lane: string; text: string; graceWindow: boolean }[] = [];
+  for (const s of alsoSettle) {
+    recovered.push({ key: s.key, lane: s.key, text: s.text, graceWindow: false });
+  }
   for (const { bounds, recovery, graceWindow } of LANE_FAMILIES) {
     for (const [lane, maxStaleMs] of Object.entries(bounds)) {
       if (staleLanes.has(lane)) continue;
@@ -333,6 +415,7 @@ async function resolveRecoveredLanes(
     }
     if (!present.has(firingKey(r.key))) continue;
     // alert-key: cron_lane_stale:*
+    // alert-key: detector_unpark:*
     const sent = await resolveAlert(r.key, r.text).catch((err) => {
       // One lane's failed notice must not skip the rest, and the firing marker
       // survives, so the next tick retries.
