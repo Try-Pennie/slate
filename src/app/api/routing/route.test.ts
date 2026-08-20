@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ROUTING_LIMITER } from "@/lib/rate-limit-core";
 
 // HTTP-level wiring for the routing-preview endpoint (#596/#961). The per-minute
 // burst window runs at the Cloudflare edge (routingWithinLimit) with no DB
@@ -8,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const rateLimit = vi.hoisted(() => ({
   routingWithinLimit: vi.fn(async (_ip: string) => true),
-  allowRequest: vi.fn(async (_key: string, _rules: unknown) => true),
+  allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   clientIp: (headers: Headers) =>
     headers.get("cf-connecting-ip")?.trim() ??
     headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
@@ -61,7 +62,9 @@ describe("POST /api/routing (#596/#961)", () => {
     // Both throttles keyed on the same client IP.
     expect(rateLimit.routingWithinLimit).toHaveBeenCalledWith("203.0.113.7");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      "203.0.113.7",
+      // #1557: the descriptor carries the routing lookup's own answer for a caller with no
+      // address, which is to serve them rather than count them into a shared bucket.
+      { kind: "address", ip: "203.0.113.7", policy: ROUTING_LIMITER },
       rateLimit.ROUTING_HOURLY_RATE_RULES,
     );
   });

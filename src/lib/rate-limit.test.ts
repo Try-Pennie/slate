@@ -49,6 +49,8 @@ import {
   AVAILABILITY_LIMITER,
   BOOKING_LIMITER,
   BOOKING_API_WRITE_LIMITER,
+  BOOKING_API_IP_LIMITER,
+  CLIENT_ERROR_ADDRESS_POLICY,
   EDGE_LIMITERS,
 } from "@/lib/rate-limit-core";
 
@@ -56,6 +58,10 @@ const RULES: RateLimitRule[] = [
   { prefix: "test:m", windowSeconds: 60, max: 5 },
   { prefix: "test:h", windowSeconds: 3600, max: 50 },
 ];
+
+/** An identified caller: the ordinary case every test below is about. The
+ *  unidentified one has its own describe block (#1557). */
+const ADDRESS = { kind: "address", ip: "1.2.3.4", policy: BOOKING_LIMITER } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -65,12 +71,12 @@ beforeEach(() => {
 
 describe("allowRequest (#597)", () => {
   it("allows a request under the limit", async () => {
-    await expect(allowRequest("1.2.3.4", RULES)).resolves.toBe(true);
+    await expect(allowRequest(ADDRESS, RULES)).resolves.toBe(true);
   });
 
   it("blocks when a rule is exceeded", async () => {
     rpc.mockResolvedValueOnce({ data: false, error: null });
-    await expect(allowRequest("1.2.3.4", RULES)).resolves.toBe(false);
+    await expect(allowRequest(ADDRESS, RULES)).resolves.toBe(false);
   });
 
   // The failure path. Before this, a broken limiter was indistinguishable from a
@@ -79,7 +85,7 @@ describe("allowRequest (#597)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "relation does not exist" } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const allowed = await allowRequest("1.2.3.4", RULES);
+    const allowed = await allowRequest(ADDRESS, RULES);
 
     // Still fails open: a limiter outage must not block real bookings.
     expect(allowed).toBe(true);
@@ -103,7 +109,7 @@ describe("allowRequest (#597)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
-    await expect(allowRequest("1.2.3.4", RULES)).resolves.toBe(true);
+    await expect(allowRequest(ADDRESS, RULES)).resolves.toBe(true);
   });
 });
 
@@ -120,11 +126,17 @@ describe("alert on block (#796)", () => {
     { prefix: "bookapi:ip:m", windowSeconds: 60, max: 60, alertOnBlock: true },
   ];
   const QUIET: RateLimitRule[] = [{ prefix: "book:m", windowSeconds: 60, max: 3 }];
+  const LOUD_CALLER = {
+    kind: "address",
+    ip: "203.0.113.9",
+    keyPrefix: "ip:",
+    policy: BOOKING_API_IP_LIMITER,
+  } as const;
 
   it("alerts when a rule marked alertOnBlock actually blocks", async () => {
     rpc.mockResolvedValue({ data: false, error: null });
 
-    await expect(allowRequest("203.0.113.9", LOUD)).resolves.toBe(false);
+    await expect(allowRequest(LOUD_CALLER, LOUD)).resolves.toBe(false);
 
     expect(sendThrottledAlert).toHaveBeenCalled();
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
@@ -135,7 +147,7 @@ describe("alert on block (#796)", () => {
   it("stays SILENT when an ordinary rule blocks (a throttled visitor is not an incident)", async () => {
     rpc.mockResolvedValue({ data: false, error: null });
 
-    await expect(allowRequest("203.0.113.9", QUIET)).resolves.toBe(false);
+    await expect(allowRequest(LOUD_CALLER, QUIET)).resolves.toBe(false);
 
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
@@ -144,7 +156,67 @@ describe("alert on block (#796)", () => {
     rpc.mockResolvedValue({ data: false, error: null });
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
-    await expect(allowRequest("203.0.113.9", LOUD)).resolves.toBe(false);
+    await expect(allowRequest(LOUD_CALLER, LOUD)).resolves.toBe(false);
+  });
+});
+
+// #1557: a caller we cannot identify. `clientIp` falls back to a literal when no address
+// header is present, and that value is a SHARED bucket: counting every such request against
+// one counter turns a per address ceiling into a global one, and the first thing a
+// global-by-accident ceiling refuses is a real lead. The answer is per limit, because
+// refusing is right for the client error beacon and wrong for the booking confirm.
+describe("a caller with no address (#1557)", () => {
+  const RULES3: RateLimitRule[] = [{ prefix: "book:h", windowSeconds: 3600, max: 10 }];
+  const unidentified = (policy: typeof BOOKING_LIMITER | typeof CLIENT_ERROR_ADDRESS_POLICY) =>
+    ({ kind: "address", ip: UNIDENTIFIED_IP, policy }) as const;
+
+  it("never counts one into the shared bucket, whichever way the limit answers", async () => {
+    await allowRequest(unidentified(BOOKING_LIMITER), RULES3);
+    await allowRequest(unidentified(CLIENT_ERROR_ADDRESS_POLICY), RULES3);
+    // The defect IS the counting. Neither answer may touch a counter, or the ceiling is
+    // still global for every caller we could not read.
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("serves one on the booking confirm, because refusing one refuses a customer", async () => {
+    await expect(allowRequest(unidentified(BOOKING_LIMITER), RULES3)).resolves.toBe(true);
+  });
+
+  it("refuses one on the client error beacon, which fails closed", async () => {
+    await expect(allowRequest(unidentified(CLIENT_ERROR_ADDRESS_POLICY), RULES3)).resolves.toBe(
+      false,
+    );
+  });
+
+  // Behind Cloudflare this cannot happen, so it is news either way: a ceiling that has
+  // quietly stopped applying looks exactly like a ceiling nobody is hitting.
+  it("reports it rather than handling it in silence", async () => {
+    await allowRequest(unidentified(BOOKING_LIMITER), RULES3);
+    const call = sendThrottledAlert.mock.calls.find((c) =>
+      String(c[0]).startsWith("rate_limit_unidentified:"),
+    );
+    expect(call).toBeDefined();
+    expect(String(call?.[2])).toMatch(/no client address/i);
+  });
+
+  it("gives nothing back on a refund, because nothing was ever counted", async () => {
+    await refundRequest(unidentified(BOOKING_LIMITER), RULES3);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  // An API key id came out of authentication, so the address rule must not reach it: an
+  // integrator who happened to name a key with the fallback value would otherwise be the
+  // one caller never counted at all.
+  it("still counts an opaque key that merely looks like the fallback", async () => {
+    await expect(
+      allowRequest({ kind: "opaque", key: `key:${UNIDENTIFIED_IP}` }, RULES3),
+    ).resolves.toBe(true);
+    expect(rpc).toHaveBeenCalled();
+  });
+
+  it("does not consult the edge limiter for one either", async () => {
+    await expect(bookingWithinLimit(UNIDENTIFIED_IP)).resolves.toBe(true);
+    expect(limit).not.toHaveBeenCalled();
   });
 });
 
@@ -159,7 +231,7 @@ describe("refundRequest (#796)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "refund fn missing" } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await refundRequest("1.2.3.4", RULES2);
+    await refundRequest(ADDRESS, RULES2);
 
     expect(sendThrottledAlert).toHaveBeenCalled();
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
@@ -173,7 +245,7 @@ describe("refundRequest (#796)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
-    await expect(refundRequest("1.2.3.4", RULES2)).resolves.toBeUndefined();
+    await expect(refundRequest(ADDRESS, RULES2)).resolves.toBeUndefined();
   });
 });
 

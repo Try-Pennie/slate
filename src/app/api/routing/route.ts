@@ -6,6 +6,7 @@ import {
   routingWithinLimit,
   ROUTING_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit";
+import { ROUTING_LIMITER } from "@/lib/rate-limit-core";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
   const ip = clientIp(req.headers);
   if (
     !(await routingWithinLimit(ip)) ||
-    !(await allowRequest(ip, ROUTING_HOURLY_RATE_RULES))
+    !(await allowRequest({ kind: "address", ip, policy: ROUTING_LIMITER }, ROUTING_HOURLY_RATE_RULES))
   ) {
     return NextResponse.json(
       { error: "Too many requests. Please try again in a moment." },

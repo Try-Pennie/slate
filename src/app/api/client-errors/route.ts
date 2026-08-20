@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { reportInternalError } from "@/lib/api/errors";
 import { allowRequest, clientIp, CLIENT_ERROR_RATE_RULES } from "@/lib/rate-limit";
+import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 import {
   normalizeClientError,
   clientErrorSignature,
@@ -44,9 +45,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // Fail CLOSED: a limiter that cannot vouch for this caller means the report is
   // dropped, not forwarded. Everything below this line can cause a Slack message.
-  const allowed = await allowRequest(clientIp(req.headers), CLIENT_ERROR_RATE_RULES).catch(
-    () => false,
-  );
+  // #1557: and fails closed on a caller it cannot IDENTIFY for the same reason. The policy
+  // says so once, next to the ceiling, rather than being re-decided here.
+  const allowed = await allowRequest(
+    { kind: "address", ip: clientIp(req.headers), policy: CLIENT_ERROR_ADDRESS_POLICY },
+    CLIENT_ERROR_RATE_RULES,
+  ).catch(() => false);
   if (!allowed) return done();
 
   const body = await req.json().catch(() => null);

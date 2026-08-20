@@ -104,6 +104,9 @@ import {
   friendlyRateArea,
   limiterBlockedAlert,
   limiterFailOpenAlert,
+  unidentifiedCallerAlert,
+  BOOKING_LIMITER,
+  CLIENT_ERROR_ADDRESS_POLICY,
   refundFailedAlert,
 } from "@/lib/rate-limit-core";
 import { evaluateRecon } from "@/lib/snowflake/reconcile-core";
@@ -1731,6 +1734,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: limiterBlockedAlert(friendlyRateArea("book"), "203.0.113.9", 30, 60) },
   { key: "rate_limit_broken:*", state: "the limiter failed open", channel: "alert",
     text: limiterFailOpenAlert(friendlyRateArea("bookapi")) },
+  // #1557: the two answers a ceiling can give a caller it cannot identify. They read
+  // differently on purpose: the reader has to know whether anything was turned away.
+  { key: "rate_limit_unidentified:*", state: "a ceiling that served the request anyway",
+    channel: "alert", text: unidentifiedCallerAlert(BOOKING_LIMITER) },
+  { key: "rate_limit_unidentified:*", state: "a ceiling that refused the request",
+    channel: "alert", text: unidentifiedCallerAlert(CLIENT_ERROR_ADDRESS_POLICY) },
   { key: "rate_limit_refund_broken:*", state: "a refund of a counted hit failed", channel: "alert",
     text: refundFailedAlert(friendlyRateArea("book")) },
 

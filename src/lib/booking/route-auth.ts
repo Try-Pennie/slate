@@ -16,6 +16,7 @@ import {
   bookingApiReadWithinLimit,
   bookingApiIpWithinLimit,
 } from "@/lib/rate-limit";
+import { BOOKING_API_IP_LIMITER } from "@/lib/rate-limit-core";
 import {
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
@@ -94,7 +95,7 @@ export async function authorizeBookingApi(
   const keyEdgeOk = readPath
     ? await bookingApiReadWithinLimit(auth.keyId)
     : await bookingApiWriteWithinLimit(auth.keyId);
-  if (!keyEdgeOk || !(await allowRequest(`key:${auth.keyId}`, hourlyKeyRules))) {
+  if (!keyEdgeOk || !(await allowRequest({ kind: "opaque", key: `key:${auth.keyId}` }, hourlyKeyRules))) {
     return refuse("throttled_key", keyBudget, 429, readPath, auth.keyId);
   }
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
@@ -102,7 +103,12 @@ export async function authorizeBookingApi(
   // cannot spend the whole budget from a single host. Per-minute at the edge, hourly in DB.
   if (hourlyIpRules) {
     const ip = clientIp(req.headers);
-    if (!(await bookingApiIpWithinLimit(ip)) || !(await allowRequest(`ip:${ip}`, hourlyIpRules))) {
+    if (!(await bookingApiIpWithinLimit(ip)) || !(await allowRequest(
+        // #1557: an address we cannot read declines to judge here, and the per KEY ceiling
+        // above (an id that came from authentication) still bounds the caller.
+        { kind: "address", ip, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },
+        hourlyIpRules,
+      ))) {
       return refuse(
         "throttled_ip",
         "Rate limit exceeded for this client.",
