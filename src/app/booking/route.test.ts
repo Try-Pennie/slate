@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+// The pure half, deliberately NOT mocked: the route's key shape is what these assert on.
+import { rateLimitKey, type CallerKey } from "@/lib/rate-limit-core";
 
 // Error mapping for the public embed booking route. Focus of #358: an
 // empty/misconfigured bucket now throws NoEligibleAgentsError (was
@@ -37,8 +39,8 @@ const service = vi.hoisted(() => {
   };
 });
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async (_key: string, _rules?: unknown) => true),
-  refundRequest: vi.fn(async (_key: string, _rules?: unknown) => {}),
+  allowRequest: vi.fn(async (_caller: unknown, _rules?: unknown) => true),
+  refundRequest: vi.fn(async (_caller: unknown, _rules?: unknown) => {}),
   bookingWithinLimit: vi.fn(async () => true),
   clientIp: () => "203.0.113.1",
   BOOKING_HOURLY_RATE_RULES: [{ prefix: "book:h", windowSeconds: 3600, max: 10 }],
@@ -144,7 +146,7 @@ describe("POST /booking (embed) error mapping", () => {
     // 1 IP-cap refund + 1 per email + 1 per phone: a server outage must not burn
     // the lead's contact budget any more than it burns their IP budget.
     expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
-    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => c[0]);
+    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => rateLimitKey(c[0] as CallerKey));
     expect(keysRefunded).toContain("203.0.113.1");
     expect(keysRefunded).toContain("email:dana@example.com");
     expect(keysRefunded).toContain("phone:2155550100");
@@ -157,7 +159,7 @@ describe("POST /booking (embed) error mapping", () => {
     // Same refund set as the 503 verify-outage path: a slot grabbed by someone
     // else a moment earlier must not burn a real lead's IP or contact budget.
     expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
-    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => c[0]);
+    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => rateLimitKey(c[0] as CallerKey));
     expect(keysRefunded).toContain("203.0.113.1");
     expect(keysRefunded).toContain("email:dana@example.com");
     expect(keysRefunded).toContain("phone:2155550100");
@@ -199,7 +201,9 @@ describe("POST /booking (embed) error mapping", () => {
   it("returns 429 when the per-contact cap blocks, after the IP cap and without creating a booking (#1033)", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     // IP key (a bare ip) passes; the per-contact email key is over its cap.
-    rateLimit.allowRequest.mockImplementation(async (key: string) => !key.startsWith("email:"));
+    rateLimit.allowRequest.mockImplementation(
+      async (caller: unknown) => !rateLimitKey(caller as CallerKey).startsWith("email:"),
+    );
     const res = await post(VALID_BODY);
     expect(res.status).toBe(429);
     expect(service.createBooking).not.toHaveBeenCalled();
@@ -214,7 +218,7 @@ describe("POST /booking (embed) error mapping", () => {
       manageUrl: "https://slate.test/booking/manage/tok",
     });
     await post(VALID_BODY);
-    const keysChecked = rateLimit.allowRequest.mock.calls.map((c) => c[0]);
+    const keysChecked = rateLimit.allowRequest.mock.calls.map((c) => rateLimitKey(c[0] as CallerKey));
     expect(keysChecked).toContain("203.0.113.1"); // per-IP
     expect(keysChecked).toContain("email:dana@example.com"); // per-contact email
     expect(keysChecked).toContain("phone:2155550100"); // per-contact phone

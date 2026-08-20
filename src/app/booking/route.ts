@@ -26,6 +26,10 @@ import {
   BOOKING_HOURLY_RATE_RULES,
   BOOKING_CONTACT_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit";
+// The policy half is pure data with no Cloudflare imports, and is imported from the core
+// module rather than through the limiter so a route test that mocks the limiter still sees
+// the REAL decision (#1557).
+import { BOOKING_LIMITER, type CallerKey } from "@/lib/rate-limit-core";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
@@ -61,6 +65,10 @@ function rawBucketCode(raw: unknown): string {
 
 export async function POST(req: NextRequest) {
   const ip = clientIp(req.headers);
+  // #1557: the address ceilings on this endpoint SERVE a caller they cannot identify rather
+  // than counting them into one shared bucket. Refusing one refuses a customer at the last
+  // step of the funnel; the per contact cap below needs no address and still bounds abuse.
+  const bookingCaller: CallerKey = { kind: "address", ip, policy: BOOKING_LIMITER };
   // Light monitoring (#962): the edge per-minute window has no refund path, so a
   // transient server outage (503) still consumes one of the lead's 3/min (the
   // hourly DB cap is refunded on an outage; see the catch below). A block is
@@ -89,7 +97,7 @@ export async function POST(req: NextRequest) {
   if (!(await bookingWithinLimit(ip))) return tooMany("edge-minute");
   // Strict hourly anti-spam cap stays in the DB (a 1-hour window the native
   // binding can't express).
-  if (!(await allowRequest(ip, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
+  if (!(await allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
 
   const raw = await req.json().catch(() => null);
 
@@ -147,7 +155,8 @@ export async function POST(req: NextRequest) {
     phone: parsed.data.attendee.phone,
   });
   for (const key of contactKeys) {
-    if (!(await allowRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES))) return tooMany("contact");
+    if (!(await allowRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES)))
+      return tooMany("contact");
   }
 
   // Give back the IP cap AND the per-contact caps for a failure that ISN'T the
@@ -155,9 +164,9 @@ export async function POST(req: NextRequest) {
   // booking budget. The edge per-minute window has no refund path, but it's a
   // short burst that clears within a minute.
   const refundAll = async () => {
-    await refundRequest(ip, BOOKING_HOURLY_RATE_RULES);
+    await refundRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES);
     for (const key of contactKeys) {
-      await refundRequest(key, BOOKING_CONTACT_HOURLY_RATE_RULES);
+      await refundRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES);
     }
   };
 

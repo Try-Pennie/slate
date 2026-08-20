@@ -14,7 +14,7 @@ const env = vi.hoisted(() => ({
   bookingApiKeySecondary: vi.fn(() => ""),
 }));
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async (_key: string, _rules: unknown) => true),
+  allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),

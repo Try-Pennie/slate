@@ -6,7 +6,12 @@ import { log } from "@/lib/log";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import { BurstTracker, BURST_LIMITER_BINDING, burstKey } from "@/lib/rate-limit-burst";
 import {
-  UNIDENTIFIED_IP,
+  judgeCaller,
+  rateLimitKey,
+  callerPolicy,
+  unidentifiedCallerAlert,
+  type AddressLimitPolicy,
+  type CallerKey,
   AVAILABILITY_LIMITER,
   BOOKING_LIMITER,
   ROUTING_LIMITER,
@@ -117,22 +122,9 @@ async function withinBurstCeiling(
   spec: EdgeLimiterSpec,
 ): Promise<boolean> {
   const area = `${spec.area}-burst`;
-  // An address we could not identify is a SHARED bucket, not an address (L75). Counting every
-  // such request against one counter would turn a per-address ceiling into a global one, and the
-  // first thing it would refuse is real leads. Behind Cloudflare `cf-connecting-ip` is always
-  // set, so reaching here at all is itself news: it is reported rather than silently allowed,
-  // because requests arriving without it means something is in front of us that should not be.
-  //
-  // Only for a limiter keyed on an ADDRESS. A per-key limiter's key is an API key id that came
-  // from auth, so the fallback is not a value it can ever hold, and applying an address rule to
-  // it would mean an integrator who happened to name a key "unknown" was never counted at all.
-  if (spec.keyKind === "ip" && key === UNIDENTIFIED_IP) {
-    await alertEdgeLimiterDown(
-      { area: `${area}-unidentified`, friendly: spec.friendly },
-      "a request arrived with no client address, so the burst ceiling cannot be applied to it",
-    );
-    return true;
-  }
+  // The unidentified caller is decided once, in `edgeWithinLimit`, before either counter is
+  // touched (#1557). It used to be decided here, which spared this ceiling and left the fast
+  // one counting every such request into one shared bucket.
   const ns = env[BURST_LIMITER_BINDING] as DurableObjectishNamespace | undefined;
   if (!ns) {
     // Same reading as a missing rate-limit binding: wrangler.jsonc always binds it, so
@@ -237,6 +229,17 @@ interface EdgeLimiter {
  * the machine-to-machine backstops where a block is itself a signal.
  */
 async function edgeWithinLimit(key: string, spec: EdgeLimiterSpec): Promise<boolean> {
+  // #1557: decided BEFORE either counter, not inside one of them. An address we could not
+  // identify is a shared bucket, so counting it at all is the defect; a check that ran the
+  // fast counter first and only spared the burst one would still have turned the per address
+  // ceiling into a global one for every isolate in the datacenter.
+  if (spec.keyKind === "ip") {
+    const verdict = judgeCaller(spec, key);
+    if (verdict !== "identified") {
+      await reportUnidentifiedCaller(spec);
+      return verdict === "serve-unjudged";
+    }
+  }
   let env: Record<string, unknown>;
   try {
     env = getCloudflareContext().env as unknown as Record<string, unknown>;
@@ -369,13 +372,24 @@ const LIMITER_BROKEN_COOLDOWN_MS = 30 * 60_000;
 
 /** True when the request is allowed under every rule. */
 export async function allowRequest(
-  ip: string,
+  caller: CallerKey,
   rules: RateLimitRule[],
 ): Promise<boolean> {
+  // #1557: an address we could not identify is a shared bucket, so the decision is made at the
+  // KEY, before any rule counts anything. Which way it goes is the limit's own stated answer,
+  // never a default applied here: refusing an unidentifiable caller is right for the client
+  // error beacon and wrong for the booking confirm.
+  const verdict = judgeCaller(callerPolicy(caller), rateLimitKey(caller));
+  if (verdict !== "identified") {
+    const policy = callerPolicy(caller);
+    if (policy) await reportUnidentifiedCaller(policy);
+    return verdict === "serve-unjudged";
+  }
+  const key = rateLimitKey(caller);
   const db = supabaseAdmin();
   for (const rule of rules) {
     const { data, error } = await db.rpc("rate_limit_hit", {
-      p_key: `${rule.prefix}:${ip}`,
+      p_key: `${rule.prefix}:${key}`,
       p_window_seconds: rule.windowSeconds,
       p_max: rule.max,
     });
@@ -405,7 +419,7 @@ export async function allowRequest(
       if (rule.alertOnBlock) {
         await alertBestEffort(
           `rate_limit_blocked:${rule.prefix}`,
-          limiterBlockedAlert(friendlyRateArea(rule.prefix), ip, rule.max, rule.windowSeconds),
+          limiterBlockedAlert(friendlyRateArea(rule.prefix), key, rule.max, rule.windowSeconds),
           rule.prefix,
         );
       }
@@ -413,6 +427,25 @@ export async function allowRequest(
     }
   }
   return true;
+}
+
+/**
+ * Say that a request arrived with no client address, once per limit per cooldown (#1557).
+ *
+ * Reported rather than silently handled: behind Cloudflare this cannot happen, so it means
+ * something is in front of us that should not be, and a ceiling that has quietly stopped
+ * applying looks exactly like a ceiling nobody is hitting. Best effort like every other alert
+ * on these paths, because a monitoring failure must never become a booking failure.
+ */
+async function reportUnidentifiedCaller(policy: AddressLimitPolicy): Promise<void> {
+  // alert-key: rate_limit_unidentified:*
+  await sendThrottledAlert(
+    `rate_limit_unidentified:${policy.area}`,
+    LIMITER_BROKEN_COOLDOWN_MS,
+    unidentifiedCallerAlert(policy),
+  ).catch((err) => {
+    log.error("rate-limit", { msg: "unidentified-caller report failed", area: policy.area }, err);
+  });
 }
 
 /** Alert without ever letting the alert's own failure escape. The alert writes to
@@ -438,13 +471,18 @@ async function alertBestEffort(key: string, text: string, label: string): Promis
  * failed refund must not turn a server fault into a second failure for the same customer.
  */
 export async function refundRequest(
-  ip: string,
+  caller: CallerKey,
   rules: RateLimitRule[],
 ): Promise<void> {
+  // Nothing was counted for a caller we declined to judge, so there is nothing to give back,
+  // and issuing the refund anyway would credit the shared bucket this whole rule exists to
+  // keep empty.
+  if (judgeCaller(callerPolicy(caller), rateLimitKey(caller)) !== "identified") return;
+  const key = rateLimitKey(caller);
   const db = supabaseAdmin();
   for (const rule of rules) {
     const { error } = await db.rpc("rate_limit_refund", {
-      p_key: `${rule.prefix}:${ip}`,
+      p_key: `${rule.prefix}:${key}`,
     });
     if (error) {
       log.error("rate-limit", { msg: "rate_limit_refund failed", rule: rule.prefix }, error);

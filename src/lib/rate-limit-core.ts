@@ -261,7 +261,7 @@ export function refundFailedAlert(area: string): string {
  * It lives in this file rather than beside the limiter calls because this half has no
  * Cloudflare imports, so a node test can read it without pulling the runtime in behind it.
  */
-export interface EdgeLimiterSpec {
+interface EdgeLimiterBase {
   /** The binding name in `wrangler.jsonc`, and the key the Worker env is looked up by. */
   binding: string;
   /**
@@ -272,12 +272,6 @@ export interface EdgeLimiterSpec {
   area: string;
   /** Plain-language area name for the human-facing Slack alert. Never a binding name. */
   friendly: string;
-  /**
-   * What the key IS. A per-key limiter is keyed on an API key id that came from auth, which
-   * can never be the unidentified-address fallback, so an address rule must not be applied
-   * to it (#1557 turns on this distinction).
-   */
-  keyKind: "ip" | "api-key";
   /** The sustained ceiling `wrangler.jsonc` configures, per minute, per datacenter. */
   perMinute: number;
   /**
@@ -301,12 +295,132 @@ export interface EdgeLimiterSpec {
   alertOnBlock?: boolean;
 }
 
+/**
+ * What a ceiling does when it cannot tell WHO is calling (#1557).
+ *
+ * `clientIp` returns `UNIDENTIFIED_IP` when no address header is present, and that value is a
+ * SHARED BUCKET rather than an address: every limit keyed on it counts unrelated callers
+ * against one counter, so a per-address ceiling silently becomes a global one, and the first
+ * thing a global-by-accident ceiling refuses is a real lead (L75).
+ *
+ *  - `serve`  do not judge this request at all. No counter is touched, so nothing else is
+ *             refused on its account. Correct wherever a refusal costs a customer, and only
+ *             honest when something ELSE still bounds the caller, which is why the reason
+ *             below has to name what that is.
+ *  - `refuse` turn it away. Correct where the request is cheap to lose and expensive to
+ *             serve unmetered.
+ *
+ * There is no third answer that counts them together: that IS the defect.
+ */
+export type UnidentifiedCallerPolicy = "serve" | "refuse";
+
+/**
+ * One ceiling keyed on the caller's ADDRESS, and its answer for a caller it cannot identify.
+ *
+ * Every `keyKind: "ip"` edge limiter satisfies this, and the limits that live only in the
+ * database (the client error beacon) declare one directly, so the decision is stated once per
+ * ceiling in the same shape wherever the ceiling is enforced.
+ */
+export interface AddressLimitPolicy {
+  /** Token-safe id; keys the report throttle. */
+  area: string;
+  /** Plain-language name for the human facing Slack line. Never a binding name. */
+  friendly: string;
+  onUnidentified: UnidentifiedCallerPolicy;
+  /** Why that is the right answer HERE, and what still bounds the caller. */
+  unidentifiedWhy: string;
+}
+
+/**
+ * A limiter's key, and whether an address rule applies to it (#1557).
+ *
+ * An `opaque` key came out of authentication (an API key id, a contact hash), so it can never
+ * be the address fallback and the address rule must not be applied to it: an integrator who
+ * happened to name a key "unknown" would otherwise be the one caller never counted at all.
+ */
+export type CallerKey =
+  | { kind: "address"; ip: string; policy: AddressLimitPolicy; keyPrefix?: string }
+  | { kind: "opaque"; key: string };
+
+/**
+ * What an edge limiter is keyed on. `ip` limiters must state their answer for a caller they
+ * cannot identify; `api-key` ones cannot meet that case at all (see `CallerKey`).
+ */
+export type EdgeLimiterSpec =
+  | (EdgeLimiterBase & { keyKind: "ip" } & AddressLimitPolicy)
+  | (EdgeLimiterBase & { keyKind: "api-key" });
+
+/**
+ * How to treat this caller: judge them normally, serve them without judging, or refuse.
+ *
+ * PURE, and the only place the fallback value is compared against anything. `policy` is null
+ * for an opaque key, which is always `identified`.
+ */
+export type CallerVerdict = "identified" | "serve-unjudged" | "refuse";
+
+export function judgeCaller(policy: AddressLimitPolicy | null, key: string): CallerVerdict {
+  if (!policy) return "identified";
+  if (key !== UNIDENTIFIED_IP) return "identified";
+  return policy.onUnidentified === "serve" ? "serve-unjudged" : "refuse";
+}
+
+/** The string a caller descriptor counts under. Never reached for an unjudged caller. */
+export function rateLimitKey(caller: CallerKey): string {
+  return caller.kind === "opaque" ? caller.key : `${caller.keyPrefix ?? ""}${caller.ip}`;
+}
+
+/** The address policy a caller descriptor carries, or null for an opaque key. */
+export function callerPolicy(caller: CallerKey): AddressLimitPolicy | null {
+  return caller.kind === "address" ? caller.policy : null;
+}
+
+/**
+ * The client error beacon's ceiling (#1368), which lives only in the database and so has no
+ * edge limiter to hang its answer off.
+ */
+export const CLIENT_ERROR_ADDRESS_POLICY: AddressLimitPolicy = {
+  area: "client-error",
+  friendly: "client error reports",
+  onUnidentified: "refuse",
+  unidentifiedWhy:
+    "dropping one report costs a log line, while an unmetered public path to Slack costs the pager, so this limit fails closed on a caller it cannot identify exactly as it already fails closed on a limiter it cannot reach",
+};
+
+/**
+ * The Slack line for a request that arrived with no client address (#1557).
+ *
+ * Behind Cloudflare `cf-connecting-ip` is always set, so reaching this at all means something
+ * is in front of us that should not be. It is reported rather than quietly handled, because a
+ * ceiling that has stopped applying looks exactly like a ceiling nobody is hitting.
+ *
+ * The two policies say different things on purpose: the reader has to know whether anything
+ * was actually turned away.
+ */
+export function unidentifiedCallerAlert(policy: AddressLimitPolicy): string {
+  const opener =
+    `A request reached ${policy.friendly} with no client address, which should not be ` +
+    `possible behind Cloudflare, so something may be in front of us that should not be. `;
+  if (policy.onUnidentified === "refuse") {
+    return (
+      `${opener}It was refused, because ${policy.unidentifiedWhy}. If this repeats, real ` +
+      `reports are being lost: check what is terminating requests before the app.`
+    );
+  }
+  return (
+    `${opener}Its ceiling was not applied to it, because ${policy.unidentifiedWhy}. Nothing ` +
+    `was refused. If this repeats, check what is terminating requests before the app.`
+  );
+}
+
 /** Availability (#56). The one endpoint anybody on the internet can reach unauthenticated. */
 export const AVAILABILITY_LIMITER = {
   binding: "AVAIL_RATE_LIMITER",
   area: "availability",
   friendly: "booking availability",
   keyKind: "ip",
+  onUnidentified: "serve",
+  unidentifiedWhy:
+    "this is a cached read that sits in front of a lead choosing a time, and the slot payload is public data that is cheap to serve; the burst ceiling behind it is per key too, so the compensating bound is that nothing here creates or sends anything",
   perMinute: 30,
   burstCeilingPerMinute: 300,
 } as const satisfies EdgeLimiterSpec;
@@ -327,6 +441,9 @@ export const BOOKING_LIMITER = {
   area: "booking",
   friendly: "public booking",
   keyKind: "ip",
+  onUnidentified: "serve",
+  unidentifiedWhy:
+    "refusing a caller we cannot identify refuses a customer at the last step of the funnel, and the per contact hourly cap still bounds this endpoint without needing an address at all",
   perMinute: 3,
   burstCeilingPerMinute: 30,
 } as const satisfies EdgeLimiterSpec;
@@ -337,6 +454,9 @@ export const ROUTING_LIMITER = {
   area: "routing",
   friendly: "routing lookup",
   keyKind: "ip",
+  onUnidentified: "serve",
+  unidentifiedWhy:
+    "this resolves the bucket a landing page books into, so a refusal here stops a lead before the booker ever loads, and the work behind it is one cached database resolve rather than anything that writes",
   perMinute: 20,
   burstCeilingPerMinute: 200,
 } as const satisfies EdgeLimiterSpec;
@@ -358,6 +478,9 @@ export const BOOKING_API_IP_LIMITER = {
   area: "booking-api-ip",
   friendly: "booking API",
   keyKind: "ip",
+  onUnidentified: "serve",
+  unidentifiedWhy:
+    "this is a backstop UNDER the per key ceiling, and that ceiling is keyed on an id that came from authentication, so an integrator whose address we cannot read is still bounded by their key's own budget",
   perMinute: 60,
   burstCeilingPerMinute: 600,
   alertOnBlock: true,

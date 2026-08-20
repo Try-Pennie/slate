@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 
 // The client error beacon endpoint (#1368).
 //
@@ -115,6 +116,10 @@ describe("POST /api/client-errors", () => {
 
   it("counts the request against the limiter before doing any work", async () => {
     await post(REPORT);
-    expect(allowRequest).toHaveBeenCalledWith("1.2.3.4", expect.any(Array));
+    expect(allowRequest).toHaveBeenCalledWith(
+      // #1557: the beacon fails closed on a caller it cannot identify, and says so at the key.
+      { kind: "address", ip: "1.2.3.4", policy: CLIENT_ERROR_ADDRESS_POLICY },
+      expect.any(Array),
+    );
   });
 });

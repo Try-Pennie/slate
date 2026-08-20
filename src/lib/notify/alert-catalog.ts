@@ -395,6 +395,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A caller was throttled in one window; windows expire on their own and carry no state to clear.",
   },
   {
+    key: "rate_limit_unidentified:*",
+    kind: "incident",
+    why:
+      "One request arrived with no client address, so a ceiling either did not apply to it or turned it away. It names requests already handled; there is no healthy state to observe, because a limiter reading addresses normally calls nothing. If it becomes an ongoing state, it belongs in its own key rather than folded in here.",
+  },
+  {
     key: "rate_limit_broken:*",
     kind: "incident",
     // Still an incident, and #1529 asked whether it should be a condition. It should not,
