@@ -7,6 +7,7 @@ import { DateTime } from "luxon";
 import {
   bookableSlotReason,
   isUnderDailyCap,
+  isOrgOpen,
   isWithinWorkingHours,
   type BusinessHoursRules,
   type SlotRules,
@@ -2476,7 +2477,9 @@ export async function checkBookable(
   const businessHours = await deps.businessHours();
   const startMs = Date.parse(input.startIso);
   const endMs = startMs + resolved.eventType.duration_min * 60_000;
-  if (!isWithinWorkingHours(businessHours.rules, businessHours.zone, startMs, endMs)) {
+  // #1363: through the org's own judge, so a date exception shuts this path too.
+  // The weekly rules alone would keep accepting a booking on a holiday.
+  if (!isOrgOpen(businessHours, startMs, endMs)) {
     return notBookable("closed");
   }
 
@@ -2988,7 +2991,7 @@ async function applyReschedule(
       // closed hour reports the org rather than blaming the agent's roster. Both
       // windows are judged in their OWN zone; they are never intersected.
       if (
-        !isWithinWorkingHours(businessHours.rules, businessHours.zone, startMs, endMs)
+        !isOrgOpen(businessHours, startMs, endMs)
       ) {
         inPlaceDeclineReason = "business_hours";
       } else if (!isWithinWorkingHours(wh.rules, wh.timezone, startMs, endMs)) {

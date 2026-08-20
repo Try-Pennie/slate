@@ -54,7 +54,9 @@ function agent(timezone: string, rules: WorkingRule[]): Pick<
 }
 
 function hours(zone: string, weekday: number, startMin: number, endMin: number): BusinessHoursRules {
-  return { zone, rules: [{ weekday, start_minute: startMin, end_minute: endMin }] };
+  // #1363: no date exceptions here; this suite is about the two hour gates and
+  // their zones, and a date override would answer for the weekday rule.
+  return { zone, rules: [{ weekday, start_minute: startMin, end_minute: endMin }], exceptions: [] };
 }
 
 function slotRules(businessHours: BusinessHoursRules, durationMin = 30): SlotRules {

@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { windowOnDate, type BusinessHoursException } from "../booking/business-hours.ts";
 
 /** Working-hours window for one weekday (1=Mon..7=Sun), minutes from midnight. */
 export interface WorkingRule {
@@ -145,6 +146,39 @@ export function isWithinWorkingHours(
 export interface BusinessHoursRules {
   zone: string;
   rules: WorkingRule[];
+  /**
+   * Specific dates that override the weekly pattern (#1363), shutting a normally
+   * open day or opening a normally shut one.
+   *
+   * REQUIRED, like `businessHours` itself is on `SlotRules` and for the same
+   * reason: an optional field would let a construction site silently offer times
+   * on a day the office is dark, and nothing downstream could tell. Pass `[]` for
+   * "no exceptions", which is a statement rather than an omission.
+   */
+  exceptions: BusinessHoursException[];
+}
+
+/**
+ * Is the ORG open for [startMs, endMs)? (#1295 gate 1, extended by #1363.)
+ *
+ * The single judge of that question. It is deliberately NOT
+ * `isWithinWorkingHours(hours.rules, ...)`, which answers the WEEKLY PATTERN and
+ * is exactly the question date exceptions exist to stop anybody asking: a caller
+ * that reached past this would keep offering times through a holiday shutdown
+ * while every test of the weekly rules stayed green.
+ *
+ * An agent's own hours still go through `isWithinWorkingHours`. Agents have no
+ * date exceptions (their time off is a different mechanism entirely), and the two
+ * windows are judged in their OWN zones and never intersected.
+ */
+export function isOrgOpen(hours: BusinessHoursRules, startMs: number, endMs: number): boolean {
+  const day = DateTime.fromMillis(startMs, { zone: hours.zone }).startOf("day");
+  const window = windowOnDate(hours, day.toISODate() ?? "", day.weekday);
+  if (!window) return false;
+  return (
+    startMs >= timeOnDay(day, window.start_minute).toMillis() &&
+    endMs <= timeOnDay(day, window.end_minute).toMillis()
+  );
 }
 
 /** The per-agent slot rules a single slot is judged against (#536). */
@@ -265,7 +299,7 @@ export function bookableSlotReason(
   const memo = opts?.businessOpen;
   let orgOpen = memo?.get(startMs);
   if (orgOpen === undefined) {
-    orgOpen = isWithinWorkingHours(bh.rules, bh.zone, startMs, endMs);
+    orgOpen = isOrgOpen(bh, startMs, endMs);
     memo?.set(startMs, orgOpen);
   }
   if (!orgOpen) return "business_hours";
@@ -330,7 +364,9 @@ export function slotsWithinBusinessHours(
     // offered list, so NaN can only ever remove a slot, never admit one.
     const startMs = Date.parse(iso);
     if (!Number.isFinite(startMs)) return false;
-    return isWithinWorkingHours(hours.rules, hours.zone, startMs, startMs + durMs);
+    // Through the same judge the gate uses, so a date exception (#1363) filters a
+    // cached slot on the very next request rather than at the next recompute.
+    return isOrgOpen(hours, startMs, startMs + durMs);
   });
 }
 

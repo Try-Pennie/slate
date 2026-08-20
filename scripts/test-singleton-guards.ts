@@ -110,6 +110,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "webhook_endpoints", category: "roster/config", why: "a few configured webhook targets per org" },
   { table: "availability_rules", category: "roster/config", why: "per-schedule weekday rules, bounded by roster x 7" },
   { table: "business_hours", category: "lock/counter", why: "one org business-hours row per weekday, keyed by a 1..7 checked smallint PK; exactly seven rows forever, #1294" },
+  { table: "business_hours_exceptions", category: "config", why: "one row per DATE the org overrides, keyed by the date as the PK, so a date can never be listed twice; an operator list of holidays, bounded by how many somebody types, #1363" },
   // Growth / append-only / queue: rows scale with volume or time BY DESIGN. A
   // second row is the point, not a bug (no singleton invariant applies).
   { table: "audit_log", category: "growth/append-only", why: "append-only audit trail" },

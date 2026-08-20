@@ -64,6 +64,7 @@ import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
 import { updateEventType } from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
+import { parseExceptionForm, countBookingsOnDate } from "@/lib/booking/business-hours-form";
 import {
   loadCoverageAgents,
   currentWeekStartIso,
@@ -1082,6 +1083,99 @@ export type BusinessHoursFormState = {
  *    without touching a single row. Marking 60+ buckets stale would additionally risk
  *    a false `bucket_slots_stale` page, which is the finding that shaped #1296.
  */
+/**
+ * Add or replace a date the org is shut (or open), whatever the weekly pattern
+ * says (#1363).
+ *
+ * The confirmation mirrors the weekly editor's, and Dan's decision behind it
+ * (#1297): closing a date that already holds appointments WARNS with a count and
+ * then saves anyway. Existing appointments stand and nothing moves automatically,
+ * because a closure is about what we OFFER from now on, and silently cancelling
+ * somebody's call would be a far larger action than the one being taken.
+ */
+export async function setBusinessHoursException(
+  _prev: BusinessHoursFormState,
+  form: FormData,
+): Promise<BusinessHoursFormState> {
+  const admin = await requireAdmin();
+  const db = supabaseAdmin();
+
+  const raw: Record<string, string> = {};
+  for (const [k, v] of form.entries()) if (typeof v === "string") raw[k] = v;
+
+  const parsed = parseExceptionForm(raw);
+  if (parsed.errors.length || !parsed.row) return { error: parsed.errors.join(" ") };
+  const row = parsed.row;
+
+  if (!row.is_open && !form.get("confirm_close")) {
+    // Every future active booking, paged: bookings is a growth table, and a
+    // truncated read would under-count and let someone close a date believing it
+    // was empty.
+    const nowIso = new Date().toISOString();
+    const rows = await selectAllPages<{ starts_at: string }>(
+      "business hours exception closure check",
+      (from, to) =>
+        db
+          .from("bookings")
+          .select("starts_at")
+          .in("status", ["confirmed", "rescheduled"])
+          .gte("starts_at", nowIso)
+          .range(from, to),
+    );
+    const affected = countBookingsOnDate(rows.map((r) => r.starts_at), BUSINESS_ZONE, row.on_date);
+    if (affected > 0) {
+      const appts = affected === 1 ? "1 appointment" : `${affected} appointments`;
+      return {
+        error: null,
+        confirm: {
+          message: `Closing ${row.on_date} leaves ${appts} already booked. They stay in the diary and nobody is moved. Save again to close that date anyway.`,
+        },
+      };
+    }
+  }
+
+  const { error } = await db
+    .from("business_hours_exceptions")
+    .upsert(
+      { ...row, updated_at: new Date().toISOString(), updated_by: admin.id },
+      { onConflict: "on_date" },
+    );
+  if (error) return { error: `Could not save that date: ${error.message}` };
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "org.business_hours_exception",
+    details: { on_date: row.on_date, is_open: row.is_open, note: row.note },
+  });
+  revalidatePath("/admin/settings");
+  return { error: null, ok: true };
+}
+
+/** Drop a date exception, so that date goes back to following the weekly pattern. */
+export async function removeBusinessHoursException(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const on_date = String(form.get("on_date") ?? "").trim();
+  if (!on_date) return;
+  const { error } = await supabaseAdmin()
+    .from("business_hours_exceptions")
+    .delete()
+    .eq("on_date", on_date);
+  if (error) {
+    // Loud rather than a silent no-op: the admin would otherwise see the date
+    // vanish from the list on the next render and reappear on the one after.
+    log.error("business-hours", { msg: "could not remove date exception", on_date }, error);
+    return;
+  }
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "org.business_hours_exception_removed",
+    details: { on_date },
+  });
+  revalidatePath("/admin/settings");
+}
+
 export async function setBusinessHours(
   _prev: BusinessHoursFormState,
   form: FormData,

@@ -19,8 +19,7 @@ const FRESH_MS = Date.parse(FRESH_ISO);
 // payload shape. Gate 1's own effect on the count is the block at the end.
 const OPEN: BusinessHoursRules = {
   zone: "America/New_York",
-  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
-};
+  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })), exceptions: [] };
 /** Three real instants on Wednesday 2026-07-29, so they survive an open-day filter. */
 const THREE = ["2026-07-29T14:00:00.000Z", "2026-07-29T15:00:00.000Z", "2026-07-29T16:00:00.000Z"];
 const ONE = ["2026-07-29T14:00:00.000Z"];
@@ -85,8 +84,7 @@ for (const bad of ["", "not-a-date", "2026-13-45T99:99:99Z"]) {
 {
   const narrowed = {
     zone: "America/New_York",
-    rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 15 * 60 }],
-  };
+    rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 15 * 60 }], exceptions: [] };
   // Monday 2026-06-08, New York: 09:00, 14:00 and 19:00 local, 30 minutes each.
   const row = (slots: string[]): SlotHealthRow => ({
     bucket_code: "411",
@@ -107,8 +105,7 @@ for (const bad of ["", "not-a-date", "2026-13-45T99:99:99Z"]) {
   eq(
     slotHealthByCode([row(all)], {
       zone: "America/New_York",
-      rules: [{ weekday: 1, start_minute: 0, end_minute: 1440 }],
-    }).get("411")?.slotCount,
+      rules: [{ weekday: 1, start_minute: 0, end_minute: 1440 }], exceptions: [] }).get("411")?.slotCount,
     3,
     "an open day counts every stored slot",
   );

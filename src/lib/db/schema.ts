@@ -16,6 +16,7 @@ import type {
   BookingApiOutcomeDaily,
   BookingSettings,
   BusinessHoursRow,
+  BusinessHoursExceptionRow,
   Bucket,
   BucketMember,
   BucketSlotsRow,
@@ -153,6 +154,7 @@ export interface Database {
       reason_options: Table<ReasonOptionRow>;
       booking_settings: Table<BookingSettings>;
       business_hours: Table<BusinessHoursRow>;
+      business_hours_exceptions: Table<BusinessHoursExceptionRow>;
     };
     Views: Record<string, never>;
     Functions: {

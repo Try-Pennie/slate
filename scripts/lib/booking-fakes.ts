@@ -14,7 +14,7 @@ import {
   type CreateBookingInput,
   type PendingEventDeletion,
 } from "../../src/lib/booking/orchestration.ts";
-import type { WorkingRule } from "../../src/lib/availability/compute.ts";
+import type { WorkingRule, BusinessHoursRules } from "../../src/lib/availability/compute.ts";
 import type { RecordRoutingDecisionInput } from "../../src/lib/routing/record.ts";
 import type {
   Booking,
@@ -104,7 +104,7 @@ export interface FakeOpts {
   memberCount?: number;
   freeEmails?: Set<string>;
   /** #1295: override the org's opening hours (defaults to open all week). */
-  businessHours?: { zone: string; rules: WorkingRule[] };
+  businessHours?: BusinessHoursRules;
   /** #1295: model an unreadable stored week, which must THROW rather than serve. */
   businessHoursReadFails?: boolean;
   // #884: when set, the deps carry a send scheduler (as a user-facing request
@@ -198,13 +198,16 @@ export const DEFAULT_WORKING_HOURS: { timezone: string; rules: WorkingRule[] } =
  * behaviour is pinned in `scripts/test-business-hours-gate.ts`, and the tests that
  * care override this via `opts.businessHours`.
  */
-export const DEFAULT_BUSINESS_HOURS: { zone: string; rules: WorkingRule[] } = {
+export const DEFAULT_BUSINESS_HOURS: BusinessHoursRules = {
   zone: "America/New_York",
   rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
     weekday,
     start_minute: 0,
     end_minute: 1440,
   })),
+  // #1363: no date exceptions. Stated rather than omitted, because the field is
+  // required precisely so a fixture cannot silently skip the date gate.
+  exceptions: [],
 };
 
 export function makeDeps(opts: FakeOpts) {

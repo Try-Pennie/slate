@@ -447,8 +447,7 @@ async function run() {
       // The org shuts at 20:00 America/New_York; the target time is 21:00 there.
       businessHours: {
         zone: "America/New_York",
-        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
-      },
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }], exceptions: [] },
     });
     // 2026-06-09T01:00Z = 21:00 NY Monday: inside A's shift, past the org's close.
     const res = await rescheduleBooking("tok1", "2026-06-09T01:00:00.000Z", RR, "customer", deps, NOW);
@@ -480,8 +479,7 @@ async function run() {
       ]),
       businessHours: {
         zone: "America/New_York",
-        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
-      },
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }], exceptions: [] },
     });
     let threw = false;
     try {
@@ -520,8 +518,7 @@ async function run() {
       ]),
       businessHours: {
         zone: "America/New_York",
-        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }],
-      },
+        rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }], exceptions: [] },
     });
     // 2026-06-08T23:00Z = 19:00 NY Monday, ending 19:30, inside the org's day.
     const res = await rescheduleBooking("tok1", "2026-06-08T23:00:00.000Z", RR, "customer", deps, NOW);

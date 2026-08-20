@@ -15,7 +15,7 @@
  * Run: node --experimental-strip-types scripts/test-empty-reason.ts
  */
 import { emptyReason } from "../src/lib/availability/empty-reason.ts";
-import type { BusinessWindow } from "../src/lib/booking/business-hours.ts";
+import type { BusinessHoursException, BusinessWindow } from "../src/lib/booking/business-hours.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
@@ -30,8 +30,14 @@ const open = (weekday: number): BusinessWindow => ({
 const MON_TO_SAT: BusinessWindow[] = [1, 2, 3, 4, 5, 6].map(open);
 const WEEKDAYS_ONLY: BusinessWindow[] = [1, 2, 3, 4, 5].map(open);
 
-const reason = (businessHours: BusinessWindow[], fromDay: string, searchedDays: number) =>
-  emptyReason({ businessHours, fromDay, searchedDays, zone: ZONE });
+const reason = (
+  businessHours: BusinessWindow[],
+  fromDay: string,
+  searchedDays: number,
+  // #1363: no date exceptions unless a case is about one; the exception cases
+  // live in scripts/test-business-hours-exceptions.ts.
+  exceptions: BusinessHoursException[] = [],
+) => emptyReason({ businessHours, exceptions, fromDay, searchedDays, zone: ZONE });
 
 // -------------------------------------------------- busy, not closed
 

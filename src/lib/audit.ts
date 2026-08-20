@@ -39,6 +39,8 @@ export const AUDIT_ACTIONS = [
   // When Pennie is open (#1297). Distinct from booking.settings because it changes
   // what every lead can book, not how the booker is configured.
   "org.business_hours",
+  "org.business_hours_exception",
+  "org.business_hours_exception_removed",
   // The warehouse half of a data-subject erasure (#1128). Its Supabase half is
   // audited by the erase_booking_pii function itself, as `pii.erasure`.
   "pii.warehouse_purge",

@@ -37,6 +37,15 @@
 export interface BusinessHours {
   zone: string;
   rules: { weekday: number; start_minute: number; end_minute: number }[];
+  /** Date exceptions (#1363). Cached with the week, and for the same reason: the
+   *  read-time filter has to see the SAME answer the gate saw about a given day. */
+  exceptions: {
+    on_date: string;
+    is_open: boolean;
+    start_minute: number | null;
+    end_minute: number | null;
+    note: string | null;
+  }[];
   source: "stored" | "seeded";
 }
 

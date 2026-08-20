@@ -38,7 +38,7 @@ const OPEN_WEEK = [1, 2, 3, 4, 5].map((weekday) => ({
   start_minute: 9 * 60,
   end_minute: 17 * 60,
 }));
-const HOURS = { zone: ZONE, rules: OPEN_WEEK };
+const HOURS = { zone: ZONE, rules: OPEN_WEEK, exceptions: [] };
 /** A Wednesday, so the four day window lands on open days. */
 const NOW = Date.parse("2026-08-12T14:00:00Z");
 
@@ -76,7 +76,7 @@ const NOW = Date.parse("2026-08-12T14:00:00Z");
   // A zone the clock cannot read is its own cause: the week READ fine, so telling
   // the reader it could not be read would send them to the wrong screen (L11).
   const badZone = explainEmptyWindow({
-    hours: { zone: "Mars/Olympus", rules: OPEN_WEEK },
+    hours: { zone: "Mars/Olympus", rules: OPEN_WEEK, exceptions: [] },
     horizonDays: 4,
     nowMs: NOW,
   });

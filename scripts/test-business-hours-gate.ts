@@ -42,9 +42,9 @@ const ms = (iso: string) => Date.parse(iso);
 const EARLY_NOW = ms("2026-01-01T00:00:00.000Z"); // well before every window below
 
 /** The seeded org week: Mon-Sat 08:00-20:00 America/New_York, Sunday closed. */
-const openWeek = { zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS };
+const openWeek = { zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS, exceptions: [] };
 
-const slotRules = (businessHours: { zone: string; rules: BusinessWindow[] }): SlotRules => ({
+const slotRules = (businessHours: { zone: string; rules: BusinessWindow[], exceptions: [] }): SlotRules => ({
   durationMin: 30,
   bufferBeforeMin: 0,
   bufferAfterMin: 0,
@@ -194,7 +194,7 @@ const agentOn = (
   const monNine = ms("2026-06-08T13:00:00.000Z");
 
   assert(
-    bookableSlotReason(agent, slotRules({ zone: BUSINESS_ZONE, rules: [] }), monNine, EARLY_NOW) ===
+    bookableSlotReason(agent, slotRules({ zone: BUSINESS_ZONE, rules: [], exceptions: [] }), monNine, EARLY_NOW) ===
       "business_hours",
     "an org closed every day offers nothing, however wide the agent's own hours are",
   );
@@ -235,8 +235,7 @@ const agentOn = (
     ...base,
     businessHours: {
       zone: BUSINESS_ZONE,
-      rules: [{ weekday: 1, start_minute: 10 * 60, end_minute: 15 * 60 }],
-    },
+      rules: [{ weekday: 1, start_minute: 10 * 60, end_minute: 15 * 60 }], exceptions: [] },
   });
   assert(
     narrowed.length === 10 && narrowed[0] === "2026-06-08T14:00:00.000Z",
@@ -252,8 +251,7 @@ const agentOn = (
   // memoized run must equal a run that consults the predicate for every single slot.
   const narrow = {
     zone: BUSINESS_ZONE,
-    rules: [{ weekday: 1, start_minute: 10 * 60, end_minute: 15 * 60 }],
-  };
+    rules: [{ weekday: 1, start_minute: 10 * 60, end_minute: 15 * 60 }], exceptions: [] };
   const mkMember = (userId: string, startHour: number): MemberAvailability => ({
     userId,
     timezone: BUSINESS_ZONE,
@@ -295,7 +293,7 @@ const agentOn = (
   // must not reuse the first run's verdicts.
   const reopened = computeBucketSlots({
     ...input,
-    businessHours: { zone: BUSINESS_ZONE, rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 18 * 60 }] },
+    businessHours: { zone: BUSINESS_ZONE, rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 18 * 60 }], exceptions: [] },
   });
   assert(
     reopened.length > memoized.length,

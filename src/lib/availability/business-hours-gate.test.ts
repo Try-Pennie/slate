@@ -40,6 +40,8 @@ function fakeDb(tables: Record<string, unknown[]>): ReturnType<typeof supabaseAd
       lte: () => b,
       gte: () => b,
       is: () => b,
+      order: () => b,
+      limit: () => b,
       range: (from: number, to: number) => {
         range = [from, to];
         return b;
