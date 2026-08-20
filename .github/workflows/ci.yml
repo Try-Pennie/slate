@@ -202,7 +202,7 @@ jobs:
       # the first attempt is allowed to fail and a second one runs only if it did.
       # If the second also fails the job goes red, which is the point: this is a
       # bounded retry, not a way to proceed without the CLI.
-      - uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v1
         id: setup-supabase-cli
         continue-on-error: true
         with:
@@ -212,7 +212,7 @@ jobs:
           version: 2.84.2
       - name: Retry the Supabase CLI install (the download hung up, #1437)
         if: steps.setup-supabase-cli.outcome == 'failure'
-        uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
+        uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v1
         with:
           version: 2.84.2
       # #1433: the parse runs as a node script with a test suite rather than inline
