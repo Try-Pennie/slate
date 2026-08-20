@@ -32,7 +32,9 @@ const CFG: BusinessHoursConfig = {
     weekday,
     start_minute: 8 * 60,
     end_minute: 20 * 60,
-  })), exceptions: [] };
+  })),
+  exceptions: [],
+};
 
 // --- isBusinessHours (Eastern, DST aware) ---
 {
@@ -47,6 +49,40 @@ const CFG: BusinessHoursConfig = {
     isBusinessHours(Date.UTC(2026, 5, 20, 16, 0, 0), CFG),
     "SATURDAY noon ET -> inside: the org is open, so the volume alarm watches it",
   );
+  // #1363: a date the org has closed is NOT business hours, whatever the weekday
+  // says. This is the loudest possible way to be wrong about a quiet day: paging
+  // that bookings have dried up on a day the office is deliberately shut.
+  const holiday: BusinessHoursConfig = {
+    ...CFG,
+    exceptions: [
+      { on_date: "2026-06-20", is_open: false, start_minute: null, end_minute: null, note: "shutdown" },
+    ],
+  };
+  assert(
+    !isBusinessHours(Date.UTC(2026, 5, 20, 16, 0, 0), holiday),
+    "a CLOSED date reads as outside hours, so the alarm stays quiet rather than paging about a shut day",
+  );
+  assert(
+    isBusinessHours(Date.UTC(2026, 5, 19, 16, 0, 0), holiday),
+    "and the day before it is watched exactly as before",
+  );
+  // The other direction: a date opened against the weekly pattern IS watched, or
+  // the one day somebody deliberately staffed would be the one nobody checked.
+  const openSunday: BusinessHoursConfig = {
+    ...CFG,
+    exceptions: [
+      { on_date: "2026-06-21", is_open: true, start_minute: 10 * 60, end_minute: 14 * 60, note: null },
+    ],
+  };
+  assert(
+    isBusinessHours(Date.UTC(2026, 5, 21, 16, 0, 0), openSunday),
+    "a Sunday opened by date is watched, in its own window",
+  );
+  assert(
+    !isBusinessHours(Date.UTC(2026, 5, 21, 19, 0, 0), openSunday),
+    "and that window closes when it says it does, not when the weekday's would",
+  );
+
   // And the window really does close on Saturday evening, so this is a window and
   // not an "always open at weekends" mistake in the other direction.
   assert(

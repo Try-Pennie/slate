@@ -686,7 +686,13 @@ export async function GET(req: NextRequest) {
       runLowVolumeCheck({
         nowMs: now,
         // Non-null by the gate above: the check does not run without this read.
-        businessHours: { zone: businessHours!.zone, rules: businessHours!.rules },
+        businessHours: {
+          zone: businessHours!.zone,
+          rules: businessHours!.rules,
+          // #1363: so a holiday closure reads as shut here too, rather than as a
+          // day the funnel mysteriously stopped delivering.
+          exceptions: businessHours!.exceptions,
+        },
         countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
         floors: settings.floors,
         armed: settings.lowVolumeArmed,

@@ -7,6 +7,7 @@
  * counts, the arming switch, Slack) lives in the cron route.
  */
 import { DateTime } from "luxon";
+import { windowOnDate, type BusinessHoursException } from "../booking/business-hours.ts";
 
 /**
  * When the org is open, in the shape the org's own hours are stored in (#1298).
@@ -26,6 +27,16 @@ export interface BusinessHoursConfig {
   zone: string;
   /** Per weekday windows (1=Mon..7=Sun), minutes from midnight. */
   rules: { weekday: number; start_minute: number; end_minute: number }[];
+  /**
+   * The dates that override the weekly pattern (#1363).
+   *
+   * REQUIRED for the same reason the window itself is passed rather than coded
+   * here: an alarm judging "is the org open" from the weekly rules alone would
+   * page about bookings drying up on a day the office is deliberately shut, which
+   * is the loudest possible way to be wrong about a quiet day. A holiday closure
+   * is exactly when the weekly pattern says open and nothing is.
+   */
+  exceptions: BusinessHoursException[];
 }
 
 /**
@@ -38,10 +49,12 @@ export interface BusinessHoursConfig {
  */
 export function isBusinessHours(nowMs: number, cfg: BusinessHoursConfig): boolean {
   const dt = DateTime.fromMillis(nowMs, { zone: cfg.zone });
+  // Through the org's own date judge (#1363), so a closure the booker refuses can
+  // never be an hour this alarm calls open.
+  const window = windowOnDate(cfg, dt.toISODate() ?? "", dt.weekday);
+  if (!window) return false;
   const minute = dt.hour * 60 + dt.minute;
-  return cfg.rules.some(
-    (r) => r.weekday === dt.weekday && r.start_minute <= minute && minute < r.end_minute,
-  );
+  return window.start_minute <= minute && minute < window.end_minute;
 }
 
 export interface VolumeWindow {
