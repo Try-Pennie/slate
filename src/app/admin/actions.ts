@@ -75,7 +75,7 @@ import {
   newlyUncoveredWarning,
 } from "@/lib/monitor/roster-coverage";
 import { __clearChannelCache } from "@/lib/notify/channels";
-import { planScheduleReplacement } from "@/lib/schedule-replacement";
+import { planScheduleReplacement, type ScheduleRule } from "@/lib/schedule-replacement";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
 /**
@@ -117,11 +117,11 @@ async function requireManageAgent(
 async function replaceUserSchedule(
   userId: string,
   timezone: string,
-  weekdays: number[],
-  startMinute: number,
-  endMinute: number,
+  /** A window PER DAY (#1308). The same window on every day is a caller's choice
+   *  now, not a shape this function imposes. */
+  days: ScheduleRule[],
 ): Promise<void> {
-  const plan = planScheduleReplacement(weekdays, startMinute, endMinute);
+  const plan = planScheduleReplacement(days);
   if (!plan.ok) throw new Error(plan.error);
 
   const db = supabaseAdmin();
@@ -173,14 +173,34 @@ async function applyOrgDefaultToUser(
   await replaceUserSchedule(
     userId,
     tz,
-    o.default_weekdays,
-    o.default_start_minute,
-    o.default_end_minute,
+    // The org default IS one window on several days, which is exactly what this
+    // button means: put this agent back on the company's hours.
+    o.default_weekdays.map((weekday) => ({
+      weekday,
+      start_minute: o.default_start_minute,
+      end_minute: o.default_end_minute,
+    })),
   );
 }
 
-const weekdaysFrom = (form: FormData): number[] =>
-  [1, 2, 3, 4, 5, 6, 7].filter((d) => form.get(`day_${d}`));
+/**
+ * The week as the per-day hours form submits it (#1308): a checkbox and its own
+ * pair of times per weekday.
+ *
+ * A day that is not ticked contributes nothing, so its times are never read and a
+ * blank pair on an unticked day cannot refuse the save. A TICKED day whose times
+ * are unreadable is passed through as NaN deliberately, so `planScheduleReplacement`
+ * refuses it and names the day, rather than a permissive default here quietly
+ * moving somebody to midnight (L50).
+ */
+const perDayFrom = (form: FormData): ScheduleRule[] =>
+  [1, 2, 3, 4, 5, 6, 7]
+    .filter((d) => form.get(`day_${d}`))
+    .map((weekday) => ({
+      weekday,
+      start_minute: toMinutes(String(form.get(`start_${weekday}`) ?? "")),
+      end_minute: toMinutes(roundUpToQuarterHour(String(form.get(`end_${weekday}`) ?? ""))),
+    }));
 
 /** Agent self-service: set my own working hours. */
 export async function setMyWorkingHours(form: FormData): Promise<void> {
@@ -189,9 +209,7 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   await replaceUserSchedule(
     me.id,
     String(form.get("timezone") ?? "America/New_York"),
-    weekdaysFrom(form),
-    toMinutes(String(form.get("start") ?? "09:00")),
-    toMinutes(roundUpToQuarterHour(String(form.get("end") ?? "17:00"))),
+    perDayFrom(form),
   );
   revalidatePath("/me");
 }
@@ -347,15 +365,10 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   await requireManageAgent(userId, "agent.hours");
   const timezone = String(form.get("timezone") ?? "America/New_York");
-  const startMinute = toMinutes(String(form.get("start") ?? "09:00"));
-  const endMinute = toMinutes(roundUpToQuarterHour(String(form.get("end") ?? "17:00")));
-  const weekdays = [1, 2, 3, 4, 5, 6, 7].filter((d) =>
-    form.get(`day_${d}`),
-  );
 
   // One schedule per user (enforced by the availability_schedules(user_id)
   // unique index, #532): replaceUserSchedule upserts it, then replaces its rules.
-  await replaceUserSchedule(userId, timezone, weekdays, startMinute, endMinute);
+  await replaceUserSchedule(userId, timezone, perDayFrom(form));
   revalidatePath("/admin");
 }
 
@@ -623,9 +636,16 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
       default_timezone: String(form.get("default_timezone") ?? "America/New_York"),
       // The fallbacks come from the seeded day (#1299), never a literal: a blank
       // field must not be able to write 09:00 back over the backfilled roster.
-      default_start_minute: toMinutes(String(form.get("default_start") ?? SEED_START_TIME)),
-      default_end_minute: toMinutes(
-        roundUpToQuarterHour(String(form.get("default_end") ?? SEED_END_TIME)),
+      // An unreadable time falls back to the SEEDED day rather than to midnight
+      // (L50): a blank or malformed field must not be able to write a window
+      // nobody chose over the backfilled roster's starting hours.
+      default_start_minute: readableMinutes(
+        String(form.get("default_start") ?? ""),
+        SEED_START_TIME,
+      ),
+      default_end_minute: readableMinutes(
+        roundUpToQuarterHour(String(form.get("default_end") ?? "")),
+        SEED_END_TIME,
       ),
       default_weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
     })
@@ -1032,14 +1052,28 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
-// Working-hours times snap down to a quarter hour (matches the 15-min pickers;
-// safety net if an off-grid value slips through).
+/**
+ * Working-hours times snap down to a quarter hour (matching the 15 minute pickers;
+ * a safety net if an off-grid value slips through).
+ *
+ * An UNREADABLE time returns NaN, deliberately, and every caller has to map that to
+ * a refusal. It used to coalesce a missing hour to zero, so "not a time" and a blank
+ * field both became MIDNIGHT and were saved as a real window: the agent's day
+ * silently started at 00:00 and the form reported success (L50). Midnight is a
+ * perfectly valid time, so nothing downstream could tell the difference.
+ */
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
-  const total = (h || 0) * 60 + (m || 0);
-  return Math.floor(total / 15) * 15;
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return Number.NaN;
+  return Math.floor((h * 60 + m) / 15) * 15;
 }
 
+
+/** `toMinutes`, with a named fallback for the one caller whose field is optional. */
+function readableMinutes(hhmm: string, fallback: string): number {
+  const parsed = toMinutes(hhmm);
+  return Number.isFinite(parsed) ? parsed : toMinutes(fallback);
+}
 
 const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 

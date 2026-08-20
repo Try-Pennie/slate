@@ -26,17 +26,12 @@ import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
 import { previewBulkReassign } from "@/lib/booking/service";
 import { log } from "@/lib/log";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import { DayToggles } from "@/components/ui/DayToggles";
-import { TimeField } from "@/components/ui/TimeField";
+import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHoursForm";
 import { labelCls, inputCls, btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import type { Attributes, Organization, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
-
-function minutesToTime(m: number): string {
-  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-}
 
 /**
  * How many active future appointments this agent still holds (#1215), or null
@@ -138,10 +133,9 @@ export default async function AgentProfilePage({
     start_minute: number;
     end_minute: number;
   }[];
-  const days = new Set(rules.map((r) => r.weekday));
-  const start = rules[0]?.start_minute ?? 540;
-  const end = rules[0]?.end_minute ?? 1020;
-  const hasHours = rules.length > 0;
+  // #1308: a window PER DAY, read back from each day's own rule rather than from
+  // rules[0], which showed Monday's hours for the whole week and then overwrote
+  // the rest on save.
 
   const allUsers = (usersRes.data ?? []) as Pick<
     User,
@@ -317,50 +311,16 @@ export default async function AgentProfilePage({
           </div>
           {canManageThisAgent ? (
             <>
-              <form
-                action={setWorkingHours}
-                className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3"
-              >
-                <input type="hidden" name="user_id" value={agent.id} />
-                <div>
-                  <label className={labelCls}>Timezone (agent home tz)</label>
-                  <input
-                    name="timezone"
-                    aria-label="Timezone"
-                    defaultValue={sched?.timezone ?? org.default_timezone}
-                    className={`${inputCls} w-44`}
-                  />
-                </div>
-                <div>
-                  <span className={labelCls}>Days</span>
-                  <div className="mt-1">
-                    <DayToggles
-                      namePrefix="day_"
-                      isOn={(d) => (hasHours ? days.has(d) : d <= 5)}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>Start</label>
-                  <TimeField
-                    name="start"
-                    ariaLabel="Start"
-                    defaultValue={minutesToTime(start)}
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>End</label>
-                  <TimeField
-                    name="end"
-                    ariaLabel="End"
-                    round="up"
-                    defaultValue={minutesToTime(end)}
-                    className="mt-1"
-                  />
-                </div>
-                <button className={btnCls}>Save hours</button>
-              </form>
+              <div className="mt-4">
+                <WorkingHoursForm
+                  action={setWorkingHours}
+                  days={workingHoursDays(rules, org.default_weekdays)}
+                  timezone={sched?.timezone ?? org.default_timezone}
+                  timezoneLabel="Timezone (agent home tz)"
+                  userId={agent.id}
+                  saveLabel="Save hours"
+                />
+              </div>
               <form action={useDefaultHours} className="mt-3">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">

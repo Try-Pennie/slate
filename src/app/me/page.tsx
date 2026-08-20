@@ -14,19 +14,15 @@ import {
   NO_MANAGER_REVIEWER,
 } from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
-import { labelCls, inputCls, btnCls, cardCls } from "@/components/ui/styles";
+import { btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
-import { TimeField } from "@/components/ui/TimeField";
+import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHoursForm";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
-
-function minutesToTime(m: number): string {
-  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-}
 
 const OOO_TIMEZONES = [
   "America/New_York",
@@ -185,9 +181,10 @@ export default async function MePage({
     start_minute: number;
     end_minute: number;
   }[];
-  const days = new Set(rules.map((r) => r.weekday));
-  const start = rules[0]?.start_minute ?? 540;
-  const end = rules[0]?.end_minute ?? 1020;
+  // #1308: a window PER DAY, read back from each day's own rule rather than from
+  // rules[0], which showed Monday's hours for the whole week and then overwrote
+  // the rest on save.
+  const hoursDays = workingHoursDays(rules);
 
   const { data: oooData } = await db
     .from("ooo_requests")
@@ -343,68 +340,12 @@ export default async function MePage({
                 Set your home timezone and weekly hours. Leads always see times in
                 their own timezone.
               </p>
-              <form
+              <WorkingHoursForm
                 action={setMyWorkingHours}
-                className="flex flex-wrap items-end gap-3"
-              >
-                <div>
-                  <label className={labelCls}>Your timezone</label>
-                  <input
-                    name="timezone"
-                    aria-label="Your timezone"
-                    defaultValue={sched?.timezone ?? "America/New_York"}
-                    className={`${inputCls} w-48`}
-                  />
-                </div>
-                <div>
-                  <span className={labelCls}>Days</span>
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {(
-                      [
-                        [1, "M"],
-                        [2, "T"],
-                        [3, "W"],
-                        [4, "T"],
-                        [5, "F"],
-                        [6, "S"],
-                        [7, "S"],
-                      ] as [number, string][]
-                    ).map(([d, lbl], i) => (
-                      <label key={i} className="cursor-pointer">
-                        <input
-                          type="checkbox"
-                          name={`day_${d}`}
-                          defaultChecked={rules.length ? days.has(d) : d <= 5}
-                          className="peer sr-only"
-                        />
-                        <span className="flex h-11 w-11 items-center justify-center rounded-full border border-border text-sm font-semibold text-fg-muted transition-colors peer-checked:border-transparent peer-checked:bg-pennie-sky peer-checked:text-pennie-graphite peer-hover:border-fg/40 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--focus-ring)]">
-                          {lbl}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>Start</label>
-                  <TimeField
-                    name="start"
-                    ariaLabel="Start"
-                    defaultValue={minutesToTime(start)}
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>End</label>
-                  <TimeField
-                    name="end"
-                    ariaLabel="End"
-                    round="up"
-                    defaultValue={minutesToTime(end)}
-                    className="mt-1"
-                  />
-                </div>
-                <button className={btnCls}>Save</button>
-              </form>
+                days={hoursDays}
+                timezone={sched?.timezone ?? "America/New_York"}
+                timezoneLabel="Your timezone"
+              />
               <form action={useMyDefaultHours} className="mt-3">
                 <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
                   Reset to company default hours
