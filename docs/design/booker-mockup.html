@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slate booker</title>
+<style>
+  :root{
+    --pennie-white:#fff; --pennie-beige:#F9F6F0; --pennie-graphite:#343434;
+    --pennie-navy:#1D212F; --pennie-sky:#82D0FF; --pennie-sky-soft:#ECF8FF;
+    --pennie-sky-deep:#439FE1; --pennie-green:#55CF90; --pennie-muted:#6A6A70;
+    --pennie-mercury:#E3E3E5;
+    --page:var(--pennie-beige); --card:var(--pennie-white); --ink:var(--pennie-graphite);
+    --title:var(--pennie-navy); --muted:var(--pennie-muted);
+    --border:rgba(52,52,52,.16); --field:#fff; --error:#C43D3D;
+    --r-xl:16px; --r-lg:12px; --r-md:10px; --r-sm:8px;
+    --shadow:0 1px 2px rgba(29,33,47,.05),0 12px 32px rgba(29,33,47,.08);
+    --focus:var(--pennie-navy);
+  }
+  [data-theme="dark"]{
+    --page:#17161A; --card:#39373F; --ink:#F9F6F0; --title:#F9F6F0;
+    --muted:#C8C6CC; --border:rgba(246,246,246,.38); --field:#28272D;
+    --pennie-sky-soft:rgba(130,208,255,.16); --error:#DF9494; --focus:var(--pennie-sky);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:0 20px 90px;-webkit-font-smoothing:antialiased;line-height:1.5}
+  .wrap{max-width:1040px;margin:0 auto}
+
+  header.top{padding:34px 0 10px;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
+  h1{font-size:32px;font-weight:600;color:var(--title);margin:0;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14.5px;margin:8px 0 0;max-width:66ch}
+  .themeBar{display:flex;gap:8px}
+  .tbtn{border:1px solid var(--border);background:transparent;color:var(--ink);border-radius:10px;
+    padding:8px 15px;font-size:14px;cursor:pointer;min-height:40px;font-family:inherit}
+  .tbtn[aria-pressed="true"]{background:var(--pennie-sky);color:#343434;border-color:transparent;font-weight:600}
+  .tbtn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+  h2.sec{font-size:19px;font-weight:600;color:var(--title);margin:46px 0 4px;letter-spacing:-.01em}
+  .seclede{color:var(--muted);font-size:14px;margin:0 0 18px;max-width:72ch}
+  .cap{font-size:12.5px;color:var(--muted);margin:10px 2px 0;line-height:1.6;max-width:78ch}
+  .tag{font-weight:600;font-size:11px;letter-spacing:.02em;background:rgba(52,52,52,.07);color:var(--title);
+    border-radius:999px;padding:4px 10px;display:inline-block;margin-bottom:9px}
+  [data-theme="dark"] .tag{background:rgba(249,246,240,.12)}
+
+  /* ---------- the booker ---------- */
+  .shell{background:var(--card);border:1px solid var(--border);border-radius:var(--r-xl);
+    box-shadow:var(--shadow);overflow:hidden}
+  .cols{display:grid;grid-template-columns:250px 1fr}
+  @media(max-width:780px){.cols{grid-template-columns:1fr}}
+  .panel{padding:24px;border-right:1px solid var(--border)}
+  @media(max-width:780px){.panel{border-right:0;border-bottom:1px solid var(--border)}}
+  .right{padding:24px;display:flex;flex-direction:column;min-height:326px}
+
+  .avatar{width:36px;height:36px;border-radius:50%;background:var(--pennie-sky-soft);color:var(--title);
+    display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px;margin-bottom:16px}
+  .evname{font-size:20px;font-weight:600;color:var(--title);line-height:1.25;margin:0}
+  .evdesc{font-size:13.5px;color:var(--muted);line-height:1.5;margin:12px 0 0}
+  .meta{margin-top:20px;display:flex;flex-direction:column;gap:10px;font-size:13.5px;color:var(--ink)}
+  .meta .row{display:flex;align-items:center;gap:9px}
+  .meta svg{color:var(--muted);flex:none}
+
+  .th{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:12px}
+  .th .d{font-size:14px;font-weight:600;color:var(--title)}
+  .toggle{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;flex:none}
+  .toggle button{min-height:32px;padding:0 11px;font-size:12px;border:none;background:transparent;
+    color:var(--muted);cursor:pointer;font-family:inherit}
+  .toggle button.on{background:var(--pennie-sky-soft);color:var(--title);font-weight:600}
+  .tz{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink);margin-bottom:14px}
+  .tz svg{color:var(--muted);flex:none}
+  .tz select{border:1px solid transparent;background:transparent;font-size:12px;color:var(--ink);
+    padding:5px 3px;border-radius:var(--r-sm);font-family:inherit;cursor:pointer;min-height:32px}
+  .tz select:hover{border-color:var(--border)}
+
+  .daystrip{display:flex;gap:8px;margin-bottom:18px;align-items:stretch}
+  .chip{flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--r-lg);padding:10px 6px 9px;
+    text-align:center;cursor:pointer;background:var(--card);min-height:44px;font-family:inherit;
+    display:flex;flex-direction:column;justify-content:center;transition:border-color .12s}
+  .chip:hover{border-color:var(--pennie-sky)}
+  .chip.sel{background:var(--pennie-navy);border-color:var(--pennie-navy)}
+  .chip.sel .cl,.chip.sel .cn{color:#fff}
+  [data-theme="dark"] .chip.sel{background:var(--pennie-sky);border-color:var(--pennie-sky)}
+  [data-theme="dark"] .chip.sel .cl,[data-theme="dark"] .chip.sel .cn{color:#1D212F}
+  .chip:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .cl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;line-height:1.3;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cn{font-size:18px;font-weight:600;color:var(--title);margin-top:1px;line-height:1.2;font-variant-numeric:tabular-nums}
+  .mon{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;line-height:1.3;margin-top:1px}
+  .chip.sel .mon{color:rgba(255,255,255,.82)}
+  [data-theme="dark"] .chip.sel .mon{color:rgba(29,33,47,.78)}
+  .mon.ghost{visibility:hidden}
+  .gapmark{align-self:stretch;width:0;border-left:1.5px dashed var(--border);margin:2px 5px;flex:none}
+
+  .dayhead{font-size:13px;font-weight:600;color:var(--title);margin:0 0 10px}
+  .prompt{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;padding:22px 16px}
+  .prompt p{font-size:13.5px;color:var(--muted);margin:0;max-width:30ch}
+  .slots{display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow-y:auto}
+  @media(max-width:480px){.slots{grid-template-columns:1fr}}
+  .slot{display:flex;align-items:center;gap:9px;min-height:44px;width:100%;border:1px solid var(--border);
+    border-radius:var(--r-md);padding:0 14px;font-size:14px;color:var(--ink);background:var(--card);
+    cursor:pointer;text-align:left;font-variant-numeric:tabular-nums;font-family:inherit;transition:border-color .12s}
+  .slot:hover{border-color:var(--pennie-sky);background:var(--pennie-sky-soft)}
+  .slot:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .gd{width:6px;height:6px;border-radius:50%;background:var(--pennie-green);flex:none}
+
+  .skel{height:44px;border-radius:var(--r-md);background:rgba(52,52,52,.08);animation:p 1.4s ease-in-out infinite}
+  [data-theme="dark"] .skel{background:rgba(249,246,240,.10)}
+  .skelchip{height:60px;border-radius:var(--r-lg);flex:1;background:rgba(52,52,52,.08);animation:p 1.4s ease-in-out infinite}
+  [data-theme="dark"] .skelchip{background:rgba(249,246,240,.10)}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.45}}
+  @media (prefers-reduced-motion: reduce){.skel,.skelchip{animation:none}}
+
+  .msg{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;padding:24px 16px;gap:8px}
+  .msg h3{font-size:16px;font-weight:600;color:var(--title);margin:0}
+  .msg p{font-size:13.5px;color:var(--muted);margin:0;max-width:38ch;line-height:1.55}
+  .cta{min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    background:var(--pennie-sky);color:#343434;border:none;border-radius:var(--r-lg);padding:0 18px;
+    font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;margin-top:8px;transition:background .12s}
+  .cta:hover{background:#6dc5f7}
+  .cta:active{transform:translateY(1px)}
+  .cta:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .cta.block{width:100%;margin-top:4px}
+  .ghostbtn{min-height:36px;display:inline-flex;align-items:center;gap:6px;background:transparent;
+    border:1px solid var(--border);color:var(--ink);border-radius:var(--r-md);padding:0 12px;
+    font-size:13px;cursor:pointer;font-family:inherit}
+  .ghostbtn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .err{font-size:13.5px;color:var(--error);text-align:center;margin:0;max-width:34ch}
+
+  /* form */
+  .back{display:inline-flex;align-items:center;gap:4px;min-height:36px;background:transparent;border:none;
+    color:var(--muted);font-size:12.5px;cursor:pointer;padding:0;font-family:inherit}
+  .back:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .when{font-size:14px;font-weight:600;color:var(--title);margin:2px 0 4px}
+  .field label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px}
+  .field input{min-height:48px;width:100%;border-radius:var(--r-sm);border:1px solid var(--border);
+    background:var(--field);color:var(--ink);padding:0 14px;font-size:16px;font-family:inherit}
+  .field input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+  .field + .field{margin-top:12px}
+  .fieldnote{margin-top:6px;font-size:13px;color:var(--error)}
+
+  /* confirmation */
+  .done{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:8px}
+  .puck{width:104px;height:104px;border-radius:50%;background:var(--pennie-sky-soft);
+    display:flex;align-items:center;justify-content:center;color:var(--pennie-sky-deep)}
+  [data-theme="dark"] .puck{color:var(--pennie-sky)}
+  .done h2{font-size:22px;font-weight:600;color:var(--title);margin:22px 0 0;letter-spacing:-.01em}
+  .done .p1{font-size:14px;color:var(--muted);margin:8px 0 0}
+  .done .p2{font-size:12.5px;color:var(--muted);opacity:.85;margin:5px 0 0}
+  .managelink{margin-top:20px;min-height:44px;display:inline-flex;align-items:center;gap:6px;
+    font-size:14px;font-weight:600;color:var(--pennie-sky-deep);text-decoration:underline;
+    text-underline-offset:2px;background:none;border:none;cursor:pointer;font-family:inherit}
+  [data-theme="dark"] .managelink{color:var(--pennie-sky)}
+  .managelink:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+  /* Manage screen. It carries the booker's own two column split rather than a
+     layout of its own: the left says what the booking is, the right is whatever
+     you are doing to it. So reschedule opens where the times live in the booker,
+     and the page reads as the same product rather than a cousin of it. */
+  .mgday{font-size:13.5px;color:var(--muted);margin:13px 0 0}
+  .mgtime{font-size:26px;font-weight:600;color:var(--title);margin:1px 0 0;
+    line-height:1.15;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .mgtime.off{color:var(--muted);text-decoration:line-through;text-decoration-thickness:1px}
+  /* A decision, kept narrow enough that the two choices read as a pair rather
+     than two full width bars. Left aligned with everything else: centring it in
+     a wide column just moved the empty space to the other side of the divider,
+     where it read as broken alignment rather than as margin. */
+  .decide{max-width:26rem}
+  .choices{display:flex;flex-direction:column;gap:8px;margin-top:18px}
+  .choices .cta,.choices .btn-out{width:100%;margin-top:0}
+  /* The 326px floor exists so the booker's picker never jumps as slots load.
+     These two screens have no picker and no loading state, so the floor only
+     pads them past their content. */
+  .right.tight{min-height:0}
+  /* Sized to its content rather than to the booker's width. At 1040 these two
+     columns carried about 415px of content and 300px of nothing, which is the
+     same defect as a too tall card turned on its side. Both of these screens
+     are a short read and a decision, so they do not need the picker's width. */
+  .shell.pagecard{max-width:740px}
+  .prep{margin-top:22px;padding-top:18px;border-top:1px solid var(--border)}
+  .prep-t{font-size:13px;font-weight:600;color:var(--title);margin:0}
+  .prep-b{font-size:13px;color:var(--muted);margin:4px 0 0;line-height:1.55;max-width:56ch}
+  /* The advisor is the one fact this page can add that the calendar entry the
+     lead is looking at does not already carry. Initials rather than a portrait
+     only because there is no photo to use; a real one would land harder. */
+  .withwho{display:flex;align-items:center;gap:12px;margin:0 0 16px}
+  .withwho .av{width:40px;height:40px;border-radius:50%;background:var(--pennie-sky-soft);
+    color:var(--title);display:flex;align-items:center;justify-content:center;
+    font-weight:600;font-size:14px;flex:none}
+  .adv-name{font-size:14px;font-weight:600;color:var(--title);margin:0}
+  .adv-role{font-size:12.5px;color:var(--muted);margin:1px 0 0}
+  .mghead{font-size:17px;font-weight:600;color:var(--title);margin:0;letter-spacing:-.01em}
+  .mgbody{font-size:13.5px;color:var(--muted);margin:6px 0 0;max-width:46ch;line-height:1.55}
+  .actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:20px}
+  /* Cancelling is rare and unrecoverable, so it does not get the same bordered
+     weight as the action almost everyone came for. It stays a real control at
+     rest, underlined and full height, just not a peer of Reschedule. */
+  .btn-text{min-height:44px;display:inline-flex;align-items:center;background:transparent;
+    border:none;color:var(--error);padding:0 2px;font-size:14px;font-weight:600;cursor:pointer;
+    font-family:inherit;text-decoration:underline;text-underline-offset:3px}
+  .btn-text:hover{text-decoration:none}
+  .btn-text:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--r-sm)}
+  .btn-out{min-height:44px;display:inline-flex;align-items:center;justify-content:center;
+    border:1px solid var(--border);background:transparent;color:var(--ink);border-radius:var(--r-lg);
+    padding:0 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  .btn-out:hover{border-color:var(--pennie-sky)}
+  .btn-out:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .btn-danger{color:var(--error);border-color:rgba(196,61,61,.4)}
+  [data-theme="dark"] .btn-danger{border-color:rgba(223,148,148,.45)}
+  .confirmbox{border:1px solid var(--border);border-radius:var(--r-lg);
+    padding:18px;background:rgba(52,52,52,.03)}
+  [data-theme="dark"] .confirmbox{background:rgba(249,246,240,.05)}
+  .confirmbox > p:first-child{margin:0;font-size:15px;font-weight:600;color:var(--title)}
+  .cancelled{color:var(--error);font-size:13px;font-weight:600;margin:8px 0 0}
+
+  .moved{margin:18px 0 4px;border-radius:var(--r-lg);background:var(--pennie-sky-soft);padding:14px 16px}
+  .moved .t{font-size:14px;font-weight:600;color:var(--title);margin:0}
+  .moved .b{font-size:13.5px;color:var(--muted);margin:5px 0 0;line-height:1.55}
+
+  .rlegend{font-size:14px;font-weight:600;color:var(--title);margin:0 0 10px}
+  .reasons{display:flex;flex-direction:column;gap:2px}
+  .reason{display:flex;align-items:center;gap:9px;min-height:40px;font-size:14px;color:var(--ink);cursor:pointer}
+  .reason input{accent-color:var(--pennie-sky);width:17px;height:17px}
+
+  /* the one-per-lead notice at the details step */
+  .dupe{margin:24px auto 0;max-width:22rem;border-radius:var(--r-xl);
+    background:var(--pennie-sky-soft);padding:16px 20px;text-align:left}
+  .dupe .t{font-size:14px;font-weight:600;color:var(--title);margin:0}
+  .dupe .b{font-size:14px;color:var(--muted);margin:5px 0 0}
+  .dupe a{margin-top:9px;min-height:36px;display:inline-flex;align-items:center;gap:5px;
+    font-size:14px;font-weight:600;color:var(--pennie-sky-deep);text-decoration:underline;
+    text-underline-offset:2px;cursor:pointer}
+  [data-theme="dark"] .dupe a{color:var(--pennie-sky)}
+
+  /* Every state is the same panel in a different condition, so each one is drawn
+     at the same size and shape as the flow above. Side by side cards made them
+     narrower than the thing they describe, which quietly changed the layout being
+     reviewed: the strip, the times grid and the wrapping all differ at 320px. */
+  .gallery{display:flex;flex-direction:column;gap:38px}
+  .narrow{max-width:400px}
+  .stepbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+  .stepbtn{min-height:38px;border:1px solid var(--border);background:transparent;color:var(--ink);
+    border-radius:var(--r-md);padding:0 13px;font-size:13px;cursor:pointer;font-family:inherit}
+  .stepbtn[aria-pressed="true"]{background:var(--pennie-navy);color:#fff;border-color:transparent;font-weight:600}
+  [data-theme="dark"] .stepbtn[aria-pressed="true"]{background:var(--pennie-sky);color:#1D212F}
+  .stepbtn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--border);
+    color:var(--muted);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <h1>Slate booker</h1>
+    <p class="sub">The screen a lead sees when they book a call from a Pennie landing page. It opens in a modal on the page they are already on, so the whole thing is one step wide and never navigates them away.</p>
+  </div>
+  <div class="themeBar">
+    <button class="tbtn" id="lt" aria-pressed="true" onclick="setTheme('light')">Light</button>
+    <button class="tbtn" id="dk" aria-pressed="false" onclick="setTheme('dark')">Dark</button>
+  </div>
+</header>
+
+<h2 class="sec">The flow</h2>
+<p class="seclede">Four steps, all in the same panel. Click through it: pick a day, pick a time, add details, done.</p>
+<div class="stepbar" id="steps"></div>
+<div class="shell"><div class="cols">
+  <div class="panel" data-evpanel id="flowPanel"></div>
+  <div class="right" id="flowRight"></div>
+</div></div>
+<p class="cap">The day strip shows the next four days a lead can actually book. Closed days are not drawn at all, so there is no greyed out remainder to explain, and the dashed rule marks where days were skipped. The month appears under the date wherever it changes, so the turn of a month never reads as the past.</p>
+
+<h2 class="sec">Every other state</h2>
+<p class="seclede">What the panel shows when it is not the happy path.</p>
+<div class="gallery">
+
+  <div>
+    <span class="tag">Loading</span>
+    <div class="shell"><div class="cols">
+      <div class="panel" data-evpanel></div>
+      <div class="right">
+        <div class="th"><span class="d">Pick a day</span>
+          <span class="toggle"><button class="on">12h</button><button>24h</button></span></div>
+        <div class="tz" id="tzA"></div>
+        <div class="daystrip" aria-hidden="true">
+          <div class="skelchip"></div><div class="skelchip"></div>
+          <div class="skelchip"></div><div class="skelchip"></div>
+        </div>
+        <div class="prompt"><p>Finding the days you can book.</p></div>
+      </div>
+    </div></div>
+    <p class="cap">Placeholder chips rather than a blank gap, so the area reads as deliberately loading. No time skeletons sit below them: times belong to a chosen day, and no day has been chosen yet, so drawing rows there would promise a list that will not arrive on its own. The pulse stops for anyone who has asked for reduced motion.</p>
+  </div>
+
+  <div>
+    <span class="tag">Could not load</span>
+    <div class="shell"><div class="cols">
+      <div class="panel" data-evpanel></div>
+      <div class="right">
+        <div class="th"><span class="d">Pick a day</span>
+          <span class="toggle"><button class="on">12h</button><button>24h</button></span></div>
+        <div class="tz" id="tzB"></div>
+        <div class="msg">
+          <p class="err" data-sentences>Could not load available times. Check your connection.</p>
+          <button class="ghostbtn">Try again</button>
+        </div>
+      </div>
+    </div></div>
+    <p class="cap">A failure and an empty diary are different things and must never look alike. This one says the connection failed and offers a retry, rather than implying nobody is free.</p>
+  </div>
+
+  <div>
+    <span class="tag">Nothing free in that day</span>
+    <div class="shell"><div class="cols">
+      <div class="panel" data-evpanel></div>
+      <div class="right">
+        <div class="th"><span class="d">Pick a day</span>
+          <span class="toggle"><button class="on">12h</button><button>24h</button></span></div>
+        <div class="tz" id="tzC"></div>
+        <div id="sC" style="display:contents"></div>
+      </div>
+    </div></div>
+    <p class="cap">The message names the day that came up empty, so nobody has to work out what another one would be. That day stays selected and the rest stay in reach, so a lead is one tap from a time rather than back at the start.</p>
+  </div>
+
+  <div>
+    <span class="tag">Closed for a while</span>
+    <div class="shell"><div class="cols">
+      <div class="panel" data-evpanel></div>
+      <div class="right">
+        <div class="th"><span class="d">Pick a day</span>
+          <span class="toggle"><button class="on">12h</button><button>24h</button></span></div>
+        <div class="tz" id="tzD"></div>
+        <div class="msg" id="closedD"></div>
+      </div>
+    </div></div>
+    <p class="cap">When the office is shut long enough that nothing is bookable nearby, the panel says so and names the day we are back. The button then shows the full set of days, not one. It only appears for a genuinely long closure; an ordinary holiday weekend just shows the days.</p>
+  </div>
+
+</div>
+
+<h2 class="sec">Already have a call booked</h2>
+<p class="seclede">We only learn who someone is when they hand over their details, so a call they already have cannot be spotted while they are picking a time. It surfaces the moment they confirm, and the panel puts that call in front of them to move or to keep.</p>
+<div class="shell pagecard"><div class="cols">
+  <div class="panel" data-dupepanel></div>
+  <div class="right tight" data-dupemount></div>
+</div></div>
+<p class="cap">The call they already have is the subject here, not a rule they have run into. It is named with the day, the time and the advisor, so they can recognise which one it is, and moving it to the time they just picked is one tap. Keeping it is right there too, for anyone who opened the booker by accident. Moving leaves one call on one calendar rather than two an advisor has to reconcile, and nothing is cancelled on their behalf either way.</p>
+
+<h2 class="sec">Changing or cancelling</h2>
+<p class="seclede">The link in the confirmation, and in the calendar invite, opens this. It is a page of its own rather than the modal, since a lead arrives at it cold, often days later.</p>
+<div class="stepbar" id="mgSteps"></div>
+<div class="shell pagecard"><div class="cols">
+  <div class="panel" id="mgPanel"></div>
+  <div class="right" id="manageMount"></div>
+</div></div>
+<p class="cap">Rescheduling runs the booking flow again rather than a second design of it: the same day strip, the same wait for a day before any time appears. Choosing it also clears the page down to the reason and the new time, so Cancel booking is not sitting beside the times a lead is reading, and one quiet link goes back. Cancelling asks once before it happens, and the confirm is worded so the two buttons cannot be misread in a hurry. A cancelled booking does not dead end: it offers a way back to the same team rather than leaving someone stuck on a page that says no.</p>
+
+<h2 class="sec">On a phone, and inside the embed</h2>
+<p class="seclede">The modal is 92% of the viewport at most, so on a narrow screen the panels stack and the strip stays four across.</p>
+<div class="narrow">
+  <div class="shell"><div class="cols" style="grid-template-columns:1fr">
+    <div class="panel" data-evpanel id="mPanel" style="border-right:0;border-bottom:1px solid var(--border)"></div>
+    <div class="right" id="mRight" style="min-height:0"></div>
+  </div></div>
+</div>
+<p class="cap">The event details sit above rather than beside, times drop to a single column, and every target stays at least 44 pixels so it is comfortable with a thumb. It waits for a day the same way the full width panel does, because it is the same picker and not a phone shaped copy of one.</p>
+
+<footer>Slate &middot; Pennie design system &middot; interactive mockup</footer>
+</div>
+
+<script>
+/* ---------- icons, inline so they take the text colour ---------- */
+const ICON = {
+  clock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  phone: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"/></svg>',
+  globe: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18Z"/></svg>',
+  alert: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>',
+  chev: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
+  arrow: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+  tick: '<svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.4l2.4 2.4 4.6-5"/></svg>',
+};
+const TZ = '<select aria-label="Timezone"><option>America/New York</option><option>America/Chicago</option><option>America/Denver</option><option>America/Los Angeles</option></select>';
+const tzHTML = () => ICON.globe + TZ;
+["tzA","tzB","tzC","tzD"].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = tzHTML(); });
+
+// `when` lets the manage page slot the booked time in as the panel's hero
+// without forking the event copy. Same panel, one extra fact.
+// The one copy of the prep note. The booker shows it as part of the event blurb;
+// the manage page shows it as its own block at the moment it is actually useful,
+// which is the day of the call rather than the day of booking.
+const PREP_COPY = "Join from somewhere quiet, not while driving, with access to a "
+  + "screen (phone, tablet, laptop, etc.). Some of what we will cover is easier to "
+  + "follow along visually.";
+
+// The blurb sells the call, which matters while someone is deciding to book one
+// and not afterwards. On the two screens where the right hand column is the whole
+// point (the duplicate decision, and the manage page) it is dropped, so the
+// SIDEBAR stops driving the card height. Main content should set the height and
+// a sidebar should end where it ends; the other way round leaves a hole beside
+// the thing the screen is actually for.
+function panelHTML(when, o){
+  o = o || {};
+  return '<div class="avatar">PE</div>'
+    + '<p class="evname">Senior Loan Advisor Call</p>'
+    + (when || '')
+    + (o.noBlurb ? '' : '<p class="evdesc">Twenty minutes with a senior advisor to confirm your income, then review the terms and rates you may qualify for.</p>')
+    + (o.noBlurb || o.noPrep ? '' : '<p class="evdesc">A small ask: '+PREP_COPY+'</p>')
+    + '<div class="meta">'
+    + '<span class="row">'+ICON.clock+' 20 minutes</span>'
+    + '<span class="row">'+ICON.globe+' America/New York</span>'
+    + '</div>';
+}
+// Every panel on the page is the same event panel, filled from one place, so a
+// change to the event copy cannot land on the flow and miss the state cards.
+document.querySelectorAll("[data-evpanel]").forEach(el => el.innerHTML = panelHTML());
+
+/* ---------- data ---------- */
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DOW=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const TIMES=["8:30am","9:00am","9:30am","10:00am","11:00am","11:30am","1:00pm","1:30pm","2:00pm","3:00pm","3:30pm","4:00pm"];
+// Friday, August 14, then Saturday, then past the closed Sunday to Monday and Tuesday.
+// Only TODAY gets a word. "Tomorrow" does not fit a chip at embed width and
+// truncates to "TOMORR...", which looks broken; the weekday is just as clear and
+// fits at every size.
+const DAYS=[
+  {iso:"2026-08-14", label:"Today"},
+  {iso:"2026-08-15"},
+  {iso:"2026-08-17"},
+  {iso:"2026-08-18"},
+];
+
+function stripHTML(days, sel){
+  const shown = days.map((d,i)=>{
+    const m = new Date(d.iso+"T00:00:00Z").getUTCMonth();
+    return i===0 || new Date(days[i-1].iso+"T00:00:00Z").getUTCMonth() !== m;
+  });
+  let out = "";
+  days.forEach((d,i)=>{
+    const dt = new Date(d.iso+"T00:00:00Z");
+    if (i>0){
+      const skipped = Math.round((dt - new Date(days[i-1].iso+"T00:00:00Z"))/86400000)-1;
+      if (skipped>0) out += '<span class="gapmark" aria-hidden="true"></span>';
+    }
+    out += '<button type="button" class="chip'+(i===sel?' sel':'')+'" aria-pressed="'+(i===sel)+'" data-i="'+i+'">'
+      + '<span class="cl">'+(d.label||DOW[dt.getUTCDay()])+'</span>'
+      + '<span class="cn">'+dt.getUTCDate()+'</span>'
+      + '<span class="mon'+(shown[i]?'':' ghost')+'">'+MONTHS[dt.getUTCMonth()]+'</span>'
+      + '</button>';
+  });
+  return out;
+}
+const headHTML = (title) =>
+  '<div class="th"><span class="d">'+title+'</span>'
+  + '<span class="toggle"><button class="on">12h</button><button>24h</button></span></div>'
+  + '<div class="tz">'+tzHTML()+'</div>';
+// US order throughout: month before the day. "Sat 15 Aug" reads as foreign to
+// an American lead, and every lead here is American.
+const pretty = (iso) => {
+  const d = new Date(iso+"T00:00:00Z");
+  return DOW[d.getUTCDay()]+", "+MONTHS[d.getUTCMonth()]+" "+d.getUTCDate();
+};
+// A centered panel message is two things: what happened, then what to do about
+// it. Left to wrap on its own the second sentence starts mid line and the two
+// read as one run-on, so every one of them breaks between sentences. One
+// definition, applied everywhere, rather than a <br> hand placed per message.
+const sentenceBreaks = (s) => s.replace(/\. (?=[A-Z])/g, ".<br>");
+
+// The manage page is read cold, often days later, so it spells the day out in
+// full rather than using the compact chip form the booker can get away with.
+const DOW_FULL=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const MONTHS_FULL=["January","February","March","April","May","June","July",
+  "August","September","October","November","December"];
+const prettyLong = (iso) => {
+  const d = new Date(iso+"T00:00:00Z");
+  return DOW_FULL[d.getUTCDay()]+", "+MONTHS_FULL[d.getUTCMonth()]+" "+d.getUTCDate();
+};
+
+/* ---------- the one day-then-time picker ---------- */
+// Every surface that offers a time goes through this: the main flow, the phone
+// version, the reschedule panel and the days revealed after a long closure.
+// The rule they must all obey (no times render until a day is chosen) lives
+// here once, so the four cannot drift apart even though they sit in different
+// chrome. `sel` is owned by the caller and passed back in, so each surface
+// keeps its own chosen day without a second copy of the rule.
+function renderPicker(mount, o){
+  const chosen = o.sel !== null && o.sel !== undefined;
+  const times = o.times || TIMES;
+  // A day with nothing left names itself. "Pick another" on its own asks the
+  // reader to work out another what, and the day they just tried is the one
+  // piece of context the message already has.
+  const body = !chosen
+    ? '<div class="prompt"><p>'
+      + sentenceBreaks(o.prompt || "Pick a day above to see the times available.")
+      + '</p></div>'
+    : times.length
+      ? '<p class="dayhead">Times on '+pretty(o.days[o.sel].iso)+'</p>'
+        + '<div class="slots"'+(o.oneCol ? ' style="grid-template-columns:1fr"' : '')+'></div>'
+      : '<div class="prompt"><p>'
+        + sentenceBreaks("Nothing left on "+pretty(o.days[o.sel].iso)+". Pick another day above.")
+        + '</p></div>';
+  mount.innerHTML = '<div class="daystrip"></div>' + body;
+
+  mount.querySelector(".daystrip").innerHTML = stripHTML(o.days, chosen ? o.sel : -1);
+  mount.querySelectorAll(".chip").forEach(b =>
+    b.onclick = () => { if (o.onDay) o.onDay(Number(b.dataset.i)); });
+
+  if (!chosen || !times.length) return;
+  mount.querySelector(".slots").innerHTML =
+    times.map(t => '<button class="slot"><span class="gd"></span>'+t+'</button>').join("");
+  mount.querySelectorAll(".slot").forEach(b =>
+    b.onclick = () => { if (o.onTime) o.onTime(b.textContent.trim()); });
+}
+
+/* ---------- the booking panel ---------- */
+// One renderer for the whole four step panel, driven by a plain state object.
+// The full width flow and the phone version below both run it, so the phone
+// cannot dead end on a tap the desktop handles, or stop at a step the desktop
+// goes past. `ids` prefixes the form field ids, because two live copies of the
+// panel on one page would otherwise share them and break every label.
+const STEPS = ["Pick a day", "Pick a time", "Your details", "Booked"];
+
+function renderPanel(mount, st, o){
+  o = o || {};
+  const ids = o.ids || "f";
+  const again = () => renderPanel(mount, st, o);
+  if (o.onRender) o.onRender(st, again);
+
+  if (st.step === 3){
+    mount.innerHTML = '<div class="done">'
+      + '<div class="puck">'+ICON.tick+'</div>'
+      + '<h2>You are all set</h2>'
+      + '<p class="p1">'+pretty(DAYS[st.selDay].iso)+' at <span style="font-variant-numeric:tabular-nums">'+st.selTime+'</span>, New York time</p>'
+      + '<p class="p2">A calendar invite is on its way to dana@example.com.</p>'
+      + '<button class="managelink">View or manage your booking '+ICON.arrow+'</button>'
+      + '</div>';
+    return;
+  }
+
+  if (st.step === 2){
+    mount.innerHTML = headHTML("Your details")
+      + '<button class="back" data-act="back">'+ICON.chev+' Back</button>'
+      + '<p class="when">'+pretty(DAYS[st.selDay].iso)+' at '+st.selTime+'</p>'
+      + '<div class="field"><label for="'+ids+'-name">Name</label><input id="'+ids+'-name" value="Dana Lee"></div>'
+      + '<div class="field"><label for="'+ids+'-email">Email</label><input id="'+ids+'-email" type="email" value="dana@example.com"></div>'
+      + '<div class="field"><label for="'+ids+'-phone">Phone</label>'
+      + '<input id="'+ids+'-phone" type="tel" inputmode="tel" autocomplete="tel" value="(215) 555-0100" '
+      + 'aria-describedby="'+ids+'-phone-hint"></div>'
+      + '<p id="'+ids+'-phone-hint" style="margin-top:6px;font-size:12.5px;color:var(--muted)">So your advisor can reach you.</p>'
+      + '<button class="cta block" data-act="confirm" style="margin-top:18px">Confirm booking</button>';
+    // Formats to (215) 555-0100 as it is typed and stops at ten digits, so an
+    // impossible number cannot be entered and then rejected after the fact.
+    const phone = mount.querySelector("#"+ids+"-phone");
+    const fmtPhone = (raw) => {
+      let d = raw.replace(/\D/g, "");
+      // A pasted "+1 (215) 555-0100" carries the country code. Without dropping it
+      // the 1 becomes the first digit and the whole number shifts, silently, into a
+      // different valid-looking number: (121) 555-5010.
+      if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+      d = d.slice(0, 10);
+      if (d.length <= 3) return d;
+      if (d.length <= 6) return "(" + d.slice(0,3) + ") " + d.slice(3);
+      return "(" + d.slice(0,3) + ") " + d.slice(3,6) + "-" + d.slice(6);
+    };
+    phone.addEventListener("input", () => {
+      const atEnd = phone.selectionStart === phone.value.length;
+      phone.value = fmtPhone(phone.value);
+      if (atEnd) phone.setSelectionRange(phone.value.length, phone.value.length);
+    });
+    mount.querySelector('[data-act="back"]').onclick = () => { st.step = 1; again(); };
+    mount.querySelector('[data-act="confirm"]').onclick = () => { st.step = 3; again(); };
+    return;
+  }
+
+  // No day is chosen to begin with, and no times are shown until one is. A list of
+  // bare clock faces carries no date, so offering it before the day is picked lets
+  // someone choose 10:00 on a day they never looked at. That rule is enforced in
+  // renderPicker, which every other surface in this mockup also calls.
+  mount.innerHTML = headHTML("Pick a day") + '<div data-picker style="display:contents"></div>';
+  renderPicker(mount.querySelector("[data-picker]"), {
+    days: DAYS,
+    sel: st.selDay,
+    oneCol: o.oneCol,
+    times: o.times,
+    onDay: (i) => { st.selDay = i; st.step = 1; again(); },
+    onTime: (t) => { st.selTime = t; st.step = 2; again(); },
+  });
+}
+
+/* ---------- the interactive flow ---------- */
+const flowSt = { step: 0, selDay: null, selTime: "10:00am" };
+renderPanel(document.getElementById("flowRight"), flowSt, {
+  ids: "f",
+  onRender: (st, again) => {
+    document.getElementById("steps").innerHTML = STEPS.map((s,i)=>
+      '<button class="stepbtn" aria-pressed="'+(i===st.step)+'" data-s="'+i+'">'+(i+1)+'. '+s+'</button>').join("");
+    document.querySelectorAll("#steps .stepbtn").forEach(b =>
+      b.onclick = () => {
+        st.step = Number(b.dataset.s);
+        // Steps past the first only make sense with a day chosen.
+        if (st.step > 0 && st.selDay === null) st.selDay = 0;
+        if (st.step === 0) st.selDay = null;
+        again();
+      });
+  },
+});
+
+/* ---------- gallery bits ---------- */
+// A day that came up empty is the picker in one of its states, not a separate
+// drawing of one, so the empty copy is the picker's and names the day itself.
+renderPicker(document.getElementById("sC"), { days: DAYS, sel: 1, times: [] });
+
+const closedD = document.getElementById("closedD");
+function closedState(){
+  closedD.innerHTML = '<h3>We are closed until Monday, January 4</h3>'
+    + '<p>'+sentenceBreaks("Nobody is available before then. You can still book the first days back.")+'</p>'
+    + '<button class="cta" id="reveal">See our next available days</button>';
+  document.getElementById("reveal").onclick = openState;
+}
+function openState(){
+  const back = [
+    {iso:"2027-01-04"}, {iso:"2027-01-05"},
+    {iso:"2027-01-06"}, {iso:"2027-01-07"},
+  ];
+  closedD.style.cssText = "display:block;padding:0;text-align:left";
+  closedD.innerHTML = '<p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">Our next available days, from Monday, January 4.</p>'
+    + '<div id="cPicker"></div>';
+  closedD.setAttribute("aria-live","polite");
+  // Revealed days are still days: the same picker, so the far side of a closure
+  // does not quietly become the one place times appear without being asked for.
+  const draw = (sel) => renderPicker(document.getElementById("cPicker"), {
+    days: back,
+    sel,
+    times: TIMES.slice(0, 6),
+    onDay: (i) => draw(i),
+  });
+  draw(null);
+  closedD.querySelector(".chip").focus();
+}
+closedState();
+
+/* ---------- narrow ---------- */
+// The same panel as the flow above, not a phone shaped picture of it: tapping a
+// time here walks the same steps through to the confirmation.
+const narrowSt = { step: 0, selDay: null, selTime: "10:00am" };
+renderPanel(document.getElementById("mRight"), narrowSt, {
+  ids: "m",
+  oneCol: true,
+  times: TIMES.slice(0, 5),
+});
+
+/* ---------- duplicate notice on the confirmation ---------- */
+// Two constraints that look opposed and are not. Nothing identifies the lead
+// until they hand over an email, so this cannot be raised while they are picking
+// a time. But submitting does not have to mean booking: the match is made when
+// they press Confirm, and at that point the second call is REFUSED rather than
+// created. So one per lead is enforced, not reported after the fact, and the
+// offer is still to move the call they have rather than to tidy up after us.
+// One decision, rendered at both widths so the two versions cannot drift while
+// the team compares them. Only the layout class differs.
+// No policy voice. Nobody has broken a rule, and telling them what we keep to
+// makes the panel about us. The call they already have is simply put in front of
+// them, named well enough to recognise, with the obvious thing to do to it.
+document.querySelectorAll("[data-dupepanel]").forEach(el =>
+  el.innerHTML = panelHTML(null, { noBlurb: true }));
+document.querySelectorAll("[data-dupemount]").forEach(el =>
+  el.innerHTML = '<div class="decide">'
+    + '<p class="mghead">You already have a call booked</p>'
+    + '<p class="mgbody">Thursday, August 20 at 2:00pm, with Aisha Bello.</p>'
+    + '<p class="mgbody" style="margin-top:14px">Would you like to move it to '
+    + '<strong>Mon, Aug 17 at 10:00am</strong> instead?</p>'
+    + '<div class="choices">'
+    + '<button class="cta">Move my call to Mon, Aug 17 at 10:00am</button>'
+    + '<button class="btn-out">Keep my August 20 time</button>'
+    + '</div></div>');
+
+/* ---------- manage / cancel ---------- */
+const MG = ["Your booking", "Confirming a cancel", "Cancelled"];
+let mg = 0, mgOpen = false, rSel = null, movedTo = null;
+// The time the booking currently sits at. A reschedule rewrites it, so the page
+// a lead comes back to shows the call they actually have rather than the one
+// they used to have.
+let bookedDay = "Monday, August 17", bookedTime = "10:00am", bookedIso = "2026-08-17";
+
+// The advisor the round robin landed on. A reassignment would change it, so the
+// page reads whoever holds the booking now rather than who took it originally.
+const ADVISOR = { first: "Aisha", name: "Aisha Bello", role: "Senior Loan Advisor", initials: "AB" };
+const LEAD_PHONE = "(215) 555-0100";
+
+// "in three days" is the unit a person actually thinks in when a reminder pops
+// up, and it is the one thing the calendar entry beside it cannot tell them.
+const TODAY_ISO = "2026-08-14";
+const COUNT = ["", "one", "two", "three", "four", "five", "six", "seven"];
+function inWords(iso){
+  const days = Math.round(
+    (new Date(iso+"T00:00:00Z") - new Date(TODAY_ISO+"T00:00:00Z")) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
+  return "in " + (COUNT[days] || days) + " days";
+}
+
+// The left column: what this booking IS. The time is set as the largest thing
+// on the page because it is the answer to the question that made someone open
+// the link, days after they booked and usually from a calendar reminder.
+function mgPanelHTML(cancelled){
+  return panelHTML(
+    '<p class="mgday">'+bookedDay+'</p>'
+    + '<p class="mgtime'+(cancelled ? ' off' : '')+'">'+bookedTime+'</p>'
+    + (cancelled ? '<p class="cancelled">Cancelled</p>' : ''),
+    { noBlurb: true },
+  );
+}
+
+// The advisor sits directly above the sentence that names them, so the name is
+// read before it is used rather than a column away from it.
+const advisorHTML = '<div class="withwho">'
+  + '<div class="av">'+ADVISOR.initials+'</div>'
+  + '<div><p class="adv-name">'+ADVISOR.name+'</p>'
+  + '<p class="adv-role">'+ADVISOR.role+'</p></div>'
+  + '</div>';
+
+const CANCEL_REASONS = ["I no longer need the call","I booked by mistake",
+  "I found what I needed elsewhere","Other"];
+
+function renderMg(){
+  document.getElementById("mgSteps").innerHTML = MG.map((s,i)=>
+    '<button class="stepbtn" aria-pressed="'+(i===mg)+'" data-m="'+i+'">'+s+'</button>').join("");
+  document.querySelectorAll("#mgSteps .stepbtn").forEach(b =>
+    b.onclick = () => { mg = Number(b.dataset.m); mgOpen = false; rSel = null; movedTo = null; renderMg(); });
+
+  const m = document.getElementById("manageMount");
+  document.getElementById("mgPanel").innerHTML = mgPanelHTML(mg === 2);
+  m.className = "right tight";
+
+  if (mg === 2){
+    m.innerHTML = '<p class="mghead">This booking is cancelled</p>'
+      + '<p class="mgbody">Changed your mind? You can grab a new time with the same team whenever you are ready.</p>'
+      + '<div class="actions"><button class="cta">Book a new time</button></div>';
+    return;
+  }
+  if (mg === 1){
+    m.innerHTML = '<div class="confirmbox"><p>Cancel this booking?</p>'
+      + '<p class="mgbody">This releases your time and cannot be undone.</p>'
+      + '<p class="rlegend" style="margin-top:18px">Why are you cancelling?</p>'
+      + '<div class="reasons">'
+      + CANCEL_REASONS.map((rr,i)=>'<label class="reason"><input type="radio" name="cr"'+(i===0?" checked":"")+'> '+rr+'</label>').join("")
+      + '</div>'
+      + '<div class="actions">'
+      + '<button class="btn-out btn-danger" id="yesCancel">Yes, cancel it</button>'
+      + '<button class="btn-out" id="keepIt">Keep my booking</button>'
+      + '</div></div>';
+    document.getElementById("yesCancel").onclick = () => { mg = 2; renderMg(); };
+    document.getElementById("keepIt").onclick = () => { mg = 0; renderMg(); };
+    return;
+  }
+  // Reschedule expands in place rather than reopening the booking flow: the lead is
+  // already looking at the booking they want to move, so sending them back to the
+  // start would lose that context and make them re-identify themselves.
+  //
+  // Once they commit to it, the panel commits with them. Close and Cancel booking
+  // come off, so the only two things in front of them are the reason and the new
+  // time, and cancelling is not sitting a few pixels from the times they are
+  // reading. One quiet link goes back, for a tap that was a mistake.
+  m.innerHTML =
+    // Picking a time is the whole point of the panel, so it has to end in a
+    // stated outcome. The notice names the new time and says what happens to the
+    // old one, because "moved" on its own leaves a lead wondering whether two
+    // invites are now sitting in their calendar.
+    (movedTo
+      ? '<div class="moved" role="status">'
+        + '<p class="t">Your call is moved</p>'
+        + '<p class="b">It is now '+movedTo+'. A new invite is on its way to '
+        + 'dana@example.com, and the time you were holding has been released.</p>'
+        + '</div>'
+      : '')
+    + (mgOpen
+        ? '<button class="back" id="keepTime">'+ICON.chev+' Keep my current time</button>'
+          + '<p class="rlegend" style="margin-top:12px">Why are you rescheduling?</p>'
+          + '<div class="reasons">'
+          + ["Something came up","I need a different time","I need more time to prepare","Other"]
+              .map((rr,i)=>'<label class="reason"><input type="radio" name="rr"'+(i===0?" checked":"")+'> '+rr+'</label>').join("")
+          + '</div>'
+          + '<p class="rlegend" style="margin-top:18px">Pick a new time</p>'
+          + '<div id="rPicker" style="display:contents"></div>'
+        // No pronoun anywhere in this copy, deliberately. Nothing in the agent
+          // record says how a person wants to be referred to, a name does not
+          // tell you, and a guess misgenders a colleague in front of a customer.
+          // Writing it so the question never comes up costs nothing and cannot
+          // be wrong; a pronouns field would mean asking staff to disclose
+          // something just to make a sentence work.
+        : advisorHTML
+          // The heading carries who and when; the line under it carries how. It
+          // used to repeat "will call you" in both, which read as a stutter.
+          + '<p class="mghead">'+ADVISOR.first+', '+inWords(bookedIso)+'</p>'
+          + '<p class="mgbody">'
+          + sentenceBreaks('Your advisor will call you at '+LEAD_PHONE+'. If your plans change, you can move it or cancel it.')
+          + '</p>'
+          + '<div class="actions">'
+          + '<button class="btn-out" id="resched">Reschedule</button>'
+          + '<button class="btn-text" id="startCancel">Cancel booking</button>'
+          + '</div>'
+          // Pinned to the bottom of the column. The height is set by the panel
+          // beside it, so rather than centring the block and leaving a gap top
+          // and bottom, the space carries the thing worth reading on the day.
+          + '<div class="prep">'
+          + '<p class="prep-t">Before the call</p>'
+          + '<p class="prep-b">'+PREP_COPY+'</p>'
+          + '</div>');
+
+  if (mgOpen){
+    document.getElementById("keepTime").onclick = () => { mgOpen = false; rSel = null; renderMg(); };
+    // The same picker the booking flow uses, so a lead moving a call meets the
+    // day-then-times sequence they already went through to make it.
+    renderPicker(document.getElementById("rPicker"), {
+      days: DAYS,
+      sel: rSel,
+      times: TIMES.slice(0, 6),
+      onDay: (i) => { rSel = i; renderMg(); },
+      onTime: (t) => {
+        bookedIso = DAYS[rSel].iso;
+        bookedDay = prettyLong(DAYS[rSel].iso);
+        bookedTime = t;
+        movedTo = bookedDay + " at " + t;
+        mgOpen = false;
+        rSel = null;
+        renderMg();
+      },
+    });
+    return;
+  }
+  document.getElementById("startCancel").onclick = () => { mg = 1; mgOpen = false; renderMg(); };
+  document.getElementById("resched").onclick = () => { mgOpen = true; rSel = null; movedTo = null; renderMg(); };
+}
+renderMg();
+
+// Any centered message written straight into the markup goes through the same
+// helper the rendered ones use, so there is one rule and not a hand placed break.
+document.querySelectorAll("[data-sentences]").forEach(el => {
+  el.innerHTML = sentenceBreaks(el.textContent.trim());
+});
+
+function setTheme(t){
+  document.documentElement.setAttribute('data-theme', t==='dark'?'dark':'light');
+  document.getElementById('lt').setAttribute('aria-pressed', String(t!=='dark'));
+  document.getElementById('dk').setAttribute('aria-pressed', String(t==='dark'));
+}
+setTheme('light');
+</script>
+</body>
+</html>
