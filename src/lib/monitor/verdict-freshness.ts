@@ -96,3 +96,76 @@ export function lowVolumeReachedVerdict(result: LowVolumeResult): boolean {
 export function oooProtectionReachedVerdict(result: OooProtectionResult): boolean {
   return result.status !== "unreadable";
 }
+
+/**
+ * A detector that CANNOT reach a verdict yet, and is deliberately not paging (#1561).
+ *
+ * The verdict watch above pages a detector that has stopped concluding, which is
+ * right, and before cutover two of them have never been able to conclude at all.
+ * The page named no action anybody could take this morning (L111) and repeated
+ * every 24 hours, which is how a channel gets ignored (L36).
+ *
+ * Parking is deliberately a hand written registry rather than something derived
+ * from a live signal. "The roster is dark" is not a fact any single query returns
+ * honestly, and a park that switched itself off on a misread would take a real
+ * safety net down silently. An entry here is a person saying, in the repo, that
+ * they know this net is off and which issue turns it back on.
+ *
+ * Two rules make the park safe, both enforced by scripts/test-detector-park.ts:
+ * every entry names the issue that arms it again, and the watchdog PAGES when a
+ * parked detector reaches a verdict anyway. The second is what stops the park
+ * outliving its reason: cutover looks exactly like a parked detector starting to
+ * conclude, and nobody has to remember anything for it to be noticed.
+ */
+export interface ParkedDetector {
+  /** Why it cannot conclude, in the terms a reader of the whisper needs. */
+  reason: string;
+  /** The issue that takes it back out. Required: a park with no issue is a note to nobody. */
+  issue: number;
+}
+
+export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, ParkedDetector>> = {
+  [AVAILABILITY_TRUTH_VERDICT_LANE]: {
+    reason:
+      "the roster is dark before cutover (#1272), so the bucket the probe picks each tick is offering no times to check",
+    issue: 1562,
+  },
+  [FAILURE_RATE_VERDICT_LANE]: {
+    reason:
+      "the only booking attempts are the smoke canary's, roughly 3 an hour against a floor of 20 in a rolling hour, so no hour is ever large enough to quote a rate from",
+    issue: 1562,
+  },
+};
+
+/** The park entry for a lane, or null when it is armed. */
+export function parkedDetector(lane: string): ParkedDetector | null {
+  return PARKED_VERDICT_DETECTORS[lane as DetectorVerdictLane] ?? null;
+}
+
+/**
+ * What the watchdog should do about one verdict lane this tick.
+ *
+ *  - `armed`  the ordinary path: judge it against its bound and page if blind.
+ *  - `parked` known blind, deliberately quiet, and reported as parked so the
+ *             missing net is visible rather than merely silent.
+ *  - `unpark` parked, and yet it has just concluded. The reason for the park has
+ *             stopped being true, so this pages: it is the arrival of the very
+ *             traffic the park was waiting for.
+ *
+ * An UNREADABLE stamp (the epoch-0 sentinel, #1172) is not a verdict. Reading it
+ * as one would arm a detector off a corrupt record, which is the opposite of what
+ * every other reader of that sentinel does.
+ */
+export type DetectorParkState = "armed" | "parked" | "unpark";
+
+export function detectorParkState(
+  lane: string,
+  lastVerdictMs: number | null | undefined,
+  nowMs: number,
+  boundMs: number,
+): DetectorParkState {
+  if (!parkedDetector(lane)) return "armed";
+  if (lastVerdictMs === null || lastVerdictMs === undefined) return "parked";
+  if (!Number.isFinite(lastVerdictMs) || lastVerdictMs <= 0) return "parked";
+  return nowMs - lastVerdictMs < boundMs ? "unpark" : "parked";
+}

@@ -74,6 +74,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A cron lane is not running; it stamps a heartbeat again and the watchdog can see it.",
   },
   {
+    key: "detector_unpark:*",
+    kind: "condition",
+    why:
+      "A parked detector has started reaching verdicts, so it is switched off while able to watch; deleting its registry entry arms it and the watchdog sees that on its next pass.",
+  },
+  {
     key: "completion_sweep_saturated",
     kind: "condition",
     why: "The completion sweep cannot drain its backlog; a tick under the cap ends it.",
@@ -450,6 +456,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "from the coverage panel, so it is a once-a-day worklist rather than something " +
       "to act on tonight. Its page sibling owns the urgent half and clears on its own " +
       "measured zero; this half has nothing to end.",
+  },
+  {
+    key: "detector_parked",
+    kind: "info",
+    why:
+      "Names the monitoring checks that are deliberately off because they cannot conclude before cutover; it is repeated so the missing cover stays visible, and there is no incident to end. Its page sibling, detector_unpark, owns the half that needs acting on.",
   },
   {
     key: "thin_tier_staffing",
