@@ -1030,6 +1030,19 @@ export default async function AdminPage({
       </section>
       )}
 
+      {/* Availability grid (#1302): which hours of which days anyone can book */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Availability</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          Every hour of the next fortnight and whether a lead could book it, saying
+          which of the four reasons it was when they could not, so an hour nobody is
+          rostered for is not mistaken for one that is simply full.
+        </p>
+        <a href="/admin/availability" className={btnSecondaryCls}>
+          View availability
+        </a>
+      </section>
+
       {/* Staffing depth (thin-tier early warning, #584) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Staffing depth</h2>
