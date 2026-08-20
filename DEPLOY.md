@@ -384,3 +384,13 @@ The Postgres database is managed by Supabase (project **`slate`**, ref
   ad-hoc SQL.
 - After any restore, re-hit `/api/health` and run the post-deploy verify steps
   above to confirm the app and crons reconnected.
+
+**Recovery objectives: RPO 24 hours, RTO same business day.** PITR is not
+enabled, so a restore loses everything written since the most recent nightly
+backup. A database-only restore is guaranteed to leave Slate disagreeing with
+Google Calendar, with the leads' inboxes and with Regal, because a booking is
+four writes and only one of them rolls back. **`docs/dr-runbook.md`** is the
+step by step: the restore, the reconciliation order (re-register the push
+channels FIRST, they fail silently otherwise), the bookings that have to be
+reconstructed by hand, and what to do about the downstream systems that cannot
+be rolled back at all. Read it before starting a restore, not during one.

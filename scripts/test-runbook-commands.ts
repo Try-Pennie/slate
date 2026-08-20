@@ -50,6 +50,7 @@ const RUNBOOKS = [
   "docs/pii-erasure-runbook.md",
   "docs/pii-retention.md",
   "docs/smoke-test-runbook.md",
+  "docs/dr-runbook.md",
 ];
 
 const blocks = RUNBOOKS.flatMap((rel) =>
