@@ -85,6 +85,44 @@ function coversInterval(agent: CoverageAgent, startMs: number, endMs: number): b
   return false;
 }
 
+/**
+ * Coverage for ONE concrete date under ONE window (#1581).
+ *
+ * The per-date half of `coverageForWeek`, extracted so a caller that resolves
+ * its window per DATE (the availability grid, whose dates can carry a #1363
+ * exception) judges each hour through the same predicate as the callers that
+ * resolve it per weekday. A second walk beside this one would be a second
+ * definition of "who is on shift", agreeing right up until the two drifted
+ * (L107). A `null` window is a closed day, whose `hours` stay empty so it can
+ * never be read as a coverage gap.
+ */
+export function coverageForDate(input: {
+  window: { start_minute: number; end_minute: number } | null;
+  /** The ORG's zone. */
+  zone: string;
+  /** yyyy-mm-dd of the date being judged, in the org's zone. */
+  dateIso: string;
+  agents: CoverageAgent[];
+}): CoverageDay {
+  const date = DateTime.fromISO(input.dateIso, { zone: input.zone }).startOf("day");
+  if (input.window === null) return { weekday: date.weekday, is_open: false, hours: [] };
+
+  const hours: CoverageHour[] = [];
+  // Whole hours only: a readout is for reading, and the org's window is set in
+  // minutes but nobody staffs to the quarter hour.
+  const firstHour = Math.floor(input.window.start_minute / 60);
+  const lastHour = Math.ceil(input.window.end_minute / 60) - 1;
+  for (let hour = firstHour; hour <= lastHour; hour++) {
+    const startMs = date.set({ hour, minute: 0, second: 0, millisecond: 0 }).toMillis();
+    const endMs = date.set({ hour, minute: 0, second: 0, millisecond: 0 })
+      .plus({ hours: 1 })
+      .toMillis();
+    const count = input.agents.filter((a) => coversInterval(a, startMs, endMs)).length;
+    hours.push({ hour, agents: count });
+  }
+  return { weekday: date.weekday, is_open: true, hours };
+}
+
 export function coverageForWeek(input: {
   businessHours: { weekday: number; is_open: boolean; start_minute: number; end_minute: number }[];
   /** The ORG's zone. */
@@ -102,26 +140,14 @@ export function coverageForWeek(input: {
   let uncoveredHours = 0;
 
   for (const bh of [...input.businessHours].sort((a, b) => a.weekday - b.weekday)) {
-    if (!bh.is_open) {
-      days.push({ weekday: bh.weekday, is_open: false, hours: [] });
-      continue;
-    }
-    const date = monday.plus({ days: bh.weekday - 1 });
-    const hours: CoverageHour[] = [];
-    // Whole hours only: a readout is for reading, and the org's window is set in
-    // minutes but nobody staffs to the quarter hour.
-    const firstHour = Math.floor(bh.start_minute / 60);
-    const lastHour = Math.ceil(bh.end_minute / 60) - 1;
-    for (let hour = firstHour; hour <= lastHour; hour++) {
-      const startMs = date.set({ hour, minute: 0, second: 0, millisecond: 0 }).toMillis();
-      const endMs = date.set({ hour, minute: 0, second: 0, millisecond: 0 })
-        .plus({ hours: 1 })
-        .toMillis();
-      const count = agents.filter((a) => coversInterval(a, startMs, endMs)).length;
-      if (count === 0) uncoveredHours++;
-      hours.push({ hour, agents: count });
-    }
-    days.push({ weekday: bh.weekday, is_open: true, hours });
+    const day = coverageForDate({
+      window: bh.is_open ? { start_minute: bh.start_minute, end_minute: bh.end_minute } : null,
+      zone: input.zone,
+      dateIso: monday.plus({ days: bh.weekday - 1 }).toISODate() ?? "",
+      agents,
+    });
+    for (const h of day.hours) if (h.agents === 0) uncoveredHours++;
+    days.push({ ...day, weekday: bh.weekday });
   }
 
   return { ok: true, bookableAgents: agents.length, days, uncoveredHours };

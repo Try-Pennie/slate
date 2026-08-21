@@ -111,7 +111,9 @@ export function cellTitle(cell: GridCell, dayLabel: string, hour: number): strin
     case "beyond-horizon":
       return `${when}: past the booking horizon. ${plural(cell.agents, "agent is", "agents are")} on shift, and times are not offered this far ahead yet.`;
     case "closed":
-      return `${when}: the org is closed.`;
+      return cell.note === null
+        ? `${when}: the org is closed.`
+        : `${when}: the org is closed (${cell.note}).`;
     case "unknown":
       return `${when}: could not be checked, because the roster could not be read.`;
   }

@@ -23,7 +23,8 @@
  * drives every branch node-native.
  */
 import { DateTime } from "luxon";
-import type { CoverageDay } from "../booking/business-hours-coverage.ts";
+import { coverageForDate, type CoverageAgent, type CoverageDay } from "../booking/business-hours-coverage.ts";
+import { windowOnDate, type BusinessHoursException, type BusinessWindow } from "../booking/business-hours.ts";
 import { slotsWithinBusinessHours, type BusinessHoursRules } from "../availability/compute.ts";
 
 /** One column: a concrete date, so a real zone offset and that week's DST apply. */
@@ -39,13 +40,58 @@ export interface GridDayInput {
    */
   withinHorizon: boolean;
   /**
-   * This weekday's coverage, from `coverageForWeek` for the week this date falls
-   * in. `null` means the roster could not be READ, which is not zero agents:
-   * `loadCoverageAgents` throws rather than returning an empty pool precisely so
-   * that difference survives to here, and an unreadable roster rendered as
-   * "nobody covers this" sends somebody to fix a roster that was fine.
+   * This DATE's coverage, resolved through `windowOnDate` so a #1363 exception
+   * beats the weekly pattern. `null` means the roster could not be READ, which
+   * is not zero agents: `loadCoverageAgents` throws rather than returning an
+   * empty pool precisely so that difference survives to here, and an unreadable
+   * roster rendered as "nobody covers this" sends somebody to fix a roster that
+   * was fine.
    */
   coverage: CoverageDay | null;
+  /**
+   * The note of the exception that closed this date ("Christmas Day"), or null
+   * for a day closed by the weekly pattern, which has nothing to explain. The
+   * grid says why every other cell is empty, so a holiday closure says its name.
+   */
+  closedNote: string | null;
+}
+
+/**
+ * The grid's day inputs, one per date, each resolved through `windowOnDate`,
+ * the same judge the gate, the read-time filter and the empty-reason copy use
+ * (#1581). Before this the loader asked `coverageForWeek` about the weekly
+ * pattern alone, so on a date the org had closed the booker correctly told a
+ * lead we were shut while the grid rendered a staffing gap that did not exist.
+ *
+ * `agents: null` means the roster could not be read; every day's coverage is
+ * null so the whole grid renders as unmeasured rather than as empty.
+ */
+export function gridDayInputs(input: {
+  hours: { rules: BusinessWindow[]; exceptions: BusinessHoursException[] };
+  /** The ORG's zone. */
+  zone: string;
+  /** yyyy-mm-dd dates in the org's zone, in display order. */
+  dates: string[];
+  /** yyyy-mm-dd of the first date BEYOND the booking horizon. */
+  horizonEndIso: string;
+  agents: CoverageAgent[] | null;
+}): GridDayInput[] {
+  return input.dates.map((iso) => {
+    const weekday = DateTime.fromISO(iso, { zone: input.zone }).weekday;
+    const window = windowOnDate(input.hours, iso, weekday);
+    const exception = input.hours.exceptions.find((e) => e.on_date === iso);
+    return {
+      iso,
+      weekday,
+      // yyyy-mm-dd compares lexicographically in date order.
+      withinHorizon: iso < input.horizonEndIso,
+      coverage:
+        input.agents === null
+          ? null
+          : coverageForDate({ window, zone: input.zone, dateIso: iso, agents: input.agents }),
+      closedNote: window === null && exception ? exception.note : null,
+    };
+  });
 }
 
 /**
@@ -57,8 +103,10 @@ export interface GridDayInput {
 export type GridCell =
   /** The roster could not be read, so nothing about this hour was measured. */
   | { kind: "unknown" }
-  /** The org is not open then. Nothing to staff, nothing to fix. */
-  | { kind: "closed" }
+  /** The org is not open then. Nothing to staff, nothing to fix. `note` names
+   *  the exception that closed the whole date ("Christmas Day"); null for the
+   *  weekly pattern, or for the hours outside an open day's own window. */
+  | { kind: "closed"; note: string | null }
   /** Open, and no bookable agent is on shift. A schedule or a hire fixes it. */
   | { kind: "unrostered" }
   /** Staffed, but past the booking horizon, so no times are offered yet. */
@@ -147,11 +195,12 @@ export function buildAvailabilityGrid(input: {
     weekday: day.weekday,
     cells: hours.map((hour): GridCell => {
       if (!measurable || day.coverage === null) return { kind: "unknown" };
-      if (!day.coverage.is_open) return { kind: "closed" };
+      if (!day.coverage.is_open) return { kind: "closed", note: day.closedNote };
       const entry = day.coverage.hours.find((h) => h.hour === hour);
       // An open day still has hours outside its own window, and those are closed
-      // in exactly the sense the whole column is: the org is not open then.
-      if (!entry) return { kind: "closed" };
+      // in exactly the sense the whole column is: the org is not open then. No
+      // note: only a whole-date exception has a name to give.
+      if (!entry) return { kind: "closed", note: null };
       if (entry.agents === 0) return { kind: "unrostered" };
       if (!day.withinHorizon) return { kind: "beyond-horizon", agents: entry.agents };
       const buckets = input.bucketsByDayHour.get(dayHourKey(day.iso, hour)) ?? 0;

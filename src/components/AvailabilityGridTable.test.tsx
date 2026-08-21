@@ -27,7 +27,7 @@ const ALL_STATES: GridCell[] = [
   { kind: "booked", agents: 3 },
   { kind: "unrostered" },
   { kind: "beyond-horizon", agents: 2 },
-  { kind: "closed" },
+  { kind: "closed", note: "Christmas Day" },
 ];
 
 describe("AvailabilityGridTable (#1302)", () => {
