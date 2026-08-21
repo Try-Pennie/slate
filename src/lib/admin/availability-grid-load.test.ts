@@ -27,12 +27,19 @@ const hours = vi.hoisted(() => ({
 }));
 const coverage = vi.hoisted(() => ({
   loadCoverageAgents: vi.fn(async () => [
-    { timezone: "America/New_York", rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 9 * 60, end_minute: 11 * 60 })) },
-    { timezone: "America/New_York", rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 9 * 60, end_minute: 11 * 60 })) },
+    { userId: "a1", timezone: "America/New_York", rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 9 * 60, end_minute: 11 * 60 })) },
+    { userId: "a2", timezone: "America/New_York", rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 9 * 60, end_minute: 11 * 60 })) },
   ]),
 }));
 const slots = vi.hoisted(() => ({
   rows: [] as { payload: unknown }[],
+  error: null as { message: string } | null,
+}));
+// Approved time off (#1582): what the ooo_requests read returns. The mock chain
+// mirrors the real query's shape (select/eq/lt/gt/range) so the wiring is the
+// thing under test, not a stub of it.
+const ooo = vi.hoisted(() => ({
+  rows: [] as { user_id: string; starts_at: string; ends_at: string }[],
   error: null as { message: string } | null,
 }));
 
@@ -45,7 +52,19 @@ vi.mock("@/lib/booking/business-hours-coverage-load", async () => {
 });
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
-    from: () => ({ select: async () => ({ data: slots.rows, error: slots.error }) }),
+    from: (table: string) => {
+      if (table === "ooo_requests") {
+        const q = {
+          select: () => q,
+          eq: () => q,
+          lt: () => q,
+          gt: () => q,
+          range: async () => ({ data: ooo.rows, error: ooo.error }),
+        };
+        return q;
+      }
+      return { select: async () => ({ data: slots.rows, error: slots.error }) };
+    },
   }),
 }));
 
@@ -60,6 +79,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   slots.rows = [];
   slots.error = null;
+  ooo.rows = [];
+  ooo.error = null;
 });
 
 describe("loadAvailabilityGrid (#1302)", () => {
@@ -110,6 +131,48 @@ describe("loadAvailabilityGrid (#1302)", () => {
     expect(today.kind).toBe("open");
     expect(today.kind === "open" && today.buckets).toBe(2);
     expect(today.kind === "open" && today.agents).toBe(2);
+  });
+
+  it("attaches approved leave to the right agent and discounts the hours it overlaps (#1582)", async () => {
+    // a1 is away for the whole of today; a2 is present. Keyed per userId: leave
+    // attached to nobody would count 2, and to everybody would read as away.
+    ooo.rows = [
+      { user_id: "a1", starts_at: "2026-08-19T00:00:00.000-04:00", ends_at: "2026-08-20T00:00:00.000-04:00" },
+    ];
+
+    const grid = await loadAvailabilityGrid(NOW);
+    const today = grid.days[0].cells[0];
+
+    expect(today.kind).toBe("booked");
+    expect(today.kind === "booked" && today.agents).toBe(1);
+    // Tomorrow the leave is over and both count again.
+    const tomorrow = grid.days[1].cells[0];
+    expect(tomorrow.kind === "booked" && tomorrow.agents).toBe(2);
+  });
+
+  it("renders a fully-away hour as away, not as booked out (#1582)", async () => {
+    ooo.rows = ["a1", "a2"].map((user_id) => ({
+      user_id,
+      starts_at: "2026-08-19T00:00:00.000-04:00",
+      ends_at: "2026-08-20T00:00:00.000-04:00",
+    }));
+
+    const grid = await loadAvailabilityGrid(NOW);
+    const today = grid.days[0].cells[0];
+
+    expect(today.kind).toBe("away");
+    expect(today.kind === "away" && today.away).toBe(2);
+  });
+
+  it("says nothing was measured when the leave read fails (#1582)", async () => {
+    // Rendering an unreadable leave read as fully staffed would be the exact
+    // defect the leave read exists to fix, on the day it matters.
+    ooo.error = { message: "relation does not exist" };
+
+    const grid = await loadAvailabilityGrid(NOW);
+
+    expect(grid.measurable).toBe(false);
+    expect(grid.days.every((d) => d.cells.every((c) => c.kind === "unknown"))).toBe(true);
   });
 
   it("throws rather than reporting a quietly empty grid when the slot read fails", async () => {

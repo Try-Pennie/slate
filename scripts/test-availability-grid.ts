@@ -24,6 +24,7 @@ import type { CoverageDay } from "../src/lib/booking/business-hours-coverage.ts"
 import { cellTitle } from "../src/lib/admin/availability-grid-copy.ts";
 import type { BusinessHoursException } from "../src/lib/booking/business-hours.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { DateTime } from "luxon";
 
 const ZONE = "America/New_York";
 
@@ -315,6 +316,67 @@ const day = (over: Partial<GridDayInput> = {}): GridDayInput => ({
     agents: null,
   });
   eq(days[0].coverage, null, "a null pool is could-not-check, never an empty roster");
+}
+
+// --- approved time off is its own cell state (#1582) ------------------------------
+//
+// A day the whole team is away used to render as fully staffed and, with nothing
+// offered, read as `booked`: the opposite conclusion from the true one. Away is
+// its own state rather than a fold into `unrostered`, because being on approved
+// leave is a different fact from never having been scheduled.
+{
+  const zone = ZONE;
+  const at = (iso: string, h: number) =>
+    DateTime.fromISO(iso, { zone }).set({ hour: h }).toMillis();
+  const rules = [{ weekday: 5, start_minute: 9 * 60, end_minute: 12 * 60 }];
+  const shift = [{ weekday: 5, start_minute: 9 * 60, end_minute: 12 * 60 }];
+
+  // Two rostered agents; one away all day, one away for the first hour only.
+  const days = gridDayInputs({
+    hours: { rules, exceptions: [] },
+    zone,
+    dates: ["2026-12-25"],
+    horizonEndIso: "2026-12-27",
+    agents: [
+      { timezone: zone, rules: shift, out: [{ startMs: at("2026-12-25", 0), endMs: at("2026-12-26", 0) }] },
+      { timezone: zone, rules: shift, out: [{ startMs: at("2026-12-25", 9), endMs: at("2026-12-25", 10) }] },
+    ],
+  });
+  const grid = buildAvailabilityGrid({ days, bucketsByDayHour: new Map() });
+  const [nine, ten, eleven] = grid.days[0].cells;
+
+  eq(nine.kind, "away", "an hour where everyone rostered is on leave reads as away");
+  assert(nine.kind === "away" && nine.away === 2, "and says how many people are away");
+  eq(ten.kind, "booked", "an hour with someone back is judged on who remains");
+  assert(ten.kind === "booked" && ten.agents === 1, "counting only the agents actually there");
+  assert(eleven.kind === "booked" && eleven.agents === 1, "for every hour of the leave");
+
+  assert(
+    cellTitle(nine, "Friday 25 December", 9).includes("time off"),
+    "the away cell's sentence names approved time off",
+  );
+
+  // Away wins over the horizon: "everybody is away" is true and actionable
+  // whether or not times are offered that far ahead yet.
+  const far = buildAvailabilityGrid({
+    days: gridDayInputs({
+      hours: { rules, exceptions: [] },
+      zone,
+      dates: ["2026-12-25"],
+      horizonEndIso: "2026-12-25",
+      agents: [
+        { timezone: zone, rules: shift, out: [{ startMs: at("2026-12-25", 0), endMs: at("2026-12-26", 0) }] },
+      ],
+    }),
+    bucketsByDayHour: new Map(),
+  });
+  assert(
+    far.days[0].cells.every((c) => c.kind === "away"),
+    "a fully-away day beyond the horizon still reads as away",
+  );
+
+  // And the summary counts it.
+  eq(gridTotals(grid).away, 1, "the totals line carries the away count");
 }
 
 // --- the horizon boundary survives the per-date path ------------------------------

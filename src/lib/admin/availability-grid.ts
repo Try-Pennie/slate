@@ -8,8 +8,9 @@
  *
  * The reason a grid is worth building rather than another alert: an empty hour
  * has several DIFFERENT causes, and they need different people to do different
- * things. The org is shut. Nobody is rostered. Everybody rostered is booked. Or
- * we could not read the roster at all. Those arrive at every existing surface as
+ * things. The org is shut. Nobody is rostered. Everybody rostered is away on
+ * approved leave. Everybody rostered is booked. Or we could not read the roster
+ * at all. Those arrive at every existing surface as
  * the same silence, and this is the surface that separates them.
  *
  * It computes NO coverage of its own. `coverageForWeek` (#1297) already answers
@@ -97,8 +98,8 @@ export function gridDayInputs(input: {
 /**
  * What one hour of one day is, and why.
  *
- * Six states rather than a number, because the number is the least useful part:
- * zero is the answer in four of these and each one is somebody else's job.
+ * Seven states rather than a number, because the number is the least useful
+ * part: zero is the answer in five of these and each one is somebody else's job.
  */
 export type GridCell =
   /** The roster could not be read, so nothing about this hour was measured. */
@@ -109,6 +110,10 @@ export type GridCell =
   | { kind: "closed"; note: string | null }
   /** Open, and no bookable agent is on shift. A schedule or a hire fixes it. */
   | { kind: "unrostered" }
+  /** Open and rostered, but everyone scheduled has approved time off (#1582).
+   *  Its own state, never folded into `unrostered`: being away is a different
+   *  fact from never having been scheduled, and it needs a different person. */
+  | { kind: "away"; away: number }
   /** Staffed, but past the booking horizon, so no times are offered yet. */
   | { kind: "beyond-horizon"; agents: number }
   /** Staffed, inside the horizon, and no bucket is offering a start. Booked out. */
@@ -201,6 +206,9 @@ export function buildAvailabilityGrid(input: {
       // in exactly the sense the whole column is: the org is not open then. No
       // note: only a whole-date exception has a name to give.
       if (!entry) return { kind: "closed", note: null };
+      // Away is judged before the horizon: "everybody scheduled is away" is
+      // true and actionable whether or not times are offered this far ahead yet.
+      if (entry.agents === 0 && entry.away > 0) return { kind: "away", away: entry.away };
       if (entry.agents === 0) return { kind: "unrostered" };
       if (!day.withinHorizon) return { kind: "beyond-horizon", agents: entry.agents };
       const buckets = input.bucketsByDayHour.get(dayHourKey(day.iso, hour)) ?? 0;
@@ -218,6 +226,7 @@ export function gridTotals(grid: AvailabilityGrid): Record<GridCell["kind"], num
     unknown: 0,
     closed: 0,
     unrostered: 0,
+    away: 0,
     "beyond-horizon": 0,
     booked: 0,
     open: 0,

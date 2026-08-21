@@ -59,7 +59,8 @@ const draw = (coverage: CoverageReadout, state: Record<string, unknown> = { erro
 const openDay = (weekday: number, hours: { hour: number; agents: number }[]) => ({
   weekday,
   is_open: true,
-  hours,
+  // The editor's readout never loads leave, so away is always zero here (#1582).
+  hours: hours.map((h) => ({ ...h, away: 0 })),
 });
 
 describe("BusinessHoursForm", () => {

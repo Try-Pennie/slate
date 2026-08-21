@@ -31,7 +31,7 @@ import type { CoverageAgent } from "@/lib/booking/business-hours-coverage";
  */
 export async function loadCoverageAgents(
   db: ReturnType<typeof supabaseAdmin>,
-): Promise<CoverageAgent[]> {
+): Promise<(CoverageAgent & { userId: string })[]> {
   const { data: pool, error } = await db
     .from("users")
     .select("id")
@@ -39,7 +39,7 @@ export async function loadCoverageAgents(
     .is("deactivated_at", null)
     .eq("is_test", false);
   if (error) throw new Error(`coverage pool read failed: ${error.message}`);
-  const poolIds = new Set(((pool ?? []) as { id: string }[]).map((u) => u.id));
+  const poolIds = ((pool ?? []) as { id: string }[]).map((u) => u.id);
 
   const { schedules, rules } = await loadAllWorkingHours(db);
   const rulesBySchedule = new Map<
@@ -51,19 +51,21 @@ export async function loadCoverageAgents(
     list.push({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute });
     rulesBySchedule.set(r.schedule_id, list);
   }
+  const scheduleByUser = new Map(schedules.map((sch) => [sch.user_id, sch]));
 
-  const agents: CoverageAgent[] = schedules
-    .filter((sch) => poolIds.has(sch.user_id))
-    .map((sch) => ({ timezone: sch.timezone, rules: rulesBySchedule.get(sch.id) ?? [] }));
-
-  // An agent in the pool with no schedule row still counts: they are bookable, they
+  // One entry per pool member, keyed by who they are, so a caller that joins
+  // per-agent facts on (approved time off, #1582) attaches them to the right
+  // person. An agent with no schedule row still counts: they are bookable, they
   // just cover nothing. Dropping them would shrink the denominator and make a
   // half-rostered pool look fully staffed.
-  const scheduleless = poolIds.size - agents.length;
-  for (let i = 0; i < Math.max(0, scheduleless); i++) {
-    agents.push({ timezone: BUSINESS_ZONE, rules: [] });
-  }
-  return agents;
+  return poolIds.map((userId) => {
+    const sch = scheduleByUser.get(userId);
+    return {
+      userId,
+      timezone: sch?.timezone ?? BUSINESS_ZONE,
+      rules: sch ? (rulesBySchedule.get(sch.id) ?? []) : [],
+    };
+  });
 }
 
 /** The Monday of the current week in the org's zone, as `coverageForWeek` wants it.

@@ -38,13 +38,25 @@ export interface CoverageRule {
 export interface CoverageAgent {
   timezone: string;
   rules: CoverageRule[];
+  /**
+   * Approved time off, as absolute intervals (#1582). Half-open, matching the
+   * overlap convention coverage reassignment reads (#1236): leave that merely
+   * abuts an hour does not discount it. Optional because only the availability
+   * grid loads leave today; a caller that does not pass it is judged exactly as
+   * before, never as if everyone were present when nobody checked.
+   */
+  out?: { startMs: number; endMs: number }[];
 }
 
 export interface CoverageHour {
   /** Hour of the day in the ORG's zone. */
   hour: number;
-  /** How many bookable agents are on shift for that whole hour. */
+  /** How many bookable agents are on shift for that whole hour AND not away. */
   agents: number;
+  /** How many of the rostered are on approved time off overlapping this hour.
+   *  Its own number, never a silent decrement: "everybody scheduled is away"
+   *  and "nobody was ever scheduled" are different facts for different people. */
+  away: number;
 }
 
 export interface CoverageDay {
@@ -117,8 +129,13 @@ export function coverageForDate(input: {
     const endMs = date.set({ hour, minute: 0, second: 0, millisecond: 0 })
       .plus({ hours: 1 })
       .toMillis();
-    const count = input.agents.filter((a) => coversInterval(a, startMs, endMs)).length;
-    hours.push({ hour, agents: count });
+    // Rostered first, then partitioned by leave: an agent never on shift for the
+    // hour is unrostered there, not away, or a day off would double-report.
+    const rostered = input.agents.filter((a) => coversInterval(a, startMs, endMs));
+    const away = rostered.filter((a) =>
+      (a.out ?? []).some((o) => o.startMs < endMs && o.endMs > startMs),
+    ).length;
+    hours.push({ hour, agents: rostered.length - away, away });
   }
   return { weekday: date.weekday, is_open: true, hours };
 }

@@ -19,6 +19,7 @@ import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { type CoverageAgent } from "@/lib/booking/business-hours-coverage";
 import { loadCoverageAgents } from "@/lib/booking/business-hours-coverage-load";
+import { approvedTimeOffIntervals } from "@/lib/ooo/approved-overlap";
 import { HORIZON_DAYS } from "@/lib/availability/slot-cache";
 import {
   buildAvailabilityGrid,
@@ -47,10 +48,20 @@ export async function loadAvailabilityGrid(now: DateTime = DateTime.now()): Prom
 
   let agents: CoverageAgent[] | null;
   try {
-    agents = await loadCoverageAgents(db);
+    const pool = await loadCoverageAgents(db);
+    // Approved time off across the whole range (#1582), attached per agent so a
+    // day the team is away renders as away rather than as fully staffed. Inside
+    // the same try: if leave cannot be read, rendering "fully staffed" would be
+    // the exact defect this read exists to fix, so the grid says "could not
+    // check" instead.
+    const out = await approvedTimeOffIntervals(
+      today.toISO() ?? "",
+      today.plus({ days: GRID_DAYS }).toISO() ?? "",
+    );
+    agents = pool.map((a) => ({ ...a, out: out.get(a.userId) ?? [] }));
   } catch {
-    // The pool or its rules could not be read. NOT an empty roster: every cell
-    // must say it was not measured.
+    // The pool, its rules, or its leave could not be read. NOT an empty roster:
+    // every cell must say it was not measured.
     agents = null;
   }
 
