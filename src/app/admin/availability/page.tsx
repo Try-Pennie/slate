@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
  * booked, and when they cannot, WHY.
  *
  * The whole reason it is a grid rather than another alert is that an empty hour
- * has four different causes and each one is a different person's job. Colour is
+ * has five different causes and each one is a different person's job. Colour is
  * never the sole signal: every cell carries a letter and a full sentence in its
  * title, so a colourblind reader and a screen reader both get the same answer.
  */
@@ -53,9 +53,10 @@ export default async function AvailabilityGridPage() {
           <h1 className="pn-h3 mt-2 text-pennie-beige">Availability</h1>
           <p className="mt-2 text-pennie-beige/75">
             Every hour of the next {GRID_DAYS} days, and whether a lead could book it.
-            When they could not, this says which of the four reasons it was, because
-            an hour nobody is rostered for and an hour that is simply full are
-            different problems for different people. All times are {zoneLabel}.
+            When they could not, this says which of the five reasons it was, because
+            an hour nobody is rostered for, an hour the whole team is away, and an
+            hour that is simply full are different problems for different people.
+            All times are {zoneLabel}.
           </p>
         </section>
 

@@ -1035,7 +1035,7 @@ export default async function AdminPage({
         <h2 className="mb-1 text-sm font-semibold">Availability</h2>
         <p className="mb-3 text-xs text-fg-muted">
           Every hour of the next fortnight and whether a lead could book it, saying
-          which of the four reasons it was when they could not, so an hour nobody is
+          which of the five reasons it was when they could not, so an hour nobody is
           rostered for is not mistaken for one that is simply full.
         </p>
         <a href="/admin/availability" className={btnSecondaryCls}>

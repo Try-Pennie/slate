@@ -26,6 +26,7 @@ const ALL_STATES: GridCell[] = [
   { kind: "open", agents: 3, buckets: 42 },
   { kind: "booked", agents: 3 },
   { kind: "unrostered" },
+  { kind: "away", away: 4 },
   { kind: "beyond-horizon", agents: 2 },
   { kind: "closed", note: "Christmas Day" },
 ];

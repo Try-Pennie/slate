@@ -61,6 +61,13 @@ export const CELL_TREATMENTS: CellTreatment[] = [
     cell: "bg-error/25 text-fg",
   },
   {
+    kind: "away",
+    mark: "A",
+    label: "Away",
+    meaning: "The org is open and everyone scheduled has approved time off.",
+    cell: "bg-[var(--pennie-yellow-2)] text-pennie-graphite",
+  },
+  {
     kind: "beyond-horizon",
     mark: "H",
     label: "Past the horizon",
@@ -108,6 +115,8 @@ export function cellTitle(cell: GridCell, dayLabel: string, hour: number): strin
       return `${when}: full. ${plural(cell.agents, "agent", "agents")} on shift and no pool has a time left.`;
     case "unrostered":
       return `${when}: nobody rostered. The org is open and no bookable agent is scheduled.`;
+    case "away":
+      return `${when}: everyone scheduled is away. ${plural(cell.away, "agent is", "agents are")} on approved time off.`;
     case "beyond-horizon":
       return `${when}: past the booking horizon. ${plural(cell.agents, "agent is", "agents are")} on shift, and times are not offered this far ahead yet.`;
     case "closed":

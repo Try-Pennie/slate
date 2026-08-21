@@ -22,10 +22,12 @@
 //     real data could tell a correct implementation from one that just compares minute
 //     numbers, which is why the cases below are synthetic.
 import {
+  coverageForDate,
   coverageForWeek,
   type CoverageAgent,
 } from "../src/lib/booking/business-hours-coverage.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { DateTime } from "luxon";
 
 const ZONE = "America/New_York";
 /** Monday 2026-06-08 is the reference week for every case below. */
@@ -186,6 +188,86 @@ const hoursFor = (res: { ok: true; days: { weekday: number; hours: { hour: numbe
       "a non-zero uncovered count is what makes the summary line say something is worth reading",
     );
   }
+}
+
+// --- approved time off discounts an hour, and is counted apart (#1582) -----------
+//
+// An agent on shift whose approved leave overlaps an hour cannot take a booking in
+// it, so counting them as coverage reports a fully-away day as fully staffed, the
+// opposite of the truth. `away` is its own number rather than a silent decrement,
+// because "everybody scheduled is away" and "nobody was ever scheduled" are
+// different facts for different people, and a surface that folds them together
+// re-creates the confusion the grid exists to remove.
+{
+  const zone = "America/New_York";
+  // 2026-12-21 is a Monday. On shift 09:00 to 12:00 in the org's zone.
+  const at = (h: number, m = 0) =>
+    DateTime.fromISO("2026-12-21", { zone }).set({ hour: h, minute: m }).toMillis();
+  const agent: CoverageAgent = {
+    timezone: zone,
+    rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 12 * 60 }],
+    out: [{ startMs: at(10), endMs: at(10, 30) }],
+  };
+
+  const day = coverageForDate({
+    window: { start_minute: 9 * 60, end_minute: 12 * 60 },
+    zone,
+    dateIso: "2026-12-21",
+    agents: [agent],
+  });
+  eq(
+    day.hours.map((h) => `${h.hour}:${h.agents}/${h.away}`).join(" "),
+    "9:1/0 10:0/1 11:1/0",
+    "leave overlapping any part of an hour discounts it, and only that hour",
+  );
+
+  // Half-open both sides: leave that merely abuts an hour leaves it covered,
+  // matching the overlap convention the coverage reassignment reads (#1236).
+  const abutting = coverageForDate({
+    window: { start_minute: 9 * 60, end_minute: 12 * 60 },
+    zone,
+    dateIso: "2026-12-21",
+    agents: [{ ...agent, out: [{ startMs: at(9), endMs: at(10) }] }],
+  });
+  eq(
+    abutting.hours.map((h) => `${h.hour}:${h.agents}/${h.away}`).join(" "),
+    "9:0/1 10:1/0 11:1/0",
+    "leave ending exactly on the hour boundary frees the next hour",
+  );
+
+  // Away counts only the ROSTERED: an agent who was never on shift for the hour
+  // is unrostered there, not away, or a day off would double-report as leave.
+  const offShift = coverageForDate({
+    window: { start_minute: 9 * 60, end_minute: 12 * 60 },
+    zone,
+    dateIso: "2026-12-21",
+    agents: [
+      {
+        timezone: zone,
+        rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 10 * 60 }],
+        out: [{ startMs: at(9), endMs: at(12) }],
+      },
+    ],
+  });
+  eq(
+    offShift.hours.map((h) => `${h.hour}:${h.agents}/${h.away}`).join(" "),
+    "9:0/1 10:0/0 11:0/0",
+    "an agent is away only in hours they were rostered to work",
+  );
+
+  // An agent with no `out` at all behaves exactly as before, so the settings
+  // screen and the roster alarm, which never load leave, are unchanged.
+  const plain = coverageForDate({
+    window: { start_minute: 9 * 60, end_minute: 12 * 60 },
+    zone,
+    dateIso: "2026-12-21",
+    agents: [{ timezone: zone, rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 12 * 60 }] }],
+  });
+  eq(
+    plain.hours.map((h) => `${h.hour}:${h.agents}/${h.away}`).join(" "),
+    "9:1/0 10:1/0 11:1/0",
+    "an agent without leave loaded is judged exactly as before",
+  );
 }
 
 finish();
