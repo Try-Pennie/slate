@@ -95,6 +95,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   availabilityTruth: SetupGate;
   lowVolume: SetupGate;
   rosterCoverage: SetupGate;
+  calendarWindow: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -127,5 +128,11 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // direction, because being wrong there is indistinguishable from the very
     // finding this check exists to report.
     rosterCoverage: gate(readiness, ["businessHours", "workingHours"]),
+    // #1262: whether every bookable agent's calendar is hydrated past the live
+    // booking horizon. The horizon IS the bound being checked, so it must skip
+    // when that read fails rather than judge against a guessed window: a guessed
+    // shorter horizon reads a starving calendar as covered, and a guessed longer
+    // one pages about coverage nobody is serving (#216's shape).
+    calendarWindow: gate(readiness, ["horizonDays"]),
   };
 }

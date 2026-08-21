@@ -163,6 +163,10 @@ import {
   formatCoverageNeedsHumanRecovery,
 } from "@/lib/monitor/coverage-needs-human";
 import {
+  formatCalendarWindowAlert,
+  formatCalendarWindowRecovery,
+} from "@/lib/monitor/calendar-window-coverage";
+import {
   formatOooCoverageGapAlert,
   formatOooCoverageGapRecovery,
   formatOooCoverageGapWhisper,
@@ -802,6 +806,70 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "everything placed or passed",
     channel: "recovery",
     text: formatCoverageNeedsHumanRecovery(),
+  },
+
+  // --- a calendar window that stopped covering the horizon (#1262) -------------
+  {
+    key: "calendar_window_uncovered",
+    state: "one agent, never covered at all",
+    channel: "alert",
+    text: formatCalendarWindowAlert(
+      [
+        {
+          userId: "u1",
+          name: "Dana Ruiz",
+          email: "dana.ruiz@example.com",
+          calendarId: "dana.ruiz@example.com",
+          syncWindowToIso: null,
+        },
+      ],
+      4,
+    ),
+  },
+  {
+    key: "calendar_window_uncovered",
+    state: "several agents, one with no name, one short rather than never",
+    channel: "alert",
+    text: formatCalendarWindowAlert(
+      [
+        {
+          userId: "u1",
+          name: "Dana Ruiz",
+          email: "dana.ruiz@example.com",
+          calendarId: "dana.ruiz@example.com",
+          syncWindowToIso: "2026-08-23T09:00:00.000Z",
+        },
+        {
+          userId: "u2",
+          name: null,
+          email: "sam.okafor@example.com",
+          calendarId: "sam.okafor@example.com",
+          syncWindowToIso: null,
+        },
+      ],
+      4,
+    ),
+  },
+  {
+    key: "calendar_window_uncovered",
+    state: "more agents than the list cap",
+    channel: "alert",
+    text: formatCalendarWindowAlert(
+      Array.from({ length: 11 }, (_, i) => ({
+        userId: `u${i}`,
+        name: `Agent ${i}`,
+        email: `agent${i}@example.com`,
+        calendarId: `agent${i}@example.com`,
+        syncWindowToIso: null,
+      })),
+      4,
+    ),
+  },
+  {
+    key: "calendar_window_uncovered",
+    state: "every bookable calendar covered again",
+    channel: "recovery",
+    text: formatCalendarWindowRecovery(),
   },
 
   // --- an approved absence nobody has covered (#1238) -------------------------

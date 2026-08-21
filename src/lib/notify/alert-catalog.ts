@@ -265,6 +265,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An agent on approved time off is holding an appointment inside 48 hours that no coverage sweep ever saw, so that customer meets nobody. It stays true until a person places it or it passes, and the monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "calendar_window_uncovered",
+    kind: "condition",
+    why: "A bookable agent's calendar is no longer refreshed far enough ahead to cover the days the booker offers, so a lead can book an hour that calendar already has taken. It stays true until the refresh rotation reaches the calendar again, and the monitor lane re-measures every 5 minutes.",
+  },
+  {
     key: "ooo_calcom",
     kind: "condition",
     why:
