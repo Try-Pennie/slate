@@ -16,10 +16,13 @@ import {
   buildAvailabilityGrid,
   bucketsOfferingByHour,
   dayHourKey,
+  gridDayInputs,
   gridTotals,
   type GridDayInput,
 } from "../src/lib/admin/availability-grid.ts";
 import type { CoverageDay } from "../src/lib/booking/business-hours-coverage.ts";
+import { cellTitle } from "../src/lib/admin/availability-grid-copy.ts";
+import type { BusinessHoursException } from "../src/lib/booking/business-hours.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
@@ -193,6 +196,138 @@ const day = (over: Partial<GridDayInput> = {}): GridDayInput => ({
     grid.days.length * grid.hours.length,
     "every cell is counted exactly once",
   );
+}
+
+// --- date exceptions decide the day, not the weekly pattern (#1581) -------------
+//
+// Since #1363 a date can be closed (or opened) against the weekly pattern, and
+// the booker already honours that. A grid deriving every cell from the weekly
+// rules alone renders a closed holiday as `unrostered`, in the error treatment,
+// which reads as a staffing gap that does not exist. Each date must be resolved
+// through `windowOnDate`, the same judge the gate and the read-time filter use,
+// never through a second opinion beside it (L107).
+{
+  // 2026-12-25 is a Friday. The org's pattern opens Fridays 09:00 to 12:00, and
+  // one agent (org zone) is rostered to cover all of it.
+  const rules = [{ weekday: 5, start_minute: 9 * 60, end_minute: 12 * 60 }];
+  const agent = { timezone: ZONE, rules: [{ weekday: 5, start_minute: 9 * 60, end_minute: 12 * 60 }] };
+  const christmas: BusinessHoursException = {
+    on_date: "2026-12-25",
+    is_open: false,
+    start_minute: null,
+    end_minute: null,
+    note: "Christmas Day",
+  };
+
+  // The control first: with no exception, the same date is open and staffed, so
+  // the closed result below can only come from the exception (L159).
+  const plain = gridDayInputs({
+    hours: { rules, exceptions: [] },
+    zone: ZONE,
+    dates: ["2026-12-25"],
+    horizonEndIso: "2026-12-27",
+    agents: [agent],
+  });
+  assert(plain[0].coverage?.is_open === true, "without the exception the Friday is open");
+  eq(plain[0].coverage?.hours.length, 3, "and its three pattern hours are measured");
+
+  const closed = gridDayInputs({
+    hours: { rules, exceptions: [christmas] },
+    zone: ZONE,
+    dates: ["2026-12-25"],
+    horizonEndIso: "2026-12-27",
+    agents: [agent],
+  });
+  assert(closed[0].coverage?.is_open === false, "a closed exception shuts the day");
+  eq(closed[0].closedNote, "Christmas Day", "and the day carries the exception's note");
+
+  const grid = buildAvailabilityGrid({
+    days: [
+      { iso: "2026-12-24", weekday: 4, withinHorizon: true, closedNote: null, coverage: openDay(4, [1, 1, 1]) },
+      ...closed,
+    ],
+    bucketsByDayHour: new Map(),
+  });
+  assert(
+    grid.days[1].cells.every((c) => c.kind === "closed"),
+    "the closed holiday renders as closed, never as a staffing gap",
+  );
+  const cell = grid.days[1].cells[0];
+  assert(
+    cell.kind === "closed" && cell.note === "Christmas Day",
+    "and the closed cell carries the note",
+  );
+  assert(
+    cellTitle(cell, "Friday 25 December", 9).includes("Christmas Day"),
+    "so the cell's sentence says why the org is closed",
+  );
+  assert(
+    !cellTitle({ kind: "closed", note: null }, "Sunday 27 December", 9).includes("("),
+    "while a day closed by the pattern alone explains nothing it does not know",
+  );
+}
+
+// --- a date OPENED against the pattern renders its own window --------------------
+{
+  // 2026-12-27 is a Sunday, shut in the pattern; the exception opens 10:00 to
+  // 12:00 and an agent covers it, so it must render those hours, not `closed`.
+  const rules = [{ weekday: 5, start_minute: 9 * 60, end_minute: 12 * 60 }];
+  const agent = { timezone: ZONE, rules: [{ weekday: 7, start_minute: 10 * 60, end_minute: 12 * 60 }] };
+  const openSunday: BusinessHoursException = {
+    on_date: "2026-12-27",
+    is_open: true,
+    start_minute: 10 * 60,
+    end_minute: 12 * 60,
+    note: "one off Sunday",
+  };
+
+  const days = gridDayInputs({
+    hours: { rules, exceptions: [openSunday] },
+    zone: ZONE,
+    dates: ["2026-12-27"],
+    horizonEndIso: "2026-12-29",
+    agents: [agent],
+  });
+  assert(days[0].coverage?.is_open === true, "an open exception opens a shut weekday");
+  eq(
+    days[0].coverage?.hours.map((h) => h.hour),
+    [10, 11],
+    "and the exception's own window is what gets measured, not the pattern's",
+  );
+  eq(days[0].coverage?.hours.map((h) => h.agents), [1, 1], "with the rostered agent counted");
+  eq(days[0].closedNote, null, "an open day carries no closed note");
+
+  const grid = buildAvailabilityGrid({ days, bucketsByDayHour: new Map() });
+  eq(grid.hours, [10, 11], "the hour axis follows the exception's window");
+  assert(
+    grid.days[0].cells.every((c) => c.kind === "booked"),
+    "staffed with nothing offered on the opened date reads as booked, not closed",
+  );
+}
+
+// --- an unreadable roster stays unreadable through the per-date path -------------
+{
+  const days = gridDayInputs({
+    hours: { rules: [{ weekday: 5, start_minute: 540, end_minute: 720 }], exceptions: [] },
+    zone: ZONE,
+    dates: ["2026-12-25"],
+    horizonEndIso: "2026-12-27",
+    agents: null,
+  });
+  eq(days[0].coverage, null, "a null pool is could-not-check, never an empty roster");
+}
+
+// --- the horizon boundary survives the per-date path ------------------------------
+{
+  const days = gridDayInputs({
+    hours: { rules: [{ weekday: 5, start_minute: 540, end_minute: 720 }], exceptions: [] },
+    zone: ZONE,
+    dates: ["2026-12-25", "2026-12-27"],
+    horizonEndIso: "2026-12-27",
+    agents: [],
+  });
+  eq(days[0].withinHorizon, true, "a date before the horizon end is within it");
+  eq(days[1].withinHorizon, false, "the horizon end itself is beyond it");
 }
 
 finish();
