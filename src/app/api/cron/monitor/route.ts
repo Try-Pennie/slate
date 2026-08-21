@@ -24,6 +24,18 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { slotHealthByCode, type SlotHealthRow } from "@/lib/monitor/slot-health";
 import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availability-tick";
 import { monitorSetupGates } from "@/lib/monitor/setup-gates";
+import {
+  runCalendarWindowCheck,
+  type CalendarWindowResult,
+  type CalendarWindowRow,
+} from "@/lib/monitor/calendar-window-coverage";
+import {
+  runBusyDriftSample,
+  sampleForTick,
+  type BusyDriftResult,
+  type DriftInterval,
+} from "@/lib/monitor/busy-drift-sampler";
+import { readAgentBusyRange } from "@/lib/monitor/availability-truth-store";
 import { runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
 import {
@@ -1303,6 +1315,133 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // --- Is every bookable agent's calendar hydrated past the booking window
+    // (#1262)? Availability is served from the busy cache, so a calendar whose
+    // hydrated window has fallen behind the horizon is one whose far days the
+    // booker offers blind. The lane watchdog covers the rotation dying outright;
+    // this covers one calendar quietly starving while the rotation stays green.
+    // Includes the smoke test agents deliberately: they are the only bookable
+    // agents before cutover, and a check with no subjects is a detector that has
+    // never once concluded (#1394). ---
+    const loadCalendarWindowRows = async (): Promise<CalendarWindowRow[]> => {
+      // test-data-ok: the smoke agents are deliberately IN this check's subject
+      // pool. Their calendars are hydrated by the same rotation, the canary books
+      // against them, and before cutover they are the only bookable agents, so
+      // excluding them would leave the detector with no subjects at all (#1394).
+      const { data: pool, error: poolErr } = await db
+        // test-data-ok: the smoke agents belong in this subject pool: the same
+        // rotation hydrates their calendars, the canary books against them, and
+        // before cutover they are the only bookable agents, so excluding them
+        // would leave the detector with no subjects at all (#1394).
+        .from("users")
+        .select("id, name, email")
+        .eq("bookable", true)
+        .is("deactivated_at", null);
+      if (poolErr) throw new Error(`calendar window pool read failed: ${poolErr.message}`);
+      const users = (pool ?? []) as { id: string; name: string | null; email: string | null }[];
+      if (users.length === 0) return [];
+      // The whole table rather than an `in` filter: agent_calendars is roster
+      // bounded (SAFE_TABLES), and a roster-sized id list rides in the URL, which
+      // PostgREST refuses outright past a few hundred ids (#1267's lesson).
+      const { data: cals, error: calErr } = await db
+        .from("agent_calendars")
+        .select("user_id, calendar_id, sync_window_to");
+      if (calErr) throw new Error(`calendar window read failed: ${calErr.message}`);
+      const byId = new Map(users.map((u) => [u.id, u]));
+      return ((cals ?? []) as { user_id: string; calendar_id: string; sync_window_to: string | null }[])
+        .filter((c) => byId.has(c.user_id))
+        .map((c) => ({
+          userId: c.user_id,
+          name: byId.get(c.user_id)?.name ?? null,
+          email: byId.get(c.user_id)?.email ?? null,
+          calendarId: c.calendar_id,
+          syncWindowToIso: c.sync_window_to,
+        }));
+    };
+    const calendarWindow = await steps.run<CalendarWindowResult | null>(
+      "calendar_window",
+      null,
+      async () => {
+        if (!gates.calendarWindow.run) {
+          log.warn("monitor", { msg: "calendar window check skipped", why: gates.calendarWindow.why });
+          return null;
+        }
+        return runCalendarWindowCheck({
+          loadRows: loadCalendarWindowRows,
+          horizonDays: horizonDays as number,
+          nowIso: new Date(now).toISOString(),
+          cooldownMs: settings.cooldownMs.calendar_window_uncovered,
+          logTick: (fields) => log.info("calendar-window", { msg: "tick", ...fields }),
+        });
+      },
+    );
+
+    // --- Does the cached busy index agree with Google (#1262)? OBSERVE-ONLY: a
+    // rotating sample's cached blocks are compared against a live freeBusy for
+    // the same window, and any difference is LOGGED for the calibration pass
+    // (tag=busy-drift), never paged. The union includes slate-source blocks,
+    // because freeBusy merges anonymously and Slate deliberately never mirrors
+    // its own bookings as gcal events (#166/#586): a google-only union would
+    // flag every Slate booking as a gap. Activation, after calibration against
+    // real samples, is its own issue so this inactive state stays visible.
+    // Cost: one freeBusy call per 20 sampled calendars per tick, on the same
+    // budget the truth probe already draws from. ---
+    const busyDrift = await steps.run<BusyDriftResult | null>("busy_drift", null, async () => {
+      if (!gates.busyDrift.run) {
+        log.warn("monitor", { msg: "busy drift sampler skipped", why: gates.busyDrift.why });
+        return null;
+      }
+      const { data: pool, error: poolErr } = await db
+        // test-data-ok: the smoke agents are the only bookable agents before
+        // cutover; without them the sampler ships blind (#1394), and their cache
+        // is maintained by the same lanes as everyone else's.
+        .from("users")
+        .select("id, email")
+        .eq("bookable", true)
+        .is("deactivated_at", null)
+        .order("id");
+      if (poolErr) throw new Error(`busy drift pool read failed: ${poolErr.message}`);
+      const agents = ((pool ?? []) as { id: string; email: string }[]).map((u) => ({
+        userId: u.id,
+        email: u.email,
+      }));
+      // Stateless rotation: the 5-minute tick index walks the roster in batches
+      // sized under freeBusy's 20-calendar cap, so a 120-agent roster is fully
+      // sampled roughly every 35 minutes with no stored cursor.
+      const sample = sampleForTick(agents, Math.floor(now / (5 * 60_000)), 18);
+      const fromIso = new Date(now).toISOString();
+      const toIso = new Date(now + (horizonDays as number) * 24 * 60 * 60_000).toISOString();
+      return runBusyDriftSample({
+        sample,
+        fromIso,
+        toIso,
+        readLive: readAgentBusyRange,
+        loadCachedBlocks: async (userIds, from, to) => {
+          const rows = await selectAllPages<{
+            user_id: string;
+            starts_at: string;
+            ends_at: string;
+          }>("busy drift cached blocks", (fromRow, toRow) =>
+            db
+              .from("busy_blocks")
+              .select("user_id, starts_at, ends_at")
+              .in("user_id", userIds)
+              .lt("starts_at", to)
+              .gt("ends_at", from)
+              .range(fromRow, toRow),
+          );
+          const byUser = new Map<string, DriftInterval[]>();
+          for (const r of rows) {
+            const list = byUser.get(r.user_id) ?? [];
+            list.push({ startIso: r.starts_at, endIso: r.ends_at });
+            byUser.set(r.user_id, list);
+          }
+          return byUser;
+        },
+        logTick: (fields) => log.info("busy-drift", { msg: "tick", ...fields }),
+      });
+    });
+
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
     // code can go live expecting a column, table, or function the database lacks;
     // the failure is usually silent (0055 left the dead-man's switch dormant for a
@@ -1623,6 +1762,14 @@ export async function GET(req: NextRequest) {
       // subject is a gap nothing else records, so "could not look" must not read as
       // "every approved absence is covered" (#1238).
       oooCoverageGap,
+      // null when the step failed or its gate stood it down; status "unreadable"
+      // inside when the roster read failed: "could not check coverage" must not
+      // render as "every calendar is covered" (#1262).
+      calendarWindow,
+      // Observe-only (#1262): findings are in the logs (tag=busy-drift), nothing
+      // pages until the activation issue lands. null when the step failed or its
+      // gate stood it down; status "unreadable" when a side could not be read.
+      busyDrift,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       // null when the step failed, and measured:false inside when the endpoint read
       // failed: "no event is unsubscribed" and "could not tell" must not render the

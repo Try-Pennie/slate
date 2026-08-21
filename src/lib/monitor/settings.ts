@@ -31,7 +31,8 @@ export type MonitorAlertKey =
   | "ooo_protection_lost"
   | "webhook_event_no_subscriber"
   | "edge_limiter_unusable"
-  | "hydration_all_failing";
+  | "hydration_all_failing"
+  | "calendar_window_uncovered";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -56,6 +57,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "webhook_event_no_subscriber",
   "edge_limiter_unusable",
   "hydration_all_failing",
+  "calendar_window_uncovered",
 ];
 
 /**
@@ -124,6 +126,11 @@ export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }
     key: "ooo_coverage_gap",
     label: "Time off nobody has covered",
     help: "Page when an agent on approved time off still holds an appointment starting within 48 hours that no coverage sweep has picked up, so that customer is booked with somebody who will not be there.",
+  },
+  {
+    key: "calendar_window_uncovered",
+    label: "Calendar refresh not covering the booking window",
+    help: "Page when a bookable agent's calendar has not been refreshed far enough ahead to cover the days the booker offers, so a lead could book an hour that calendar already has taken.",
   },
   {
     key: "ooo_calcom_unprotected",
@@ -220,6 +227,10 @@ export const MONITOR_DEFAULTS = {
     // shorter repeat than its neighbours. Half an hour keeps it present without
     // becoming the thing people mute.
     ooo_calcom_unprotected: 30 * 60_000,
+    // A bookable agent's calendar no longer hydrated past the booking horizon
+    // (#1262): stays wrong until the rotation reaches it or someone fixes the
+    // account, so it repeats hourly like the coverage pages it sits beside.
+    calendar_window_uncovered: 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
