@@ -74,6 +74,9 @@ describe("AvailabilityGridTable (#1302)", () => {
     // so collapsing them there would undo the point of the grid below it.
     expect(summary.textContent).toContain("1 bookable hours");
     expect(summary.textContent).toContain("1 with nobody rostered");
+    // #1582 follow-up: a fortnight lost to leave must be readable from the
+    // summary, not only from a wall of peach cells below it.
+    expect(summary.textContent).toContain("1 with everyone away");
     expect(summary.textContent).toContain("1 staffed but full");
     expect(summary.textContent).toContain("1 past the horizon");
   });

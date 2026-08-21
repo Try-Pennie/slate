@@ -24,6 +24,9 @@ export function AvailabilityGridTable({ grid }: { grid: AvailabilityGrid }) {
           <span className="font-semibold tabular-nums">{totals.unrostered}</span> with nobody rostered
         </span>
         <span className="text-fg-muted">
+          <span className="font-semibold tabular-nums">{totals.away}</span> with everyone away
+        </span>
+        <span className="text-fg-muted">
           <span className="font-semibold tabular-nums">{totals.booked}</span> staffed but full
         </span>
         <span className="text-fg-muted">
