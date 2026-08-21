@@ -31,6 +31,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.availabilityTruth.run, "a healthy tick runs the drift probe");
   assert(g.lowVolume.run, "a healthy tick runs the low-volume alarm");
   assert(g.calendarWindow.run, "a healthy tick runs the calendar window coverage check");
+  assert(g.busyDrift.run, "a healthy tick runs the busy drift sampler");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -46,21 +47,24 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
      *  only that read gates it; a guessed horizon reads a starving calendar as
      *  covered or pages about coverage nobody serves. */
     window: boolean;
+    /** #1262: the drift sampler compares over the horizon window, so only that
+     *  read gates it. */
+    drift: boolean;
   }[] = [
-    { name: "buckets", scan: false, truth: true, volume: true, window: true },
-    { name: "slotHealth", scan: false, truth: true, volume: true, window: true },
+    { name: "buckets", scan: false, truth: true, volume: true, window: true, drift: true },
+    { name: "slotHealth", scan: false, truth: true, volume: true, window: true, drift: true },
     // #1298: the volume alarm asks whether the org is open before deciding a quiet
     // half hour is worth mentioning, and it asks the org's REAL hours now rather
     // than a second hardcoded copy. So this read gates it, and neither fallback is
     // acceptable: guessing open pages for an ordinary closed evening, guessing shut
     // silences a genuinely dead Monday morning.
-    { name: "businessHours", scan: false, truth: true, volume: false, window: true },
-    { name: "workingHours", scan: false, truth: true, volume: true, window: true },
+    { name: "businessHours", scan: false, truth: true, volume: false, window: true, drift: true },
+    { name: "workingHours", scan: false, truth: true, volume: true, window: true, drift: true },
     // The horizon is the one read BOTH availability checks need: the scan compares a
     // probe against a row computed over that window, and the probe checks the times
     // offered inside it. Guessing it would make the two sides disagree by
     // construction (#216). The volume alarm counts bookings and needs neither.
-    { name: "horizonDays", scan: false, truth: false, volume: true, window: false },
+    { name: "horizonDays", scan: false, truth: false, volume: true, window: false, drift: false },
   ];
   for (const c of cases) {
     const g = monitorSetupGates(with_({ [c.name]: false }));
@@ -68,6 +72,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     eq(g.availabilityTruth.run, c.truth, `${c.name} unreadable: drift probe runs = ${c.truth}`);
     eq(g.lowVolume.run, c.volume, `${c.name} unreadable: low-volume alarm runs = ${c.volume}`);
     eq(g.calendarWindow.run, c.window, `${c.name} unreadable: calendar window check runs = ${c.window}`);
+    eq(g.busyDrift.run, c.drift, `${c.name} unreadable: busy drift sampler runs = ${c.drift}`);
   }
 }
 
@@ -128,7 +133,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     !allDown.availabilityScan.run &&
       !allDown.availabilityTruth.run &&
       !allDown.lowVolume.run &&
-      !allDown.calendarWindow.run,
+      !allDown.calendarWindow.run &&
+      !allDown.busyDrift.run,
     "every gate can block",
   );
   const allUp = monitorSetupGates(ALL_SETUP_READ);
@@ -136,7 +142,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     allUp.availabilityScan.run &&
       allUp.availabilityTruth.run &&
       allUp.lowVolume.run &&
-      allUp.calendarWindow.run,
+      allUp.calendarWindow.run &&
+      allUp.busyDrift.run,
     "and every gate can pass",
   );
 }

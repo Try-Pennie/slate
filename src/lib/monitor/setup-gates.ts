@@ -96,6 +96,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   lowVolume: SetupGate;
   rosterCoverage: SetupGate;
   calendarWindow: SetupGate;
+  busyDrift: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -134,5 +135,10 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // shorter horizon reads a starving calendar as covered, and a guessed longer
     // one pages about coverage nobody is serving (#216's shape).
     calendarWindow: gate(readiness, ["horizonDays"]),
+    // #1262: the observe-only busy drift sampler compares the cache against live
+    // Google over the horizon window. The window IS the comparison's bound, so a
+    // guessed horizon has it judging times the cache was never asked to hold and
+    // logging the difference as drift (#216's shape, in a log line).
+    busyDrift: gate(readiness, ["horizonDays"]),
   };
 }

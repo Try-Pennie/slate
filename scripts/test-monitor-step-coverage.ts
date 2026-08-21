@@ -137,6 +137,7 @@ const code = src
     ["avail_scan", "gates.availabilityScan.run"],
     ["avail_truth", "gates.availabilityTruth.run"],
     ["calendar_window", "gates.calendarWindow.run"],
+    ["busy_drift", "gates.busyDrift.run"],
   ]) {
     // Indexed off the step NAME rather than the `steps.run` token, because a call
     // carrying a type argument puts the two on different lines.
