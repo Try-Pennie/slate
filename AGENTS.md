@@ -22,8 +22,30 @@ The same hook also runs CI's checks before every push — `tsc --noEmit`,
 `pnpm lint`, `pnpm test` (the unit suite, which includes the copy/dash lint and
 the migration invariants), and `pnpm cf:build` (the full Cloudflare/OpenNext
 build, #412) — so a CI-only failure (including a build-only break) is caught
-locally instead of breaking main after merge. It's ~20s on a warm cache; skip it
-in a pinch with `SKIP_PREPUSH_CHECKS=1`.
+locally instead of breaking main after merge. Skip it in a pinch with
+`SKIP_PREPUSH_CHECKS=1`.
+
+**It takes about 40s, not the ~20s this file used to claim** (#1594). Measured end
+to end on 2026-08-29: 60s before the overlap below, 40s after. There is no "warm
+cache" number to quote, because the isolated worktree (#490) deliberately pays a
+fresh install, a cold typecheck and a cold build on every push: that isolation is
+the whole reason the gate sees what CI sees rather than what your working tree
+happens to contain, and it stays. Budget 40s.
+
+`tsc` runs first and alone, then the Cloudflare build runs CONCURRENTLY with lint
+and the tests. The ordering is load bearing, not incidental: `next build`
+generates `.next/types`, and `tsconfig.json` includes `.next/types/**/*.ts`, so a
+build overlapping tsc has tsc reading a directory the build is writing (the same
+coupling the hook's `rm -rf .next/types` exists for). Overlapping them would
+reintroduce it as a gate that fails at random, and the response to a random
+failure is to re-run rather than to look. Lint and the tests are safe alongside it
+because neither reads what it writes: eslint ignores `.next/**` and
+`.open-next/**`, and vitest collects only `src/**/*.test.{ts,tsx}`. The build's
+output goes to a log and is printed in full only if it fails, so a failure still
+reads as one thing at a time, and a check that fails while the build is still
+running cancels it and says so. `scripts/test-prepush-overlap.ts` pins all of
+that, including the `wait` on the build: an `&` with no `wait` would make the gate
+pass while checking nothing.
 
 # Main is guarded by detection, not prevention (free-plan constraint)
 

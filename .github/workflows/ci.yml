@@ -157,7 +157,22 @@ jobs:
   # Report-only merged coverage across both harnesses (#603). Its own job so it
   # never gates merge: a hard threshold on this mixed harness would be noisy. The
   # summary prints in the log and the lcov is uploaded as an artifact.
+  #
+  # MERGES TO MAIN ONLY (#1593). It re-runs both harnesses under instrumentation
+  # for about 4m05s, and while it never gated anything, the merge flow waits for
+  # every check to go green, so a report-only job still delayed every merge it
+  # outlived. Once #1592 split the gate down to about 2m35s, this job WAS the
+  # critical path and quietly took most of that win back.
+  #
+  # What is deliberately given up: a pull request no longer carries its own
+  # coverage number, so a change's effect on coverage is visible on the merge
+  # rather than before it. The coverage MERGE LOGIC is not what is being skipped;
+  # scripts/test-coverage-orchestration.ts still runs in `pnpm test` on every
+  # pull request. A weekly schedule would have saved more (about 1,900 billed
+  # minutes a month against about 1,000) and was considered and declined, because
+  # a per-merge record is worth the difference.
   coverage:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
