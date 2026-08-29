@@ -129,4 +129,137 @@ assert(
   "#1437: the tee-to-a-tempfile pipeline is gone (the script prints the table itself)",
 );
 
+// --- #1592: the parallel split hides behind ONE fan-in check named `ci` ------
+// The pipeline is split into independent legs that run in parallel, but the
+// outside world still reads a single check. Two consumers depend on that name
+// LITERALLY and neither is in this file:
+//   - .github/workflows/main-push-guard.yml resolves whether a merge was green by
+//     selecting `.check_runs[] | select(.name == "ci")` on the PR head (twice);
+//   - the deploy job below gates on `needs: [ci, ...]`.
+// So the fan-in job's key must stay `ci`, and it must FAIL when any leg fails.
+const jobsBlock = ci.match(/^jobs:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
+assert(jobsBlock.trim().length > 0, "ci.yml has a `jobs:` block");
+
+const jobNames = [...jobsBlock.matchAll(/^ {2}([\w-]+):$/gm)].map((m) => m[1]);
+assert(jobNames.length > 0, "the jobs in ci.yml are readable");
+assert(jobNames.includes("ci"), "#1592: a job literally named `ci` still exists (main-push-guard selects that check name)");
+
+/**
+ * The text of one job, from its key to the next top-level job key (or EOF).
+ * Line-based rather than a regex: every job key sits at the same two-space
+ * indent as the lines inside its neighbours, so an `(?:[ \t]+.*\n)*` block
+ * match runs to the end of the file and hands back every job at once.
+ */
+function jobBlock(name: string): string {
+  const lines = jobsBlock.split("\n");
+  const start = lines.findIndex((l) => l === `  ${name}:`);
+  if (start < 0) return "";
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^ {2}[\w-]+:$/.test(l));
+  return (end < 0 ? rest : rest.slice(0, end)).join("\n");
+}
+
+const fanIn = jobBlock("ci");
+const needsLine = fanIn.match(/^\s*needs:\s*(.+)$/m)?.[1] ?? "";
+const fanInNeeds = [...needsLine.matchAll(/[\w-]+/g)].map((m) => m[0]);
+assert(fanInNeeds.length > 0, "#1592: the `ci` job is a fan-in with a `needs` list");
+
+// Jobs deliberately OUTSIDE the gate, each with the reason it is out. Anything
+// not listed here and not in the fan-in's needs fails this guard, so a job added
+// later is covered by construction rather than silently falling out of the gate
+// (L96: a guard driven by a hand-written registry checks only what the registry
+// lists). The reason is required, so an exemption is a decision and not a
+// default (L129, L233).
+const FAN_IN_EXEMPT: Record<string, string> = {
+  ci: "the fan-in itself",
+  deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
+  "migration-drift": "gates the deploy directly and is skipped on dependabot PRs, so it cannot be a leg of a check that must conclude on every PR",
+  coverage: "report-only (#603); a coverage blip must never block a merge",
+  "security-scan": "detective by design (#1042): its rule packs are fetched at run time, so a newly published rule must not block a deploy",
+};
+
+for (const name of jobNames) {
+  const gated = fanInNeeds.includes(name);
+  const exempt = Object.prototype.hasOwnProperty.call(FAN_IN_EXEMPT, name);
+  assert(
+    gated || exempt,
+    `#1592: job \`${name}\` is either a leg of the \`ci\` fan-in or listed in FAN_IN_EXEMPT with a reason (a new job must not silently fall outside the gate)`,
+  );
+  assert(
+    !(gated && exempt),
+    `#1592: job \`${name}\` is both a leg of the fan-in and listed as exempt; the exemption is stale`,
+  );
+}
+for (const name of Object.keys(FAN_IN_EXEMPT)) {
+  assert(
+    jobNames.includes(name),
+    `#1592: FAN_IN_EXEMPT names \`${name}\`, which is not a job in ci.yml (a renamed or deleted job must not leave a stale exemption standing)`,
+  );
+  assert(
+    FAN_IN_EXEMPT[name].trim().length > 0,
+    `#1592: the exemption for \`${name}\` states why it is outside the gate`,
+  );
+}
+for (const leg of fanInNeeds) {
+  assert(
+    jobNames.includes(leg),
+    `#1592: the fan-in needs \`${leg}\`, which is a job that exists (a typo in needs makes the gate wait on nothing)`,
+  );
+}
+
+// THE ONE THAT MATTERS. Without `if: always()` the fan-in is SKIPPED the moment a
+// leg fails, and a skipped check is not a failed one: main-push-guard's jq reads
+// it as "null" (unknown), which the classifier deliberately tolerates. A red PR
+// would then merge with the guard saying nothing.
+assert(
+  /^\s*if:\s*always\(\)\s*$/m.test(fanIn),
+  "#1592: the fan-in runs `if: always()`, so a failed leg produces a FAILED check rather than a skipped one",
+);
+// ...and `always()` alone passes green regardless, so the job must actually judge
+// the legs. Derived from `needs.*.result`, never a hand-listed set of job names,
+// or adding a leg would leave it unjudged (L41).
+assert(
+  /needs\.\*\.result/.test(fanIn),
+  "#1592: the fan-in judges its legs via `needs.*.result` (derived from the needs list, so a new leg is judged without editing the check)",
+);
+assert(
+  /exit 1/.test(fanIn),
+  "#1592: the fan-in exits non-zero when a leg did not succeed",
+);
+assert(
+  /!=\s*"success"/.test(fanIn) || /!=\s*'success'/.test(fanIn),
+  "#1592: the fan-in requires each leg to be exactly `success`, so a skipped or cancelled leg is not read as a pass",
+);
+
+// The deploy still hangs off the fan-in, so a broken leg cannot ship.
+assert(
+  /needs:\s*\[[^\]]*\bci\b[^\]]*\]/.test(jobBlock("deploy")),
+  "#1592: deploy still needs the `ci` fan-in (and so, transitively, every leg)",
+);
+
+// --- the guard's literal check name, read from the guard itself --------------
+// The coupling is across two files, so assert it from the OTHER side rather than
+// restating the string here: a rename in ci.yml with the guard left alone is
+// exactly the failure this pins.
+const guard = readFileSync(
+  join(ROOT, ".github", "workflows", "main-push-guard.yml"),
+  "utf8",
+);
+const guardNames = [...guard.matchAll(/select\(\.name == "([\w-]+)"\)/g)].map((m) => m[1]);
+assert(
+  guardNames.length >= 2,
+  "main-push-guard still resolves a merge's CI by check name (both the association and the claim route)",
+);
+for (const name of guardNames) {
+  assert(
+    jobNames.includes(name),
+    `#1592: main-push-guard reads the check named \`${name}\`, which must be a job in ci.yml (otherwise the merge backstop reads a check that never reports)`,
+  );
+  assert(
+    name === "ci" || fanInNeeds.includes(name),
+    `#1592: the check \`${name}\` that main-push-guard trusts is the fan-in, so it covers every leg`,
+  );
+}
+
+
 finish();
