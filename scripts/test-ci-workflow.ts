@@ -292,4 +292,57 @@ assert(
 );
 
 
+// --- #1611: a sharded suite must cover every shard, or it verifies nothing -----
+//
+// Sharding vitest is the one change here that can pass CI while running half the
+// tests. `--shard=1/2` on both jobs, or a third shard job added without moving the
+// denominator, leaves files that no job ever runs, and every check still goes
+// green because each shard passed the subset it was given (L98).
+//
+// The denominator is therefore DERIVED from the matrix (`strategy.job-total`)
+// rather than written beside it, so adding a shard is one edit and cannot leave
+// the two halves disagreeing (L41). This asserts that, and asserts the shard
+// numbers form a complete 1..N run.
+{
+  const vitestJob = jobBlock("vitest");
+  assert(vitestJob.trim().length > 0, "#1611: the vitest job exists");
+
+  const shardList = vitestJob.match(/^\s*shard:\s*\[([^\]]*)\]/m)?.[1] ?? "";
+  const shards = [...shardList.matchAll(/\d+/g)].map((m) => Number(m[0]));
+  assert(
+    shards.length >= 2,
+    `#1611: vitest runs as a shard matrix (found ${shards.length} shard(s) in "${shardList}")`,
+  );
+  // The `>= 2` is part of THIS condition, not left to the assertion above. Built
+  // from `shards.length`, the expected list is `[]` when the parse found nothing,
+  // and `[] === []` passes: the completeness check would go green on exactly the
+  // input that means it read no shards at all (L98).
+  const expected = Array.from({ length: shards.length }, (_, i) => i + 1);
+  assert(
+    shards.length >= 2 &&
+      JSON.stringify([...shards].sort((a, b) => a - b)) === JSON.stringify(expected),
+    `#1611: the shard numbers are a complete 1..${shards.length} run (got ${JSON.stringify(shards)}); a gap or a repeat means files no job ever runs, and every shard still passes the subset it was given`,
+  );
+
+  // To end of line, not to the first space: a GitHub expression contains spaces
+  // (`${{ matrix.shard }}`), so a space-terminated capture reads only "${{".
+  const shardArg = vitestJob.match(/--shard=(.*)$/m)?.[1] ?? "";
+  assert(
+    shardArg.includes("matrix.shard"),
+    `#1611: the shard number comes from the matrix, not a literal (got "${shardArg}")`,
+  );
+  assert(
+    shardArg.includes("strategy.job-total"),
+    `#1611: the shard DENOMINATOR is derived from the matrix via strategy.job-total, not written beside it (got "${shardArg}"); a literal here is a second place to update, and forgetting it silently drops files`,
+  );
+  // fail-fast would cancel the sibling shard on the first failure, so a run could
+  // report one shard's failure while the other never finished: the reader then
+  // cannot tell whether the rest of the suite passes.
+  assert(
+    /fail-fast:\s*false/.test(vitestJob),
+    "#1611: fail-fast is off, so one shard failing does not cancel the other and the run still says whether the rest of the suite passes",
+  );
+}
+
+
 finish();
