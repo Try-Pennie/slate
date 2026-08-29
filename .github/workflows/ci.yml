@@ -23,20 +23,22 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # #1592: the pipeline runs as three independent legs in parallel behind the
-  # `ci` fan-in below. Nothing here depended on anything else in it: the serial
-  # job was 5m15s to 5m45s of wall time on every PR and again on every merge,
-  # for about 2m35s of real work on the longest leg. Billed minutes stay roughly
-  # flat (the same work, plus two extra installs); what drops is the time a PR
-  # and a deploy spend waiting.
+  # #1592 split the pipeline into parallel legs; #1611 split the two long ones,
+  # because they had converged. Measured on run 33272627643: checks 148s (tsc 17s,
+  # lint 22s, node suite 81s) and vitest 133s (vitest 100s) were within 15s of each
+  # other, so splitting EITHER alone just promoted the other to critical path.
+  # #1595 reached that conclusion about vitest and declined to shard it; this does
+  # both at once, which is the only version that moves anything.
   #
-  # The legs are NOT named `ci`. Exactly one check carries that name (the fan-in),
+  # Each job pays about 25s of fixed setup (checkout, pnpm, node, install), so
+  # splitting trades billed minutes for wall time on purpose: roughly two extra
+  # billed minutes per run.
+  #
+  # None of these is named `ci`. Exactly one check carries that name (the fan-in),
   # because main-push-guard.yml resolves whether a merge was green by selecting
-  # check runs literally named `ci`, and several checks under that one name would
-  # have it judging a set rather than a verdict. Pinned by
-  # scripts/test-ci-workflow.ts.
-  checks:
-    timeout-minutes: 15  # measured max 157s
+  # check runs literally named `ci`. Pinned by scripts/test-ci-workflow.ts.
+  typecheck:
+    timeout-minutes: 10  # measured max 43s projected
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -59,23 +61,17 @@ jobs:
       # gate stays green today but fires the moment something new lands, instead
       # of a Next.js-style lag where nothing was watching. --prod scopes it to
       # what actually ships to the Worker (dev-only advisories don't gate merges).
+      #
+      # It rides with the typecheck rather than getting its own job: it is a 1s
+      # step, and a job of its own would pay 25s of setup to run it.
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
 
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 
-      - name: Lint
-        run: pnpm lint
-
-      # The node suite only. `pnpm test` runs this AND vitest, which is what the
-      # pre-push gate wants locally; here vitest is its own leg, so this job runs
-      # the node half directly rather than waiting on the slower one.
-      - name: Unit tests (node suites)
-        run: pnpm test:node
-
-  vitest:
-    timeout-minutes: 15  # measured max 156s
+  lint:
+    timeout-minutes: 10  # measured max 47s projected
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -92,8 +88,67 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Component and route tests (vitest)
-        run: pnpm test:components
+      - name: Lint
+        run: pnpm lint
+
+  # The node suites only. `pnpm test` runs this AND vitest, which is what the
+  # pre-push gate wants locally; here vitest is its own sharded leg.
+  #
+  # At about 106s this is the critical path after the split, so it is the next
+  # thing to shard if CI needs to get faster again.
+  node-tests:
+    timeout-minutes: 15  # measured max 106s projected
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests (node suites)
+        run: pnpm test:node
+
+  # Two shards in parallel. The DENOMINATOR is derived from the matrix via
+  # `strategy.job-total`, never written beside it: a literal would be a second
+  # place to update, and a shard count that disagrees with the matrix leaves files
+  # no job ever runs while every shard still passes the subset it was handed.
+  # scripts/test-ci-workflow.ts fails the build on either mistake.
+  #
+  # fail-fast is off so one shard failing does not cancel its sibling; otherwise a
+  # red run cannot say whether the rest of the suite passes.
+  vitest:
+    timeout-minutes: 15  # measured max 75s projected
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Component and route tests (vitest, shard ${{ matrix.shard }} of ${{ strategy.job-total }})
+        run: pnpm test:components --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
   build:
     timeout-minutes: 15  # measured max 78s
@@ -132,12 +187,13 @@ jobs:
   #
   # The results are read from `needs.*.result` rather than named one by one, so a
   # leg added to `needs` is judged without anyone remembering to edit this step
-  # (L41). Anything other than `success` fails: a cancelled or skipped leg is not
-  # a pass.
+  # (L41). A matrix job reports ONE aggregated result here, so a single failing
+  # shard fails the gate. Anything other than `success` fails: a cancelled or
+  # skipped leg is not a pass.
   ci:
-    timeout-minutes: 5  # measured max 3s
-    needs: [checks, vitest, build]
+    needs: [typecheck, lint, node-tests, vitest, build]
     if: always()
+    timeout-minutes: 5  # measured max 4s
     runs-on: ubuntu-latest
     steps:
       - name: Every CI leg succeeded
