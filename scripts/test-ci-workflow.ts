@@ -313,9 +313,14 @@ assert(
     shards.length >= 2,
     `#1611: vitest runs as a shard matrix (found ${shards.length} shard(s) in "${shardList}")`,
   );
+  // The `>= 2` is part of THIS condition, not left to the assertion above. Built
+  // from `shards.length`, the expected list is `[]` when the parse found nothing,
+  // and `[] === []` passes: the completeness check would go green on exactly the
+  // input that means it read no shards at all (L98).
   const expected = Array.from({ length: shards.length }, (_, i) => i + 1);
   assert(
-    JSON.stringify([...shards].sort((a, b) => a - b)) === JSON.stringify(expected),
+    shards.length >= 2 &&
+      JSON.stringify([...shards].sort((a, b) => a - b)) === JSON.stringify(expected),
     `#1611: the shard numbers are a complete 1..${shards.length} run (got ${JSON.stringify(shards)}); a gap or a repeat means files no job ever runs, and every shard still passes the subset it was given`,
   );
 
