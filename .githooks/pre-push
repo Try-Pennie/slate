@@ -108,7 +108,20 @@ echo "▶ pre-push: CI parity checks (tsc · lint · tests · build) against the
 # untracked/uncommitted file can't make them pass locally yet fail CI (#490).
 tmp_parent="$(mktemp -d)"
 tree="$tmp_parent/tree"
+# The Cloudflare build runs in the background (see below), so an early exit from
+# a failing check leaves it writing into a worktree about to be removed. It is
+# killed as a PROCESS GROUP: `pnpm` spawns the real builder, so killing only the
+# pid we hold leaves the build itself running.
+build_pid=""
+kill_build() {
+  [ -n "${build_pid:-}" ] || return 0
+  kill -TERM -- -"$build_pid" 2>/dev/null || kill -TERM "$build_pid" 2>/dev/null || true
+  wait "$build_pid" 2>/dev/null || true
+  build_pid=""
+  echo "   (the Cloudflare build was still running and has been cancelled; fix the failure above, then push again)" >&2
+}
 cleanup() {
+  kill_build
   git worktree remove --force "$tree" >/dev/null 2>&1 || true
   rm -rf "$tmp_parent" 2>/dev/null || true
 }
@@ -125,16 +138,52 @@ pnpm install --frozen-lockfile --prefer-offline
 # Stale Next.js route-type stubs make a clean tree fail tsc; clear them first.
 rm -rf .next/types 2>/dev/null || true
 
+# tsc runs ALONE, and that ordering is load bearing (#1594). `next build`
+# generates .next/types, and tsconfig.json includes `.next/types/**/*.ts`, so a
+# build running alongside tsc has tsc reading a directory the build is writing.
+# That is the same coupling the `rm -rf .next/types` above exists for, and
+# overlapping the two would reintroduce it in a nondeterministic form: a pre-push
+# gate that fails at random is worse than a slow one, because the response to it
+# is to re-run rather than to look.
 pnpm exec tsc --noEmit
-pnpm lint
-pnpm test
+
 # The full Cloudflare/OpenNext build (#412): catches build-only breaks (e.g. an
 # edge-incompatible import tsc accepts) before they reach main and skip the
 # deploy. NEXT_PUBLIC_* mirror CI's build env (public, inlined at build time).
+#
+# It runs CONCURRENTLY with lint and the tests, which is safe because neither
+# reads what it writes: eslint ignores `.next/**` and `.open-next/**` (see
+# eslint.config.mjs), and vitest collects only `src/**/*.test.{ts,tsx}`. Its
+# output goes to a log rather than interleaving with theirs, and is printed in
+# full if it fails, so a failure still reads as one thing at a time.
+#
+# `set -m` gives it its own process group so kill_build can take down the whole
+# tree rather than just the pnpm wrapper.
+echo "▶ pre-push: starting the Cloudflare build in the background, alongside lint and the tests." >&2
+build_log="$tmp_parent/build.log"
+set -m
 NEXT_PUBLIC_APP_URL=https://slate.trypennie.app \
 NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co \
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_ci_placeholder \
 NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN=trypennie.com \
-  pnpm cf:build
+  pnpm cf:build >"$build_log" 2>&1 &
+build_pid=$!
+set +m
+
+pnpm lint
+pnpm test
+
+# The build's verdict. `wait` returns its exit status, and a failure prints the
+# whole captured log: a build that failed silently into a file nobody reads would
+# be a gate that passed while checking nothing.
+echo "▶ pre-push: lint and tests done, waiting on the Cloudflare build." >&2
+if ! wait "$build_pid"; then
+  build_pid=""
+  echo "" >&2
+  echo "pre-push blocked: the Cloudflare build failed. Its full output:" >&2
+  cat "$build_log" >&2
+  exit 1
+fi
+build_pid=""
 
 exit 0
