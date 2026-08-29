@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, cleanup } from "@testing-library/react";
 
 // Access guard for the monitor-settings page (#676): unauthenticated to /login,
 // the OOO-only launch flag diverts non-super-admins to /admin/ooo, and once
@@ -19,9 +19,12 @@ const redirect = vi.hoisted(() =>
 const db = vi.hoisted(() => ({
   throwSettings: false,
   results: {} as Record<string, { data: unknown; error: unknown }>,
+  /** Every table the render path read, in order (#1555). */
+  reads: [] as string[],
 }));
 const from = vi.hoisted(() => {
   return vi.fn((table: string) => {
+    db.reads.push(table);
     const res = () => {
       if (db.throwSettings && (table === "booking_settings" || table === "buckets")) {
         return Promise.reject(new Error("relation does not exist"));
@@ -65,6 +68,7 @@ const ADMIN = {
 beforeEach(() => {
   vi.clearAllMocks();
   env.oooOnlyFor.mockReturnValue(false);
+  db.reads = [];
   db.throwSettings = false;
   db.results = {
     monitor_settings: { data: [], error: null },
@@ -102,9 +106,39 @@ describe("MonitorSettingsPage guard", () => {
 });
 
 describe("MonitorSettingsPage default-bucket section (#1016)", () => {
+  /**
+   * Run one render with the settings and bucket reads rejecting, and put the fake
+   * back whatever happens (#1555).
+   *
+   * The failing read and the healthy one are the SAME shared object, and the page
+   * swallows a read failure into "no default, no options" (its catch is
+   * deliberate, so the settings screen survives a missing table). That means a
+   * test which inherited a throwing fake would fail exactly the way a genuine
+   * regression does, with `select.value` empty and nothing saying why. beforeEach
+   * already resets the flag; this makes it impossible for a test to leave it set
+   * in the first place, rather than relying on the reset alone.
+   */
+  async function withSettingsReadsFailing(run: () => Promise<void>): Promise<void> {
+    db.throwSettings = true;
+    try {
+      await run();
+    } finally {
+      db.throwSettings = false;
+    }
+  }
+
   it("renders the non-test buckets as options with the current default selected", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     render(await MonitorSettingsPage(props));
+
+    // Asserted BEFORE the value, and separately, because the page turns a failed
+    // read into the same empty select a genuinely missing default produces. Read
+    // together these say which of the two happened: a bare `select.value` failure
+    // cannot (#1555, L11).
+    expect(db.reads).toContain("booking_settings");
+    expect(db.reads).toContain("buckets");
+    expect(screen.queryByText(/No bookable buckets found/i)).toBeNull();
+
     const select = screen.getByLabelText("Default bucket") as HTMLSelectElement;
     expect(select.value).toBe("100");
     expect(screen.getByRole("option", { name: /100 \(Debt A\)/ })).toBeTruthy();
@@ -113,12 +147,36 @@ describe("MonitorSettingsPage default-bucket section (#1016)", () => {
   });
 
   it("falls back to no-default without crashing when the config table is missing", async () => {
+    await withSettingsReadsFailing(async () => {
+      auth.currentUser.mockResolvedValueOnce(ADMIN);
+      render(await MonitorSettingsPage(props));
+      const select = screen.getByLabelText("Default bucket") as HTMLSelectElement;
+      expect(select.value).toBe("");
+      expect(screen.getByText(/No bookable buckets found/i)).toBeTruthy();
+    });
+  });
+
+  // The two states above must be distinguishable, or the assertions in the happy
+  // path are decoration: if a failed read rendered the same screen as a healthy
+  // one with no default set, nothing here could tell them apart (L1).
+  it("renders a different screen when the reads fail than when they succeed", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    db.throwSettings = true;
     render(await MonitorSettingsPage(props));
-    const select = screen.getByLabelText("Default bucket") as HTMLSelectElement;
-    expect(select.value).toBe("");
-    expect(screen.getByText(/No bookable buckets found/i)).toBeTruthy();
+    const healthy = (screen.getByLabelText("Default bucket") as HTMLSelectElement).value;
+    const healthyReads = [...db.reads];
+    cleanup();
+
+    db.reads = [];
+    await withSettingsReadsFailing(async () => {
+      auth.currentUser.mockResolvedValueOnce(ADMIN);
+      render(await MonitorSettingsPage(props));
+      const failed = (screen.getByLabelText("Default bucket") as HTMLSelectElement).value;
+      expect(failed).not.toBe(healthy);
+      // Both attempted the same reads, so the difference is the read's ANSWER and
+      // not a different code path being taken.
+      expect(db.reads).toContain("booking_settings");
+      expect(healthyReads).toContain("booking_settings");
+    });
   });
 });
 
