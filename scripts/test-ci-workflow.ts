@@ -174,7 +174,7 @@ const FAN_IN_EXEMPT: Record<string, string> = {
   ci: "the fan-in itself",
   deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
   "migration-drift": "gates the deploy directly and is skipped on dependabot PRs, so it cannot be a leg of a check that must conclude on every PR",
-  coverage: "report-only (#603); a coverage blip must never block a merge",
+  coverage: "report-only (#603) and merges-to-main only (#1593); it does not run on pull requests, so it can only ever be skipped there",
   "security-scan": "detective by design (#1042): its rule packs are fetched at run time, so a newly published rule must not block a deploy",
 };
 
@@ -260,6 +260,36 @@ for (const name of guardNames) {
     `#1592: the check \`${name}\` that main-push-guard trusts is the fan-in, so it covers every leg`,
   );
 }
+
+
+// --- #1593: coverage runs on merges to main, never on a pull request ---------
+// The job re-runs BOTH harnesses under instrumentation (about 4m05s) to print a
+// report-only summary and upload an lcov nothing in the repo consumes. It never
+// gated a merge, but the merge flow waits for every check to be green, so a
+// report-only job still delayed every merge it outlived. After the #1592 split
+// took the gate down to about 2m35s, coverage at 4m05s WAS the critical path and
+// silently took most of that win back.
+//
+// Dan's decision (2026-08-29): merges to main only, keeping the per-merge
+// coverage record. A weekly schedule would have saved more and was declined.
+const coverageJob = jobBlock("coverage");
+assert(coverageJob.trim().length > 0, "the coverage job exists in ci.yml");
+const coverageIf = coverageJob.match(/^\s*if:\s*(.+)$/m)?.[1] ?? "";
+assert(
+  /github\.event_name == 'push'/.test(coverageIf),
+  "#1593: coverage runs only on a push event (a pull_request run would put a report-only 4m job back on the merge path)",
+);
+assert(
+  /github\.ref == 'refs\/heads\/main'/.test(coverageIf),
+  "#1593: coverage runs only on main, so a push to any other branch does not pay for it",
+);
+// It must stay OUT of the gate. A job that does not run on pull requests cannot
+// be a leg of a check that has to conclude on every pull request: it would be
+// skipped there, and the fan-in fails on anything that is not `success`.
+assert(
+  !fanInNeeds.includes("coverage"),
+  "#1593: coverage is not a leg of the `ci` fan-in (it does not run on pull requests, so it could only ever be skipped there, which the fan-in scores as a failure)",
+);
 
 
 finish();
