@@ -23,7 +23,19 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  ci:
+  # #1592: the pipeline runs as three independent legs in parallel behind the
+  # `ci` fan-in below. Nothing here depended on anything else in it: the serial
+  # job was 5m15s to 5m45s of wall time on every PR and again on every merge,
+  # for about 2m35s of real work on the longest leg. Billed minutes stay roughly
+  # flat (the same work, plus two extra installs); what drops is the time a PR
+  # and a deploy spend waiting.
+  #
+  # The legs are NOT named `ci`. Exactly one check carries that name (the fan-in),
+  # because main-push-guard.yml resolves whether a merge was green by selecting
+  # check runs literally named `ci`, and several checks under that one name would
+  # have it judging a set rather than a verdict. Pinned by
+  # scripts/test-ci-workflow.ts.
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -55,8 +67,48 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Unit tests
-        run: pnpm test
+      # The node suite only. `pnpm test` runs this AND vitest, which is what the
+      # pre-push gate wants locally; here vitest is its own leg, so this job runs
+      # the node half directly rather than waiting on the slower one.
+      - name: Unit tests (node suites)
+        run: pnpm test:node
+
+  vitest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Component and route tests (vitest)
+        run: pnpm test:components
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
 
       - name: Build (Cloudflare / OpenNext)
         run: pnpm cf:build
@@ -66,6 +118,41 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_placeholder
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
+
+  # The fan-in, and the ONLY check anything outside this file reads.
+  #
+  # `if: always()` is load bearing rather than defensive. Without it a failed leg
+  # SKIPS this job, and a skipped check is not a failed one: main-push-guard's jq
+  # scores it "null" (unknown), which the classifier deliberately tolerates, so a
+  # red PR would merge with the backstop saying nothing. With always(), the job
+  # runs whatever the legs did and turns their results into a real conclusion.
+  #
+  # The results are read from `needs.*.result` rather than named one by one, so a
+  # leg added to `needs` is judged without anyone remembering to edit this step
+  # (L41). Anything other than `success` fails: a cancelled or skipped leg is not
+  # a pass.
+  ci:
+    needs: [checks, vitest, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every CI leg succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "leg results: $RESULTS"
+          if [ -z "$RESULTS" ]; then
+            echo "::error::The CI fan-in read no leg results at all, so it has verified nothing. Failing rather than passing green."
+            exit 1
+          fi
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error::A CI leg did not succeed (results: $RESULTS). Open the run and look at the red leg."
+              exit 1
+            fi
+          done
+          echo "All CI legs succeeded."
 
   # Report-only merged coverage across both harnesses (#603). Its own job so it
   # never gates merge: a hard threshold on this mixed harness would be noisy. The

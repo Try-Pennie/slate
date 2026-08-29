@@ -17,6 +17,12 @@ import {
 } from "./notify-smoke-failure.ts";
 import type { FailureLog, FailureLogIo } from "./lib/smoke-failure-log.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import {
+  assertAlerterFailsLoud,
+  assertHouseStyle,
+  FAIL_LOUD_CHECKS,
+  HOUSE_STYLE_CHECKS,
+} from "./lib/alerter-contract.ts";
 
 /** No failure log configured: the shape every pre-#1492 assertion below assumes. */
 const NO_LOG: FailureLog = { kind: "none" };
@@ -38,15 +44,11 @@ for (const [mode, needle] of [
   assert(text.toLowerCase().includes(needle), `${mode}: message names the pass`);
   assert(/canary failed/i.test(text), `${mode}: message says the canary failed`);
   // House style: no dashes as punctuation, no emoji (Slack shortcodes included).
+  // The count is pinned so a helper that stopped asserting cannot read as a pass.
   assert(
-    !new RegExp("[\u2014\u2013]").test(text),
-    `${mode}: no em or en dashes`,
+    assertHouseStyle(assert, text, mode) === HOUSE_STYLE_CHECKS,
+    `${mode}: the shared house-style check ran every one of its assertions`,
   );
-  assert(
-    !/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text),
-    `${mode}: no unicode emoji`,
-  );
-  assert(!/:[a-z0-9_]+:/.test(text), `${mode}: no slack emoji shortcodes`);
 }
 
 // --- env reader maps both fields ---
@@ -159,41 +161,15 @@ assert(
 const baseEnv = { SMOKE_MODE: "full", RUN_URL: runUrl };
 const noIo = ioWith({});
 
-// --- run(): happy path posts once to the configured channel ---
+// --- run(): the fail-loud contract, shared with the deploy alerter (#1596) ---
+// Smoke is unconfigured by having no SLACK_ALERTS_CHANNEL.
 {
-  const calls: { text: string; channel?: string }[] = [];
-  const post = async (m: { text: string; channel?: string }) => {
-    calls.push(m);
-    return { ok: true };
-  };
-  const res = await run(post, { ...baseEnv, SLACK_ALERTS_CHANNEL: "C123" }, noIo);
-  assert(res.ok, "run returns ok on a successful post");
-  assert(calls.length === 1, "run posts exactly once");
-  assert(calls[0]?.channel === "C123", "run posts to SLACK_ALERTS_CHANNEL");
-}
-
-// --- run(): a Slack API error FAILS LOUD ---
-{
-  let called = 0;
-  const post = async () => {
-    called++;
-    return { ok: false, error: "channel_not_found" };
-  };
-  const res = await run(post, { ...baseEnv, SLACK_ALERTS_CHANNEL: "C123" }, noIo);
-  assert(!res.ok, "run FAILS LOUD when the Slack post errors");
-  assert(/channel_not_found/.test(res.reason), "run surfaces the Slack error");
-  assert(called === 1, "run attempted the post once");
-}
-
-// --- run(): unconfigured Slack FAILS LOUD (never silently no-ops) ---
-{
-  const post = async () => ({ ok: false, error: "slack-not-configured" });
-  const res = await run(post, baseEnv, noIo);
-  assert(!res.ok, "run FAILS LOUD when Slack is unconfigured");
-  assert(
-    /slack-not-configured/.test(res.reason),
-    "run surfaces the unconfigured reason",
-  );
+  const ran = await assertAlerterFailsLoud(assert, {
+    channel: "C123",
+    configured: (post) => run(post, { ...baseEnv, SLACK_ALERTS_CHANNEL: "C123" }, noIo),
+    unconfigured: (post) => run(post, baseEnv, noIo),
+  });
+  assert(ran === FAIL_LOUD_CHECKS, "the shared fail-loud contract ran every one of its assertions");
 }
 
 finish();

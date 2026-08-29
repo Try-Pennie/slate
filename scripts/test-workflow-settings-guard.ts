@@ -31,6 +31,31 @@ interface Run {
  * @param checkerExit what the stub `pnpm check:workflow-settings` returns
  * @param withGh false puts NO gh on PATH at all
  */
+
+/**
+ * The externals every isolated run needs. Resolved ONCE at module scope (#1596):
+ * runGuard is called eleven times and used to spawn `/usr/bin/which` three times
+ * per call, which is 33 process spawns to answer the same three questions.
+ *
+ * A missing one throws HERE rather than resolving to an empty string, because an
+ * empty path would make the symlink or the spawn fail later as something that
+ * reads like the guard under test refusing the push.
+ */
+const ISOLATED_PATH_TOOLS = ["grep", "sh"] as const;
+const REAL_PATHS: Record<(typeof ISOLATED_PATH_TOOLS)[number] | "bash", string> = (() => {
+  const resolved = {} as Record<string, string>;
+  for (const tool of [...ISOLATED_PATH_TOOLS, "bash"]) {
+    const real = spawnSync("/usr/bin/which", [tool], { encoding: "utf8" }).stdout.trim();
+    if (!real) {
+      throw new Error(
+        `could not locate ${tool}, so this test cannot isolate PATH and its results would mean nothing`,
+      );
+    }
+    resolved[tool] = real;
+  }
+  return resolved as Record<(typeof ISOLATED_PATH_TOOLS)[number] | "bash", string>;
+})();
+
 function runGuard(
   changed: string,
   checkerExit: number,
@@ -60,17 +85,13 @@ function runGuard(
     // let the real gh answer and the case tested nothing (L141). The externals
     // the guard genuinely needs are symlinked in instead of borrowing a whole
     // system directory.
-    for (const tool of ["grep", "sh"]) {
-      const real = spawnSync("/usr/bin/which", [tool], { encoding: "utf8" }).stdout.trim();
-      if (!real) throw new Error(`could not locate ${tool}, so this test cannot isolate PATH`);
-      symlinkSync(real, join(dir, tool));
+    for (const tool of ISOLATED_PATH_TOOLS) {
+      symlinkSync(REAL_PATHS[tool], join(dir, tool));
     }
     // bash by ABSOLUTE path: it is not on the isolated PATH either, and a
     // spawn that fails to find its own shell would report as the guard exiting
     // non-zero, which is indistinguishable from the guard blocking the push.
-    const bash = spawnSync("/usr/bin/which", ["bash"], { encoding: "utf8" }).stdout.trim();
-    if (!bash) throw new Error("could not locate bash");
-    const r = spawnSync(bash, [guard, changed], {
+    const r = spawnSync(REAL_PATHS.bash, [guard, changed], {
       encoding: "utf8",
       env: { PATH: dir, ...(opts.env ?? {}) },
     });

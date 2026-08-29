@@ -176,4 +176,46 @@ assert(SYNC_CONCURRENCY > 1 && SYNC_CONCURRENCY <= 20, "sync concurrency is a sm
   assert(ordered[0].userId === "u1", "the corrupt-stamp agent leads the rotation");
 }
 
+// toSyncAgents: the sync/watch loop must never process deactivated users (#274).
+// A deactivated-but-still-bookable account kept getting synced and watched, and
+// could fire watch-renewal failure alerts forever for an account nobody can fix.
+// This is the pure shaper behind loadSyncAgents: it drops deactivated rows
+// (defence in depth behind the SQL filter) and maps the rest to the pacing facts
+// both lanes rotate on. Absorbed here from scripts/test-sync-agents.ts (#1596),
+// which tested only this one function out of the module this file already covers.
+{
+  const rows = [
+    { id: "active", last_synced_at: null, deactivated_at: null },
+    { id: "deactivated", last_synced_at: null, deactivated_at: "2026-06-19T00:00:00Z" },
+    { id: "synced", last_synced_at: "2026-06-01T00:00:00Z", deactivated_at: null },
+  ];
+  const agents = toSyncAgents(rows, new Set(["active"]));
+  const ids = agents.map((a) => a.userId).sort();
+
+  assert(
+    JSON.stringify(ids) === JSON.stringify(["active", "synced"]),
+    "drops the deactivated user, keeps the active ones (order preserved among kept)",
+  );
+  assert(
+    !ids.includes("deactivated"),
+    "a deactivated-but-bookable user is excluded from the sync/watch loop",
+  );
+  assert(
+    agents.find((a) => a.userId === "active")?.hasCalendars === true,
+    "calendar presence is resolved from the provided set",
+  );
+  assert(
+    agents.find((a) => a.userId === "synced")?.hasCalendars === false,
+    "an agent absent from the calendar set has hasCalendars=false",
+  );
+  assert(
+    agents.find((a) => a.userId === "synced")?.lastSyncedMs === Date.parse("2026-06-01T00:00:00Z"),
+    "last_synced_at is parsed to epoch ms; null stays null",
+  );
+  assert(
+    agents.find((a) => a.userId === "active")?.lastSyncedMs === null,
+    "never-synced agent keeps lastSyncedMs null",
+  );
+}
+
 finish();
