@@ -31,8 +31,16 @@ import { assert, finish } from "./lib/harness.ts";
 const repoRoot = new URL("..", import.meta.url).pathname;
 const CONFIG = "tsconfig.scripts.json";
 
+/**
+ * How many times tsc has been spawned. Asserted to be ONE at the end: the run
+ * costs about 10s and used to happen twice on every push and every CI job, once
+ * for the verdict and once again to re-prove the guard could still fail (#1516).
+ */
+let tscRuns = 0;
+
 /** Run tsc over the scripts tree and return its stdout (errors go to stdout). */
 function runTsc(): string {
+  tscRuns++;
   try {
     execFileSync("npx", ["tsc", "-p", CONFIG, "--noEmit"], {
       cwd: repoRoot,
@@ -94,41 +102,65 @@ const readSource = (file: string): string[] => {
   );
 }
 
-// --- the real tree ------------------------------------------------------------
-const output = runTsc();
-const breaking = breakingErrors(output, readSource);
+// --- the real tree, judged by a run that PROVED it looked -----------------------
+//
+// One tsc invocation, not two. Everything the guard reports is satisfied by an
+// invocation that never looked at `scripts/` at all: a wrong `include`, a config
+// that failed to load, and a genuinely clean tree all produce the same empty
+// error list (L1, L98). So a real undefined identifier is planted in the tree
+// FIRST, and the single run has to come back with exactly that error and nothing
+// else breaking.
+//
+// Two runs is how this started, and the second one paid ~10s on every push, every
+// pre-push gate and every CI job to re-prove a property the first run can prove
+// for free (#1516). Folding them together is also strictly stronger evidence: the
+// control now vouches for THE run that produced the verdict, rather than for a
+// second invocation that merely resembled it (L70).
+//
+// The control's filename does not match `test-*.ts`, so the suite runner cannot
+// pick it up if it somehow survives, and it is removed in a `finally`.
+const controlName = "typecheck-control.tmp.ts";
+const controlPath = join(repoRoot, "scripts", controlName);
+
+let found: ReturnType<typeof breakingErrors>;
+try {
+  writeFileSync(controlPath, "export const planted = thisNameIsNotDefined;\n");
+  // Read the errors while the control file still exists, so the opt-out lookup
+  // sees its real (annotation-free) source rather than an unreadable file.
+  found = breakingErrors(runTsc(), readSource);
+} finally {
+  rmSync(controlPath, { force: true });
+}
+
+const isControl = (file: string) => file.includes(controlName);
+const control = found.filter((e) => isControl(e.file));
+const breaking = found.filter((e) => !isControl(e.file));
+
+// THE CONTROL. Without this the two assertions below are answered identically by
+// a healthy tree and by a tsc that read no files at all.
+const controlCaught = control.some((e) => e.code === "TS2304");
+assert(
+  controlCaught,
+  controlCaught
+    ? "this run was PROVEN to have read scripts/: it caught the planted undefined name"
+    : control.length > 0
+      ? `the planted control was found but not as TS2304 (got ${control.map((e) => e.code).join(", ")}), so the class this guard watches is not the class being reported`
+      : "the planted undefined name was NOT caught, so this run did not look at scripts/ and its verdict below means nothing (check tsconfig.scripts.json's include, and that tsc ran)",
+);
+
 assert(
   breaking.length === 0,
   breaking.length === 0
-    ? `no undefined names or unresolved imports in scripts/ (watching ${BREAKING_CODES.join(", ")})`
+    ? `no undefined names or unresolved imports in scripts/ (watching ${BREAKING_CODES.join(", ")}), on a run proven to have looked`
     : `these break at runtime and must be fixed (or annotated with "// typecheck-ok: <why>"):\n` +
       breaking.map((e) => `  ${e.file}:${e.line} ${e.code} ${e.message}`).join("\n"),
 );
 
-// --- positive control: the gate has been SEEN to fail --------------------------
-//
-// Everything above is satisfied by a tsc invocation that never looked at
-// scripts/ at all: a wrong `include`, a config that failed to load, and a clean
-// tree are indistinguishable from an empty error list (L1, L98). So plant a real
-// undefined identifier in the tree and require the gate to catch it by name.
-//
-// The filename does not match `test-*.ts`, so the suite runner cannot pick it up
-// if it somehow survives, and it is removed in a `finally`.
-{
-  const controlName = "typecheck-control.tmp.ts";
-  const controlPath = join(repoRoot, "scripts", controlName);
-  try {
-    writeFileSync(controlPath, "export const planted = thisNameIsNotDefined;\n");
-    const caught = breakingErrors(runTsc(), readSource);
-    assert(
-      caught.some((e) => e.file.includes(controlName) && e.code === "TS2304"),
-      `the gate catches a planted undefined name (caught: ${
-        caught.map((e) => `${e.file} ${e.code}`).join(", ") || "nothing"
-      })`,
-    );
-  } finally {
-    rmSync(controlPath, { force: true });
-  }
-}
+// #1516: the whole point. A second invocation creeping back in doubles the
+// slowest suite in the pre-push gate and in CI, and nothing else would notice.
+assert(
+  tscRuns === 1,
+  `tsc is spawned exactly once per run (spawned ${tscRuns}x); a second invocation doubles the slowest suite in CI`,
+);
 
 finish();
