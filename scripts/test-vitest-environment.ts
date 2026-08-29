@@ -62,4 +62,24 @@ for (const f of files.filter((f) => f.rel.endsWith(".test.ts"))) {
   }
 }
 
+// --- #1595: the pool, and the one speed-up that is out of bounds ---------------
+//
+// `isolate: false` would be the biggest remaining win and it is ruled out: every
+// file in this suite mocks modules, so a shared module registry makes one file's
+// mocks answer for another's, and the failures that produces look like flakes
+// rather than like a configuration choice. A rule that lives only in a comment is
+// a hope (L27), so it is a build failure here.
+{
+  const config = readFileSync(join(ROOT, "vitest.config.ts"), "utf8");
+  assert(
+    !/isolate:\s*false/.test(config),
+    "#1595: `isolate: false` is out of bounds; it trades test independence for seconds, and every file here relies on a fresh module registry for its mocks",
+  );
+  const pool = config.match(/^\s*pool:\s*"(\w+)"/m)?.[1] ?? "";
+  assert(
+    pool === "threads" || pool === "forks",
+    `the vitest pool is set explicitly to a known value (got ${pool || "nothing"}), so a change to it is a decision rather than a default drifting`,
+  );
+}
+
 finish();

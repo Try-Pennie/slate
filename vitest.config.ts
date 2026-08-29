@@ -14,6 +14,28 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
+    // #1595: MEASURED, and left on forks. Worker threads were the experiment and
+    // they are not a win on the two core runner. Five attempts of the vitest job
+    // on one commit, so the runner was the only variable, came back 142s, 154s,
+    // 148s, 146s and 147s (median 147s), against a forks baseline of 15 runs at
+    // min 121s, median 150s, max 158s. Threads' own minimum (142s) is worse than
+    // forks' (121s). All five passed, so the pool is safe, it simply buys
+    // nothing: locally, with cores to spare, threads did win (8.2s against
+    // 10.4s), because process start-up is what parallelises away there. On two
+    // cores the run is bound by the test bodies and by jsdom setup, and a thread
+    // does neither of those more cheaply.
+    //
+    // Named explicitly rather than left to the default, so changing it is a
+    // decision somebody made and not a default drifting under us.
+    //
+    // `isolate` stays ON, and is deliberately absent so the default holds: each
+    // file gets a fresh module registry, which is what makes the module mocks
+    // these suites are built on independent. Turning it off is the one speed-up
+    // #1595 rules out, and scripts/test-vitest-environment.ts fails the build if
+    // it appears: every file here mocks modules, so a leaked registry makes one
+    // file's mocks answer for another's, and the failures look like flakes rather
+    // than like a configuration choice.
+    pool: "forks",
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./vitest.setup.ts"],
   },
