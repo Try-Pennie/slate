@@ -36,6 +36,7 @@ jobs:
   # have it judging a set rather than a verdict. Pinned by
   # scripts/test-ci-workflow.ts.
   checks:
+    timeout-minutes: 15  # measured max 157s
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -74,6 +75,7 @@ jobs:
         run: pnpm test:node
 
   vitest:
+    timeout-minutes: 15  # measured max 156s
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -94,6 +96,7 @@ jobs:
         run: pnpm test:components
 
   build:
+    timeout-minutes: 15  # measured max 78s
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -132,6 +135,7 @@ jobs:
   # (L41). Anything other than `success` fails: a cancelled or skipped leg is not
   # a pass.
   ci:
+    timeout-minutes: 5  # measured max 3s
     needs: [checks, vitest, build]
     if: always()
     runs-on: ubuntu-latest
@@ -172,6 +176,7 @@ jobs:
   # minutes a month against about 1,000) and was considered and declined, because
   # a per-merge record is worth the difference.
   coverage:
+    timeout-minutes: 20  # measured max 321s
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -228,6 +233,7 @@ jobs:
   # plan (see the main-push guard, #1027), it is DETECTIVE: a red run means look
   # now and rotate if needed, not "the change was prevented".
   security-scan:
+    timeout-minutes: 15  # measured max 87s
     runs-on: ubuntu-latest
     steps:
       # Full history: the secret scan reads the commits a push ADDS, and needs the
@@ -294,6 +300,7 @@ jobs:
             --error --quiet --metrics=off --disable-version-check
 
   migration-drift:
+    timeout-minutes: 10  # measured max 19s
     if: ${{ ! startsWith(github.head_ref, 'dependabot/') }}
     runs-on: ubuntu-latest
     steps:
@@ -363,6 +370,13 @@ jobs:
   # loudly instead of shipping a feature whose schema is missing. Under the runbook
   # the migration is applied before merge, so migration-drift is already green here.
   deploy:
+    # 20, not the 15 its siblings get: the post-deploy probe POLLS for up to
+    # DEFAULT_VERSION_TIMEOUT_MS (240s) waiting for Cloudflare to serve the new
+    # commit, and this bound has to clear that comfortably or the job timeout
+    # kills the probe before the probe can report its own honest failure, which
+    # would read as a hung deploy rather than as propagation never completing.
+    # Pinned against the probe's own constant by scripts/test-workflow-timeouts.ts.
+    timeout-minutes: 20  # measured max 103s, of which the probe may poll 240s
     needs: [ci, migration-drift]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
