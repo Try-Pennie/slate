@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const auth = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   requireManager: vi.fn(),
+  requireSuperAdmin: vi.fn(),
   realCurrentUser: vi.fn(),
   currentUser: vi.fn(),
 }));
@@ -59,6 +60,8 @@ const locks = vi.hoisted(() => ({
 
 const dbState = vi.hoisted(() => ({
   single: null as unknown,
+  singleError: null as { message: string } | null,
+  insertError: null as { message: string } | null,
   count: 0,
   countError: null as { message: string } | null,
 }));
@@ -66,7 +69,9 @@ const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
 const update = vi.hoisted(() =>
   vi.fn((_patch: Record<string, unknown> = {}) => ({ eq: updateEq })),
 );
-const insert = vi.hoisted(() => vi.fn(async () => ({})));
+const insert = vi.hoisted(() =>
+  vi.fn(async (_rows: unknown) => ({ error: dbState.insertError })),
+);
 const upsert = vi.hoisted(() =>
   vi.fn(async (_rows: unknown, _opts?: { onConflict: string }) => ({})),
 );
@@ -79,7 +84,10 @@ const from = vi.hoisted(() =>
         count: dbState.countError ? null : dbState.count,
         error: dbState.countError,
       })),
-      maybeSingle: vi.fn(async () => ({ data: dbState.single })),
+      maybeSingle: vi.fn(async () => ({
+        data: dbState.singleError ? null : dbState.single,
+        error: dbState.singleError,
+      })),
       limit: vi.fn(() => q),
       update,
       insert,
@@ -103,6 +111,7 @@ vi.mock("@/lib/salesforce/sync", () => salesforce);
 vi.mock("@/lib/notify/streak", () => streak);
 
 import {
+  grantStaffAccess,
   setUserRole,
   startImpersonation,
   stopImpersonation,
@@ -129,6 +138,8 @@ function form(entries: Record<string, string>): FormData {
 beforeEach(() => {
   vi.clearAllMocks();
   dbState.single = null;
+  dbState.singleError = null;
+  dbState.insertError = null;
   dbState.count = 0;
   dbState.countError = null;
   locks.acquireLock.mockResolvedValue("claim");
@@ -647,5 +658,155 @@ describe("syncSalesforceNow streak reset (#491)", () => {
     salesforce.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF down"));
     await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\?sync_error/);
     expect(streak.clearFailureStreak).not.toHaveBeenCalled();
+  });
+});
+
+// Granting elevated access by email (#160). The surface exists because seeding a
+// privileged row used to mean a developer editing the users table, so the guards
+// on it ARE the feature: this pins that the action refuses server side rather
+// than relying on the button being hidden, and that an admin count it could not
+// read never becomes a confident answer in either direction.
+describe("grantStaffAccess", () => {
+  const superAdmin = { id: "sa1", role: "super_admin", org_id: "o1" };
+
+  function staffForm(over: Record<string, string> = {}): FormData {
+    return form({ email: "new.person@trypennie.com", role: "admin", ...over });
+  }
+
+  function redirectedTo(): string {
+    const call = redirect.mock.calls.at(-1);
+    return String(call?.[0] ?? "");
+  }
+
+  it("refuses a caller who is not a super admin, and never touches the DB", async () => {
+    auth.requireSuperAdmin.mockRejectedValueOnce(new Error("Not authorized"));
+    await expect(grantStaffAccess(staffForm())).rejects.toThrow();
+    expect(from).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // The plan refuses independently of the route guard, so a second entry point
+  // wired to requireAdmin could not open the door by accident.
+  it("refuses an ordinary admin even if the route guard let them through", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(admin);
+    await expect(grantStaffAccess(staffForm())).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=not_authorized");
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // The positive control, in the same fixture: without it every refusal above is
+  // satisfied by an action that can never write at all.
+  it("creates the account, never bookable, and reports the address it wrote", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = null;
+    await expect(grantStaffAccess(staffForm())).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(insert).toHaveBeenCalledTimes(1);
+    const row = insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(row.email).toBe("new.person@trypennie.com");
+    expect(row.role).toBe("admin");
+    expect(row.org_id).toBe("o1");
+    expect(row.bookable).toBe(false);
+    expect(redirectedTo()).toContain("staff=granted");
+    expect(recordAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes the address, because login matches on exactly what is stored", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    await expect(
+      grantStaffAccess(staffForm({ email: "  New.Person@TryPennie.com " })),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
+    const row = insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(row.email).toBe("new.person@trypennie.com");
+  });
+
+  it("refuses an address held by another org rather than colliding on the unique index", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = {
+      id: "u9",
+      org_id: "other-org",
+      role: "agent",
+      deactivated_at: null,
+      auth_user_id: null,
+    };
+    await expect(grantStaffAccess(staffForm())).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=other_org");
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // An unreadable lookup is not an absent row. Reading it as absence would send
+  // the action down the create path on an address that may already exist.
+  it("refuses when the existing-account lookup fails, and writes nothing", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.singleError = { message: "permission denied for table users" };
+    await expect(grantStaffAccess(staffForm())).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=lookup_failed");
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("blocks a change that would leave the org with no admin", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = {
+      id: "u9",
+      org_id: "o1",
+      role: "admin",
+      deactivated_at: null,
+      auth_user_id: "a9",
+    };
+    dbState.count = 1;
+    await expect(grantStaffAccess(staffForm({ role: "manager" }))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=last_admin");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // #1165 again, on a new surface. A FAILED count read must refuse in its own
+  // words: scoring it as zero produces a confident "no admin would remain" about
+  // a roster nothing measured, and scoring it as plenty would let the change
+  // through on the same non-answer.
+  it("refuses with an unreadable-count message, not a last-admin claim, when the count read fails", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = {
+      id: "u9",
+      org_id: "o1",
+      role: "admin",
+      deactivated_at: null,
+      auth_user_id: "a9",
+    };
+    dbState.count = 5; // plenty of admins; only the READ is broken
+    dbState.countError = { message: "permission denied for table users" };
+    await expect(grantStaffAccess(staffForm({ role: "manager" }))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=admin_count_unreadable");
+    expect(redirectedTo()).not.toContain("last_admin");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // The count only decides a change that TAKES org power away, so a broken count
+  // read must not block a grant that never depended on it.
+  it("still grants when the count read fails but the change adds org power", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = {
+      id: "u9",
+      org_id: "o1",
+      role: "manager",
+      deactivated_at: null,
+      auth_user_id: "a9",
+    };
+    dbState.countError = { message: "permission denied for table users" };
+    await expect(grantStaffAccess(staffForm({ role: "admin" }))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=updated");
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  // A write that failed must not be reported as access somebody now has: the
+  // person would be told they are set up and find out at the login screen.
+  it("reports a failed write as a failure, and records no audit row for it", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.insertError = { message: "duplicate key value violates unique constraint" };
+    await expect(grantStaffAccess(staffForm())).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=write_failed");
+    expect(recordAudit).not.toHaveBeenCalled();
   });
 });

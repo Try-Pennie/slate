@@ -16,6 +16,11 @@ import { log } from "@/lib/log";
  */
 export const AUDIT_ACTIONS = [
   "role.set",
+  // A staff account created from an email address rather than arriving in the
+  // Salesforce agent feed (#160). Distinct from role.set because there was no
+  // account before it: the trail's target is null and the address, which is the
+  // only thing that identifies the grant until they sign in, is in the details.
+  "staff.access_granted",
   "agent.hours",
   "agent.use_default_hours",
   "agent.bookable",
