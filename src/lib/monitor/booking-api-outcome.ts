@@ -33,26 +33,43 @@ export interface TallyArgs {
   p_outcome: string;
   p_bucket: string;
   p_error_code: string;
+  /** #1616: whether this attempt was the smoke canary's rather than a customer's. */
+  p_is_test: boolean;
+}
+
+export interface TallyInput {
+  outcome: string;
+  bucketCode: string;
+  errorCode: string | null;
+  /**
+   * #1616. Decided at the point of recording from the BUCKET the attempt belongs
+   * to, never inferred downstream: the manage-token reschedule path records an
+   * empty bucket code, so a bucket-code filter would keep the canary's deliberate
+   * `reschedule_conflict` and drop its successes.
+   */
+  isTest: boolean;
+  /** The call time (epoch ms), bucketed into the roster's ET calendar day. */
+  atMs: number;
 }
 
 /**
- * Build the bump_booking_api_outcome RPC args for one API call. `atMs` is the
- * call time (epoch ms), bucketed into the roster's ET calendar day. A null error
- * code becomes "" so it fits the table's non-null unique key (day, outcome,
- * bucket, error_code) rather than making the row NULL-distinct.
+ * Build the bump_booking_api_outcome RPC args for one API call. A null error code
+ * becomes "" so it fits the table's non-null unique key (day, outcome, bucket,
+ * error_code, is_test) rather than making the row NULL-distinct.
+ *
+ * Takes one named object rather than five positionals: `outcome`, `bucketCode`
+ * and `errorCode` are all strings and `isTest` sits beside them, and a pair of
+ * same-typed positionals silently swapped is a defect this codebase has already
+ * shipped once (#1220).
  */
-export function outcomeTallyArgs(
-  outcome: string,
-  bucketCode: string,
-  errorCode: string | null,
-  atMs: number,
-): TallyArgs {
-  const day = DateTime.fromMillis(atMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
+export function outcomeTallyArgs(input: TallyInput): TallyArgs {
+  const day = DateTime.fromMillis(input.atMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
   return {
     p_day: day,
-    p_outcome: outcome,
-    p_bucket: bucketCode,
-    p_error_code: errorCode ?? "",
+    p_outcome: input.outcome,
+    p_bucket: input.bucketCode,
+    p_error_code: input.errorCode ?? "",
+    p_is_test: input.isTest,
   };
 }
 
@@ -71,12 +88,22 @@ export interface OutcomeMix {
   total: number;
   outcomes: OutcomeSlice[];
   errors: ErrorSlice[];
+  /**
+   * How many TEST attempts fell in this window (#1616), or null when the read did
+   * not report it. Null, never 0: "the canary wrote nothing this week" and "we
+   * could not count what we hid" are different facts, and a panel that shows a
+   * smaller number without saying what it left out is the silently-smaller-number
+   * the issue rules out.
+   */
+  testTotal: number | null;
 }
 
 /** The jsonb shape the booking_api_outcome_mix RPC returns for a window. */
 export interface RawMix {
   by_outcome?: Record<string, number> | null;
   by_error?: Record<string, number> | null;
+  /** #1616, migration 0108. Absent from a pre-0108 function and from a failed read. */
+  test_total?: number | null;
 }
 
 /**
@@ -96,5 +123,28 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
   const errors: ErrorSlice[] = Object.entries(byError)
     .map(([code, count]) => ({ code, count }))
     .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
-  return { total, outcomes, errors };
+  const testTotal = typeof raw?.test_total === "number" ? raw.test_total : null;
+  return { total, outcomes, errors, testTotal };
+}
+
+/**
+ * The one sentence the outcome panel shows about what it left out (#1616).
+ *
+ * The panel HIDES test traffic, so it measures the same population the
+ * failure-rate page does and a reader following that page's "the per call
+ * breakdown is in the booking outcome panel" is not handed a different number.
+ * Hiding is only honest if the reader can see that something was hidden, so the
+ * count comes back with the mix and is stated either way.
+ *
+ * Three states, three sentences, because they are three different facts: some was
+ * excluded, none existed, and it could not be counted (L11). The last one must
+ * never render as "0 excluded".
+ */
+export function excludedTestTrafficNote(testTotal: number | null): string {
+  if (testTotal === null) {
+    return "Could not count the smoke canary calls this window leaves out.";
+  }
+  if (testTotal === 0) return "No smoke canary calls in this window.";
+  const calls = testTotal === 1 ? "call" : "calls";
+  return `Excludes ${testTotal} smoke canary ${calls}.`;
 }

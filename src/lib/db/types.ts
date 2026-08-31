@@ -708,6 +708,13 @@ export interface BookingApiOutcomeDaily {
   outcome: string;
   bucket_code: string;
   error_code: string;
+  /**
+   * #1616, migration 0108: whether the attempt was the smoke canary's rather than
+   * a customer's. Decided at the point of recording from the bucket it belongs to,
+   * because the manage-token reschedule path records an EMPTY bucket_code and so
+   * cannot be identified by one. Part of the row's unique key.
+   */
+  is_test: boolean;
   count: number;
   created_at: string;
   updated_at: string;

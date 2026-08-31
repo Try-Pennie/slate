@@ -52,7 +52,10 @@ export async function POST(req: NextRequest) {
     // One rejected body is a stray call; a wave means the bot is sending a shape Slate
     // no longer takes, and every lead it is holding is refused until somebody notices
     // (#1318). Counted so the failure-rate window (#1313) sees it.
-    recordApiOutcome("error", "", "VALIDATION");
+    recordApiOutcome("error", "", "VALIDATION", {
+      by: "unidentifiable",
+      why: "the request body did not parse, so no bucket was ever named",
+    });
     return NextResponse.json(
       parsed.fieldErrors
         ? { error: parsed.error, code: "VALIDATION", fieldErrors: parsed.fieldErrors }
@@ -168,6 +171,7 @@ export async function POST(req: NextRequest) {
       result.outcome,
       v.bucketCode,
       result.bucketChangeDeclined ? `bucket_change_declined_${result.bucketChangeDeclined}` : null,
+      { by: "bucket", code: v.bucketCode },
     );
     return NextResponse.json(body, { status });
   } catch (err) {
@@ -180,7 +184,7 @@ export async function POST(req: NextRequest) {
       status,
       code,
     });
-    recordApiOutcome("error", v.bucketCode, code);
+    recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode });
     return NextResponse.json(
       await apiErrorBody(err, code, "book", "Booking failed"),
       { status },

@@ -60,7 +60,13 @@ export async function POST(
     // a share: adding only the failures would inflate the very number #1313 pages on.
     // Not bucket scoped, because reaching the code here would cost a lookup the manage
     // page has no other reason to do, and the tally coalesces a missing bucket to "".
-    recordApiOutcome("rescheduled", "", null);
+    //
+    // That empty bucket code is exactly why the test marker cannot be inferred from it
+    // (#1616): this route is where the smoke canary's deliberate reschedule_conflict is
+    // recorded, so a bucket-code filter would leave the canary's errors in the failure
+    // rate and take its successes out. The marker travels as the TOKEN instead and is
+    // resolved from the booking's own bucket, after the response.
+    recordApiOutcome("rescheduled", "", null, { by: "manageToken", token });
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,
@@ -70,14 +76,14 @@ export async function POST(
   } catch (err) {
     // Outage (couldn't verify), not a full slot — retryable (#319).
     if (err instanceof VerifyUnavailableError) {
-      recordApiOutcome("error", "", "reschedule_verify_unavailable");
+      recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
       // refusal: reschedule_verify_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // Fail-closed lock claim on a transient DB error (#479): safe to retry, so a
     // 503 like a verify outage, not a hard 500.
     if (err instanceof RescheduleLockUnavailableError) {
-      recordApiOutcome("error", "", "reschedule_lock_unavailable");
+      recordApiOutcome("error", "", "reschedule_lock_unavailable", { by: "manageToken", token });
       // refusal: reschedule_lock_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -91,7 +97,7 @@ export async function POST(
     // the reason travels as its own field. `rescheduleOffersAlternatives` is the only
     // judge of it; these ids are the refusal-catalog ids already recorded above.
     if (err instanceof RescheduleConflictError) {
-      recordApiOutcome("error", "", "reschedule_conflict");
+      recordApiOutcome("error", "", "reschedule_conflict", { by: "manageToken", token });
       // refusal: reschedule_conflict
       return NextResponse.json(
         { error: err.message, reason: "reschedule_conflict" },
@@ -99,7 +105,7 @@ export async function POST(
       );
     }
     if (err instanceof SlotUnavailableError) {
-      recordApiOutcome("error", "", "reschedule_slot_taken");
+      recordApiOutcome("error", "", "reschedule_slot_taken", { by: "manageToken", token });
       // refusal: reschedule_slot_taken
       return NextResponse.json(
         { error: err.message, reason: "reschedule_slot_taken" },
@@ -110,14 +116,14 @@ export async function POST(
     // full slot, not a crash. 409 like the other unavailable cases so the caller
     // can offer another time instead of seeing a generic error.
     if (err instanceof NoEligibleAgentsError) {
-      recordApiOutcome("error", "", "reschedule_no_eligible_agents");
+      recordApiOutcome("error", "", "reschedule_no_eligible_agents", { by: "manageToken", token });
       // refusal: reschedule_no_eligible_agents
       return NextResponse.json(
         { error: err.message, reason: "reschedule_no_eligible_agents" },
         { status: 409 },
       );
     }
-    recordApiOutcome("error", "", "reschedule_internal");
+    recordApiOutcome("error", "", "reschedule_internal", { by: "manageToken", token });
     // refusal: reschedule_internal
     return internalErrorResponse(err, "bookings/[token]/reschedule");
   }

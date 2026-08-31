@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
     // and nothing said so (#1318). Counted as an error, so the existing failure-rate
     // window (#1313) pages on the share and names the code. The bucket is read off the
     // raw body rather than the parsed one, which is exactly what failed to parse.
-    recordApiOutcome("error", rawBucketCode(raw), "invalid_request");
+    recordApiOutcome("error", rawBucketCode(raw), "invalid_request", { by: "bucket", code: rawBucketCode(raw) });
     return NextResponse.json(
       { error: "Invalid request", details: parsed.error.flatten() },
       { status: 400 },
@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
     // incoming data disagreeing, which turns every lead from that source away at once,
     // and #1425 made that concrete: a number carrying an extension is now refused, so any
     // upstream source still sending one fails every time (#1318).
-    recordApiOutcome("error", parsed.data.bucketCode, "invalid_contact");
+    recordApiOutcome("error", parsed.data.bucketCode, "invalid_contact", { by: "bucket", code: parsed.data.bucketCode });
     return NextResponse.json(
       { error: "Please check your contact details.", fieldErrors: attendeeErrors },
       { status: 400 },
@@ -201,7 +201,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    recordApiOutcome("created", parsed.data.bucketCode, null);
+    recordApiOutcome("created", parsed.data.bucketCode, null, { by: "bucket", code: parsed.data.bucketCode });
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
     // and the Move they are about to make is a separate request.
     if (err instanceof ExistingCallError) {
       await refundAll();
-      recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call");
+      recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: existing_call
       return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
     }
@@ -225,7 +225,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof VerifyUnavailableError) {
       // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable");
+      recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: verify_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -238,7 +238,7 @@ export async function POST(req: NextRequest) {
       // WE ADVERTISED. One lost race is ordinary contention, which is why this
       // does not page on its own; fifty in two hours is the cal.com failure of
       // 2026-08-06, and it is indistinguishable from the one without a count.
-      recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable");
+      recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: slot_unavailable
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
@@ -246,11 +246,11 @@ export async function POST(req: NextRequest) {
     // (the API route #358 distinguishes them), but it is a config problem, not a
     // slot race: a retry won't help, so we deliberately do NOT refund here.
     if (err instanceof NoEligibleAgentsError) {
-      recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents");
+      recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: no_eligible_agents
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
-    recordApiOutcome("error", parsed.data.bucketCode, "internal");
+    recordApiOutcome("error", parsed.data.bucketCode, "internal", { by: "bucket", code: parsed.data.bucketCode });
     // refusal: internal
     return internalErrorResponse(err, "booking");
   }

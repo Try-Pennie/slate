@@ -180,16 +180,31 @@ export interface Database {
         Returns: Record<string, number> | null;
       };
       /** #418: atomic per-call increment of the booking-API outcome tally
-       *  (INSERT ... ON CONFLICT DO UPDATE count + 1). */
+       *  (INSERT ... ON CONFLICT DO UPDATE count + 1). `p_is_test` (#1616,
+       *  migration 0108) marks the smoke canary's own attempts; it is part of the
+       *  conflict target, so a test row and a real one never collapse into one. */
       bump_booking_api_outcome: {
-        Args: { p_day: string; p_outcome: string; p_bucket: string; p_error_code: string };
+        Args: {
+          p_day: string;
+          p_outcome: string;
+          p_bucket: string;
+          p_error_code: string;
+          p_is_test: boolean;
+        };
         Returns: undefined;
       };
       /** #418: the aggregated outcome mix over [p_since, today] as a single jsonb
-       *  row ({ by_outcome, by_error }) so it never hits the 1000-row SETOF cap. */
+       *  row ({ by_outcome, by_error }) so it never hits the 1000-row SETOF cap.
+       *  `p_include_test` (#1616) defaults to false in the database as well, so the
+       *  safe direction is what a forgetful caller gets; `test_total` always counts
+       *  the window's test attempts, so a panel that hides them can say how many. */
       booking_api_outcome_mix: {
-        Args: { p_since: string };
-        Returns: { by_outcome?: Record<string, number>; by_error?: Record<string, number> } | null;
+        Args: { p_since: string; p_include_test?: boolean };
+        Returns: {
+          by_outcome?: Record<string, number>;
+          by_error?: Record<string, number>;
+          test_total?: number;
+        } | null;
       };
       /** #990/#989: how often each reason has been picked since p_since. Returns a
        *  jsonb map "<action>|<reason_code>" -> count (a single row, so it never hits

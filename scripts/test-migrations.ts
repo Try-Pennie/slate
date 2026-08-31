@@ -233,6 +233,43 @@ assert(
   "#624: a global unique index on buckets(code) enforces single-org code uniqueness",
 );
 
+// #1616: the booking failure rate must not count the smoke canary.
+//
+// Three things in the SQL carry that, and each fails silently on its own. If the
+// marker is not in the unique key, a test attempt and a real one collapse onto one
+// row and the split is unrecoverable. If the mix does not filter, the reading
+// counts the canary exactly as before while every TypeScript test still passes. If
+// the filter defaults to INCLUDING test traffic, a caller that forgets the argument
+// gets the defect back, silently.
+{
+  const fn =
+    sql.match(/create (?:or replace )?function booking_api_outcome_mix[\s\S]*?\$\$;/gi)?.at(-1) ??
+    "";
+  assert(
+    /p_include_test\s+boolean\s+default\s+false/i.test(fn),
+    "#1616: booking_api_outcome_mix defaults to EXCLUDING test traffic (the safe direction)",
+  );
+  assert(
+    (fn.match(/p_include_test\s+or\s+not\s+is_test/gi) ?? []).length >= 2,
+    "#1616: both the outcome slice and the error slice filter on the test marker " +
+      "(filtering only one leaves the canary's deliberate reschedule_conflict in)",
+  );
+  assert(
+    /'test_total'/.test(fn),
+    "#1616: the mix reports how much test traffic it hid, so the panel never shows a " +
+      "silently smaller number",
+  );
+
+  const bump =
+    sql.match(/create (?:or replace )?function bump_booking_api_outcome[\s\S]*?\$\$;/gi)?.at(-1) ??
+    "";
+  assert(
+    /on conflict\s*\([^)]*is_test[^)]*\)/i.test(bump),
+    "#1616: the tally's conflict target includes is_test, so a test attempt and a real " +
+      "one can never share a row",
+  );
+}
+
 // The deployed build has no filesystem, so the prod lag alert (#516) compares the
 // live DB against a constant baked into the bundle. That constant is only as good
 // as this guard: adding a migration without bumping it would make prod look in

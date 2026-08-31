@@ -119,7 +119,32 @@ describe("readTodayOutcomes", () => {
     // 01:00 UTC on the 12th is still the 11th in Eastern time.
     const reading = await readTodayOutcomes(Date.UTC(2026, 7, 12, 1, 0, 0));
     expect(reading.day).toBe("2026-08-11");
-    expect(rpc).toHaveBeenCalledWith("booking_api_outcome_mix", { p_since: "2026-08-11" });
+    expect(rpc).toHaveBeenCalledWith("booking_api_outcome_mix", {
+      p_since: "2026-08-11",
+      p_include_test: false,
+    });
+  });
+
+  // #1616. Before cutover EVERY attempt in the tally is the smoke canary's, and
+  // exactly one per pass is a reschedule_conflict the canary raises on purpose, so
+  // a reading that counts it measures the test harness. The exclusion is asserted
+  // at the reading site rather than trusted to the RPC's own default, which nothing
+  // in this repo can see.
+  it("asks the tally to EXCLUDE test traffic, so the canary is not the thing being measured", async () => {
+    rpc.mockResolvedValue({ data: { by_outcome: {}, by_error: {}, test_total: 16 }, error: null });
+    await readTodayOutcomes(Date.UTC(2026, 7, 11, 18, 0, 0));
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_include_test: false });
+  });
+
+  it("reads a day of nothing but excluded canary traffic as zero attempts, not as a failure", async () => {
+    // What production looks like while the roster is dark: the canary wrote 16
+    // rows and every one of them was filtered out by the RPC, so the window has
+    // nothing to judge and the check parks instead of concluding.
+    rpc.mockResolvedValue({ data: { by_outcome: {}, by_error: {}, test_total: 16 }, error: null });
+    const reading = await readTodayOutcomes(Date.UTC(2026, 7, 11, 18, 0, 0));
+    expect(reading.attempts).toBe(0);
+    expect(reading.failures).toBe(0);
+    expect(reading.byCode).toEqual({});
   });
 
   it("THROWS when the tally read fails, rather than reporting a day with no failures", async () => {
