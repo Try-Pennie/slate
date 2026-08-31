@@ -1085,6 +1085,18 @@ export default async function AdminPage({
         </a>
       </section>
 
+      {/* Bucket availability (per bucket per day supply, #1254) */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Bucket availability</h2>
+        <p className="mb-3 text-xs text-fg-muted">
+          How many times each debt bucket is offering each day, against how many that
+          day could have held, so a thin pool is visible next to a closed one.
+        </p>
+        <a href="/admin/bucket-availability" className={btnSecondaryCls}>
+          View bucket availability
+        </a>
+      </section>
+
       {/* Staffing depth (thin-tier early warning, #584) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Staffing depth</h2>
