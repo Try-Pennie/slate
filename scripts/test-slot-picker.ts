@@ -34,11 +34,12 @@ const TODAY = DateTime.fromISO("2026-08-13", { zone: ZONE });
   eq(chips[0].label, "TODAY", "day zero is labelled TODAY");
   eq(chips[1].label, "FRI", "a later day carries its uppercase weekday");
   eq(chips[0].day, "13", "the day number is the large figure");
-  eq(chips[0].month, "AUG", "every chip carries its month text, so the line is always reserved");
-  eq(chips[2].month, "AUG", "including the ones that will not show it");
-  eq(chips[0].monthShown, true, "the first chip names its month");
-  eq(chips[1].monthShown, false, "a chip in the same month does not repeat it");
-  eq(chips[2].monthShown, false, "nor does the one after that");
+  eq(chips[0].month, "AUG", "every chip carries its month text");
+  eq(chips[2].month, "AUG", "including the ones whose month has not changed");
+  assert(
+    chips.every((c) => c.month.length > 0),
+    "every chip names its month (Dan, 2026-08-31), so no chip is readable only by looking left",
+  );
   assert(
     chips.every((c) => c.gapBefore === false),
     "consecutive days carry no gap marker",
@@ -63,44 +64,42 @@ const TODAY = DateTime.fromISO("2026-08-13", { zone: ZONE });
 
 {
   // The month turning over must not read as a date in the past: without it the
-  // strip reads "30, 31, 1, 2" and the last two look like days already gone. So
-  // the month is NAMED wherever it changes (Dan, 2026-08-07, and the committed
-  // design record at docs/design/booker-mockup.html), which is the first chip and
-  // every turnover, and it is not repeated on the chips in between.
+  // strip reads "30, 31, 1, 2" and the last two look like days already gone.
+  //
+  // Every chip names its month (Dan, 2026-08-31, shown both renderings and
+  // choosing this one; it reverses the 2026-08-07 record and #1298's correction
+  // to it, see #1640). Naming it everywhere means a chip is readable on its own
+  // rather than by looking left to find the last one that carried it, and it
+  // makes the strip's height constant by construction rather than by reserving
+  // a blank line.
   const chips = dayChips(["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"], TODAY, ZONE);
-  eq(chips[0].monthShown, true, "the first chip always names its month");
-  eq(chips[1].monthShown, false, "the second day of the same month does not repeat it");
-  eq(chips[2].monthShown, true, "the turnover names the new month");
-  eq(chips[3].monthShown, false, "and the day after the turnover does not repeat it");
-  eq(chips[2].month, "SEP", "the first day of the next one is named SEP");
+  eq(chips[0].month, "AUG", "the first chip names its month");
+  eq(chips[1].month, "AUG", "so does the next one in the same month");
+  eq(chips[2].month, "SEP", "the turnover names the new month");
+  eq(chips[3].month, "SEP", "and the day after the turnover names it too");
   eq(chips[1].gapBefore, false, "a month boundary is not a gap");
 
-  // Every chip still CARRIES the text, whether or not it shows it. That is what
-  // reserves the line: the strip must not grow taller on the first of the month,
-  // so the chip that is not naming its month hides the same span rather than
-  // omitting it.
   assert(
     chips.every((c) => c.month.length > 0),
-    "the month text is present on every chip, so the line can be reserved on all of them",
+    "no chip is left without a month, at a turnover or anywhere else",
   );
 }
 
 {
-  // December to January is a turnover like any other, and the year is part of the
-  // comparison so that two Decembers a year apart are not read as one run. A
-  // horizon of at most seven days cannot reach that far, so this is `dayChips`
-  // being asked directly rather than a case the booker can produce; the check
-  // exists because the rule is stated in the code and an unstated rule is the one
-  // that gets simplified away.
+  // A year boundary still has to name the right month on each side. This case
+  // mattered more when the month was named only where it CHANGED, because the
+  // comparison had to include the year; now that every chip names its own month
+  // there is no comparison left to get wrong. The check stays because it is the
+  // one that would catch a future rendering that reintroduces a comparison.
   const newYear = dayChips(["2026-12-31", "2027-01-01"], TODAY, ZONE);
-  eq(newYear[1].monthShown, true, "January names itself after December");
-  eq(newYear[1].month, "JAN", "and it is named JAN");
+  eq(newYear[0].month, "DEC", "December is named on its own chip");
+  eq(newYear[1].month, "JAN", "and January on the next, across the year boundary");
 
   const sameMonthDifferentYear = dayChips(["2026-12-30", "2027-12-30"], TODAY, ZONE);
   eq(
-    sameMonthDifferentYear[1].monthShown,
-    true,
-    "two Decembers a year apart are two months, not one run",
+    sameMonthDifferentYear[1].month,
+    "DEC",
+    "two Decembers a year apart each name themselves",
   );
 }
 

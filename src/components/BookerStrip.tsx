@@ -101,19 +101,24 @@ export function BookerStrip({
                 {chip.label}
               </span>
               <span className="text-lg font-semibold leading-tight">{chip.day}</span>
-              {/* The month is NAMED wherever it changes and hidden in between,
-                  never omitted: `invisible` is `visibility: hidden`, which keeps
-                  the line in the layout, so the strip is exactly as tall on the
-                  first of the month as on any other day. A chip that dropped the
-                  span would make the row grow while a lead was looking at it.
-                  Hiding it this way also takes it out of the accessible name, so
-                  a screen reader hears the month once per turnover rather than on
-                  every chip in the row. */}
+              {/* EVERY chip names its month (Dan, 2026-08-31, #1640, shown both
+                  renderings and choosing this one; it reverses the 2026-08-07
+                  design record and #1298's correction to match it).
+
+                  Two things follow, and both are the point rather than side
+                  effects. A chip is readable on its own, instead of having to be
+                  read by looking left for the last chip that carried a month. And
+                  the row's height is constant by construction: nothing here is
+                  conditionally hidden, so there is no blank line to reserve and no
+                  way for the strip to grow on the first of the month.
+
+                  A screen reader now hears the month on each chip. That repetition
+                  is deliberate: the visible text and the accessible name say the
+                  same thing, which is worth more than saving three words, and a
+                  divergence between them is its own defect. */}
               <span
                 data-chip-month
-                className={`text-[10px] uppercase tracking-wide ${
-                  chip.monthShown ? "" : "invisible"
-                } ${selected ? "" : "text-fg-muted"}`}
+                className={`text-[10px] uppercase tracking-wide ${selected ? "" : "text-fg-muted"}`}
               >
                 {chip.month}
               </span>
