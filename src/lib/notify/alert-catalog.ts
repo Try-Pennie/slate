@@ -120,6 +120,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The Salesforce roster sync is failing on consecutive runs; a successful run ends it.",
   },
   {
+    key: "salesforce_user_id_conflicts",
+    kind: "condition",
+    why: "Part of the roster cannot be given a Salesforce user id (a disagreement, a shared email, or an id another row holds); it stays true until somebody fixes those records, and the hourly sync re-measures it.",
+  },
+  {
     key: "availability_drift:*",
     kind: "condition",
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
