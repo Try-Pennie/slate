@@ -10,7 +10,18 @@ import {
   realCurrentUser,
   requireAdmin,
   requireManager,
+  requireSuperAdmin,
 } from "@/lib/auth";
+import {
+  isGrantableStaffRole,
+  normalizeStaffEmail,
+  planStaffAccess,
+  requiresAdminCount,
+  staffAccessInputError,
+  type StaffAccessOutcome,
+  type StaffAccessTarget,
+} from "@/lib/admin/staff-access";
+import { googleHostedDomain } from "@/lib/env";
 import {
   IMPERSONATE_COOKIE,
   IMPERSONATE_TTL_SECONDS,
@@ -917,6 +928,149 @@ export async function setUserRole(form: FormData): Promise<void> {
     details: { from: current, to: next },
   });
   revalidatePath("/admin");
+}
+
+/**
+ * Super admin only: give a staff member elevated access by email (#160).
+ *
+ * These people are not in the Salesforce agent feed, so nothing creates them.
+ * Until now that meant a developer editing the users table by hand, which is why
+ * four admins were seeded that way in one session, and it carried a silent
+ * failure: `provisionUser` matches a login to a row BY EMAIL, so a row keyed to
+ * an address that is not the person's real Google login is never used and nothing
+ * anywhere reports it.
+ *
+ * The guards, all server side and none of them relying on the button being hidden:
+ *
+ *  - **Who may call it.** `requireSuperAdmin`, the highest role, at the top of the
+ *    action. `planStaffAccess` asks the same question again from its own module,
+ *    so a second entry point wired to a weaker guard still could not grant.
+ *  - **What may be granted.** The same `canSetRole` the per user role editor runs,
+ *    over a narrower set of roles: `super_admin` is never minted from a typed
+ *    address, and `agent` is not a grant.
+ *  - **Whose data it touches.** Everything is scoped to the caller's org: the row
+ *    is created in it, an address already held by another org is refused by name,
+ *    and the admin count is counted within it.
+ *  - **The last admin.** Typing a current admin's address and picking a lower role
+ *    is a demotion by another name, so it carries the same invariant. A count that
+ *    could not be READ is not a count (#1165): it refuses in its own words rather
+ *    than being scored as zero and producing a confident claim about a roster
+ *    nothing measured, and it is only read where it actually decides something, so
+ *    a broken read cannot block a grant that never depended on it.
+ *
+ * Every ending, refusal and success alike, comes back on the page as its own
+ * sentence rather than as an error boundary, because the person needs to read the
+ * address back: it is the address, not the button, that decides whether this works.
+ */
+export async function grantStaffAccess(form: FormData): Promise<void> {
+  const actor = await requireSuperAdmin();
+  const email = normalizeStaffEmail(String(form.get("email") ?? ""));
+  const requestedRole = String(form.get("role") ?? "");
+  const allowedDomain = googleHostedDomain();
+
+  // Annotated rather than inferred: TypeScript only treats a call as ending
+  // control flow when the callee carries an explicit `never` TYPE, and without
+  // that every `done()` below reads as a fall through.
+  const done: (outcome: StaffAccessOutcome) => never = (outcome) => {
+    revalidatePath("/admin");
+    redirect(
+      `/admin?staff=${outcome}&staff_email=${encodeURIComponent(email)}` +
+        `&staff_role=${encodeURIComponent(requestedRole)}#team-access`,
+    );
+  };
+
+  // Judged before any database read, so a caller who may not do this at all, or an
+  // address that could never sign in, never reaches the roster.
+  const inputError = staffAccessInputError({
+    actorRole: actor.role,
+    email,
+    requestedRole,
+    allowedDomain,
+  });
+  // The second half is a narrowing for `tsc`, not a second policy: it can only be
+  // reached when `staffAccessInputError` already returned `invalid_role`.
+  if (inputError || !isGrantableStaffRole(requestedRole)) done(inputError ?? "invalid_role");
+
+  const db = supabaseAdmin();
+  // Not org scoped on purpose: `users.email` is globally unique, so an address
+  // held by another org has to be FOUND in order to be refused by name. The plan
+  // then compares the org. An unreadable lookup is not an absent row, so it stops
+  // here rather than falling through to the create path.
+  const { data: existingRow, error: lookupError } = await db
+    .from("users")
+    .select("id, org_id, role, deactivated_at, auth_user_id")
+    .eq("email", email)
+    .maybeSingle();
+  if (lookupError) {
+    log.error("admin-actions", { msg: "staff access lookup failed" }, lookupError);
+    done("lookup_failed");
+  }
+  const existing = (existingRow as StaffAccessTarget | null) ?? null;
+
+  let adminCount: number | null = null;
+  if (existing && requiresAdminCount(existing.role, requestedRole)) {
+    const { count, error: countError } = await db
+      .from("users")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", actor.org_id)
+      .in("role", ["admin", "super_admin"]);
+    if (countError) {
+      log.error("admin-actions", { msg: "admin count read failed" }, countError);
+    }
+    adminCount = countError ? null : (count ?? 0);
+  }
+
+  const plan = planStaffAccess({
+    actorRole: actor.role,
+    actorId: actor.id,
+    actorOrgId: actor.org_id,
+    allowedDomain,
+    email,
+    requestedRole,
+    existing,
+    adminCount,
+  });
+  if (!plan.ok) done(plan.outcome);
+
+  if (plan.outcome === "granted") {
+    const { error } = await db.from("users").insert({
+      org_id: actor.org_id,
+      email: plan.email,
+      role: plan.role,
+      // Never bookable on arrival, for the same reason `provisionUser` says so at
+      // its own insert (#1266): adding an account must not put anyone into the
+      // round robin pool. A staff member added here is not an agent at all.
+      bookable: false,
+    });
+    if (error) {
+      log.error("admin-actions", { msg: "staff access insert failed" }, error);
+      done("write_failed");
+    }
+    await recordAudit({
+      orgId: actor.org_id,
+      actorId: actor.id,
+      action: "staff.access_granted",
+      details: { email: plan.email, role: plan.role },
+    });
+  } else if (plan.outcome === "updated") {
+    const { error } = await db
+      .from("users")
+      .update({ role: plan.role })
+      .eq("id", plan.userId);
+    if (error) {
+      log.error("admin-actions", { msg: "staff access update failed" }, error);
+      done("write_failed");
+    }
+    await recordAudit({
+      orgId: actor.org_id,
+      actorId: actor.id,
+      action: "role.set",
+      targetUserId: plan.userId,
+      details: { from: plan.from, to: plan.role, via: "team_access" },
+    });
+  }
+
+  done(plan.outcome);
 }
 
 // Server-side duplicate guard for the non-idempotent webhook re-delivery

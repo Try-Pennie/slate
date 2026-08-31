@@ -41,6 +41,9 @@ import {
   ROLES,
 } from "@/lib/auth/roles";
 import { AppHeader } from "@/components/AppHeader";
+import { TeamAccessPanel } from "@/components/TeamAccessPanel";
+import { isStaffAccessOutcome } from "@/lib/admin/staff-access";
+import { pendingPrivilegedAccess } from "@/lib/admin/pending-access";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
@@ -84,6 +87,13 @@ export const dynamic = "force-dynamic";
 // (unit-tested); this only supplies the clock.
 function loadLaneHealthNow(read: () => Promise<Record<string, number | null>>) {
   return loadLaneHealth(read, Date.now());
+}
+
+// Unclaimed elevated access and how long each has waited (#160). At module scope
+// so the Date.now() call doesn't trip react-hooks/purity in render, matching
+// loadLaneHealthNow below, and so every row is measured against ONE instant.
+function pendingAccessNow(users: User[] | null) {
+  return pendingPrivilegedAccess(users, Date.now());
 }
 
 // User ids with at least one live (non-expired) calendar watch. At module
@@ -295,6 +305,11 @@ export default async function AdminPage({
     to?: string;
     routine?: string;
     auditPage?: string;
+    /** #160: the outcome of a team access grant, read back so every ending
+     *  (including every refusal) is a sentence the super admin reads. */
+    staff?: string;
+    staff_email?: string;
+    staff_role?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -358,6 +373,13 @@ export default async function AdminPage({
     ]);
 
   const users = (usersRes.data ?? []) as User[];
+  // #160: an unreadable roster and an empty one render identically once the error
+  // is dropped, and this is the page somebody opens when access is not working.
+  // Kept as an explicit "could not tell" so the surfaces that can say so, do.
+  const rosterUnreadable = usersRes.error != null;
+  // Read once, outside the render tree: how long each unclaimed grant has waited
+  // is measured against a single instant, not a different one per row.
+  const pendingAccess = pendingAccessNow(rosterUnreadable ? null : users);
   const eventTypes = (eventTypesRes.data ?? []) as EventType[];
   const buckets = (bucketsRes.data ?? []) as Bucket[];
   const members = (membersRes.data ?? []) as BucketMember[];
@@ -745,7 +767,27 @@ export default async function AdminPage({
       )}
 
       {/* Agents + working hours */}
+      {/* Team access (#160): super admin only, and the server action enforces
+          that itself. Hiding the panel is presentation, never the control. */}
+      {me.role === "super_admin" && (
+        <TeamAccessPanel
+          outcome={sp.staff && isStaffAccessOutcome(sp.staff) ? sp.staff : null}
+          outcomeEmail={sp.staff_email ?? ""}
+          outcomeRole={sp.staff_role ?? ""}
+          pending={pendingAccess}
+        />
+      )}
+
       <section id="agents" className={cardCls}>
+        {rosterUnreadable && (
+          <p
+            role="alert"
+            className="mb-4 rounded-md border border-[var(--error)] px-4 py-3 text-sm text-error"
+          >
+            The roster could not be read, so this list is not the roster. Nobody
+            has been removed. Reload in a moment.
+          </p>
+        )}
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold">

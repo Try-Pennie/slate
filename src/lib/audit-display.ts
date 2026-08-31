@@ -21,6 +21,7 @@ export interface AuditDisplayRow {
 
 const ACTION_LABEL: Record<string, string> = {
   "role.set": "changed role",
+  "staff.access_granted": "gave a staff member access",
   "agent.hours": "set hours",
   "agent.use_default_hours": "applied default hours",
   "agent.bookable": "set bookable",
