@@ -37,10 +37,20 @@ function main() {
   // 3. Every lane says what is actually at stake while it is stopped, so the
   //    reader can judge urgency without opening the code.
   {
-    const stakes = new Set(
-      ["prune-bookings-pii", "prune-webhook-payloads", "prune-routing"].map((l) => retentionLaneStake(l)),
+    const lanes = ["prune-bookings-pii", "prune-webhook-payloads", "prune-routing", "prune-warehouse-pii"];
+    const stakes = new Set(lanes.map((l) => retentionLaneStake(l)));
+    assert(stakes.size === lanes.length, "each lane states a DISTINCT consequence");
+    // The old shape fell through to routing's sentence for any lane it did not
+    // recognise, so a new lane's skip alert would have claimed routing decisions
+    // were at stake. The fallback must claim nothing about a lane it cannot name.
+    assert(
+      retentionLaneStake("prune-something-new") !== retentionLaneStake("prune-routing"),
+      "an unrecognised lane does not borrow another lane's consequence",
     );
-    assert(stakes.size === 3, "each lane states a DISTINCT consequence");
+    assert(
+      retentionLaneStake("prune-warehouse-pii").includes("warehouse"),
+      "the warehouse lane names the copy it protects, not the live database",
+    );
     assert(
       retentionLaneStake("prune-bookings-pii").includes("24 month"),
       "the bookings lane names its 24 month window",
@@ -72,6 +82,31 @@ function main() {
     const text = retentionResumedText("prune-bookings-pii");
     assert(text.includes("deleting again"), "the all-clear says the lane is deleting again");
     assert(text.includes("No action is needed"), "the all-clear closes the loop");
+  }
+
+  // 6. The all-clear's REASON is the gate that actually cleared, not a borrowed
+  //    one (#1180). The three Supabase lanes are gated on the export lane keeping
+  //    up; the warehouse lane has no export gate at all, so claiming the mirror
+  //    was confirmed current would assert something nothing measured (L11).
+  {
+    const supabaseSide = retentionResumedText("prune-bookings-pii");
+    const warehouseSide = retentionResumedText("prune-warehouse-pii");
+    assert(
+      supabaseSide.includes("confirmed current"),
+      "a Supabase lane's all-clear names the export gate it passed",
+    );
+    assert(
+      !warehouseSide.includes("confirmed current"),
+      "the warehouse lane's all-clear does NOT claim a gate it never has",
+    );
+    assert(
+      warehouseSide.includes("credential"),
+      "the warehouse lane's all-clear names the gate it does have",
+    );
+    assert(
+      warehouseSide.includes("No action is needed"),
+      "the warehouse all-clear closes the loop too",
+    );
   }
 }
 

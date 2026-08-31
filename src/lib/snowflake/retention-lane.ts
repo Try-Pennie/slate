@@ -45,6 +45,12 @@ export const RETENTION_HEARTBEAT_LANES = new Set([
   // cache, not a mirrored table), so it uses only the heartbeat half of this
   // module: it can never sit in the skip-forever state the skip alert covers.
   "prune-busy-blocks",
+  // #1180. The only lane here that writes to the WAREHOUSE rather than to
+  // Supabase, so it is not export-gated (nothing needs archiving before it runs).
+  // It still uses both halves: the skip alert covers the mirror being
+  // unconfigured, which would otherwise stop warehouse retention indefinitely
+  // behind a cheerful 200.
+  "prune-warehouse-pii",
 ]);
 
 /**

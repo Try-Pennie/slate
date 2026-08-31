@@ -605,6 +605,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: retentionSkippedText("prune-bookings-pii", "mirror not configured"),
   },
+  // #1180's lane, previewed on its own because it is the only one whose stake
+  // sentence is about the WAREHOUSE copy rather than the live database, and
+  // because it is the only skip reason that lane can have.
+  {
+    key: "retention_skipped:*",
+    state: "the warehouse lane has no credential",
+    channel: "alert",
+    text: retentionSkippedText("prune-warehouse-pii", "mirror not configured"),
+  },
+  {
+    key: "retention_skipped:*",
+    state: "the warehouse lane is clearing again",
+    channel: "recovery",
+    text: retentionResumedText("prune-warehouse-pii"),
+  },
 
   // --- appointments held by an agent who left the pool (#1215) --------------
   // Three states, because the wording changes shape in each: one agent holding

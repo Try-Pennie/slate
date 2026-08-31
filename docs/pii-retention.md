@@ -36,17 +36,27 @@ Calendar** (`bookings.gcal_event_id`). That copy is addressed in §4.
 | `routing_decisions` | 12 months | delete, `/api/cron/prune-routing` (existing) |
 | `booking_events.reason_detail` | on an erasure request, not on a timer | redact in place via `erase_booking_pii` through the §5 sentinel (shipped, migration 0092) |
 
-**Every window above describes Supabase only, and the Snowflake mirror does not
-inherit it.** Redacting or blanking a row in place sets the flag that freezes it
-from re-export (`applySkipRedacted`), deliberately, so the mirror cannot clobber a
-redaction with the full-fidelity copy. The consequence is that the redaction
-propagates nowhere: Snowflake keeps what it last held until something clears the
-warehouse copy explicitly. So "90 days" for
-`webhook_deliveries.payload` + `last_response` is the Supabase lifetime, not the
-lifetime of the data. The mirror has no PII window of its own yet (#1180), and for
-an erasure request the runbook's manual purge is the only thing that clears it
-(#1205, which found `last_response` missing from that purge and from the audit
-that checks it).
+**A window above does not propagate to the Snowflake mirror by itself.** Redacting
+or blanking a row in place sets the flag that freezes it from re-export
+(`applySkipRedacted`), deliberately, so the mirror cannot clobber a redaction with
+the full-fidelity copy. The consequence is that the redaction propagates nowhere:
+Snowflake keeps what it last held until something clears the warehouse copy
+explicitly.
+
+**Two of these windows now have a warehouse side, and two do not.**
+
+- **Bookings contact data (24 months) IS enforced on the mirror** (#1180), by
+  `/api/cron/prune-warehouse-pii`, which clears the same fields in Snowflake for
+  bookings whose appointment is past the same window. It shares its statements
+  with the deletion-request purge, so the two cannot clear different field sets,
+  and it needs no marker column: "past the window and still holding contact data"
+  is directly observable, which also makes it idempotent and resumable.
+- **`webhook_deliveries` payloads and `routing_decisions` have no warehouse
+  window.** So "90 days" for `webhook_deliveries.payload` + `last_response` is the
+  Supabase lifetime, not the lifetime of the data. For an erasure request the
+  purge clears them (#1205 found `last_response` missing from that purge and from
+  the audit that checks it; #1207 found `booking_outbox.steps` the same way), but
+  nothing clears them on a timer.
 
 The 24 month booking window is **confirmed** (Dan, 2026-07-29, see §9), not
 provisional. Nothing in production is near it yet: the oldest bookings date from
@@ -69,11 +79,30 @@ current, and then only redacts rows strictly behind the confirmed export waterma
 proving per row that Snowflake holds that version first (#1102 / #1118 / #1139). A
 run that cannot confirm the mirror skips and alerts rather than redacting blind.
 
-**The warehouse needs its own window.** These windows govern Supabase. Snowflake
-holds full-fidelity copies indefinitely unless a matching window is set there, so
-on its own a Supabase window does not limit how long Pennie actually holds the
-data. Setting the Snowflake side is tracked as part of the archival milestone; the
-confirmed position (§9) is that the 24 month window applies to both.
+**The warehouse side of the 24 month window is now enforced** (#1180). The
+confirmed position (§9) is that the window applies to both, and until
+`/api/cron/prune-warehouse-pii` existed this document overstated what the system
+did: Supabase enforced it and Snowflake held a full-fidelity copy indefinitely.
+
+That lane is SCHEDULED rather than operator-triggered, which was the open decision
+on the issue. The deletion-request purge stayed a deliberate action so the audit
+lane remains the thing that notices a missed one; retention has no per-request
+trail to miss and is purely time driven, and a window nobody remembers to enforce
+is not a window. Running unattended is paid for with the same pair the other
+retention lanes carry: a heartbeat with a bound in `RETENTION_STALE_BOUNDS_MS`, so
+a lane that stops firing or fails nightly pages, and its own skip alert, because
+without the warehouse credential it would otherwise no-op behind a cheerful 200
+while the mirror side of the window quietly stopped being honored.
+
+Everything it cannot measure fails LOUD: an unreadable select, an unreadable row
+count, and a verify that still finds contact data all throw, and the lane turns
+that into a 500 with the heartbeat withheld. A "cleared 0" result means one thing
+only, that nothing was past the window. Nothing is close to it yet (Slate's oldest
+bookings are June 2026), so this exists to be already working in mid 2028 rather
+than to have work to do today.
+
+The other two windows (`webhook_deliveries` payloads, `routing_decisions`) still
+govern Supabase only; see the note in §2 above.
 
 ## 3. Redaction, not deletion
 
@@ -332,7 +361,9 @@ code implements what is below.
    for a verified deletion request (see §7 and the erasure runbook).
 2. **Retention window: 24 months**, measured from the appointment, confirmed
    rather than provisional, and applying to the Snowflake mirror as well as
-   Supabase (§2).
+   Supabase (§2). Both sides are now enforced in code: `/api/cron/prune-bookings-pii`
+   for Supabase and `/api/cron/prune-warehouse-pii` for the mirror (#1180). Until
+   the second of those shipped, this position was stated here and half enforced.
 3. **Deletion means redaction in place**, and `salesforce_id` / `external_id` stay
    (§3, §4). Accepted residual risk, stated plainly so review can see it: an
    erased row still carries an identifier that links to the person's record in
