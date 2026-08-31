@@ -135,4 +135,12 @@ atLeast(rose, white, 4.5, "Pill status-error rose-on-white"); // 5.14
 atLeast(roseDark, ink2, 4.5, "dark error rose-on-ink-2 surface"); // 4.96
 atLeast(roseDark, navy, 4.5, "dark error rose-on-navy bg"); // 6.72
 
+// --- #1124: the erasure worklist's success panel ----------------------------
+// Both halves are RAW tokens, so this pair does not move between themes and needs
+// no dark override. It is asserted here because it is a filled panel carrying a
+// sentence, which is the case the sky family is easiest to get wrong in (sky
+// itself fails as text on light, and white fails on sky).
+const skySoft = r("--pennie-sky-soft");
+atLeast(graphite, skySoft, 4.5, "erasure purge result graphite-on-sky-soft");
+
 finish();

@@ -756,6 +756,12 @@ export default async function MonitorSettingsPage({
             >
               View booking API outcomes
             </a>
+            <a
+              href="/admin/erasure"
+              className="text-sm font-semibold text-pennie-blue underline dark:text-pennie-sky"
+            >
+              View data subject erasures
+            </a>
           </div>
         </section>
       </main>

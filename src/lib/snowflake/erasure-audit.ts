@@ -57,20 +57,25 @@ async function countSnowflake(config: SnowflakeConfig, sql: string): Promise<num
   return Number(res.data?.[0]?.[0] ?? 0);
 }
 
-export async function auditSnowflakeErasures(): Promise<ErasureAuditOutcome> {
-  const config = readSnowflakeConfig();
-  if (!config) return { skipped: true, ok: true, erasedBookings: 0, residuals: [], reasons: [] };
-
-  // Every erased booking id, from the pii.erasure audit trail. Read through the
-  // shared trail reader (#1128) so this lane and the purge that clears what it
-  // finds can never disagree about which bookings are in scope.
-  const ids = new Set(erasedIdsFrom(await readErasureAuditRows()));
-  if (ids.size === 0) return { ok: true, erasedBookings: 0, residuals: [], reasons: [] };
-
+/**
+ * How much contact PII Snowflake still holds for a given set of erased bookings.
+ *
+ * Lifted out of the lane below (#1124) so the 6-hourly audit and the operator
+ * worklist that renders the same number ask ONE question through one
+ * implementation. Two readers would be two chances to disagree about what counts
+ * as a residual, and the worklist's whole job is to show what this lane measures.
+ *
+ * It THROWS when Snowflake refuses, because a caller must never receive a zero
+ * nobody measured: a zero here is what certifies a deletion request honored.
+ */
+export async function residualsForBookingIds(
+  config: SnowflakeConfig,
+  ids: string[],
+): Promise<ErasureResidual[]> {
   // `ids` come from our own audit rows (uuids), never user input; still escape
   // them defensively before interpolating into the Snowflake statement.
-  const idList = [...ids].map((id) => `'${escapeSqlLiteral(id)}'`).join(",");
-  const residuals: ErasureResidual[] = [
+  const idList = ids.map((id) => `'${escapeSqlLiteral(id)}'`).join(",");
+  return [
     {
       table: "bookings",
       residual: await countSnowflake(
@@ -130,6 +135,19 @@ export async function auditSnowflakeErasures(): Promise<ErasureAuditOutcome> {
       ),
     },
   ];
+}
+
+export async function auditSnowflakeErasures(): Promise<ErasureAuditOutcome> {
+  const config = readSnowflakeConfig();
+  if (!config) return { skipped: true, ok: true, erasedBookings: 0, residuals: [], reasons: [] };
+
+  // Every erased booking id, from the pii.erasure audit trail. Read through the
+  // shared trail reader (#1128) so this lane and the purge that clears what it
+  // finds can never disagree about which bookings are in scope.
+  const ids = new Set(erasedIdsFrom(await readErasureAuditRows()));
+  if (ids.size === 0) return { ok: true, erasedBookings: 0, residuals: [], reasons: [] };
+
+  const residuals = await residualsForBookingIds(config, [...ids]);
 
   const { ok, reasons } = evaluateErasureAudit(residuals);
   log.info("erasure-audit", { msg: ok ? "clean" : "residual PII", erased: ids.size, flagged: reasons.length });

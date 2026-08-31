@@ -14,8 +14,16 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 
 export interface ErasureAuditRow {
+  /** The `audit_log` row id: the stable identity of one erasure (#1124). */
+  id: string;
   org_id: string;
-  details: { booking_ids?: string[] } | null;
+  created_at: string;
+  /**
+   * `email_sha256` is the ONLY identifier the trail keeps for the person:
+   * `erase_booking_pii` deliberately records a hash and never the cleartext
+   * address, so it is what the operator worklist shows.
+   */
+  details: { booking_ids?: string[]; email_sha256?: string } | null;
 }
 
 /**
@@ -30,7 +38,7 @@ export async function readErasureAuditRows(): Promise<ErasureAuditRow[]> {
   return selectAllPages<ErasureAuditRow>("erasure-audit ids", (from, to) =>
     db
       .from("audit_log")
-      .select("org_id, details")
+      .select("id, org_id, created_at, details")
       .eq("action", "pii.erasure")
       .range(from, to) as unknown as PromiseLike<{
       data: unknown[] | null;

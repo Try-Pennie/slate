@@ -137,6 +137,16 @@ purges **every** booking in the `pii.erasure` audit trail by default, so you do 
 need the ids from step 2 unless you deliberately want a subset:
 `{"bookingIds": ["..."]}`.
 
+**There is a screen for this** (#1124): `/admin/erasure`, admin only, reachable
+from Diagnostics on the admin settings page. It lists every `pii.erasure` entry for
+your org with the residual the 6-hourly audit lane measures, and offers both calls
+above as buttons, each labelled with which one it is: a per row button sends that
+erasure's ids only, and the footer button sends no ids and therefore takes the whole
+trail. It renders the row counts and the verify result afterwards. Steps 2 and 4 are
+already done for you there, so hand-running them is for the case where the page
+cannot reach Snowflake and you need to work out why. A residual it could not measure
+is shown as **not measured**, never as clean.
+
 Repeating it is safe, and idempotent in effect rather than in the counts: the
 statements carry no "only if not already null" guard, so a second run re-nulls
 already-null columns and reports the same rows changed. Judge a run by the verify
