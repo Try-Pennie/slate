@@ -73,6 +73,11 @@ export interface EdgeLimiterReading {
    * it an alarm to clean up on every tick forever. So this check can say the counter is
    * BOUND; it cannot say the counter ANSWERS, and the copy below is careful not to claim
    * it does.
+   *
+   * The answering half is proved out of band instead, by `pnpm verify:burst-counter`
+   * (#1564), which reports a fixed monitor key to the real object and requires the count to
+   * rise. Run that after any change to the burst path or the binding; a counter that is
+   * bound and unreachable reads as healthy here and nowhere else would say so.
    */
   burstNamespacePresent: boolean | null;
 }

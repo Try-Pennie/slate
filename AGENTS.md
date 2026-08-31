@@ -379,6 +379,74 @@ traffic fed checks (which are properly silent from Friday evening to Monday
 morning). A blind detector re-pages daily rather than hourly, since before
 cutover it can legitimately stay blind for days.
 
+# Proving the burst counter answers (`pnpm verify:burst-counter`)
+
+The same shape as the truth probe above, on the burst ceiling (#1564).
+
+The monitor lane reports the burst counter missing from a deployment (#1558) by
+resolving the `BURST_LIMITER` namespace as a **property read**, and it stops
+there deliberately: asking the object whether it ANSWERS would create it, spend a
+subrequest out of the invocation four cron lanes share, and give it an alarm to
+clean up on every tick forever. The cost of that correct choice is that a counter
+which is **bound but unreachable reads as fine**, and stays that way until one
+caller crosses the escalation threshold, which before cutover could be months
+away. Injected fakes cannot close it either: a fake agrees with our assumption
+about the Durable Object by construction (L52).
+
+**`pnpm verify:burst-counter` is the proof.** It reports a FIXED monitor key to
+the real `BURST_LIMITER` object, reads the count back, reports it again, and
+requires the count to have **RISEN inside one window**. Both halves, or it proves
+nothing (L1): a counter hard wired to a single answer, or one that replies
+without counting, satisfies a check that only asks whether it replied. It judges
+on the COUNT and never on a substring of the output, because every failure the
+deployment can report quotes the same binding name the success case does (L156).
+
+It writes one count, against a key no real caller's `burstKey` can produce (the
+argument for why lives in `src/lib/monitor/burst-counter-probe.ts`, and
+`scripts/test-burst-counter-live-control.ts` walks the shipped `EDGE_LIMITERS`
+table so a limiter that ever adopted that key space fails the build). The object
+its own alarm deletes two windows after the last report.
+
+A Durable Object is reachable only through a binding inside the Worker, so the
+command's one step into the deployment is `POST /api/smoke/burst-counter`, a
+key-authed endpoint on the same Bearer key as `/api/smoke/version` and
+`/api/smoke/heartbeat`. The key it reports is a **constant in that route and is
+never taken from the request**: a caller who could name the key could report
+requests against a real lead's count and push them toward a ceiling.
+
+```
+BOOKING_API_KEY=<the key the deployment holds> pnpm verify:burst-counter
+```
+
+`SLATE_BASE_URL` picks the deployment (default prod). Finding nothing to check is
+never a pass (L98): every way of learning nothing exits non-zero on **its own
+code**, so a shell caller can branch on which one it met.
+
+| exit | what it met | what to do |
+|---|---|---|
+| 0 | the count rose | nothing |
+| 1 | no base URL or no `BOOKING_API_KEY` here | set them; nothing was attempted |
+| 2 | no reply at all | check the base URL and that the deployment serves |
+| 3 | a reply this command cannot read | something other than the endpoint answered |
+| 4 | the key was refused | the deployment does not hold this key |
+| 5 | the endpoint is disabled | the deployment has no booking API key configured |
+| 6 | not found | the deployment predates this endpoint; deploy and re-run |
+| 7 | the Worker could not read its own context | not a missing binding; a local dev server reads like this |
+| 8 | `BURST_LIMITER` is not bound | a deploy shipped without the `durable_objects` block |
+| 9 | bound, and the object did not answer | **the state the monitor lane cannot see**; the ceiling is failing open |
+| 10 | it answered with no count | reachable, wrong reply shape: a code fault |
+| 11 | the two readings fell in different windows | nothing is wrong; run it again |
+| 12 | two readings in one window and it did not rise | it answers and does not count |
+
+**Re-run it after any change to the burst path (`src/lib/rate-limit-burst.ts`,
+`src/lib/rate-limit.ts`, `worker/burst-limiter.ts`) or to the `BURST_LIMITER`
+binding in `wrangler.jsonc`, and after a deploy that touched either.** Like the
+truth probe, it talks to a live deployment, so it is deliberately NOT named
+`test-*.ts`: that glob is the offline unit suite. Its decision logic is pinned
+offline by `scripts/test-burst-counter-live-control.ts`, which drives every
+refusal through hand written replies and asserts no two of them share a code or a
+message.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then

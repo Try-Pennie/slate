@@ -60,7 +60,14 @@ export class BurstLimiter {
     const next = bumpSharedWindow(stored, bump, Date.now());
     await this.state.storage.put(STORAGE_KEY, next);
     await this.state.storage.setAlarm(Date.now() + 2 * BURST_WINDOW_MS);
-    return Response.json({ count: next.count });
+    // The window is reported alongside the count for the verification command (#1564), which
+    // proves the counter ANSWERS by reporting twice and requiring the count to rise. Two
+    // reports either side of a boundary are two separate counts, and without the object saying
+    // which window each belongs to the command would have to guess: either accusing a healthy
+    // counter at the top of a minute, or forgiving a genuinely broken one as "probably a
+    // rollover", which is the failure it exists to catch. The tracker on the hot path reads
+    // only `count` and is unaffected.
+    return Response.json({ count: next.count, windowStartMs: next.windowStartMs });
   }
 
   /** Nothing has reported for two windows, so this address is no longer hot. */
