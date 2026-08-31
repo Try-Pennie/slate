@@ -14,7 +14,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { snowflakeDriftAlert, snowflakeDriftRecovery } from "./alert-copy";
+import {
+  erasureResidualAlert,
+  erasureResidualTestNotice,
+  snowflakeDriftAlert,
+  snowflakeDriftRecovery,
+} from "./alert-copy";
 
 describe("snowflakeDriftAlert", () => {
   const text = snowflakeDriftAlert([
@@ -61,5 +66,70 @@ describe("snowflakeDriftRecovery", () => {
     // The drift it clears may have been rows stranded behind the watermark and
     // fixed by a re-export, with the lane current the whole time.
     expect(text).not.toMatch(/caught up/);
+  });
+});
+
+/**
+ * The residual page has to be ACTIONABLE (#1195) and has to say which KIND of
+ * residual it found (#1196).
+ *
+ * Both were filed off one live page on 2026-07-31 that reported `bookings: 1,
+ * booking_events: 1, webhook_deliveries: 3` and then sent the reader to a runbook.
+ * It named no booking, so identifying the subject took a query against
+ * `audit_log`; and it read identically whether the subject was a real person's
+ * incomplete erasure (a compliance incident with a clock on it) or the retired
+ * SMOKE fixture (an operational tidy-up on fake data), which it was.
+ *
+ * The remedy sentence is the part that had gone stale. #1128 replaced the four
+ * hand-pasted statements with an endpoint and #1124 put a worklist on top of it,
+ * so pointing at the runbook names a procedure instead of the action that
+ * actually changes the state the reader is stuck in (L111).
+ */
+describe("erasureResidualAlert", () => {
+  const text = erasureResidualAlert(["bookings: 1 row still holds contact PII"], ["bk-1", "bk-2"]);
+
+  it("names the bookings, which is the one fact the purge needs", () => {
+    expect(text).toContain("bk-1");
+    expect(text).toContain("bk-2");
+  });
+
+  it("sends the reader to the worklist, which is where the purge actually happens", () => {
+    expect(text).toContain("/admin/erasure");
+  });
+
+  it("does not send the reader to the runbook to paste SQL by hand", () => {
+    expect(text).not.toMatch(/pii-erasure-runbook/);
+  });
+
+  it("truncates a large batch rather than printing a wall of ids", () => {
+    const many = Array.from({ length: 12 }, (_, i) => `bk-${i + 1}`);
+    const long = erasureResidualAlert(["bookings: 12 rows still hold contact PII"], many);
+    expect(long).toContain("bk-1");
+    expect(long).toMatch(/7 more/);
+    // The whole point of truncating: the untruncated form is unreadable on a phone.
+    expect(long).not.toContain("bk-12");
+  });
+
+  it("says nothing about ids when it was given none, rather than an empty list", () => {
+    const none = erasureResidualAlert(["bookings: 1 row still holds contact PII"], []);
+    expect(none).not.toMatch(/bookings?:\s*\./);
+    expect(none).not.toMatch(/\(\)/);
+  });
+});
+
+describe("erasureResidualTestNotice", () => {
+  const text = erasureResidualTestNotice(["booking_outbox: 1 row still holds contact PII"], ["bk-smoke"]);
+
+  it("says the data is synthetic, so triage is instant", () => {
+    expect(text).toMatch(/test/i);
+  });
+
+  it("still names the bookings and the place to clear them", () => {
+    expect(text).toContain("bk-smoke");
+    expect(text).toContain("/admin/erasure");
+  });
+
+  it("does not describe itself as urgent, because nothing is exposed", () => {
+    expect(text).not.toMatch(/incident|urgent|immediately/i);
   });
 });

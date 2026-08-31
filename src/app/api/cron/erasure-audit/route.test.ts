@@ -13,6 +13,7 @@ const locks = vi.hoisted(() => ({
 const audit = vi.hoisted(() => ({ auditSnowflakeErasures: vi.fn() }));
 const notify = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+  sendThrottledInfo: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
   resolveAlert: vi.fn(async (_key: string, _text: string) => true),
 }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
@@ -28,12 +29,31 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 
 import { GET } from "./route";
 
+/**
+ * The fields every audit outcome carries, so the fakes below only state what the
+ * case under test is actually about (#1196 added four of them at once).
+ *
+ * Spread FIRST in each fake, so a case can still override any of them.
+ */
+const AUDIT_DEFAULTS = {
+  ok: true,
+  erasedBookings: 0,
+  residuals: [],
+  reasons: [],
+  realBookingIds: [],
+  testResiduals: [],
+  testReasons: [],
+  testBookingIds: [],
+  classificationUnreadable: null,
+};
+
+
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
   locks.acquireLock.mockResolvedValue("lease");
-  audit.auditSnowflakeErasures.mockResolvedValue({ ok: true, erasedBookings: 0, residuals: [], reasons: [] });
+  audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS, ok: true, erasedBookings: 0, residuals: [], reasons: [] });
   purge.runErasurePurgeSqlProbe.mockResolvedValue({ ok: true, statements: [], reasons: [] });
 });
 
@@ -58,7 +78,7 @@ describe("GET /api/cron/erasure-audit", () => {
   });
 
   it("alerts loudly when Snowflake still holds PII for an erased booking", async () => {
-    audit.auditSnowflakeErasures.mockResolvedValue({
+    audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
       ok: false,
       erasedBookings: 2,
       residuals: [{ table: "bookings", residual: 1 }],
@@ -80,7 +100,7 @@ describe("GET /api/cron/erasure-audit", () => {
   });
 
   it("does NOT alert when the mirror is unconfigured (skipped)", async () => {
-    audit.auditSnowflakeErasures.mockResolvedValue({
+    audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
       skipped: true,
       ok: true,
       erasedBookings: 0,
@@ -101,7 +121,7 @@ describe("GET /api/cron/erasure-audit", () => {
   // The silent paths (#1152). A skipped run measured nothing and a thrown run
   // knows nothing, so neither may claim the compliance request is now honored.
   it("sends NO all-clear when the mirror is unconfigured (nothing was measured)", async () => {
-    audit.auditSnowflakeErasures.mockResolvedValueOnce({ skipped: true, reasons: [] });
+    audit.auditSnowflakeErasures.mockResolvedValueOnce({ ...AUDIT_DEFAULTS, skipped: true, reasons: [] });
     await GET(req());
     expect(clearedKeys()).not.toContain("snowflake_erasure_residual");
   });
@@ -153,7 +173,7 @@ describe("GET /api/cron/erasure-audit", () => {
     });
 
     it("a passing probe does NOT clear a residual page", async () => {
-      audit.auditSnowflakeErasures.mockResolvedValue({
+      audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
         ok: false,
         erasedBookings: 1,
         residuals: [{ table: "webhook_deliveries", residual: 3 }],
@@ -198,7 +218,7 @@ describe("GET /api/cron/erasure-audit", () => {
     });
 
     it("stamps even when the mirror is unconfigured (the lane still ran)", async () => {
-      audit.auditSnowflakeErasures.mockResolvedValue({
+      audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
         skipped: true,
         ok: true,
         erasedBookings: 0,
@@ -210,7 +230,7 @@ describe("GET /api/cron/erasure-audit", () => {
     });
 
     it("stamps after alerting on a residual (the lane did its job)", async () => {
-      audit.auditSnowflakeErasures.mockResolvedValue({
+      audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
         ok: false,
         erasedBookings: 1,
         residuals: [{ table: "bookings", residual: 1 }],
@@ -240,5 +260,117 @@ describe("GET /api/cron/erasure-audit", () => {
       const res = await GET(req());
       expect(res.status).toBe(200);
     });
+  });
+});
+
+/**
+ * Which CHANNEL each class of residual reaches (#1196).
+ *
+ * The audit's own tests prove the partition. These prove the lane acts on it,
+ * which is a separate failure: a correct split routed to one channel would page
+ * for synthetic data exactly as before, and every test of the split would pass.
+ */
+describe("GET /api/cron/erasure-audit test/real routing", () => {
+  it("whispers on its own key for a test residual and pages nobody", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValue({
+      ...AUDIT_DEFAULTS,
+      ok: true,
+      erasedBookings: 1,
+      testResiduals: [{ table: "booking_outbox", residual: 1 }],
+      testReasons: ["booking_outbox: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      testBookingIds: ["bk-smoke"],
+    });
+
+    await GET(new Request("http://x/api/cron/erasure-audit") as never);
+
+    expect(notify.sendThrottledInfo.mock.calls.map((c) => c[0])).toEqual([
+      "snowflake_erasure_residual_test",
+    ]);
+    expect(notify.sendThrottledAlert.mock.calls.map((c) => c[0])).not.toContain(
+      "snowflake_erasure_residual",
+    );
+  });
+
+  it("names the test bookings in the whisper", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValue({
+      ...AUDIT_DEFAULTS,
+      erasedBookings: 1,
+      testReasons: ["booking_outbox: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      testBookingIds: ["bk-smoke"],
+    });
+
+    await GET(new Request("http://x/api/cron/erasure-audit") as never);
+
+    const text = notify.sendThrottledInfo.mock.calls[0]?.[2] ?? "";
+    expect(text).toContain("bk-smoke");
+    expect(text).toContain("/admin/erasure");
+  });
+
+  it("pages AND whispers when both classes have a residual", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValue({
+      ...AUDIT_DEFAULTS,
+      ok: false,
+      erasedBookings: 2,
+      reasons: ["bookings: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      realBookingIds: ["bk-real"],
+      testReasons: ["booking_outbox: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      testBookingIds: ["bk-smoke"],
+    });
+
+    await GET(new Request("http://x/api/cron/erasure-audit") as never);
+
+    expect(notify.sendThrottledAlert.mock.calls.map((c) => c[0])).toContain(
+      "snowflake_erasure_residual",
+    );
+    expect(notify.sendThrottledInfo.mock.calls.map((c) => c[0])).toContain(
+      "snowflake_erasure_residual_test",
+    );
+  });
+
+  it("says the class was a fallback when it could not be read", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValue({
+      ...AUDIT_DEFAULTS,
+      ok: false,
+      erasedBookings: 1,
+      reasons: ["bookings: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      realBookingIds: ["bk-1"],
+      classificationUnreadable: "the bookings read failed, so no id could be classified",
+    });
+
+    await GET(new Request("http://x/api/cron/erasure-audit") as never);
+
+    const text = notify.sendThrottledAlert.mock.calls.find(
+      (c) => c[0] === "snowflake_erasure_residual",
+    )?.[2] ?? "";
+    expect(text).toMatch(/could not be read/);
+    expect(text).toMatch(/treated as real/);
+  });
+
+  // A skipped run measured nothing, so it must not whisper either. The same rule
+  // the real page already follows (#1134/#1152): a signal must hang off a measured
+  // result, never off "this run did not object".
+  it("whispers nothing on a skipped run", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValue({
+      ...AUDIT_DEFAULTS,
+      skipped: true,
+      testReasons: ["booking_outbox: 1 erased booking row(s) still hold contact PII in Snowflake"],
+      testBookingIds: ["bk-smoke"],
+    });
+
+    await GET(new Request("http://x/api/cron/erasure-audit") as never);
+
+    expect(notify.sendThrottledInfo).not.toHaveBeenCalled();
+  });
+
+  // The info key must never resolve: it is classified `info` in the catalog, and an
+  // all-clear there would declare the end of an incident that never existed.
+  it("never resolves the test key", async () => {
+    audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS, erasedBookings: 1 });
+
+    await GET(new Request("http://x/api/cron/erasure-audit") as never);
+
+    expect(notify.resolveAlert.mock.calls.map((c) => c[0])).not.toContain(
+      "snowflake_erasure_residual_test",
+    );
   });
 });

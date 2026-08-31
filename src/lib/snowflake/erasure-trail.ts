@@ -53,3 +53,31 @@ export function erasedIdsFrom(rows: ErasureAuditRow[]): string[] {
   for (const r of rows) for (const id of r.details?.booking_ids ?? []) ids.add(id);
   return [...ids];
 }
+
+/**
+ * Whether each of these bookings is a test fixture (#1196).
+ *
+ * Returns null rather than throwing or short-listing when the read fails, because
+ * the caller's fallback for "cannot classify" is to treat everything as REAL, and
+ * that decision belongs in one pure place (`classifyErasedBookings`) rather than
+ * being split between a thrown error here and a partition there.
+ *
+ * A short read is indistinguishable from a booking that is genuinely absent, and
+ * both land on real, so this deliberately does NOT paginate: the id set is the
+ * erasure trail, which is a handful of rows, and `.in("id", ...)` is a primary-key
+ * lookup, so it is cap-safe by the bounded-set rule.
+ */
+export async function readBookingClasses(
+  ids: string[],
+): Promise<{ id: string; is_test: boolean }[] | null> {
+  if (ids.length === 0) return [];
+  const db = supabaseAdmin();
+  // error-ok: a read failure returns null, and `classifyErasedBookings` maps null
+  // to "every booking is real", which is the LOUD direction: the residual still
+  // pages, it simply cannot be downgraded to a whisper. An empty array is never
+  // substituted for a failure here, which is what would silently mark everything
+  // real-but-unremarked.
+  const { data, error } = await db.from("bookings").select("id,is_test").in("id", ids);
+  if (error) return null;
+  return (data ?? []) as { id: string; is_test: boolean }[];
+}

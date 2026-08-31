@@ -66,9 +66,92 @@ export function snowflakeDriftRecovery(): string {
           "waiting on the mirror being complete can proceed. No action is needed.";
 }
 
-/** An erasure is not finished in the warehouse. */
-export function erasureResidualAlert(reasons: string[]): string {
-  return `A data-subject erasure is incomplete in the Snowflake warehouse. ${reasons.join("; ")}. Run the Snowflake purge step in docs/pii-erasure-runbook.md for the affected bookings.`;
+/**
+ * How many booking ids a page may carry (#1195).
+ *
+ * The ids are the one fact the reader needs, but an erasure batch has no upper
+ * bound, so an untruncated list would arrive on a phone as a wall of uuids and
+ * bury the sentence that says what to do. Five is enough to recognise the subject;
+ * the worklist has the full list.
+ */
+const MAX_NAMED_BOOKINGS = 5;
+
+/**
+ * The affected bookings, as a phrase, or null when there are none to name.
+ *
+ * Null rather than an empty string so the caller has to decide what to say
+ * instead: an alert reading "Affected bookings: ." is worse than one that does
+ * not mention them.
+ */
+function namedBookings(ids: string[]): string | null {
+  if (ids.length === 0) return null;
+  const shown = ids.slice(0, MAX_NAMED_BOOKINGS);
+  const rest = ids.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")} and ${rest} more` : shown.join(", ");
+}
+
+/**
+ * Where a residual is cleared, named once so both halves of this page say the
+ * same thing.
+ *
+ * It is deliberately NOT the runbook any more (#1195). The runbook was the only
+ * option when this alert was written; #1128 replaced the hand-pasted statements
+ * with an endpoint and #1124 put a worklist on top of it, which lists these
+ * bookings, shows what the warehouse still holds for each, and purges them. A
+ * remedy that names a procedure instead of the action that changes the state
+ * leaves the reader doing by hand what the product now does (L111).
+ */
+const WORKLIST_REMEDY = "Clear it on the erasure worklist at /admin/erasure, which lists every outstanding erasure with what the warehouse still holds for it, and runs the purge.";
+
+/**
+ * An erasure is not finished in the warehouse, for a REAL booking.
+ *
+ * This is the paging half of the split in #1196, and it must stay exactly as loud
+ * as it was before that split: an incomplete data-subject erasure is a compliance
+ * matter with a response deadline, and this lane is the only thing that would
+ * ever notice it.
+ */
+export function erasureResidualAlert(reasons: string[], bookingIds: string[]): string {
+  const named = namedBookings(bookingIds);
+  const which = named ? ` Affected bookings: ${named}.` : "";
+  return (
+    `A data-subject erasure is incomplete in the Snowflake warehouse. ${reasons.join("; ")}.` +
+    `${which} ${WORKLIST_REMEDY}`
+  );
+}
+
+/**
+ * The same finding on a TEST booking (#1196).
+ *
+ * A separate key on the info channel rather than a line inside the page above,
+ * because the two need different responses and only one of them is worth waking
+ * for: the SMOKE fixtures are isolated by design (#396), so the "PII" here is
+ * fabricated and nothing is exposed. It still says the residual exists, because
+ * suppressing it would leave the warehouse holding rows nobody is told about, and
+ * it still names where to clear it, because the fix is identical.
+ *
+ * Deliberately carries no all-clear: an info whisper that resolved would be
+ * claiming an incident ended, and there was no incident (see alert-catalog.ts).
+ */
+export function erasureResidualTestNotice(reasons: string[], bookingIds: string[]): string {
+  const named = namedBookings(bookingIds);
+  const which = named ? ` Affected test bookings: ${named}.` : "";
+  return (
+    `A test booking's erasure is incomplete in the Snowflake warehouse. ${reasons.join("; ")}.` +
+    `${which} These are synthetic SMOKE fixtures, so no real contact data is exposed and there ` +
+    `is nothing to act on tonight. ${WORKLIST_REMEDY}`
+  );
+}
+
+/**
+ * The classification itself could not be read, so everything was treated as real.
+ *
+ * Said out loud rather than folded into the page above, because a reader deciding
+ * how hard to jump needs to know the "real" label was a fallback rather than a
+ * measurement (L11: a message may claim only what its check measured).
+ */
+export function erasureClassificationUnreadable(reason: string): string {
+  return ` The test-or-real classification could not be read for every booking (${reason}), so they are all treated as real, which is the safe direction.`;
 }
 
 /**

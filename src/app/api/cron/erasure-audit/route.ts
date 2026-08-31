@@ -2,12 +2,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { auditSnowflakeErasures } from "@/lib/snowflake/erasure-audit";
-import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 import {
+  erasureClassificationUnreadable,
   erasureResidualAlert,
   erasureResidualRecovery,
+  erasureResidualTestNotice,
   purgeSqlBrokenAlert,
   purgeSqlBrokenRecovery,
 } from "@/lib/snowflake/alert-copy";
@@ -50,7 +52,14 @@ export async function GET(req: NextRequest) {
       await sendThrottledAlert(
         "snowflake_erasure_residual",
         ALERT_COOLDOWN_MS,
-        erasureResidualAlert(result.reasons),
+        // alert-text-ok: every part is our own wording. The reasons come from
+        // evaluateErasureAudit, the ids are uuids from our own audit_log rows (not
+        // contact data, unlike the deliberately hashed email), and the
+        // classification note is a fixed sentence.
+        erasureResidualAlert(result.reasons, result.realBookingIds) +
+          (result.classificationUnreadable
+            ? erasureClassificationUnreadable(result.classificationUnreadable)
+            : ""),
       );
     } else if (!result.skipped) {
       // #1151: an incomplete erasure is a CONDITION that ends when the operator
@@ -62,6 +71,26 @@ export async function GET(req: NextRequest) {
         erasureResidualRecovery(),
       );
       if (cleared) log.info("erasure-audit", { msg: "residual alert cleared" });
+    }
+
+    // #1196: the same finding on a SMOKE fixture, on its own key and the info
+    // channel. Label, do not suppress: the rows are really there and nothing else
+    // would report them, but the "PII" is fabricated (#396 isolates the fixtures),
+    // so it is a worklist item rather than something to wake for.
+    //
+    // Deliberately has NO all-clear, and that is not an omission. An info key that
+    // resolved would announce the end of an incident there never was, which the
+    // catalog classification forbids and test-alert-recovery-coverage.ts enforces.
+    // Its absence costs nothing here: the condition is visible on the worklist,
+    // and a real residual keeps its own resolve above.
+    if (!result.skipped && result.testReasons.length > 0) {
+      // alert-key: snowflake_erasure_residual_test
+      await sendThrottledInfo(
+        "snowflake_erasure_residual_test",
+        ALERT_COOLDOWN_MS,
+        // alert-text-ok: as above, our own reasons plus our own uuids.
+        erasureResidualTestNotice(result.testReasons, result.testBookingIds),
+      );
     }
 
     // #1128: prove the purge SQL still RUNS, on its own key. The audit above can
