@@ -111,12 +111,17 @@ export async function residualsForBookingIds(
     },
     {
       table: "booking_outbox",
-      // `last_error` ONLY, deliberately, and the asymmetry is the point.
+      // The two ERROR-BEARING fields and not the payload, and the asymmetry is the
+      // point.
       //
       // The payload is out of erasure scope: it carries a reason code, staff-typed
       // free text, timestamps and internal user ids, and incidental mentions in
       // staff free text are not treated as PII requiring erasure (#1199). Counting
       // it would alert on healthy rows forever.
+      //
+      // This said `last_error` ONLY until #1207, which is what let the identical
+      // text inside `steps[].error` sit in the warehouse unmeasured while this
+      // lane reported clean.
       //
       // `last_error` is in scope because it is `err.message` from whatever a step
       // threw (src/lib/booking/outbox.ts), and two steps are OUTBOUND calls (a
@@ -125,13 +130,25 @@ export async function residualsForBookingIds(
       // and we cannot enumerate what a third party writes into an error string, so
       // it is treated as possibly carrying contact data.
       //
-      // It cannot self-heal either: outbox retention is a hard DELETE in Supabase,
-      // so once the row is gone nothing remains to MERGE over the warehouse copy,
-      // and only the runbook's manual purge clears it. This is the sole unattended
-      // check that an operator ran that statement.
+      // Neither can self-heal reliably. `booking_outbox` is deliberately absent
+      // from applySkipRedacted, so a row STILL PRESENT in Supabase does re-export
+      // and overwrite the warehouse copy. But outbox retention is a hard DELETE,
+      // so once the row has aged out nothing remains to MERGE and only the purge
+      // clears it (the runbook says exactly this under "Never wait for the export
+      // to fix a booking_outbox residual"). This is the sole unattended check that
+      // an operator ran that statement.
       residual: await countSnowflake(
         config,
-        `SELECT count(*) FROM booking_outbox WHERE booking_id IN (${idList}) AND last_error IS NOT NULL`,
+        `SELECT count(*) FROM booking_outbox WHERE booking_id IN (${idList}) ` +
+          `AND (last_error IS NOT NULL ` +
+          // `steps[].error` is the same `err.message` as `last_error`, so it carries
+          // the same risk (#1207). Judged on the TEXT, cast to string, rather than on
+          // whether the key is present: the purge REMOVES the key (object_insert with
+          // null) while a Supabase erasure that re-exports leaves it as a JSON null,
+          // and a check that read presence would page forever on a row that already
+          // healed itself. Measured against the live warehouse 2026-08-31: a real
+          // error counts 1, and both cleared shapes count 0.
+          `OR array_size(filter(steps, s variant -> coalesce(s:error::string, '') <> '')) > 0)`,
       ),
     },
   ];

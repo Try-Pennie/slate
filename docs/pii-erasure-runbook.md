@@ -172,12 +172,16 @@ To hand-run it, substitute the ids from step 2 for `<ids>` (comma-separated,
 single-quoted, e.g. `'id1','id2'`) and use your own Snowflake admin login.
 
 <!-- canonical-sql: purge -->
-<!-- runbook-verified: 2026-08-03 (cd896ce8) executed against the real warehouse by the
-     6-hourly erasure-audit lane, bound to an id no booking can carry; last run
-     2026-08-03 12:00 UTC, every statement compiled and changed nothing. It proves the
-     SQL parses and resolves against the warehouse schema as it exists now (the #1197
-     failure). It does NOT prove the statements clear fields on a populated row: a
-     zero-row statement can only ever report zero rows. -->
+<!-- runbook-verified: 2026-08-31 (0405ebb1) executed against the real warehouse, bound to
+     an id no booking can carry, after #1207 added the booking_outbox.steps clear. Every
+     statement compiled and the verify below returned all zeros. It proves the SQL parses
+     and resolves against the warehouse schema as it exists now (the #1197 failure). It
+     does NOT prove the statements clear fields on a populated row: a zero-row statement
+     can only ever report zero rows.
+     The steps rewrite was additionally measured on literal JSON, because a zero-row run
+     cannot exercise it: transform + object_insert(s::object,'error',null,true) removes
+     the error key and keeps name and state, and transform over a NULL steps returns NULL
+     rather than erroring, so a row with no step history is safe. -->
 ```
 update SLATE.PUBLIC.bookings
    set attendee_name = null, attendee_email = null, attendee_phone = null,
@@ -195,6 +199,7 @@ update SLATE.PUBLIC.webhook_deliveries
 
 update SLATE.PUBLIC.booking_outbox
    set payload = object_insert(payload, 'reasonDetail', null, true),
+       steps = transform(steps, s variant -> object_insert(s::object, 'error', null, true)),
        last_error = null
  where booking_id in (<ids>);
 ```
@@ -305,11 +310,16 @@ export re-mirrored them); do not consider the request honored until it returns a
 zeros.
 
 <!-- canonical-sql: verify -->
-<!-- runbook-verified: 2026-08-03 (2abb7dc6) executed against the real warehouse by the
-     6-hourly erasure-audit lane alongside the purge statements; last run 2026-08-03
-     12:00 UTC, returned all four residual counts as zero for an id no booking can
-     carry. Same limit as the purge block: it proves the query compiles and reads the
-     four columns it names, not that it would catch a residual on a populated row. -->
+<!-- runbook-verified: 2026-08-31 (9797d2d8) executed against the real warehouse alongside
+     the purge statements, after #1207 widened the outbox count to steps[].error; returned
+     all four residual counts as zero for an id no booking can carry. Same limit as the
+     purge block: it proves the query compiles and reads the columns it names, not that it
+     would catch a residual on a populated row.
+     The steps half was measured separately on literal JSON, since zero rows cannot
+     exercise it: the filter counts 1 for a real error string, 0 after the purge removes
+     the key, and 0 for the JSON null a Supabase erasure re-exports. That last pair is
+     why it is judged on the TEXT rather than on the key being present: a presence test
+     would page forever on a row that had already healed itself. -->
 ```
 select
   (select count(*) from SLATE.PUBLIC.bookings
@@ -322,7 +332,8 @@ select
             or last_response is not null)) as webhook_residual,
   (select count(*) from SLATE.PUBLIC.booking_outbox
      where booking_id in (<ids>)
-       and last_error is not null) as outbox_error_residual;
+       and (last_error is not null
+            or array_size(filter(steps, s variant -> coalesce(s:error::string, '') <> '')) > 0)) as outbox_error_residual;
 ```
 
 Also confirm the Supabase side: the `audit_log` row from step 2 exists with
