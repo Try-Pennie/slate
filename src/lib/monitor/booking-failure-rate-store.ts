@@ -71,11 +71,19 @@ export async function saveRateState(state: RateWindowState): Promise<void> {
  * summed (a customer who was deduped or sent to confirm still tried), `failures`
  * is the error outcome, and `byCode` is the error slice so the page can name what
  * is actually failing.
+ *
+ * `p_include_test: false` is what keeps the smoke canary out of the failure rate
+ * (#1616). It is passed EXPLICITLY even though the RPC defaults it that way, so
+ * the exclusion is visible in the repo at the reading site rather than living only
+ * in a database default nothing here can see.
  */
 export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> {
   const day = DateTime.fromMillis(nowMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
   const raw = unwrap(
-    await supabaseAdmin().rpc("booking_api_outcome_mix", { p_since: day }),
+    await supabaseAdmin().rpc("booking_api_outcome_mix", {
+      p_since: day,
+      p_include_test: false,
+    }),
     "booking_api_outcome_mix",
   ) as RawMix | null;
   const mix = normalizeMix(raw);

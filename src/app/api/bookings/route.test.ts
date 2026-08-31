@@ -507,6 +507,8 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
       "deduped",
       "411",
       "bucket_change_declined_no_eligible_agents",
+      // #1616: every recording site names how the test marker is resolved.
+      { by: "bucket", code: "411" },
     );
   });
 
@@ -519,7 +521,10 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
 
     expect(body.outcome).toBe("deduped");
     expect("bucketChangeDeclined" in body).toBe(false);
-    expect(monitor.recordApiOutcome).toHaveBeenCalledWith("deduped", "411", null);
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith("deduped", "411", null, {
+      by: "bucket",
+      code: "411",
+    });
   });
 });
 // #1515: the caller is the system of record for which team owns a lead, and the

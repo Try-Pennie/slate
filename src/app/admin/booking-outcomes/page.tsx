@@ -4,7 +4,12 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { normalizeMix, type OutcomeMix, type RawMix } from "@/lib/monitor/booking-api-outcome";
+import {
+  normalizeMix,
+  excludedTestTrafficNote,
+  type OutcomeMix,
+  type RawMix,
+} from "@/lib/monitor/booking-api-outcome";
 import { AppHeader } from "@/components/AppHeader";
 import { cardCls } from "@/components/ui/styles";
 
@@ -35,6 +40,12 @@ function Window({ title, mix }: { title: string; mix: OutcomeMix }) {
           {mix.total} {mix.total === 1 ? "call" : "calls"}
         </span>
       </div>
+      {/* #1616: this panel counts CUSTOMER attempts only, matching the failure
+          rate page that points readers here. Hiding the smoke canary silently
+          would make a quiet week and an excluded canary pass render the same
+          number, so what was left out is stated either way, and an unreadable
+          count says so rather than showing zero. */}
+      <p className="mt-1 text-xs text-fg-muted">{excludedTestTrafficNote(mix.testTotal)}</p>
       {mix.total === 0 ? (
         <p className="mt-3 text-sm text-fg-muted">No direct booking API calls in this window.</p>
       ) : (
@@ -85,9 +96,12 @@ export default async function BookingOutcomesPage() {
   }
 
   const db = supabaseAdmin();
+  // p_include_test:false (#1616) so the panel measures the same population the
+  // failure-rate page does. Passed explicitly, not left to the RPC's default, so
+  // the decision is readable here rather than only in the database.
   const [weekRes, monthRes] = await Promise.all([
-    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(7) }),
-    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(30) }),
+    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(7), p_include_test: false }),
+    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(30), p_include_test: false }),
   ]);
   // A read error must not read as "no traffic" (a false all-clear); surface it.
   const readError = weekRes.error?.message ?? monthRes.error?.message ?? null;
@@ -112,8 +126,9 @@ export default async function BookingOutcomesPage() {
           <h1 className="pn-h2 mt-2 text-pennie-beige">Booking API outcomes</h1>
           <p className="mt-2 text-pennie-beige/75">
             The mix of direct booking API results: whether person-dedupe,
-            cross-bucket moves, and no-eligible-agents are behaving. Visibility
-            only, not an alert.
+            cross-bucket moves, and no-eligible-agents are behaving. Customer
+            attempts only, so it matches the failure rate check; smoke canary
+            calls are counted out separately below. Visibility only, not an alert.
           </p>
         </section>
 

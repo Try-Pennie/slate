@@ -53,8 +53,15 @@ function refuse(
   const counting = authRefusalCounting(reason, readPath ? "read" : "write");
   if (counting.kind === "error") {
     // No bucket is known yet: the body has not been read. "" is the tally's
-    // existing convention for an outcome recorded before routing (#418).
-    recordApiOutcome("error", "", counting.code);
+    // existing convention for an outcome recorded before routing (#418), and for
+    // the same reason nothing here can say whether the caller was the smoke
+    // canary, so the refusal is counted as real traffic (#1616). That is the
+    // right way round: a rejected key means every lead the integration holds is
+    // being refused, which is exactly what the failure rate should see.
+    recordApiOutcome("error", "", counting.code, {
+      by: "unidentifiable",
+      why: "refused at auth, before any bucket or booking was read",
+    });
   }
   log.warn("booking-api", {
     msg: "refused",
