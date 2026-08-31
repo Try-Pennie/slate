@@ -60,6 +60,7 @@ function fakeDeps(over: Partial<BulkReassignDeps> = {}) {
     reassign: async (bookingId) => {
       log.push(`reassign:${bookingId}`);
     },
+    claimItem: async () => true,
     commitItemOutcome: async (itemId, outcome, attempts) => {
       log.push(`commit:${itemId}:${outcome.status}:${attempts}`);
     },
@@ -219,6 +220,7 @@ async function run() {
       reassignCalls.push(bookingId);
       assignedTo = "cov"; // the swap committed: the booking is now off the out agent
     },
+    claimItem: async () => true,
     commitItemOutcome: async () => {},
     markJobDoneIfDrained: async () => {},
   };
@@ -227,12 +229,62 @@ async function run() {
   assert(first.moved === 1 && second.moved === 1, "both the first move and the re-run record the item moved");
   assert(reassignCalls.length === 1, "a re-run never reassigns an already-moved booking a second time (idempotent)");
 
+  // --- a sweep that was STOPPED (#1665) ---
+  //
+  // Two guards, and they cover different moments. The job status covers a tick that
+  // starts after the cancellation; the claim covers a tick already part way through
+  // a batch it read before it. Each is asserted beside the same fixture WITHOUT the
+  // stop, so neither can pass because the fixture could not have moved anything.
+  {
+    const stoppedJob: BulkReassignJob = { ...job, status: "cancelled" };
+    const f = fakeDeps();
+    const outcome = await processBulkReassignItem(item(), stoppedJob, f.deps);
+    assert(outcome.status === "cancelled", "an item of a stopped sweep is refused rather than moved");
+    assert(
+      f.log.length === 0,
+      "and refused before any work: no booking read, no target selected, no reassign",
+    );
+    assert((outcome.detail ?? "").length > 0, "the row says why it never moved");
+
+    // CONTROL: the same item under the same sweep, still active, moves.
+    const control = await processBulkReassignItem(item(), job, fakeDeps().deps);
+    assert(control.status === "moved", "CONTROL: the same item under a live sweep is moved");
+  }
+  {
+    // The row was stopped between this tick reading its batch and reaching the item.
+    const claimed: string[] = [];
+    const f = fakeDeps({
+      loadPendingItems: async () => [{ item: item({ id: "C", booking_id: "bkC" }), job }],
+      claimItem: async (id) => {
+        claimed.push(id);
+        return false;
+      },
+    });
+    const summary = await drainBulkReassign(f.deps);
+    assert(claimed.length === 1, "the tick asked the store whether the row was still pending");
+    assert(summary.unclaimed === 1 && summary.processed === 0, "a row it could not claim is not processed");
+    assert(
+      !f.log.some((l) => l.startsWith("reassign:")) && !f.log.some((l) => l.startsWith("commit:")),
+      "nothing is moved and nothing is written over whatever the other writer set",
+    );
+    assert(f.log.includes("done?:job1"), "the job is still checked for completion, so it cannot be stranded active");
+
+    // CONTROL: the identical tick whose claim succeeds does move it.
+    const c = fakeDeps({
+      loadPendingItems: async () => [{ item: item({ id: "C", booking_id: "bkC" }), job }],
+    });
+    const cs = await drainBulkReassign(c.deps);
+    assert(cs.moved === 1, "CONTROL: the same tick with the row still pending moves it");
+  }
+
   // --- summarizeBulkReassignItems: the progress read's counts (#974) ---
   const mk = (status: BulkReassignItemStatus) => ({ status });
   const s = summarizeBulkReassignItems([
     mk("moved"), mk("moved"), mk("unplaceable"), mk("skipped"), mk("failed"), mk("pending"),
+    mk("cancelled"),
   ]);
-  assert(s.total === 6, "summary totals every item");
+  assert(s.total === 7, "summary totals every item");
+  assert(s.counts.cancelled === 1, "an appointment a stopped sweep never moved is counted as its own outcome (#1665)");
   assert(
     s.counts.moved === 2 && s.counts.unplaceable === 1 && s.counts.skipped === 1 &&
       s.counts.failed === 1 && s.counts.pending === 1,

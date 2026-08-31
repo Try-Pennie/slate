@@ -790,7 +790,13 @@ export interface ExportCursor {
   updated_at: string;
 }
 
-export type BulkReassignJobStatus = "active" | "done";
+/**
+ * A sweep's lifecycle. `cancelled` (#1665) is terminal exactly as `done` is, and
+ * separate from it on purpose: `done` means every item reached an outcome,
+ * `cancelled` means the time off that caused the sweep was cancelled or narrowed
+ * and the remaining appointments must not move. Only `active` is ever drained.
+ */
+export type BulkReassignJobStatus = "active" | "done" | "cancelled";
 
 /** One bulk coverage-reassign sweep (#973, #562): move every active upcoming
  *  booking assigned to `out_user_id` in [range_start, range_end) onto a
@@ -827,7 +833,12 @@ export type BulkReassignItemStatus =
   | "moved"
   | "unplaceable"
   | "skipped"
-  | "failed";
+  | "failed"
+  /** Still waiting to move when the time off was cancelled (#1665), so it never
+   *  moved and the appointment stays where it was. Distinct from `skipped`, which
+   *  is a fact about the BOOKING (cancelled or completed before we got to it)
+   *  rather than about the sweep. */
+  | "cancelled";
 
 /** One booking to move within a bulk-reassign job (#973). `target_user_id` is the
  *  covering agent once moved; `detail` explains an unplaceable/skipped/failed

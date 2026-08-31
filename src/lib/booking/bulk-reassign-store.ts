@@ -1,11 +1,21 @@
-import { unwrap } from "@/lib/db/result";
+import { unwrap, unwrapCount } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import { enqueueCoverageSweep } from "@/lib/booking/coverage-sweep-enqueue";
+import {
+  cancelCoverageSweep,
+  type CoverageSweepCancelReport,
+} from "@/lib/booking/coverage-sweep-cancel";
 import { coverageSelectionBounds } from "@/lib/booking/coverage-selection";
-import type { BookingStatus, BulkReassignItem, BulkReassignJob } from "@/lib/db/types";
+import type {
+  BookingStatus,
+  BulkReassignItem,
+  BulkReassignItemStatus,
+  BulkReassignJob,
+  BulkReassignJobStatus,
+} from "@/lib/db/types";
 
 /**
  * The active-upcoming statuses a coverage sweep moves. Exported so the #1215
@@ -115,6 +125,10 @@ export interface CreateBulkReassignJobInput {
  *  be mistaken for it. */
 const UNIQUE_VIOLATION = "23505";
 
+/** How many booking ids ride in one `in()` filter. The filter is part of the URL,
+ *  so a long list is REFUSED, not truncated: 200 uuids are fine and 400 are not. */
+const RE_ARM_CHUNK = 100;
+
 /**
  * Create a coverage sweep and snapshot its work: insert the job, then one pending
  * item per booking currently assigned to the out agent in range. A job with no
@@ -216,6 +230,30 @@ export async function createBulkReassignJob(
       return (data as { id: string }[] | null)?.length ?? 0;
     },
 
+    reArmCancelledItems: async (jobId, bookingIds) => {
+      // Chunked because an `in()` filter rides in the URL, and a long enough list
+      // is refused by PostgREST rather than truncated (PR#1251 shipped a 500-id
+      // batch that failed outright).
+      let reArmed = 0;
+      for (let i = 0; i < bookingIds.length; i += RE_ARM_CHUNK) {
+        reArmed += unwrapCount(
+          await supabaseAdmin()
+            .from("bulk_reassign_items")
+            .update(
+              { status: "pending", detail: null, updated_at: new Date().toISOString() },
+              { count: "exact" },
+            )
+            .eq("job_id", jobId)
+            .in("booking_id", bookingIds.slice(i, i + RE_ARM_CHUNK))
+            // Only ones a cancellation stopped. A 'moved' item can never be re-armed
+            // this way, so a re-approval cannot hand the same customer over twice.
+            .eq("status", "cancelled"),
+          "re-arm-cancelled-coverage-items",
+        );
+      }
+      return reArmed;
+    },
+
     reactivateJob: async (jobId) => {
       const { error } = await supabaseAdmin()
         .from("bulk_reassign_jobs")
@@ -281,12 +319,57 @@ export async function loadBookingSnapshot(bookingId: string): Promise<BookingSna
   return data ?? null;
 }
 
-/** Persist an item's outcome and its new attempt count. Serialized by the lane lock. */
+/**
+ * Take one item for processing while it is still pending (#1665), answering
+ * whether it still was.
+ *
+ * A conditional UPDATE that changes only `updated_at`: the value it is really
+ * asking about is `status`, and asking through a WHERE clause is what makes the
+ * answer atomic. It deliberately leaves the status alone, so an item is never
+ * half claimed and a tick that dies mid item leaves it exactly as it was.
+ *
+ * Fails loud rather than answering false on a read error: a claim that could not
+ * be made and a row that is no longer pending are different things, and treating
+ * the first as the second would silently stop draining a healthy sweep.
+ */
+export async function claimBulkReassignItem(itemId: string): Promise<boolean> {
+  const count = unwrapCount(
+    await supabaseAdmin()
+      .from("bulk_reassign_items")
+      .update({ updated_at: new Date().toISOString() }, { count: "exact" })
+      .eq("id", itemId)
+      .eq("status", "pending"),
+    "claim-bulk-reassign-item",
+  );
+  return count > 0;
+}
+
+/**
+ * Persist an item's outcome and its new attempt count.
+ *
+ * CONDITIONAL on the status the item is leaving (#1665). The lane lock serializes
+ * this against another tick, but a cancellation is a person pressing a button
+ * while a tick is running, and the two writes want the same row. Ordering them in
+ * application code cannot settle that; the WHERE clause can, because Postgres
+ * takes the row lock and exactly one of them matches.
+ *
+ * A COMPLETED MOVE may also leave 'cancelled', and that asymmetry is the whole
+ * design. By the time the engine answers 'moved' the booking is already off the
+ * out agent on both sides, so the only question left is what the record SAYS. An
+ * item reading 'cancelled' over a booking that really moved would be a lie a
+ * later re-approval acts on (it re-arms cancelled items), and it would strand the
+ * appointment #1235 exists to keep converging. Every other outcome, including the
+ * retry that writes 'pending' back, is refused: nothing moved, so a stopped sweep
+ * stays stopped rather than putting the customer back in a queue that no longer
+ * has a reason to exist.
+ */
 export async function commitBulkReassignItemOutcome(
   itemId: string,
   outcome: ItemOutcome,
   attempts: number,
 ): Promise<void> {
+  const leaving: BulkReassignItemStatus[] =
+    outcome.status === "moved" ? ["pending", "cancelled"] : ["pending"];
   const { error } = await supabaseAdmin()
     .from("bulk_reassign_items")
     .update({
@@ -296,8 +379,74 @@ export async function commitBulkReassignItemOutcome(
       attempts,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", itemId);
+    .eq("id", itemId)
+    .in("status", leaving);
   if (error) throw new Error(`bulk-reassign item commit failed: ${error.message}`);
+}
+
+/**
+ * Stop every sweep an approved time-off request produced (#1665), and say what
+ * that stopped and what had already moved.
+ *
+ * The IO only; the decision (what order, and why a job is settled before its
+ * items) lives in `coverage-sweep-cancel.ts` where it can be driven by fakes.
+ */
+export async function cancelCoverageSweepForRequest(
+  oooRequestId: string,
+): Promise<CoverageSweepCancelReport> {
+  return cancelCoverageSweep({
+    findJobs: async () =>
+      (unwrap(
+        await supabaseAdmin()
+          // cap-safe: bounded by the unique index on (ooo_request_id, range_start,
+          // range_end): one sweep per window, and a request has a handful at most.
+          .from("bulk_reassign_jobs")
+          .select("id, status")
+          .eq("ooo_request_id", oooRequestId),
+        "find-coverage-sweeps-for-request",
+      ) as { id: string; status: BulkReassignJobStatus }[] | null) ?? [],
+
+    cancelJob: async (jobId) => {
+      const { error } = await supabaseAdmin()
+        .from("bulk_reassign_jobs")
+        .update({ status: "cancelled", updated_at: new Date().toISOString() })
+        .eq("id", jobId)
+        // A sweep that already drained stays 'done'. Nothing is left to stop, and
+        // relabelling it would lose that it finished.
+        .eq("status", "active");
+      if (error) throw new Error(`coverage sweep cancel failed: ${error.message}`);
+    },
+
+    cancelPendingItems: async (jobId) =>
+      unwrapCount(
+        await supabaseAdmin()
+          .from("bulk_reassign_items")
+          .update(
+            {
+              status: "cancelled",
+              detail: "The time off was cancelled before this appointment moved.",
+              updated_at: new Date().toISOString(),
+            },
+            { count: "exact" },
+          )
+          .eq("job_id", jobId)
+          // The guarantee. An item that has reached any outcome, including one a
+          // drain tick moved a moment ago, does not match and is left alone.
+          .eq("status", "pending"),
+        "cancel-pending-coverage-items",
+      ),
+
+    countMovedItems: async (jobId) =>
+      unwrapCount(
+        await supabaseAdmin()
+          .from("bulk_reassign_items")
+          // cap-safe: server-side count (head:true), no rows returned.
+          .select("id", { count: "exact", head: true })
+          .eq("job_id", jobId)
+          .eq("status", "moved"),
+        "count-moved-coverage-items",
+      ),
+  });
 }
 
 /** The org a user belongs to, or null if the user does not exist (#974). Used to
@@ -358,7 +507,13 @@ export async function loadActionableBookingContext(
 }
 
 /** Flip the job to 'done' once it has no pending items left. Best-effort: a
- *  tracking miss just leaves it 'active' and the next drained tick retries. */
+ *  tracking miss just leaves it 'active' and the next drained tick retries.
+ *
+ *  Only ever flips a job that is still 'active' (#1665). A sweep stopped while its
+ *  last in-flight item was being committed must not be relabelled 'done' by the
+ *  tick that finished it: 'done' means every item reached an outcome, 'cancelled'
+ *  means the reason for the sweep went away, and the admin panel and the #1242
+ *  give-up page read the difference. */
 export async function markBulkReassignJobDoneIfDrained(jobId: string): Promise<void> {
   const { count, error } = await supabaseAdmin()
     .from("bulk_reassign_items")
@@ -374,7 +529,8 @@ export async function markBulkReassignJobDoneIfDrained(jobId: string): Promise<v
     const { error: upErr } = await supabaseAdmin()
       .from("bulk_reassign_jobs")
       .update({ status: "done", updated_at: new Date().toISOString() })
-      .eq("id", jobId);
+      .eq("id", jobId)
+      .eq("status", "active");
     if (upErr) log.error("bulk-reassign", { msg: "job-done update failed", job_id: jobId }, upErr);
   }
 }

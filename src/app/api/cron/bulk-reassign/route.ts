@@ -43,6 +43,8 @@ export async function GET(req: NextRequest) {
         skipped: summary.skipped,
         failed: summary.failed,
         pending: summary.pending,
+        cancelled: summary.cancelled,
+        unclaimed: summary.unclaimed,
       });
     }
     return NextResponse.json(summary ?? { error: "drain-failed" });

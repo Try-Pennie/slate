@@ -152,18 +152,67 @@ export function approvedCoverageLine(
 }
 
 /**
- * The line on a CANCELLED request: what happens to the appointments the sweep
- * already moved.
+ * What stopping the coverage sweep found (#1665).
  *
- * They stay with the covering advisor. That is a decision (#1219 decision 4): the
- * customer has been told twice by then, and the covering advisor is holding the
- * slot under their own cap. Saying it here makes it something the reader was
- * told rather than something they discover.
+ * `stopped` and `alreadyMoved` are the database's own answer to the writes that
+ * stopped them, not a read taken beforehand, so the sentence built from them
+ * describes what really happened rather than what was intended.
+ *
+ * `failed` is its own state and never collapses into zeroes. Zero stopped means
+ * "nothing was waiting", which is reassuring; a stop that could not be confirmed
+ * means appointments may still be moving, which is the opposite, and the two must
+ * not read the same (L11).
  */
-export function cancelledCoverageLine(wasApproved: boolean): string | null {
-  if (!wasApproved) return null;
-  return (
-    `Any appointments that already moved to another advisor stay with that advisor. ` +
-    `Cancelling this time off does not move them back.`
-  );
+export type CoverageStopState =
+  | { kind: "checked"; stopped: number; alreadyMoved: number }
+  | { kind: "failed" };
+
+/**
+ * The line on a CANCELLED (or narrowed) request: what happened to the customer
+ * appointments the approval had queued.
+ *
+ * Two facts, and a manager needs both, because they will reasonably expect
+ * cancelling to put everything back and only half of it does:
+ *
+ *   still waiting   stopped, and they stay with the advisor who is now going to
+ *                   be there. That is #1665; before it they went on moving.
+ *   already moved   stays with the covering advisor. That is a decision (#1219
+ *                   decision 4): the customer has been told twice by then, and
+ *                   the covering advisor holds the slot under their own cap.
+ *                   Saying it here makes it something the reader was told rather
+ *                   than something they discover.
+ *
+ * Silent when neither happened, because a request whose approval queued nothing
+ * has nothing to report, and a sentence about appointments that never existed is
+ * noise on a message somebody skims.
+ *
+ * Carries no error text on the failed branch, deliberately. This is read by a
+ * manager deciding whether to go and look at something, and a Postgres or Google
+ * error pasted into it buries the one instruction that matters (#1133).
+ */
+export function cancelledCoverageLine(state: CoverageStopState): string | null {
+  if (state.kind === "failed") {
+    return (
+      `Slate could not confirm that their queued appointment moves were stopped, so some ` +
+      `may still move to another advisor. Check their coverage panel.`
+    );
+  }
+  const lines: string[] = [];
+  if (state.stopped > 0) {
+    const one = state.stopped === 1;
+    lines.push(
+      `${appointments(state.stopped)} ${one ? "was" : "were"} still waiting to move to another ` +
+        `advisor. ${one ? "It will" : "They will"} not move now, and ${one ? "it stays" : "they stay"} ` +
+        `with the advisor who is going to be there.`,
+    );
+  }
+  if (state.alreadyMoved > 0) {
+    const one = state.alreadyMoved === 1;
+    lines.push(
+      `${appointments(state.alreadyMoved)} had already moved to another advisor and ` +
+        `${one ? "stays" : "stay"} with that advisor. Cancelling this time off does not move ` +
+        `${one ? "it" : "them"} back.`,
+    );
+  }
+  return lines.length > 0 ? lines.join("\n") : null;
 }

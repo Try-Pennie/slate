@@ -42,6 +42,21 @@ export interface BulkReassignDrainSummary {
   skipped: number;
   failed: number;
   pending: number;
+  /** Items the tick refused because their sweep had been stopped (#1665). Counted
+   *  separately from `skipped`: a skip is a fact about the booking, this is a fact
+   *  about the sweep, and a tick that refused ten is not a tick that moved none. */
+  cancelled: number;
+  /**
+   * Items whose row had moved on between this tick READING them and reaching them
+   * (#1665). The tick writes nothing for these: the row already carries whatever
+   * the other writer set, and only that writer knows what it means.
+   *
+   * Today the only writer that can produce this is a cancellation landing while a
+   * tick is part way through its batch, which is exactly the case that must not
+   * move a customer. It is not labelled 'cancelled' here because this count is
+   * measured from a failed claim, not from a status anybody read (L11).
+   */
+  unclaimed: number;
 }
 
 /** Every side effect the engine needs; `service.ts` wires the real ones. */
@@ -54,8 +69,33 @@ export interface BulkReassignDeps {
   selectTarget(booking: BookingSnapshot, job: BulkReassignJob): Promise<SelectionOutcome>;
   /** Reassign the booking onto `targetEmail` (adminReassignBooking); throws on failure. */
   reassign(bookingId: string, targetEmail: string, job: BulkReassignJob): Promise<void>;
-  /** Persist an item's outcome and its new attempt count in one write. The drain
-   *  holds the lane lock, so this serialized write is never raced. */
+  /**
+   * Take this item for processing WHILE IT IS STILL PENDING, answering whether it
+   * still was (#1665).
+   *
+   * A tick reads up to twenty items at once and then works through them one at a
+   * time, each taking a live verify plus two Google writes, so the batch it is
+   * holding can be minutes old by the time it reaches the last one. A cancellation
+   * that lands in the middle of that has already stopped those rows in the
+   * database, and without this the tick would go on moving customers off a
+   * snapshot taken before anybody cancelled.
+   *
+   * It does NOT change the status, so nothing is left half claimed: a tick that
+   * dies mid item leaves the row pending and the next tick picks it up, exactly as
+   * before. The whole of it is the database answering "is this row still pending",
+   * atomically, at the moment of asking.
+   */
+  claimItem(itemId: string): Promise<boolean>;
+  /**
+   * Persist an item's outcome and its new attempt count in one write.
+   *
+   * The lane lock serializes this against another TICK, but not against a
+   * cancellation (#1665), which is a person pressing a button while a tick is
+   * running. So the write is conditional on the status the item is leaving, and
+   * the database decides: an item stopped underneath this tick keeps 'cancelled'
+   * unless the outcome is a COMPLETED move, which must be recorded whichever write
+   * arrived first, because the booking really is with somebody else now.
+   */
   commitItemOutcome(itemId: string, outcome: ItemOutcome, attempts: number): Promise<void>;
   /** Flip the job to 'done' if it now has no pending items left. */
   markJobDoneIfDrained(jobId: string): Promise<void>;
@@ -76,6 +116,7 @@ function errMessage(err: unknown): string {
  * decision keys off the booking's CURRENT assignment, which is the source of
  * truth for whether the covering swap has already committed:
  *
+ *  - Sweep stopped (#1665) → `cancelled`, without reading the booking at all.
  *  - Booking gone / cancelled / completed → `skipped` (never a failure).
  *  - Booking already off the out agent → `moved` WITHOUT reassigning again. This
  *    is the crash-resume guard: if a prior tick committed the swap but died
@@ -94,6 +135,21 @@ export async function processBulkReassignItem(
   job: BulkReassignJob,
   deps: BulkReassignDeps,
 ): Promise<ItemOutcome> {
+  // The sweep was stopped because the time off was cancelled or narrowed (#1665).
+  // Checked BEFORE the booking is even read: this appointment must not move, and
+  // the reason has nothing to do with the booking.
+  //
+  // Cancelling a sweep is two writes, the job then its items, in that order. This
+  // is what makes the pair convergent rather than merely ordered: an item the
+  // second write never reached settles itself here, on the next tick, instead of
+  // staying pending under a sweep nothing will ever drain.
+  if (job.status === "cancelled") {
+    return {
+      status: "cancelled",
+      targetUserId: null,
+      detail: "The time off was cancelled before this appointment moved.",
+    };
+  }
   const booking = await deps.loadBooking(item.booking_id);
   if (!booking) {
     return { status: "skipped", targetUserId: null, detail: "Booking no longer exists." };
@@ -152,9 +208,19 @@ export async function drainBulkReassign(
     skipped: 0,
     failed: 0,
     pending: 0,
+    cancelled: 0,
+    unclaimed: 0,
   };
   const touchedJobs = new Set<string>();
   for (const { item, job } of pending) {
+    // The row may have been stopped since this batch was read (#1665). Ask the
+    // database, per item, immediately before doing the work rather than trusting a
+    // snapshot that can be minutes old.
+    if (!(await deps.claimItem(item.id))) {
+      summary.unclaimed++;
+      touchedJobs.add(job.id);
+      continue;
+    }
     const outcome = await processBulkReassignItem(item, job, deps);
     await deps.commitItemOutcome(item.id, outcome, item.attempts + 1);
     summary.processed++;
@@ -185,6 +251,7 @@ export function summarizeBulkReassignItems(
     unplaceable: 0,
     skipped: 0,
     failed: 0,
+    cancelled: 0,
   };
   for (const it of items) counts[it.status]++;
   return { total: items.length, counts, done: counts.pending === 0 };

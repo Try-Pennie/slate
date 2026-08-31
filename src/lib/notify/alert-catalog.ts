@@ -462,6 +462,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "incident",
     why: "One undo of a time-off decision failed and needs a human; nothing re-attempts it.",
   },
+  {
+    key: "ooo_coverage_stop",
+    kind: "incident",
+    why:
+      "One cancelled or narrowed time off could not have its coverage sweep stopped " +
+      "(#1665). The request is already closed and nothing re-attempts it, so there is no " +
+      "healthy state to observe: a person opens the coverage panel and stops the rest.",
+  },
 
   // --- Info: never needed action, so never announces recovery ---------------
   {

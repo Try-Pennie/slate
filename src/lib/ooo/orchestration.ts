@@ -10,12 +10,14 @@ import {
   oooAgentDmAlert,
   oooUndoManagerAlert,
   oooUndoAgentAlert,
+  oooCoverageStopAlert,
 } from "./alert-copy.ts";
 import {
   approvedCoverageLine,
   cancelledCoverageLine,
   pendingCoverageLine,
   type CoverageMove,
+  type CoverageStopState,
   type CoverageSweepState,
 } from "./coverage-notice-copy.ts";
 import {
@@ -131,6 +133,19 @@ export interface CoverageSweepReport {
   moves: CoverageMove[];
 }
 
+/**
+ * What stopping a coverage sweep did (#1665), as the database answered it.
+ *
+ * `stopped` is the count of appointments that were still waiting to move and now
+ * never will; `alreadyMoved` is the count that had already moved and stays put
+ * (#1219 decision 4). Both are counts of rows a conditional write actually
+ * matched, so neither can claim something that did not happen.
+ */
+export interface CoverageStopReport {
+  stopped: number;
+  alreadyMoved: number;
+}
+
 export interface OooDeps {
   loadRequest(id: string): Promise<OooRequest | null>;
   /** A user's still-active (pending/approved) requests, for overlap checks. */
@@ -173,6 +188,21 @@ export interface OooDeps {
      *  that moves customers' bookings should name a person in its audit trail. */
     createdBy: string;
   }): Promise<CoverageSweepReport>;
+
+  /**
+   * Stop the coverage sweep this request's approval started (#1665).
+   *
+   * Approving enqueues a sweep that moves the agent's upcoming customer appointments
+   * to colleagues. Cancelling the time off, or narrowing it by a modification, removes
+   * the reason those appointments are moving, and nothing else in this file reaches the
+   * sweep: the undo below tears down the calendar events and the busy block and knows
+   * nothing about it.
+   *
+   * Whatever it has already moved stays moved (#1219 decision 4); this stops the rest.
+   * Injected, like `startCoverageSweep`, so the flow including its failure branch is
+   * drivable with in-memory fakes.
+   */
+  stopCoverageSweep(args: { requestId: string }): Promise<CoverageStopReport>;
 
   /**
    * How many of this agent's upcoming appointments fall in the window and would move
@@ -866,6 +896,37 @@ function shortReason(e: unknown): string {
   return text.split("\n")[0]!.slice(0, 200);
 }
 
+/**
+ * Stop the coverage sweep, and answer what to TELL the reader about it (#1665).
+ *
+ * Called after the status transition has committed, never before, and that is the
+ * whole of the concurrency reasoning on this side: the transition is the atomic
+ * claim on the cancellation, so reaching this line means this call is the one that
+ * closed the request, and an approval that lost the race never enqueued anything to
+ * stop. Everything about the sweep's own races (a drain part way through its batch,
+ * an item mid move) is settled by conditional writes in
+ * `coverage-sweep-cancel.ts`, not here.
+ *
+ * Never throws. The request is already cancelled by the time this runs and there is
+ * no rolling that back, so a failure here becomes a state the reader is TOLD about
+ * plus a page, rather than an exception that loses the cancellation.
+ */
+async function stopCoverage(
+  request: OooRequest,
+  deps: OooDeps,
+): Promise<CoverageStopState> {
+  try {
+    const report = await deps.stopCoverageSweep({ requestId: request.id });
+    return { kind: "checked", stopped: report.stopped, alreadyMoved: report.alreadyMoved };
+  } catch (e) {
+    await deps.alertOps(
+      "ooo_coverage_stop",
+      oooCoverageStopAlert(request.id, shortReason(e)),
+    );
+    return { kind: "failed" };
+  }
+}
+
 /** Undo of every approval artifact (cancel + modify-of-approved share this). */
 async function undoPostApproval(
   request: OooRequest,
@@ -1048,11 +1109,19 @@ export async function cancelOoo(
     details: { was_approved: wasApproved },
   });
 
-  // Appointments the sweep already moved stay with the covering advisor (#1219
-  // decision 4): the customer has been told twice by then and the covering advisor
-  // holds the slot under their own cap. Said out loud on both messages, so it is a
-  // decision the reader was told rather than one they find out about.
-  const coverageNote = cancelledCoverageLine(wasApproved);
+  // The sweep the approval started (#1665). Stopped here, AFTER the transition, so
+  // this only ever stops a sweep for a request this call really did cancel.
+  //
+  // Attempted whatever the prior status was, not only for an approved one: a request
+  // that was approved, then modified back to pending, and only then cancelled still
+  // has a sweep behind it, and the numbers are what decide whether there is anything
+  // to say rather than a flag guessing on their behalf.
+  //
+  // Appointments it already moved stay with the covering advisor (#1219 decision 4):
+  // the customer has been told twice by then and the covering advisor holds the slot
+  // under their own cap. Both halves are said out loud on both messages, so they are
+  // a decision the reader was told rather than one they find out about.
+  const coverageNote = cancelledCoverageLine(await stopCoverage(request, deps));
   await deps.dmUserByEmail(
     agent.email,
     `Your time off request for ${whenLineFor(request)} was cancelled.` +
@@ -1156,12 +1225,25 @@ export async function modifyOoo(
     },
   });
 
+  // The same gap as the cancel (#1665), and it is worse here rather than milder.
+  // A modification returns the request to PENDING, so the agent is bookable again
+  // and the absence may not happen at all, while the sweep the old approval started
+  // goes on moving that agent's customers away over the OLD window. Narrowing a
+  // window is the sharpest version: the appointments the narrowing put back inside
+  // the working day are exactly the ones still queued to move.
+  //
+  // Stopping it is not a loss on re-approval: the enqueue is convergent, so
+  // approving again re-arms the stopped items and picks up anything booked in the
+  // pending gap (#1235). Placed after the transition, for the same reason as in
+  // cancelOoo.
+  const coverageNote = cancelledCoverageLine(await stopCoverage(request, deps));
+
   // notifyManagerOfPending posts a fresh message and overwrites the stored
   // slack ref, so first mark the prior manager message (an 'Approved' or
   // earlier 'Pending') as superseded — once the ref is overwritten its location
   // is lost and it can never be edited again, leaving a stale status forever.
   // Uses the pre-modify `request` (old window + old ref); a no-op when none.
-  await updateManagerStatus(request, agent, deps, "superseded");
+  await updateManagerStatus(request, agent, deps, "superseded", coverageNote);
 
   await notifyManagerOfPending(
     flipped.request,

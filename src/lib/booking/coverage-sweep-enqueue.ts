@@ -21,6 +21,11 @@
  * agent is bookable and new bookings land; re-snapshotting picks them up, where
  * refusing the duplicate would strand exactly those bookings.
  *
+ * A sweep the request's own cancellation stopped (#1665) reaches this same path on
+ * a re-approval, and needs one thing more than a crash does: its stopped items are
+ * already there, so nothing is "newly added" and the sweep would be reactivated
+ * with no pending work. `reArmCancelledItems` is what puts them back.
+ *
  * Pure decision, injected IO, so every branch above is pinned by
  * `scripts/test-coverage-sweep-enqueue.ts` with fakes rather than living inside a
  * query nothing can assert against.
@@ -43,6 +48,17 @@ export interface CoverageSweepEnqueueDeps {
   /** Add these bookings as items, ignoring ones already present. Returns how many
    *  were NEWLY added, which is what decides whether the job gained work. */
   addItems(jobId: string, bookingIds: string[]): Promise<number>;
+  /**
+   * Put back to 'pending' the items this sweep had STOPPED (#1665), for the
+   * bookings in the new snapshot. Returns how many rows that changed.
+   *
+   * Needed because `addItems` ignores duplicates: a stopped item already exists,
+   * so re-snapshotting adds nothing and the sweep would gain no work and never be
+   * reactivated. That is a silent nothing, which is the amnesiac failure this
+   * layer exists to remove. Conditional on 'cancelled' at the database, so it can
+   * never resurrect an item that MOVED and hand the same customer over twice.
+   */
+  reArmCancelledItems(jobId: string, bookingIds: string[]): Promise<number>;
   /** Put a job back to 'active' so the drain picks it up again. */
   reactivateJob(jobId: string): Promise<void>;
 }
@@ -81,9 +97,15 @@ export async function enqueueCoverageSweep(
   if (bookingIds.length === 0) return { jobId: existing.id, itemCount: 0 };
 
   const added = await deps.addItems(existing.id, bookingIds);
+  // A sweep this request's own cancellation (or a narrowing modification) stopped
+  // (#1665). Re-approving the SAME window is a deliberate new decision, so the
+  // appointments that were stopped are exactly the ones that should move now, and
+  // they are already items, so `addItems` reports nothing. Re-arming them is what
+  // keeps "cancel, then approve again" from being a sweep that queues silence.
+  const reArmed = await deps.reArmCancelledItems(existing.id, bookingIds);
   // Only reactivate a job that actually gained pending work. Flipping a drained
   // job back to 'active' with nothing pending would recreate the stuck state this
   // exists to prevent, since nothing would ever flip it back to 'done'.
-  if (added > 0) await deps.reactivateJob(existing.id);
+  if (added + reArmed > 0) await deps.reactivateJob(existing.id);
   return { jobId: existing.id, itemCount: bookingIds.length };
 }

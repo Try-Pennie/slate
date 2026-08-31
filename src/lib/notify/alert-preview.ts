@@ -84,6 +84,7 @@ import {
   oooCalendarCreateBothFailedAlert,
   oooManagerCalendarAlert,
   oooUndoAgentAlert,
+  oooCoverageStopAlert,
   oooUndoManagerAlert,
 } from "@/lib/ooo/alert-copy";
 import {
@@ -1864,6 +1865,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: oooUndoManagerAlert("req_9f2", "404 notFound") },
   { key: "ooo_undo", state: "undoing the agent event failed", channel: "alert",
     text: oooUndoAgentAlert("req_9f2", "404 notFound") },
+  { key: "ooo_coverage_stop", state: "the sweep could not be stopped after the request was closed",
+    channel: "alert", text: oooCoverageStopAlert("req_9f2", "count failed [cancel-pending-coverage-items]") },
 ];
 
 /** Previews grouped by key, in catalog order, for a renderer. */

@@ -25,6 +25,9 @@ const calls = {
   jobLookupFilters: [] as Array<[string, unknown]>,
   itemsUpserted: [] as Row[][],
   reactivated: [] as string[],
+  /** The filter columns of each bulk_reassign_items UPDATE, so the re-arm's own
+   *  conditions are visible rather than inferred (#1665). */
+  itemsUpdated: [] as string[][],
 };
 /** Postgres unique violation, i.e. this sweep already exists. */
 let insertConflicts = false;
@@ -67,12 +70,26 @@ function chain(table: string) {
     calls.itemsUpserted.push(rows);
     return { select: async () => ({ data: rows.map((_, i) => ({ id: `item${i}` })), error: null }) };
   };
-  self.update = () => ({
-    eq: async (_col: string, val: string) => {
-      calls.reactivated.push(val);
-      return { error: null };
-    },
-  });
+  // An update chain that can carry more than one filter, because the re-arm of
+  // items a cancellation stopped (#1665) is update -> eq(job) -> in(bookings) ->
+  // eq(status) and answers with a count. Thenable so it resolves at whatever point
+  // the caller awaits it.
+  self.update = () => {
+    const filters: Array<[string, unknown]> = [];
+    const upd: Record<string, unknown> = {};
+    upd.eq = (col: string, val: unknown) => {
+      filters.push([col, val]);
+      return upd;
+    };
+    upd.in = () => upd;
+    upd.then = (resolve: (value: { error: null; count: number }) => void) => {
+      const id = filters.find(([col]) => col === "id");
+      if (table === "bulk_reassign_jobs" && id) calls.reactivated.push(String(id[1]));
+      if (table === "bulk_reassign_items") calls.itemsUpdated.push(filters.map(([c]) => c));
+      resolve({ error: null, count: 0 });
+    };
+    return upd;
+  };
   return self;
 }
 
@@ -101,6 +118,7 @@ beforeEach(() => {
   calls.jobLookupFilters.length = 0;
   calls.itemsUpserted.length = 0;
   calls.reactivated.length = 0;
+  calls.itemsUpdated.length = 0;
   insertConflicts = false;
   existingJob = null;
   snapshotRows = [...SNAPSHOT];
