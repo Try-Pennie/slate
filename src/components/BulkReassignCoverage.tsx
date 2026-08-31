@@ -42,11 +42,19 @@ export default function BulkReassignCoverage({
   agentId,
   agentName,
   reassignReasons,
+  initialJobId,
 }: {
   agentId: string;
   agentName: string;
   /** Active reassign reason options, resolved from the store server-side (#346). */
   reassignReasons: ReasonOption[];
+  /**
+   * A sweep to open ON, rather than the start form (#1239). The time off queue links
+   * here with the job an approval enqueued, so whoever was told in Slack that a dozen
+   * appointments are moving can watch them land. The progress read is scoped to this
+   * agent server-side, so a job belonging to somebody else 404s rather than showing.
+   */
+  initialJobId?: string;
 }) {
   const base = `/api/admin/agents/${agentId}/bulk-reassign`;
   const today = new Date().toISOString().slice(0, 10);
@@ -65,7 +73,7 @@ export default function BulkReassignCoverage({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(initialJobId ?? null);
   const [progress, setProgress] = useState<BulkReassignProgress | null>(null);
   const [pollFailures, setPollFailures] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);

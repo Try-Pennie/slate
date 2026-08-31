@@ -96,3 +96,26 @@ describe("BulkReassignCoverage", () => {
     expect(screen.queryByText(/Reassign complete/)).toBeNull();
   });
 });
+
+// #1239: the time off queue links straight to the sweep a request enqueued, so the
+// panel has to open ON that job rather than on an empty start form. Without this the
+// link lands on a page showing no sign of the sweep the manager was just told about.
+describe("BulkReassignCoverage opened on an existing job (#1239)", () => {
+  it("polls the job it was given and shows its progress", async () => {
+    render(
+      <BulkReassignCoverage
+        agentId="out1"
+        agentName="Adam"
+        reassignReasons={REASSIGN_REASONS}
+        initialJobId="job1"
+      />,
+    );
+
+    await waitFor(() =>
+      expect(http.getJson).toHaveBeenCalledWith("/api/admin/agents/out1/bulk-reassign?jobId=job1"),
+    );
+    // The progress view, not the start form: the panel is reporting, not offering.
+    expect((await screen.findAllByText(/Couldn't place/i)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /start coverage reassign/i })).toBeNull();
+  });
+});

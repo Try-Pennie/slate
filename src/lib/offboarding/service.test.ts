@@ -226,6 +226,31 @@ describe("the offboarding API sweeps the departed agent's appointments (#1241)",
     expect(res).toMatchObject({ status: "applied", coverageSweep: "queued" });
   });
 
+  // #1239 put a coverage line on the time-off manager notice and an edit on the
+  // manager's Slack message reporting what moved. Both hang off an ooo_requests
+  // row: the notice is addressed to that request's manager of record, and the
+  // admin queue's link to a sweep is keyed on `ooo_request_id`.
+  //
+  // An offboarding sweep has no request and no human anywhere in the call, so it
+  // must never carry one. If it did, the notice path would be handed a sweep with
+  // nobody to address and a queue row would link to a request that does not exist.
+  // Asserted on the enqueue arguments rather than on "no Slack call happened",
+  // because a module that never imports Slack cannot call it and a test written
+  // that way passes for a reason unrelated to what it claims (L159).
+  it("carries no time off request, which is what would pull it into the manager notice path", async () => {
+    row = { id: "u9", deactivated_at: null };
+    booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 2 });
+
+    await applyLifecycleByEmail("leaver@trypennie.com", "deactivate");
+
+    const args = booking.startBulkReassign.mock.calls[0][0];
+    expect(args.oooRequestId ?? null).toBeNull();
+    expect(args.actor).toBeNull();
+    // And it still says WHY it has no actor, which is the one thing that makes an
+    // unattributed sweep legal (#1241).
+    expect(typeof args.offboardingDeactivatedAtIso).toBe("string");
+  });
+
   it("reports none, not queued, when the agent held nothing to move", async () => {
     row = { id: "u9", deactivated_at: null };
     booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 0 });

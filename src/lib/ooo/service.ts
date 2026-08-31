@@ -10,7 +10,7 @@ import {
   deleteEventOnCalendar,
 } from "@/lib/google/calendar";
 import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
-import { startBulkReassign } from "@/lib/booking/service";
+import { previewBulkReassign, startBulkReassign } from "@/lib/booking/service";
 import {
   dmSlackUserByEmail,
   postSlack,
@@ -41,7 +41,10 @@ const OOO_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
  * Supabase, Google Calendar, Slack, or Cal.com. The logic lives in
  * `orchestration.ts` and is exercised by `scripts/test-ooo-orchestration.ts`.
  */
-function realDeps(): OooDeps {
+// Exported so the wiring itself can be tested (#1239): the orchestration suite
+// drives in-memory fakes, which proves the flow and says nothing about whether these
+// bindings do what the flow assumes (L3).
+export function realDeps(): OooDeps {
   const db = supabaseAdmin;
   return {
     loadRequest: async (id) => {
@@ -191,7 +194,7 @@ function realDeps(): OooDeps {
     // `oooRequestId` is what makes it idempotent: re-approving or retrying converges on one
     // sweep rather than moving customers' bookings twice.
     startCoverageSweep: async ({ requestId, outUserId, startIso, endIso, createdBy }) => {
-      const { itemCount } = await startBulkReassign({
+      const { itemCount, snapshot } = await startBulkReassign({
         outUserId,
         rangeStartIso: startIso,
         rangeEndIso: endIso,
@@ -199,7 +202,32 @@ function realDeps(): OooDeps {
         actor: { userId: createdBy, actingAsUserId: null },
         oooRequestId: requestId,
       });
-      return itemCount;
+      // The same rows the sweep snapshotted, so the manager's notice describes the work
+      // that was queued rather than the answer a second query would give a moment later
+      // (#1239).
+      return {
+        queued: itemCount,
+        moves: snapshot.map((b) => ({
+          startsAtIso: b.starts_at,
+          endsAtIso: b.ends_at,
+          attendeeName: b.attendee_name,
+        })),
+      };
+    },
+
+    // #1239: how many appointments approving would move, for the pending notice.
+    //
+    // NULL on a read error, never 0. The notice stays silent on zero, so a swallowed
+    // failure would render as "nothing will move" on the one screen where a manager is
+    // deciding whether to approve. Reads through previewBulkReassign, which is the same
+    // selection the sweep itself uses.
+    countCoverageBookings: async ({ outUserId, startIso, endIso }) => {
+      try {
+        return await previewBulkReassign(outUserId, startIso, endIso);
+      } catch (err) {
+        log.error("ooo", { msg: "coverage preview count failed", user_id: outUserId }, err);
+        return null;
+      }
     },
 
     calcomAddOverrides: async (email, startIso, endIso) =>

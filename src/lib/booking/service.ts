@@ -57,6 +57,7 @@ import {
   loadPendingBulkReassignItems,
   loadUserOrgId,
   markBulkReassignJobDoneIfDrained,
+  type CoverageBookingRow,
 } from "@/lib/booking/bulk-reassign-store";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
@@ -2235,7 +2236,7 @@ export interface StartBulkReassignInput {
  */
 export async function startBulkReassign(
   input: StartBulkReassignInput,
-): Promise<{ jobId: string; itemCount: number }> {
+): Promise<{ jobId: string; itemCount: number; snapshot: CoverageBookingRow[] }> {
   // A sweep moves customers' appointments, so it may only go unattributed when it
   // can say why. Refused here, at the one place every sweep is created, rather
   // than at the drain, where the job row already exists and the bookings are

@@ -12,6 +12,13 @@ import {
   oooUndoAgentAlert,
 } from "./alert-copy.ts";
 import {
+  approvedCoverageLine,
+  cancelledCoverageLine,
+  pendingCoverageLine,
+  type CoverageMove,
+  type CoverageSweepState,
+} from "./coverage-notice-copy.ts";
+import {
   agentDisplayName,
   managerDisplayName,
   canCancel,
@@ -105,6 +112,25 @@ export type OooBusyBlockInsert = {
 /** Coordinates of a posted Slack message, so it can be edited later. */
 export type SlackRef = { channel: string; ts: string };
 
+/**
+ * What one coverage sweep enqueued (#1237 for the count, #1239 for the detail).
+ *
+ * `queued` is what the enqueue itself reported, and it is the number the manager is
+ * told. `moves` is the same work described appointment by appointment, so the notice
+ * can NAME the ones starting within the next couple of hours; nothing else reads it,
+ * and it never decides what moves.
+ *
+ * Named REPORT rather than Outcome because `src/lib/offboarding/service.ts` already
+ * exports a `CoverageSweepOutcome`, and it is a different thing entirely (the string
+ * "queued" | "none" | "failed" that the lifecycle API answers with). One name across
+ * two modules gets read as one concept (L263), and these two would then be assumed
+ * interchangeable by whoever meets the second one.
+ */
+export interface CoverageSweepReport {
+  queued: number;
+  moves: CoverageMove[];
+}
+
 export interface OooDeps {
   loadRequest(id: string): Promise<OooRequest | null>;
   /** A user's still-active (pending/approved) requests, for overlap checks. */
@@ -146,7 +172,26 @@ export interface OooDeps {
     /** The approving or retrying actor. Never null: both call sites have one, and a sweep
      *  that moves customers' bookings should name a person in its audit trail. */
     createdBy: string;
-  }): Promise<number>;
+  }): Promise<CoverageSweepReport>;
+
+  /**
+   * How many of this agent's upcoming appointments fall in the window and would move
+   * on approval (#1239), for the manager's PENDING notice.
+   *
+   * `null`, never 0, when the count could not be read. Zero is silence on the notice,
+   * and a manager reads silence as "nothing will move", so an unreadable read has to
+   * stay distinguishable all the way to the sentence (AGENTS.md, "Ask what the EMPTY
+   * result means downstream").
+   *
+   * Answers the SAME question as the sweep's own selection (`movesUnderCoverage`), so
+   * it reads through the same predicate rather than a second definition of "needs
+   * covering" (L16).
+   */
+  countCoverageBookings(args: {
+    outUserId: string;
+    startIso: string;
+    endIso: string;
+  }): Promise<number | null>;
 
   /** The agent's primary calendar id from agent_calendars (fallback "primary"). */
   agentPrimaryCalendarId(userId: string): Promise<string>;
@@ -375,12 +420,18 @@ function managerNotice(
   deps: OooDeps,
   heading: string,
   status: keyof typeof STATUS_LINE,
+  /** The coverage line for this status (#1239), or null when there is nothing to
+   *  say about the customer appointments. Built by the pure builders in
+   *  coverage-notice-copy.ts, never assembled here, so every state is readable in
+   *  one place (L41). */
+  coverage?: string | null,
 ): string {
   return (
     `*${heading}* from ${agentDisplayName(agent)}\n` +
     `${STATUS_LINE[status]}\n` +
     `${formatRequestWhenAndReason(request)}` +
     (request.notes ? `\nNotes: ${request.notes}` : "") +
+    (coverage ? `\n${coverage}` : "") +
     `\n<${reviewUrl(deps, request.id)}|Review it here>`
   );
 }
@@ -391,7 +442,22 @@ async function notifyManagerOfPending(
   heading: string,
   deps: OooDeps,
 ): Promise<void> {
-  const text = managerNotice(request, agent, deps, heading, "pending");
+  // Read here rather than at the call sites, so the fresh notice `modifyOoo` posts
+  // recomputes by construction: an edited request carrying the submit-time number
+  // would be stale twice over, on a window that no longer exists.
+  const willMove = await deps.countCoverageBookings({
+    outUserId: request.user_id,
+    startIso: request.starts_at,
+    endIso: request.ends_at,
+  });
+  const text = managerNotice(
+    request,
+    agent,
+    deps,
+    heading,
+    "pending",
+    pendingCoverageLine(willMove),
+  );
   const namedManager = request.manager_id
     ? await deps.getUser(request.manager_id)
     : null;
@@ -454,11 +520,12 @@ async function updateManagerStatus(
   agent: User,
   deps: OooDeps,
   status: keyof typeof STATUS_LINE,
+  coverage?: string | null,
 ): Promise<void> {
   if (!request.slack_channel || !request.slack_ts) return;
   await deps.editMessage(
     { channel: request.slack_channel, ts: request.slack_ts },
-    managerNotice(request, agent, deps, "Time off request", status),
+    managerNotice(request, agent, deps, "Time off request", status, coverage),
   );
 }
 
@@ -533,7 +600,7 @@ async function runPostApproval(
   /** `actorId` is who approved or retried, recorded as the sweep's creator so the reassign
    *  audit names a person rather than the system (#1237). */
   opts: { notifyAgent: boolean; actorId: string },
-): Promise<OooRequest> {
+): Promise<{ request: OooRequest; coverage: CoverageSweepState }> {
   const effects: Record<string, string> = { ...request.side_effects };
   const patch: Partial<OooRequest> = {};
   const eventArgs: OooEventArgs = {
@@ -759,9 +826,14 @@ async function runPostApproval(
   //    id for, and the enqueue is idempotent by a database key on (request, window) anyway, so
   //    the marker is a cheap first gate rather than the only guard. Re-running would also move
   //    customers' bookings a second time, which is not a harmless duplicate.
+  //
+  //    The outcome is also RETURNED, not just recorded (#1239): the manager's message is
+  //    edited to say what actually moved, and reading that back out of the recorded
+  //    "ok (3 queued)" string would be re-deriving a fact from its own rendering.
+  let coverage: CoverageSweepState = { kind: "already" };
   if (!effects[EFFECTS.coverage]?.startsWith("ok")) {
     try {
-      const queued = await deps.startCoverageSweep({
+      const outcome = await deps.startCoverageSweep({
         requestId: request.id,
         outUserId: agent.id,
         // The request's OWN bounds, exact timestamps rather than whole days, so a half day
@@ -770,18 +842,21 @@ async function runPostApproval(
         endIso: request.ends_at,
         createdBy: opts.actorId,
       });
+      coverage = { kind: "queued", queued: outcome.queued, moves: outcome.moves };
       // Nothing to move is a measured answer and reads differently from a failure: one needs
       // no action, the other is retryable (L11).
       effects[EFFECTS.coverage] =
-        queued > 0 ? `ok (${queued} queued)` : "ok (none in window)";
+        outcome.queued > 0 ? `ok (${outcome.queued} queued)` : "ok (none in window)";
     } catch (e) {
-      effects[EFFECTS.coverage] = `failed: ${shortReason(e)}`;
+      const reason = shortReason(e);
+      coverage = { kind: "failed", reason };
+      effects[EFFECTS.coverage] = `failed: ${reason}`;
     }
   }
 
   patch.side_effects = effects;
   await deps.patchRequest(request.id, patch);
-  return { ...request, ...patch };
+  return { request: { ...request, ...patch }, coverage };
 }
 
 /** One line, no stack: side_effects is read by a person in an admin panel, and a pasted
@@ -876,11 +951,24 @@ export async function approveOoo(
 
   const agent = await deps.getUser(request.user_id);
   if (!agent) return fail("The requesting agent no longer exists.");
-  const updated = await runPostApproval(flipped.request, agent, deps, {
+  const { request: updated, coverage } = await runPostApproval(flipped.request, agent, deps, {
     notifyAgent: true,
     actorId: actor.id,
   });
-  await updateManagerStatus(request, agent, deps, "approved");
+  // The edit reports what the sweep ACTUALLY did, and names anything starting soon
+  // enough that somebody should also phone the customer (#1239). Built from the
+  // finished outcome, so the message and the record cannot disagree (L78).
+  await updateManagerStatus(
+    request,
+    agent,
+    deps,
+    "approved",
+    approvedCoverageLine(coverage, {
+      nowIso: deps.nowIso(),
+      tzId: request.display_tz_id,
+      tzLabel: request.display_tz_label,
+    }),
+  );
   return { ok: true, request: updated };
 }
 
@@ -960,11 +1048,17 @@ export async function cancelOoo(
     details: { was_approved: wasApproved },
   });
 
+  // Appointments the sweep already moved stay with the covering advisor (#1219
+  // decision 4): the customer has been told twice by then and the covering advisor
+  // holds the slot under their own cap. Said out loud on both messages, so it is a
+  // decision the reader was told rather than one they find out about.
+  const coverageNote = cancelledCoverageLine(wasApproved);
   await deps.dmUserByEmail(
     agent.email,
-    `Your time off request for ${whenLineFor(request)} was cancelled.`,
+    `Your time off request for ${whenLineFor(request)} was cancelled.` +
+      (coverageNote ? `\n\n${coverageNote}` : ""),
   );
-  await updateManagerStatus(request, agent, deps, "cancelled");
+  await updateManagerStatus(request, agent, deps, "cancelled", coverageNote);
   if (!wasApproved && request.manager_id) {
     const manager = await deps.getUser(request.manager_id);
     if (manager) {
@@ -1113,7 +1207,7 @@ export async function retryOooSideEffects(
     targetUserId: request.user_id,
     requestId,
   });
-  const updated = await runPostApproval(request, agent, deps, {
+  const { request: updated } = await runPostApproval(request, agent, deps, {
     notifyAgent: false,
     actorId: actor.id,
   });

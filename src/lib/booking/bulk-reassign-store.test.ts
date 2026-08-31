@@ -9,6 +9,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // see it: that layer is deliberately key-agnostic.
 //
 // Supabase is mocked, so this is vitest rather than a node script.
+//
+// #1239 landed on the same function: it hands the caller back the ROWS it
+// snapshotted, so the manager's notice can say what is moving and name the
+// appointments starting within the next couple of hours. The two changes met in one
+// function, and a resolution keeping only one of them would still typecheck and
+// still pass everything else, because the offboarding cases below never look at the
+// snapshot and the notice suites never enqueue an offboarding sweep. So both halves
+// are asserted here, together, on both the ordinary and the conflict path.
 
 type Row = Record<string, unknown>;
 
@@ -21,7 +29,18 @@ const calls = {
 /** Postgres unique violation, i.e. this sweep already exists. */
 let insertConflicts = false;
 let existingJob: { id: string } | null = null;
-let snapshotIds: string[] = ["bk1", "bk2"];
+/** What the snapshot query reads: the ids the items are made from, plus the fields
+ *  the manager's notice describes each appointment with (#1239). */
+let snapshotRows: Array<{
+  id: string;
+  starts_at: string;
+  ends_at: string;
+  attendee_name: string | null;
+}> = [];
+const SNAPSHOT: typeof snapshotRows = [
+  { id: "bk1", starts_at: "2026-09-01T14:00:00Z", ends_at: "2026-09-01T14:30:00Z", attendee_name: "Jane" },
+  { id: "bk2", starts_at: "2026-09-01T16:00:00Z", ends_at: "2026-09-01T16:30:00Z", attendee_name: null },
+];
 
 function chain(table: string) {
   const self: Record<string, unknown> = {};
@@ -34,7 +53,7 @@ function chain(table: string) {
     if (table === "bulk_reassign_jobs") calls.jobLookupFilters.push([col, val]);
     return self;
   };
-  self.range = async () => ({ data: snapshotIds.map((id) => ({ id })), error: null });
+  self.range = async () => ({ data: snapshotRows, error: null });
   self.maybeSingle = async () => ({ data: existingJob, error: null });
   self.single = async () =>
     insertConflicts
@@ -84,14 +103,14 @@ beforeEach(() => {
   calls.reactivated.length = 0;
   insertConflicts = false;
   existingJob = null;
-  snapshotIds = ["bk1", "bk2"];
+  snapshotRows = [...SNAPSHOT];
 });
 
 describe("an offboarding coverage sweep is keyed on the deactivation (#1241)", () => {
   it("stamps the deactivation on the job row, so the unique index has something to bite on", async () => {
     const res = await createBulkReassignJob(offboardingInput);
 
-    expect(res).toEqual({ jobId: "job-new", itemCount: 2 });
+    expect(res).toEqual({ jobId: "job-new", itemCount: 2, snapshot: SNAPSHOT });
     expect(calls.inserted[0]).toMatchObject({
       out_user_id: "u9",
       offboarding_deactivated_at: DEACTIVATED_AT,
@@ -125,6 +144,10 @@ describe("an offboarding coverage sweep is keyed on the deactivation (#1241)", (
     // (job row inserted, items not) still ends up with its work (#1235).
     expect(calls.itemsUpserted[0].map((r) => r.booking_id)).toEqual(["bk1", "bk2"]);
     expect(calls.reactivated).toEqual(["job-existing"]);
+    // And the rows come back out of the conflict branch as well, which returns
+    // through different code than the ordinary one. This is the half a merge could
+    // drop in silence: everything above would still pass (#1239).
+    expect(res.snapshot).toEqual(SNAPSHOT);
   });
 
   // The failure path of the conflict path. The index said a row exists; if the
@@ -148,5 +171,20 @@ describe("an offboarding coverage sweep is keyed on the deactivation (#1241)", (
       offboarding_deactivated_at: null,
       created_by: "admin1",
     });
+  });
+
+  it("describes the work whatever the sweep is keyed on", async () => {
+    const res = await createBulkReassignJob({
+      ...offboardingInput,
+      createdBy: "mgr1",
+      offboardingDeactivatedAtIso: null,
+      oooRequestId: "req1",
+      rangeEndIso: "2026-09-01T21:00:00Z",
+    });
+
+    expect(calls.inserted[0]).toMatchObject({ ooo_request_id: "req1" });
+    // The notice reads these: a time and an attendee per appointment, not just a
+    // count, so it can name the one starting within the next couple of hours.
+    expect(res.snapshot).toEqual(SNAPSHOT);
   });
 });
