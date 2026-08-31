@@ -2,10 +2,16 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
+import { resolveManagerSync } from "@/lib/salesforce/manager-sync";
 import {
-  matchByInitialLastName,
-  resolveManagerSync,
-} from "@/lib/salesforce/manager-sync";
+  exactNameMatch,
+  initialLastNameMatch,
+  mergeManagerNamePlans,
+  planManagerNames,
+  splitUnresolvedByAmbiguity,
+  type ManagerNamePlan,
+  type SfManagerCandidate,
+} from "@/lib/salesforce/manager-link";
 import { reapableUserIds } from "@/lib/salesforce/reap";
 import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
 import { chunkSoqlValues, sfInList } from "@/lib/salesforce/soql";
@@ -151,6 +157,24 @@ function idCandidates(rows: SfUser[]): SfIdCandidate[] {
   return out;
 }
 
+/**
+ * One Salesforce record as the manager-name planner needs to see it (#1653).
+ *
+ * The two name queries ask for different fields (the exact pass asks for `Name`,
+ * the fallback for `FirstName`/`LastName`), so each candidate carries whichever it
+ * has and the matcher decides which it needs. The Id rides along because it is
+ * what tells the same record arriving twice apart from two people sharing a name.
+ */
+function toManagerCandidate(u: SfUser): SfManagerCandidate {
+  return {
+    name: u.Name ?? "",
+    firstName: u.FirstName ?? "",
+    lastName: u.LastName ?? "",
+    email: u.Email ?? "",
+    salesforceRecordId: (u.Id ?? "").trim() || null,
+  };
+}
+
 function toAttributes(u: SfUser): Attributes {
   const debt = DEBT.filter(([f]) => u[f]).map(([, v]) => v);
   const backend = BACKEND.filter(([f]) => u[f]).map(([, v]) => v);
@@ -175,11 +199,30 @@ export interface SyncResult {
    */
   managersUnlinked: number;
   /**
-   * Agents whose Salesforce manager NAME could not be resolved to a Slate user, so
-   * the sync deliberately left the row alone. Counted because this is the case
-   * where doing nothing is correct and therefore invisible.
+   * Agents whose Salesforce manager NAME matched NOBODY, so the sync deliberately
+   * left the row alone. Counted because this is the case where doing nothing is
+   * correct and therefore invisible.
+   *
+   * Since #1653 this counts ONLY the no-match refusal. Many matches is
+   * `managersAmbiguous`, because the two need opposite things done about them.
    */
   managersUnresolved: number;
+  /**
+   * Agents whose Salesforce manager NAME matched MORE THAN ONE Salesforce user,
+   * so no link was written and any existing one was left alone (#1653).
+   *
+   * Counted per AGENT rather than per duplicated name, because the number a reader
+   * has to act on is how many PEOPLE have no settled approver.
+   */
+  managersAmbiguous: number;
+  /**
+   * How many distinct picklist NAMES answered to more than one Salesforce user
+   * (#1653). Reported beside the agent count because the two are very different
+   * situations at the same agent count: one shared name over a whole team is one
+   * Salesforce edit, fifteen shared names is a roster problem, and editing those
+   * values is the entire remedy.
+   */
+  managerNamesAmbiguous: number;
   managersPromoted: number;
   /**
    * The shared cross system rep key (#1587). Every one of these except
@@ -298,7 +341,18 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       sfUsers.map((u) => (u.Agent_Manager__c ?? "").trim()).filter(Boolean),
     ),
   ];
-  const nameToEmail = new Map<string, string>();
+  //
+  // Exactly one Salesforce user answering to the name LINKS. Zero and many are
+  // both refusals, and they are DIFFERENT refusals (#1653, L521, L11): before
+  // this, many matches kept the first record and discarded the rest with no
+  // record at all, which is a coin flip deciding who approves somebody's time
+  // off while every surface downstream reads as healthy. The decision itself is
+  // pure and lives in `manager-link.ts`.
+  let namePlan: ManagerNamePlan = {
+    resolved: new Map<string, string>(),
+    ambiguous: [],
+    unmatched: [],
+  };
   if (managerNames.length) {
     const mgrRecords = await queryAll(
       instanceUrl,
@@ -306,22 +360,26 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       `SELECT Id, Name, Email FROM User WHERE Name IN (${sfInList(managerNames)}) AND Email != null`,
     );
     sfIdCandidates.push(...idCandidates(mgrRecords));
-    for (const m of mgrRecords) {
-      const nm = (m.Name ?? "").trim();
-      const em = (m.Email ?? "").toLowerCase();
-      if (nm && em && !nameToEmail.has(nm)) nameToEmail.set(nm, em);
-    }
+    namePlan = planManagerNames(
+      managerNames,
+      mgrRecords.map(toManagerCandidate),
+      exactNameMatch,
+    );
   }
 
   // Fallback for informal picklist names (e.g. "Mike Dugan" vs the user
-  // "Michael Dugan"): match unresolved names by last name + first initial, but
-  // only when exactly one active user matches, so it never links to the wrong
-  // person.
-  const unresolved = managerNames.filter((n) => !nameToEmail.has(n));
-  if (unresolved.length) {
+  // "Michael Dugan"): match by last name + first initial, but only when exactly
+  // one active user matches, so it never links to the wrong person.
+  //
+  // It sees ONLY names the exact pass matched NOTHING at all for. An ambiguous
+  // name is a refusal, and retrying a refusal with a matcher that needs LESS
+  // evidence is exactly the "aim at a nearby candidate" failure the refusal
+  // exists to prevent (L75). It would also be silent: the weaker match would
+  // overturn the stronger refusal and nothing would say so.
+  if (namePlan.unmatched.length) {
     const lastNames = [
       ...new Set(
-        unresolved
+        namePlan.unmatched
           .map((n) => n.trim().split(/\s+/).pop() ?? "")
           .filter(Boolean),
       ),
@@ -332,18 +390,17 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       `SELECT Id, FirstName, LastName, Email FROM User WHERE IsActive = true AND Email != null AND LastName IN (${sfInList(lastNames)})`,
     );
     sfIdCandidates.push(...idCandidates(nameRows));
-    const candidates = nameRows
-      .map((c) => ({
-        firstName: c.FirstName ?? "",
-        lastName: c.LastName ?? "",
-        email: c.Email ?? "",
-      }))
-      .filter((c) => c.firstName && c.lastName && c.email);
-    for (const name of unresolved) {
-      const em = matchByInitialLastName(name, candidates);
-      if (em) nameToEmail.set(name, em);
-    }
+    namePlan = mergeManagerNamePlans(
+      namePlan,
+      planManagerNames(
+        namePlan.unmatched,
+        nameRows.map(toManagerCandidate),
+        initialLastNameMatch,
+      ),
+    );
   }
+  const nameToEmail = namePlan.resolved;
+  const ambiguousNames = namePlan.ambiguous.map((a) => a.name);
 
   // Resolve agent->manager and create any manager who isn't already a Slate
   // user so manager_id can reference them. Managers come in role='manager',
@@ -441,14 +498,36 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     if (error) throw new Error(`SF manager unlink batch failed: ${error.message}`);
     managersUnlinked = pendingClears.length;
   }
-  if (plan.unresolved.length) {
+  // The two refusals, said separately (#1653, L11). `resolveManagerSync` sees
+  // only "Salesforce named a manager and we have no email for them", which is the
+  // same value for both, so the split is made here against the names the planner
+  // refused. One number covering both would tell a reader neither: an unmatched
+  // name is a picklist value somebody can correct in a minute, a shared name may
+  // be pointing an approval at the wrong person.
+  const managerRefusals = splitUnresolvedByAmbiguity(plan.unresolved, ambiguousNames);
+  if (managerRefusals.missing.length) {
     // The case where the sync deliberately does nothing. Logged because an
     // unresolvable manager name and an agent who genuinely has no manager are
     // otherwise the same silence, and this one is a config gap somebody can fix.
     log.warn("sf-sync", {
-      msg: "manager name could not be resolved, link left unchanged",
-      count: plan.unresolved.length,
-      names: [...new Set(plan.unresolved)].slice(0, 10).join(", "),
+      msg: "manager name matched no Salesforce user, link left unchanged",
+      count: managerRefusals.missing.length,
+      names: [...new Set(managerRefusals.missing)].slice(0, 10).join(", "),
+    });
+  }
+  if (managerRefusals.ambiguous.length) {
+    // Distinct wording, because this one is not a gap: the name is there and it
+    // answers to more than one person, so nothing here can say which of them
+    // approves this rep's time off. The picklist VALUES are named (they are
+    // Salesforce config, and the whole remedy is editing them); the people are
+    // not, so a log search does not become a roster export (L222).
+    log.warn("sf-sync", {
+      msg: "manager name matched more than one Salesforce user, link left unchanged",
+      agents: managerRefusals.ambiguous.length,
+      names: namePlan.ambiguous
+        .map((a) => `${a.name} (${a.matchCount})`)
+        .slice(0, 10)
+        .join(", "),
     });
   }
 
@@ -617,7 +696,11 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     managersCreated: plan.managersToCreate.length,
     managersLinked,
     managersUnlinked,
-    managersUnresolved: plan.unresolved.length,
+    managersUnresolved: managerRefusals.missing.length,
+    managersAmbiguous: managerRefusals.ambiguous.length,
+    // Only the names an agent actually pointed at: a duplicated name nobody in the
+    // roster reports to is not a routing problem and must not page.
+    managerNamesAmbiguous: new Set(managerRefusals.ambiguous).size,
     managersPromoted,
     salesforceIdsLinked: idReport.linked,
     salesforceIdDisagreements: idReport.disagreements,

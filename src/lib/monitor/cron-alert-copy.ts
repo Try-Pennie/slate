@@ -64,6 +64,47 @@ export function salesforceUserIdConflictAlert(
   );
 }
 
+/**
+ * A manager of record could not be settled, because the Agent_Manager picklist
+ * name answers to more than one Salesforce user (#1653).
+ *
+ * Its own key rather than a fold into the user id conflicts above: that one is
+ * about the stored id column, and its all-clear says the roster agrees about user
+ * ids. Sharing a key would give two independent checks one status field, so
+ * clearing either would clear both (L53).
+ *
+ * @param agents How many PEOPLE have no settled approver (not how many names are
+ *   duplicated), because that is the number the reader has to act on.
+ * @param names  How many picklist values are duplicated, since editing those is
+ *   the whole remedy.
+ */
+export function salesforceManagerAmbiguousAlert(
+  agents: number,
+  names: number,
+): string {
+  return (
+    `${names} manager ${names === 1 ? "name" : "names"} in the Salesforce Agent_Manager ` +
+    `picklist ${names === 1 ? "answers" : "answer"} to more than one Salesforce user, so ` +
+    `${agents} ${agents === 1 ? "person has" : "people have"} no settled approver. Nothing ` +
+    `was changed, on purpose: choosing one of the matches would route their time off ` +
+    `approvals to somebody who may not be their manager, and every screen would still read ` +
+    `as correct. Any manager link they already had was left exactly as it was, so it may now ` +
+    `be out of date. Make the duplicated name unique in Salesforce, or point those people at ` +
+    `a name that is, and the next hourly sync settles it. The sync log line tagged sf-sync ` +
+    `names the picklist values.`
+  );
+}
+
+/** Every manager name answers to exactly one Salesforce user again. */
+export function salesforceManagerAmbiguousRecovery(): string {
+  return (
+    "Every manager name in the Salesforce Agent_Manager picklist now answers to exactly one " +
+    "Salesforce user, so the earlier page is cleared. Manager links are being kept in step " +
+    "with Salesforce again, and time off approvals route to the right person. No action is " +
+    "needed."
+  );
+}
+
 /** Every roster row agrees with Salesforce again. */
 export function salesforceUserIdConflictRecovery(): string {
   return (

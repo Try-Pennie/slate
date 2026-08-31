@@ -124,6 +124,8 @@ import {
 import {
   agentSyncFailureAlert,
   agentSyncRecovery,
+  salesforceManagerAmbiguousAlert,
+  salesforceManagerAmbiguousRecovery,
   salesforceUserIdConflictAlert,
   salesforceUserIdConflictRecovery,
   bucketSlotsStaleAlert,
@@ -1752,6 +1754,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: salesforceUserIdConflictAlert(3, 2, 4) },
   { key: "salesforce_user_id_conflicts", state: "the roster agrees again", channel: "recovery",
     text: salesforceUserIdConflictRecovery() },
+  // #1653. One duplicated name over a whole team is the shape this really takes
+  // (a manager carries roughly 15 reps), so the singular and the plural are both
+  // rendered: they read very differently on a phone.
+  { key: "salesforce_manager_ambiguous", state: "one name, one person affected", channel: "alert",
+    text: salesforceManagerAmbiguousAlert(1, 1) },
+  { key: "salesforce_manager_ambiguous", state: "one name, a whole team affected", channel: "alert",
+    text: salesforceManagerAmbiguousAlert(15, 1) },
+  { key: "salesforce_manager_ambiguous", state: "several duplicated names", channel: "alert",
+    text: salesforceManagerAmbiguousAlert(31, 2) },
+  { key: "salesforce_manager_ambiguous", state: "every manager name is unique again", channel: "recovery",
+    text: salesforceManagerAmbiguousRecovery() },
   { key: "recompute_headroom", state: "falling behind its budget", channel: "alert",
     text: recomputeHeadroomAlert(18, 64, 60, 98) },
   { key: "recompute_headroom", state: "caught up", channel: "recovery",

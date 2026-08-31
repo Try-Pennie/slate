@@ -1,7 +1,6 @@
 // Tests for the pure agent->manager resolution used by the Salesforce sync.
 // Run: node --experimental-strip-types scripts/test-salesforce-manager-sync.ts
 import {
-  matchByInitialLastName,
   resolveManagerSync,
   type SfAgentRef,
 } from "../src/lib/salesforce/manager-sync.ts";
@@ -173,34 +172,8 @@ const agent = (
   assert(plan.links.length === 0 && plan.clears.length === 0, "an agent with no email is skipped entirely");
 }
 
-// --- matchByInitialLastName: informal Agent_Manager picklist names ---
-const cands = [
-  { firstName: "Michael", lastName: "Dugan", email: "mdugan@x.com" },
-  { firstName: "Matt", lastName: "Rasmussen", email: "mrasmussen@x.com" },
-];
-assert(
-  matchByInitialLastName("Mike Dugan", cands) === "mdugan@x.com",
-  "informal 'Mike Dugan' resolves to Michael Dugan by initial+last",
-);
-assert(
-  matchByInitialLastName("Matthew Rasmussen", cands) === "mrasmussen@x.com",
-  "'Matthew Rasmussen' resolves to Matt Rasmussen",
-);
-assert(
-  matchByInitialLastName("Jane Doe", cands) === null,
-  "no match returns null",
-);
-assert(
-  matchByInitialLastName("Cher", cands) === null,
-  "single-token name returns null",
-);
-// Two people with the same initial + last name: never guess.
-assert(
-  matchByInitialLastName("Mike Dugan", [
-    ...cands,
-    { firstName: "Mary", lastName: "Dugan", email: "marydugan@x.com" },
-  ]) === null,
-  "ambiguous initial+last (Michael & Mary Dugan) does NOT resolve",
-);
+// The informal-name matcher moved to manager-link.ts in #1653, and its cases
+// moved with it to scripts/test-salesforce-manager-link.ts, where an ambiguous
+// name is now asserted to be REPORTED rather than to merely return null.
 
 finish();

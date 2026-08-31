@@ -485,3 +485,259 @@ describe("salesforce_user_id linking (#1587)", () => {
     await expect(syncSalesforceAgents()).rejects.toThrow(/user id link batch failed/);
   });
 });
+
+// #1653: the manager of record must be refused when the picklist name answers to
+// more than one Salesforce user.
+//
+// The planner's own rules are pinned offline (scripts/test-salesforce-manager-link.ts).
+// What is proved HERE is the wiring: that the sync refuses rather than taking the
+// first match, that it says WHICH refusal it made, that it never hands an ambiguous
+// name to the looser fallback matcher, that an existing correct link is not
+// disturbed, and that a second run over the same data writes nothing. The last one
+// is not a nicety: this is an hourly job, so "assume it runs twice" is the default.
+describe("manager name ambiguity (#1653)", () => {
+  /** Every manager_id write this run made, with the rows it targeted. */
+  const managerWrites = () =>
+    store.calls
+      .filter((c) => c.op === "update" && "manager_id" in (c.payload as object))
+      .map((c) => ({
+        managerId: (c.payload as { manager_id: string | null }).manager_id,
+        ids: c.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2],
+      }));
+
+  let sentQueries: string[] = [];
+  const soqlSent = () => sentQueries.slice();
+
+  /**
+   * Drives the sync with a Slate roster and whatever Salesforce answers. The two
+   * name queries are told apart by `LastName IN (` FIRST: the fallback query's
+   * text contains the exact query's `Name IN (` as a substring, so testing for the
+   * exact one first would answer both with the same records and hide the very
+   * hand-off this suite is about.
+   */
+  function arrange(opts: {
+    roster: Record<string, unknown>[];
+    existing?: Record<string, unknown>[];
+    debtTeam: Record<string, unknown>[];
+    byName?: Record<string, unknown>[];
+    byLastName?: Record<string, unknown>[];
+  }) {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    sentQueries = [];
+    store.config.existing = opts.existing ?? [];
+    store.config.afterInsert = opts.roster;
+    store.config.reapable = [];
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return {
+          ok: true,
+          json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }),
+        };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      sentQueries.push(q);
+      if (q.includes("IsActive = true AND (")) return sfResponse(opts.debtTeam);
+      if (q.includes("LastName IN (")) return sfResponse(opts.byLastName ?? []);
+      if (q.includes("Name IN (")) return sfResponse(opts.byName ?? []);
+      return sfResponse([]);
+    });
+  }
+
+  const agentRow = (over: Record<string, unknown> = {}) => ({
+    id: "u1",
+    email: "a@x.com",
+    manager_id: null,
+    role: "agent",
+    salesforce_user_id: null,
+    ...over,
+  });
+
+  it("links NOTHING when the picklist name answers to two Salesforce users", async () => {
+    arrange({
+      roster: [
+        agentRow(),
+        { id: "u3", email: "mona1@x.com", manager_id: null, role: "manager", salesforce_user_id: null },
+      ],
+      debtTeam: [
+        { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+      ],
+      byName: [
+        { Id: "005M1", Name: "Mona Manager", Email: "mona1@x.com" },
+        { Id: "005M2", Name: "Mona Manager", Email: "mona2@x.com" },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    // The defect: the old code kept the FIRST match, so u1 was linked to mona1
+    // and nothing anywhere said a second person answered to the same name.
+    expect(managerWrites()).toHaveLength(0);
+    expect(result.managersLinked).toBe(0);
+    expect(result.managersAmbiguous).toBe(1);
+    // Many matches is a refusal in its own right, never reported as absence (L11).
+    expect(result.managersUnresolved).toBe(0);
+    // And no manager user is invented for either of them, which would leave a
+    // half-made row behind for a name the sync just refused.
+    const managerInserts = store.calls.filter(
+      (c) => c.op === "insert" && JSON.stringify(c.payload).includes("mona"),
+    );
+    expect(managerInserts).toHaveLength(0);
+  });
+
+  it("reports a name that matched NOBODY differently from one that matched several", async () => {
+    arrange({
+      roster: [agentRow()],
+      debtTeam: [
+        { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Nobody Matching", HighDebt__c: true },
+      ],
+      byName: [],
+      byLastName: [],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.managersUnresolved).toBe(1);
+    expect(result.managersAmbiguous).toBe(0);
+    expect(managerWrites()).toHaveLength(0);
+  });
+
+  it("does NOT hand an ambiguous name to the looser fallback matcher (L75)", async () => {
+    arrange({
+      roster: [agentRow()],
+      debtTeam: [
+        { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+      ],
+      byName: [
+        { Id: "005M1", Name: "Mona Manager", Email: "mona1@x.com" },
+        { Id: "005M2", Name: "Mona Manager", Email: "mona2@x.com" },
+      ],
+      // If the ambiguous name reached the fallback, this ONE candidate would
+      // resolve it and the refusal would be quietly overturned by a weaker match.
+      byLastName: [
+        { Id: "005M3", FirstName: "Mona", LastName: "Manager", Email: "mona3@x.com" },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    const lastNameQuery = soqlSent().find((q) => q.includes("LastName IN ("));
+    expect(lastNameQuery).toBeUndefined();
+    expect(result.managersLinked).toBe(0);
+    expect(result.managersAmbiguous).toBe(1);
+    expect(JSON.stringify(store.calls)).not.toContain("mona3@x.com");
+  });
+
+  it("leaves an EXISTING correct link exactly as it is when the name goes ambiguous", async () => {
+    arrange({
+      roster: [
+        agentRow({ manager_id: "u3" }),
+        { id: "u3", email: "mona1@x.com", manager_id: null, role: "manager", salesforce_user_id: null },
+      ],
+      existing: [
+        { id: "u1", email: "a@x.com", attributes: {}, salesforce_user_id: null },
+        { id: "u3", email: "mona1@x.com", attributes: {}, salesforce_user_id: null },
+      ],
+      debtTeam: [
+        { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+      ],
+      byName: [
+        { Id: "005M1", Name: "Mona Manager", Email: "mona1@x.com" },
+        { Id: "005M2", Name: "Mona Manager", Email: "mona2@x.com" },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    // Neither re-pointed nor cleared. "We could not work out who this is" must
+    // never be written down as "this person has no manager" (#1474).
+    expect(managerWrites()).toHaveLength(0);
+    expect(result.managersUnlinked).toBe(0);
+    expect(result.managersAmbiguous).toBe(1);
+  });
+
+  it("still links a name exactly one Salesforce user answers to", async () => {
+    arrange({
+      roster: [
+        agentRow(),
+        { id: "u3", email: "mona@x.com", manager_id: null, role: "manager", salesforce_user_id: null },
+      ],
+      debtTeam: [
+        { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+      ],
+      byName: [{ Id: "005M1", Name: "Mona Manager", Email: "mona@x.com" }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    const written = managerWrites().filter((w) => w.managerId === "u3");
+    expect(written).toHaveLength(1);
+    expect(written[0].ids).toEqual(["u1"]);
+    expect(result.managersLinked).toBe(1);
+    expect(result.managersAmbiguous).toBe(0);
+  });
+
+  it("writes NOTHING on a second run over the same ambiguous data (it runs hourly)", async () => {
+    const arrangeAmbiguous = () =>
+      arrange({
+        // Deliberately UNLINKED. With the agent already pointed at one of the two
+        // candidates, a regression to taking the first match writes nothing (the
+        // link it would write is the one already there), so the test would pass
+        // over the very defect it exists to catch.
+        roster: [
+          agentRow({ manager_id: null, salesforce_user_id: "005A" }),
+          { id: "u3", email: "mona1@x.com", manager_id: null, role: "manager", salesforce_user_id: "005M1" },
+        ],
+        existing: [
+          { id: "u1", email: "a@x.com", attributes: {}, salesforce_user_id: "005A" },
+          { id: "u3", email: "mona1@x.com", attributes: {}, salesforce_user_id: "005M1" },
+        ],
+        debtTeam: [
+          { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+        ],
+        byName: [
+          { Id: "005M1", Name: "Mona Manager", Email: "mona1@x.com" },
+          { Id: "005M2", Name: "Mona Manager", Email: "mona2@x.com" },
+        ],
+      });
+
+    arrangeAmbiguous();
+    const first = await syncSalesforceAgents();
+    const firstWrites = managerWrites();
+
+    arrangeAmbiguous();
+    const second = await syncSalesforceAgents();
+
+    expect(firstWrites).toHaveLength(0);
+    expect(managerWrites()).toHaveLength(0);
+    // Identical in and identical out: the second hour reports the same refusal
+    // rather than converging on one of the two by accident.
+    expect(second.managersAmbiguous).toBe(first.managersAmbiguous);
+    expect(second.managersLinked).toBe(first.managersLinked);
+    expect(second.managersUnlinked).toBe(first.managersUnlinked);
+    expect(second.managersUnresolved).toBe(first.managersUnresolved);
+  });
+
+  it("counts EVERY agent under a shared name, not just the name", async () => {
+    arrange({
+      roster: [
+        agentRow(),
+        { id: "u2", email: "b@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+      ],
+      debtTeam: [
+        { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+        { Id: "005B", Email: "b@x.com", Name: "Agent B", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+      ],
+      byName: [
+        { Id: "005M1", Name: "Mona Manager", Email: "mona1@x.com" },
+        { Id: "005M2", Name: "Mona Manager", Email: "mona2@x.com" },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    // The number that matters to a reader is how many PEOPLE have no settled
+    // approver, which is not the number of duplicated picklist values.
+    expect(result.managersAmbiguous).toBe(2);
+  });
+});
