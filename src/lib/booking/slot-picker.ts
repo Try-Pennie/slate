@@ -25,16 +25,6 @@ export interface DayChip {
    *  because the chip RESERVES the line rather than omitting it: a strip that
    *  gains a line on the first of the month grows taller as a lead watches. */
   month: string;
-  /** Whether this chip NAMES its month (Dan, 2026-08-07, and the committed design
-   *  record at `docs/design/booker-mockup.html`): true on the first chip and on
-   *  any turnover, false in between.
-   *
-   *  Naming it on every chip and naming it nowhere are the two failure modes this
-   *  sits between. Nowhere reads "30, 31, 1, 2" and the last two look like dates
-   *  already gone. Everywhere repeats a word that has not changed on every chip in
-   *  the row, which is noise on the one line a lead scans fastest. The line is
-   *  reserved either way, so nothing about the strip's height depends on this. */
-  monthShown: boolean;
   /** True when one or more offerable-day gaps sit between the previous chip and
    *  this one, so a skipped closed day is visible rather than silently absent.
    *  Never true on the first chip: there is nothing before it to have skipped. */
@@ -59,11 +49,6 @@ export function dayChips(days: string[], today: DateTime, zone: string): DayChip
       label: iso === todayIso ? "TODAY" : d.toFormat("ccc").toUpperCase(),
       day: d.toFormat("d"),
       month: d.toFormat("LLL").toUpperCase(),
-      // The turnover is judged on the month AND the year, so December to January
-      // is a turnover rather than a repeat: comparing the month alone would make
-      // "DEC, JAN" read correctly and "DEC 2026, DEC 2027" read as one run.
-      monthShown:
-        prev === null || prev.month !== d.month || prev.year !== d.year,
       gapBefore:
         prev !== null &&
         Math.round(d.startOf("day").diff(prev.startOf("day"), "days").days) > 1,

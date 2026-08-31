@@ -14,8 +14,9 @@ import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 //  - there is no greyed remainder, so every chip is pressable;
 //  - a skipped day is marked, so a closed day is visible rather than silently
 //    absent between two chips;
-//  - every chip carries its month, so a month boundary never reads as a date in
-//    the past and neighbouring chips stay the same shape.
+//  - every chip NAMES its month (Dan, 2026-08-31, #1640), so a month boundary
+//    never reads as a date in the past and no chip has to be read by looking
+//    left to find the last one that carried it.
 
 const ZONE = "America/New_York";
 // 2026-08-13 is a Thursday, so Fri/Sat/Mon exercises a skipped Sunday.
@@ -55,7 +56,7 @@ describe("BookerStrip renders the offered days (#1336)", () => {
     chips.forEach((chip) => expect(chip.className).toContain("min-w-16"));
   });
 
-  it("labels day zero TODAY, later days by weekday, and names the month once", () => {
+  it("labels day zero TODAY, later days by weekday, and names the month on each", () => {
     const { container } = render(
       <BookerStrip
         today={TODAY}
@@ -72,13 +73,13 @@ describe("BookerStrip renders the offered days (#1336)", () => {
     expect(chips[1].textContent).toContain("FRI");
     expect(chips[1].textContent).toContain("14");
 
-    // The month is named wherever it CHANGES, so the first chip carries it and
-    // the one after it, in the same month, does not repeat it. Both still hold
-    // the span, hidden, so the line is reserved and the row keeps its height.
-    const months = container.querySelectorAll("[data-chip-month]");
+    // Every chip names its month, including one whose month has not changed.
+    const months = [...container.querySelectorAll("[data-chip-month]")];
     expect(months).toHaveLength(2);
-    expect(months[0].className).not.toContain("invisible");
-    expect(months[1].className).toContain("invisible");
+    expect(months.map((m) => m.textContent)).toEqual(["AUG", "AUG"]);
+    // Nothing is hidden: a chip that showed a blank month would be readable only
+    // in the context of the chips beside it.
+    expect(months.every((m) => !m.className.includes("invisible"))).toBe(true);
   });
 
   it("marks a skipped day with a gap rule between the chips either side", () => {
@@ -140,10 +141,11 @@ describe("BookerStrip renders the offered days (#1336)", () => {
     expect(unselected.querySelector("span")!.className).toContain("text-fg-muted");
   });
 
-  // #1298 decision 2: the month is not decoration. Without it a month boundary
-  // reads "30, 31, 1, 2" and the last two chips look like dates in the past. It is
-  // named wherever it CHANGES, and its line is reserved on every chip even when
-  // blank, so the strip does not grow taller on the first of the month.
+  // The month is not decoration. Without it a month boundary reads "30, 31, 1, 2"
+  // and the last two chips look like dates in the past. Every chip names its own
+  // (Dan, 2026-08-31, #1640, shown both renderings and choosing this one), which
+  // also makes the strip's height constant by construction rather than by
+  // reserving a blank line on the chips that stayed silent.
   it("names the new month at a turnover, without changing the strip's shape", () => {
     const august30 = DateTime.fromISO("2026-08-30", { zone: ZONE });
     const { container } = render(
@@ -164,16 +166,11 @@ describe("BookerStrip renders the offered days (#1336)", () => {
 
     const months = [...container.querySelectorAll("[data-chip-month]")];
     expect(months.map((m) => m.textContent)).toEqual(["AUG", "AUG", "SEP", "SEP"]);
-    // Named on the first chip and on the turnover; not repeated in between.
-    expect(months.map((m) => !m.className.includes("invisible"))).toEqual([
-      true,
-      false,
-      true,
-      false,
-    ]);
+    // Named on every chip, the turnover included.
+    expect(months.every((m) => !m.className.includes("invisible"))).toBe(true);
 
-    // Height is structural: the span is HIDDEN, never omitted, so every chip keeps
-    // the same three lines and nothing about the row grows on the 1st of the month.
+    // Height is structural: every chip carries the same three lines, so nothing
+    // about the row grows on the 1st of the month.
     const lineCounts = chips.map((c) => c.querySelectorAll("span").length);
     expect(new Set(lineCounts).size).toBe(1);
     expect(lineCounts[0]).toBe(3);
