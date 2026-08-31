@@ -19,7 +19,8 @@
     "preview:booker": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-booker.ts",
     "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
     "check:workflow-settings": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-workflow-settings.ts",
-    "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts"
+    "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts",
+    "verify:burst-counter": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
