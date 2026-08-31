@@ -46,7 +46,7 @@ const { freeBusyMany, getEventOnPrimary } = await import("@/lib/google/calendar"
 const { GoogleHttpError } = await import("@/lib/google/http-error");
 const { reachabilityFromError } = await import("@/lib/google/reachability-classify");
 const { shortErrorReason } = await import("@/lib/notify/error-text");
-const { selectRequests, judgeRequest, summarize } = await import(
+const { selectRequests, judgeRequest, summarize, readToleranceMs } = await import(
   "./lib/ooo-protection-live-check.ts"
 );
 type CalendarReading = import("./lib/ooo-protection-live-check.ts").CalendarReading;
@@ -61,7 +61,12 @@ function fail(code: string, why: string): never {
 
 const requestedId = process.env.OOO_VERIFY_REQUEST_ID || process.argv[2] || null;
 const includeUnhandled = process.env.OOO_VERIFY_INCLUDE_UNHANDLED === "1";
-const toleranceMs = Number(process.env.OOO_VERIFY_TOLERANCE_MINUTES ?? "1") * 60_000;
+// A tolerance that cannot be read REFUSES rather than becoming NaN, which every
+// comparison reads as a mismatch (L50). The rule lives in the pure half so it is
+// tested rather than trusted.
+const tolerance = readToleranceMs(process.env.OOO_VERIFY_TOLERANCE_MINUTES);
+if (!tolerance.ok) fail("tolerance-unreadable", tolerance.why);
+const toleranceMs = tolerance.ms;
 const nowMs = Date.now();
 const nowIso = new Date(nowMs).toISOString();
 

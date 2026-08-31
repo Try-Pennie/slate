@@ -538,7 +538,9 @@ OOO_VERIFY_REQUEST_ID=<uuid> pnpm verify:ooo-protection     # one request
 `OOO_VERIFY_INCLUDE_UNHANDLED=1` also checks the imported rows Slate never ran a
 step for (#1485), which are excluded by default and counted out loud;
 `OOO_VERIFY_TOLERANCE_MINUTES` (default 1) is how far an event bound may sit from
-the record before the two are called different windows.
+the record before the two are called different windows, and a value that is not a
+number exits `tolerance-unreadable` rather than becoming a NaN every comparison
+reads as a mismatch.
 
 **Only `verified` passes, and every other outcome exits non-zero with its own
 reason.** Finding nothing to check is never a pass (L98), and one message

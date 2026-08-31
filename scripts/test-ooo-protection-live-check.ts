@@ -23,6 +23,8 @@ import {
   selectRequests,
   judgeRequest,
   summarize,
+  readToleranceMs,
+  DEFAULT_TOLERANCE_MINUTES,
   VERDICT_CODES,
   type ApprovedRequestRow,
   type CalendarReading,
@@ -84,6 +86,40 @@ function judge(...args: Parameters<typeof judgeRequest>): ReturnType<typeof judg
   const v = judgeRequest(...args);
   produced.add(v.code);
   return v;
+}
+
+// --- reading the tolerance: a setting that cannot be read must REFUSE (L50) ---
+{
+  const t = readToleranceMs(undefined);
+  assert(t.ok, "an unset tolerance takes the default");
+  if (t.ok) eq(t.ms, DEFAULT_TOLERANCE_MINUTES * MIN, "which is one minute");
+}
+{
+  const t = readToleranceMs("");
+  assert(t.ok, "an EMPTY setting is not a value, so it takes the default too");
+  if (t.ok) eq(t.ms, DEFAULT_TOLERANCE_MINUTES * MIN, "rather than becoming zero");
+}
+{
+  const t = readToleranceMs("5");
+  assert(t.ok, "a real number of minutes is used");
+  if (t.ok) eq(t.ms, 5 * MIN, "converted to milliseconds");
+}
+{
+  const t = readToleranceMs("0");
+  assert(t.ok, "zero is a legitimate setting: compare the bounds exactly");
+  if (t.ok) eq(t.ms, 0, "and it is not confused with unset");
+}
+{
+  // NaN compares false against everything, so a tolerance nobody could read would
+  // make EVERY event look like it does not cover its window: a confident wrong
+  // answer for the whole run instead of one refusal.
+  const t = readToleranceMs("abc");
+  assert(!t.ok, "a tolerance that is not a number refuses");
+  if (!t.ok) assert(/not a number/.test(t.why), "and says so");
+}
+{
+  const t = readToleranceMs("-5");
+  assert(!t.ok, "a negative tolerance refuses rather than widening the match backwards");
 }
 
 // --- selecting what to check: finding nothing is never a pass (L98) ---

@@ -165,6 +165,34 @@ export function selectRequests(rows: ApprovedRequestRow[], opts: SelectOptions):
   return { ok: true, requests: handled, skippedUnhandled };
 }
 
+/** The tolerance to judge with, or the reason the setting could not be read. */
+export type ToleranceRead = { ok: true; ms: number } | { ok: false; why: string };
+
+/** Default tolerance: one minute. The request form works in minutes, so nothing
+ *  a person can do moves an event by less than one. */
+export const DEFAULT_TOLERANCE_MINUTES = 1;
+
+/**
+ * Read the tolerance override.
+ *
+ * A value that cannot be read must REFUSE, never become NaN. Every comparison
+ * against NaN is false, so a NaN tolerance would make each event read as not
+ * covering its window: a confident wrong answer for every request in the run
+ * rather than a refusal (L50). An unset or empty setting is not a value at all
+ * and takes the default, which is why this cannot be written as `?? default`:
+ * `??` would hand `Number("")` its zero.
+ */
+export function readToleranceMs(raw: string | undefined): ToleranceRead {
+  if (raw === undefined || raw.trim() === "") {
+    return { ok: true, ms: DEFAULT_TOLERANCE_MINUTES * 60_000 };
+  }
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    return { ok: false, why: `OOO_VERIFY_TOLERANCE_MINUTES is "${raw}", which is not a number of minutes` };
+  }
+  return { ok: true, ms: minutes * 60_000 };
+}
+
 /** One end of a Google event, in either of the two shapes Google returns. */
 export interface GoogleTimePoint {
   dateTime?: string;
