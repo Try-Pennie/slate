@@ -90,6 +90,19 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   assert(/if:\s*failure\(\)/.test(alertStep), "the alert step fires on failure()");
   assert(/scripts\/notify-smoke-failure\.ts/.test(alertStep), "the alert posts via notify-smoke-failure.ts");
   assert(/SLACK_BOT_TOKEN/.test(alertStep), "the alert step has the Slack token");
+  // #1598: the canary's own steps need the install, this one does not. Comment lines
+  // are stripped first, because the step now EXPLAINS why it carries no alias hook and
+  // a match on the raw text would be answered by the sentence about the thing rather
+  // than by the thing (L103). What the script actually reaches is proven by walking its
+  // import graph in scripts/test-dependency-free-scripts.ts; this only pins the wiring.
+  const alertCode = alertStep
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+  assert(
+    !/register-paths/.test(alertCode),
+    "the alert step runs on bare node, so it does not need the install to have worked",
+  );
 }
 
 // --- preflight: skip quietly until the key is configured (no alert spam) ---

@@ -166,4 +166,9 @@ jobs:
           # an error: it means the run died before any check reported, and the alert
           # says that rather than implying a booking regression (#1492).
           SMOKE_FAILURE_FILE: smoke-failures.txt
-        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/notify-smoke-failure.ts
+        # #1598: bare node, no alias hook. The canary's own steps genuinely need the
+        # install (they drive the real booking path through the app), so it stays in this
+        # workflow; what this step no longer needs is for that install to have WORKED.
+        # This is the step that speaks when something has already gone wrong, and the
+        # alerter now posts through scripts/lib/slack-post.ts, which imports nothing.
+        run: node --experimental-strip-types scripts/notify-smoke-failure.ts

@@ -20,15 +20,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 10
+
+      # #1598: NO dependency install. This job exists to send one Slack message, and it
+      # fires precisely when CI on main has already failed, which correlates with GitHub
+      # or the network having a bad day, so every dependency it carries is another way
+      # for the alert to be unavailable in exactly the conditions it exists for. It used
+      # to carry pnpm/action-setup, setup-node with the pnpm cache and a full
+      # `pnpm install --frozen-lockfile`, purely because the alerter reached Slack
+      # through the app's notifier and from there the tunable channel lookup and the
+      # Supabase client. The same removal was made for the main push guard in #1524,
+      # after run 32039856279 died at `Failed to download action 'pnpm/action-setup'`
+      # with a 429 and the only control over main never ran; this is its sibling, which
+      # that fix did not cover. The alerter now posts through scripts/lib/slack-post.ts,
+      # which imports nothing, so node and this checkout are all it needs.
+      #
+      # setup-node is the one that stays: it pins the node version the type stripping
+      # flag needs, rather than trusting whatever the runner image happens to ship.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-          cache: pnpm
-      - name: Install
-        run: pnpm install --frozen-lockfile
+
       - name: Post Slack alert
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -38,4 +49,7 @@ jobs:
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
           ACTOR: ${{ github.event.workflow_run.actor.login }}
-        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/notify-deploy-failure.ts
+        # No alias hook: nothing under src/ is reachable from the alerter any more, and
+        # scripts/test-dependency-free-scripts.ts walks its real import graph to prove it
+        # rather than reading this line.
+        run: node --experimental-strip-types scripts/notify-deploy-failure.ts

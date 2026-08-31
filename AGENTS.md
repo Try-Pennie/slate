@@ -205,6 +205,47 @@ The decision logic (what counts as a reference, what is built in, what counts as
 missing) is pinned offline in `scripts/test-workflow-env-coverage.ts`, so the
 rule is tested even where the listing is not available.
 
+# An alerting workflow carries no dependency install (#1524, #1598)
+
+Three workflows run a script on **bare node**, with no `pnpm install` and no
+`--import ./scripts/register-paths.mjs`: the main push guard (#1027), the deploy
+failure alert (#122) and the smoke canary's alert step (#525). Each of them is the
+thing that has to still work when something else has already gone wrong, and every
+dependency it carries is another way for it to be unavailable in exactly those
+conditions. That is not hypothetical: on 2026-08-17 run 32039856279 died at
+`Failed to download action 'pnpm/action-setup'` with a 429 and the only control over
+main never ran.
+
+So an alerter posts through **`scripts/lib/slack-post.ts`**, which imports nothing,
+rather than the app's notifier (`postSlack` reaches `defaultAlertsChannel`, which
+reaches `supabaseAdmin`, which reaches `@supabase/supabase-js`). The channel comes
+from `SLACK_ALERTS_CHANNEL` and an empty one is refused by name, since the database
+lookup that would supply a default is the very thing being avoided. The WORDING is
+still built in one place per alert, so no copy is duplicated (L41): only the HTTP
+call is local.
+
+**The invariant is about the script's imports, not about the workflow file.** A check
+that the workflow no longer says `pnpm install` passes happily while the script still
+imports the app, which is a check on a proxy for the quantity being protected (L63).
+`scripts/test-dependency-free-scripts.ts` therefore walks the real transitive import
+graph (`scripts/lib/scan-local-import-graph.ts`) from every entry a workflow runs on
+bare node, and fails on any edge that leaves `scripts/`: a package, a `@/` alias, a
+file outside the tree, or a relative specifier that resolves to nothing. The entry
+list is DERIVED from the workflows (`scripts/lib/scan-workflow-node-scripts.ts`), so
+a newly added bare node script is covered by construction rather than exempt from the
+guard meant to catch it (L96), and the three alerters are ALSO declared by name, so a
+workflow that quietly put the alias hook back fails rather than removing its own
+script from the guard's reach.
+
+Its positive controls are what keep it from rotting into a no-op: synthetic fixtures
+for each way an edge can leave the local set, plus an overlay of the REAL tree that
+puts `@/lib/notify/slack` back into each alerter and a package import into the shared
+poster one module deeper, both of which must be caught and blamed on the right file.
+The overlay replaces a file's content in memory, so nothing is written to the repo. It
+also runs the deploy alerter on bare node with Slack deliberately unconfigured and
+requires it to reach its own refusal, which node can only report once every import
+resolved.
+
 # The scripts tree is typechecked, but only for what breaks at runtime
 
 `tsconfig.json` excludes `scripts` and `worker`, so `pnpm build` and

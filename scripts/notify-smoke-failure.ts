@@ -1,16 +1,22 @@
 // #525: post a Slack alert when the scheduled booking-smoke canary fails, so a
 // broken booking path (or a misconfigured smoke key / test fixture) is noticed
 // instead of sitting red in the Actions tab unseen. Invoked by
-// .github/workflows/smoke-canary.yml on any failed step. Reuses the app's Slack
-// notifier (src/lib/notify/slack.ts) rather than a second Slack implementation,
-// mirroring notify-deploy-failure.ts.
+// .github/workflows/smoke-canary.yml on any failed step, mirroring
+// notify-deploy-failure.ts.
 //
 // Fails loud: a Slack post that errors, or Slack being unconfigured, exits
 // non-zero so the alert job goes visibly red rather than pretending it warned
 // anyone.
+//
+// #1598: it posts through the dependency free poster (scripts/lib/slack-post.ts) and
+// runs on bare node. The canary's own steps still need the install (they drive the
+// real booking path through the app), so this does not remove one from the workflow;
+// what it removes is the alert's dependence on that install having WORKED. This step
+// speaks only when something already went wrong, and a half installed job that cannot
+// even say so leaves the failure to be found by somebody reading the Actions tab.
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
-import { postSlack } from "@/lib/notify/slack";
+import { makeSlackPoster } from "./lib/slack-post.ts";
 import {
   failureLogPath,
   nodeSmokeFailureIo,
@@ -103,8 +109,9 @@ export async function run(
   io: FailureLogIo = nodeSmokeFailureIo,
 ): Promise<{ ok: boolean; reason: string }> {
   const text = buildSmokeFailureMessage(readContextFromEnv(env, io));
-  // Pass the channel explicitly so the notifier does not need the app's Supabase
-  // config in CI; an empty value lets postSlack report "no-channel" (fail loud).
+  // The channel comes from the workflow, never from a database lookup (#1598). An
+  // empty value is refused by name (slack-channel-not-configured) rather than posted
+  // into nowhere, because an unset repo variable interpolates to the empty string.
   const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
   const res = await post({ text, ...(channel ? { channel } : {}) });
   return res.ok
@@ -117,7 +124,10 @@ const isMain =
   realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
-  run(postSlack, process.env).then((res) => {
+  run(
+    makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }),
+    process.env,
+  ).then((res) => {
     if (!res.ok) {
       console.error(
         `::error title=Smoke-failure alert not sent::Could not post the Slack smoke-failure alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions settings.`,
