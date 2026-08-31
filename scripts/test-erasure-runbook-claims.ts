@@ -25,6 +25,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+// The export's own table definitions, so claim 7's watermark exclusion is DERIVED
+// from what the export lane actually keys on rather than hand listed beside it (L41).
+import { MIRROR_TABLES } from "../src/lib/snowflake/export-core.ts";
 
 const root = join(import.meta.dirname, "..");
 const runbook = readFileSync(join(root, "docs", "pii-erasure-runbook.md"), "utf8");
@@ -195,13 +198,18 @@ const referenced = snowflakeColumnsNamed(runbook);
 // Sanity check on the statement parse: a regex that stopped matching would leave
 // every claim below passing vacuously.
 //
-// Step 3's purge touches four tables; step 4's verify touches THREE, because
-// `booking_outbox` is deliberately out of erasure scope (#1199: no contact data,
-// and its retention is a hard delete, so a residual count there could never reach
-// zero and left the operator gated on an impossible condition). Seven, not eight.
+// Step 3's purge touches four tables and step 4's verify reads four, so eight.
+//
+// An earlier version of this comment said the verify touched THREE, on the
+// grounds that `booking_outbox` is out of erasure scope. That is half of #1199's
+// decision: the outbox PAYLOAD is out of scope (a reason code, staff free text,
+// timestamps and internal ids), but `last_error` is IN scope, and step 4 has
+// counted it as `outbox_error_residual` since #1205. Left uncorrected, the
+// sentence read as a deliberate exemption for a table the verify really does
+// cover (L346).
 assert(
-  referenced.length >= 7,
-  `parsed the runbook's Snowflake statements (found ${referenced.length}, expected at least 7)`,
+  referenced.length >= 8,
+  `parsed the runbook's Snowflake statements (found ${referenced.length}, expected at least 8)`,
 );
 
 for (const { table, columns } of referenced) {
@@ -296,14 +304,15 @@ eq(
   "positive control: an earlier no-match return does not shadow the success return's keys",
 );
 
-// --- Claim 7 (#1205): the warehouse purge clears EVERY PII column the erasure
-// function clears in Supabase, not just the obvious one.
+// --- Claim 7 (#1205, generalized to every erased table in #1207): the warehouse
+// purge clears EVERY PII column the erasure function clears in Supabase, on
+// EVERY table it touches.
 //
-// Redacting in Supabase sets the flag that FREEZES the row from re-export
+// Redacting in Supabase can set a flag that FREEZES the row from re-export
 // (applySkipRedacted, src/lib/snowflake/skip-redacted.ts), which is deliberate so
 // the mirror cannot clobber a redaction. The consequence that bit us: the
-// redaction therefore propagates NOWHERE, so Snowflake keeps whatever it last
-// held and step 3's manual statement is the ONLY thing that ever clears it.
+// redaction then propagates NOWHERE, so Snowflake keeps whatever it last held and
+// step 3's statement is the ONLY thing that ever clears it.
 //
 // #1205 was `webhook_deliveries.last_response`, which holds up to 1000 chars of
 // the subscriber's response body and commonly quotes the request, so it carries
@@ -312,21 +321,32 @@ eq(
 // frozen from export, so the person's contact data stayed in the warehouse
 // permanently. Classic N minus 1 of N (L38).
 //
-// Derived from the migration (L41) so a future column added to the erasure
-// function cannot be silently missed here the same way.
+// #1207 is the same defect one table over, and it is why this loop is no longer
+// wired to a single table. `booking_outbox.steps` carries `steps[].error`, which
+// the migration nulls per element and the warehouse purge did not touch at all.
+// `booking_outbox` is NOT frozen from re-export, so a row still present in
+// Supabase self-heals on the next export tick, but outbox retention is a hard
+// DELETE: once the Supabase row has aged out there is nothing left to MERGE, and
+// the runbook says so under "Never wait for the export to fix a booking_outbox
+// residual". So the warehouse copy of an erased person's error text was
+// unreachable, and step 4 reported all zeros over it.
+//
+// Naming one table was the whole defect: a guard wired to a third of the surface
+// reads as coverage of all of it. Derived from the migration (L41) so a column
+// added to the erasure function cannot be silently missed in the warehouse, and
+// derived per TABLE so a fourth table cannot be either.
+
+/** Every table the erasure function updates, in the order it updates them. */
+function erasedTablesIn(body: string): string[] {
+  return [...body.matchAll(/update\s+([a-z_][a-z0-9_]*)/gi)].map((m) => m[1].toLowerCase());
+}
+
 function erasedColumnsFor(body: string, table: string): string[] {
   // The function's `update <table> set a = x, b = y where ...` block.
   const stmt = new RegExp(`update\\s+${table}\\b([\\s\\S]*?)where\\b`, "i").exec(body);
   if (!stmt) return [];
   return [...stmt[1].matchAll(/(\w+)\s*=/g)].map((m) => m[1].toLowerCase());
 }
-
-const supabaseErased = erasedColumnsFor(sql, "webhook_deliveries");
-assert(
-  supabaseErased.includes("payload") && supabaseErased.includes("last_response"),
-  `sanity check on the migration parse: the erasure function clears payload and last_response ` +
-    `on webhook_deliveries (found: ${supabaseErased.join(", ") || "nothing"})`,
-);
 
 /** The runbook's Snowflake `update SLATE.PUBLIC.<table> ... where` block. */
 function warehousePurgeFor(doc: string, table: string): string {
@@ -337,37 +357,94 @@ function warehousePurgeFor(doc: string, table: string): string {
   return m ? m[1] : "";
 }
 
-const warehouseWebhookPurge = warehousePurgeFor(runbook, "webhook_deliveries");
-assert(
-  warehouseWebhookPurge !== "",
-  "found the runbook's SLATE.PUBLIC.webhook_deliveries purge statement",
+const erasedTables = erasedTablesIn(sql);
+eq(
+  erasedTables,
+  ["bookings", "booking_events", "webhook_deliveries", "booking_outbox"],
+  "sanity check on the migration parse: the four tables erase_booking_pii updates",
 );
 
-for (const column of supabaseErased) {
-  // payload_erased is Supabase-only by design: claim 5 already asserts naming it
-  // in the Snowflake statement is an error, because the warehouse lacks it and
-  // Snowflake would reject the whole statement (#1197).
-  if (!(warehouse.get("webhook_deliveries")?.has(column) ?? false)) continue;
+/**
+ * A column the erasure function sets that the warehouse purge must NOT set, per
+ * table, with the reason. Two kinds, and only the first was anticipated in #1207:
+ *
+ *   - A watermark. `booking_outbox` has no `set_updated_at` trigger, so 0093
+ *     stamps `updated_at` itself, and that stamp is what makes the export
+ *     overwrite the warehouse copy. It is bookkeeping, not PII, and the warehouse
+ *     copy of it MIRRORS Supabase: a purge that wrote it would corrupt the very
+ *     column `buildVerifySql` compares to decide whether a row is archived. Taken
+ *     from MIRROR_TABLES rather than hand listed, so it cannot drift from what the
+ *     export actually keys on (L96).
+ *   - A column the warehouse does not have. `payload_erased` and `pii_redacted_at`
+ *     are Supabase-only; claim 5 already asserts that naming one in a Snowflake
+ *     statement is an error, because Snowflake would reject the whole statement
+ *     (#1197). Handled by the DDL check below rather than by an entry here.
+ */
+const watermarkOf = new Map(MIRROR_TABLES.map((t) => [t.table, t.watermark]));
+assert(
+  watermarkOf.get("booking_outbox") === "updated_at",
+  "sanity check: MIRROR_TABLES really names booking_outbox's watermark, so the exclusion is derived and not silently empty",
+);
+
+let claim7Checked = 0;
+for (const table of erasedTables) {
+  const supabaseErased = erasedColumnsFor(sql, table);
   assert(
-    new RegExp(`\\b${column}\\b`, "i").test(warehouseWebhookPurge),
-    `the warehouse purge clears webhook_deliveries.${column}, which the erasure function ` +
-      `clears in Supabase. The row is frozen from re-export once redacted, so the Supabase ` +
-      `clear never reaches Snowflake and this statement is the only thing that ever will (#1205)`,
+    supabaseErased.length > 0,
+    `sanity check on the migration parse: erase_booking_pii sets at least one column on ${table}`,
+  );
+
+  const warehousePurge = warehousePurgeFor(runbook, table);
+  assert(
+    warehousePurge !== "",
+    `found the runbook's SLATE.PUBLIC.${table} purge statement`,
+  );
+
+  const required = supabaseErased.filter(
+    (column) =>
+      // Present in the warehouse at all: a Supabase-only column must NOT be named.
+      (warehouse.get(table)?.has(column) ?? false) &&
+      // And not the export's own watermark for this table.
+      column !== watermarkOf.get(table),
+  );
+  assert(
+    required.length > 0,
+    `${table}: the loop found at least one column to require, so a parse that quietly ` +
+      `stopped matching cannot read as coverage`,
+  );
+
+  for (const column of required) {
+    claim7Checked += 1;
+    assert(
+      new RegExp(`\\b${column}\\b`, "i").test(warehousePurge),
+      `the warehouse purge clears ${table}.${column}, which the erasure function clears in ` +
+        `Supabase. The Supabase clear does not reach the warehouse on its own (a frozen row ` +
+        `never re-exports, and a hard-deleted row has nothing left to MERGE), so this ` +
+        `statement is the only thing that ever will (#1205, #1207)`,
+    );
+  }
+
+  // Positive control, PER TABLE: blind this table's statement and prove the loop
+  // above would have caught it. Without one per table, a regex that matched
+  // nothing for three of the four would assert nothing and read as full coverage
+  // (L1), which is exactly how the single-table version read before #1207.
+  const victim = required[required.length - 1];
+  const blinded = warehousePurge.replace(new RegExp(`\\b${victim}\\b`, "gi"), "blinded_column");
+  assert(
+    blinded !== warehousePurge,
+    `positive control actually mutated the ${table} purge it checks`,
+  );
+  assert(
+    !new RegExp(`\\b${victim}\\b`, "i").test(blinded),
+    `positive control: claim 7 catches a warehouse purge that leaves ${table}.${victim} behind`,
   );
 }
 
-// Positive control: drop last_response from a copy of the real statement and
-// prove the loop above catches it. Without this, a regex that quietly stopped
-// matching would assert nothing and read as full coverage (L1).
-const blindedPurge = warehouseWebhookPurge.replace(/,?\s*last_response\s*=\s*null/i, "");
-assert(
-  blindedPurge !== warehouseWebhookPurge,
-  "positive control actually mutated the warehouse purge it checks",
-);
-assert(
-  !/\blast_response\b/i.test(blindedPurge),
-  "positive control: claim 7 catches a warehouse purge that leaves last_response behind",
-);
+// The count is asserted, not just the loop, because a `required` that filtered
+// everything out on every table would pass every assertion inside the loop while
+// checking nothing at all (L98). Ten today: 4 on bookings, 1 on booking_events,
+// 2 on webhook_deliveries, 3 on booking_outbox.
+eq(claim7Checked, 10, "claim 7 checked every erased PII column across all four tables");
 
 // --- Claim 8 (#1205): step 4's verify must READ the columns it claims to clear.
 //

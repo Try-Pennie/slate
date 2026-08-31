@@ -59,6 +59,7 @@ update SLATE.PUBLIC.webhook_deliveries
 
 update SLATE.PUBLIC.booking_outbox
    set payload = object_insert(payload, 'reasonDetail', null, true),
+       steps = transform(steps, s variant -> object_insert(s::object, 'error', null, true)),
        last_error = null
  where booking_id in (<ids>);`;
 
@@ -81,7 +82,8 @@ export const RUNBOOK_VERIFY_BLOCK = `select
             or last_response is not null)) as webhook_residual,
   (select count(*) from SLATE.PUBLIC.booking_outbox
      where booking_id in (<ids>)
-       and last_error is not null) as outbox_error_residual;`;
+       and (last_error is not null
+            or array_size(filter(steps, s variant -> coalesce(s:error::string, '') <> '')) > 0)) as outbox_error_residual;`;
 
 /**
  * The verify statement's columns, in order, and the table each one measures.
