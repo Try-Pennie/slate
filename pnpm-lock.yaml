@@ -18,9 +18,6 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.112.4
         version: 2.112.4
-      google-auth-library:
-        specifier: ^10.9.1
-        version: 10.9.1
       googleapis:
         specifier: ^173.0.0
         version: 173.0.0
