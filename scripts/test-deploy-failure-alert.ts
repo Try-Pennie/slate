@@ -49,6 +49,45 @@ assert(
   /SLACK_ALERTS_CHANNEL:\s*\$\{\{\s*vars\.SLACK_ALERTS_CHANNEL\s*\}\}/.test(wf),
   "passes the alerts channel variable",
 );
+// #1598: it carries no dependency install. This alert fires exactly when CI on
+// main has already failed, which correlates with GitHub or the network having a
+// bad day, so every dependency it carries is another way for it to be
+// unavailable in the conditions it exists for. #1524 made the same removal for
+// the main push guard after a 429 downloading pnpm/action-setup left that guard
+// unrun.
+//
+// Comment lines are stripped before matching, because the workflow now EXPLAINS
+// why it carries no install and a match on the raw text would be answered by the
+// sentence describing the thing rather than by the thing (L103), in the direction
+// that fails a correct file.
+//
+// These assertions are about the WIRING only. Whether the script it runs still
+// needs an install is a question about the script's imports, not about this file,
+// and scripts/test-dependency-free-scripts.ts answers it by walking the real
+// import graph (L63).
+{
+  const code = wf
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+  assert(
+    !/pnpm install/.test(code),
+    "the workflow installs no dependencies to send one Slack message",
+  );
+  assert(
+    !/pnpm\/action-setup/.test(code),
+    "the workflow does not download the pnpm action, which is what took the sibling guard out",
+  );
+  assert(
+    !/register-paths/.test(code),
+    "the workflow does not need the module alias hook, so nothing under src/ is reachable from the alerter",
+  );
+  assert(
+    /actions\/setup-node@/.test(code),
+    "setup-node stays, so the node version the type stripping flag needs is pinned rather than inherited",
+  );
+}
+
 assert(
   /RUN_URL:\s*\$\{\{\s*github\.event\.workflow_run\.html_url\s*\}\}/.test(wf),
   "passes the failed run URL",
