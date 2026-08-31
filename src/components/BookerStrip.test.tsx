@@ -55,8 +55,8 @@ describe("BookerStrip renders the offered days (#1336)", () => {
     chips.forEach((chip) => expect(chip.className).toContain("min-w-16"));
   });
 
-  it("labels day zero TODAY, later days by weekday, and every chip with its month", () => {
-    render(
+  it("labels day zero TODAY, later days by weekday, and names the month once", () => {
+    const { container } = render(
       <BookerStrip
         today={TODAY}
         days={["2026-08-13", "2026-08-14"]}
@@ -71,8 +71,14 @@ describe("BookerStrip renders the offered days (#1336)", () => {
     expect(chips[0].textContent).toContain("13");
     expect(chips[1].textContent).toContain("FRI");
     expect(chips[1].textContent).toContain("14");
-    // Every chip, not only the ones where the month changes (Dan, 2026-08-07).
-    chips.forEach((chip) => expect(chip.textContent).toContain("AUG"));
+
+    // The month is named wherever it CHANGES, so the first chip carries it and
+    // the one after it, in the same month, does not repeat it. Both still hold
+    // the span, hidden, so the line is reserved and the row keeps its height.
+    const months = container.querySelectorAll("[data-chip-month]");
+    expect(months).toHaveLength(2);
+    expect(months[0].className).not.toContain("invisible");
+    expect(months[1].className).toContain("invisible");
   });
 
   it("marks a skipped day with a gap rule between the chips either side", () => {
@@ -132,6 +138,68 @@ describe("BookerStrip renders the offered days (#1336)", () => {
     }
     // The quiet lines on an unselected chip still read as secondary.
     expect(unselected.querySelector("span")!.className).toContain("text-fg-muted");
+  });
+
+  // #1298 decision 2: the month is not decoration. Without it a month boundary
+  // reads "30, 31, 1, 2" and the last two chips look like dates in the past. It is
+  // named wherever it CHANGES, and its line is reserved on every chip even when
+  // blank, so the strip does not grow taller on the first of the month.
+  it("names the new month at a turnover, without changing the strip's shape", () => {
+    const august30 = DateTime.fromISO("2026-08-30", { zone: ZONE });
+    const { container } = render(
+      <BookerStrip
+        today={august30}
+        // Sun 30 Aug, Mon 31 Aug, Tue 1 Sep, Wed 2 Sep: the turnover is inside.
+        days={["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"]}
+        activeDay={null}
+        zone={ZONE}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    const chips = screen.getAllByRole("button");
+    expect(chips).toHaveLength(4);
+    // The 1st reads as the 1st of September, never as a date already gone.
+    expect(chips[2].textContent).toContain("1");
+
+    const months = [...container.querySelectorAll("[data-chip-month]")];
+    expect(months.map((m) => m.textContent)).toEqual(["AUG", "AUG", "SEP", "SEP"]);
+    // Named on the first chip and on the turnover; not repeated in between.
+    expect(months.map((m) => !m.className.includes("invisible"))).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ]);
+
+    // Height is structural: the span is HIDDEN, never omitted, so every chip keeps
+    // the same three lines and nothing about the row grows on the 1st of the month.
+    const lineCounts = chips.map((c) => c.querySelectorAll("span").length);
+    expect(new Set(lineCounts).size).toBe(1);
+    expect(lineCounts[0]).toBe(3);
+    // A turnover is not a gap: these are consecutive days and no rule is drawn.
+    expect(container.querySelectorAll("[data-day-gap]")).toHaveLength(0);
+  });
+
+  // The horizon is admin-settable down to HORIZON_MIN of 1, so a one day strip is a
+  // reachable state and has to read as one real choice rather than as a broken row.
+  it("draws a single pressable chip at a horizon of one, with no gap rule", () => {
+    const { container } = render(
+      <BookerStrip
+        today={TODAY}
+        days={["2026-08-13"]}
+        activeDay={"2026-08-13"}
+        zone={ZONE}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    const chips = screen.getAllByRole("button");
+    expect(chips).toHaveLength(1);
+    expect(chips[0].getAttribute("aria-pressed")).toBe("true");
+    expect(chips[0].textContent).toContain("TODAY");
+    expect(chips[0].querySelectorAll("span")).toHaveLength(3);
+    expect(container.querySelectorAll("[data-day-gap]")).toHaveLength(0);
   });
 
   it("marks the active day pressed and reports a press by its date", async () => {
