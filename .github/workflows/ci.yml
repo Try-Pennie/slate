@@ -56,11 +56,19 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Fail the build on a NEW high (or critical) advisory in a production
-      # dependency (#1026). Known, unremediated advisories are allow-listed in
-      # package.json pnpm.auditConfig.ignoreGhsas and tracked in #1057, so this
-      # gate stays green today but fires the moment something new lands, instead
-      # of a Next.js-style lag where nothing was watching. --prod scopes it to
-      # what actually ships to the Worker (dev-only advisories don't gate merges).
+      # dependency (#1026), instead of a Next.js-style lag where nothing was
+      # watching. --prod scopes it to what actually ships to the Worker
+      # (dev-only advisories don't gate merges).
+      #
+      # pnpm.auditConfig.ignoreGhsas in package.json is EMPTY as of #1057, so
+      # this gate is green on its own merit rather than by suppression. It held
+      # two entries before, both for a sharp advisory reachable only through
+      # next's image optimizer; the #1057 bump took sharp out of the tree
+      # entirely, which made both moot. Consequence worth knowing: a future bump
+      # that puts a vulnerable sharp back now fails this step rather than being
+      # silently allow-listed. That is the intent. Anything added back here needs
+      # a reason and an issue that removes it again, or it becomes a standing
+      # false assurance.
       #
       # It rides with the typecheck rather than getting its own job: it is a 1s
       # step, and a job of its own would pay 25s of setup to run it.
