@@ -90,6 +90,21 @@ scare in the first wave), so they live here now.
   this branch's. Diff against the branch's merge-base
   (`git diff $(git merge-base origin/main <branch>)..<branch>`) to see only what
   this agent actually changed.
+- **A branch built on a stale `origin/main` is refused at push time** (#1612).
+  The rule above was stated here for months and enforced by nothing, and on
+  2026-08-29 it broke twice in one day: two branches were cut from a stale ref,
+  carried another change's already-merged commits, and had to be thrown away and
+  rebuilt (#1603 as #1606, #1605 as #1607); in the second case the branch tip
+  even carried the other change's title. So `.githooks/lib/stale-main-guard.sh`
+  now fetches `origin/main` on every push and refuses when `git cherry` reports
+  the branch carrying commits already upstream, naming them. The match is by
+  **patch id**, not by sha, because a squash, rebase or cherry pick gives a
+  commit a new sha and a sha comparison would miss exactly this case. It fails
+  OPEN with no network and says so rather than skipping in silence, and it can
+  see a single-commit squash merge but not a multi-commit one (whose combined
+  patch matches none of the originals). Override a deliberate case, once, with
+  `ALLOW_STALE_MAIN=1 git push ...`, and say why out loud;
+  `scripts/test-stale-main-guard.ts` drives the decision without a remote.
 - **Never trust an agent's self-reported "clean."** A subagent will report a
   branch green that never had `node_modules` and so never ran the gate. Confirm
   each branch yourself (gate ran, diff is scoped, tests pass) before merging.

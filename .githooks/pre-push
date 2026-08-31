@@ -5,6 +5,15 @@
 #      PR has already merged/closed (the commit would silently strand and never
 #      reach main). Override with ALLOW_MERGED_PUSH=1.
 #
+#   1b. Workflow settings guard. Refuses a push whose workflows reference a repo
+#      variable or secret that does not exist, since GitHub substitutes the
+#      empty string rather than failing. Override with
+#      SKIP_WORKFLOW_SETTINGS_CHECK=1.
+#
+#   1c. Stale-main guard. Refuses a push from a branch carrying commits whose
+#      changes are already on main by patch id (a branch built off a stale
+#      origin/main ref). Override with ALLOW_STALE_MAIN=1.
+#
 #   2. CI parity checks: runs the same checks CI runs (tsc, lint, the unit
 #      suite, the Cloudflare build) so a CI-only failure is caught here instead
 #      of breaking main after merge. They run inside an isolated checkout of the
@@ -82,6 +91,23 @@ changed_paths="$(git diff --name-only "@{push}"..HEAD 2>/dev/null)" \
   || changed_paths="$(git diff --name-only origin/main...HEAD 2>/dev/null)" \
   || changed_paths="UNKNOWN"
 "$root_dir/.githooks/lib/workflow-settings-guard.sh" "$changed_paths" || exit 1
+
+# --- 1c. Stale-main guard (#1612) -------------------------------------------
+#
+# A branch created from a stale `origin/main` ref silently carries commits that
+# are already on main. Its diff against its own merge base then shows another
+# change's work as this branch's, its PR conflicts, and the branch tip can carry
+# a different change's commit message. That happened twice on 2026-08-29 and cost
+# two thrown-away PRs (#1603, #1605), and it surfaced only at PR time as a merge
+# conflict, which reads as an ordinary rebase rather than as a branch that was
+# wrong from the start.
+#
+# AGENTS.md has stated the rule for months with nothing enforcing it. The
+# decision lives in its own lib so scripts/test-stale-main-guard.ts can drive it
+# with a stub git and no remote; this only supplies the branch name.
+#
+# Cost: one `git fetch --no-tags origin main`, a single ref, on every push.
+"$root_dir/.githooks/lib/stale-main-guard.sh" "$branch" || exit 1
 
 # --- 2. CI parity checks ----------------------------------------------------
 if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
