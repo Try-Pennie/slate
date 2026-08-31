@@ -28,6 +28,22 @@
 //     legitimate readings, several of them alarming), and several of those panels
 //     sit beside a control that writes back what they show.
 //
+// #1647 and #1648 widened the PATHS again, and each carries its own revert
+// control, because a widened path list and a path list that reaches nothing
+// produce the same clean tree (L98):
+//
+//   - #1647, `src/app/me` recursively: the agent's own page reads the schedule
+//     and its rules, renders them as a form, and REPLACES every rule on save, so
+//     an unreadable read draws a plausible week that is not theirs over hours one
+//     press is about to destroy;
+//   - #1648, `src/lib/provision.ts`, ONE FILE rather than a directory, since
+//     src/lib is not scanned wholesale. It ran read then insert three times on
+//     the LOGIN path with every read swallowed, so a transient failure created a
+//     second organization or a duplicate users row.
+//
+// Both controls assert an EXACT finding count, so a scanner that flagged
+// everything could not satisfy them.
+//
 // #1641 added the two shapes where the result never gets a NAME at all: the
 // inline `(await ...).data`, and a loop over an awaited `Promise.all` wave
 // reading each element's `.data`. The second is the weak-match booking lookup,
@@ -342,6 +358,14 @@ const surface = [
   // stayed outside the scan, which is the shape of a class that reads as closed
   // (L30, L247).
   ...tsFiles(join(ROOT, "src", "app", "me"), true),
+  // #1648: provisioning, a single FILE rather than a directory (src/lib is not
+  // scanned wholesale). It sat outside every scanned path while running read then
+  // insert three times on the LOGIN path with all three reads swallowed, so a
+  // transient failure created a second organization (which mis scopes every
+  // bucket lookup, since resolveBucketByCode matches globally by code) or a
+  // duplicate users row (which splits one person's identity across the roster,
+  // the bookable pool and the manager link).
+  join(ROOT, "src", "lib", "provision.ts"),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -469,6 +493,39 @@ assert(
   "the reverted reads are caught as the result-object shape, not by accident as a destructure",
 );
 
+// A control on the newly-scanned provisioning file (#1648): provision.ts routes
+// its three reads through `unwrap` and carries one `// error-ok:` opt-out on the
+// cosmetic avatar refresh. Append the exact #277 regression shape and confirm the
+// guard flags it, proving the scan actually reaches src/lib/provision.ts. A single
+// FILE is easy to add to the surface list and just as easy to add in a way that
+// never matches anything, which reads exactly like a clean file (L98).
+const provisionPath = join(ROOT, "src", "lib", "provision.ts");
+const provisionSrc = readFileSync(provisionPath, "utf8");
+assert(
+  scanSwallowedErrorReads(provisionSrc, provisionPath).length === 0,
+  "the real provision.ts is clean",
+);
+const provisionReintroduced =
+  provisionSrc +
+  `\nasync function _regression() {\n  const { data } = await supabaseAdmin().from("organizations").select("*").limit(1).maybeSingle();\n  return data;\n}\n`;
+const provisionFindings = scanSwallowedErrorReads(provisionReintroduced, provisionPath);
+// An exact count, not "some findings": one planted read must produce exactly one
+// finding, or the control is equally satisfied by a scanner that flags the whole
+// file, which would hide the real reads going unguarded (L63).
+assert(
+  provisionFindings.length === 1,
+  `positive control: a reintroduced swallowed-error provisioning read is caught (got ${provisionFindings.length})`,
+);
+assert(
+  provisionFindings[0].shape === "destructure" &&
+    provisionFindings[0].snippet.includes('.from("organizations")'),
+  `the finding names the planted read (got: ${provisionFindings[0]?.snippet})`,
+);
+assert(
+  surface.some((f) => f === provisionPath),
+  "src/lib/provision.ts is really in the scanned surface, not merely controlled for",
+);
+
 // And the shape's own alignment, on the real admin page: each finding must name a
 // read that is really there. A scanner that names the WRONG read is worse than one
 // that names none, because the reader goes and looks at code that is fine.
@@ -514,13 +571,19 @@ assert(
   "the /me revert control actually changed page.tsx (else it proves nothing)",
 );
 const meFindings = scanSwallowedErrorReads(meReverted, mePagePath);
+// #1648 tightened this from `.some(...)` to an exact count, for the same reason
+// the provisioning control above carries one: reverting ONE read must produce ONE
+// finding, or a scanner flagging everything satisfies the control just as well.
 assert(
-  meFindings.some(
-    (f) => f.shape === "destructure" && f.snippet.includes('.from("availability_schedules")'),
-  ),
+  meFindings.length === 1,
   `positive control: dropping the /me schedule read's error binding is caught (got ${JSON.stringify(
     meFindings.map((f) => f.snippet),
   )})`,
+);
+assert(
+  meFindings[0].shape === "destructure" &&
+    meFindings[0].snippet.includes('.from("availability_schedules")'),
+  `the finding names the /me schedule read (got: ${meFindings[0]?.snippet})`,
 );
 
 // A control on the two UNNAMED shapes (#1641), driven off the real file the issue
@@ -617,7 +680,8 @@ for (const file of surface) {
 }
 if (siteCount === 0) {
   console.log(
-    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, routing, salesforce, webhook, admin and agent-page source files`,
+    `ok: no swallowed-error reads across ${surface.length} availability, booking, ` +
+      `google, routing, salesforce, webhook, admin, agent-page and provisioning source files`,
   );
 }
 

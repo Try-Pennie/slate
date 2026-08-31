@@ -10,7 +10,10 @@ import LoginPage from "@/app/login/page";
 // must re-enable the button and surface an inline error immediately, not leave
 // it stuck on "Redirecting…" until the watchdog eventually fires.
 
-vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
+// #1648 added a fourth bounce-back code, so the params are mutable per test: a
+// message nothing renders is a message nobody reads.
+const params = vi.hoisted(() => ({ current: new URLSearchParams() }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => params.current }));
 
 const signInWithOAuth = vi.fn();
 vi.mock("@/lib/supabase/browser", () => ({
@@ -19,6 +22,7 @@ vi.mock("@/lib/supabase/browser", () => ({
 
 afterEach(() => {
   signInWithOAuth.mockReset();
+  params.current = new URLSearchParams();
   vi.useRealTimers();
 });
 
@@ -159,5 +163,28 @@ describe("LoginPage", () => {
     expect(bothCuesShown()).toBe(false);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("alert").textContent).toMatch(/couldn't reach/i);
+  });
+});
+
+// The callback bounces a refused sign-in here rather than throwing (#1648). What
+// arrives is a code, so the page has to have copy for it: an unmapped code renders
+// NOTHING, which leaves the person back on the sign-in screen with no explanation
+// and the same button they just pressed.
+describe("LoginPage sign-in error copy", () => {
+  it("explains a refused provisioning as something to try again", () => {
+    params.current = new URLSearchParams("error=provision_failed");
+    render(<LoginPage />);
+
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).toMatch(/try signing in again/i);
+    // Nothing technical, and nothing that reads as their account being wrong.
+    expect(alert).not.toMatch(/error|failed|unwrap|constraint|organization/i);
+  });
+
+  it("renders no banner for a code it has no copy for", () => {
+    params.current = new URLSearchParams("error=not_a_real_code");
+    render(<LoginPage />);
+
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

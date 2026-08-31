@@ -22,6 +22,12 @@ export type DeliveryStatus = "pending" | "success" | "failed";
 export interface Organization {
   id: string;
   name: string;
+  /**
+   * The single org a login resolves to (#1648). At most one row may have this
+   * true, enforced by `organizations_single_default_idx` (migration 0110), so a
+   * second default org is impossible rather than merely unlikely.
+   */
+  is_default: boolean;
   default_timezone: string;
   default_start_minute: number;
   default_end_minute: number;
