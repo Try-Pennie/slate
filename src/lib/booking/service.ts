@@ -45,6 +45,7 @@ import {
   type BulkReassignProgress,
 } from "@/lib/booking/bulk-reassign";
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
+import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
 import {
   commitBulkReassignItemOutcome,
   coverageBookingIds,
@@ -2092,6 +2093,28 @@ export function adminReassignBooking(
 }
 
 /**
+ * Coverage move with NO human actor (#1241): the offboarding automation deactivated
+ * the agent, so there is no person in the request to hold accountable and the move
+ * is recorded as `initiator: "system"`, exactly like the machine contact-owner
+ * reassign path above. Reached only for a job that recorded why it has no actor.
+ *
+ * `allowNonBookable` matches the admin path deliberately: the target came from
+ * `selectCoverageReassignTarget` either way, and the two sweeps must not disagree
+ * about who may cover.
+ */
+export function systemReassignBooking(
+  bookingId: string,
+  agentEmail: string,
+  reason: ValidatedReason,
+): Promise<BookingResult & { overCap: boolean }> {
+  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), {
+    overrideCap: false,
+    initiator: "system",
+    allowNonBookable: true,
+  });
+}
+
+/**
  * The live coverage-target deps (#972): the ordered eligible list from
  * `resolveRouting`, and the batched email / live verify-on-book / working-hours /
  * per-day booking-count reads reused verbatim from the booking path's `realDeps`
@@ -2125,7 +2148,11 @@ function realBulkReassignDeps(): BulkReassignDeps {
       );
     },
     reassign: async (bookingId, targetEmail, job) => {
-      if (!job.created_by) throw new Error("bulk-reassign job has no accountable actor (created_by)");
+      // Who the move is recorded as. Throws for a job that has neither an actor nor
+      // a recorded reason for having none, which is the same refusal as before:
+      // #1241 added the offboarding case, it did not widen the guard (see
+      // coverage-sweep-actor.ts).
+      const sweepActor = coverageSweepActor(job);
       // The reason was validated when the job was enqueued (the bulk-reassign route).
       // Do NOT re-validate membership here (#346): a re-check against the live option
       // set, which loadReasonOptions degrades to coded defaults on a transient read
@@ -2134,7 +2161,6 @@ function realBulkReassignDeps(): BulkReassignDeps {
       const code = (job.reason_code ?? "").trim();
       if (!code) throw new Error("bulk-reassign job has no reason code");
       const reason: ValidatedReason = { code, detail: job.reason_detail ?? null };
-      const actor: BookingActor = { userId: job.created_by, actingAsUserId: job.acting_as_user_id };
       // Downstream signal (#975): a coverage move reuses adminReassignBooking, so
       // it emits the SAME booking.rescheduled webhook every reassign already does
       // (the deliberate Regal contract, see the regal.test.ts lock). That event
@@ -2145,6 +2171,18 @@ function realBulkReassignDeps(): BulkReassignDeps {
       //
       // Cap is NOT overridden: the covering agent was selected under their daily
       // cap. The manual force-override (#974) is the only path that overrides.
+      //
+      // The two branches differ ONLY in who the move is recorded as. Everything
+      // that decides which bookings move, and where they land, is shared, so an
+      // offboarding sweep and an admin's sweep can never cover an agent differently.
+      if (sweepActor.kind === "system") {
+        await systemReassignBooking(bookingId, targetEmail, reason);
+        return;
+      }
+      const actor: BookingActor = {
+        userId: sweepActor.userId,
+        actingAsUserId: sweepActor.actingAsUserId,
+      };
       await adminReassignBooking(bookingId, targetEmail, reason, actor, false);
     },
     commitItemOutcome: commitBulkReassignItemOutcome,
@@ -2172,12 +2210,22 @@ export interface StartBulkReassignInput {
   rangeStartIso: string;
   rangeEndIso: string | null;
   reason: ValidatedReason;
-  actor: BookingActor;
+  /** The staff user accountable for the moves, or null for a sweep the offboarding
+   *  automation triggered, which has no person in the request at all (#1241). Null
+   *  is only accepted alongside `offboardingDeactivatedAtIso`, which is the record
+   *  of WHY there is nobody: an actor lost by accident must not read as a system
+   *  action. */
+  actor: BookingActor | null;
   /** The approved time off this sweep covers, when it came from one (#1237). Present makes
    *  the enqueue idempotent by database key on (request, window), so re-approving or retrying
    *  converges on ONE sweep rather than moving customers' bookings twice. Absent for an
    *  admin-initiated sweep, which has no request to key on. */
   oooRequestId?: string | null;
+  /** The offboarding deactivation this sweep covers (#1241), when the lifecycle API
+   *  triggered it. Makes the enqueue idempotent by database key on (agent,
+   *  deactivation), so a retried or concurrent offboarding call converges on ONE
+   *  sweep rather than moving customers' bookings twice. */
+  offboardingDeactivatedAtIso?: string | null;
 }
 
 /**
@@ -2188,6 +2236,13 @@ export interface StartBulkReassignInput {
 export async function startBulkReassign(
   input: StartBulkReassignInput,
 ): Promise<{ jobId: string; itemCount: number }> {
+  // A sweep moves customers' appointments, so it may only go unattributed when it
+  // can say why. Refused here, at the one place every sweep is created, rather
+  // than at the drain, where the job row already exists and the bookings are
+  // already snapshotted.
+  if (!input.actor && !input.offboardingDeactivatedAtIso) {
+    throw new Error("a coverage sweep with no accountable actor must record why it has none");
+  }
   const orgId = await loadUserOrgId(input.outUserId);
   if (!orgId) throw new orchestration.AgentNotAvailableError();
   return createBulkReassignJob({
@@ -2197,9 +2252,10 @@ export async function startBulkReassign(
     rangeEndIso: input.rangeEndIso,
     reasonCode: input.reason.code,
     reasonDetail: input.reason.detail,
-    createdBy: input.actor.userId,
-    actingAsUserId: input.actor.actingAsUserId ?? null,
+    createdBy: input.actor?.userId ?? null,
+    actingAsUserId: input.actor?.actingAsUserId ?? null,
     oooRequestId: input.oooRequestId ?? null,
+    offboardingDeactivatedAtIso: input.offboardingDeactivatedAtIso ?? null,
   });
 }
 

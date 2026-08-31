@@ -783,6 +783,13 @@ export interface BulkReassignJob {
    *  admin-initiated one. Unique per (request, window), so a re-approval of a
    *  changed window may sweep again but the same window never twice. */
   ooo_request_id: string | null;
+  /** The offboarding deactivation that triggered this sweep (#1241): the agent's
+   *  `deactivated_at` at the moment the lifecycle API deactivated them. NULL for a
+   *  sweep a person started or one an approved time-off request caused. Unique per
+   *  (agent, deactivation), so a retried or concurrent offboarding call converges
+   *  on one sweep. Also the record of WHY such a job has no `created_by`: it has no
+   *  human actor and its moves are recorded as system-initiated. */
+  offboarding_deactivated_at: string | null;
   created_at: string;
   updated_at: string;
 }

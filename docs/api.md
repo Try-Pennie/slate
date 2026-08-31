@@ -381,8 +381,32 @@ An unknown or missing `action` is a `400`. Kept for callers not yet migrated
 - `POST /api/users/deactivate` body `{ "email": "…" }`
 - `POST /api/users/reactivate` body `{ "email": "…" }`
 
-Missing email: `400`. Response: `200 { "status", "userId"?, "deactivate"? }`.
+Missing email: `400`. Response:
+`200 { "status", "userId"?, "deactivate"?, "coverageSweep"? }`.
 Deactivating an unknown email is an idempotent `200`; activating one is `404`.
+
+**Deactivating also moves the appointments they still hold (#1241).** These
+endpoints are the offboarding automation's, with no person in the request, so
+there is nobody to ask whether to reassign and the coverage sweep runs on its
+own: reason `coverage`, open ended from the moment they were deactivated,
+through the same engine the admin coverage panel uses. `coverageSweep` reports
+what it did: `queued` (bookings are on their way to a covering agent), `none`
+(they held nothing still ahead), or `failed`.
+
+A `failed` sweep does NOT fail the deactivate, because the deactivation is what
+stops them being offered for anything new and keeping that is strictly better
+than rolling it back. It is not silent either: the reason is logged under
+`tag=offboarding`, a repeat call converges onto the same sweep rather than
+creating a second, and the `inactive_agent_bookings` monitor pages about an hour
+later naming the agent if nothing moved.
+
+Activating does **not** move anything back. Appointments covered while they were
+gone stay with the agent now holding them (matching #1219): the customer has
+already been told who they are meeting.
+
+The admin UI deactivates through a different path and deliberately keeps its
+confirm step, because an admin has the coverage panel one click away and
+deactivating from the agent page can mean several things.
 
 ---
 
