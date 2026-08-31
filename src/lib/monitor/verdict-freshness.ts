@@ -111,17 +111,40 @@ export function oooProtectionReachedVerdict(result: OooProtectionResult): boolea
  * safety net down silently. An entry here is a person saying, in the repo, that
  * they know this net is off and which issue turns it back on.
  *
- * Two rules make the park safe, both enforced by scripts/test-detector-park.ts:
- * every entry names the issue that arms it again, and the watchdog PAGES when a
- * parked detector reaches a verdict anyway. The second is what stops the park
- * outliving its reason: cutover looks exactly like a parked detector starting to
- * conclude, and nobody has to remember anything for it to be noticed.
+ * Three rules make the park safe, all enforced by scripts/test-detector-park.ts:
+ * every entry names the issue that arms it again, every entry declares how fresh
+ * a verdict has to be to count as concluding (`unparkWithinMs`, and it must be
+ * tighter than the lane's blindness bound), and the watchdog PAGES when a parked
+ * detector reaches a verdict anyway. The last is what stops the park outliving its
+ * reason: cutover looks exactly like a parked detector starting to conclude, and
+ * nobody has to remember anything for it to be noticed.
  */
 export interface ParkedDetector {
   /** Why it cannot conclude, in the terms a reader of the whisper needs. */
   reason: string;
   /** The issue that takes it back out. Required: a park with no issue is a note to nobody. */
   issue: number;
+  /**
+   * How fresh a verdict has to be to mean "this detector is concluding NOW" (#1562).
+   *
+   * Required, and deliberately TIGHTER than the lane's blindness bound. Reusing
+   * that bound is the defect this field replaces: for the failure rate check it
+   * asked "has it concluded at any point in the last four days", and production
+   * answered yes off a two minute coincidence. One full smoke canary pass records
+   * exactly 16 booking attempts against a floor of 20 in a rolling hour, so a
+   * single pass never concludes, but the canary runs four or five times a day and
+   * two landing inside one hour clear the floor between them. That happened once,
+   * at 2026-08-29T01:25Z, and then nothing for two and a half days while a daily
+   * page asked for a blind detector to be armed.
+   *
+   * So the question this window asks is the one that actually separates cutover
+   * from an accident in the test harness: real traffic keeps the stamp fresh on
+   * essentially every tick, where a burst keeps it fresh once and then lets it
+   * lapse. It does not make a burst silent, and it is not claimed to: it bounds
+   * the page to the span the detector was genuinely concluding in, and the lapse
+   * ends it.
+   */
+  unparkWithinMs: number;
 }
 
 export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, ParkedDetector>> = {
@@ -129,11 +152,20 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
     reason:
       "the roster is dark before cutover (#1272), so the bucket the probe picks each tick is offering no times to check",
     issue: 1562,
+    // One pass of the roughly 60 bucket rotation takes about 5 hours, so a verdict
+    // inside 6 hours means the probe concluded on the pass it is currently making.
+    // Its blindness bound is 24 hours, nearly five passes, which is the right
+    // question for "has it stopped" and the wrong one for "is it going".
+    unparkWithinMs: 6 * 60 * 60_000,
   },
   [FAILURE_RATE_VERDICT_LANE]: {
     reason:
-      "the only booking attempts are the smoke canary's, roughly 3 an hour against a floor of 20 in a rolling hour, so no hour is ever large enough to quote a rate from",
+      "every booking attempt is still the smoke canary's, and one full canary pass records exactly 16 of them inside about two minutes against a floor of 20 in a rolling hour, so a pass lands four short and only two passes inside one hour ever clear it",
     issue: 1562,
+    // The rolling hour the check judges. A verdict older than that was quoted from
+    // a window which has since emptied, so it says nothing about whether the check
+    // can judge the hour it is in now.
+    unparkWithinMs: 60 * 60_000,
   },
 };
 
@@ -148,9 +180,13 @@ export function parkedDetector(lane: string): ParkedDetector | null {
  *  - `armed`  the ordinary path: judge it against its bound and page if blind.
  *  - `parked` known blind, deliberately quiet, and reported as parked so the
  *             missing net is visible rather than merely silent.
- *  - `unpark` parked, and yet it has just concluded. The reason for the park has
- *             stopped being true, so this pages: it is the arrival of the very
- *             traffic the park was waiting for.
+ *  - `unpark` parked, and yet it has just concluded, judged against the park's own
+ *             `unparkWithinMs` rather than the wider blindness bound. The reason
+ *             for the park has stopped being true, so this pages: it is the
+ *             arrival of the very traffic the park was waiting for. A detector
+ *             that lapses back to `parked` ends that page with its own wording,
+ *             because nobody armed it and an all-clear saying otherwise would be
+ *             a claim the watchdog never measured.
  *
  * An UNREADABLE stamp (the epoch-0 sentinel, #1172) is not a verdict. Reading it
  * as one would arm a detector off a corrupt record, which is the opposite of what
@@ -162,10 +198,14 @@ export function detectorParkState(
   lane: string,
   lastVerdictMs: number | null | undefined,
   nowMs: number,
-  boundMs: number,
 ): DetectorParkState {
-  if (!parkedDetector(lane)) return "armed";
+  const parked = parkedDetector(lane);
+  if (!parked) return "armed";
   if (lastVerdictMs === null || lastVerdictMs === undefined) return "parked";
   if (!Number.isFinite(lastVerdictMs) || lastVerdictMs <= 0) return "parked";
-  return nowMs - lastVerdictMs < boundMs ? "unpark" : "parked";
+  // The park's OWN window, not the blindness bound it sits inside (#1562). The
+  // bound answers "has this stopped concluding", which is a far older verdict than
+  // "is this concluding", and using it here made a single accidental verdict read
+  // as the arrival of real traffic for the next four days.
+  return nowMs - lastVerdictMs < parked.unparkWithinMs ? "unpark" : "parked";
 }

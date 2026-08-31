@@ -77,7 +77,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "detector_unpark:*",
     kind: "condition",
     why:
-      "A parked detector has started reaching verdicts, so it is switched off while able to watch; deleting its registry entry arms it and the watchdog sees that on its next pass.",
+      "A parked detector has started reaching verdicts, so it is switched off while able to watch. It ends two ways and each says so in its own words: deleting the registry entry arms it, or the verdict lapses and the park stands with nobody having armed anything (#1562).",
   },
   {
     key: "completion_sweep_saturated",

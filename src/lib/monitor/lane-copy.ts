@@ -267,12 +267,47 @@ export function verdictUnparkAlertText(lane: string): string {
   );
 }
 
-/** All-clear for an un-park page: the detector has been armed. */
+/**
+ * All-clear for an un-park page: somebody armed the detector.
+ *
+ * One of TWO endings, and the only one that may say this (#1562). See
+ * `verdictUnparkLapsedText` for the other.
+ */
 export function verdictUnparkRecoveryText(lane: string): string {
   const subject = VERDICT_SUBJECT[lane];
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is armed again, so it is ` +
     `being watched against its own bound like every other detector and the earlier ` +
     `page is cleared. No action is needed.`
+  );
+}
+
+/**
+ * The OTHER ending of an un-park page: the detector went quiet again (#1562).
+ *
+ * A park ends two ways and they are not the same news. Somebody arming the
+ * detector is `verdictUnparkRecoveryText`. This one is the verdict lapsing: the
+ * detector concluded, the page asked for it to be armed, nobody armed it, and it
+ * has now stopped concluding, so the park it never left still stands.
+ *
+ * It needs its own wording because the two were sharing one all-clear, and that
+ * all-clear says the detector "is armed again, so it is being watched against its
+ * own bound". Sent on a lapse, every clause of it is false, and it is a claim the
+ * watchdog never measured (L11). What it must leave the reader with instead is why
+ * the earlier page was not worth acting on: the burst was too brief to be the
+ * traffic the park is waiting for.
+ */
+export function verdictUnparkLapsedText(lane: string): string {
+  const subject = VERDICT_SUBJECT[lane];
+  const parked = parkedDetector(lane);
+  // Deliberately does NOT recite the park's reason. The weekly whisper carries that,
+  // at length, and this is a message whose whole content is that there is nothing to
+  // do: repeating four lines of arithmetic here buries the one fact worth reading.
+  return (
+    `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has stopped reaching a verdict ` +
+    `again, so the earlier page asking for it to be switched on is cleared and it stays parked. ` +
+    `Nothing was armed, and nothing needs to be: the verdict was too short lived to be the ` +
+    `traffic the park is waiting for. #${parked?.issue} is still where it goes back on. ` +
+    `No action is needed.`
   );
 }
