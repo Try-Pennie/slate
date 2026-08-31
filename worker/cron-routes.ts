@@ -57,7 +57,8 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // on terminal deliveries older than the 90-day window (#1073), redact
   // consumer PII on bookings whose appointment is past the 24-month window (#1071),
   // and delete cached busy_blocks whose end is far enough past to be unreadable
-  // (#1252: that table had no retention at all and reached 403k rows). The prune
+  // (#1252: that table had no retention at all and reached 403k rows), and clear
+  // the same 24-month contact data from the Snowflake mirror (#1180). The prune
   // sits here rather than on the every-minute trigger deliberately, because that
   // invocation is the one already short of CPU headroom.
   "0 3 * * *": [
@@ -65,6 +66,19 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     "/api/cron/prune-webhook-payloads",
     "/api/cron/prune-bookings-pii",
     "/api/cron/prune-busy-blocks",
+    // #1180: the warehouse half of the same 24 month window prune-bookings-pii
+    // enforces in Supabase. Co-scheduled here rather than given its own
+    // expression because it needs no new cron slot and its budget cost is small
+    // (one select, four updates and a verify), and because the retention gate
+    // stopped making Snowflake calls in #1139, so this invocation has the
+    // headroom the every-minute one does not.
+    //
+    // Concurrent with prune-bookings-pii on purpose, and safe in either order:
+    // that lane refuses to redact a row the warehouse has not confirmed, but the
+    // confirmation asks only whether the id is PRESENT and its watermark current,
+    // never whether a contact column holds anything, so a row this sweep has
+    // already cleared still verifies as archived.
+    "/api/cron/prune-warehouse-pii",
   ],
   // Calendar hydration rotation (#1261): re-bootstrap a slice of the calendars every 15
   // minutes, sized from the live count so every calendar is refreshed at least once a day.

@@ -81,6 +81,7 @@ const healthy = () => ({
   "prune-webhook-payloads": ago(4 * 60 * MIN),
   "prune-bookings-pii": ago(4 * 60 * MIN),
   "prune-busy-blocks": ago(4 * 60 * MIN),
+  "prune-warehouse-pii": ago(4 * 60 * MIN),
   // The detector verdict stamps (#1394), also judged with neverIsStale ON: a
   // detector that has NEVER concluded is the exact state they exist to notice, so
   // omitting one from a fixture reads as blind and pages.

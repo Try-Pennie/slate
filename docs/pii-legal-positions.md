@@ -79,11 +79,23 @@ same 24 months applies to the copy in the data warehouse.
 window, short enough to be defensible as a real limit rather than indefinite
 retention.
 
-**What the system does.** A daily job finds bookings whose appointment is more than
-24 months old and blanks the name, email, phone, and prefilled answers, keeping the
-appointment itself for reporting. It is keyed on the appointment date, not on a
-status flag that a failed background job might leave unset, so a stale record
-cannot avoid the sweep.
+**What the system does.** Two daily jobs, one per copy of the data, because the
+warehouse copy does not inherit the live database's cleanup and had to be given its
+own. Each finds bookings whose appointment is more than 24 months old and blanks the
+name, email, phone, and prefilled answers, keeping the appointment itself for
+reporting. Both are keyed on the appointment date, not on a status flag that a
+failed background job might leave unset, so a stale record cannot avoid the sweep.
+
+Both jobs report failure rather than silence: anything either one cannot measure
+(an unreadable read, an unreadable count, or data still present after the cleanup
+ran) raises an alert rather than being recorded as "nothing to clean", and a job
+that stops running at all is alerted on separately. That matters for this position
+specifically, because a cleanup that quietly stopped and a cleanup with nothing to
+do produce the same visible result.
+
+Worth stating plainly, since it was true until 2026-08-31: the warehouse half was
+described in this memo before it existed, and only the live database was actually
+being cleaned. Both are enforced now.
 
 Worth knowing: **nothing has aged out yet.** Slate's oldest bookings are from June
 2026, so no consumer data has reached 24 months and the job currently has nothing

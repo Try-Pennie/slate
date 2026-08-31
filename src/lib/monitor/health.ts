@@ -138,6 +138,9 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
   "prune-webhook-payloads": 28 * 60 * MIN,
   "prune-bookings-pii": 28 * 60 * MIN,
   "prune-busy-blocks": 28 * 60 * MIN,
+  // #1180. Same daily cadence and the same reasoning as its siblings: one missed
+  // or failing run pages, and cron jitter never causes it.
+  "prune-warehouse-pii": 28 * 60 * MIN,
 };
 
 /**

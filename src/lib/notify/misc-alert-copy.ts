@@ -37,11 +37,24 @@ export function watchLapseRecovery(): string {
       "cleared and no action is needed.";
 }
 
-/** What stops being honored while a given retention lane is not deleting. */
+/**
+ * What stops being honored while a given retention lane is not deleting.
+ *
+ * An explicit entry per lane, because the previous shape fell through to routing's
+ * sentence for any lane it did not recognise. A new lane's skip alert would then
+ * have claimed routing decisions were at stake, which is a message asserting
+ * something its check never measured, and it would read as a deliberate choice
+ * (L11, L113). The fallback now names the lane and claims nothing about what it
+ * protects.
+ */
 export function retentionLaneStake(lane: string): string {
   if (lane === "prune-bookings-pii") return "consumer contact data past the 24 month window is not being redacted";
   if (lane === "prune-webhook-payloads") return "webhook payloads past the 90 day window are keeping full attendee PII";
-  return "routing decisions past the 12 month window are not being pruned";
+  if (lane === "prune-routing") return "routing decisions past the 12 month window are not being pruned";
+  if (lane === "prune-warehouse-pii") {
+    return "consumer contact data past the 24 month window is not being cleared from the warehouse copy";
+  }
+  return `whatever the ${lane} lane protects is not being enforced`;
 }
 
 /**
@@ -58,21 +71,41 @@ export const MIRROR_NOT_CONFIGURED = "mirror not configured";
  * that actually ships rather than a copy of it (L41).
  */
 export function retentionSkippedText(lane: string, reason: string): string {
-  const remedy =
-    reason === MIRROR_NOT_CONFIGURED
-      ? `Retention stays stopped until the warehouse credential is set: see the Snowflake settings in DEPLOY.md.`
-      : `Retention stays stopped until the export lane catches up: check the snowflake-export lane and ` +
-        `/api/admin/snowflake-check.`;
+  // Two different situations, and they must not borrow each other's wording: an
+  // absent credential is not a mirror that is "behind", and a reader mid-incident
+  // sent to chase a lagging export lane that was never configured is being given a
+  // remedy that cannot work (L11, L111).
+  const unconfigured = reason === MIRROR_NOT_CONFIGURED;
+  const cause = unconfigured
+    ? "the Snowflake mirror is not configured here"
+    : `the Snowflake mirror is not confirmed current (${reason})`;
+  const remedy = unconfigured
+    ? `Retention stays stopped until the warehouse credential is set: see the Snowflake settings in DEPLOY.md.`
+    : `Retention stays stopped until the export lane catches up: check the snowflake-export lane and ` +
+      `/api/admin/snowflake-check.`;
   return (
-    `The ${lane} retention lane ran but did nothing because the Snowflake mirror is not ` +
-        `confirmed current (${reason}), so ${retentionLaneStake(lane)}. ${remedy}`
+    `The ${lane} retention lane ran but did nothing because ${cause}, so ` +
+        `${retentionLaneStake(lane)}. ${remedy}`
   );
 }
 
-/** A retention lane is past its gate and deleting again. */
+/**
+ * A retention lane is past its gate and deleting again.
+ *
+ * The REASON differs by lane and must not be borrowed, which reading the preview
+ * is what caught (#1180). The three Supabase lanes are gated on the export lane
+ * keeping up, so "the mirror is confirmed current" is what their run measured. The
+ * warehouse lane has no export gate at all (it writes to the mirror rather than
+ * relying on it), so its only gate is the credential existing, and claiming the
+ * mirror was confirmed current would assert something nothing checked (L11).
+ */
 export function retentionResumedText(lane: string): string {
+  const because =
+    lane === "prune-warehouse-pii"
+      ? "The warehouse credential is present"
+      : "The Snowflake mirror is confirmed current";
   return (
-    `The ${lane} retention lane is deleting again. The Snowflake mirror is confirmed current, so aged ` +
+    `The ${lane} retention lane is deleting again. ${because}, so aged ` +
         `data is being cleared on schedule and the retention window is being honored once more. ` +
         `No action is needed.`
   );

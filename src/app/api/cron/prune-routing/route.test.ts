@@ -295,7 +295,13 @@ describe("GET /api/cron/prune-routing (verify-gated, #1102)", () => {
     // would just re-post the same thing.
     expect(cooldownMs).toBeGreaterThan(12 * 60 * 60_000);
     expect(text).toMatch(/routing decisions/);
-    expect(text).toMatch(/mirror not configured/);
+    // The CAUSE and its matching remedy, asserted as the rule rather than as the
+    // exact wording: an absent credential must not borrow the lagging-mirror
+    // sentence, because chasing an export lane that was never configured is a
+    // remedy that cannot work (L11, L111).
+    expect(text).toMatch(/not configured/);
+    expect(text).toMatch(/DEPLOY\.md/);
+    expect(text).not.toMatch(/catches up/);
     // Still stamps: the cron DID fire, which is a different question from whether
     // it did any work.
     expect(hb.recordHeartbeat).toHaveBeenCalledWith("prune-routing");

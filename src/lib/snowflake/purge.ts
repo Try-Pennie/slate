@@ -159,6 +159,63 @@ export interface PurgeOutcome {
   reasons: string[];
 }
 
+export interface PurgeRunResult {
+  /** Rows each statement changed, by mirror table. */
+  rowsByTable: Record<string, number>;
+  /** What the verify afterwards still found, by table. Null = unreadable. */
+  residualAfter: Record<string, number | null>;
+  reasons: string[];
+  /** True only when the verify measured zero residual in every column. */
+  ok: boolean;
+}
+
+/**
+ * Run every redact-in-place statement for `ids`, then verify nothing is left.
+ *
+ * Shared by the two callers that clear contact data from the warehouse: a
+ * deletion request (below) and the 24 month retention sweep (#1180,
+ * `warehouse-retention.ts`). They differ ONLY in how they choose the ids, so
+ * sharing this is what keeps them clearing the same field set: a second copy
+ * would be a second chance to miss a column, which is exactly what #1205 and
+ * #1207 both were (L41).
+ *
+ * Fails loud on anything it cannot measure. An unreadable row count THROWS rather
+ * than being recorded as zero, because a purge reported as having changed no rows
+ * is indistinguishable from one that had nothing to change, and for a compliance
+ * control those are opposite facts (the `unwrapCount` rule, applied warehouse-side).
+ */
+export async function runPurgeAndVerify(
+  config: SnowflakeConfig,
+  ids: string[],
+  tag: string,
+): Promise<PurgeRunResult> {
+  const rowsByTable: Record<string, number> = {};
+  for (const sql of buildPurgeStatements(ids)) {
+    const label = statementLabel(sql);
+    const res = await executeStatement(config, sql);
+    const changed = readNumber(res);
+    if (changed === null) {
+      throw new Error(`${tag}: ${label} ran but Snowflake's row count could not be read`);
+    }
+    rowsByTable[label] = changed;
+  }
+
+  const verify = await executeStatement(config, buildVerifyStatement(ids));
+  const residualAfter: Record<string, number | null> = {};
+  const reasons: string[] = [];
+  VERIFY_COLUMNS.forEach((col, i) => {
+    const count = readNumber(verify, i);
+    residualAfter[col.table] = count;
+    if (count === null) {
+      reasons.push(`${col.table}: could not read the residual count, so the purge is unverified`);
+    } else if (count > 0) {
+      reasons.push(`${col.table}: ${count} row(s) still hold contact PII after the purge`);
+    }
+  });
+
+  return { rowsByTable, residualAfter, reasons, ok: reasons.length === 0 };
+}
+
 /**
  * Clear the warehouse copy of the contact data for erased bookings, then verify.
  *
@@ -202,31 +259,7 @@ export async function purgeSnowflakeErasure(ids?: string[], actorId?: string): P
     return { ok: true, bookingIds: [], rowsByTable: {}, residualAfter: {}, reasons: [] };
   }
 
-  const rowsByTable: Record<string, number> = {};
-  for (const sql of buildPurgeStatements(target)) {
-    const label = statementLabel(sql);
-    const res = await executeStatement(config, sql);
-    const changed = readNumber(res);
-    if (changed === null) {
-      throw new Error(`erasure purge: ${label} ran but Snowflake's row count could not be read`);
-    }
-    rowsByTable[label] = changed;
-  }
-
-  const verify = await executeStatement(config, buildVerifyStatement(target));
-  const residualAfter: Record<string, number | null> = {};
-  const reasons: string[] = [];
-  VERIFY_COLUMNS.forEach((col, i) => {
-    const count = readNumber(verify, i);
-    residualAfter[col.table] = count;
-    if (count === null) {
-      reasons.push(`${col.table}: could not read the residual count, so the purge is unverified`);
-    } else if (count > 0) {
-      reasons.push(`${col.table}: ${count} row(s) still hold contact PII after the purge`);
-    }
-  });
-
-  const ok = reasons.length === 0;
+  const { rowsByTable, residualAfter, reasons, ok } = await runPurgeAndVerify(config, target, "erasure purge");
   log.info("erasure-purge", {
     msg: ok ? "purged and verified" : "purge left a residual",
     bookings: target.length,
