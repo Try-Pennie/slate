@@ -264,8 +264,19 @@ export async function syncSalesforceNow(): Promise<void> {
       r.managersUnlinked
         ? `${plural(r.managersUnlinked, "agent")} no longer has a manager in Salesforce`
         : null,
+      // The two refusals, said separately (#1653). Before the split, one line
+      // covered both, so an admin who pressed sync to fix a manager problem read
+      // "could not be matched" whether the name was missing (a picklist value to
+      // correct) or shared by two people (a Salesforce record to fix), and the
+      // second is the one that decides whether an approval reaches the right
+      // person. The unit is AGENTS, which is what the count has always held: the
+      // old line said "manager name" and rendered "15 manager names" for one
+      // unmatched name shared by a team of fifteen.
       r.managersUnresolved
-        ? `${plural(r.managersUnresolved, "manager name")} in Salesforce could not be matched, so those links were left alone`
+        ? `${plural(r.managersUnresolved, "agent")} ${r.managersUnresolved === 1 ? "has" : "have"} a manager name nothing in Salesforce matched, so those links were left alone`
+        : null,
+      r.managersAmbiguous
+        ? `${plural(r.managersAmbiguous, "agent")} left unlinked because ${plural(r.managerNamesAmbiguous, "manager name")} in Salesforce ${r.managerNamesAmbiguous === 1 ? "answers" : "answer"} to more than one user`
         : null,
       r.managersCreated ? `${plural(r.managersCreated, "new manager")}` : null,
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,

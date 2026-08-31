@@ -52,6 +52,10 @@ beforeEach(() => {
     deactivated: 0,
     managersCreated: 0,
     managersLinked: 0,
+    managersUnlinked: 0,
+    managersUnresolved: 0,
+    managersAmbiguous: 0,
+    managerNamesAmbiguous: 0,
     managersPromoted: 0,
     salesforceIdsLinked: 0,
     salesforceIdDisagreements: 0,
@@ -82,11 +86,13 @@ describe("GET /api/cron/agents", () => {
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.
   it("announces recovery on a clean pass, so the earlier page can be closed", async () => {
     await GET(req());
-    // Two conditions this lane owns, so a clean pass closes both: the sync
-    // failing, and the roster disagreeing with Salesforce about a user id (#1587).
+    // Three conditions this lane owns, so a clean pass closes all of them: the
+    // sync failing, the roster disagreeing with Salesforce about a user id
+    // (#1587), and a manager name answering to more than one user (#1653).
     expect(dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0])).toEqual([
       "agent_sync_failures",
       "salesforce_user_id_conflicts",
+      "salesforce_manager_ambiguous",
     ]);
   });
 
@@ -194,6 +200,111 @@ describe("GET /api/cron/agents", () => {
     // already written by this point.
     it("still returns 200 when the conflict page cannot be delivered", async () => {
       withConflicts({ salesforceIdDisagreements: 1 });
+      dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+    });
+  });
+
+
+  // #1653: a manager name that answers to more than one Salesforce user is a
+  // CONDITION. It stays true until somebody edits Salesforce, it decides who
+  // approves that rep's time off, and until it is settled the sync deliberately
+  // writes nothing, which is invisible from every other angle.
+  //
+  // Its OWN key, not folded into salesforce_user_id_conflicts: that condition is
+  // about the stored id column and its all-clear says the roster agrees about
+  // user ids. Sharing one key would give two independent checks one status field,
+  // so clearing either would clear both (L53).
+  describe("manager name ambiguity (#1653)", () => {
+    const withResult = (over: Record<string, number>) =>
+      sync.syncSalesforceAgents.mockResolvedValueOnce({
+        inserted: 0,
+        updated: 0,
+        deactivated: 0,
+        managersCreated: 0,
+        managersLinked: 0,
+        managersUnlinked: 0,
+        managersUnresolved: 0,
+        managersAmbiguous: 0,
+        managerNamesAmbiguous: 0,
+        managersPromoted: 0,
+        salesforceIdsLinked: 0,
+        salesforceIdDisagreements: 0,
+        salesforceIdAmbiguous: 0,
+        salesforceIdClaimed: 0,
+        salesforceIdsUnresolved: 0,
+        ...over,
+      });
+
+    const sentFor = (key: string) =>
+      dispatch.sendThrottledAlert.mock.calls.filter((c: unknown[]) => c[0] === key);
+    const resolvedKeys = () =>
+      dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]);
+
+    it("pages when a manager name answers to more than one Salesforce user", async () => {
+      withResult({ managersAmbiguous: 15, managerNamesAmbiguous: 1 });
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      const sent = sentFor("salesforce_manager_ambiguous");
+      expect(sent).toHaveLength(1);
+      const text = sent[0][2] as string;
+      // The reader has to learn that nothing was re-pointed, which is the whole
+      // reason this is a page rather than a silent correction.
+      expect(text).toContain("Nothing was changed");
+      // BOTH numbers reach the copy. The shape this really takes is one duplicated
+      // name over a whole team, and a message carrying only one of the two reads as
+      // a much smaller or a much larger problem than it is. A count the route never
+      // passed would render as "undefined", which no substring assertion on the
+      // sentence around it would notice.
+      expect(text).toContain("15 people");
+      expect(text).toContain("1 manager name");
+      expect(text).not.toContain("undefined");
+      expect(text).not.toContain("NaN");
+      expect(resolvedKeys()).not.toContain("salesforce_manager_ambiguous");
+    });
+
+    // The asymmetry, mirroring #1587. A rep whose manager name matched NOBODY has
+    // no link written and every consumer correctly sees no manager, which is safe.
+    // A name that answers to two people is one where a link may name the wrong
+    // human, and wrong is worse than missing.
+    it("does NOT page for a manager name that simply matched nobody", async () => {
+      withResult({ managersUnresolved: 12 });
+      await GET(req());
+      expect(sentFor("salesforce_manager_ambiguous")).toHaveLength(0);
+      // And it still counts as healthy for this condition, so a previous page clears.
+      expect(resolvedKeys()).toContain("salesforce_manager_ambiguous");
+    });
+
+    it("announces recovery on a run that measured no ambiguity", async () => {
+      await GET(req());
+      expect(resolvedKeys()).toContain("salesforce_manager_ambiguous");
+    });
+
+    // #1152: the all-clear hangs off a MEASURED healthy result, never off "we did
+    // not alert this run". A sync that threw measured nothing at all.
+    it("sends NO all-clear for the manager condition when the sync itself failed", async () => {
+      sync.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF unreachable"));
+      await GET(req());
+      expect(resolvedKeys()).not.toContain("salesforce_manager_ambiguous");
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+
+    // The two conditions are independent: an id conflict must not silence or clear
+    // the manager page, and the reverse.
+    it("pages the manager condition while the id condition is clearing", async () => {
+      withResult({ managersAmbiguous: 1 });
+      await GET(req());
+      expect(sentFor("salesforce_manager_ambiguous")).toHaveLength(1);
+      expect(sentFor("salesforce_user_id_conflicts")).toHaveLength(0);
+      expect(resolvedKeys()).toContain("salesforce_user_id_conflicts");
+      expect(resolvedKeys()).not.toContain("salesforce_manager_ambiguous");
+    });
+
+    // A Slack outage must not turn a good roster sync into a 500: the roster is
+    // already written by this point.
+    it("still returns 200 when the manager page cannot be delivered", async () => {
+      withResult({ managersAmbiguous: 3 });
       dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
       const res = await GET(req());
       expect(res.status).toBe(200);

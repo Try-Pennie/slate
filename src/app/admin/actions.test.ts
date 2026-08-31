@@ -659,6 +659,62 @@ describe("syncSalesforceNow streak reset (#491)", () => {
     await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\?sync_error/);
     expect(streak.clearFailureStreak).not.toHaveBeenCalled();
   });
+
+  // #1653: the admin who presses this button is usually pressing it BECAUSE a
+  // manager link looks wrong, so the summary is where they find out what the run
+  // refused to do. A manager name answering to two Salesforce users and one
+  // answering to nobody need opposite fixes, so they are two sentences (L11); one
+  // line covering both told the reader neither.
+  it("says separately that a manager name was shared and that one matched nobody", async () => {
+    salesforce.syncSalesforceAgents.mockResolvedValueOnce({
+      updated: 2,
+      inserted: 0,
+      managersLinked: 0,
+      managersUnlinked: 0,
+      managersUnresolved: 1,
+      managersAmbiguous: 15,
+      managerNamesAmbiguous: 1,
+      managersCreated: 0,
+      managersPromoted: 0,
+      deactivated: 0,
+    });
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("15 agents left unlinked");
+    expect(redirected).toContain("1 manager name in Salesforce answers to more than one user");
+    expect(redirected).toContain("1 agent has a manager name nothing in Salesforce matched");
+    expect(redirected).not.toContain("undefined");
+    expect(redirected).not.toContain("NaN");
+  });
+
+  // The count has always been per AGENT. The old line called it a manager name, so
+  // one unmatched name shared by a team of fifteen rendered as fifteen names.
+  it("counts the unmatched refusal in agents, not in picklist names", async () => {
+    salesforce.syncSalesforceAgents.mockResolvedValueOnce({
+      updated: 0,
+      inserted: 0,
+      managersLinked: 0,
+      managersUnlinked: 0,
+      managersUnresolved: 15,
+      managersAmbiguous: 0,
+      managerNamesAmbiguous: 0,
+      managersCreated: 0,
+      managersPromoted: 0,
+      deactivated: 0,
+    });
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("15 agents have a manager name nothing in Salesforce matched");
+    expect(redirected).not.toContain("15 manager names");
+  });
 });
 
 // Granting elevated access by email (#160). The surface exists because seeding a

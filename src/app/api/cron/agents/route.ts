@@ -11,6 +11,8 @@ import { log } from "@/lib/log";
 import {
   agentSyncFailureAlert,
   agentSyncRecovery,
+  salesforceManagerAmbiguousAlert,
+  salesforceManagerAmbiguousRecovery,
   salesforceUserIdConflictAlert,
   salesforceUserIdConflictRecovery,
 } from "@/lib/monitor/cron-alert-copy";
@@ -97,6 +99,39 @@ export async function GET(req: NextRequest) {
       ).catch(() => false);
       if (clearedIds) {
         log.info("agents", { msg: "salesforce user id conflict alert cleared" });
+      }
+    }
+
+    // #1653: a manager name answering to more than one Salesforce user. Its own
+    // condition, not folded into the id conflicts above, because the two are
+    // independent checks and one status field between them would have either
+    // clearing both (L53).
+    //
+    // Only the AMBIGUOUS refusal pages. A manager name that matched NOBODY leaves
+    // the rep with no manager, which every consumer correctly sees as no manager;
+    // a name that matched several may leave a link naming the wrong human, and
+    // wrong is worse than missing. That is the same asymmetry #1587 settled.
+    //
+    // Both directions hang off THIS point, reached only after the sync returned a
+    // real result, so a run that threw clears nothing (#1134, #1152).
+    if (sync.managersAmbiguous > 0) {
+      // alert-key: salesforce_manager_ambiguous
+      await sendThrottledAlert(
+        "salesforce_manager_ambiguous",
+        SYNC_ALERT_COOLDOWN_MS,
+        salesforceManagerAmbiguousAlert(
+          sync.managersAmbiguous,
+          sync.managerNamesAmbiguous,
+        ),
+      ).catch(() => {});
+    } else {
+      // alert-key: salesforce_manager_ambiguous
+      const clearedManagers = await resolveAlert(
+        "salesforce_manager_ambiguous",
+        salesforceManagerAmbiguousRecovery(),
+      ).catch(() => false);
+      if (clearedManagers) {
+        log.info("agents", { msg: "salesforce manager ambiguity alert cleared" });
       }
     }
     return NextResponse.json({

@@ -125,6 +125,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Part of the roster cannot be given a Salesforce user id (a disagreement, a shared email, or an id another row holds); it stays true until somebody fixes those records, and the hourly sync re-measures it.",
   },
   {
+    key: "salesforce_manager_ambiguous",
+    kind: "condition",
+    why:
+      "A manager name in the Agent_Manager picklist answers to more than one " +
+      "Salesforce user, so those reps have no settled approver; it stays true until " +
+      "somebody makes the name unique in Salesforce, and the hourly sync re-measures " +
+      "it. Its own key rather than a fold into salesforce_user_id_conflicts, which " +
+      "is about the stored id column: sharing one would give two independent checks " +
+      "one status field, so clearing either would clear both.",
+  },
+  {
     key: "availability_drift:*",
     kind: "condition",
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
