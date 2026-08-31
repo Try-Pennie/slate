@@ -36,16 +36,45 @@ export async function coverageBookingIds(
   rangeStartIso: string,
   rangeEndIso: string | null,
 ): Promise<string[]> {
+  const rows = await coverageBookings(outUserId, rangeStartIso, rangeEndIso);
+  return rows.map((r) => r.id);
+}
+
+/**
+ * One booking a coverage sweep would move, as a person reads it (#1239).
+ *
+ * `starts_at` / `ends_at` / `attendee_name` exist so the manager's approved notice can
+ * NAME the appointments starting within the next couple of hours. They never decide
+ * what moves: that is `movesUnderCoverage` alone, and it carries no lead time.
+ */
+export interface CoverageBookingRow {
+  id: string;
+  starts_at: string;
+  ends_at: string;
+  attendee_name: string | null;
+}
+
+/**
+ * The bookings a coverage sweep over this window would move, with enough of each row
+ * to describe it. `coverageBookingIds` is this, narrowed to ids: ONE query, so the
+ * count in the preview, the work the sweep snapshots and the appointments the notice
+ * names can never mean different things (L16).
+ */
+export async function coverageBookings(
+  outUserId: string,
+  rangeStartIso: string,
+  rangeEndIso: string | null,
+): Promise<CoverageBookingRow[]> {
   const bounds = coverageSelectionBounds(
     { startIso: rangeStartIso, endIso: rangeEndIso },
     new Date().toISOString(),
   );
-  const rows = await selectAllPages<{ id: string }>("bulk-reassign-coverage-bookings", (from, to) => {
+  return selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", (from, to) => {
     let q = supabaseAdmin()
       // cap-safe: read every page via selectAllPages (.range below), so an out
       // agent with more than one page of upcoming bookings is fully snapshotted.
       .from("bookings")
-      .select("id")
+      .select("id, starts_at, ends_at, attendee_name")
       .eq("assigned_user_id", outUserId)
       .in("status", ACTIVE_BOOKING_STATUSES)
       // Strictly after now: one already under way is never moved out from under the customer.
@@ -57,7 +86,6 @@ export async function coverageBookingIds(
     if (bounds.startsBeforeIso) q = q.lt("starts_at", bounds.startsBeforeIso);
     return q.range(from, to);
   });
-  return rows.map((r) => r.id);
 }
 
 export interface CreateBulkReassignJobInput {
@@ -99,12 +127,23 @@ const UNIQUE_VIOLATION = "23505";
  */
 export async function createBulkReassignJob(
   input: CreateBulkReassignJobInput,
-): Promise<{ jobId: string; itemCount: number }> {
+): Promise<{ jobId: string; itemCount: number; snapshot: CoverageBookingRow[] }> {
   const oooRequestId = input.oooRequestId ?? null;
   const offboardingDeactivatedAt = input.offboardingDeactivatedAtIso ?? null;
-  return enqueueCoverageSweep({
-    snapshotBookingIds: () =>
-      coverageBookingIds(input.outUserId, input.rangeStartIso, input.rangeEndIso),
+  // The rows this run snapshotted, kept so the caller can describe the work to a
+  // person (#1239) without asking the database the same question a second time and
+  // getting a different answer. The enqueue layer itself only ever needs the ids.
+  //
+  // Assigned on EVERY path through the enqueue, including the #1241 offboarding key
+  // and the convergent conflict path, because `snapshotBookingIds` is what both of
+  // them snapshot with: there is no route to a job that leaves this holding the
+  // wrong rows for the run that just happened.
+  let snapshot: CoverageBookingRow[] = [];
+  const result = await enqueueCoverageSweep({
+    snapshotBookingIds: async () => {
+      snapshot = await coverageBookings(input.outUserId, input.rangeStartIso, input.rangeEndIso);
+      return snapshot.map((r) => r.id);
+    },
 
     insertJob: async (status) => {
       const { data, error } = await supabaseAdmin()
@@ -185,6 +224,7 @@ export async function createBulkReassignJob(
       if (error) throw new Error(`bulk-reassign job reactivate failed: ${error.message}`);
     },
   });
+  return { ...result, snapshot };
 }
 
 /**

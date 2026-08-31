@@ -319,6 +319,41 @@ export default async function OooQueuePage({
     return [...names];
   };
 
+  // #1239: the coverage sweep each approved request enqueued, so its row can link
+  // to the panel that shows what has actually moved. Without it the manager is told
+  // in Slack that a dozen appointments were queued and has nowhere in Slate to watch
+  // them land.
+  //
+  // Most recent sweep per request: `modifyOoo` can legitimately produce a second one
+  // for a re-approved window, and the newest is the one still draining.
+  const coverageJobByRequest = new Map<string, string>();
+  const approvedRequestIds = history
+    .filter((r) => r.status === "approved")
+    .map((r) => r.id);
+  if (approvedRequestIds.length > 0) {
+    // error-ok: a read error costs the row its link and nothing else. Nothing here
+    // counts these rows or decides anything from their absence; the panel is still
+    // reachable from the agent's own page, and the next render retries.
+    const { data, error } = await db
+      .from("bulk_reassign_jobs")
+      // cap-safe: bounded by the explicit limit below, over the at most 50 decided
+      // requests this page lists.
+      .select("id, ooo_request_id, created_at")
+      .in("ooo_request_id", approvedRequestIds)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (!error) {
+      for (const job of (data ?? []) as {
+        id: string;
+        ooo_request_id: string | null;
+      }[]) {
+        if (job.ooo_request_id && !coverageJobByRequest.has(job.ooo_request_id)) {
+          coverageJobByRequest.set(job.ooo_request_id, job.id);
+        }
+      }
+    }
+  }
+
   const whenOf = (r: OooRequest) =>
     formatWhenLine(r.starts_at, r.ends_at, r.display_tz_id, r.display_tz_label);
   // One description of the request's finished state, shared with the retry
@@ -684,14 +719,26 @@ export default async function OooQueuePage({
                           decide whether to press Retry. */}
                       {r.status === "approved" && <FailedSteps steps={failures} />}
                     </div>
-                    {canRetry && r.status === "approved" && failures.length > 0 && (
-                      <form action={retryOooAction}>
-                        <input type="hidden" name="request_id" value={r.id} />
-                        <button className={btnSecondaryCls}>
-                          Retry calendar updates
-                        </button>
-                      </form>
-                    )}
+                    <div className="flex flex-wrap items-center gap-3">
+                      {/* #1239: straight to the sweep that is moving this agent's
+                          appointments, carrying the job so the panel opens on it. */}
+                      {coverageJobByRequest.has(r.id) && (
+                        <a
+                          className={btnSecondaryCls}
+                          href={`/admin/agents/${r.user_id}?job=${coverageJobByRequest.get(r.id)}#coverage`}
+                        >
+                          View the coverage sweep
+                        </a>
+                      )}
+                      {canRetry && r.status === "approved" && failures.length > 0 && (
+                        <form action={retryOooAction}>
+                          <input type="hidden" name="request_id" value={r.id} />
+                          <button className={btnSecondaryCls}>
+                            Retry calendar updates
+                          </button>
+                        </form>
+                      )}
+                    </div>
                   </li>
                 );
               })}

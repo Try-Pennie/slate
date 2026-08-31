@@ -21,6 +21,10 @@ const dbState = vi.hoisted(() => ({
   history: [] as unknown[],
   users: [] as unknown[],
   bookings: [] as unknown[],
+  /** Coverage sweeps keyed to a time off request (#1239), for the row's link. */
+  jobs: [] as unknown[],
+  /** Make that read FAIL, which is a different thing from it finding no sweep. */
+  jobsError: false,
   /** Which ooo_requests read this is: the page runs pending, then history. Reset
    *  per test, or a later test's pending read serves the (empty) history and every
    *  absence assertion passes on a blank page. */
@@ -45,7 +49,10 @@ const from = vi.hoisted(() =>
       range: () => q,
       single: async () => ({ data: { default_timezone: "America/New_York" } }),
       maybeSingle: async () => ({ data: null }),
-      then: (res: (v: { data: unknown; error: null }) => void) => {
+      then: (res: (v: { data: unknown; error: unknown }) => void) => {
+        if (table === "bulk_reassign_jobs" && dbState.jobsError) {
+          return res({ data: null, error: { message: "read failed" } });
+        }
         // The page runs the pending query before the history query, so serve them
         // in call order rather than guessing from the table name (both read
         // ooo_requests).
@@ -54,7 +61,14 @@ const from = vi.hoisted(() =>
           return res({ data: next, error: null });
         }
         return res({
-          data: table === "users" ? dbState.users : table === "bookings" ? dbState.bookings : [],
+          data:
+            table === "users"
+              ? dbState.users
+              : table === "bookings"
+                ? dbState.bookings
+                : table === "bulk_reassign_jobs"
+                  ? dbState.jobs
+                  : [],
           error: null,
         });
       },
@@ -294,5 +308,85 @@ describe("OooQueuePage: the roster covers people with no manager of record (#149
 
     expect(noTimeOffHeading()).toMatch(/^1 person has taken no time off/);
     expect(screen.queryByText("Ada Admin")).toBeNull();
+  });
+});
+
+// #1239: an approved request whose coverage sweep moved appointments links to that
+// sweep's progress panel. Without the link the manager is told in Slack that a dozen
+// appointments were queued and has nowhere in Slate to go and watch them land.
+describe("OooQueuePage: link to the coverage sweep (#1239)", () => {
+  const approvedRow = {
+    id: "r-approved",
+    org_id: "o1",
+    user_id: "u-agent",
+    manager_id: "u-mgr",
+    status: "approved",
+    starts_at: "2026-09-01T13:00:00Z",
+    ends_at: "2026-09-01T21:00:00Z",
+    display_tz_id: "America/New_York",
+    display_tz_label: "ET",
+    all_day: false,
+    reason: "Vacation",
+    notes: null,
+    rejection_note: null,
+    decided_by: "u-mgr",
+    decided_at: "2026-08-20T00:00:00Z",
+    cancelled_at: null,
+    side_effects: { coverage: "ok (3 queued)" },
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-20T00:00:00Z",
+  };
+
+  beforeEach(() => {
+    dbState.oooReads = 0;
+    dbState.pending = [];
+    dbState.bookings = [];
+    dbState.jobs = [];
+    dbState.jobsError = false;
+    dbState.history = [approvedRow];
+    dbState.users = [
+      { id: "u-agent", name: "Aria Agent", email: "aria@trypennie.com", role: "agent", manager_id: "u-mgr" },
+      { id: "u-mgr", name: "Mona Manager", email: "mona@trypennie.com", role: "manager", manager_id: null },
+    ];
+    auth.currentUser.mockResolvedValue({
+      id: "u-lead",
+      role: "team_lead",
+      org_id: "o1",
+      email: "lead@trypennie.com",
+    });
+  });
+
+  it("links the row to the sweep's own progress panel", async () => {
+    dbState.jobs = [{ id: "job-1", ooo_request_id: "r-approved" }];
+
+    render(await OooQueuePage(props));
+
+    const link = screen.getByRole("link", { name: /coverage/i }) as HTMLAnchorElement;
+    // The agent's coverage panel, carrying the job so the panel opens on THIS
+    // sweep rather than on an empty form.
+    expect(link.getAttribute("href")).toBe("/admin/agents/u-agent?job=job-1#coverage");
+  });
+
+  it("offers no link when no sweep was ever enqueued for the request", async () => {
+    render(await OooQueuePage(props));
+
+    expect(screen.queryByRole("link", { name: /coverage/i })).toBeNull();
+  });
+
+  // The failure path for the deliberately swallowed read (the `error-ok` on the
+  // lookup). A read error costs the row its link, and that is the whole blast
+  // radius: the queue still renders, the decisions are still listed, and nothing
+  // reports a sweep that does not exist. Losing the whole page, or linking to a
+  // job id that came back null, would both be worse than the missing shortcut.
+  it("still renders the queue, without a link, when the sweep lookup fails", async () => {
+    dbState.jobs = [{ id: "job-1", ooo_request_id: "r-approved" }];
+    dbState.jobsError = true;
+
+    render(await OooQueuePage(props));
+
+    expect(screen.queryByRole("link", { name: /coverage/i })).toBeNull();
+    // The row itself is still there: the failure took the link, not the page.
+    expect(screen.getAllByText("Aria Agent").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Recent decisions/i)).toBeTruthy();
   });
 });

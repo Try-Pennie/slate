@@ -17,7 +17,12 @@ import { assert, finish } from "./lib/harness.ts";
   const blocks = approvalBlocks("Pending: Aria Agent", "req-42") as Array<{
     type: string;
     text?: { text?: string };
-    elements?: { action_id: string; value: string; style?: string }[];
+    elements?: {
+      action_id: string;
+      value: string;
+      style?: string;
+      confirm?: unknown;
+    }[];
   }>;
   assert(blocks[0].text?.text === "Pending: Aria Agent", "section carries the text");
   const actions = blocks[1];
@@ -34,6 +39,15 @@ import { assert, finish } from "./lib/harness.ts";
     (e) => e.action_id === OOO_APPROVE_ACTION,
   );
   assert(approve?.style === "primary", "approve is the primary button");
+  // #1239 decision 6: the pending notice now says how many appointments approving
+  // would move, and that is the whole intervention. NO confirm dialog on Approve: it
+  // would slow every approval, including the majority that move nothing, to guard a
+  // minority the notice already warns about. A decision that is only true because
+  // nobody added one has no owner and no test (L281), so it is pinned here.
+  assert(
+    approve?.confirm === undefined,
+    "approve is one click: no blocking confirm dialog",
+  );
 }
 
 // --- rejection modal ---

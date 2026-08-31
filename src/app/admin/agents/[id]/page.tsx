@@ -60,10 +60,15 @@ function attrToText(v: Attributes[string] | undefined): string {
 
 export default async function AgentProfilePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  /** `job` opens the coverage panel on an existing sweep (#1239), which is how the
+   *  time off queue links to the sweep an approval enqueued. */
+  searchParams?: Promise<{ job?: string }>;
 }) {
   const { id } = await params;
+  const openJobId = (await searchParams)?.job;
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) {
@@ -459,6 +464,7 @@ export default async function AgentProfilePage({
               agentId={agent.id}
               agentName={agent.name ?? agent.email}
               reassignReasons={(await loadReasonOptions()).reassign.active}
+              initialJobId={openJobId}
             />
           </div>
         )}

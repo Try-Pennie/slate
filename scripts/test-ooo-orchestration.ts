@@ -17,6 +17,10 @@ import {
   agentDisplayName,
   DEFAULT_REJECTION_NOTE,
 } from "../src/lib/ooo/core.ts";
+import {
+  COVERAGE_SHORT_NOTICE_MS,
+  type CoverageMove,
+} from "../src/lib/ooo/coverage-notice-copy.ts";
 import type { OooRequest, User } from "../src/lib/db/types.ts";
 import { GoogleHttpError } from "../src/lib/google/http-error.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -142,6 +146,15 @@ interface World {
   sweeps: { requestId: string; startIso: string; endIso: string; queued: number }[];
   /** How the sweep answers: a count, or a throw, so the failure path is reachable. */
   sweepResult: number | "throw";
+  /** The appointments the sweep reports having queued, which is what the approved
+   *  edit names when one of them starts within the short notice window (#1239). */
+  sweepMoves: CoverageMove[];
+  /** Every "how many would move" read the pending notice made, with its bounds, so
+   *  a test can prove modify RECOMPUTED rather than reusing the submit number. */
+  countReads: { outUserId: string; startIso: string; endIso: string }[];
+  /** The answers to serve those reads, in order. `null` is the unreadable case, and
+   *  an exhausted queue answers 0 (the ordinary "nothing to move" state). */
+  countAnswers: (number | null)[];
 }
 
 function makeWorld(): World {
@@ -169,6 +182,9 @@ function makeWorld(): World {
     calcomOutcome: "skipped",
     sweeps: [],
     sweepResult: 0,
+    sweepMoves: [],
+    countReads: [],
+    countAnswers: [],
     /** The roster getUser reads, exposed so a test can add its own fixture user. */
     users: new Map<string, User>(
       [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
@@ -296,7 +312,11 @@ function makeWorld(): World {
     startCoverageSweep: async ({ requestId, startIso, endIso }) => {
       if (world.sweepResult === "throw") throw new Error("sweep store unreachable");
       world.sweeps.push({ requestId, startIso, endIso, queued: world.sweepResult });
-      return world.sweepResult;
+      return { queued: world.sweepResult, moves: world.sweepMoves };
+    },
+    countCoverageBookings: async ({ outUserId, startIso, endIso }) => {
+      world.countReads.push({ outUserId, startIso, endIso });
+      return world.countAnswers.length > 0 ? world.countAnswers.shift()! : 0;
     },
     calcomRemoveOverrides: async () => "skipped",
     dmUserByEmail: async (email, text) => {
@@ -1362,6 +1382,208 @@ const input = {
   assert(
     effects[EFFECTS.coverage] === "ok (1 queued)",
     `and the outcome converges to ok (got ${effects[EFFECTS.coverage]})`,
+  );
+}
+
+// --- #1239: what the manager is told will move, and what actually moved --------
+//
+// The sentences themselves live in coverage-notice-copy.ts and are asserted state by
+// state there. What these check is the WIRING: that the pending notice carries a
+// count read for THIS request's window, that an edit recomputes it, and that the
+// approved and cancelled edits carry the outcome rather than a silence a reader
+// would take for "nothing happened".
+
+/** The manager's most recent pending notice, wherever it was delivered. */
+function latestManagerNotice(w: World): string {
+  const dm = [...w.dms].reverse().find((d) => d.email === manager.email);
+  return dm?.text ?? w.channelPosts[w.channelPosts.length - 1] ?? "";
+}
+
+{
+  const w = makeWorld();
+  w.countAnswers = [2];
+  const sub = await submitOoo(agent, input, w.deps);
+  assert(sub.ok, "the submit succeeds");
+  const notice = latestManagerNotice(w);
+  assert(
+    /2 upcoming appointments/.test(notice),
+    `the pending notice says how many appointments approving would move (got: ${notice})`,
+  );
+  assert(w.countReads.length === 1, `the count is read once (got ${w.countReads.length})`);
+  const read = w.countReads[0]!;
+  assert(
+    read.outUserId === agent.id &&
+      read.startIso === input.startIso &&
+      read.endIso === input.endIso,
+    "and it is read for THIS agent over THIS request's exact window",
+  );
+}
+
+{
+  // Nothing to move stays silent: a line on every request would be noise on the
+  // majority that move nothing, which is why the issue asks for it above zero only.
+  const w = makeWorld();
+  w.countAnswers = [0];
+  await submitOoo(agent, input, w.deps);
+  assert(
+    !/upcoming appointment/.test(latestManagerNotice(w)),
+    "a window with nothing in it adds no line",
+  );
+}
+
+{
+  // The failure path, and the reason this is not just a nicety: a count that could
+  // not be READ must not render as the zero state, because the zero state is silence
+  // and a manager reads silence as "nothing will move".
+  const w = makeWorld();
+  w.countAnswers = [null];
+  await submitOoo(agent, input, w.deps);
+  const notice = latestManagerNotice(w);
+  assert(
+    /could not read how many/.test(notice),
+    `an unreadable count says so on the notice (got: ${notice})`,
+  );
+  assert(
+    !/^0 upcoming/m.test(notice),
+    "and never claims the window is empty",
+  );
+}
+
+{
+  // modifyOoo posts a FRESH pending notice, so it must recompute. Carrying the
+  // submit-time number would make an edited request doubly stale: wrong window and
+  // wrong clock.
+  const w = makeWorld();
+  w.countAnswers = [1, 5];
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  const changed = {
+    ...input,
+    startIso: "2026-07-02T13:00:00Z",
+    endIso: "2026-07-02T21:00:00Z",
+  };
+  const res = await modifyOoo(id, agent, changed, w.deps);
+  assert(res.ok, "the edit succeeds");
+  const notice = latestManagerNotice(w);
+  assert(
+    /5 upcoming appointments/.test(notice),
+    `the reposted notice carries the RECOMPUTED count (got: ${notice})`,
+  );
+  assert(!/1 upcoming appointment\b/.test(notice), "not the one from submit time");
+  assert(w.countReads.length === 2, `the count is read again on edit (got ${w.countReads.length})`);
+  assert(
+    w.countReads[1]!.startIso === changed.startIso &&
+      w.countReads[1]!.endIso === changed.endIso,
+    "and over the NEW window, not the one that was replaced",
+  );
+}
+
+{
+  // After approval the status edit reports what was actually queued.
+  const w = makeWorld();
+  w.sweepResult = 3;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const edit = w.edits[w.edits.length - 1]?.text ?? "";
+  assert(
+    /3 upcoming appointments were queued to move/.test(edit),
+    `the approved edit reports what was queued (got: ${edit})`,
+  );
+  assert(
+    !/Starting within/.test(edit),
+    "and names nobody when nothing starts within the short notice window",
+  );
+}
+
+{
+  // A same day approval: one of the appointments starts within COVERAGE_SHORT_NOTICE_MS,
+  // so the edit NAMES it. The threshold decides only what is said; both appointments
+  // still move.
+  const w = makeWorld();
+  const now = Date.parse(await w.deps.nowIso());
+  const soonStart = new Date(now + COVERAGE_SHORT_NOTICE_MS / 2).toISOString();
+  const laterStart = new Date(now + 6 * 60 * 60 * 1000).toISOString();
+  const halfHourAfter = (iso: string) =>
+    new Date(Date.parse(iso) + 30 * 60_000).toISOString();
+  w.sweepResult = 2;
+  w.sweepMoves = [
+    { startsAtIso: soonStart, endsAtIso: halfHourAfter(soonStart), attendeeName: "Jane Smith" },
+    { startsAtIso: laterStart, endsAtIso: halfHourAfter(laterStart), attendeeName: "Later Larry" },
+  ];
+  const sameDay = {
+    ...input,
+    startIso: new Date(now).toISOString(),
+    endIso: new Date(now + 8 * 60 * 60 * 1000).toISOString(),
+    reason: "Sick day",
+  };
+  const sub = await submitOoo(agent, sameDay, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const edit = w.edits[w.edits.length - 1]?.text ?? "";
+  assert(
+    /2 upcoming appointments were queued to move/.test(edit),
+    `both appointments still move (got: ${edit})`,
+  );
+  assert(/Jane Smith/.test(edit), "the one starting within two hours is named so it can be phoned");
+  assert(!/Later Larry/.test(edit), "the one further out is not");
+}
+
+{
+  // A sweep that failed must not leave the manager reading an unchanged message that
+  // says nothing: the appointments are still on the agent who is away.
+  const w = makeWorld();
+  w.sweepResult = "throw";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const edit = w.edits[w.edits.length - 1]?.text ?? "";
+  assert(
+    /could not be queued to move/.test(edit),
+    `the approved edit says the sweep failed (got: ${edit})`,
+  );
+  assert(
+    !/were queued to move/.test(edit),
+    "and never claims a number of appointments moved",
+  );
+}
+
+{
+  // Cancelling approved time off does NOT move the appointments back (#1219 decision 4).
+  // Both the agent and the manager are told, so it is a decision rather than something
+  // discovered later.
+  const w = makeWorld();
+  w.sweepResult = 1;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const dmsBefore = w.dms.length;
+  const res = await cancelOoo(id, agent, w.deps);
+  assert(res.ok, "the cancel succeeds");
+  const agentDm = w.dms.slice(dmsBefore).find((d) => d.email === agent.email)?.text ?? "";
+  assert(
+    /stay with that advisor/.test(agentDm),
+    `the agent is told the moved appointments stay moved (got: ${agentDm})`,
+  );
+  const edit = w.edits[w.edits.length - 1]?.text ?? "";
+  assert(
+    /does not move them back/.test(edit),
+    `and so is the manager, on the cancelled message (got: ${edit})`,
+  );
+}
+
+{
+  // A request cancelled while still PENDING moved nothing, so it must not say
+  // anything about appointments staying with another advisor.
+  const w = makeWorld();
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  const dmsBefore = w.dms.length;
+  await cancelOoo(id, agent, w.deps);
+  const agentDm = w.dms.slice(dmsBefore).find((d) => d.email === agent.email)?.text ?? "";
+  assert(
+    !/stay with that advisor/.test(agentDm),
+    `a withdrawn pending request says nothing about moved appointments (got: ${agentDm})`,
   );
 }
 
