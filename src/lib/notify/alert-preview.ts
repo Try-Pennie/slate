@@ -116,7 +116,9 @@ import {
   snowflakeDriftRecovery,
   snowflakeHealthcheckAlert,
   snowflakeHealthcheckRecovery,
+  erasureClassificationUnreadable,
   erasureResidualAlert,
+  erasureResidualTestNotice,
   erasureResidualRecovery,
   purgeSqlBrokenAlert,
   purgeSqlBrokenRecovery,
@@ -1726,8 +1728,30 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ) },
   { key: "snowflake_reconcile_drift", state: "back in step", channel: "recovery",
     text: snowflakeDriftRecovery() },
-  { key: "snowflake_erasure_residual", state: "data still in the warehouse", channel: "alert",
-    text: erasureResidualAlert(["bookings: 3 rows still hold contact data for erased booking bk_77a"]) },
+  { key: "snowflake_erasure_residual", state: "one real booking", channel: "alert",
+    text: erasureResidualAlert(
+      ["bookings: 1 row still holds contact data for an erased booking"],
+      ["7dc86c04-bb42-4db9-8c08-7bbd408ccd25"],
+    ) },
+  // The truncation state is previewed because it is the one a large erasure batch
+  // produces, and an untruncated list of uuids is unreadable on a phone (#1195).
+  { key: "snowflake_erasure_residual", state: "a batch too large to name in full", channel: "alert",
+    text: erasureResidualAlert(
+      ["bookings: 9 rows still hold contact data for erased bookings"],
+      ["bk-1", "bk-2", "bk-3", "bk-4", "bk-5", "bk-6", "bk-7", "bk-8", "bk-9"],
+    ) },
+  // The class could not be read, so everything was treated as real. Previewed
+  // because the reader has to be able to tell a measured "real" from a fallback.
+  { key: "snowflake_erasure_residual", state: "class unreadable, treated as real", channel: "alert",
+    text: erasureResidualAlert(
+      ["booking_events: 1 row still holds contact data for an erased booking"],
+      ["bk-1"],
+    ) + erasureClassificationUnreadable("the bookings read failed, so no id could be classified") },
+  { key: "snowflake_erasure_residual_test", state: "a test fixture's erasure is unfinished", channel: "info",
+    text: erasureResidualTestNotice(
+      ["booking_outbox: 1 row still holds contact data for an erased booking"],
+      ["7dc86c04-bb42-4db9-8c08-7bbd408ccd25"],
+    ) },
   { key: "snowflake_erasure_residual", state: "erasure complete", channel: "recovery",
     text: erasureResidualRecovery() },
   { key: "snowflake_purge_sql_broken", state: "a statement no longer compiles", channel: "alert",

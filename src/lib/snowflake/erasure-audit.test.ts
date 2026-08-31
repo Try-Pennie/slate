@@ -1,7 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./config", () => ({ readSnowflakeConfig: vi.fn() }));
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: vi.fn(() => ({ from: vi.fn() })) }));
+// The audit reads `bookings.is_test` to split the trail (#1196). This fake lets a
+// test choose what that read answers, including FAILING, which is the case the
+// fallback direction exists for. Default: no rows, so every id is unclassified and
+// therefore treated as real, which is what the pre-#1196 assertions below expect.
+const bookingClassRead: { rows: { id: string; is_test: boolean }[] | null } = { rows: [] };
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: vi.fn(() => ({
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        in: vi.fn(async () =>
+          bookingClassRead.rows === null
+            ? { data: null, error: { message: "read failed" } }
+            : { data: bookingClassRead.rows, error: null },
+        ),
+      })),
+    })),
+  })),
+}));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("./client", () => ({
   executeStatement: vi.fn(async () => ({ data: [["0"]] })),
@@ -9,7 +26,7 @@ vi.mock("./client", () => ({
 }));
 vi.mock("@/lib/supabase/paginate", () => ({ selectAllPages: vi.fn(async () => []) }));
 
-import { evaluateErasureAudit, auditSnowflakeErasures } from "./erasure-audit";
+import { classifyErasedBookings, evaluateErasureAudit, auditSnowflakeErasures } from "./erasure-audit";
 import { readSnowflakeConfig } from "./config";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { executeStatement } from "./client";
@@ -24,7 +41,10 @@ const cfg = {
   role: "R",
 };
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  bookingClassRead.rows = [];
+});
 
 describe("evaluateErasureAudit", () => {
   it("is ok when no erased booking holds residual PII in Snowflake", () => {
@@ -155,5 +175,132 @@ describe("auditSnowflakeErasures", () => {
     const webhookQuery = asked.find((s) => /FROM webhook_deliveries/i.test(s));
     expect(webhookQuery).toBeDefined();
     expect(webhookQuery).toMatch(/last_response\s+IS\s+NOT\s+NULL/i);
+  });
+});
+
+/**
+ * Test versus real classification (#1196).
+ *
+ * A residual on a synthetic SMOKE booking and a residual on a real person's
+ * booking need different responses: one is an operational tidy-up with zero
+ * exposure, the other is an incomplete data-subject erasure with a clock on it.
+ * The audit partitions the trail so the lane can page for one and whisper for the
+ * other.
+ *
+ * The direction of the fallback is the whole safety argument: an id whose class
+ * cannot be READ counts as REAL. Landing an unreadable classification on "test"
+ * would silently downgrade a genuine compliance page, which is the L42 shape (a
+ * protective control failing open).
+ */
+describe("classifyErasedBookings", () => {
+  it("splits the trail into real and test by is_test", () => {
+    const r = classifyErasedBookings(["a", "b", "c"], [
+      { id: "a", is_test: false },
+      { id: "b", is_test: true },
+      { id: "c", is_test: false },
+    ]);
+    expect(r.realIds).toEqual(["a", "c"]);
+    expect(r.testIds).toEqual(["b"]);
+    expect(r.unreadable).toBeNull();
+  });
+
+  it("counts an id the bookings read never returned as REAL, not test", () => {
+    const r = classifyErasedBookings(["a", "missing"], [{ id: "a", is_test: true }]);
+    expect(r.testIds).toEqual(["a"]);
+    expect(r.realIds).toEqual(["missing"]);
+    expect(r.unreadable).toMatch(/missing/);
+  });
+
+  it("counts EVERY id as real when the class could not be read at all", () => {
+    const r = classifyErasedBookings(["a", "b"], null);
+    expect(r.realIds).toEqual(["a", "b"]);
+    expect(r.testIds).toEqual([]);
+    expect(r.unreadable).toBeTruthy();
+  });
+
+  it("reports nothing unreadable when every id was classified", () => {
+    const r = classifyErasedBookings(["a"], [{ id: "a", is_test: true }]);
+    expect(r.unreadable).toBeNull();
+  });
+});
+
+/**
+ * The split reaching the outcome the LANE branches on (#1196).
+ *
+ * The pure classifier above proves the partition; these prove the audit actually
+ * routes each class to its own field, because a correct partition wired into one
+ * field would page for test data exactly as before while every unit test passed.
+ */
+describe("auditSnowflakeErasures test/real split", () => {
+  const trail = (ids: string[]) =>
+    vi.mocked(selectAllPages).mockResolvedValue([{ details: { booking_ids: ids } }] as never);
+
+  /** Snowflake reports a residual only for the ids this statement mentions. */
+  const residualFor = (dirty: string[]) =>
+    vi.mocked(executeStatement).mockImplementation(
+      async (_c, sql: string) =>
+        ({ data: [[dirty.some((id) => sql.includes(id)) && sql.includes("FROM bookings") ? "1" : "0"]] }) as never,
+    );
+
+  it("does not page for a residual that belongs only to a test booking", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    trail(["bk-smoke"]);
+    bookingClassRead.rows = [{ id: "bk-smoke", is_test: true }];
+    residualFor(["bk-smoke"]);
+
+    const r = await auditSnowflakeErasures();
+    expect(r.ok).toBe(true);
+    expect(r.reasons).toEqual([]);
+    expect(r.testReasons.join(" ")).toMatch(/bookings/);
+    expect(r.testBookingIds).toEqual(["bk-smoke"]);
+    expect(r.realBookingIds).toEqual([]);
+  });
+
+  it("pages for a real booking's residual and keeps the two sides separate", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    trail(["bk-real", "bk-smoke"]);
+    bookingClassRead.rows = [
+      { id: "bk-real", is_test: false },
+      { id: "bk-smoke", is_test: true },
+    ];
+    residualFor(["bk-real"]);
+
+    const r = await auditSnowflakeErasures();
+    expect(r.ok).toBe(false);
+    expect(r.realBookingIds).toEqual(["bk-real"]);
+    expect(r.testReasons).toEqual([]);
+    expect(r.classificationUnreadable).toBeNull();
+  });
+
+  /**
+   * The one that matters. A class read that FAILS must not turn a real residual
+   * into a whisper, so the fallback treats every booking as real even when it is
+   * genuinely a test fixture. The cost is a real page about fake data, which is
+   * the direction we want to be wrong in (L42).
+   */
+  it("pages for a TEST booking's residual when the class could not be read at all", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    trail(["bk-smoke"]);
+    bookingClassRead.rows = null;
+    residualFor(["bk-smoke"]);
+
+    const r = await auditSnowflakeErasures();
+    expect(r.ok).toBe(false);
+    expect(r.realBookingIds).toEqual(["bk-smoke"]);
+    expect(r.testReasons).toEqual([]);
+    expect(r.classificationUnreadable).toBeTruthy();
+  });
+
+  it("asks Snowflake nothing about a side with no bookings in it", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    trail(["bk-real"]);
+    bookingClassRead.rows = [{ id: "bk-real", is_test: false }];
+    residualFor([]);
+
+    await auditSnowflakeErasures();
+    const asked = vi.mocked(executeStatement).mock.calls.map((c) => c[1] as string);
+    expect(asked.length).toBeGreaterThan(0);
+    // Every statement names the real booking; none was sent for an empty test side.
+    expect(asked.every((sql) => sql.includes("bk-real"))).toBe(true);
   });
 });

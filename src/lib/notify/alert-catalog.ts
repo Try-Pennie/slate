@@ -110,6 +110,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An erasure is incomplete until the operator runs the purge; the audit re-measures every 6h.",
   },
   {
+    key: "snowflake_erasure_residual_test",
+    kind: "info",
+    why:
+      "The same incomplete warehouse erasure as its paging sibling, but on a SMOKE " +
+      "fixture, so the contact data it names is fabricated and nothing is exposed. " +
+      "Worth saying so the rows get cleared off the worklist, never worth waking " +
+      "for, and there is no incident to declare over: the paging key owns the " +
+      "all-clear for a real residual.",
+  },
+  {
     key: "snowflake_purge_sql_broken",
     kind: "condition",
     why: "The purge SQL stays broken until someone fixes it; the 6h probe re-runs it against the warehouse.",
