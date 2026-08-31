@@ -8,6 +8,13 @@ import {
 } from "@/lib/salesforce/manager-sync";
 import { reapableUserIds } from "@/lib/salesforce/reap";
 import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
+import { chunkSoqlValues, sfInList } from "@/lib/salesforce/soql";
+import {
+  hasUserIdConflicts,
+  planSalesforceUserIds,
+  type SfIdCandidate,
+  type SlateRosterRow,
+} from "@/lib/salesforce/user-id-link";
 import { fetchSfWithRetry } from "@/lib/salesforce/retry";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
@@ -35,6 +42,12 @@ const BACKEND: [keyof SfUser, string][] = [
 ];
 
 interface SfUser {
+  /**
+   * The Salesforce `User.Id`: the stable cross system key (#1587). Optional here
+   * because not every one of this file's queries asks for it, and a record that
+   * arrives without one simply contributes no candidate.
+   */
+  Id?: string | null;
   Email: string | null;
   Name: string | null;
   FirstName?: string | null;
@@ -103,21 +116,37 @@ async function queryInactiveEmails(
   emails: string[],
 ): Promise<Set<string>> {
   const out = new Set<string>();
-  const CHUNK = 200;
-  for (let i = 0; i < emails.length; i += CHUNK) {
-    const inList = emails
-      .slice(i, i + CHUNK)
-      .map((e) => `'${e.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
-      .join(",");
+  // Chunked by ENCODED length rather than by a row count (#1587, L81): the limit
+  // that refuses an oversized query is Salesforce's byte cap on the REST GET URI,
+  // and the list is percent encoded by the time it meets that cap, so a count of
+  // rows is not the unit the limit is expressed in.
+  for (const chunk of chunkSoqlValues(emails)) {
     const rows = await queryAll(
       instanceUrl,
       token,
-      `SELECT Email FROM User WHERE IsActive = false AND Email IN (${inList})`,
+      `SELECT Email FROM User WHERE IsActive = false AND Email IN (${sfInList(chunk)})`,
     );
     for (const r of rows) {
       const em = (r.Email ?? "").toLowerCase();
       if (em) out.add(em);
     }
+  }
+  return out;
+}
+
+/**
+ * The (email, Salesforce Id) pairs a Salesforce response contributes (#1587).
+ *
+ * Every query in this file that asks for `Id` feeds the same candidate pool, so
+ * one record showing up in two of them is deduplicated by the planner rather than
+ * read as two people sharing an address.
+ */
+function idCandidates(rows: SfUser[]): SfIdCandidate[] {
+  const out: SfIdCandidate[] = [];
+  for (const r of rows) {
+    const email = (r.Email ?? "").trim().toLowerCase();
+    const salesforceUserId = (r.Id ?? "").trim();
+    if (email && salesforceUserId) out.push({ email, salesforceUserId });
   }
   return out;
 }
@@ -152,6 +181,21 @@ export interface SyncResult {
    */
   managersUnresolved: number;
   managersPromoted: number;
+  /**
+   * The shared cross system rep key (#1587). Every one of these except
+   * `salesforceIdsLinked` counts a row the sync deliberately did NOT write, which
+   * is precisely the outcome nothing would otherwise report.
+   */
+  /** Roster rows that gained a Salesforce User Id this run. */
+  salesforceIdsLinked: number;
+  /** Slate holds one id, Salesforce now names another. Reported, never rewritten. */
+  salesforceIdDisagreements: number;
+  /** More than one Salesforce user matched, so no id was stored (L521). */
+  salesforceIdAmbiguous: number;
+  /** The resolved id is already held by another Slate row, so no id was stored. */
+  salesforceIdClaimed: number;
+  /** Roster rows with no id that Salesforce could not resolve at all. */
+  salesforceIdsUnresolved: number;
 }
 
 /**
@@ -166,7 +210,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
   const debtFilter = DEBT.map(([f]) => `${f}=true`).join(" OR ");
   const soql =
-    `SELECT Email, Name, Profile.Name, Agent_Manager__c, ` +
+    `SELECT Id, Email, Name, Profile.Name, Agent_Manager__c, ` +
     `${DEBT.map(([f]) => f).join(", ")}, ` +
     `${BACKEND.map(([f]) => f).join(", ")} FROM User ` +
     `WHERE IsActive = true AND (${debtFilter}) AND Email != null`;
@@ -175,13 +219,21 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const db = supabaseAdmin();
   const org = await ensureDefaultOrg();
 
+  // Every (email, Salesforce Id) pair this run observes, from whichever query
+  // happened to return it (#1587). Collected as the queries run rather than
+  // re-queried at the end, so the common case costs no extra Salesforce call.
+  const sfIdCandidates: SfIdCandidate[] = idCandidates(sfUsers);
+
   // Existing Slate agents by email (attributes too: Slate-managed keys like
   // legal_eligible must survive the sync - see mergeSfAttributes). Fail loud
   // (unwrap, #963): a swallowed read error left this null, so every SF agent
   // looked brand new and was re-inserted (the #277 class). An empty roster is a
   // null-safe pass; only a real query error throws.
   const existing = unwrap(
-    await db.from("users").select("id, email, attributes").eq("org_id", org.id),
+    await db
+      .from("users")
+      .select("id, email, attributes, salesforce_user_id")
+      .eq("org_id", org.id),
     "sf-existing-agents",
   );
   const byEmail = new Map(
@@ -248,14 +300,12 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   ];
   const nameToEmail = new Map<string, string>();
   if (managerNames.length) {
-    const inList = managerNames
-      .map((n) => `'${n.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
-      .join(",");
     const mgrRecords = await queryAll(
       instanceUrl,
       token,
-      `SELECT Name, Email FROM User WHERE Name IN (${inList}) AND Email != null`,
+      `SELECT Id, Name, Email FROM User WHERE Name IN (${sfInList(managerNames)}) AND Email != null`,
     );
+    sfIdCandidates.push(...idCandidates(mgrRecords));
     for (const m of mgrRecords) {
       const nm = (m.Name ?? "").trim();
       const em = (m.Email ?? "").toLowerCase();
@@ -276,16 +326,13 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
           .filter(Boolean),
       ),
     ];
-    const inLast = lastNames
-      .map((n) => `'${n.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
-      .join(",");
-    const candidates = (
-      await queryAll(
-        instanceUrl,
-        token,
-        `SELECT FirstName, LastName, Email FROM User WHERE IsActive = true AND Email != null AND LastName IN (${inLast})`,
-      )
-    )
+    const nameRows = await queryAll(
+      instanceUrl,
+      token,
+      `SELECT Id, FirstName, LastName, Email FROM User WHERE IsActive = true AND Email != null AND LastName IN (${sfInList(lastNames)})`,
+    );
+    sfIdCandidates.push(...idCandidates(nameRows));
+    const candidates = nameRows
       .map((c) => ({
         firstName: c.FirstName ?? "",
         lastName: c.LastName ?? "",
@@ -330,7 +377,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const afterInsert = unwrap(
     await db
       .from("users")
-      .select("id, email, manager_id, role")
+      .select("id, email, manager_id, role, salesforce_user_id")
       .eq("org_id", org.id),
     "sf-after-insert",
   );
@@ -421,6 +468,109 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     managersPromoted = toPromote.length;
   }
 
+  // ---------------------------------------------------------------------------
+  // The shared cross system rep key (#1587).
+  //
+  // Read from `afterInsert` rather than `existing`, so an agent or manager
+  // inserted moments ago in this same run is linked on the run that created them
+  // instead of waiting an hour.
+  const rosterRows: SlateRosterRow[] = (afterInsert ?? []).map((u) => {
+    const row = u as {
+      id: string;
+      email: string;
+      salesforce_user_id: string | null;
+    };
+    return {
+      id: row.id,
+      email: row.email,
+      salesforceUserId: row.salesforce_user_id ?? null,
+    };
+  });
+
+  // One extra query, for the roster rows none of the queries above happened to
+  // return. It is what makes this a BACKFILL rather than a rule that only ever
+  // applies to debt team agents: measured against the live org on 2026-08-31, the
+  // debt team query resolves 104 of 118 active users, and the remaining 14
+  // (managers, admins, the team lead) are reachable only this way. Restricted to
+  // IsActive = true to match the rest of this sync, whose reap step already acts
+  // on a positive IsActive = false.
+  //
+  // It costs one Salesforce call at this roster size and shrinks as ids land: a
+  // row that already holds the id another query just confirmed is not asked about
+  // again.
+  const coveredEmails = new Set(sfIdCandidates.map((c) => c.email));
+  const remainingEmails = rosterRows
+    .map((r) => r.email.toLowerCase())
+    .filter((e) => e && !coveredEmails.has(e));
+  for (const chunk of chunkSoqlValues(remainingEmails)) {
+    const rows = await queryAll(
+      instanceUrl,
+      token,
+      `SELECT Id, Email FROM User WHERE IsActive = true AND Email != null AND Email IN (${sfInList(chunk)})`,
+    );
+    sfIdCandidates.push(...idCandidates(rows));
+  }
+
+  const idPlan = planSalesforceUserIds(rosterRows, sfIdCandidates);
+  const emailById = new Map(rosterRows.map((r) => [r.id, r.email]));
+  // Written as an upsert on the id PK, like the agent refreshes above: `org_id`
+  // and `email` are the only NOT NULL columns without a default, so echoing them
+  // unchanged keeps the phantom insert tuple valid while ON CONFLICT writes only
+  // the listed columns. Batched, so a whole roster backfill is a couple of writes.
+  //
+  // Only rows GAINING an id are in this payload. That is what makes "never
+  // overwritten, never cleared" a property of the write rather than a promise
+  // about it, and it makes the second run of an unchanged roster write literally
+  // nothing.
+  const idWrites: Partial<User>[] = idPlan.assign.map((a) => ({
+    id: a.userId,
+    org_id: org.id,
+    email: emailById.get(a.userId) ?? a.email,
+    salesforce_user_id: a.salesforceUserId,
+  }));
+  for (const batch of chunkRows(idWrites, 200)) {
+    const { error } = await db.from("users").upsert(batch, { onConflict: "id" });
+    if (error) {
+      throw new Error(`SF user id link batch failed: ${error.message}`);
+    }
+  }
+
+  if (idPlan.unresolved.length) {
+    // Absence, logged rather than paged. A row with no key is a row every consumer
+    // correctly REFUSES, which is safe; the three conflict shapes below are the
+    // ones where the key we hold may name the wrong human, and wrong is worse than
+    // missing. This is the same call the manager-name resolution above makes.
+    log.warn("sf-sync", {
+      msg: "no Salesforce user id could be resolved for these roster rows",
+      count: idPlan.unresolved.length,
+      user_ids: idPlan.unresolved.map((u) => u.userId).slice(0, 10).join(", "),
+    });
+  }
+  const idReport = {
+    linked: idPlan.assign.length,
+    disagreements: idPlan.disagreements.length,
+    ambiguous: idPlan.ambiguous.length,
+    claimed: idPlan.claimed.length,
+    unresolved: idPlan.unresolved.length,
+  };
+  if (hasUserIdConflicts(idReport)) {
+    // The detail goes to the log, not to the alert (#1133): the alert says how
+    // many and what to do, and this line is where a reader finds which rows. Slate
+    // user ids only, never the person's email or name, so a transcript or a log
+    // search does not become a roster export (L222).
+    log.warn("sf-sync", {
+      msg: "Salesforce user id conflicts, nothing written for these rows",
+      disagreements: idPlan.disagreements.length,
+      ambiguous: idPlan.ambiguous.length,
+      claimed: idPlan.claimed.length,
+      disagreeing_user_ids: idPlan.disagreements
+        .map((d) => d.userId)
+        .slice(0, 10)
+        .join(", "),
+      claimed_user_ids: idPlan.claimed.map((c) => c.userId).slice(0, 10).join(", "),
+    });
+  }
+
   // Reap never-logged-in agents AND managers whose Salesforce account is
   // INACTIVE by DEACTIVATING them (not deleting): the row is kept so OOO/booking
   // history attribution survives, and a boomerang rehire can be reactivated.
@@ -469,5 +619,10 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     managersUnlinked,
     managersUnresolved: plan.unresolved.length,
     managersPromoted,
+    salesforceIdsLinked: idReport.linked,
+    salesforceIdDisagreements: idReport.disagreements,
+    salesforceIdAmbiguous: idReport.ambiguous,
+    salesforceIdClaimed: idReport.claimed,
+    salesforceIdsUnresolved: idReport.unresolved,
   };
 }

@@ -123,6 +123,8 @@ import {
 import {
   agentSyncFailureAlert,
   agentSyncRecovery,
+  salesforceUserIdConflictAlert,
+  salesforceUserIdConflictRecovery,
   bucketSlotsStaleAlert,
   bucketSlotsStaleRecovery,
   bucketSlotsStaleUnreadableMarkerAlert,
@@ -1737,6 +1739,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: agentSyncFailureAlert("SF token failed: 522 error code: 522") },
   { key: "agent_sync_failures", state: "working again", channel: "recovery",
     text: agentSyncRecovery() },
+  // Each shape alone, then all three together, because the sentence is assembled
+  // from parts and a reader has to be able to see each one read on its own.
+  { key: "salesforce_user_id_conflicts", state: "one stored id disagrees", channel: "alert",
+    text: salesforceUserIdConflictAlert(1, 0, 0) },
+  { key: "salesforce_user_id_conflicts", state: "one email is shared in Salesforce", channel: "alert",
+    text: salesforceUserIdConflictAlert(0, 1, 0) },
+  { key: "salesforce_user_id_conflicts", state: "one id is already held by another row", channel: "alert",
+    text: salesforceUserIdConflictAlert(0, 0, 1) },
+  { key: "salesforce_user_id_conflicts", state: "several of each at once", channel: "alert",
+    text: salesforceUserIdConflictAlert(3, 2, 4) },
+  { key: "salesforce_user_id_conflicts", state: "the roster agrees again", channel: "recovery",
+    text: salesforceUserIdConflictRecovery() },
   { key: "recompute_headroom", state: "falling behind its budget", channel: "alert",
     text: recomputeHeadroomAlert(18, 64, 60, 98) },
   { key: "recompute_headroom", state: "caught up", channel: "recovery",

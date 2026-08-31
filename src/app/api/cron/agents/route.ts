@@ -8,7 +8,13 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
-import { agentSyncFailureAlert, agentSyncRecovery } from "@/lib/monitor/cron-alert-copy";
+import {
+  agentSyncFailureAlert,
+  agentSyncRecovery,
+  salesforceUserIdConflictAlert,
+  salesforceUserIdConflictRecovery,
+} from "@/lib/monitor/cron-alert-copy";
+import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +63,42 @@ export async function GET(req: NextRequest) {
       agentSyncRecovery(),
     ).catch(() => false);
     if (clearedSync) log.info("agents", { msg: "sync failure alert cleared" });
+
+    // #1587: the shared cross system rep key. A row the sync deliberately left
+    // alone is invisible from every other angle: the run succeeds, the roster
+    // looks synced, and the only trace is a count nobody reads. It pages instead.
+    //
+    // Both directions hang off THIS point, which is reached only after the sync
+    // returned a real result. A run that threw never gets here, so a sync that
+    // could not measure anything clears nothing (#1134, #1152).
+    const idConflicts = {
+      linked: sync.salesforceIdsLinked,
+      disagreements: sync.salesforceIdDisagreements,
+      ambiguous: sync.salesforceIdAmbiguous,
+      claimed: sync.salesforceIdClaimed,
+      unresolved: sync.salesforceIdsUnresolved,
+    };
+    if (hasUserIdConflicts(idConflicts)) {
+      // alert-key: salesforce_user_id_conflicts
+      await sendThrottledAlert(
+        "salesforce_user_id_conflicts",
+        SYNC_ALERT_COOLDOWN_MS,
+        salesforceUserIdConflictAlert(
+          idConflicts.disagreements,
+          idConflicts.ambiguous,
+          idConflicts.claimed,
+        ),
+      ).catch(() => {});
+    } else {
+      // alert-key: salesforce_user_id_conflicts
+      const clearedIds = await resolveAlert(
+        "salesforce_user_id_conflicts",
+        salesforceUserIdConflictRecovery(),
+      ).catch(() => false);
+      if (clearedIds) {
+        log.info("agents", { msg: "salesforce user id conflict alert cleared" });
+      }
+    }
     return NextResponse.json({
       ...sync,
       hoursApplied,

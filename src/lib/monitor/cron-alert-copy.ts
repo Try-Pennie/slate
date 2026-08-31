@@ -17,6 +17,61 @@ export function agentSyncRecovery(): string {
         "assignments are up to date, so the earlier page is cleared. No action is needed.";
 }
 
+/**
+ * The shared cross system rep key cannot be settled for some people (#1587).
+ *
+ * Three shapes, one page, because the reader's first action is the same for all
+ * of them (open Salesforce and look at those users) and three separate keys would
+ * be three pages about one morning's data problem. Each count is named separately
+ * inside it, because what they then DO differs: a disagreement is a decision about
+ * which record is the person, a duplicate is a Salesforce cleanup, and a claimed
+ * id means two Slate rows are pointing at one human.
+ *
+ * Deliberately NOT sent for rows with no id at all. That is reported in the run's
+ * counts and its log line: a person with no key is one every consumer refuses,
+ * which is safe, while a key that may name the WRONG person is not.
+ */
+export function salesforceUserIdConflictAlert(
+  disagreements: number,
+  ambiguous: number,
+  claimed: number,
+): string {
+  const parts: string[] = [];
+  if (disagreements > 0) {
+    parts.push(
+      `${disagreements} ${disagreements === 1 ? "person has" : "people have"} a stored ` +
+        `Salesforce id that no longer matches the one Salesforce returns for their email`,
+    );
+  }
+  if (ambiguous > 0) {
+    parts.push(
+      `${ambiguous} email ${ambiguous === 1 ? "address is" : "addresses are"} shared by ` +
+        `more than one Salesforce user`,
+    );
+  }
+  if (claimed > 0) {
+    parts.push(
+      `${claimed} Slate ${claimed === 1 ? "row wants" : "rows want"} a Salesforce id ` +
+        `another Slate row already holds`,
+    );
+  }
+  return (
+    `The Salesforce user id could not be settled for part of the roster: ${parts.join("; ")}. ` +
+    `Nothing was changed, on purpose: the stored ids are left exactly as they were, so no ` +
+    `existing link has been re-pointed at a different person. Time off and manager checks ` +
+    `will refuse to name these people until it is resolved. Look at them in Salesforce and ` +
+    `decide which record is the person; the sync log line tagged sf-sync names the Slate rows.`
+  );
+}
+
+/** Every roster row agrees with Salesforce again. */
+export function salesforceUserIdConflictRecovery(): string {
+  return (
+    "Every roster row now agrees with Salesforce about its user id, so the earlier page is " +
+    "cleared. Time off and manager checks can name these people again. No action is needed."
+  );
+}
+
 /** Recompute is not keeping up with the buckets that are due. */
 export function recomputeHeadroomAlert(
   recomputed: number,

@@ -64,6 +64,21 @@ export interface User {
    * an existing assignment when SF doesn't resolve one.
    */
   manager_id: string | null;
+  /**
+   * This person's Salesforce `User.Id`, the shared cross system key (#1587).
+   *
+   * Written by the hourly roster sync and NEVER cleared or overwritten: a
+   * disagreement between what Salesforce says and what Slate holds is reported,
+   * not rewritten, because the two ways one arises (a recreated Salesforce user,
+   * or an email reassigned to a different person) need opposite corrections.
+   *
+   * `null` means unknown, and it is the whole reason the column is nullable. A
+   * consumer must REFUSE a null rather than fall back to an email or name match
+   * (L75), which is the substitution the key exists to remove. Read it only
+   * through `requireSalesforceUserId` (`@/lib/salesforce/user-id-link`);
+   * `scripts/test-salesforce-user-id-contract.ts` enforces that.
+   */
+  salesforce_user_id: string | null;
   /** On manager rows: the manager's OOO Google calendar for approval events. */
   ooo_calendar_id: string | null;
   /** Account-tied UI theme; 'system' follows the device setting. */

@@ -298,3 +298,190 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
     });
   });
 });
+
+// #1587: the shared cross system rep key, salesforce_user_id on users.
+//
+// The planner's own rules are pinned offline (scripts/test-salesforce-user-id-link.ts).
+// What is proved HERE is the wiring: that the sync asks Salesforce for the Id at
+// all, that it writes only what the plan says to write, that the write is fail
+// loud, and that a second run over unchanged data writes nothing. The last one is
+// not a nicety: this is an hourly job, so "assume it runs twice" is the default
+// case, not the edge.
+describe("salesforce_user_id linking (#1587)", () => {
+  const SF_A = "005AAAAAAAAAAAAAAA";
+  const SF_B = "005BBBBBBBBBBBBBBB";
+
+  /** Just the upserts that carry a Salesforce id (not the agent attribute refresh). */
+  const idWrites = () =>
+    store.calls
+      .filter((c) => c.op === "upsert")
+      .flatMap((c) => (c.payload as Record<string, unknown>[]) ?? [])
+      .filter((row) => "salesforce_user_id" in row);
+
+  /** Every SOQL statement this run sent, decoded. */
+  const soqlSent = () => sentQueries.slice();
+  let sentQueries: string[] = [];
+
+  /**
+   * Drives the sync with one Slate roster row and whatever Salesforce answers.
+   * `debtTeam` is what the main agent query returns; `byEmail` is what the
+   * roster-remainder query returns for rows the first one missed.
+   */
+  function arrange(opts: {
+    roster: Record<string, unknown>[];
+    existing?: Record<string, unknown>[];
+    debtTeam: Record<string, unknown>[];
+    byEmail?: Record<string, unknown>[];
+  }) {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    sentQueries = [];
+    store.config.existing = opts.existing ?? [];
+    store.config.afterInsert = opts.roster;
+    store.config.reapable = [];
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return {
+          ok: true,
+          json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }),
+        };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      sentQueries.push(q);
+      if (q.includes("IsActive = true AND (")) return sfResponse(opts.debtTeam);
+      if (q.includes("IsActive = true AND Email != null AND Email IN")) {
+        return sfResponse(opts.byEmail ?? []);
+      }
+      return sfResponse([]);
+    });
+  }
+
+  it("asks Salesforce for the Id and writes it onto the roster row", async () => {
+    arrange({
+      roster: [{ id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: null }],
+      debtTeam: [{ Id: SF_A, Email: "a@x.com", Name: "Agent A", HighDebt__c: true }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    // The query has to ASK for the field. Without this the whole feature is a
+    // planner that is only ever handed empty candidates, and every assertion below
+    // would still pass on an empty plan.
+    expect(soqlSent().some((q) => q.startsWith("SELECT Id,"))).toBe(true);
+
+    const written = idWrites();
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ id: "u1", salesforce_user_id: SF_A });
+    // org_id and email ride along because they are the NOT NULL columns without a
+    // default; the upsert's phantom insert tuple is invalid without them.
+    expect(written[0]).toHaveProperty("org_id", "org1");
+    expect(written[0]).toHaveProperty("email", "a@x.com");
+    expect(result.salesforceIdsLinked).toBe(1);
+    expect(result.salesforceIdsUnresolved).toBe(0);
+  });
+
+  it("writes NOTHING on a second run over the same data (it runs hourly)", async () => {
+    arrange({
+      roster: [{ id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: SF_A }],
+      existing: [{ id: "u1", email: "a@x.com", attributes: {}, salesforce_user_id: SF_A }],
+      debtTeam: [{ Id: SF_A, Email: "a@x.com", Name: "Agent A", HighDebt__c: true }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(idWrites()).toHaveLength(0);
+    expect(result.salesforceIdsLinked).toBe(0);
+    // And nothing is dressed up as a problem either: an id agreeing with itself is
+    // the healthy state, not a disagreement and not an absence.
+    expect(result.salesforceIdDisagreements).toBe(0);
+    expect(result.salesforceIdsUnresolved).toBe(0);
+  });
+
+  it("REPORTS a disagreement and does not overwrite the stored id", async () => {
+    arrange({
+      roster: [{ id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: SF_A }],
+      existing: [{ id: "u1", email: "a@x.com", attributes: {}, salesforce_user_id: SF_A }],
+      debtTeam: [{ Id: SF_B, Email: "a@x.com", Name: "Agent A", HighDebt__c: true }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(idWrites()).toHaveLength(0);
+    // Nothing anywhere in this run may carry the new id. Checking only the id
+    // writes would miss it being smuggled in on the attribute refresh upsert.
+    expect(JSON.stringify(store.calls)).not.toContain(SF_B);
+    expect(result.salesforceIdDisagreements).toBe(1);
+    expect(result.salesforceIdsLinked).toBe(0);
+  });
+
+  it("stores NO id when two Salesforce users share the matching key, and reports it", async () => {
+    arrange({
+      roster: [{ id: "u1", email: "shared@x.com", manager_id: null, role: "agent", salesforce_user_id: null }],
+      debtTeam: [
+        { Id: SF_A, Email: "shared@x.com", Name: "Agent A", HighDebt__c: true },
+        { Id: SF_B, Email: "shared@x.com", Name: "Agent A Duplicate", HighDebt__c: true },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(idWrites()).toHaveLength(0);
+    expect(result.salesforceIdAmbiguous).toBe(1);
+    // Many matches is a refusal in its own right, never reported as absence (L521).
+    expect(result.salesforceIdsUnresolved).toBe(0);
+    expect(result.salesforceIdsLinked).toBe(0);
+  });
+
+  it("reports an agent it could not resolve rather than silently skipping them", async () => {
+    arrange({
+      roster: [{ id: "u1", email: "ghost@x.com", manager_id: null, role: "agent", salesforce_user_id: null }],
+      debtTeam: [],
+      byEmail: [],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(idWrites()).toHaveLength(0);
+    expect(result.salesforceIdsUnresolved).toBe(1);
+  });
+
+  it("backfills a roster row the debt-team query never returns", async () => {
+    // The measured case: on 2026-08-31 the debt team query resolved 104 of 118
+    // active users, and the other 14 (managers, admins, the team lead) are
+    // reachable only through the by-email remainder query.
+    arrange({
+      roster: [
+        { id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+        { id: "u9", email: "boss@x.com", manager_id: null, role: "admin", salesforce_user_id: null },
+      ],
+      debtTeam: [{ Id: SF_A, Email: "a@x.com", Name: "Agent A", HighDebt__c: true }],
+      byEmail: [{ Id: SF_B, Email: "boss@x.com" }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    const written = idWrites();
+    expect(written).toHaveLength(2);
+    expect(written.find((w) => w.id === "u9")).toMatchObject({ salesforce_user_id: SF_B });
+    expect(result.salesforceIdsLinked).toBe(2);
+    expect(result.salesforceIdsUnresolved).toBe(0);
+    // The remainder query asks about the row the first query missed, and ONLY that
+    // row: re-asking about one already answered would spend a Salesforce call per
+    // hour forever on a question that is already settled.
+    const remainder = soqlSent().find((q) => q.includes("Email != null AND Email IN"));
+    expect(remainder).toContain("boss@x.com");
+    expect(remainder).not.toContain("a@x.com");
+  });
+
+  it("throws when the id write errors (fail loud, never a quiet non-link)", async () => {
+    arrange({
+      roster: [{ id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: null }],
+      debtTeam: [{ Id: SF_A, Email: "a@x.com", Name: "Agent A", HighDebt__c: true }],
+    });
+    // `existing` is empty, so the agent arrives as an INSERT and this run's only
+    // upsert is the id write itself.
+    store.config.errorOn = "upsert";
+
+    await expect(syncSalesforceAgents()).rejects.toThrow(/user id link batch failed/);
+  });
+});
