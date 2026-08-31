@@ -155,3 +155,29 @@ describe("sweepWarehousePii", () => {
     await expect(sweepWarehousePii(NOW)).rejects.toThrow(/unverified|could not read/i);
   });
 });
+
+/**
+ * The ids come from OUTSIDE (Snowflake's answer), so they are checked rather than
+ * coerced. `String(null)` is the string "null", which would be interpolated into
+ * the purge as a booking id, match nothing, and leave the run reporting a
+ * candidate it cleared zero of: a silent no-op that reads as a healthy sweep.
+ */
+describe("sweepWarehousePii id handling", () => {
+  it("refuses a selected row with no readable id rather than coercing it", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement).mockImplementation(async (_c, sql: string) => {
+      if (/^select id/i.test(sql)) return { data: [["bk-1"], [null]] } as never;
+      return { data: [["1"]] } as never;
+    });
+    await expect(sweepWarehousePii(NOW)).rejects.toThrow(/no readable id/i);
+  });
+
+  it("refuses a blank id, which would build a statement matching nothing", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    vi.mocked(executeStatement).mockImplementation(async (_c, sql: string) => {
+      if (/^select id/i.test(sql)) return { data: [["   "]] } as never;
+      return { data: [["1"]] } as never;
+    });
+    await expect(sweepWarehousePii(NOW)).rejects.toThrow(/no readable id/i);
+  });
+});

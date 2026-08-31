@@ -112,7 +112,22 @@ async function selectAgedBookings(
         "the window could not be read (an empty result and an unreadable one are not the same)",
     );
   }
-  return res.data.map((row) => String(row[0]));
+  return res.data.map((row) => {
+    const id = row[0];
+    // Refuse rather than coerce. `String(null)` is the string "null", which would
+    // be interpolated into the purge as a booking id, match nothing, and leave the
+    // run reporting a candidate it cleared zero of: a silent no-op that reads as a
+    // healthy sweep. Every id here is a uuid the warehouse holds, so anything else
+    // means the answer is not what we think it is (L50: map the unreadable case to
+    // the fail-safe side rather than letting it flow into the next statement).
+    if (typeof id !== "string" || id.trim() === "") {
+      throw new Error(
+        "warehouse retention: the aged-booking select returned a row with no readable id, so which " +
+          "bookings are past the window cannot be trusted",
+      );
+    }
+    return id;
+  });
 }
 
 /**
