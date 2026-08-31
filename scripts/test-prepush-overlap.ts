@@ -90,7 +90,15 @@ assert(
 // --- the two facts in other files the overlap rests on -------------------------
 {
   const eslintConfig = readFileSync(join(ROOT, "eslint.config.mjs"), "utf8");
-  for (const ignored of [".next/**", ".open-next/**"]) {
+  // The `**/` prefix is required, not incidental. A root anchored `.open-next/**`
+  // covers the repo's own build output, which is all this overlap needs, but it
+  // misses the identical directories inside `.claude/worktrees/agent-*` and that
+  // made `pnpm lint` unrunnable locally on 2026-08-31. Asserting the prefixed
+  // form here stops a well meaning "simplification" back to the root anchored one.
+  //
+  // This is a cheap text check on the pattern. What eslint ACTUALLY ignores is
+  // proved behaviourally, with a positive control, in test-eslint-ignores.ts.
+  for (const ignored of ["**/.next/**", "**/.open-next/**"]) {
     assert(
       eslintConfig.includes(`"${ignored}"`),
       `eslint still ignores ${ignored}; without that, lint reads the build's output while the build is writing it`,

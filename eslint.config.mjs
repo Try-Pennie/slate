@@ -7,14 +7,34 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Override default ignores of eslint-config-next.
   globalIgnores([
+    // Every pattern here is `**/`-prefixed rather than root anchored, because
+    // eslint finds its inputs by a recursive glob and this repo routinely holds
+    // nested checkouts: the parallel agent playbook in AGENTS.md creates git
+    // worktrees under `.claude/worktrees/agent-*`, and each one that runs the
+    // gate leaves its own build output behind (L234).
+    //
+    // Root anchored patterns matched `<root>/.open-next/**` and missed
+    // `.claude/worktrees/agent-*/.open-next/**`. On 2026-08-31 that made
+    // `pnpm lint` report 734,754 problems from 14 abandoned worktrees and OOM at
+    // node's default heap, so the pre-push gate's lint leg could not run at all.
+    // CI never saw it, because a fresh checkout has no worktrees.
+    //
+    // `scripts/test-eslint-ignores.ts` asks eslint itself whether each path is
+    // ignored, and carries a positive control so a config that ignored
+    // everything cannot pass.
+    //
     // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
+    "**/.next/**",
+    "**/out/**",
+    "**/build/**",
+    "**/next-env.d.ts",
     // Cloudflare / OpenNext build artifacts (huge generated bundles).
-    ".open-next/**",
-    ".wrangler/**",
+    "**/.open-next/**",
+    "**/.wrangler/**",
+    // Nested agent checkouts in full: their sources are already linted on their
+    // own branch, and linting them here reports another branch's code as this
+    // one's.
+    ".claude/worktrees/**",
   ]),
   {
     // A leading underscore marks an intentionally-unused binding (positional

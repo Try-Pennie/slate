@@ -39,8 +39,19 @@ build overlapping tsc has tsc reading a directory the build is writing (the same
 coupling the hook's `rm -rf .next/types` exists for). Overlapping them would
 reintroduce it as a gate that fails at random, and the response to a random
 failure is to re-run rather than to look. Lint and the tests are safe alongside it
-because neither reads what it writes: eslint ignores `.next/**` and
-`.open-next/**`, and vitest collects only `src/**/*.test.{ts,tsx}`. The build's
+because neither reads what it writes: eslint ignores `**/.next/**` and
+`**/.open-next/**`, and vitest collects only `src/**/*.test.{ts,tsx}`. Those
+ignores are `**/`-prefixed on purpose and it is not cosmetic: root-anchored
+versions matched only the repo's own build output and missed the identical
+directories inside `.claude/worktrees/agent-*`, so eslint walked every abandoned
+agent checkout. On 2026-08-29 to 31 that meant 14 worktrees, 18 GB, and a
+`pnpm lint` that reported 734,754 problems and OOMed before finishing, i.e. a
+gate leg that could not run. CI never saw it, because a fresh checkout has no
+worktrees, so it stayed invisible to the pipeline while being fatal locally.
+`scripts/test-eslint-ignores.ts` asks eslint itself whether each path is ignored
+and carries a positive control, so a config that ignored everything cannot pass.
+**Remove an agent worktree once its PR merges** (`git worktree remove`), or they
+accumulate silently. The build's
 output goes to a log and is printed in full only if it fails, so a failure still
 reads as one thing at a time, and a check that fails while the build is still
 running cancels it and says so. `scripts/test-prepush-overlap.ts` pins all of
