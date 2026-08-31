@@ -914,11 +914,22 @@ export default async function AdminPage({
         </div>
         {/* An empty sync-health panel is a real all-clear ("no calendar is in a
             failure streak"), so it may only be drawn from a calendar read that
-            actually happened. */}
-        {calendarsUnreadable ? (
+            actually happened.
+            #1646: and from a ROSTER read that actually happened. The rows are a
+            JOIN of the two (`agent_calendars` for the streak, `users` for whose
+            calendar it is), and `dedupeFailingAgents` drops every row with no
+            email, so an unreadable roster empties the panel just as completely as
+            an unreadable calendar read does, with the difference that nothing
+            said so: the roster notice above explains the agent list, not this
+            (L530). Distinct causes get distinct sentences (L11), because "the
+            calendar read failed" and "we cannot say whose calendar it is" point
+            at different things to go and look at. */}
+        {calendarsUnreadable || rosterUnreadable ? (
           <UnreadableNotice className="mb-4">
-            Calendar sync health could not be read, so no agent is listed below as
-            failing. That is not the same as none of them failing.
+            {calendarsUnreadable
+              ? "Calendar sync health could not be read, so no agent is listed below as failing."
+              : "The roster could not be read, so a failing calendar cannot be matched to the agent it belongs to, and no agent is listed below as failing."}{" "}
+            That is not the same as none of them failing.
           </UnreadableNotice>
         ) : (
           syncHealthRows.length > 0 && (
