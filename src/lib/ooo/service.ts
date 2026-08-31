@@ -10,7 +10,11 @@ import {
   deleteEventOnCalendar,
 } from "@/lib/google/calendar";
 import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
-import { previewBulkReassign, startBulkReassign } from "@/lib/booking/service";
+import {
+  previewBulkReassign,
+  startBulkReassign,
+  stopCoverageSweepForRequest,
+} from "@/lib/booking/service";
 import {
   dmSlackUserByEmail,
   postSlack,
@@ -215,6 +219,18 @@ export function realDeps(): OooDeps {
       };
     },
 
+    // #1665: stop the sweep the approval started, and say what that stopped and
+    // what had already moved.
+    //
+    // Deliberately NOT wrapped in a try/catch here. The orchestration's own
+    // `stopCoverage` catches, pages and tells the reader it could not be confirmed;
+    // swallowing it in the binding would report a stop that never happened, which is
+    // the one answer nobody can act on.
+    stopCoverageSweep: async ({ requestId }) => {
+      const report = await stopCoverageSweepForRequest(requestId);
+      return { stopped: report.stopped, alreadyMoved: report.alreadyMoved };
+    },
+
     // #1239: how many appointments approving would move, for the pending notice.
     //
     // NULL on a read error, never 0. The notice stays silent on zero, so a swallowed
@@ -265,6 +281,7 @@ export function realDeps(): OooDeps {
       // alert-key: ooo_busy_block_fallback
       // alert-key: ooo_calcom
       // alert-key: ooo_undo
+      // alert-key: ooo_coverage_stop
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),
 
     recordAudit: ({ action, actorId, orgId, targetUserId, requestId, details }) =>

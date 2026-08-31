@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const booking = vi.hoisted(() => ({
   previewBulkReassign: vi.fn(),
   startBulkReassign: vi.fn(),
+  stopCoverageSweepForRequest: vi.fn(),
 }));
 vi.mock("@/lib/booking/service", () => booking);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -94,5 +95,32 @@ describe("startCoverageSweep (what the approved edit reports)", () => {
         attendeeName: null,
       },
     ]);
+  });
+});
+
+describe("stopCoverageSweep (what cancelling reports)", () => {
+  it("passes the two counts through, keyed on the request", async () => {
+    booking.stopCoverageSweepForRequest.mockResolvedValueOnce({
+      jobs: 1,
+      stopped: 2,
+      alreadyMoved: 3,
+    });
+
+    const outcome = await realDeps().stopCoverageSweep({ requestId: "r1" });
+
+    expect(booking.stopCoverageSweepForRequest).toHaveBeenCalledWith("r1");
+    expect(outcome).toEqual({ stopped: 2, alreadyMoved: 3 });
+  });
+
+  it("lets a failure THROW rather than answering a stop that never happened", async () => {
+    // The orchestration catches this, pages, and tells the reader it could not be
+    // confirmed. A binding that swallowed it here would answer `stopped: 0`, which
+    // reads exactly like a sweep that had nothing left to stop, on the one message
+    // saying whether customers are still being handed to other advisors.
+    booking.stopCoverageSweepForRequest.mockRejectedValueOnce(new Error("PostgREST said no"));
+
+    await expect(realDeps().stopCoverageSweep({ requestId: "r1" })).rejects.toThrow(
+      /PostgREST said no/,
+    );
   });
 });

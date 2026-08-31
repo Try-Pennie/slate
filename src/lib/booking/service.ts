@@ -46,7 +46,10 @@ import {
 } from "@/lib/booking/bulk-reassign";
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
 import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
+import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
 import {
+  cancelCoverageSweepForRequest,
+  claimBulkReassignItem,
   commitBulkReassignItemOutcome,
   coverageBookingIds,
   createBulkReassignJob,
@@ -2239,6 +2242,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
       };
       await adminReassignBooking(bookingId, targetEmail, reason, actor, false);
     },
+    claimItem: claimBulkReassignItem,
     commitItemOutcome: commitBulkReassignItemOutcome,
     markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,
   };
@@ -2311,6 +2315,20 @@ export async function startBulkReassign(
     oooRequestId: input.oooRequestId ?? null,
     offboardingDeactivatedAtIso: input.offboardingDeactivatedAtIso ?? null,
   });
+}
+
+/**
+ * Stop every coverage sweep an approved time-off request produced (#1665), and
+ * answer what that stopped and what had already moved.
+ *
+ * Throws on a write it could not make, deliberately: the caller pages and tells the
+ * reader it could not be confirmed, and a stop reported as done while customers are
+ * still being handed over is the one answer nobody can act on.
+ */
+export function stopCoverageSweepForRequest(
+  oooRequestId: string,
+): Promise<CoverageSweepCancelReport> {
+  return cancelCoverageSweepForRequest(oooRequestId);
 }
 
 /** The job's status + per-status counts + the actionable list (#974), or null if

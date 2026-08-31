@@ -27,6 +27,7 @@ function fakes(over: Partial<CoverageSweepEnqueueDeps> = {}) {
     insertJob: [] as { status: "active" | "done" }[],
     findExisting: 0,
     addItems: [] as { jobId: string; bookingIds: string[] }[],
+    reArm: [] as { jobId: string; bookingIds: string[] }[],
     reactivate: [] as string[],
   };
   const deps: CoverageSweepEnqueueDeps = {
@@ -42,6 +43,10 @@ function fakes(over: Partial<CoverageSweepEnqueueDeps> = {}) {
     addItems: async (jobId, bookingIds) => {
       calls.addItems.push({ jobId, bookingIds });
       return bookingIds.length;
+    },
+    reArmCancelledItems: async (jobId, bookingIds) => {
+      calls.reArm.push({ jobId, bookingIds });
+      return 0;
     },
     reactivateJob: async (jobId) => {
       calls.reactivate.push(jobId);
@@ -87,6 +92,31 @@ async function run() {
     "a sweep that gained work is put back to active so the drain picks it up",
   );
 
+  // --- a sweep this request's own cancellation stopped (#1665) --------------
+  //
+  // Cancelling the time off flips its waiting items to 'cancelled'; approving the
+  // same window again is a deliberate new decision, so they must move after all.
+  // `addItems` cannot see them (they already exist, so the upsert ignores them), so
+  // without the re-arm this re-approval would report a sweep and queue silence.
+  f = fakes({
+    insertJob: async () => ({ ok: false, conflict: true, message: "duplicate key" }),
+    addItems: async () => 0,
+  });
+  const recordingReArm = f.deps.reArmCancelledItems;
+  f.deps.reArmCancelledItems = async (jobId, bookingIds) => {
+    await recordingReArm(jobId, bookingIds);
+    return 2;
+  };
+  r = await enqueueCoverageSweep(f.deps);
+  assert(
+    f.calls.reArm[0]?.jobId === "job-existing" && f.calls.reArm[0].bookingIds.length === 2,
+    "a re-approval puts the stopped appointments back into the sweep",
+  );
+  assert(
+    f.calls.reactivate[0] === "job-existing",
+    "and reactivates the sweep, which nothing else would have done since no item was NEW",
+  );
+
   // Nothing new to add: a genuine duplicate call, or every booking already an item.
   // Reactivating here would leave a job active with no pending items, which is the
   // very state this exists to prevent (nothing ever flips it back to done).
@@ -99,6 +129,10 @@ async function run() {
   assert(
     f.calls.reactivate.length === 0,
     "a sweep that gained NO new work is left alone, never flipped active-and-empty",
+  );
+  assert(
+    f.calls.reArm.length === 1,
+    "the re-arm is still ASKED, so nothing new plus nothing stopped is a measured zero rather than a skipped question",
   );
 
   // A conflict with no bookings in range: nothing to add, nothing to reactivate.

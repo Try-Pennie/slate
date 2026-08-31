@@ -149,6 +149,11 @@ interface World {
   /** The appointments the sweep reports having queued, which is what the approved
    *  edit names when one of them starts within the short notice window (#1239). */
   sweepMoves: CoverageMove[];
+  /** Every request whose coverage sweep was asked to STOP (#1665), in order. */
+  sweepStops: string[];
+  /** What stopping the sweep answers: the two counts, or a throw so the branch that
+   *  pages and tells the reader it could not be confirmed is reachable. */
+  stopResult: { stopped: number; alreadyMoved: number } | "throw";
   /** Every "how many would move" read the pending notice made, with its bounds, so
    *  a test can prove modify RECOMPUTED rather than reusing the submit number. */
   countReads: { outUserId: string; startIso: string; endIso: string }[];
@@ -183,6 +188,8 @@ function makeWorld(): World {
     sweeps: [],
     sweepResult: 0,
     sweepMoves: [],
+    sweepStops: [],
+    stopResult: { stopped: 0, alreadyMoved: 0 },
     countReads: [],
     countAnswers: [],
     /** The roster getUser reads, exposed so a test can add its own fixture user. */
@@ -313,6 +320,11 @@ function makeWorld(): World {
       if (world.sweepResult === "throw") throw new Error("sweep store unreachable");
       world.sweeps.push({ requestId, startIso, endIso, queued: world.sweepResult });
       return { queued: world.sweepResult, moves: world.sweepMoves };
+    },
+    stopCoverageSweep: async ({ requestId }) => {
+      world.sweepStops.push(requestId);
+      if (world.stopResult === "throw") throw new Error("sweep store unreachable");
+      return world.stopResult;
     },
     countCoverageBookings: async ({ outUserId, startIso, endIso }) => {
       world.countReads.push({ outUserId, startIso, endIso });
@@ -1549,26 +1561,92 @@ function latestManagerNotice(w: World): string {
 }
 
 {
-  // Cancelling approved time off does NOT move the appointments back (#1219 decision 4).
-  // Both the agent and the manager are told, so it is a decision rather than something
-  // discovered later.
+  // Cancelling approved time off STOPS the sweep for what has not moved yet (#1665),
+  // and does NOT move back what has (#1219 decision 4). Both the agent and the
+  // manager are told, so both are decisions rather than things discovered later.
   const w = makeWorld();
-  w.sweepResult = 1;
+  w.sweepResult = 3;
+  w.stopResult = { stopped: 2, alreadyMoved: 1 };
   const sub = await submitOoo(agent, input, w.deps);
   const id = sub.ok ? sub.request.id : "";
   await approveOoo(id, manager, w.deps);
   const dmsBefore = w.dms.length;
   const res = await cancelOoo(id, agent, w.deps);
   assert(res.ok, "the cancel succeeds");
+  assert(
+    w.sweepStops.length === 1 && w.sweepStops[0] === id,
+    "cancelling asks the sweep for THIS request to stop, which nothing used to do",
+  );
   const agentDm = w.dms.slice(dmsBefore).find((d) => d.email === agent.email)?.text ?? "";
   assert(
-    /stay with that advisor/.test(agentDm),
-    `the agent is told the moved appointments stay moved (got: ${agentDm})`,
+    /still waiting to move/.test(agentDm) && /will not move now/i.test(agentDm),
+    `the agent is told what was stopped (got: ${agentDm})`,
+  );
+  assert(
+    /stays with that advisor/.test(agentDm),
+    `and that the moved appointment stays moved (got: ${agentDm})`,
   );
   const edit = w.edits[w.edits.length - 1]?.text ?? "";
   assert(
-    /does not move them back/.test(edit),
+    /does not move it back/.test(edit) && /will not move now/i.test(edit),
     `and so is the manager, on the cancelled message (got: ${edit})`,
+  );
+}
+
+{
+  // The stop runs AFTER the status transition, so a cancel that lost the race and
+  // changed nothing can never stop a sweep for a request that is still approved.
+  const w = makeWorld();
+  w.sweepResult = 2;
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  await cancelOoo(id, agent, w.deps);
+  const stopsAfterFirst = w.sweepStops.length;
+  const second = await cancelOoo(id, agent, w.deps);
+  assert(!second.ok, "a second cancel of the same request is refused");
+  assert(
+    w.sweepStops.length === stopsAfterFirst,
+    "and it does not reach the sweep, because the transition it never won is what gates the stop",
+  );
+}
+
+{
+  // A stop that could not be confirmed is its own state: it pages, and it tells the
+  // reader that appointments may still be moving. It must never read as the silence
+  // of a request that had nothing to stop.
+  const w = makeWorld();
+  w.sweepResult = 2;
+  w.stopResult = "throw";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const dmsBefore = w.dms.length;
+  const res = await cancelOoo(id, agent, w.deps);
+  assert(res.ok, "the cancellation itself still succeeds: the sweep must not cost it");
+  const agentDm = w.dms.slice(dmsBefore).find((d) => d.email === agent.email)?.text ?? "";
+  assert(
+    /could not confirm/.test(agentDm) && /may still move/.test(agentDm),
+    `a failed stop is said out loud (got: ${agentDm})`,
+  );
+  assert(
+    w.alerts.some((a) => a.key === "ooo_coverage_stop"),
+    "and it pages, because nothing retries it and customers may still be handed over",
+  );
+
+  // CONTROL: the same flow with a stop that answers zero says nothing and pages
+  // nothing, so the assertions above are about the failure and not about cancelling.
+  const c = makeWorld();
+  c.sweepResult = 2;
+  const csub = await submitOoo(agent, input, c.deps);
+  const cid = csub.ok ? csub.request.id : "";
+  await approveOoo(cid, manager, c.deps);
+  const cBefore = c.dms.length;
+  await cancelOoo(cid, agent, c.deps);
+  const cDm = c.dms.slice(cBefore).find((d) => d.email === agent.email)?.text ?? "";
+  assert(
+    !/could not confirm/.test(cDm) && !c.alerts.some((a) => a.key === "ooo_coverage_stop"),
+    `CONTROL: a measured stop of nothing is silent (got: ${cDm})`,
   );
 }
 
@@ -1584,6 +1662,67 @@ function latestManagerNotice(w: World): string {
   assert(
     !/stay with that advisor/.test(agentDm),
     `a withdrawn pending request says nothing about moved appointments (got: ${agentDm})`,
+  );
+}
+
+{
+  // The same gap on MODIFY (#1665). Narrowing an approved window returns the request
+  // to pending, and the sweep the old approval started would otherwise carry on
+  // moving that agent's customers over the OLD window.
+  const w = makeWorld();
+  w.sweepResult = 3;
+  w.stopResult = { stopped: 2, alreadyMoved: 1 };
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const editsBefore = w.edits.length;
+  const res = await modifyOoo(
+    id,
+    agent,
+    {
+      startIso: "2026-07-01T13:00:00.000Z",
+      endIso: "2026-07-01T17:00:00.000Z",
+      displayTzId: "America/New_York",
+      displayTzLabel: "ET",
+      allDay: false,
+      reason: "Appointment",
+    },
+    w.deps,
+  );
+  assert(res.ok, "narrowing the window succeeds");
+  assert(
+    w.sweepStops.length === 1 && w.sweepStops[0] === id,
+    "narrowing an approved window stops the sweep the old approval started",
+  );
+  const superseded = w.edits.slice(editsBefore)[0]?.text ?? "";
+  assert(
+    /still waiting to move/.test(superseded) && /had already moved/.test(superseded),
+    `and the superseded message says what happened to both halves (got: ${superseded})`,
+  );
+
+  // CONTROL: modifying a request that was never approved has no sweep behind it, so
+  // the same code path says nothing rather than inventing a stop.
+  const c = makeWorld();
+  const csub = await submitOoo(agent, input, c.deps);
+  const cid = csub.ok ? csub.request.id : "";
+  const cEditsBefore = c.edits.length;
+  await modifyOoo(
+    cid,
+    agent,
+    {
+      startIso: "2026-07-01T13:00:00.000Z",
+      endIso: "2026-07-01T17:00:00.000Z",
+      displayTzId: "America/New_York",
+      displayTzLabel: "ET",
+      allDay: false,
+      reason: "Appointment",
+    },
+    c.deps,
+  );
+  const cSuperseded = c.edits.slice(cEditsBefore)[0]?.text ?? "";
+  assert(
+    !/still waiting to move/.test(cSuperseded) && !/had already moved/.test(cSuperseded),
+    `CONTROL: a never-approved request's edit says nothing about appointments (got: ${cSuperseded})`,
   );
 }
 

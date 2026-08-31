@@ -67,3 +67,22 @@ export function oooUndoManagerAlert(requestId: string, reason: string): string {
 export function oooUndoAgentAlert(requestId: string, reason: string): string {
   return `Removing the agent calendar OOO event for request ${requestId} failed: ${reason}`;
 }
+
+/**
+ * Time-off orchestration incident: oooCoverageStopAlert (#1665).
+ *
+ * The time off was cancelled or narrowed and the coverage sweep behind it could not
+ * be stopped, so customers may still be handed to another advisor for a reason that
+ * no longer exists. Nothing retries this: the request is already closed, so the only
+ * route back is a person opening the coverage panel.
+ *
+ * Its own key rather than sharing `ooo_undo`, because the two say different things
+ * to do and a shared key lets one throttle away the other (L11).
+ */
+export function oooCoverageStopAlert(requestId: string, reason: string): string {
+  return (
+    `The coverage sweep for time off request ${requestId} could not be stopped after the ` +
+    `request was closed (${reason}). Its remaining appointments may still move to other ` +
+    `advisors. Stop them from that agent's coverage panel.`
+  );
+}

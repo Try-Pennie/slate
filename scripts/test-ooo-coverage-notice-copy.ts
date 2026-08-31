@@ -170,17 +170,68 @@ assert(
   "a sweep that had already been started says that rather than a number it does not hold",
 );
 
-// --- cancelling: the appointments that already moved stay moved -------------
+// --- cancelling: what was stopped, and what stays moved (#1665) -------------
+//
+// A manager who cancels reasonably expects everything to go back, and only half of
+// it does. Both halves have to be in the sentence, and each is asserted on its own
+// so a line carrying only one can never satisfy the other (L178).
 
-const cancelledApproved = cancelledCoverageLine(true) ?? "";
+const cancelledBoth = cancelledCoverageLine({ kind: "checked", stopped: 2, alreadyMoved: 3 }) ?? "";
 assert(
-  /stay/.test(cancelledApproved) && /not move them back/i.test(cancelledApproved),
-  "cancelling approved time off states that moved appointments stay with the new advisor",
+  /2 upcoming appointments were still waiting/.test(cancelledBoth) &&
+    /will not move now/.test(cancelledBoth),
+  "cancelling says how many were stopped before they moved",
 );
 assert(
-  cancelledCoverageLine(false) === null,
-  "a request that was never approved moved nothing, so it says nothing",
+  /3 upcoming appointments had already moved/.test(cancelledBoth) &&
+    /does not move them back/i.test(cancelledBoth),
+  "and how many had already moved and stay with the covering advisor",
 );
+
+const cancelledStoppedOnly =
+  cancelledCoverageLine({ kind: "checked", stopped: 1, alreadyMoved: 0 }) ?? "";
+assert(
+  /1 upcoming appointment was still waiting/.test(cancelledStoppedOnly) &&
+    /It will not move now/.test(cancelledStoppedOnly),
+  "one stopped appointment reads in the singular",
+);
+assert(
+  !/already moved/.test(cancelledStoppedOnly),
+  "and nothing is claimed about appointments that had moved, because none had",
+);
+
+const cancelledMovedOnly =
+  cancelledCoverageLine({ kind: "checked", stopped: 0, alreadyMoved: 1 }) ?? "";
+assert(
+  /1 upcoming appointment had already moved/.test(cancelledMovedOnly) &&
+    /does not move it back/i.test(cancelledMovedOnly),
+  "one already-moved appointment reads in the singular",
+);
+assert(
+  !/still waiting/.test(cancelledMovedOnly),
+  "and nothing is claimed about stopped appointments, because none were waiting",
+);
+
+assert(
+  cancelledCoverageLine({ kind: "checked", stopped: 0, alreadyMoved: 0 }) === null,
+  "a request whose approval queued nothing says nothing rather than a sentence about no appointments",
+);
+
+const cancelledFailed = cancelledCoverageLine({ kind: "failed" }) ?? "";
+assert(
+  /could not confirm/.test(cancelledFailed) && /may still move/.test(cancelledFailed),
+  "a stop that could not be confirmed says so, and says they may still move",
+);
+assert(
+  cancelledFailed !== cancelledCoverageLine({ kind: "checked", stopped: 0, alreadyMoved: 0 }),
+  "which never reads as the silence of a request that had nothing to stop",
+);
+assert(
+  /coverage panel/.test(cancelledFailed) && !/[{}]|Error|failed \[/.test(cancelledFailed),
+  "and points at where to look rather than pasting the error that caused it",
+);
+
+const cancelledApproved = cancelledBoth;
 
 // --- the copy rules, over every state --------------------------------------
 
@@ -197,8 +248,11 @@ const everyLine = [
   failed,
   already,
   cancelledApproved,
+  cancelledStoppedOnly,
+  cancelledMovedOnly,
+  cancelledFailed,
 ].filter((s): s is string => typeof s === "string");
-assert(everyLine.length >= 12, "every state produced a line to check");
+assert(everyLine.length >= 15, "every state produced a line to check");
 for (const line of everyLine) {
   // Written as escapes so this file holds no literal dash for the style guard to
   // catch: it cannot tell the line banning the character from a line using it.
