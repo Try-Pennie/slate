@@ -563,16 +563,28 @@ answering for another is how a blind check reads as a healthy one (L11):
   Google calendar can fail, not two" above); `busy-unreadable`,
   `request-window-unreadable`, `no-agent`.
 
+There is one SKIP, and it is deliberately neither proof nor damage.
+`agent-deactivated` is an approved future window belonging to somebody who has
+left the pool: nothing can be booked with them, and their Google account is
+routinely unlicensed on the way out, so asking Google would report a provisioning
+repair nobody should make. It is asked BEFORE the Google call rather than after,
+so the run does not spend one. A skip is still not a pass: a run whose every
+request was skipped exits `nothing-judged`, because judging nothing proves
+nothing (L98). The point of the skip is that one departed agent must not leave the
+sweep permanently red, which is how a check stops being read at all (L36).
+
 Its decision logic is pinned offline by
 `scripts/test-ooo-protection-live-check.ts`, which drives every one of those
 verdicts through hand written fakes and fails if a declared verdict is one no case
 can produce.
 
-**As of 2026-08-31 a full sweep is RED, correctly**: 21 of 23 approved future
-requests verified against live Google, and 2 exit `calendar-not-provisioned`
-because those agents have never been given Calendar (#1396). Nothing here can fix
-that, and scoring it as a pass would be the exact failure this command exists to
-prevent.
+**As of 2026-08-31 a full sweep passes**: 24 approved future requests looked at,
+22 verified against live Google, and 2 skipped as `agent-deactivated`. Those two
+belong to one agent who left the pool on 2026-08-24, and before the skip existed
+they came back `calendar-not-provisioned` (`403 notACalendarUser`), which is what
+Google says for a revoked licence as well as for an account that never had one.
+Reading that as a provisioning ticket would have sent somebody to re-license a
+departed employee, and left the sweep red forever while they did not.
 
 # Capped single-page reads (the `// cap-safe:` convention)
 

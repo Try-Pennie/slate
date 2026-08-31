@@ -103,18 +103,24 @@ type RawRow = {
 const raw = (data ?? []) as RawRow[];
 
 const userIds = [...new Set(raw.map((r) => r.user_id))];
-const users = new Map<string, { email: string; name: string | null }>();
+const users = new Map<string, { email: string; name: string | null; deactivatedAt: string | null }>();
 if (userIds.length > 0) {
   const { data: userRows, error: userErr } = await db
     .from("users")
     // cap-safe: primary-key lookup of the few agents on those requests.
-    .select("id, email, name")
+    .select("id, email, name, deactivated_at")
     .in("id", userIds);
   if (userErr) {
     fail("users-unreadable", `could not read the agents on those requests: ${userErr.message}`);
   }
-  for (const u of (userRows ?? []) as { id: string; email: string; name: string | null }[]) {
-    users.set(u.id, { email: u.email, name: u.name });
+  const rowsRead = (userRows ?? []) as {
+    id: string;
+    email: string;
+    name: string | null;
+    deactivated_at: string | null;
+  }[];
+  for (const u of rowsRead) {
+    users.set(u.id, { email: u.email, name: u.name, deactivatedAt: u.deactivated_at });
   }
 }
 
@@ -124,6 +130,7 @@ const rows: ApprovedRequestRow[] = raw.map((r) => ({
   userId: r.user_id,
   agentEmail: users.get(r.user_id)?.email ?? null,
   agentName: users.get(r.user_id)?.name ?? null,
+  agentDeactivatedAt: users.get(r.user_id)?.deactivatedAt ?? null,
   startsAt: r.starts_at,
   endsAt: r.ends_at,
   displayTzId: r.display_tz_id,
@@ -180,6 +187,12 @@ function classifyFailure(err: unknown): CalendarReading {
 async function readCalendar(request: ApprovedRequestRow): Promise<CalendarReading> {
   const email = request.agentEmail;
   if (!email) return { kind: "no-agent" };
+  // Asked BEFORE Google, not after. A departed agent's account is routinely
+  // unlicensed on offboarding, so the read would come back refused and be
+  // reported as a provisioning repair nobody should make; and nothing can be
+  // booked with them, so there is nothing to protect. Skipping it also saves the
+  // call.
+  if (request.agentDeactivatedAt) return { kind: "agent-deactivated" };
 
   let busy: { start: string; end: string }[];
   try {
@@ -214,20 +227,32 @@ for (const request of selection.requests) {
   const reading = await readCalendar(request);
   const verdict = judgeRequest(request, reading, { toleranceMs, nowMs });
   const who = request.agentName?.trim() || request.agentEmail || request.userId;
-  console.log(`${verdict.ok ? "VERIFIED" : "FAILED  "} ${who}  ${request.startsAt} to ${request.endsAt}`);
+  const label = verdict.ok ? "VERIFIED" : verdict.skipped ? "SKIPPED " : "FAILED  ";
+  console.log(`${label} ${who}  ${request.startsAt} to ${request.endsAt}`);
   console.log(`         ${request.id}  ${verdict.code}: ${verdict.detail}`);
   verdicts.push(verdict);
 }
 
 const summary = summarize(verdicts);
 console.log(
-  `\n${summary.verified} verified, ${summary.failed} failed, out of ${verdicts.length} checked.`,
+  `\n${summary.verified} verified, ${summary.failed} failed, ${summary.skipped} skipped, ` +
+    `out of ${verdicts.length} looked at.`,
 );
-if (!summary.ok) {
+if (summary.failed > 0) {
   fail(
     "protection-not-proved",
     `${summary.failed} approved time off window(s) could not be proved to be blocking. ` +
       "Each line above says what Google actually reported.",
+  );
+}
+if (!summary.ok) {
+  // Reached when every request was skipped. Its own refusal, because a run that
+  // judged nothing has proved nothing, and reporting zero failures here would be
+  // the exact "nothing to report" that reads as health (L98).
+  fail(
+    "nothing-judged",
+    `all ${verdicts.length} request(s) were skipped, so this run proved nothing. Every one of ` +
+      "them belongs to an agent who has left the pool.",
   );
 }
 console.log(

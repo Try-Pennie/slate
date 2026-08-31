@@ -44,6 +44,7 @@ function request(over: Partial<ApprovedRequestRow> = {}): ApprovedRequestRow {
     userId: "user-1",
     agentEmail: "agent@trypennie.com",
     agentName: "Agent One",
+    agentDeactivatedAt: null,
     startsAt: iso(120),
     endsAt: iso(240),
     displayTzId: "America/New_York",
@@ -408,6 +409,20 @@ function judge(...args: Parameters<typeof judgeRequest>): ReturnType<typeof judg
   assert(!v.ok, "and never a pass");
 }
 {
+  // A departed agent. Their Google account is routinely unlicensed on the way
+  // out, and nothing can be booked with them, so this is neither proof nor
+  // damage. It must not read as either.
+  const v = judge(
+    request({ agentDeactivatedAt: "2026-08-24T07:52:34.954+00:00" }),
+    { kind: "agent-deactivated" },
+    judgeOpts,
+  );
+  eq(v.code, "agent-deactivated", "a departed agent's request is its own outcome");
+  assert(!v.ok, "it is never counted as proof");
+  assert(v.skipped, "and it is a skip rather than a failure");
+  assert(/2026-08-24/.test(v.detail), "the detail says when they left");
+}
+{
   const v = judge(request(), { kind: "unreadable", detail: "socket hang up" }, judgeOpts);
   eq(v.code, "calendar-unreadable", "a Google read that threw transiently is its own refusal");
   assert(/socket hang up/.test(v.detail), "carrying the reason it threw");
@@ -480,6 +495,37 @@ function judge(...args: Parameters<typeof judgeRequest>): ReturnType<typeof judg
 {
   const s = summarize([]);
   assert(!s.ok, "summarising NOTHING is never a pass (L98)");
+}
+{
+  // A skip is neither proof nor damage: one departed agent must not leave the
+  // sweep permanently red (L36), and must not be counted as a window proved.
+  const s = summarize([
+    judge(request(), reading(), judgeOpts),
+    judge(
+      request({ id: "req-2", agentDeactivatedAt: "2026-08-24T07:52:34.954+00:00" }),
+      { kind: "agent-deactivated" },
+      judgeOpts,
+    ),
+  ]);
+  assert(s.ok, "a run of one verified request and one skipped one passes");
+  eq(s.verified, 1, "counting only what was really proved");
+  eq(s.skipped, 1, "and reporting the skip separately");
+  eq(s.failed, 0, "a skip is not a failure");
+  assert(
+    s.lines.some((l) => /^SKIPPED/.test(l)),
+    "and the skipped line says so rather than reading as verified",
+  );
+}
+{
+  const s = summarize([
+    judge(
+      request({ agentDeactivatedAt: "2026-08-24T07:52:34.954+00:00" }),
+      { kind: "agent-deactivated" },
+      judgeOpts,
+    ),
+  ]);
+  assert(!s.ok, "a run where EVERYTHING was skipped proved nothing, so it is not a pass");
+  eq(s.failed, 0, "and it is not dressed up as a failure either");
 }
 
 finish();

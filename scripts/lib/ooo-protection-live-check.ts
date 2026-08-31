@@ -37,6 +37,15 @@ export interface ApprovedRequestRow {
   userId: string;
   agentEmail: string | null;
   agentName: string | null;
+  /**
+   * When the agent left the pool, or null while they are still in it.
+   *
+   * A departed agent's Google account is routinely unlicensed on offboarding, so
+   * their approved future time off can never be proved to be blocking and never
+   * needs to be: nothing can be booked with them. Carried on the row so the
+   * command can SAY that rather than reporting a repair nobody should make.
+   */
+  agentDeactivatedAt: string | null;
   startsAt: string;
   endsAt: string;
   /** The zone the agent submitted in, used to read an all day event's dates. */
@@ -241,6 +250,7 @@ export type EventReading =
 export type CalendarReading =
   | { kind: "read"; event: EventReading; busy: BusyPeriod[] }
   | { kind: "no-agent" }
+  | { kind: "agent-deactivated" }
   | { kind: "unreadable"; detail: string }
   | { kind: "not-provisioned"; detail: string }
   | { kind: "refused"; detail: string };
@@ -264,6 +274,7 @@ export const VERDICT_CODES = [
   "busy-unreadable",
   "request-window-unreadable",
   "no-agent",
+  "agent-deactivated",
   "calendar-unreadable",
   "calendar-not-provisioned",
   "calendar-refused",
@@ -276,6 +287,15 @@ export interface Verdict {
   code: VerdictCode;
   /** True for `verified` and nothing else. A run proves protection or it does not. */
   ok: boolean;
+  /**
+   * Deliberately not judged, and therefore neither proof nor damage.
+   *
+   * A skip is NOT a pass: a run that skipped everything has proved nothing, so
+   * `summarize` still refuses it. It exists so one departed agent cannot leave
+   * the sweep permanently red, which is how a check stops being read at all
+   * (L36).
+   */
+  skipped: boolean;
   detail: string;
 }
 
@@ -359,8 +379,18 @@ export function judgeRequest(
     requestId: request.id,
     code,
     ok: code === "verified",
+    skipped: code === "agent-deactivated",
     detail,
   });
+
+  if (reading.kind === "agent-deactivated") {
+    return at(
+      "agent-deactivated",
+      `this agent left the pool on ${request.agentDeactivatedAt}, so nothing can be booked with ` +
+        "them and their Google account is routinely unlicensed on the way out. Not checked, and " +
+        "not a repair anybody should make",
+    );
+  }
 
   if (reading.kind === "no-agent") {
     return at(
@@ -513,21 +543,27 @@ export interface Summary {
   ok: boolean;
   verified: number;
   failed: number;
+  /** Deliberately not judged (a departed agent). Never counted as proof. */
+  skipped: number;
   lines: string[];
 }
 
 /**
  * Roll the verdicts up.
  *
- * An EMPTY list is not a pass. A run that judged nothing proved nothing, and the
- * whole reason this command exists is that "found nothing wrong" and "could not
- * look" render identically in a summary (L98).
+ * An empty list is not a pass, and neither is a list of nothing but SKIPS. A run
+ * that judged nothing proved nothing, and the whole reason this command exists
+ * is that "found nothing wrong" and "could not look" render identically in a
+ * summary (L98).
  */
 export function summarize(verdicts: Verdict[]): Summary {
   const verified = verdicts.filter((v) => v.ok).length;
-  const failed = verdicts.length - verified;
-  const lines = verdicts.map(
-    (v) => `${v.ok ? "VERIFIED" : "FAILED  "} ${v.requestId}  ${v.code}: ${v.detail}`,
-  );
-  return { ok: verdicts.length > 0 && failed === 0, verified, failed, lines };
+  const skipped = verdicts.filter((v) => v.skipped).length;
+  const failed = verdicts.length - verified - skipped;
+  const label = (v: Verdict): string => (v.ok ? "VERIFIED" : v.skipped ? "SKIPPED " : "FAILED  ");
+  const lines = verdicts.map((v) => `${label(v)} ${v.requestId}  ${v.code}: ${v.detail}`);
+  // `verified > 0` is the half that matters: a run whose every request was
+  // skipped judged nothing, and a run that judged nothing has proved nothing,
+  // however few failures it can point at (L98).
+  return { ok: verified > 0 && failed === 0, verified, failed, skipped, lines };
 }
