@@ -139,14 +139,21 @@ const HEALTHY: Record<string, Result> = {
     data: { id: "w1", org_id: "o1", url: "https://regal.test/events", format: "regal", auth_header: "set" },
     error: null,
   },
+  // #1646: this calendar is deliberately FAILING its sync lane. The sync-health
+  // panel is drawn only when it has rows, so a fixture whose calendar is clean
+  // never draws it in the control either, and a test asserting the panel is gone
+  // on a failed read is then satisfied by a state in which it could not have been
+  // there anyway (L159). A failing calendar makes the panel a positive control:
+  // it renders here, so every case below can be seen to REPLACE it with a notice.
+  // The watch lane stays clean, so exactly one row is expected.
   agent_calendars: {
     data: [
       {
         user_id: "u1",
         watch_expiration: new Date(Date.now() + 86_400_000).toISOString(),
-        consecutive_failures: 0,
+        consecutive_failures: 4,
         last_success_at: new Date().toISOString(),
-        last_sync_error: null,
+        last_sync_error: "invalid_grant",
         watch_consecutive_failures: 0,
         watch_last_success_at: new Date().toISOString(),
         watch_last_error: null,
@@ -215,6 +222,11 @@ describe("AdminPage with every read healthy (the control)", () => {
     expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);
     expect(screen.getByText(/No deliveries yet/i)).toBeTruthy();
     expect(screen.queryByText(/could not be read/i)).toBeNull();
+    // #1646: the sync-health panel's positive control. Every case below asserts
+    // this panel is ABSENT and a notice stands in its place, which proves nothing
+    // unless the panel is present when every read succeeded.
+    expect(screen.getByText(/1 agent with a calendar problem/i)).toBeTruthy();
+    expect(screen.getByText(/failing to sync, 4 consecutive failures/i)).toBeTruthy();
   });
 });
 
@@ -265,6 +277,28 @@ describe("AdminPage on an unreadable table (#1629)", () => {
     expect(screen.queryByText(/push \d+\/\d+ watched/)).toBeNull();
     // And the same read feeds the failure list, whose emptiness is an all-clear.
     expect(screen.getByText(/sync health could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/agent with a calendar problem/i)).toBeNull();
+  });
+
+  // #1646: the panel is a JOIN of two reads, agent_calendars for the failure
+  // streaks and users for who each calendar belongs to, and it was gated on the
+  // calendar read alone. With the roster unreadable every failing calendar maps
+  // to a row with a null email, dedupeFailingAgents drops each of those, the row
+  // count falls to zero and the panel is not drawn. The roster notice renders
+  // directly above it, correctly and about the agent list, so the screen looks
+  // like it is already saying what went wrong while the calendar panel is
+  // silently reading as a clean bill of health (L530).
+  it("says calendar sync health could not be measured when the ROSTER read fails", async () => {
+    mockDb({ users: fails("users read exploded") });
+    render(await AdminPage(props));
+    expect(
+      screen.getByText(/failing calendar cannot be matched to the agent/i),
+    ).toBeTruthy();
+    // The panel itself is gone (the join emptied it), which is exactly why the
+    // notice above has to be there: absent panel and healthy panel look the same.
+    expect(screen.queryByText(/agent with a calendar problem/i)).toBeNull();
+    // The calendar read succeeded, so it must not be blamed for this.
+    expect(screen.queryByText(/sync health could not be read/i)).toBeNull();
   });
 
   it("says the delivery log could not be read, not that nothing was sent", async () => {
