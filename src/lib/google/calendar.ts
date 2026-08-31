@@ -25,8 +25,8 @@ export interface GoogleEvent {
   id?: string;
   status?: string;
   transparency?: string;
-  start?: { dateTime?: string; date?: string };
-  end?: { dateTime?: string; date?: string };
+  start?: { dateTime?: string; date?: string; timeZone?: string };
+  end?: { dateTime?: string; date?: string; timeZone?: string };
 }
 
 export interface Interval {
@@ -403,21 +403,41 @@ export async function updateEventTime(
 }
 
 /**
- * Whether an event still exists on the agent's primary calendar (#830). A GET
- * returns 200 when present, 404/410 when gone (deleted by the agent, or already
- * removed by the deletion drain). Any other status throws, so a caller can tell
- * "confirmed gone" from "couldn't verify" and avoid a false alert on a blip.
+ * One event from the agent's primary calendar, or null when it is gone.
+ *
+ * A GET returns 200 when present and 404/410 when gone (deleted by the agent, or
+ * already removed by the deletion drain). Any other status throws, so a caller
+ * can tell "confirmed gone" from "couldn't verify" and avoid a false alert on a
+ * blip.
+ *
+ * The BODY is what `pnpm verify:ooo-protection` (#1478) needs: an approved time
+ * off is only protected if the event's own start and end still match the window
+ * it was written for, and free/busy cannot answer that (busy periods merge, so a
+ * neighbouring meeting makes a mistimed event read as a perfectly occupied
+ * window).
  */
-export async function eventExists(email: string, eventId: string): Promise<boolean> {
+export async function getEventOnPrimary(
+  email: string,
+  eventId: string,
+): Promise<GoogleEvent | null> {
   const res = await gfetch(
     email,
     `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}`,
     {},
     CALENDAR_WRITE_TIMEOUT_MS,
   );
-  if (res.status === 404 || res.status === 410) return false;
-  await ok(res, "events.get (exists)");
-  return true;
+  if (res.status === 404 || res.status === 410) return null;
+  await ok(res, "events.get");
+  return (await res.json()) as GoogleEvent;
+}
+
+/**
+ * Whether an event still exists on the agent's primary calendar (#830). Reads
+ * through the same GET as `getEventOnPrimary` so the two can never disagree
+ * about what "gone" means.
+ */
+export async function eventExists(email: string, eventId: string): Promise<boolean> {
+  return (await getEventOnPrimary(email, eventId)) !== null;
 }
 
 export async function deleteEvent(

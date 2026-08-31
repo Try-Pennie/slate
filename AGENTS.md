@@ -503,6 +503,89 @@ offline by `scripts/test-burst-counter-live-control.ts`, which drives every
 refusal through hand written replies and asserts no two of them share a code or a
 message.
 
+# Proving an approved time off blocks (`pnpm verify:ooo-protection`)
+
+The third command in this family, and the closest mirror of the truth probe two
+sections up: that one asks whether the times Slate OFFERS are really free, this
+one asks whether the times it has promised to PROTECT are really blocked (#1478).
+Both rest on the same rule. Asking whether an approved time off is really
+blocking the agent means asking GOOGLE, because everything Slate stores about it
+was written by the very code under test (L58).
+
+#1464 is what that costs. A busy block was deleted 31 seconds after it was
+written, `ooo_requests.side_effects` went on reading `ok (slate fallback)` for
+weeks, and both Slack messages read as healthy. Any check built on the stored
+record would have agreed with them.
+
+**Two reads, and both are required.** Google's free/busy alone cannot answer it,
+because busy periods MERGE: a neighbouring meeting makes an oversized, mistimed
+or entirely absent time off event read as a perfectly occupied window. So the
+command reads the EVENT itself by the id Slate recorded, checks its start and end
+against the request, and separately asks free/busy whether that window really
+reads as occupied. Free/busy is asked over the agent's PRIMARY calendar only,
+which is where Slate writes the event; counting another calendar's busy time
+would let something unrelated to the request answer for it.
+
+It WRITES NOTHING (no calendar, no database, no alert) and is deliberately not
+named `test-*.ts`, because that glob is the offline unit suite and this needs
+live Google plus the Supabase secret key from `.env.local` / `.dev.vars`.
+
+```
+pnpm verify:ooo-protection                                  # sweep
+OOO_VERIFY_REQUEST_ID=<uuid> pnpm verify:ooo-protection     # one request
+```
+
+`OOO_VERIFY_INCLUDE_UNHANDLED=1` also checks the imported rows Slate never ran a
+step for (#1485), which are excluded by default and counted out loud;
+`OOO_VERIFY_TOLERANCE_MINUTES` (default 1) is how far an event bound may sit from
+the record before the two are called different windows, and a value that is not a
+number exits `tolerance-unreadable` rather than becoming a NaN every comparison
+reads as a mismatch.
+
+**Only `verified` passes, and every other outcome exits non-zero with its own
+reason.** Finding nothing to check is never a pass (L98), and one message
+answering for another is how a blind check reads as a healthy one (L11):
+
+- `no-approved-future-requests`, `only-unhandled-requests`: the sweep had nothing
+  it could check, for two different reasons.
+- `request-not-found`, `request-not-approved`, `request-window-passed`,
+  `request-unhandled`: a named request that cannot be the subject of this check,
+  each said separately so nobody hunts for a typo that is not there.
+- `event-never-recorded-window-free` / `-busy`, `event-gone-window-free` /
+  `-busy`: no event covering the window, split by whether Slate ever held an id
+  and by what free/busy said. The `-busy` pair still FAIL: an occupied window with
+  no event of its own can be the neighbouring meeting.
+- `event-window-uncovered`, `event-window-wider`, `event-window-unreadable`,
+  `event-cancelled`, `event-marked-free`, `event-matches-but-window-free`: the
+  event exists but does not prove the window is blocked.
+- `calendar-refused`, `calendar-not-provisioned`, `calendar-unreadable`: the three
+  ways a calendar read fails, each carrying its own instruction (see "Three ways a
+  Google calendar can fail, not two" above); `busy-unreadable`,
+  `request-window-unreadable`, `no-agent`.
+
+There is one SKIP, and it is deliberately neither proof nor damage.
+`agent-deactivated` is an approved future window belonging to somebody who has
+left the pool: nothing can be booked with them, and their Google account is
+routinely unlicensed on the way out, so asking Google would report a provisioning
+repair nobody should make. It is asked BEFORE the Google call rather than after,
+so the run does not spend one. A skip is still not a pass: a run whose every
+request was skipped exits `nothing-judged`, because judging nothing proves
+nothing (L98). The point of the skip is that one departed agent must not leave the
+sweep permanently red, which is how a check stops being read at all (L36).
+
+Its decision logic is pinned offline by
+`scripts/test-ooo-protection-live-check.ts`, which drives every one of those
+verdicts through hand written fakes and fails if a declared verdict is one no case
+can produce.
+
+**As of 2026-08-31 a full sweep passes**: 24 approved future requests looked at,
+22 verified against live Google, and 2 skipped as `agent-deactivated`. Those two
+belong to one agent who left the pool on 2026-08-24, and before the skip existed
+they came back `calendar-not-provisioned` (`403 notACalendarUser`), which is what
+Google says for a revoked licence as well as for an account that never had one.
+Reading that as a provisioning ticket would have sent somebody to re-license a
+departed employee, and left the sweep red forever while they did not.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
