@@ -13,6 +13,27 @@
 // destructured for `data` without also consulting `error` (and without the
 // documented `// error-ok:` opt-out for a deliberately null-tolerant read).
 //
+// #1629 widened it in BOTH directions at once, because widening either alone
+// would have fixed nothing:
+//
+//   - the SHAPE. The scanner only saw `const { data } = await ...`. The two sites
+//     #1629 is about are written as `const [aRes, bRes] = await Promise.all([...])`
+//     followed by `(aRes.data ?? [])`, which produces no such destructure. One of
+//     them, `staffing-depth-load.ts`, has been INSIDE the scanned paths since #865
+//     with four swallowed reads in it, and this guard reported clean over it every
+//     single run. A guard blind to the shape reads exactly like a clean tree.
+//   - the PATHS, now including the whole `src/app/admin` tree. That surface is
+//     where the empty answer is most convincing ("no agents", "no buckets",
+//     "nobody is in this pool", "nothing was ever sent to Regal" are all
+//     legitimate readings, several of them alarming), and several of those panels
+//     sit beside a control that writes back what they show.
+//
+// Widening the paths flagged 22 further reads across the admin tree. They were
+// triaged one at a time, not blanket-annotated: nineteen turned out to be the
+// "empty is indistinguishable from an answer" class and now `unwrap` (three of
+// them were fail-open authorization or write-branch decisions), and three are
+// genuinely safe degrades carrying an `// error-ok:` that names the safe path.
+//
 // The scan logic lives in scripts/lib/scan-swallowed-error-reads.ts so it is
 // unit-testable. This file exercises it against fixtures (a positive control that
 // proves the detector actually flags the bad pattern, so it can't rot into a
@@ -135,6 +156,66 @@ const FIXTURES: Fixture[] = [
     flagged: false,
     src: `// a read failure here falls back to a safe re-route,\n// error-ok: so a transient error must not throw and block the reschedule\nconst { data } = await db.from("availability_schedules").select("timezone").eq("user_id", u).limit(1);\nreturn (data ?? [])[0];`,
   },
+
+  // FLAGGED: the RESULT-OBJECT member read (#1629) ------------------------------
+  // The shape both sites in #1629 were written in, and the reason widening the
+  // scanned PATHS alone would have fixed nothing: src/lib/routing has been in
+  // scope since #865, and staffing-depth-load.ts sat inside it reading four
+  // tables this way with the guard reporting clean over it.
+  {
+    name: "Promise.all result object, .data read later, .error never read",
+    flagged: true,
+    src: `const [usersRes, bucketsRes] = await Promise.all([\n  db.from("users").select("*").eq("org_id", o),\n  db.from("buckets").select("*").eq("org_id", o),\n]);\nconst users = (usersRes.data ?? []) as User[];\nconst buckets = (bucketsRes.data ?? []) as Bucket[];`,
+  },
+  {
+    name: "a leading // comment WITH COMMAS does not shift the element alignment",
+    flagged: true,
+    // The admin page's own shape. Split naively, the comment's two commas make
+    // three elements and every later name lands on the wrong query.
+    src: `const [aRes, bRes] = await Promise.all([\n  // Exclude the synthetic agent, the bookable count, and the pickers fed by it.\n  db.from("users").select("*"),\n  db.from("buckets").select("*"),\n]);\nreturn (bRes.data ?? []).length + (aRes.data ?? []).length;`,
+  },
+  {
+    name: "a bare BUILDER NAME as the Promise.all element, defined on an earlier line",
+    flagged: true,
+    src: `let bucketsQuery = db.from("buckets").select("*");\nif (orgId) bucketsQuery = bucketsQuery.eq("org_id", orgId);\nconst [bucketsRes] = await Promise.all([bucketsQuery]);\nreturn (bucketsRes.data ?? []) as Bucket[];`,
+  },
+  {
+    name: "a single awaited result bound to a name, .data read later",
+    flagged: true,
+    src: `const usersRes = await db.from("users").select("id, email").eq("org_id", o);\nconst users = (usersRes.data ?? []) as User[];\nreturn users.length;`,
+  },
+
+  // NOT FLAGGED: the same shape with `.error` actually consulted ---------------
+  {
+    name: "result object whose .error is checked somewhere in the file",
+    flagged: false,
+    src: `const [usersRes] = await Promise.all([db.from("users").select("*")]);\nconst unreadable = usersRes.error != null;\nconst users = (usersRes.data ?? []) as User[];\nreturn { users, unreadable };`,
+  },
+  {
+    name: "result object never consumed as .data (nothing reads the rows)",
+    flagged: false,
+    src: `const [pingRes] = await Promise.all([db.from("users").select("id").limit(1)]);\nreturn pingRes != null;`,
+  },
+  {
+    name: "result object from a WRITE (mutator before the select)",
+    flagged: false,
+    src: `const [updRes] = await Promise.all([db.from("bookings").update(patch).eq("id", id).select("id")]);\nreturn ((updRes.data ?? []) as unknown[]).length > 0;`,
+  },
+  {
+    name: "result object carrying an error-ok opt-out above the binding",
+    flagged: false,
+    src: `// error-ok: a read error leaves the panel blank and the next tick refills it\nconst [rowsRes] = await Promise.all([db.from("bucket_slots").select("payload")]);\nreturn (rowsRes.data ?? []).length;`,
+  },
+  {
+    name: "result object carrying an error-ok opt-out above the .data read",
+    flagged: false,
+    src: `const [rowsRes] = await Promise.all([db.from("bucket_slots").select("payload")]);\ndoSomethingElse();\n// error-ok: an unreadable cache re-routes to a cold compute below\nconst rows = (rowsRes.data ?? []);\nreturn rows.length;`,
+  },
+  {
+    name: "a non-supabase awaited result bound to a name",
+    flagged: false,
+    src: `const res = await fetch(url);\nconst body = res.data;\nreturn body;`,
+  },
 ];
 
 for (const f of FIXTURES) {
@@ -144,10 +225,13 @@ for (const f of FIXTURES) {
 
 // --- the scan surface: availability, booking, google, routing (#865) ----------
 
-function tsFiles(dir: string): string[] {
+function tsFiles(dir: string, recursive = false): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) continue; // both dirs are flat; the issue scopes /*
+    if (e.isDirectory()) {
+      if (recursive) out.push(...tsFiles(join(dir, e.name), true));
+      continue; // the lib dirs are flat; the issue scopes /*
+    }
     if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(join(dir, e.name));
   }
   return out;
@@ -162,6 +246,12 @@ const surface = [
   // #1036: the webhook emit path silently dropped a booking event on a swallowed
   // endpoints-read / insert error because it sat outside this scanner's scope.
   ...tsFiles(join(ROOT, "src", "lib", "webhooks")),
+  // #1629: the whole /admin tree, recursively (it is nested, unlike the lib dirs
+  // above). The admin surface is where the empty answer is most convincing:
+  // "no agents", "no buckets", "nobody in this pool", "nothing was ever sent to
+  // Regal" are all legitimate readings, several of them alarming, and two of them
+  // sit beside a control that would write the empty reading back as fact.
+  ...tsFiles(join(ROOT, "src", "app", "admin"), true),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -258,6 +348,64 @@ assert(
   "positive control: a reintroduced swallowed-error webhook read is caught",
 );
 
+// A control on the newly-covered SHAPE (#1629), driven off the real file the
+// issue was filed about. staffing-depth-load.ts now routes its four reads through
+// `unwrap`; put them back as `(<name>Res.data ?? [])` and the guard must catch all
+// four. This is the control that matters most here, because src/lib/routing has
+// been in the scanned paths since #865 and the guard reported it CLEAN the whole
+// time those four reads were swallowing errors: a scanner blind to the shape reads
+// exactly like a clean tree (L1, L98).
+const depthPath = join(ROOT, "src", "lib", "routing", "staffing-depth-load.ts");
+const depthSrc = readFileSync(depthPath, "utf8");
+assert(
+  scanSwallowedErrorReads(depthSrc, depthPath).length === 0,
+  "the real routing/staffing-depth-load.ts is clean",
+);
+const depthReverted = depthSrc
+  .replace(/unwrap\((\w+Res), "[^"]*"\)/g, "$1.data")
+  // The busy-block read goes through selectAllPages and is not part of this shape.
+  .replace(/import \{ unwrap \} from "@\/lib\/db\/result";\n/, "");
+assert(
+  depthReverted !== depthSrc,
+  "the revert control actually changed staffing-depth-load.ts (else it proves nothing)",
+);
+const depthFindings = scanSwallowedErrorReads(depthReverted, depthPath);
+assert(
+  depthFindings.length === 4,
+  `positive control: reverting loadTierDepths' four unwraps is caught (got ${depthFindings.length})`,
+);
+assert(
+  depthFindings.every((f) => f.shape === "result-object"),
+  "the reverted reads are caught as the result-object shape, not by accident as a destructure",
+);
+
+// And the shape's own alignment, on the real admin page: each finding must name a
+// read that is really there. A scanner that names the WRONG read is worse than one
+// that names none, because the reader goes and looks at code that is fine.
+const adminPagePath = join(ROOT, "src", "app", "admin", "page.tsx");
+const adminSrc = readFileSync(adminPagePath, "utf8");
+assert(
+  scanSwallowedErrorReads(adminSrc, adminPagePath).length === 0,
+  "the real admin/page.tsx is clean",
+);
+const adminReverted = adminSrc.replace(
+  /const rosterUnreadable = usersRes\.error != null;/,
+  "const rosterUnreadable = false;",
+);
+assert(
+  adminReverted !== adminSrc,
+  "the admin revert control actually changed page.tsx (else it proves nothing)",
+);
+const adminFindings = scanSwallowedErrorReads(adminReverted, adminPagePath);
+assert(
+  adminFindings.some((f) => f.binding === "usersRes.data"),
+  "positive control: dropping the admin page's only usersRes.error check is caught",
+);
+assert(
+  adminFindings.every((f) => f.snippet.includes('.from("users")')),
+  `the finding names the read it is about (got: ${adminFindings.map((f) => f.snippet).join(" | ")})`,
+);
+
 // --- repo invariant: the whole scan surface is clean --------------------------
 
 let siteCount = 0;
@@ -268,15 +416,20 @@ for (const file of surface) {
   for (const fnd of findings) {
     assert(
       false,
-      `${fnd.file}:${fnd.line} awaited select destructured for \`${fnd.binding}\` without consulting \`error\`; ` +
-        `route it through unwrap (src/lib/db/result.ts), also destructure \`error\` and check it, ` +
-        `or annotate // error-ok: <reason> if it deliberately tolerates a null/empty result [${fnd.snippet}]`,
+      `${fnd.file}:${fnd.line} ` +
+        (fnd.shape === "result-object"
+          ? `awaited select bound to a result object read later as \`${fnd.binding}\`, with its \`.error\` read nowhere; `
+          : `awaited select destructured for \`${fnd.binding}\` without consulting \`error\`; `) +
+        `route it through unwrap (src/lib/db/result.ts), also read \`error\` and check it, ` +
+        `or annotate // error-ok: <reason> if it deliberately tolerates a null/empty result. ` +
+        `The question that decides which: not "can this read fail harmlessly" but ` +
+        `"can anything downstream read the empty result as an answer?" [${fnd.snippet}]`,
     );
   }
 }
 if (siteCount === 0) {
   console.log(
-    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, routing, and salesforce source files`,
+    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, routing, salesforce, webhook and admin source files`,
   );
 }
 

@@ -28,6 +28,35 @@ function fakeDb(tables: Rows): ReturnType<typeof supabaseAdmin> {
   } as unknown as ReturnType<typeof supabaseAdmin>;
 }
 
+/**
+ * The same fake, but ONE named table answers with a query error. #1629: a read
+ * that fails has to be told apart from a table that is genuinely empty, and only
+ * a per-table fixture can do that (a fake where everything fails is satisfied by
+ * any read throwing, including one that was already covered).
+ */
+function fakeDbFailing(tables: Rows, failingTable: string): ReturnType<typeof supabaseAdmin> {
+  const builder = (result: unknown) => {
+    const b: Record<string, unknown> = {
+      select: () => b,
+      eq: () => b,
+      lte: () => b,
+      gt: () => b,
+      in: () => b,
+      range: () => b,
+      then: (resolve: (v: unknown) => unknown) => Promise.resolve(result).then(resolve),
+    };
+    return b;
+  };
+  return {
+    from: (table: string) =>
+      builder(
+        table === failingTable
+          ? { data: null, error: { message: `${table} read exploded` } }
+          : { data: tables[table] ?? [], error: null },
+      ),
+  } as unknown as ReturnType<typeof supabaseAdmin>;
+}
+
 // 11:00 ET on 2026-07-09. The all-day fixtures below are anchored to ET local
 // midnight (04:00Z in July), matching what the #616 sync writes.
 const NOW = new Date("2026-07-09T15:00:00Z");
@@ -192,4 +221,47 @@ describe("loadTierDepths", () => {
     } as unknown as ReturnType<typeof supabaseAdmin>;
     await expect(loadTierDepths(failing, "org1", NOW)).rejects.toThrow(/read timeout/);
   });
+});
+
+describe("loadTierDepths on an unreadable table (#1629)", () => {
+  // The populated roster every case below starts from: whatever it reports, an
+  // empty depth list is the WRONG answer, because the fixture has real tiers.
+  const roster: Rows = {
+    buckets: [
+      { id: "b1", code: "311", name: "High", criteria: {}, is_test: false, fallback_user_id: null },
+    ],
+    users: [
+      { id: "u1", name: "A", email: "a@x.com", attributes: {}, bookable: true, deactivated_at: null },
+      { id: "u2", name: "B", email: "b@x.com", attributes: {}, bookable: true, deactivated_at: null },
+    ],
+    bucket_members: [
+      { bucket_id: "b1", user_id: "u1" },
+      { bucket_id: "b1", user_id: "u2" },
+    ],
+    ooo_requests: [],
+    busy_blocks: [],
+    availability_schedules: [],
+  };
+
+  it("proves the control: the same roster reads fine when nothing fails", async () => {
+    const depths = await loadTierDepths(fakeDbFailing(roster, "nothing"), "org1", NOW);
+    expect(depths.map((d) => d.code)).toEqual(["311"]);
+    expect(depths[0].effectiveDepth).toBe(2);
+  });
+
+  // Each read separately, and each error names its own table, so a caught failure
+  // says which read could not be made rather than one answering for another (L11).
+  for (const [table, context] of [
+    ["buckets", "staffing depth buckets"],
+    ["users", "staffing depth users"],
+    ["bucket_members", "staffing depth bucket_members"],
+    ["ooo_requests", "staffing depth ooo_requests"],
+  ] as const) {
+    it(`throws (never returns []) when the ${table} read fails, naming that read`, async () => {
+      const db = fakeDbFailing(roster, table);
+      await expect(loadTierDepths(db, "org1", NOW)).rejects.toThrow(
+        new RegExp(`${context.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*${table} read exploded`),
+      );
+    });
+  }
 });

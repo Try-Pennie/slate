@@ -3,6 +3,7 @@ import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import { AppHeader } from "@/components/AppHeader";
 import { cardCls } from "@/components/ui/styles";
 import AdminBookingActions from "@/components/AdminBookingActions";
@@ -36,17 +37,29 @@ export default async function BookingDetailPage({
     orgId: me.org_id,
     canManage: canManageAgents,
     oooOnly: oooOnlyFor,
+    // #1629: a null booking here is `notfound()`, so a swallowed error told an
+    // admin looking up a booking that it does not exist. On the surface somebody
+    // opens because they suspect a booking went missing, that is the one answer
+    // that must be true when it is given.
     async getBooking(bookingId, orgId) {
-      const { data } = await db
-        .from("bookings")
-        .select("*")
-        .eq("id", bookingId)
-        .eq("org_id", orgId)
-        .maybeSingle();
+      const data = unwrap(
+        await db
+          .from("bookings")
+          .select("*")
+          .eq("id", bookingId)
+          .eq("org_id", orgId)
+          .maybeSingle(),
+        "booking detail row",
+      );
       return (data as Booking | null) ?? null;
     },
+    // An empty roster leaves every actor in the history rendered as a bare id,
+    // so the trail stops naming who did what.
     async getRoster(orgId) {
-      const { data } = await db.from("users").select("id,name,email").eq("org_id", orgId);
+      const data = unwrap(
+        await db.from("users").select("id,name,email").eq("org_id", orgId),
+        "booking detail roster",
+      );
       return (data ?? []) as HistoryRosterUser[];
     },
   });

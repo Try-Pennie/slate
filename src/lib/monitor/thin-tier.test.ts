@@ -141,6 +141,25 @@ describe("runThinTierStaffingCheck (cron wiring)", () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
+  it("#1629: an unreadable roster propagates, it does NOT report zero thin tiers", async () => {
+    const notify = vi.fn(async () => {});
+    // What loadTierDepths does now on an unreadable table. Before #1629 it
+    // resolved [] here, this returned 0, and the cycle line said "0 thin tier(s)"
+    // off a read that never ran. The monitor lane's own `steps.run(..., null, ...)`
+    // boundary turns this rejection into a recorded step failure and a null count.
+    await expect(
+      runThinTierStaffingCheck({
+        loadDepths: async () => {
+          throw new Error("read failed [staffing depth buckets]: connection reset");
+        },
+        notify,
+        cooldownMs: 1000,
+      }),
+    ).rejects.toThrow(/staffing depth buckets/);
+    // And nothing is whispered about a roster nobody managed to read.
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it("swallows a notify failure so a flaky Slack can't fail the monitor tick", async () => {
     const notify = vi.fn(async () => {
       throw new Error("slack 503");

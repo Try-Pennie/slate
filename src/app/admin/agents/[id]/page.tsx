@@ -25,6 +25,7 @@ import BulkReassignCoverage from "@/components/BulkReassignCoverage";
 import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
 import { previewBulkReassign } from "@/lib/booking/service";
 import { log } from "@/lib/log";
+import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHoursForm";
 import { labelCls, inputCls, btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
@@ -91,12 +92,13 @@ export default async function AgentProfilePage({
   const roleOptions = (target: User["role"]) =>
     ROLES.filter((r) => canSetRole(me.role, target, r));
 
-  const { data: agentData } = await db
-    .from("users")
-    .select("*")
-    .eq("id", id)
-    .eq("org_id", me.org_id)
-    .maybeSingle();
+  // #1629: a swallowed error made this null, and null here means notFound(): the
+  // page told an admin the agent does not exist when the read simply failed.
+  // `unwrap` throws instead, so a real 404 still means a real 404.
+  const agentData = unwrap(
+    await db.from("users").select("*").eq("id", id).eq("org_id", me.org_id).maybeSingle(),
+    "agent detail row",
+  );
   const agent = agentData as User | null;
   if (!agent) notFound();
   const active = isActive(agent);
@@ -125,14 +127,22 @@ export default async function AgentProfilePage({
     db.from("users").select("id, name, email, role, deactivated_at").eq("org_id", me.org_id).eq("is_test", false),
     db.from("organizations").select("*").eq("id", me.org_id).single(),
   ]);
-  const sched = schedRes.data as { id: string; timezone: string } | null;
-  const { data: rulesData } = sched
-    ? await db
-        // cap-safe: one agent's schedule rules, at most a few per weekday.
-        .from("availability_rules")
-        .select("weekday, start_minute, end_minute")
-        .eq("schedule_id", sched.id)
-    : { data: [] };
+  // #1629: all three, and the rules read below, feed FORMS whose save replaces
+  // what they show. An unreadable schedule renders as "this agent has no hours"
+  // and saving that writes an empty week (the #1308 lossy-projection shape); an
+  // unreadable roster renders the manager of record as unassigned. None of these
+  // may be guessed, so each throws rather than drawing a blank the admin acts on.
+  const sched = unwrap(schedRes, "agent schedule") as { id: string; timezone: string } | null;
+  const rulesData = sched
+    ? unwrap(
+        await db
+          // cap-safe: one agent's schedule rules, at most a few per weekday.
+          .from("availability_rules")
+          .select("weekday, start_minute, end_minute")
+          .eq("schedule_id", sched.id),
+        "agent schedule rules",
+      )
+    : [];
   const rules = (rulesData ?? []) as {
     weekday: number;
     start_minute: number;
@@ -142,7 +152,7 @@ export default async function AgentProfilePage({
   // rules[0], which showed Monday's hours for the whole week and then overwrote
   // the rest on save.
 
-  const allUsers = (usersRes.data ?? []) as Pick<
+  const allUsers = (unwrap(usersRes, "agent detail roster") ?? []) as Pick<
     User,
     "id" | "name" | "email" | "role" | "deactivated_at"
   >[];
@@ -153,7 +163,7 @@ export default async function AgentProfilePage({
   const assignedManager = agent.manager_id
     ? allUsers.find((u) => u.id === agent.manager_id)
     : null;
-  const org = orgRes.data as Organization;
+  const org = unwrap(orgRes, "agent detail org") as Organization;
 
   const initials = (agent.name ?? agent.email).slice(0, 2).toUpperCase();
 
