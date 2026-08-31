@@ -71,4 +71,25 @@ describe("GET /api/health/availability", () => {
     expect(body.status).toBe("degraded");
     expect(body.reason).toBe("check_error");
   });
+
+  it("#1629: an unreadable roster reports the counts as null, never as zero", async () => {
+    // The shape `loadTierDepths` now throws with. Before #1629 it resolved `[]`
+    // here, which took the HEALTHY branch: 200, reason "ok", staffedBuckets 0,
+    // indistinguishable from a fleet that genuinely has no staffed buckets.
+    staffing.loadTierDepths.mockRejectedValue(
+      new Error('read failed [staffing depth buckets]: connection reset'),
+    );
+    precompute.listBucketSlotCounts.mockResolvedValue([{ code: "100", slots: 142 }]);
+
+    const res = await GET();
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.reason).toBe("check_error");
+    // A count that could not be measured is null. Not 0, and not absent: to a
+    // JSON reader an absent count reads the same as a zero one.
+    expect(body).toHaveProperty("staffedBuckets", null);
+    expect(body).toHaveProperty("unknownBuckets", null);
+    // Nothing may be NAMED as broken off a reading that was never taken.
+    expect(body.brokenBuckets).toEqual([]);
+  });
 });

@@ -29,6 +29,9 @@ import {
 } from "@/app/admin/ooo/actions";
 import { AppHeader } from "@/components/AppHeader";
 import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
+import { unwrap } from "@/lib/db/result";
+import { log } from "@/lib/log";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { DeepLinkScroll } from "@/components/ui/DeepLinkScroll";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -153,13 +156,21 @@ export default async function OooQueuePage({
     // paged or the aggregates silently under-report (#828).
     loadOrgOooHistory(db, me.org_id),
   ]);
-  const users = (usersRes.data ?? []) as Pick<
+  // #1629: the roster decides who is filtered OUT of this queue (`staffIds`
+  // below), so an empty one does not merely blank the page, it lets operator and
+  // test requests back into the moderation queue as if they were real.
+  const users = (unwrap(usersRes, "ooo admin roster") ?? []) as Pick<
     User,
     "id" | "name" | "email" | "manager_id" | "role"
   >[];
-  const orgZone =
-    (orgRes.data as { default_timezone: string } | null)?.default_timezone ??
-    "America/New_York";
+  // error-ok: the org's default timezone falls back to the documented canonical
+  // one (America/New_York, the whole roster's zone), which is what this read
+  // returns in practice. Nothing reads the fallback as a measurement: it decides
+  // how a date is FORMATTED, and every consumer of it renders the same times the
+  // real value would. It is the one read on this page whose empty is a default
+  // rather than an answer.
+  const orgRow = orgRes.data as { default_timezone: string } | null;
+  const orgZone = orgRow?.default_timezone ?? "America/New_York";
 
   // Exclude OOO requests authored by admins/super admins everywhere on this
   // page — they're operators (and the source of test requests), not part of the
@@ -195,8 +206,15 @@ export default async function OooQueuePage({
       .map((u) => [u.id, managerCannotApproveNotice(u.name ?? u.email, u.role)] as const),
   );
 
-  const pending = ((pendingRes.data ?? []) as OooRequest[]).filter(notStaff);
-  const history = ((historyRes.data ?? []) as OooRequest[]).filter(notStaff);
+  // #1629: this IS a moderation queue, so an empty one says "nothing is waiting
+  // for you" to the person whose job is to clear it, and the history says "no
+  // decisions were made". Both are answers, not absences.
+  const pending = ((unwrap(pendingRes, "ooo pending queue") ?? []) as OooRequest[]).filter(
+    notStaff,
+  );
+  const history = ((unwrap(historyRes, "ooo decision history") ?? []) as OooRequest[]).filter(
+    notStaff,
+  );
   const allRequests = allRequestsRaw
     .filter(notStaff)
     .map(deOperatorManager);
@@ -269,7 +287,14 @@ export default async function OooQueuePage({
 
   // Booked-meeting overlap warnings for the pending queue: one batched query
   // over the union window, matched up in memory (never blocks approval).
+  //
+  // #1629: an empty result here is the absence of a WARNING, and absence of a
+  // warning is read as "this time off clashes with nothing" by the manager about
+  // to approve it. It must not throw either, because that would take the whole
+  // approval queue down over an advisory panel, so it degrades to an explicit
+  // "could not check" that the queue states out loud.
   let bookingsByAgent = new Map<string, Booking[]>();
+  let overlapsUnreadable = false;
   if (pending.length > 0) {
     const minStart = pending
       .map((r) => r.starts_at)
@@ -277,7 +302,7 @@ export default async function OooQueuePage({
     const maxEnd = pending
       .map((r) => r.ends_at)
       .reduce((a, b) => (a > b ? a : b));
-    const { data } = await db
+    const { data, error } = await db
       // cap-safe: active bookings for the few agents with pending time off, within their requested dates.
       .from("bookings")
       .select("*")
@@ -286,6 +311,10 @@ export default async function OooQueuePage({
       .in("assigned_user_id", [...new Set(pending.map((r) => r.user_id))])
       .lt("starts_at", maxEnd)
       .gt("ends_at", minStart);
+    if (error) {
+      log.error("admin-ooo", { msg: "overlap warning read failed" }, error);
+      overlapsUnreadable = true;
+    }
     bookingsByAgent = ((data ?? []) as Booking[]).reduce((map, b) => {
       if (b.assigned_user_id) {
         map.set(b.assigned_user_id, [...(map.get(b.assigned_user_id) ?? []), b]);
@@ -550,6 +579,14 @@ export default async function OooQueuePage({
               Nothing waiting. New requests show up here and in Slack.
             </p>
           ) : (
+            <>
+            {overlapsUnreadable && (
+              <UnreadableNotice className="mt-3">
+                The booked meetings could not be read, so no clash is flagged below.
+                That is not a check that came back clear. Reload before approving
+                anything whose dates you are unsure about.
+              </UnreadableNotice>
+            )}
             <ul className="mt-3 divide-y divide-border overflow-hidden rounded-md bg-surface shadow-xs">
               {pending.map((r) => {
                 const conflicts = overlapsFor(r);
@@ -657,6 +694,7 @@ export default async function OooQueuePage({
                 );
               })}
             </ul>
+            </>
           )}
         </section>
 

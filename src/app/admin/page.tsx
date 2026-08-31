@@ -42,6 +42,7 @@ import {
 } from "@/lib/auth/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { TeamAccessPanel } from "@/components/TeamAccessPanel";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { isStaffAccessOutcome } from "@/lib/admin/staff-access";
 import { pendingPrivilegedAccess } from "@/lib/admin/pending-access";
 import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
@@ -372,6 +373,18 @@ export default async function AdminPage({
         .limit(25),
     ]);
 
+  // #1629: every one of these seven reads dropped `error` and rendered
+  // `(res.data ?? [])`, so an unreadable table drew the SAME screen as an empty
+  // one: no agents, no buckets, no event types, no recent bookings, and on the
+  // membership read every bucket showing zero eligible agents. On this page that
+  // is not a cosmetic difference. It is the screen somebody opens when they think
+  // routing is broken, and the empty version of it answers "yes, catastrophically"
+  // (L10). Each read is now classified explicitly, and every count derived from an
+  // unreadable read renders as unknown rather than as a zero it never measured.
+  //
+  // The reads stay together in ONE `Promise.all` (they are independent and the
+  // page pays one round trip, not seven), so each is checked separately here and
+  // one failing read never blanks the six that succeeded.
   const users = (usersRes.data ?? []) as User[];
   // #160: an unreadable roster and an empty one render identically once the error
   // is dropped, and this is the page somebody opens when access is not working.
@@ -381,45 +394,88 @@ export default async function AdminPage({
   // is measured against a single instant, not a different one per row.
   const pendingAccess = pendingAccessNow(rosterUnreadable ? null : users);
   const eventTypes = (eventTypesRes.data ?? []) as EventType[];
+  // Empty reads as "no event types configured", and the form below invites the
+  // admin to create one, so a broken read invites a duplicate.
+  const eventTypesUnreadable = eventTypesRes.error != null;
   const buckets = (bucketsRes.data ?? []) as Bucket[];
+  // Empty reads as "no routing pools exist", which on this page is the shape of a
+  // total routing outage rather than of a database hiccup.
+  const bucketsUnreadable = bucketsRes.error != null;
   const members = (membersRes.data ?? []) as BucketMember[];
+  // The worst of the six to swallow: empty shows every bucket with no members
+  // ticked and zero eligible agents, and the obvious correction (re-add them) is
+  // a WRITE made from a reading that never happened.
+  const membersUnreadable = membersRes.error != null;
   // Routing editor offers only attribute keys/values that exist on agents.
+  // Derived from the roster, so an unreadable roster offers nothing rather than
+  // an empty catalog that reads as "no agent has any routing attribute".
   const attrCatalog = deriveAttributeCatalog(users.map((u) => u.attributes));
   // Bookable-agent depth per bucket, from the shared staffing-depth helper (#584)
   // so this count matches the booker's pool exactly (bookable + not deactivated,
   // active members only) instead of an ad-hoc recompute that could drift.
-  const depthByBucketCode = bucketDepthByCode(buckets, users, members);
+  // `null` (not a zeroed map) when either input could not be read: the eligible
+  // count beside each bucket then says nothing instead of saying zero.
+  const depthByBucketCode =
+    rosterUnreadable || bucketsUnreadable || membersUnreadable
+      ? null
+      : bucketDepthByCode(buckets, users, members);
   const webhook = webhookRes.data as WebhookEndpoint | null;
+  // A null here means "no endpoint configured" AND "could not read", and the two
+  // differ by a data loss: the form below is prefilled from this row and saving it
+  // blank would overwrite the live Regal endpoint with nothing.
+  const webhookUnreadable = webhookRes.error != null;
 
   // Routing trace viewer: recent bookings + how each one routed.
   const recent = (recentRes.data ?? []) as RecentRoutingRow[];
+  // Empty reads as "nothing has been booked", on the panel somebody opens to ask
+  // exactly that.
+  const recentUnreadable = recentRes.error != null;
+  // Push health and the per-agent sync-failure panel both come off this one read,
+  // and a swallowed error is wrong in BOTH directions at once: "push 0/N watched"
+  // (a false alarm) beside an empty failure list (a false all-clear).
+  const calendarsUnreadable = calsRes.error != null;
   const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
   const nameOf = (id: string | null) =>
     id ? (agentName.get(id) ?? id.slice(0, 8)) : "unassigned";
 
   // Webhook delivery log (admin only): recent attempts across the org's endpoints.
+  //
+  // #1629: both reads go through `unwrap`. An empty delivery log means "nothing
+  // has been sent to Regal", and this panel is what an admin opens when they think
+  // a webhook did not arrive, so an unreadable read confirming their fear is the
+  // worst possible direction to fail in. The endpoint read is upstream of the
+  // deliveries read, so a failure there silently skipped the deliveries read too
+  // and produced the same empty panel.
   let deliveries: DeliveryRow[] = [];
+  let deliveriesUnreadable = false;
   const endpointUrl = new Map<string, string>();
   if (isAdmin) {
-    const { data: eps } = await db
-      .from("webhook_endpoints")
-      .select("id, url")
-      .eq("org_id", me.org_id);
-    const epList = (eps ?? []) as { id: string; url: string }[];
-    for (const e of epList) endpointUrl.set(e.id, e.url);
-    if (epList.length) {
-      const { data: dels } = await db
-        .from("webhook_deliveries")
-        .select(
-          "id, endpoint_id, event, status, attempts, last_response, created_at, suppressed",
-        )
-        .in(
-          "endpoint_id",
-          epList.map((e) => e.id),
-        )
-        .order("created_at", { ascending: false })
-        .limit(25);
-      deliveries = (dels ?? []) as DeliveryRow[];
+    try {
+      const eps = (unwrap(
+        await db.from("webhook_endpoints").select("id, url").eq("org_id", me.org_id),
+        "admin webhook endpoints",
+      ) ?? []) as { id: string; url: string }[];
+      for (const e of eps) endpointUrl.set(e.id, e.url);
+      if (eps.length) {
+        deliveries = (unwrap(
+          await db
+            .from("webhook_deliveries")
+            .select(
+              "id, endpoint_id, event, status, attempts, last_response, created_at, suppressed",
+            )
+            .in(
+              "endpoint_id",
+              eps.map((e) => e.id),
+            )
+            .order("created_at", { ascending: false })
+            .limit(25),
+          "admin webhook deliveries",
+        ) ?? []) as DeliveryRow[];
+      }
+    } catch (err) {
+      log.error("admin", { msg: "webhook delivery log read failed" }, err);
+      deliveries = [];
+      deliveriesUnreadable = true;
     }
   }
 
@@ -506,13 +562,19 @@ export default async function AdminPage({
   // Push health: how many bookable agents have at least one live Google watch
   // channel across their calendars. A shortfall means external calendar edits
   // for those agents only reach the cache via the cron backstop, not push.
+  // `null` when either input could not be read: "0 of 97 watched" off a failed
+  // calendar read is a fleet-wide push outage that is not happening, and "97 of
+  // 97" off a failed roster read is a reassurance nothing measured.
   const watchedUserIds = liveWatchedUserIds(
     (calsRes.data ?? []) as { user_id: string; watch_expiration: string | null }[],
   );
   const bookableAgents = users.filter((u) => u.bookable && isActive(u));
-  const watchedCount = bookableAgents.filter((u) => watchedUserIds.has(u.id)).length;
+  const watchedCount =
+    calendarsUnreadable || rosterUnreadable
+      ? null
+      : bookableAgents.filter((u) => watchedUserIds.has(u.id)).length;
   const pushHealthy =
-    bookableAgents.length > 0 && watchedCount === bookableAgents.length;
+    watchedCount !== null && bookableAgents.length > 0 && watchedCount === bookableAgents.length;
 
   // Per-lane cron health strip (#288): reuse the dead-man's-switch heartbeats so a
   // silently-wedged lane is visible in-app. readAllHeartbeatMs THROWS on a read
@@ -655,17 +717,31 @@ export default async function AdminPage({
       <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
         <p className="pn-eyebrow text-pennie-sky">Admin</p>
         <h1 className="pn-h3 mt-2 text-pennie-beige">Slate admin</h1>
-        <p className="mt-2 text-pennie-beige/75">
-          <span className="font-semibold tabular-nums text-pennie-beige">
-            {bookableAgents.length}
-          </span>{" "}
-          bookable of{" "}
-          <span className="tabular-nums">{users.length}</span> agents ·{" "}
-          <span className="tabular-nums">
-            {watchedCount}/{bookableAgents.length}
-          </span>{" "}
-          calendars syncing
-        </p>
+        {/* #1629: the hero states the roster in numbers, and this is the first
+            thing read on the page. An unreadable roster or calendar read used to
+            report a confident "0 bookable of 0 agents", which is the fleet being
+            gone rather than a query having failed. */}
+        {rosterUnreadable ? (
+          <p className="mt-2 text-pennie-beige/75">
+            The roster could not be read, so there is no count to show here yet.
+          </p>
+        ) : (
+          <p className="mt-2 text-pennie-beige/75">
+            <span className="font-semibold tabular-nums text-pennie-beige">
+              {bookableAgents.length}
+            </span>{" "}
+            bookable of{" "}
+            <span className="tabular-nums">{users.length}</span> agents ·{" "}
+            {watchedCount === null ? (
+              <span>an unknown number of</span>
+            ) : (
+              <span className="tabular-nums">
+                {watchedCount}/{bookableAgents.length}
+              </span>
+            )}{" "}
+            calendars syncing
+          </p>
+        )}
       </section>
 
       {sp.synced && (
@@ -780,37 +856,51 @@ export default async function AdminPage({
 
       <section id="agents" className={cardCls}>
         {rosterUnreadable && (
-          <p
-            role="alert"
-            className="mb-4 rounded-md border border-[var(--error)] px-4 py-3 text-sm text-error"
-          >
+          <UnreadableNotice className="mb-4">
             The roster could not be read, so this list is not the roster. Nobody
             has been removed. Reload in a moment.
-          </p>
+          </UnreadableNotice>
         )}
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold">
               Agents{" "}
-              <span className="font-normal text-fg-muted tabular-nums">
-                ({bookableAgents.length} bookable / {users.length})
-              </span>
+              {rosterUnreadable ? (
+                <span className="font-normal text-fg-muted">(count unavailable)</span>
+              ) : (
+                <span className="font-normal text-fg-muted tabular-nums">
+                  ({bookableAgents.length} bookable / {users.length})
+                </span>
+              )}
             </h2>
-            <span
-              className="inline-flex items-center gap-1.5 text-xs text-fg-muted tabular-nums"
-              title="Bookable agents with a live Google Calendar push watch channel. A shortfall means those agents rely on the backup cron sync instead of push."
-            >
+            {/* #1629: the push pill is a health verdict, so it never renders off a
+                read that failed. "push 0/97 watched" beside a grey dot is a fleet
+                wide push outage, and it was what a failed calendar read drew. */}
+            {watchedCount === null ? (
               <span
-                className={`inline-block h-2 w-2 rounded-full ${
-                  pushHealthy
-                    ? "bg-pennie-green"
-                    : watchedCount > 0
-                      ? "bg-pennie-yellow"
-                      : "bg-[var(--pennie-mercury)]"
-                }`}
-              />
-              push {watchedCount}/{bookableAgents.length} watched
-            </span>
+                className="inline-flex items-center gap-1.5 text-xs text-fg-muted"
+                title="Push health could not be read, so it is not being reported. It has not been measured as bad."
+              >
+                <span className="inline-block h-2 w-2 rounded-full bg-[var(--pennie-mercury)]" />
+                push health unavailable
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1.5 text-xs text-fg-muted tabular-nums"
+                title="Bookable agents with a live Google Calendar push watch channel. A shortfall means those agents rely on the backup cron sync instead of push."
+              >
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${
+                    pushHealthy
+                      ? "bg-pennie-green"
+                      : watchedCount > 0
+                        ? "bg-pennie-yellow"
+                        : "bg-[var(--pennie-mercury)]"
+                  }`}
+                />
+                push {watchedCount}/{bookableAgents.length} watched
+              </span>
+            )}
           </div>
           {isAdmin && (
             <form action={syncSalesforceNow}>
@@ -822,10 +912,20 @@ export default async function AdminPage({
         <div className="mb-4">
           <CronLaneHealth rows={laneHealth} unavailable={laneHealthUnavailable} />
         </div>
-        {syncHealthRows.length > 0 && (
-          <div className="mb-4">
-            <SyncHealthPanel agents={syncHealthRows} />
-          </div>
+        {/* An empty sync-health panel is a real all-clear ("no calendar is in a
+            failure streak"), so it may only be drawn from a calendar read that
+            actually happened. */}
+        {calendarsUnreadable ? (
+          <UnreadableNotice className="mb-4">
+            Calendar sync health could not be read, so no agent is listed below as
+            failing. That is not the same as none of them failing.
+          </UnreadableNotice>
+        ) : (
+          syncHealthRows.length > 0 && (
+            <div className="mb-4">
+              <SyncHealthPanel agents={syncHealthRows} />
+            </div>
+          )
         )}
         <FilterForm action="/admin" className="mb-4 flex flex-wrap items-center gap-2">
           <input
@@ -1034,18 +1134,27 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-4 text-sm font-semibold">Event types</h2>
-        <ul className="mb-4 space-y-1 text-sm">
-          {eventTypes.map((e) => (
-            <li key={e.id} className="text-fg tabular-nums">
-              {e.name} · {e.duration_min}m · {e.min_notice_min}m notice ·{" "}
-              {e.slot_interval_min}m grid
-              {e.daily_cap ? ` · cap ${e.daily_cap}/day` : ""}
-            </li>
-          ))}
-          {eventTypes.length === 0 && (
-            <li className="text-fg-muted">None yet.</li>
-          )}
-        </ul>
+        {/* "None yet." beside a form that creates one is an invitation, so it may
+            only be shown when the read that says so actually ran (#1629). */}
+        {eventTypesUnreadable ? (
+          <UnreadableNotice className="mb-4">
+            The event types could not be read, so none are listed. Do not add one
+            from this screen until it loads, or you may create a duplicate.
+          </UnreadableNotice>
+        ) : (
+          <ul className="mb-4 space-y-1 text-sm">
+            {eventTypes.map((e) => (
+              <li key={e.id} className="text-fg tabular-nums">
+                {e.name} · {e.duration_min}m · {e.min_notice_min}m notice ·{" "}
+                {e.slot_interval_min}m grid
+                {e.daily_cap ? ` · cap ${e.daily_cap}/day` : ""}
+              </li>
+            ))}
+            {eventTypes.length === 0 && (
+              <li className="text-fg-muted">None yet.</li>
+            )}
+          </ul>
+        )}
         <form action={createEventType} className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <Field name="name" label="Title (eventTitle)" defaultValue="Senior Loan Advisor Call" />
@@ -1117,37 +1226,59 @@ export default async function AdminPage({
           Edit routing live. Changes apply without a deploy. Routing matches
           agents by attribute; leave all groups empty to pick members manually.
         </p>
-        <div className="space-y-4">
-          {buckets.map((b) => (
-            <BucketForm
-              key={b.id}
-              bucket={b}
-              eventTypes={eventTypes}
-              users={users}
-              memberIds={
-                new Set(
-                  members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
-                )
-              }
-              catalog={attrCatalog}
-              eligibleCount={depthByBucketCode.get(b.code) ?? 0}
-            />
-          ))}
-          {buckets.length === 0 && (
-            <p className="text-sm text-fg-muted">None yet.</p>
-          )}
-        </div>
-        <div className="mt-6">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">
-            New bucket
-          </h3>
-          <BucketForm
-            eventTypes={eventTypes}
-            users={users}
-            memberIds={new Set()}
-            catalog={attrCatalog}
-          />
-        </div>
+        {/* #1629: the editor writes what it shows. An unreadable buckets or
+            members read draws pools with nobody in them and every attribute group
+            blank, and SAVING that form would then persist the empty reading as
+            fact. Neither the existing pools nor the new-bucket form is offered
+            until every input behind them was actually read. */}
+        {bucketsUnreadable || membersUnreadable || rosterUnreadable || eventTypesUnreadable ? (
+          <UnreadableNotice>
+            {bucketsUnreadable
+              ? "The buckets could not be read, so none are shown."
+              : membersUnreadable
+                ? "The bucket memberships could not be read, so the pools are not shown."
+                : rosterUnreadable
+                  ? "The roster could not be read, so the pools are not shown."
+                  : "The event types could not be read, so the pools are not shown."}{" "}
+            No routing has changed. Editing is off on this panel until it loads,
+            because saving it now would write the blanks on screen over what is
+            really configured.
+          </UnreadableNotice>
+        ) : (
+          <>
+            <div className="space-y-4">
+              {buckets.map((b) => (
+                <BucketForm
+                  key={b.id}
+                  bucket={b}
+                  eventTypes={eventTypes}
+                  users={users}
+                  memberIds={
+                    new Set(
+                      members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
+                    )
+                  }
+                  catalog={attrCatalog}
+                  eligibleCount={depthByBucketCode?.get(b.code) ?? 0}
+                />
+              ))}
+              {buckets.length === 0 && (
+                <p className="text-sm text-fg-muted">None yet.</p>
+              )}
+            </div>
+            <div className="mt-6">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">
+                New bucket
+              </h3>
+              <BucketForm
+                eventTypes={eventTypes}
+                users={users}
+                memberIds={new Set()}
+                catalog={attrCatalog}
+              />
+            </div>
+          </>
+        )}
       </section>
       )}
 
@@ -1165,11 +1296,22 @@ export default async function AdminPage({
       {/* Recent routing (trace viewer) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Recent routing</h2>
-        <p className="mb-3 text-xs text-fg-muted">
-          How the last {recent.length} bookings routed: agents considered, who
-          was chosen, whether the fallback fired, and any manual reassignments.
-        </p>
-        <RecentRoutingTable rows={recent} users={users} />
+        {/* An empty trace says "nothing has been booked", which is exactly the
+            question this panel is opened to answer (#1629). */}
+        {recentUnreadable ? (
+          <UnreadableNotice>
+            The recent bookings could not be read, so no routing is shown. This is
+            not a report that nothing has been booked.
+          </UnreadableNotice>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-fg-muted">
+              How the last {recent.length} bookings routed: agents considered, who
+              was chosen, whether the fallback fired, and any manual reassignments.
+            </p>
+            <RecentRoutingTable rows={recent} users={users} />
+          </>
+        )}
       </section>
 
       {/* Reassign API key (admin only) */}
@@ -1200,6 +1342,19 @@ export default async function AdminPage({
           <strong>Generic</strong> sends a signed <code>{"{event,data}"}</code>{" "}
           body (good for webhook.site).
         </p>
+        {/* #1629: `webhookRes.data` is null both when no endpoint is configured
+            and when the read failed, and the form below is PREFILLED from it. On
+            the second reading a save writes the placeholder URL over the live
+            Regal endpoint, which is a data loss made from a reading that never
+            happened, so the form is withheld rather than shown blank. */}
+        {webhookUnreadable ? (
+          <UnreadableNotice>
+            The webhook endpoint could not be read, so it is not shown and cannot be
+            edited here right now. Nothing has changed, and whatever is configured
+            is still configured.
+          </UnreadableNotice>
+        ) : (
+          <>
         {webhook && (
           <p className="mb-3 text-xs text-fg-muted">
             Current: <code className="break-all">{webhook.url}</code> · {webhook.format} ·{" "}
@@ -1261,6 +1416,8 @@ export default async function AdminPage({
             Save
           </SubmitButton>
         </form>
+          </>
+        )}
       </section>
       )}
 
@@ -1268,10 +1425,18 @@ export default async function AdminPage({
       {isAdmin && (
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Webhook deliveries</h2>
+          {/* An empty log says "nothing has been sent", on the panel opened
+              precisely to check whether something was (#1629). */}
+          {deliveriesUnreadable && (
+            <UnreadableNotice className="mb-3">
+              The delivery log could not be read, so no attempts are listed. This is
+              not a report that nothing was sent.
+            </UnreadableNotice>
+          )}
           <p className="mb-3 text-xs text-fg-muted">
-            The last {deliveries.length} delivery attempts. Resend re-fires one
-            immediately. Test bucket bookings are recorded as &ldquo;not sent&rdquo;:
-            they never reach a downstream system, so they cannot be resent.
+            {deliveriesUnreadable
+              ? "Resend re-fires one delivery immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent."
+              : `The last ${deliveries.length} delivery attempts. Resend re-fires one immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent.`}
           </p>
           <form
             action={replayFailedWebhooks}
@@ -1296,7 +1461,7 @@ export default async function AdminPage({
               Replay failed deliveries
             </SubmitButton>
           </form>
-          {deliveries.length === 0 ? (
+          {deliveriesUnreadable ? null : deliveries.length === 0 ? (
             <p className="text-sm text-fg-muted">No deliveries yet.</p>
           ) : (
             <div className="overflow-x-auto">

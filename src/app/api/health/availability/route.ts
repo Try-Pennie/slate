@@ -48,7 +48,29 @@ export async function GET() {
     );
   } catch (err) {
     // Fail loud: a read error must read as broken, never as a healthy 200.
+    //
+    // #1629: `loadTierDepths` used to answer an unreadable roster with an EMPTY
+    // depth list, which never reached this catch at all. It reached the healthy
+    // branch instead, with `staffedBuckets: 0`, and the external uptime monitor
+    // read a 200 off a query that never ran. It throws now, so the failure lands
+    // here.
+    //
+    // The counts are stated as `null`, not omitted and not zero. A count nobody
+    // could measure is not a measurement of zero (the `slotHealthByCode`
+    // precedent), and an absent field reads to a JSON consumer as "no buckets
+    // reported" just as a zero does. `brokenBuckets` is the one exception: an
+    // empty LIST here means "nothing is named", which is the truth, since naming
+    // a broken bucket requires a reading that was never taken.
     log.error("availability-canary", { msg: "check failed" }, err);
-    return NextResponse.json({ status: "degraded", reason: "check_error" }, { status: 503 });
+    return NextResponse.json(
+      {
+        status: "degraded",
+        reason: "check_error",
+        staffedBuckets: null,
+        brokenBuckets: [],
+        unknownBuckets: null,
+      },
+      { status: 503 },
+    );
   }
 }

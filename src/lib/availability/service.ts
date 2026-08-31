@@ -456,6 +456,13 @@ export async function getBucketSlots(
     loadMembersAvailability(bucket, from, to, resolveEligible),
     loadBusinessHours(),
   ]);
+  // error-ok: the org NAME's only consumer is the Booker avatar's initials
+  // (Booker.tsx `initials(meta.orgName)`), so an unreadable read degrades to an
+  // empty avatar label and nothing reads that emptiness as an answer. Failing the
+  // whole availability compute over a decorative string would take the booker down
+  // for a cosmetic value; the next recompute cycle refills it. The two reads BESIDE
+  // it are the ones that matter and neither is null-tolerant: `loadBusinessHours`
+  // throws (#1294) and `loadMembersAvailability` throws on its daily-cap count.
   const org = orgRes.data;
   const slots = computeBucketSlots({
     members,

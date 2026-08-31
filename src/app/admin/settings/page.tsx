@@ -131,6 +131,12 @@ export default async function MonitorSettingsPage({
   const editorIds = [...new Set([...rows.map((r) => r.updated_by), config?.updated_by ?? null].filter(Boolean))] as string[];
   const nameById = new Map<string, string>();
   if (editorIds.length) {
+    // error-ok: this read only turns an editor's id into their DISPLAY NAME for the
+    // "last changed by" line, and `lastChangedLine` already renders an unresolved
+    // id as "someone". Nothing acts on the empty map, no setting is decided by it,
+    // and the settings themselves (which are the thing worth failing loud over)
+    // come from the resolver above. The alternative, failing the whole settings
+    // page over a name lookup, would hide every alarm threshold on it.
     const { data } = await supabaseAdmin().from("users").select("id, name, email").in("id", editorIds);
     for (const u of (data ?? []) as Pick<User, "id" | "name" | "email">[]) {
       nameById.set(u.id, u.name ?? u.email);

@@ -58,6 +58,10 @@ export default async function ReasonOptionsPage({
         const editorIds = [...new Set(stored.map((r) => r.updated_by).filter(Boolean))] as string[];
         const nameById = new Map<string, string>();
         if (editorIds.length) {
+          // error-ok: an id-to-display-name lookup for the "last changed by" line
+          // only, and the very next line already renders an unresolved id as
+          // "someone". No reason option is decided by it, and the reasons
+          // themselves are read above with `error` bound and checked.
           const { data: users } = await supabaseAdmin()
             .from("users")
             .select("id,name,email")

@@ -48,6 +48,7 @@ import {
 import { loadBusinessHoursRows } from "@/lib/booking/business-hours-load";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { unwrap } from "@/lib/db/result";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
@@ -98,11 +99,14 @@ async function requireManageAgent(
   action: AuditAction,
 ): Promise<User> {
   const actor = await requireManager();
-  const { data } = await supabaseAdmin()
-    .from("users")
-    .select("role")
-    .eq("id", userId)
-    .maybeSingle();
+  // #1629: this is an AUTHORIZATION read, and swallowing it failed OPEN. A null
+  // `data` defaulted the target to "agent", which is the role a manager is allowed
+  // to edit, so an unreadable users row let a manager edit an admin. `unwrap`
+  // refuses instead of guessing the answer that grants the most.
+  const data = unwrap(
+    await supabaseAdmin().from("users").select("role").eq("id", userId).maybeSingle(),
+    "manage-agent target role",
+  );
   const targetRole = (data as { role: Role } | null)?.role ?? "agent";
   if (!canManageUser(actor.role, targetRole, actor.id === userId)) {
     throw new Error("Not authorized");
@@ -161,24 +165,32 @@ async function applyOrgDefaultToUser(
   userId: string,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { data: org } = await db
-    .from("organizations")
-    .select(
-      "default_timezone, default_start_minute, default_end_minute, default_weekdays",
-    )
-    .eq("id", orgId)
-    .single();
+  // #1629: both reads decide what gets WRITTEN to the agent's schedule. The org
+  // read swallowed into a null then threw an unattributable TypeError on the very
+  // next line; `unwrap` names the read that failed instead.
+  const org = unwrap(
+    await db
+      .from("organizations")
+      .select(
+        "default_timezone, default_start_minute, default_end_minute, default_weekdays",
+      )
+      .eq("id", orgId)
+      .single(),
+    "org default schedule",
+  );
   const o = org as {
     default_timezone: string;
     default_start_minute: number;
     default_end_minute: number;
     default_weekdays: number[];
   };
-  const { data: existing } = await db
-    .from("availability_schedules")
-    .select("timezone")
-    .eq("user_id", userId)
-    .maybeSingle();
+  // An unreadable schedule read as "this agent has no timezone of their own" and
+  // the write below then REPLACED their real one with the org default. A silent
+  // timezone change moves every hour they are bookable.
+  const existing = unwrap(
+    await db.from("availability_schedules").select("timezone").eq("user_id", userId).maybeSingle(),
+    "agent schedule timezone",
+  );
   const tz =
     (existing as { timezone: string } | null)?.timezone ?? o.default_timezone;
   await replaceUserSchedule(
@@ -450,10 +462,13 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
 
   // The valid set = current non-test bucket codes (a test bucket must never be
   // the public default). Roster-bounded (~60 buckets), so a single page holds all.
-  const { data: buckets } = await db
-    .from("buckets")
-    .select("code, is_test")
-    .eq("is_test", false);
+  // #1629: an empty valid set makes EVERY code invalid, so a failed read told the
+  // admin their real bucket code does not exist. That is fail-closed, but with a
+  // false reason, which sends them hunting for a typo that is not there (L11).
+  const buckets = unwrap(
+    await db.from("buckets").select("code, is_test").eq("is_test", false),
+    "default bucket valid codes",
+  );
   const validCodes = new Set(((buckets ?? []) as { code: string }[]).map((b) => b.code));
 
   const parsed = parseDefaultBucketForm(String(form.get("default_bucket_code") ?? ""), validCodes);
@@ -671,13 +686,18 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   if (!userId) return;
   const actor = await requireManageAgent(userId, "agent.use_default_hours");
 
-  const { data: org } = await db
-    .from("organizations")
-    .select(
-      "default_timezone, default_start_minute, default_end_minute, default_weekdays",
-    )
-    .eq("id", actor.org_id)
-    .single();
+  // #1629: same pair as applyOrgDefaultToUser above, same reasoning. Both reads
+  // decide what is written to the agent's schedule, so neither may be guessed.
+  const org = unwrap(
+    await db
+      .from("organizations")
+      .select(
+        "default_timezone, default_start_minute, default_end_minute, default_weekdays",
+      )
+      .eq("id", actor.org_id)
+      .single(),
+    "org default schedule",
+  );
   const o = org as {
     default_timezone: string;
     default_start_minute: number;
@@ -689,11 +709,10 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   // else adopts the org default. Pass it back through upsertUserSchedule so the
   // single-row (user_id) unique index (#532) is honored without a check-then-
   // insert race.
-  const { data: existing } = await db
-    .from("availability_schedules")
-    .select("timezone")
-    .eq("user_id", userId)
-    .maybeSingle();
+  const existing = unwrap(
+    await db.from("availability_schedules").select("timezone").eq("user_id", userId).maybeSingle(),
+    "agent schedule timezone",
+  );
   const tz =
     (existing as { timezone: string } | null)?.timezone ?? o.default_timezone;
   const scheduleId = await upsertUserSchedule(userId, tz);
@@ -767,12 +786,18 @@ export async function startImpersonation(form: FormData): Promise<void> {
   // instead of wiping it (the field is uncontrolled and the redirect re-renders).
   if (!email) redirect(impersonationErrorUrl("Enter an email."));
 
-  const { data } = await supabaseAdmin()
-    .from("users")
-    .select("id, role")
-    .eq("org_id", admin.org_id)
-    .eq("email", email)
-    .maybeSingle();
+  // #1629: a null on error took the "No user with email X." branch, which tells an
+  // admin the person does not exist when the read simply failed. The next thing
+  // somebody does with that answer is create the account again.
+  const data = unwrap(
+    await supabaseAdmin()
+      .from("users")
+      .select("id, role")
+      .eq("org_id", admin.org_id)
+      .eq("email", email)
+      .maybeSingle(),
+    "impersonation target lookup",
+  );
   const target = data as { id: string; role: Role } | null;
   if (!target) {
     redirect(impersonationErrorUrl(`No user with email ${email}.`, email));
@@ -879,11 +904,14 @@ export async function setUserRole(form: FormData): Promise<void> {
   const next = String(form.get("role") ?? "");
   if (!userId || !isRole(next)) return;
 
-  const { data: target } = await db
-    .from("users")
-    .select("role")
-    .eq("id", userId)
-    .maybeSingle();
+  // #1629: an unreadable row made `current` undefined and this returned SILENTLY,
+  // so the admin pressed "set role", the page re-rendered unchanged, and nothing
+  // anywhere said why. The read also feeds `canSetRole`, so guessing it is a
+  // guess at an authorization input.
+  const target = unwrap(
+    await db.from("users").select("role").eq("id", userId).maybeSingle(),
+    "set-role target role",
+  );
   const current = (target as { role: Role } | null)?.role;
   if (!current) return;
 
@@ -1182,12 +1210,19 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   // Regal offline. Omit the column entirely unless a new key was actually typed.
   const authHeader = String(form.get("auth_header") ?? "").trim() || null;
 
-  const { data: existing } = await db
-    .from("webhook_endpoints")
-    .select("id")
-    .eq("org_id", admin.org_id)
-    .limit(1)
-    .maybeSingle();
+  // #1629: this null decides UPDATE versus INSERT. On a read error it read as "no
+  // endpoint exists" and took the insert branch, adding a SECOND endpoint row for
+  // the org: every booking event then delivered twice, and the page's own
+  // `.limit(1)` read would afterwards show whichever row came back first.
+  const existing = unwrap(
+    await db
+      .from("webhook_endpoints")
+      .select("id")
+      .eq("org_id", admin.org_id)
+      .limit(1)
+      .maybeSingle(),
+    "webhook endpoint upsert lookup",
+  );
 
   if (existing) {
     await db

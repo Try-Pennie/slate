@@ -8,6 +8,7 @@ import {
 } from "./staffing-depth";
 import { isAllDayBlock } from "@/lib/google/sync-core";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { unwrap } from "@/lib/db/result";
 import type { Bucket, BucketMember, BusyBlock, OooRequest, User } from "@/lib/db/types";
 
 /** Mirrors the sync + availability compute fallback, so the depth math and the
@@ -72,6 +73,29 @@ async function loadAllDayOutUserIds(
  * an agent with an approved OOO active at `now` is discounted from effective
  * depth. Row volumes here (≈60 buckets, ~200 agents, a few hundred memberships,
  * a handful of active OOOs) sit well under PostgREST's 1,000-row cap.
+ *
+ * ## It THROWS on an unreadable read, and that is its only failure signal (#1629)
+ *
+ * All four reads go through `unwrap`. Before that they were `(<name>Res.data ?? [])`,
+ * so a failed `buckets` or `users` query produced an EMPTY depth list, and every
+ * consumer read that as a real answer: `/admin/tiers` rendered "No tiers yet", the
+ * thin-tier whisper counted zero thin tiers, and the availability canary scored
+ * zero staffed buckets and answered a healthy 200 on a read that never ran.
+ *
+ * A throw rather than a `null` return, deliberately: this function ALREADY threw
+ * on an unreadable `busy_blocks` / `availability_schedules` read (both go through
+ * `selectAllPages`), so returning a null for the other four would give one
+ * function two different ways to say "I could not tell", and a caller that handled
+ * only one of them would be silently wrong on the other. One contract: a depth
+ * list means it was measured, and an exception means it was not.
+ *
+ * Every caller must map that exception to an explicit unknown rather than to a
+ * number. A count nobody could measure is `null`, never `0`:
+ *   - `/api/health/availability` answers 503 with `staffedBuckets: null`;
+ *   - `/admin/tiers` renders its unreadable state instead of "No tiers yet";
+ *   - `bucketSupplyReport` takes `depthByCode: null` and shows depth as unknown;
+ *   - the monitor's thin-tier step is inside `steps.run(..., null, ...)`, so the
+ *     step records a failure and the whisper does not fire on nothing.
  */
 export async function loadTierDepths(
   db: ReturnType<typeof supabaseAdmin>,
@@ -103,8 +127,8 @@ export async function loadTierDepths(
     oooQuery,
   ]);
 
-  const buckets = (bucketsRes.data ?? []) as Bucket[];
-  const userRows = (usersRes.data ?? []) as Pick<
+  const buckets = (unwrap(bucketsRes, "staffing depth buckets") ?? []) as Bucket[];
+  const userRows = (unwrap(usersRes, "staffing depth users") ?? []) as Pick<
     User,
     "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at"
   >[];
@@ -118,10 +142,15 @@ export async function loadTierDepths(
     deactivated_at: u.deactivated_at,
   }));
   const activeMembers: ActiveMember[] = (
-    (membersRes.data ?? []) as Pick<BucketMember, "bucket_id" | "user_id">[]
+    (unwrap(membersRes, "staffing depth bucket_members") ?? []) as Pick<
+      BucketMember,
+      "bucket_id" | "user_id"
+    >[]
   ).map((m) => ({ bucket_id: m.bucket_id, user_id: m.user_id }));
   const outUserIds = new Set(
-    ((oooRes.data ?? []) as Pick<OooRequest, "user_id">[]).map((o) => o.user_id),
+    (
+      (unwrap(oooRes, "staffing depth ooo_requests") ?? []) as Pick<OooRequest, "user_id">[]
+    ).map((o) => o.user_id),
   );
 
   // #744: an agent is also out when their own calendar is blocked all day, with

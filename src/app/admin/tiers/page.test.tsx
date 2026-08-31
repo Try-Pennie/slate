@@ -114,3 +114,58 @@ describe("TiersPage time-off-aware display (#738)", () => {
     expect(screen.getByText("(out today)")).toBeTruthy();
   });
 });
+
+describe("TiersPage on an unreadable roster (#1629)", () => {
+  const superAdmin = {
+    id: "s1",
+    role: "super_admin",
+    org_id: "o1",
+    email: "s@x.com",
+    theme_preference: null,
+    bookable: false,
+    avatar_url: null,
+  };
+
+  it("renders its own unreadable state, NOT the empty-roster copy", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    // What loadTierDepths does now on an unreadable table. Before #1629 it
+    // resolved [] here and this page said "No tiers yet", which on this screen
+    // reads as every tier having lost its agents.
+    load.loadTierDepths.mockRejectedValueOnce(
+      new Error("read failed [staffing depth buckets]: connection reset"),
+    );
+    render(await TiersPage());
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/could not be read/i);
+    // The empty-state sentence must NOT appear: an unreadable roster and a roster
+    // with no tiers are different screens (L10).
+    expect(screen.queryByText(/No tiers yet/i)).toBeNull();
+  });
+
+  it("reports no count at all rather than a zero it never measured", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    load.loadTierDepths.mockRejectedValueOnce(new Error("read failed [staffing depth users]: boom"));
+    const { container } = render(await TiersPage());
+
+    // The summary strip is what turns an unmeasured roster into numbers, so it is
+    // absent entirely. A "0 with no coverage" here would be a claim nothing made.
+    expect(screen.queryByText(/with no coverage/i)).toBeNull();
+    expect(screen.queryByText(/on a single agent today/i)).toBeNull();
+    expect(screen.queryByText(/agent-slots out today/i)).toBeNull();
+    expect(container.querySelector("table")).toBeNull();
+  });
+
+  it("proves the control: the same page still renders the table when the read succeeds", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    load.loadTierDepths.mockResolvedValueOnce([]);
+    const { container } = render(await TiersPage());
+    // An EMPTY read is a measurement, so the counts and the empty-state copy are
+    // exactly what should show. This is the half the assertions above would
+    // otherwise be satisfied by a page that renders nothing at all.
+    expect(screen.getByText(/No tiers yet/i)).toBeTruthy();
+    expect(screen.getByText(/with no coverage/i)).toBeTruthy();
+    expect(container.querySelector("table")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

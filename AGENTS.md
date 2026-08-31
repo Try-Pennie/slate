@@ -660,11 +660,36 @@ day. That was #277; it routed the availability-critical reads through **`unwrap`
 (`data: null, error: null`) through unchanged.
 
 **`scripts/test-swallowed-error-reads.ts`** (#315) keeps that invariant from
-eroding. It scans `src/lib/availability/*` and `src/lib/booking/*` and fails if an
-awaited SELECT is destructured for `data` without also consulting `error`. The
-scan logic lives in `scripts/lib/scan-swallowed-error-reads.ts` (unit-testable),
-and the guard carries a positive control (stripping the opt-outs from the real
-`booking/service.ts` must be caught) so it can never rot into a no-op.
+eroding. It scans `src/lib/availability/*`, `src/lib/booking/*`,
+`src/lib/google/*`, `src/lib/routing/*`, `src/lib/salesforce/*`,
+`src/lib/webhooks/*` and the whole `src/app/admin/**` tree, and fails on an
+awaited SELECT whose `error` is never consulted. The scan logic lives in
+`scripts/lib/scan-swallowed-error-reads.ts` (unit-testable), and the guard carries
+positive controls (stripping the opt-outs from the real `booking/service.ts`, and
+reverting `staffing-depth-load.ts`'s four unwraps, must both be caught) so it can
+never rot into a no-op.
+
+**It reads TWO shapes, and #1629 is why.** Until then it saw only
+`const { data } = await ...`. The other shape is the result object bound whole and
+read later:
+
+```ts
+const [usersRes, bucketsRes] = await Promise.all([...]);
+const users = (usersRes.data ?? []) as User[];   // and usersRes.error read NOWHERE
+```
+
+`src/lib/routing` had been in the scanned paths since #865 with
+`staffing-depth-load.ts` reading four tables exactly that way, and the guard
+reported clean over it on every run: a scanner blind to the shape and a clean tree
+produce the same empty result (L98). So widening the paths alone would have fixed
+nothing, and widening the shape alone would have left the admin surface (where the
+empty answer is most convincing) unguarded. Both were widened together.
+
+Two rarer shapes stay deliberately out of scope and are named in the scanner's own
+header: an array destructure of object patterns
+(`const [{ data: a }] = await Promise.all(...)`), and an inline member read
+(`(await ...).data`, including `for (const r of results) use(r.data)`), where the
+result is never given a name to track.
 
 A read is **compliant** when it does ONE of:
 
@@ -686,10 +711,10 @@ const { data } = await db.from("pending_event_deletions").select("*").limit(n);
 
 Use it only when a swallowed error degrades to a genuinely SAFE path (a retry next
 tick, a re-route, a caller null/empty branch), and say why. A read whose swallowed
-error would silently show no availability must use `unwrap` instead. The guard
-covers the `const { data } = await` object-destructure shape the bug keeps taking;
-an array destructure (`const [{ data }] = await Promise.all(...)`) or an inline
-`(await ...).data` is out of scope by design (documented in the scanner header).
+error would silently show no availability must use `unwrap` instead. On the
+result-object shape the opt-out may sit above the binding OR above the `.data`
+read, because the two are routinely tens of lines apart and the reason belongs
+where the reader of the empty value is.
 
 ### The count-shaped twin: `unwrapCount` (#1165)
 
@@ -735,6 +760,15 @@ is three files away. Every instance so far:
   a failed count as zero admins and refused with a claim it never measured; and
   the header's pending-approvals badge vanished on a broken read exactly as it
   does when the queue is empty.
+- **#1629** the admin page read six tables as `(res.data ?? [])`, so an unreadable
+  table drew the same screen an empty one draws (no agents, no buckets, nobody in
+  any pool, nothing ever sent to Regal), and two of those blanks sat beside a
+  control that would have written them back as fact. The same read shape in
+  `loadTierDepths` returned an empty depth list, which `/admin/tiers` rendered as
+  "No tiers yet" and which the availability canary scored as **zero staffed
+  buckets** and answered a healthy **200** on. `loadTierDepths` throws now, and
+  every caller maps that to an explicit unknown: the canary answers 503 with
+  `staffedBuckets: null` rather than `0`.
 - **#1152** three self-heal worklist reads returned `[]`, the resulting count of
   zero read as "under the cap", and that posted "the backlog has cleared, no
   action is needed" while clearing the streak that would have paged. The same

@@ -8,6 +8,7 @@ import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -79,13 +80,25 @@ export default async function TiersPage() {
     redirect("/admin/ooo");
   }
 
-  const rows = await loadTierDepths(supabaseAdmin(), me.org_id);
+  // #1629: `loadTierDepths` THROWS on an unreadable read rather than answering
+  // with an empty list. Caught here and turned into its own screen, because
+  // "no tiers are configured" and "the roster could not be read" are the same
+  // picture once the error is dropped, and on this page the first reads as a
+  // staffing emergency (L10). Nothing below may count over an unmeasured roster.
+  let rows: TierDepth[] | null = null;
+  try {
+    rows = await loadTierDepths(supabaseAdmin(), me.org_id);
+  } catch (err) {
+    log.error("admin-tiers", { msg: "staffing depth unreadable" }, err);
+    rows = null;
+  }
   // Summary + status reflect the EFFECTIVE (time-off-aware) flag: the real
   // short-term risk today. Roster depth stays visible per row for context (#738).
-  const spofCount = rows.filter((r) => r.effectiveFlag === "spof").length;
-  const noneCount = rows.filter((r) => r.effectiveFlag === "none").length;
-  const thinCount = rows.filter((r) => r.effectiveFlag === "thin").length;
-  const outTodayCount = rows.reduce((n, r) => n + r.outCount, 0);
+  // Each is null, never 0, when there was nothing to count over.
+  const spofCount = rows && rows.filter((r) => r.effectiveFlag === "spof").length;
+  const noneCount = rows && rows.filter((r) => r.effectiveFlag === "none").length;
+  const thinCount = rows && rows.filter((r) => r.effectiveFlag === "thin").length;
+  const outTodayCount = rows && rows.reduce((n, r) => n + r.outCount, 0);
 
   return (
     <>
@@ -113,14 +126,25 @@ export default async function TiersPage() {
         </section>
 
         <section className={cardCls}>
+          {rows === null ? (
+            <p
+              role="alert"
+              className="rounded-md border border-[var(--error)] px-4 py-3 text-sm text-error"
+            >
+              Staffing depth could not be read, so this page is not showing your
+              tiers. No tier has lost its agents. Reload in a moment, and if it keeps
+              saying this, the database read is failing rather than the roster.
+            </p>
+          ) : (
+          <>
           <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
             <span className="text-fg-muted">
               <span className="font-semibold tabular-nums text-fg">{rows.length}</span> tiers
             </span>
-            <span className={noneCount > 0 ? "text-error" : "text-fg-muted"}>
+            <span className={(noneCount ?? 0) > 0 ? "text-error" : "text-fg-muted"}>
               <span className="font-semibold tabular-nums">{noneCount}</span> with no coverage
             </span>
-            <span className={spofCount > 0 ? "text-error" : "text-fg-muted"}>
+            <span className={(spofCount ?? 0) > 0 ? "text-error" : "text-fg-muted"}>
               <span className="font-semibold tabular-nums">{spofCount}</span> on a single agent today
             </span>
             <span className="text-fg-muted">
@@ -205,6 +229,8 @@ export default async function TiersPage() {
               </tbody>
             </table>
           </div>
+          </>
+          )}
         </section>
       </main>
     </>

@@ -34,16 +34,36 @@
 //   - carries a `// error-ok:` opt-out on, or in the `//` block directly above,
 //     the destructure line (the escape hatch, below).
 //
-// SCOPE (deliberate, honest boundary): this scanner covers the exact shape #277
-// warned about and the issue quotes, an OBJECT destructure of an awaited select
-// (`const { ... } = await ...`). It intentionally does NOT chase two rarer
-// shapes, so it never claims coverage it does not have (a false-confidence check
-// is Slate's most repeated defect class):
-//   - an ARRAY destructure element, `const [{ data: a }, { data: b }] = await
-//     Promise.all([...])`; and
-//   - an inline member read, `(await db.from(...).select(...)).data`.
-// Both are discouraged by review; the `const { data } = await` form is the one
-// that keeps reappearing and is what this guards.
+// A SECOND read site (#1629): the RESULT-OBJECT member read.
+//   const [usersRes, bucketsRes] = await Promise.all([
+//     db.from("users").select("*"),
+//     db.from("buckets").select("*"),
+//   ]);
+//   const users = (usersRes.data ?? []) as User[];
+// Here the result object is bound whole and `.data` is read off it later, so no
+// `const { data } = await` ever appears and the destructure scan above cannot
+// see it. It is FLAGGED when the bound name's `.data` is read somewhere in the
+// file, its `.error` is read NOWHERE, the element it was bound to is a Supabase
+// select, and no `// error-ok:` opt-out is attached (to the binding, or to the
+// `.data` read).
+//
+// This shape is why widening the scanned PATHS alone would have fixed nothing
+// for #1629: `src/lib/routing` has been in scope since #865, and
+// `staffing-depth-load.ts` sat inside it reading four tables as
+// `(<name>Res.data ?? [])` the whole time, with the guard reporting clean over
+// it. A guard blind to the shape is a guard, not coverage (L98).
+//
+// SCOPE (deliberate, honest boundary): the two shapes above are what this
+// covers. It intentionally does NOT chase two rarer ones, so it never claims
+// coverage it does not have (a false-confidence check is Slate's most repeated
+// defect class):
+//   - an ARRAY destructure of OBJECT patterns, `const [{ data: a }, { data: b }]
+//     = await Promise.all([...])`; and
+//   - an inline member read, `(await db.from(...).select(...)).data`, including
+//     the loop form `for (const r of await Promise.all(qs)) use(r.data)`, where
+//     the result object is never given a name to track.
+// Both are discouraged by review; the two shapes above are the ones that keep
+// reappearing and are what this guards.
 //
 // THE ESCAPE HATCH (`// error-ok:`). A read that DELIBERATELY tolerates a null /
 // empty result on a query error opts out with a one-line reason on, or in the
@@ -67,6 +87,12 @@ export interface SwallowedReadFinding {
   binding: string;
   /** The read snippet (whitespace collapsed, truncated for readability). */
   snippet: string;
+  /**
+   * Which read site it is, so the failure message can name the right remedy:
+   * `destructure` for `const { data } = await ...`, `result-object` for a whole
+   * result bound to a name and read later as `<name>.data`.
+   */
+  shape: "destructure" | "result-object";
 }
 
 // `const { ... } = await` (also let / var). `[^{}]*` keeps it to a flat object
@@ -154,6 +180,208 @@ function isSelectRead(text: string): boolean {
   return true;
 }
 
+/**
+ * A same-length copy of `source` with the CONTENT of comments and string / template
+ * literals blanked to spaces. Structural scanning (bracket matching, top-level
+ * comma splitting) runs over this so a comma inside a `//` comment or a string can
+ * never be read as a separator.
+ *
+ * Same length, so every index into the mask is an index into the original: the
+ * caller slices the ORIGINAL for the text it reports.
+ *
+ * This matters concretely. The admin page's `Promise.all` opens with a two-line
+ * `//` comment containing two commas, which without the mask split the first
+ * element into three and shifted every name onto the wrong query for the rest of
+ * the array (#1629). A guard that names the wrong read is worse than one that
+ * names none, because the reader goes and looks at code that is fine.
+ */
+function maskLiterals(source: string): string {
+  const out = source.split("");
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") out[i++] = " ";
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      while (i < stop) {
+        if (source[i] !== "\n") out[i] = " ";
+        i++;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      i++;
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === "\\") {
+          out[i] = " ";
+          i++;
+        }
+        if (i < source.length && source[i] !== "\n") out[i] = " ";
+        i++;
+      }
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return out.join("");
+}
+
+/**
+ * The offsets of the TOP-LEVEL commas' separated spans within `masked`, ignoring
+ * commas nested inside brackets (comments and strings are already blanked). Used
+ * to line the elements of a `Promise.all([...])` up with the names the array
+ * destructure binds them to.
+ */
+function splitTopLevel(masked: string): { start: number; end: number }[] {
+  const parts: { start: number; end: number }[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < masked.length; i++) {
+    const c = masked[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) {
+      parts.push({ start, end: i });
+      start = i + 1;
+    }
+  }
+  parts.push({ start, end: masked.length });
+  return parts;
+}
+
+/** The index of the bracket that closes the one opened at `openIndex` (-1 if none). */
+function matchBracket(masked: string, openIndex: number): number {
+  const open = masked[openIndex];
+  const close = open === "[" ? "]" : open === "(" ? ")" : "}";
+  let depth = 0;
+  for (let i = openIndex; i < masked.length; i++) {
+    const c = masked[i];
+    if (c === open) depth++;
+    else if (c === close) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** `const [a, b, c] = await Promise.all([`: the names, up to the array's `[`. */
+const ARRAY_FROM_PROMISE_ALL =
+  /(?:const|let|var)\s*\[([^\][]*)\]\s*=\s*await\s+Promise\.all\s*\(\s*\[/g;
+/** `const usersRes = await db.from("users")...`: a whole result bound to a name. */
+const NAMED_AWAIT = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\b/g;
+
+/**
+ * A `Promise.all` element's own chain text. An element that is a BARE BUILDER NAME
+ * (`bucketsQuery`) carries no `.from(` of its own, so its nearest preceding
+ * `const/let/var bucketsQuery = ...` definition stands in for it. Scoped to the
+ * element, never to the statement, because the statement holds every sibling
+ * query and reading those would attribute one name's chain to another.
+ *
+ * loadTierDepths writes three of its four reads that way (`let bucketsQuery = ...`
+ * then `.eq("org_id", orgId)` conditionally), so without this the guard reaches
+ * one of the four reads named in #1629 and reports the other three clean.
+ */
+function resolveElementChain(masked: string, elementText: string, beforeIndex: number): string {
+  if (elementText.includes(".from(")) return elementText;
+  const bare = /^\s*([A-Za-z_$][\w$]*)\s*$/.exec(elementText);
+  if (!bare) return elementText;
+  const defRe = new RegExp(`(?:const|let|var)\\s+${bare[1]}\\s*=`, "g");
+  let defIndex = -1;
+  for (const dm of masked.slice(0, beforeIndex).matchAll(defRe)) defIndex = dm.index as number;
+  if (defIndex === -1) return elementText;
+  const defEnd = masked.indexOf(";", defIndex);
+  return masked.slice(defIndex, defEnd === -1 ? beforeIndex : defEnd);
+}
+
+/** Every index in `source` where `<name>.<member>` is read. */
+function memberReadIndexes(source: string, name: string, member: string): number[] {
+  const re = new RegExp(`\\b${name}\\s*\\.\\s*${member}\\b`, "g");
+  return [...source.matchAll(re)].map((m) => m.index as number);
+}
+
+/**
+ * The RESULT-OBJECT member read (#1629): a whole Supabase result bound to a name
+ * and read later as `<name>.data`, with `<name>.error` read nowhere.
+ *
+ * The opt-out may sit above the BINDING or above any `<name>.data` read, because
+ * the two are routinely tens of lines apart and the reason belongs wherever the
+ * reader of the empty value is.
+ */
+function scanResultObjectReads(source: string, file: string): SwallowedReadFinding[] {
+  const findings: SwallowedReadFinding[] = [];
+  const masked = maskLiterals(source);
+  const seen = new Set<string>();
+
+  const consider = (
+    name: string,
+    chainText: string,
+    bindingIndex: number,
+    reportSpan?: { start: number; end: number },
+  ) => {
+    if (!name || seen.has(name)) return;
+    if (!isSelectRead(chainText)) return; // a write, or not a supabase select
+    const dataReads = memberReadIndexes(masked, name, "data");
+    if (dataReads.length === 0) return; // the result is never consumed as `.data`
+    if (memberReadIndexes(masked, name, "error").length > 0) return; // error is consulted
+    if (hasOptOut(source, bindingIndex)) return; // documented null-tolerant
+    if (dataReads.some((i) => hasOptOut(source, i))) return;
+    seen.add(name);
+    // Reported from the ORIGINAL text, not the mask, so the snippet in the failure
+    // message still names the table the read is on. Leading `//` lines are dropped
+    // first: a two-line comment above the query eats the whole 100-character
+    // budget, and the message then quotes prose instead of the read.
+    const shown = (reportSpan ? source.slice(reportSpan.start, reportSpan.end) : chainText)
+      .split("\n")
+      .filter((l) => !/^\s*\/\//.test(l))
+      .join("\n");
+    const snippet = `${name} = ${shown}`.replace(/\s+/g, " ").trim();
+    findings.push({
+      file,
+      line: lineOf(source, bindingIndex),
+      binding: `${name}.data`,
+      snippet: snippet.length > 100 ? `${snippet.slice(0, 97)}...` : snippet,
+      shape: "result-object",
+    });
+  };
+
+  // `const [a, b] = await Promise.all([chainA, chainB])`: element i belongs to name i.
+  for (const m of masked.matchAll(ARRAY_FROM_PROMISE_ALL)) {
+    const bindingIndex = m.index as number;
+    const arrayOpen = bindingIndex + m[0].length - 1;
+    const arrayClose = matchBracket(masked, arrayOpen);
+    if (arrayClose === -1) continue;
+    const base = arrayOpen + 1;
+    const spans = splitTopLevel(masked.slice(base, arrayClose));
+    const names = m[1].split(",").map((n) => n.trim());
+    for (let i = 0; i < names.length; i++) {
+      const span = spans[i];
+      if (!span) continue;
+      consider(
+        names[i],
+        resolveElementChain(masked, masked.slice(base + span.start, base + span.end), bindingIndex),
+        bindingIndex,
+        { start: base + span.start, end: base + span.end },
+      );
+    }
+  }
+
+  // `const usersRes = await db.from("users").select(...)`
+  for (const m of masked.matchAll(NAMED_AWAIT)) {
+    const bindingIndex = m.index as number;
+    consider(m[1], analysisText(masked, bindingIndex + m[0].length), bindingIndex);
+  }
+
+  return findings;
+}
+
 export function scanSwallowedErrorReads(source: string, file = "<source>"): SwallowedReadFinding[] {
   const findings: SwallowedReadFinding[] = [];
   for (const m of source.matchAll(DESTRUCTURE)) {
@@ -173,9 +401,11 @@ export function scanSwallowedErrorReads(source: string, file = "<source>"): Swal
       line: lineOf(source, destructureIndex),
       binding: m[1].trim(),
       snippet: snippet.length > 100 ? `${snippet.slice(0, 97)}...` : snippet,
+      shape: "destructure",
     });
   }
-  return findings;
+  findings.push(...scanResultObjectReads(source, file));
+  return findings.sort((a, b) => a.line - b.line);
 }
 
 /**
@@ -222,6 +452,7 @@ export function scanSwallowedCountResults(
       line: lineOf(source, destructureIndex),
       binding: m[1].trim(),
       snippet: snippet.length > 100 ? `${snippet.slice(0, 97)}...` : snippet,
+      shape: "destructure",
     });
   }
   return findings;
