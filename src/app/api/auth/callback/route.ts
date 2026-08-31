@@ -5,6 +5,7 @@ import { ensureWatches } from "@/lib/google/sync";
 import { canManageAgents } from "@/lib/auth/roles";
 import { isAllowedEmail } from "@/lib/auth/domain";
 import { googleHostedDomain } from "@/lib/env";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -44,13 +45,29 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(`${origin}/login?error=domain_not_allowed`);
   }
 
-  const slateUser = await provisionUser({
-    authUserId: user.id,
-    email,
-    name: (meta.full_name as string) ?? (meta.name as string) ?? null,
-    googleSub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
-    avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
-  });
+  // Provisioning REFUSES rather than degrading (#1648): an unreadable users or
+  // organizations read, or a race it lost that it still could not resolve, throws
+  // instead of falling through to an insert that would create a second
+  // organization or a duplicate users row. That refusal lands on a person signing
+  // in, so it has to read as a retryable sign-in failure rather than a stack
+  // trace, and the session the code exchange just set has to go with it: leaving
+  // it would put them on an internal page with no Slate row behind it, where every
+  // request resolves the session by auth_user_id and finds nothing. The detail is
+  // kept server-side in the logs, keyed on the auth user rather than the email.
+  let slateUser;
+  try {
+    slateUser = await provisionUser({
+      authUserId: user.id,
+      email,
+      name: (meta.full_name as string) ?? (meta.name as string) ?? null,
+      googleSub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
+      avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
+    });
+  } catch (err) {
+    log.error("auth-callback", { msg: "provisioning refused", auth_user_id: user.id }, err);
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/login?error=provision_failed`);
+  }
 
   // Register/refresh this user's calendar push channels (reachable via
   // domain-wide delegation by email). We do NOT run the event sync here: a

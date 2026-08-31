@@ -17,6 +17,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   domain_not_allowed: "Please sign in with your Pennie Google account.",
   exchange_failed: "That sign-in didn't complete. Please try again.",
   missing_code: "That sign-in didn't complete. Please try again.",
+  // #1648: provisioning refused rather than risk creating a second account for
+  // this person. Worded as a retry, because that is what it is: nothing is wrong
+  // with their account, a read failed or a simultaneous sign-in won the race.
+  provision_failed:
+    "We couldn't finish setting up your account just now. Please try signing in again.",
 };
 
 // Shown when the sign-in call itself never reaches Google (a transient network

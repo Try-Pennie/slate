@@ -29,6 +29,18 @@ function makeDb(opts: FakeOpts) {
     const eqCols: string[] = [];
     const b: Record<string, unknown> = {};
     const chain = () => b;
+    // Writes come back through whichever terminal the caller used. #1648 moved the
+    // inserts and updates off `.single()` (whose zero-row error masks a lost race
+    // as a generic failure) onto `.maybeSingle()`, so both terminals resolve here.
+    const resolveWrite = async () => {
+      if (state.insert) {
+        return { data: { id: "new-user", ...state.insert }, error: null };
+      }
+      if (updatePayloads.length) {
+        return { data: { id: "existing-user", ...updatePayloads.at(-1) }, error: null };
+      }
+      return { data: null, error: null };
+    };
     Object.assign(b, {
       select: () => b,
       order: () => b,
@@ -54,6 +66,7 @@ function makeDb(opts: FakeOpts) {
         return b;
       },
       maybeSingle: async () => {
+        if (state.insert || updatePayloads.length) return resolveWrite();
         // organizations lookup returns the existing org; the users lookups are
         // told apart by which column they filtered on, so a test can drive the
         // already-linked branch and the found-by-email branch separately.
@@ -65,15 +78,7 @@ function makeDb(opts: FakeOpts) {
         }
         return { data: null, error: null };
       },
-      single: async () => {
-        if (state.insert) {
-          return { data: { id: "new-user", ...state.insert }, error: null };
-        }
-        if (updatePayloads.length) {
-          return { data: { id: "existing-user", ...updatePayloads.at(-1) }, error: null };
-        }
-        return { data: null, error: null };
-      },
+      single: resolveWrite,
       // The admin-count query is awaited directly (no terminal). Resolve it as a
       // count result so the legacy path can compute a role.
       then: (resolve: (v: unknown) => unknown) =>

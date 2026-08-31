@@ -53,3 +53,27 @@ export function unwrapCount(res: DbCountResult, context: string): number {
   }
   return res.count ?? 0;
 }
+
+/** Postgres `unique_violation`. */
+export const UNIQUE_VIOLATION = "23505";
+
+/**
+ * Whether a Supabase/PostgREST error is a unique key refusing a duplicate row
+ * (#1648).
+ *
+ * This is the answer to "assume it runs twice": a read that correctly returned
+ * nothing is no protection, because two concurrent callers can both pass it, so
+ * the key is what actually makes the second write impossible. A caller that gets
+ * this back has LOST a race it was always allowed to lose; the right response is
+ * to re-read and use the row that won, never to retry the insert and never to
+ * treat it as the caller's own failure.
+ *
+ * Any other error is a real failure and must stay one: this deliberately matches
+ * on the SQLSTATE rather than on the message, so a differently worded duplicate
+ * error is still caught and an unrelated error is never mistaken for one.
+ */
+export function isUniqueViolation(
+  error: { code?: string } | null | undefined,
+): boolean {
+  return error?.code === UNIQUE_VIOLATION;
+}
