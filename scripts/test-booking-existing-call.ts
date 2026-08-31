@@ -17,14 +17,20 @@
  *  - **It runs after the idempotency fast path.** A double-click's second
  *    request must not find the booking its own first request just made and
  *    decline it, which would turn a successful confirm into a refusal.
- *  - **It fails OPEN, loudly.** A lookup error books the call and logs; refusing
- *    on a database hiccup would cost the lead their call entirely.
+ *  - **It fails CLOSED (#1641, reversing the original call).** A lookup error
+ *    refuses the booking and logs, rather than creating it. The fail-open it
+ *    replaces rested on `findDuplicateWarning` telling the lead afterwards, and
+ *    that backstop runs the SAME query on the SAME table: when the read is what
+ *    failed, it is blind too (L345), so the duplicate reached the advisor with
+ *    nobody told. The refusal is a retriable 503 and the rate-limit hit is
+ *    refunded, so the cost is a retry rather than the lead's call.
  *
  * Run: node --experimental-strip-types scripts/test-booking-existing-call.ts
  */
 import {
   createBooking,
   ExistingCallError,
+  ExistingCallCheckUnavailableError,
   type ExistingCall,
 } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input } from "./lib/booking-fakes.ts";
@@ -38,7 +44,12 @@ const bookerInput = { ...input, refuseIfPersonHasCall: true };
 async function attempt(
   over: Parameters<typeof makeDeps>[0],
   inp = bookerInput,
-): Promise<{ declined: ExistingCall | null; created: boolean; events: number }> {
+): Promise<{
+  declined: ExistingCall | null;
+  created: boolean;
+  events: number;
+  bookingsWritten: number;
+}> {
   const { deps, calls } = makeDeps({
     candidates: ["a"],
     freeEmails: new Set(["a@x.com"]),
@@ -46,12 +57,58 @@ async function attempt(
   });
   try {
     await createBooking(inp, deps);
-    return { declined: null, created: true, events: calls.createEvent.length };
+    return {
+      declined: null,
+      created: true,
+      events: calls.createEvent.length,
+      bookingsWritten: calls.insertBooking.length,
+    };
   } catch (err) {
     if (err instanceof ExistingCallError) {
       // A calendar invite is the observable proof a booking happened, so its
-      // absence is what "nothing was created" actually means to a lead.
-      return { declined: err.existingCall, created: false, events: calls.createEvent.length };
+      // absence is what "nothing was created" actually means to a lead. The
+      // booking row is the other half, and it is written in a separate step.
+      return {
+        declined: err.existingCall,
+        created: false,
+        events: calls.createEvent.length,
+        bookingsWritten: calls.insertBooking.length,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * The same run, for the case where the LOOKUP ITSELF fails: report whether the
+ * refusal was the unavailable one, and what (if anything) got written.
+ * Deliberately separate from `attempt`, so a run that threw the ordinary
+ * `ExistingCallError` can never be counted as this outcome.
+ */
+async function attemptUnavailable(
+  over: Parameters<typeof makeDeps>[0],
+): Promise<{ unavailable: boolean; created: boolean; events: number; bookingsWritten: number }> {
+  const { deps, calls } = makeDeps({
+    candidates: ["a"],
+    freeEmails: new Set(["a@x.com"]),
+    ...over,
+  });
+  try {
+    await createBooking(bookerInput, deps);
+    return {
+      unavailable: false,
+      created: true,
+      events: calls.createEvent.length,
+      bookingsWritten: calls.insertBooking.length,
+    };
+  } catch (err) {
+    if (err instanceof ExistingCallCheckUnavailableError) {
+      return {
+        unavailable: true,
+        created: false,
+        events: calls.createEvent.length,
+        bookingsWritten: calls.insertBooking.length,
+      };
     }
     throw err;
   }
@@ -231,14 +288,54 @@ async function run() {
     );
   }
 
-  // --- Fails open, loudly ---
+  // --- A failed lookup REFUSES rather than booking (#1641) -------------------
+  // Read as a PAIR with the healthy control below it: a "no second booking was
+  // created" assertion is satisfied by a fixture in which no booking could have
+  // been created at all (L159), so the same fixture has to be shown creating one.
   {
-    const r = await attempt({
-      personBookingsThrows: true,
+    const own = makeBooking({
+      id: "bk-old",
+      salesforce_id: "sf1",
+      attendee_email: "k@x.com",
+      attendee_phone: "+12035615295",
+      manage_token: "tok-old",
+      assigned_user_id: "a",
     });
+
+    // The read fails. Nothing may be written, and the lead must be told.
+    const failed = await attemptUnavailable({ personBookings: [own], personBookingsThrows: true });
     assert(
-      r.created,
-      "a failed existing-call lookup books the call rather than refusing it",
+      failed.unavailable,
+      "a failed existing-call lookup refuses with ExistingCallCheckUnavailableError",
+    );
+    assert(
+      failed.bookingsWritten === 0,
+      `a failed existing-call lookup writes NO booking row (wrote ${failed.bookingsWritten})`,
+    );
+    assert(
+      failed.events === 0,
+      "a failed existing-call lookup creates no calendar invite either",
+    );
+
+    // Same fixture, read succeeding: the existing call IS found and deduped, so
+    // the assertions above are about the refusal and not about a dead fixture.
+    const healthy = await attempt({ personBookings: [own], agentNames: { a: "Aisha Bello" } });
+    assert(
+      !healthy.created && healthy.declined !== null,
+      "healthy control: the same fixture finds the existing call and declines",
+    );
+    assert(
+      healthy.bookingsWritten === 0,
+      "healthy control: a declined second booking writes no booking row",
+    );
+
+    // Same fixture again with NOBODY on record: it really does create, so
+    // "wrote 0 rows" above is a suppressed write rather than a fixture that
+    // never writes.
+    const fresh = await attempt({ personBookings: [] });
+    assert(
+      fresh.created && fresh.bookingsWritten === 1,
+      `control: with no existing call the same fixture writes one booking (wrote ${fresh.bookingsWritten})`,
     );
   }
 

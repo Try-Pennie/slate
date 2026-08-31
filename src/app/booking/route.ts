@@ -4,6 +4,7 @@ import {
   createBooking,
   findDuplicateBookingWarning,
   ExistingCallError,
+  ExistingCallCheckUnavailableError,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -188,10 +189,10 @@ export async function POST(req: NextRequest) {
       prefill: parsed.data.prefill,
     });
     // Backstop, not the ordinary path (#1337): a second booking is normally
-    // DECLINED above before anything is created. This still fires for the window
-    // refusal cannot cover, namely a failed existing-call lookup (which books
-    // rather than refusing) and two simultaneous confirms that both pass the
-    // check. When a duplicate does reach here, the lead is told about it (#626).
+    // DECLINED above before anything is created. Since #1641 the window it
+    // covers is two simultaneous confirms both passing the check, and no longer
+    // a failed lookup, which is refused rather than booked. When a duplicate does
+    // reach here, the lead is told about it (#626).
     const duplicateWarning = await findDuplicateBookingWarning({
       excludeBookingId: booking.id,
       salesforceId: parsed.data.salesforceId ?? null,
@@ -218,6 +219,20 @@ export async function POST(req: NextRequest) {
       recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: existing_call
       return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
+    }
+    // The one-call-per-person check could not be MADE (#1641), so nothing is
+    // known about what this lead already holds and nothing was created. Treated
+    // like the other transient server faults: a retriable 503 carrying one short
+    // sentence (the detail is already in the log), and the rate-limit hit handed
+    // back, because a failed read on our side is not an attempt the lead should
+    // pay for. Refusing is the deliberate reversal of the old fail-open; see
+    // ExistingCallCheckUnavailableError for why the confirmation-screen backstop
+    // could never cover this case.
+    if (err instanceof ExistingCallCheckUnavailableError) {
+      await refundAll();
+      recordApiOutcome("error", parsed.data.bucketCode, "existing_call_unavailable", { by: "bucket", code: parsed.data.bucketCode });
+      // refusal: existing_call_unavailable
+      return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // Couldn't verify any candidate (likely a Google/DB outage), not a full
     // slot — tell the lead it's temporary and let them retry (#319). Refund the

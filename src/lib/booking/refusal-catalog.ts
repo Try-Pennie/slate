@@ -171,6 +171,23 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "not as a failure, because a busy day of returning leads must not read as an outage.",
   },
   {
+    id: "existing_call_unavailable",
+    surface: "embed booker",
+    outcome: "503, told it is temporary and to retry",
+    counting: { kind: "error", code: "existing_call_unavailable" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The one-call-per-person check could not be MADE: the bookings read behind it failed, so " +
+      "nothing is known about what this lead already holds (#1641). It refuses rather than " +
+      "booking, because the empty candidate list a failed read used to produce is the specific " +
+      "claim that this person has no call, and acting on it creates the duplicate. Counted as " +
+      "an error so the failure-rate window names it: one is a blip a retry clears, and a run of " +
+      "them is the bookings table being unreadable on the hot path, which is an outage. It does " +
+      "NOT page on its own, because the read it depends on is the same one every other booking " +
+      "step uses, so a sustained failure here surfaces through the share alongside the rest " +
+      "rather than as its own separate page.",
+  },
+  {
     id: "verify_unavailable",
     surface: "embed booker",
     outcome: "503, told it is temporary and to retry",

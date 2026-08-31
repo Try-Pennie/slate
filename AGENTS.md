@@ -669,9 +669,10 @@ positive controls (stripping the opt-outs from the real `booking/service.ts`, an
 reverting `staffing-depth-load.ts`'s four unwraps, must both be caught) so it can
 never rot into a no-op.
 
-**It reads TWO shapes, and #1629 is why.** Until then it saw only
-`const { data } = await ...`. The other shape is the result object bound whole and
-read later:
+**It reads FOUR shapes, and each was added because the previous set read a live
+instance of the bug as a clean tree.** Until #1629 it saw only
+`const { data } = await ...`. The second shape is the result object bound whole
+and read later:
 
 ```ts
 const [usersRes, bucketsRes] = await Promise.all([...]);
@@ -685,11 +686,27 @@ produce the same empty result (L98). So widening the paths alone would have fixe
 nothing, and widening the shape alone would have left the admin surface (where the
 empty answer is most convincing) unguarded. Both were widened together.
 
-Two rarer shapes stay deliberately out of scope and are named in the scanner's own
-header: an array destructure of object patterns
-(`const [{ data: a }] = await Promise.all(...)`), and an inline member read
-(`(await ...).data`, including `for (const r of results) use(r.data)`), where the
-result is never given a name to track.
+The third and fourth shapes (#1641) are the ones where the result never gets a
+name at all, so no earlier shape could reach them:
+
+```ts
+const buckets = ((await db.from("buckets").select("*").in("id", ids)).data ?? []) as Bucket[];
+
+const results = await Promise.all(queries);
+for (const r of results) for (const row of (r.data ?? []) as Booking[]) byId.set(row.id, row);
+```
+
+The second of those is the weak-match booking lookup on the booking hot path. A
+failed query resolved to an empty candidate list, which is not "no failure" but
+the specific answer "this lead has no call booked", so the dedupe gate passed and
+a SECOND booking was created for someone who already had one. There is no
+compliant way to write an inline `(await ...).data` (nothing can consult an
+`error` on a result that never exists as a value), so it is `unwrap` or the
+opt-out.
+
+**One shape stays deliberately out of scope**, and is named in the scanner's own
+header so the next instance of it is not assumed covered: an array destructure of
+object patterns, `const [{ data: a }, { data: b }] = await Promise.all([...])`.
 
 A read is **compliant** when it does ONE of:
 
@@ -769,6 +786,14 @@ is three files away. Every instance so far:
   buckets** and answered a healthy **200** on. `loadTierDepths` throws now, and
   every caller maps that to an explicit unknown: the canary answers 503 with
   `staffedBuckets: null` rather than `0`.
+- **#1641** the weak-match booking lookup read its query wave as
+  `for (const r of results) ... (r.data ?? [])`, so a failed read arrived as "this
+  lead has no call booked", the one-call-per-person gate passed, and a second
+  booking was created: a second invite, a second slot consumed, `booking.created`
+  fired twice. The confirmation-screen warning that was supposed to catch it runs
+  the SAME query on the SAME table, so it was blind in exactly that failure
+  (L345). The read `unwrap`s now and the booker REFUSES with a retriable 503,
+  reversing the fail-open this path shipped with.
 - **#1152** three self-heal worklist reads returned `[]`, the resulting count of
   zero read as "under the cap", and that posted "the backlog has cleared, no
   action is needed" while clearing the streak that would have paged. The same

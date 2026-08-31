@@ -302,6 +302,35 @@ export class ExistingCallError extends Error {
   }
 }
 
+/**
+ * Thrown when the one-call-per-person check could not be MADE (#1641): the
+ * bookings read behind it failed, so nothing is known about what this lead
+ * already has.
+ *
+ * It fails CLOSED, reversing the fail-open this path shipped with. The fail-open
+ * reasoning was that refusing on a database hiccup costs the lead their call
+ * while a duplicate only costs an advisor a reconciliation, and that the
+ * confirmation screen's `findDuplicateWarning` would tell the lead about any
+ * duplicate that slipped through. That backstop runs the SAME query on the SAME
+ * table: when the read is what failed, it is blind too and swallows its own
+ * failure, so on the one occasion the fail-open was chosen for, nobody is told
+ * anything (L345). What actually shipped was a second calendar invite, a second
+ * slot consumed, and `booking.created` fired twice into Regal.
+ *
+ * The cost of failing closed is bounded: this maps to a retriable 503 with the
+ * rate-limit hit refunded, like `VerifyUnavailableError` and
+ * `RescheduleLockUnavailableError`, so the lead is asked to try again rather
+ * than turned away. And a failed `bookings` SELECT is not a hiccup off to one
+ * side of the path: the next thing this request does is INSERT into that same
+ * table.
+ */
+export class ExistingCallCheckUnavailableError extends Error {
+  constructor() {
+    super("We hit a temporary issue booking this time. Please try again in a moment.");
+    this.name = "ExistingCallCheckUnavailableError";
+  }
+}
+
 /** Thrown when a lookup/cancel can't resolve an owned booking by id (#386). */
 export class BookingNotFoundError extends Error {
   constructor() {
@@ -1662,10 +1691,13 @@ const DISCLOSABLE_MATCH: ReadonlySet<MatchStrength> = new Set<MatchStrength>([
  *
  * Since #1337 the public booker DECLINES a second booking before creating it, so
  * this is no longer the ordinary path: it is the BACKSTOP for the window that
- * refusal cannot cover. `findExistingCall` fails open on a lookup error (refusing
- * a booking because a read hiccuped would cost the lead their call), and two
- * simultaneous confirms can both pass the check, so a duplicate can still reach
- * the confirmation screen. When it does, the lead is told.
+ * refusal cannot cover, which since #1641 is two simultaneous confirms both
+ * passing the check. When a duplicate does reach here, the lead is told.
+ *
+ * It is NOT a backstop for a failed lookup, and was never able to be one: it runs
+ * the same query on the same table, so the read that failed for `findExistingCall`
+ * fails here too and this returns no warning (L345). That is why the lookup
+ * failure is now refused up front rather than warned about afterwards (#1641).
  *
  * Reuses the same identity grading (findPersonMatch) and candidate lookup as the
  * dedupe path; this wrapper only drops the just-created row and decides how much
@@ -1709,12 +1741,14 @@ const RESERVATION_DRAIN_CONCURRENCY = 6;
 /**
  * The active call this person already has, or null to go ahead and book.
  *
- * Fails OPEN, loudly. If the lookup itself errors we create the booking and log
- * it: a swallowed failure that lets a duplicate through costs an advisor one
- * reconciliation, while refusing on a database hiccup costs the lead their call
- * entirely and looks to them like the product is broken. `findDuplicateWarning`
- * on the confirmation screen is the backstop for exactly this window, which is
- * why it survives the move to refuse-before-create.
+ * Fails CLOSED, loudly (#1641, reversing the original call). A lookup that ERRORS
+ * knows nothing about this lead, and the empty list it used to produce is not
+ * "nothing found", it is the specific claim "this person has no call", which is
+ * exactly what creates the duplicate. The full reasoning, including why the
+ * confirmation-screen backstop cannot cover this particular failure, is on
+ * `ExistingCallCheckUnavailableError`.
+ *
+ * The detail goes to the log; the lead gets one short sentence and a retry.
  */
 async function findExistingCall(
   input: CreateBookingInput,
@@ -1730,14 +1764,14 @@ async function findExistingCall(
   try {
     match = findPersonMatch(identity, await deps.findActiveBookingsForPerson(identity));
   } catch (err) {
-    // Loud, not silent: the duplicate that slips through is visible in the logs
-    // and the confirmation screen still warns the lead about it.
+    // The full read error goes here and only here; the lead sees the error's own
+    // one-sentence message (src/lib/api/errors.ts convention).
     log.error(
       "booking",
-      { msg: "existing-call check failed; booking anyway" },
+      { msg: "existing-call check failed; refusing rather than booking" },
       err,
     );
-    return null;
+    throw new ExistingCallCheckUnavailableError();
   }
   if (!match) return null;
   if (!DISCLOSABLE_MATCH.has(match.strength)) return { disclose: false };

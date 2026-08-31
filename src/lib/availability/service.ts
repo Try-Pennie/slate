@@ -168,9 +168,17 @@ async function realEmptyBucketDeps(): Promise<EmptyBucketDeps> {
     // what watches them: counting them here would put a fixture in a number someone
     // reconciles against the roster ("60 of 62" when they have 60), and paging about
     // one would be noise to whoever is deciding whether real leads can be routed.
+    // #1641: unwrapped, because an empty roster is exactly what this monitor is
+    // watching FOR. A failed read used to arrive as zero buckets, which the sweep
+    // reads as a roster with nothing in it to check: no bucket is empty, so no
+    // page, and (worse) nothing is measured as healthy either. The consumer
+    // already treats a throw as "this run measured no pool" and clears nothing,
+    // which is the honest outcome and is pinned in empty-buckets.test.ts.
     loadBuckets: async () =>
-      ((await supabaseAdmin().from("buckets").select("*").eq("is_test", false)).data ??
-        []) as Bucket[],
+      (unwrap(
+        await supabaseAdmin().from("buckets").select("*").eq("is_test", false),
+        "empty-bucket sweep roster",
+      ) ?? []) as Bucket[],
     // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
     // one eligibility read per bucket rather than each re-querying the DB.
     countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
