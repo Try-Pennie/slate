@@ -11,6 +11,7 @@ import {
   verdictParkedInfoText,
   verdictRecoveryText,
   verdictUnparkAlertText,
+  verdictUnparkLapsedText,
   verdictUnparkRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
@@ -144,9 +145,13 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
   // They are PARKED: quiet about being blind, loud about being parked, and loud
   // again the moment one of them concludes anyway, which is what cutover looks
   // like. Derived from the same heartbeat read, so it costs no extra query.
-  const parkStates = Object.entries(VERDICT_STALE_BOUNDS_MS).map(([lane, maxStaleMs]) => ({
+  // Judged against each park's OWN `unparkWithinMs`, not the blindness bound the
+  // same record supplies below (#1562): the bound asks "has this stopped", which a
+  // verdict from three days ago still satisfies, and reading that as "this is
+  // concluding" let one accidental canary-driven verdict hold a daily page open.
+  const parkStates = Object.keys(VERDICT_STALE_BOUNDS_MS).map((lane) => ({
     lane,
-    state: detectorParkState(lane, heartbeats[lane], now, maxStaleMs),
+    state: detectorParkState(lane, heartbeats[lane], now),
   }));
   const parkedLanes = parkStates.filter((p) => p.state === "parked").map((p) => p.lane);
   const unparkLanes = parkStates.filter((p) => p.state === "unpark").map((p) => p.lane);
@@ -256,12 +261,20 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
         (l) => l.lane,
       ),
     ),
-    // Every detector that is NOT parked settles its un-park page, so arming one
-    // (deleting its registry entry) clears the page that asked for it. Folded
-    // into the recovery pass's single alert_state read rather than adding one.
-    parkStates
-      .filter((p) => p.state === "armed")
-      .map((p) => ({ key: unparkAlertKey(p.lane), text: verdictUnparkRecoveryText(p.lane) })),
+    // The un-park page's two endings, both folded into the recovery pass's single
+    // alert_state read rather than adding one. A detector that is now ARMED had its
+    // registry entry deleted, which is the ending the page asked for. A detector
+    // back in PARKED concluded once and then stopped, so nobody armed anything and
+    // the park still stands: distinct causes, distinct messages (L11), because the
+    // armed wording asserts three things that are all false on a lapse. A lane is
+    // exactly one of the three states, so these can never both name one key, and a
+    // lane whose page never fired sends nothing either way.
+    parkStates.flatMap((p) => {
+      const key = unparkAlertKey(p.lane);
+      if (p.state === "armed") return [{ key, text: verdictUnparkRecoveryText(p.lane) }];
+      if (p.state === "parked") return [{ key, text: verdictUnparkLapsedText(p.lane) }];
+      return [];
+    }),
   );
 
   return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale];

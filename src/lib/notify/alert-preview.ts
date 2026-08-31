@@ -147,6 +147,7 @@ import {
   verdictParkedInfoText,
   verdictRecoveryText,
   verdictUnparkAlertText,
+  verdictUnparkLapsedText,
   verdictUnparkRecoveryText,
 } from "@/lib/monitor/lane-copy";
 import {
@@ -1517,6 +1518,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a parked check has been armed",
     channel: "recovery",
     text: verdictUnparkRecoveryText("verdict:booking-failure-rate"),
+  },
+  // #1562: the same page's OTHER ending, and the reason it needs reading beside the
+  // one above. Nobody armed anything here; the verdict simply lapsed, and the armed
+  // wording would have claimed otherwise.
+  {
+    key: "detector_unpark:*",
+    state: "a parked check went quiet again with nobody arming it",
+    channel: "recovery",
+    text: verdictUnparkLapsedText("verdict:booking-failure-rate"),
   },
 
   // --- the booking layer's incidents ----------------------------------------
