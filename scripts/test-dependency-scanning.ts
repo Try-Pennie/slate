@@ -5,9 +5,14 @@
 //   1. .github/dependabot.yml covers BOTH the npm and github-actions ecosystems,
 //      so a new advisory (or a stale pinned Action) raises an update PR.
 //   2. ci.yml runs `pnpm audit --prod --audit-level=high`, so a NEW high advisory
-//      in a production dependency fails the build loudly. Known, unremediated
-//      advisories are allow-listed in package.json pnpm.auditConfig (tracked in
-//      #1057); the gate still fires on anything new.
+//      in a production dependency fails the build loudly. The allowlist in
+//      package.json pnpm.auditConfig.ignoreGhsas is EMPTY as of #1057 (the bump
+//      took sharp, the only prod-scope advisory, out of the tree), so the gate is
+//      green on its own merit rather than by suppression. The assertion below is
+//      about the allowlist's SHAPE, not its length: an empty list and a populated
+//      one both pass, because an entry is legitimate when it carries a reason and
+//      an issue that removes it. What it refuses is a non-array, which is how a
+//      wildcard would quietly suppress everything.
 // Run: node --experimental-strip-types scripts/test-dependency-scanning.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
