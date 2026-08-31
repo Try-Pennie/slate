@@ -74,6 +74,12 @@ export interface CreateBulkReassignJobInput {
    *  key on (request, window) makes re-running the approval converge on one sweep
    *  rather than creating a second. Absent for an admin-initiated sweep. */
   oooRequestId?: string | null;
+  /** The offboarding deactivation this sweep covers (#1241), when the lifecycle API
+   *  triggered it. The agent's stored `deactivated_at`, which is both the window
+   *  start and, paired with the agent, the idempotency key: a retried or concurrent
+   *  offboarding call reads the same stamp back and converges on one sweep. Absent
+   *  for every other sweep. */
+  offboardingDeactivatedAtIso?: string | null;
 }
 
 /** Postgres unique-violation. The ONLY error class that means "a sweep already
@@ -95,6 +101,7 @@ export async function createBulkReassignJob(
   input: CreateBulkReassignJobInput,
 ): Promise<{ jobId: string; itemCount: number }> {
   const oooRequestId = input.oooRequestId ?? null;
+  const offboardingDeactivatedAt = input.offboardingDeactivatedAtIso ?? null;
   return enqueueCoverageSweep({
     snapshotBookingIds: () =>
       coverageBookingIds(input.outUserId, input.rangeStartIso, input.rangeEndIso),
@@ -113,6 +120,7 @@ export async function createBulkReassignJob(
           created_by: input.createdBy,
           acting_as_user_id: input.actingAsUserId,
           ooo_request_id: oooRequestId,
+          offboarding_deactivated_at: offboardingDeactivatedAt,
         })
         .select("id")
         .single();
@@ -124,6 +132,23 @@ export async function createBulkReassignJob(
     },
 
     findExistingJob: async () => {
+      // #1241: an offboarding sweep is keyed on (agent, deactivation) instead of
+      // (request, window). Same convergent conflict path, different unique index,
+      // so the lookup has to ask the question that index answers.
+      if (offboardingDeactivatedAt) {
+        const row = unwrap(
+          await supabaseAdmin()
+            .from("bulk_reassign_jobs")
+            // cap-safe: the unique index on (out_user_id, offboarding_deactivated_at)
+            // means this matches at most one row.
+            .select("id")
+            .eq("out_user_id", input.outUserId)
+            .eq("offboarding_deactivated_at", offboardingDeactivatedAt)
+            .maybeSingle(),
+          "find-existing-offboarding-sweep",
+        ) as { id: string } | null;
+        return row ?? null;
+      }
       if (!oooRequestId) return null;
       let q = supabaseAdmin()
         .from("bulk_reassign_jobs")

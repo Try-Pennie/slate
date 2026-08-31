@@ -55,7 +55,49 @@ describe("startBulkReassign", () => {
       actingAsUserId: null,
       // #1237: null for an admin-started sweep, which has no request to key on.
       oooRequestId: null,
+      // #1241: null too, for the same reason: this sweep has a person behind it,
+      // not an offboarding deactivation.
+      offboardingDeactivatedAtIso: null,
     });
+  });
+
+  // #1241: an offboarding sweep has nobody in the request at all, so it carries no
+  // actor and is keyed on the deactivation instead. Both halves travel together.
+  it("passes the deactivation through for a sweep the offboarding API triggered (#1241)", async () => {
+    store.loadUserOrgId.mockResolvedValueOnce("org9");
+    store.createBulkReassignJob.mockResolvedValueOnce({ jobId: "job3", itemCount: 2 });
+    await startBulkReassign({
+      outUserId: "out1",
+      rangeStartIso: "2026-08-31T09:00:00.000Z",
+      rangeEndIso: null,
+      reason,
+      actor: null,
+      offboardingDeactivatedAtIso: "2026-08-31T09:00:00.000Z",
+    });
+    expect(store.createBulkReassignJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createdBy: null,
+        actingAsUserId: null,
+        offboardingDeactivatedAtIso: "2026-08-31T09:00:00.000Z",
+      }),
+    );
+  });
+
+  // A sweep moves customers' appointments. It may go unattributed only when it can
+  // say WHY, and that refusal lives at the one place every sweep is created, before
+  // any job row or item exists.
+  it("refuses a sweep with no actor and no reason for having none", async () => {
+    await expect(
+      startBulkReassign({
+        outUserId: "out1",
+        rangeStartIso: "2026-08-31T09:00:00.000Z",
+        rangeEndIso: null,
+        reason,
+        actor: null,
+      }),
+    ).rejects.toThrow(/accountable actor/);
+    expect(store.loadUserOrgId).not.toHaveBeenCalled();
+    expect(store.createBulkReassignJob).not.toHaveBeenCalled();
   });
 
   it("passes the time off request through, which is what makes the enqueue idempotent (#1237)", async () => {
