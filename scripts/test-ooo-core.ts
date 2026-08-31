@@ -21,6 +21,7 @@ import {
   overlaps,
   validateWindow,
   NO_MANAGER_REVIEWER,
+  UNNAMED_MANAGER_REVIEWER,
 } from "../src/lib/ooo/core.ts";
 import { canModerateAllOoo } from "../src/lib/auth/roles.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -352,6 +353,38 @@ assert(
   assert(
     noManagerReviewerCapitalized().toLowerCase() === NO_MANAGER_REVIEWER,
     "the sentence-start spelling is derived from the constant, not a second copy of it",
+  );
+}
+
+// --- #1647: the THIRD reviewer state, a manager who exists and could not be read
+//
+// /me falls back to this when `users` refuses while `manager_id` is set. Neither
+// of the other two states is true then: there is no name, and the person is NOT
+// somebody with no manager, so routing them to the moderator pool in copy is a
+// claim the read never measured (L11).
+{
+  const unnamed = [
+    oooRequestIntro(UNNAMED_MANAGER_REVIEWER),
+    oooApproverLine(UNNAMED_MANAGER_REVIEWER),
+  ];
+  assert(
+    unnamed.every((line) => !line.toLowerCase().includes(NO_MANAGER_REVIEWER)),
+    `an unreadable manager never renders as having none (got: ${unnamed.join(" | ")})`,
+  );
+  assert(
+    unnamed.every((line) => line.toLowerCase().includes(UNNAMED_MANAGER_REVIEWER)),
+    `and still names a reviewer (got: ${unnamed.join(" | ")})`,
+  );
+  // The subheading opens a sentence, so the descriptor has to be capitalized
+  // there and a stored name must NOT be rewritten by the same helper.
+  assert(
+    oooApproverLine(UNNAMED_MANAGER_REVIEWER).startsWith("Your manager"),
+    `the subheading opens the sentence properly (got: ${oooApproverLine(UNNAMED_MANAGER_REVIEWER)})`,
+  );
+  assert(
+    oooApproverLine("mona lisa").startsWith("Mona lisa") &&
+      oooApproverLine("Mona Lisa") === "Mona Lisa signs off on these.",
+    "a stored name keeps its own spelling past the first letter",
   );
 }
 

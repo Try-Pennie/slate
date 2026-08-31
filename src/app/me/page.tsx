@@ -12,8 +12,10 @@ import {
   oooRequestIntro,
   stripModifiedMarkers,
   NO_MANAGER_REVIEWER,
+  UNNAMED_MANAGER_REVIEWER,
 } from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { btnCls, cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
@@ -161,53 +163,82 @@ export default async function MePage({
 
   const oooOnly = oooOnlyFor(me.role);
 
+  // #1647: every read on this page binds `error`. Each one feeds a surface that
+  // either OFFERS A WRITE over what it shows or makes a claim about what is
+  // stored, so a dropped error draws exactly the screen a genuinely empty answer
+  // draws, and the obvious correction is a write made from a reading that never
+  // happened. They are checked one at a time below and one failing read never
+  // blanks the sections whose reads succeeded.
   const db = supabaseAdmin();
-  const { data: schedule } = await db
+  const { data: schedule, error: schedErr } = await db
     .from("availability_schedules")
     .select("id, timezone")
     .eq("user_id", me.id)
     .maybeSingle();
-  const sched = schedule as { id: string; timezone: string } | null;
+  const sched = schedErr ? null : (schedule as { id: string; timezone: string } | null);
 
-  const { data: rulesData } = sched
+  const { data: rulesData, error: rulesErr } = sched
     ? await db
         // cap-safe: the signed in agent's own schedule rules, at most a few per weekday.
         .from("availability_rules")
         .select("weekday, start_minute, end_minute")
         .eq("schedule_id", sched.id)
-    : { data: [] };
+    : { data: [], error: null };
   const rules = (rulesData ?? []) as {
     weekday: number;
     start_minute: number;
     end_minute: number;
   }[];
+  // The worst empty result on this page (#1647). `workingHoursDays` ticks Monday
+  // to Friday, 9 to 5, when NOTHING is stored, because that is the right start
+  // for a new agent; an unreadable read reaches the same branch, so the form
+  // draws a plausible week that is not this agent's, and `setMyWorkingHours`
+  // REPLACES every rule for the schedule (the #1308 lossy-projection shape). One
+  // save on a page nobody suspected and their real hours are gone. So the hours
+  // section renders its own state instead, and offers nothing that writes.
+  const hoursUnreadable = schedErr != null || rulesErr != null;
   // #1308: a window PER DAY, read back from each day's own rule rather than from
   // rules[0], which showed Monday's hours for the whole week and then overwrote
   // the rest on save.
   const hoursDays = workingHoursDays(rules);
 
-  const { data: oooData } = await db
+  const { data: oooData, error: oooErr } = await db
     .from("ooo_requests")
     .select("*")
     .eq("user_id", me.id)
     .order("created_at", { ascending: false })
     .limit(25);
+  // Empty means "you have asked for no time off", on the page somebody opens to
+  // ask exactly that, and it also silently turns a CHANGE into a new request: the
+  // edit below resolves against this list, so a failed read leaves `editing` null
+  // and the change form becomes a fresh submission for the same days.
+  const oooUnreadable = oooErr != null;
   const oooRequests = (oooData ?? []) as OooRequest[];
-  const manager = me.manager_id
-    ? ((
-        await db
-          .from("users")
-          .select("name, email")
-          .eq("id", me.manager_id)
-          .maybeSingle()
-      ).data as Pick<User, "name" | "email"> | null)
-    : null;
-  const managerName = manager?.name ?? manager?.email ?? null;
+  const { data: managerData, error: managerErr } = me.manager_id
+    ? await db.from("users").select("name, email").eq("id", me.manager_id).maybeSingle()
+    : { data: null, error: null };
+  const manager = managerData as Pick<User, "name" | "email"> | null;
+  // Three states, not two. `null` here is read as "no manager of record", which
+  // routes the copy to the moderator pool, and saying that to somebody who HAS a
+  // manager is a claim the read never measured (L11). This branch is reachable
+  // only when `me.manager_id` is set, so a manager provably exists; the reviewer
+  // is named generically rather than not at all.
+  const reviewerName = managerErr
+    ? UNNAMED_MANAGER_REVIEWER
+    : (manager?.name ?? manager?.email ?? null);
 
   const editing =
     sp.edit !== undefined
       ? (oooRequests.find((r) => r.id === sp.edit && isChangeable(r)) ?? null)
       : null;
+  // A change was asked for and the list that would resolve it could not be read.
+  // Distinct from "that request is not changeable", which is a real answer.
+  const editUnresolvable = sp.edit !== undefined && oooUnreadable;
+  // The one place an unreadable schedule degrades rather than refusing, and it is
+  // the safe class (#1647): this is the zone the time off picker OPENS on, shown
+  // as a labelled select the person reads and submits, and nothing here replaces
+  // stored hours. Falling back to the roster's canonical zone leaves a visible,
+  // correctable default instead of taking time off away over an hours read.
   const defaultTz = editing?.display_tz_id ?? sched?.timezone ?? "America/New_York";
   const tzOptions = OOO_TIMEZONES.includes(defaultTz)
     ? OOO_TIMEZONES
@@ -273,12 +304,19 @@ export default async function MePage({
               {firstName ? `Hi, ${firstName}.` : "Hi there."}
             </h1>
             <p className="mt-2 text-pennie-beige/85">
-              {!hasRequests ? (
+              {oooUnreadable ? (
+                // #1647: every other sentence in this band is a count, and a
+                // count off a read that never ran is the one thing this greeting
+                // must not say. Plain copy rather than the rose notice: the
+                // announced version of this lives once, on the list below, so a
+                // screen reader is told the same thing once rather than twice.
+                "Your time off could not be read just now, so there is nothing summarized here. Reload to try again."
+              ) : !hasRequests ? (
                 // #1499: no manager of record is not a blocker. It routes to
                 // whoever moderates all time off, and the copy says so rather
                 // than naming a step nobody can perform (the admin field is read
                 // only, because Salesforce owns the link).
-                oooRequestIntro(managerName)
+                oooRequestIntro(reviewerName)
               ) : summary.pending === 0 && summary.upcomingApproved === 0 ? (
                 "Nothing pending. Need another day off? Request it below."
               ) : (
@@ -288,7 +326,7 @@ export default async function MePage({
                       <span className="font-semibold tabular-nums text-pennie-beige">
                         {summary.pending}
                       </span>{" "}
-                      waiting on {managerName ?? NO_MANAGER_REVIEWER}
+                      waiting on {reviewerName ?? NO_MANAGER_REVIEWER}
                     </span>
                   )}
                   {summary.pending > 0 && summary.upcomingApproved > 0 && (
@@ -318,7 +356,7 @@ export default async function MePage({
               </p>
             </div>
 
-            {rules.length === 0 && (
+            {!hoursUnreadable && rules.length === 0 && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
                 <span className="flex items-center gap-2.5">
                   <InfoIcon
@@ -336,21 +374,37 @@ export default async function MePage({
 
             <section className={cardCls}>
               <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
-              <p className="mb-4 text-xs text-fg-muted">
-                Set your home timezone and weekly hours. Leads always see times in
-                their own timezone.
-              </p>
-              <WorkingHoursForm
-                action={setMyWorkingHours}
-                days={hoursDays}
-                timezone={sched?.timezone ?? "America/New_York"}
-                timezoneLabel="Your timezone"
-              />
-              <form action={useMyDefaultHours} className="mt-3">
-                <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
-                  Reset to company default hours
-                </button>
-              </form>
+              {hoursUnreadable ? (
+                /* #1647: the form and BOTH reset controls are withheld, not
+                   disabled with a warning beside them. Every one of them
+                   replaces the whole week, so any of them pressed here writes a
+                   guess over hours nobody has read. The notice says which way
+                   round it is, because the empty version of this card reads as
+                   "you have no hours" and that is the frightening direction. */
+                <UnreadableNotice className="mt-3">
+                  Your working hours could not be read just now, so they are not
+                  shown and cannot be changed from here. Your saved hours are
+                  unaffected. Reload to try again.
+                </UnreadableNotice>
+              ) : (
+                <>
+                  <p className="mb-4 text-xs text-fg-muted">
+                    Set your home timezone and weekly hours. Leads always see times
+                    in their own timezone.
+                  </p>
+                  <WorkingHoursForm
+                    action={setMyWorkingHours}
+                    days={hoursDays}
+                    timezone={sched?.timezone ?? "America/New_York"}
+                    timezoneLabel="Your timezone"
+                  />
+                  <form action={useMyDefaultHours} className="mt-3">
+                    <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
+                      Reset to company default hours
+                    </button>
+                  </form>
+                </>
+              )}
             </section>
           </>
         )}
@@ -359,10 +413,12 @@ export default async function MePage({
         <section id="time-off" className="scroll-mt-20 space-y-6">
           <header>
             <h2 className="pn-h3">
-              {editing ? "Change your request" : "Request time away"}
+              {editing || editUnresolvable
+                ? "Change your request"
+                : "Request time away"}
             </h2>
             <p className="mt-1.5 text-sm text-fg-muted">
-              {oooApproverLine(managerName)}
+              {oooApproverLine(reviewerName)}
             </p>
           </header>
 
@@ -375,27 +431,47 @@ export default async function MePage({
             </div>
           )}
 
-          <OooForm
-            key={sp.t ?? sp.edit ?? "new"}
-            action={editing ? modifyMyOoo : submitMyOoo}
-            editing={editingForForm}
-            managerName={managerName}
-            defaultTz={defaultTz}
-            tzOptions={tzChoices}
-            bounds={bounds}
-            successMessage={sp.ooo ?? null}
-            successKind={sp.ooo_kind ?? null}
-          />
+          {editUnresolvable ? (
+            /* #1647: a change was asked for and the request it is about could not
+               be read. Rendering the form anyway is not a degraded change, it is
+               a NEW request: `editing` is null, so the action is submitMyOoo and
+               the agent ends up with two requests for the same days. */
+            <UnreadableNotice>
+              That request could not be read just now, so it cannot be changed
+              here yet. Nothing has been altered. Reload to try again.
+            </UnreadableNotice>
+          ) : (
+            <OooForm
+              key={sp.t ?? sp.edit ?? "new"}
+              action={editing ? modifyMyOoo : submitMyOoo}
+              editing={editingForForm}
+              managerName={reviewerName}
+              defaultTz={defaultTz}
+              tzOptions={tzChoices}
+              bounds={bounds}
+              successMessage={sp.ooo ?? null}
+              successKind={sp.ooo_kind ?? null}
+            />
+          )}
 
           <div className="space-y-8">
             <div>
               <p className="pn-eyebrow text-fg-muted">
                 Upcoming
-                {upcoming.length > 0 && (
+                {!oooUnreadable && upcoming.length > 0 && (
                   <span className="tabular-nums"> ({upcoming.length})</span>
                 )}
               </p>
-              {upcoming.length === 0 ? (
+              {oooUnreadable ? (
+                /* The empty version of this list answers "have I already asked
+                   for these days?" with a wrong no, and the reply to that answer
+                   is to ask again. */
+                <UnreadableNotice className="mt-3">
+                  Your time off requests could not be read just now, so none are
+                  listed. This is not a sign that you have none. Reload to try
+                  again.
+                </UnreadableNotice>
+              ) : upcoming.length === 0 ? (
                 <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
                   No upcoming time off. Use the form above to request a day.
                 </p>
@@ -404,7 +480,7 @@ export default async function MePage({
               )}
             </div>
 
-            {past.length > 0 && (
+            {!oooUnreadable && past.length > 0 && (
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky [&::-webkit-details-marker]:hidden">
                   <svg

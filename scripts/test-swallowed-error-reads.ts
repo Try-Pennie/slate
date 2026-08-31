@@ -334,6 +334,14 @@ const surface = [
   // Regal" are all legitimate readings, several of them alarming, and two of them
   // sit beside a control that would write the empty reading back as fact.
   ...tsFiles(join(ROOT, "src", "app", "admin"), true),
+  // #1647: the agent's own page, for the same reason the admin tree came in, on
+  // the same tables. `/me` reads the schedule and its rules, renders them as a
+  // form, and REPLACES every rule for the schedule on save, so an unreadable
+  // read draws a week that is not this agent's and one press destroys the real
+  // one. The admin twin of that exact read was fixed by #1629 while this one
+  // stayed outside the scan, which is the shape of a class that reads as closed
+  // (L30, L247).
+  ...tsFiles(join(ROOT, "src", "app", "me"), true),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -488,6 +496,33 @@ assert(
   `the finding names the read it is about (got: ${adminFindings.map((f) => f.snippet).join(" | ")})`,
 );
 
+// #1647: the same control on the newly added path. A widened path list and a
+// path list that reaches nothing produce the same clean tree (L98), so the real
+// /me page has its schedule read put back the way it was and the guard must
+// catch it. It also pins the direction the widening was for: the schedule read
+// is the one whose empty answer draws a plausible default week over hours that
+// are about to be replaced.
+const mePagePath = join(ROOT, "src", "app", "me", "page.tsx");
+const meSrc = readFileSync(mePagePath, "utf8");
+assert(scanSwallowedErrorReads(meSrc, mePagePath).length === 0, "the real me/page.tsx is clean");
+const meReverted = meSrc.replace(
+  /const \{ data: schedule, error: schedErr \} = await db/,
+  "const { data: schedule } = await db",
+);
+assert(
+  meReverted !== meSrc,
+  "the /me revert control actually changed page.tsx (else it proves nothing)",
+);
+const meFindings = scanSwallowedErrorReads(meReverted, mePagePath);
+assert(
+  meFindings.some(
+    (f) => f.shape === "destructure" && f.snippet.includes('.from("availability_schedules")'),
+  ),
+  `positive control: dropping the /me schedule read's error binding is caught (got ${JSON.stringify(
+    meFindings.map((f) => f.snippet),
+  )})`,
+);
+
 // A control on the two UNNAMED shapes (#1641), driven off the real file the issue
 // was filed about. booking/service.ts now unwraps both the weak-match wave and the
 // bucket join in queryBookings; put each back the way it was and the guard must
@@ -582,7 +617,7 @@ for (const file of surface) {
 }
 if (siteCount === 0) {
   console.log(
-    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, routing, salesforce, webhook and admin source files`,
+    `ok: no swallowed-error reads across ${surface.length} availability, booking, google, routing, salesforce, webhook, admin and agent-page source files`,
   );
 }
 
