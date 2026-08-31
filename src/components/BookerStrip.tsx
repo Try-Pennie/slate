@@ -101,8 +101,19 @@ export function BookerStrip({
                 {chip.label}
               </span>
               <span className="text-lg font-semibold leading-tight">{chip.day}</span>
+              {/* The month is NAMED wherever it changes and hidden in between,
+                  never omitted: `invisible` is `visibility: hidden`, which keeps
+                  the line in the layout, so the strip is exactly as tall on the
+                  first of the month as on any other day. A chip that dropped the
+                  span would make the row grow while a lead was looking at it.
+                  Hiding it this way also takes it out of the accessible name, so
+                  a screen reader hears the month once per turnover rather than on
+                  every chip in the row. */}
               <span
-                className={`text-[10px] uppercase tracking-wide ${selected ? "" : "text-fg-muted"}`}
+                data-chip-month
+                className={`text-[10px] uppercase tracking-wide ${
+                  chip.monthShown ? "" : "invisible"
+                } ${selected ? "" : "text-fg-muted"}`}
               >
                 {chip.month}
               </span>
