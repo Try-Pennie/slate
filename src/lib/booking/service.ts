@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { unwrap } from "@/lib/db/result";
+import { unwrap, type DbResult } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
@@ -75,6 +75,7 @@ import type {
   ReschedulePin,
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
+import type { PersonIdentity } from "@/lib/booking/person-dedupe";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
@@ -323,6 +324,7 @@ async function agentBusyIntervals(
 export {
   SlotUnavailableError,
   ExistingCallError,
+  ExistingCallCheckUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
@@ -426,6 +428,58 @@ export async function agentActiveBookingStartsMs(
     "agentActiveBookingStartsMs",
   );
   return ((data as { starts_at: string }[] | null) ?? []).map((r) => Date.parse(r.starts_at));
+}
+
+/**
+ * Every ACTIVE booking that could belong to this person (#357), fetched once per
+ * identity signal the caller supplied and merged by booking id.
+ *
+ * **Each result is unwrapped on its own (#1641).** This used to read the wave as
+ * `for (const r of results) ... (r.data ?? [])`, which turned a failed query into
+ * an empty candidate list. Empty here is not "no failure", it is the specific
+ * answer "this lead has no call booked", and that is the one answer that lets a
+ * SECOND booking be created for somebody who already has one: the dedupe gate
+ * passes, the round robin assigns an agent, a calendar invite goes out, and the
+ * webhooks fire. It is the #277 / #1165 class on the path with a customer at the
+ * end of it, so it fails loud and the callers decide what to do with the throw.
+ *
+ * The shape also hid it from every static guard: the result objects are never
+ * given a name, so neither the original `const { data } =` scan nor the
+ * result-object scan added in #1629 could reach them. That is the third shape
+ * `scripts/lib/scan-swallowed-error-reads.ts` now covers.
+ *
+ * Which bookings MATCH is decided downstream by `findPersonMatch`; this only
+ * decides which rows are fetched, and #1641 changed neither the four signals nor
+ * their filters.
+ */
+export async function findActiveBookingsForPerson(
+  identity: PersonIdentity,
+): Promise<Booking[]> {
+  const active = ["confirmed", "rescheduled"] as const;
+  const base = () =>
+    supabaseAdmin().from("bookings").select("*").in("status", active).limit(20);
+  const queries: PromiseLike<DbResult<unknown>>[] = [];
+  if (identity.externalId)
+    queries.push(base().eq("external_id", identity.externalId));
+  if (identity.salesforceId)
+    queries.push(base().eq("salesforce_id", identity.salesforceId));
+  const email = identity.email?.trim();
+  // Escape LIKE metacharacters (#620): an email's `_`/`%` must not act as an
+  // ilike wildcard, or a `john_doe@` address would also fetch `johnXdoe@` and
+  // an unordered limit(20) could crowd out the true row. Still case-insensitive
+  // (matches the lowercased grader) and still served by the trigram index.
+  if (email) queries.push(base().ilike("attendee_email", escapeLike(email)));
+  const phone = toE164(identity.phone);
+  if (phone) queries.push(base().eq("attendee_phone", phone));
+  if (queries.length === 0) return [];
+
+  const results = await Promise.all(queries);
+  const byId = new Map<string, Booking>();
+  for (const r of results) {
+    const rows = unwrap(r, "person booking lookup") as Booking[] | null;
+    for (const row of rows ?? []) byId.set(row.id, row);
+  }
+  return [...byId.values()];
 }
 
 export async function loadActiveUpcomingBookings(
@@ -1592,37 +1646,23 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .range(filter.offset, filter.offset + filter.limit - 1);
       const rows = (data ?? []) as Booking[];
       const bucketIds = [...new Set(rows.map((b) => b.bucket_id))];
+      // The bucket join is NOT null-tolerant like the row read above it (#1641).
+      // Its only job is to turn each row's bucket_id into the code the caller
+      // renders, and an empty result is consumed as a real answer: every listed
+      // booking comes back with `bucketCode: null`, which the booking API
+      // documents as "the routing trace does not record it". So a failed join
+      // makes a healthy list of bookings look like a list of bookings nobody can
+      // say the team for.
       const buckets = bucketIds.length
-        ? (((await supabaseAdmin().from("buckets").select("*").in("id", bucketIds)).data ?? []) as Bucket[])
+        ? ((unwrap(
+            await supabaseAdmin().from("buckets").select("*").in("id", bucketIds),
+            "queryBookings bucket join",
+          ) ?? []) as Bucket[])
         : [];
       return { rows, buckets };
     },
 
-    findActiveBookingsForPerson: async (identity) => {
-      const active = ["confirmed", "rescheduled"] as const;
-      const base = () =>
-        supabaseAdmin().from("bookings").select("*").in("status", active).limit(20);
-      const queries: PromiseLike<{ data: unknown }>[] = [];
-      if (identity.externalId)
-        queries.push(base().eq("external_id", identity.externalId));
-      if (identity.salesforceId)
-        queries.push(base().eq("salesforce_id", identity.salesforceId));
-      const email = identity.email?.trim();
-      // Escape LIKE metacharacters (#620): an email's `_`/`%` must not act as an
-      // ilike wildcard, or a `john_doe@` address would also fetch `johnXdoe@` and
-      // an unordered limit(20) could crowd out the true row. Still case-insensitive
-      // (matches the lowercased grader) and still served by the trigram index.
-      if (email) queries.push(base().ilike("attendee_email", escapeLike(email)));
-      const phone = toE164(identity.phone);
-      if (phone) queries.push(base().eq("attendee_phone", phone));
-      if (queries.length === 0) return [];
-
-      const results = await Promise.all(queries);
-      const byId = new Map<string, Booking>();
-      for (const r of results)
-        for (const row of (r.data ?? []) as Booking[]) byId.set(row.id, row);
-      return [...byId.values()];
-    },
+    findActiveBookingsForPerson,
 
     loadBookingById: async (bookingId) => {
       const db = supabaseAdmin();
@@ -1838,8 +1878,16 @@ export function createBooking(input: CreateBookingInput): Promise<BookingResult>
 
 /**
  * Best-effort "you already have another call booked" lookup for the confirmation
- * screen (#626). Never throws: a lookup failure just yields no warning, so it can
- * never turn a successful booking into a failed one.
+ * screen (#626). Never throws: the booking is already made and committed by the
+ * time this runs, so a lookup failure must not turn a successful booking into a
+ * failed one for the lead.
+ *
+ * It LOGS the failure rather than swallowing it in silence (#1641). Returning
+ * null here is indistinguishable from "there is no other booking", which is the
+ * ordinary and overwhelmingly common answer, so without the log a broken read is
+ * a completely silent loss of the warning. It is also why this cannot serve as
+ * the backstop for a failed existing-call check: same query, same table, so it is
+ * blind in exactly that failure.
  */
 export async function findDuplicateBookingWarning(input: {
   excludeBookingId: string;
@@ -1848,7 +1896,12 @@ export async function findDuplicateBookingWarning(input: {
 }): Promise<orchestration.DuplicateWarning | null> {
   try {
     return await orchestration.findDuplicateWarning(input, realDeps());
-  } catch {
+  } catch (err) {
+    log.error(
+      "booking",
+      { msg: "duplicate-warning lookup failed; no warning shown", booking_id: input.excludeBookingId },
+      err,
+    );
     return null;
   }
 }

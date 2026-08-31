@@ -53,17 +53,39 @@
 // `(<name>Res.data ?? [])` the whole time, with the guard reporting clean over
 // it. A guard blind to the shape is a guard, not coverage (L98).
 //
-// SCOPE (deliberate, honest boundary): the two shapes above are what this
-// covers. It intentionally does NOT chase two rarer ones, so it never claims
+// A THIRD and FOURTH read site (#1641): the UNNAMED result. Neither of the two
+// above needs the result object to have a name; these two are the shapes where
+// it never gets one.
+//
+//   // inline-await: the result exists only for the length of one expression
+//   const buckets = ((await db.from("buckets").select("*").in("id", ids)).data ?? []) as Bucket[];
+//
+//   // result-loop: the wave is named, the individual results are not
+//   const results = await Promise.all(queries);
+//   for (const r of results) for (const row of (r.data ?? []) as Booking[]) byId.set(row.id, row);
+//
+// The second one is the weak-match booking lookup, and it is why this was worth
+// widening rather than documenting: a failed query there resolved to an empty
+// candidate list, which is not "no failure" but the specific answer "this lead
+// has no call booked", so the dedupe gate passed and a SECOND booking was
+// created for somebody who already had one.
+//
+// `inline-await` is FLAGGED whenever the parenthesised expression is an awaited
+// Supabase select and `.data` is read straight off it: there is no name, so
+// `.error` cannot be consulted anywhere, and the only way out is `unwrap` or the
+// opt-out. `result-loop` is FLAGGED when the loop variable's `.data` is read in
+// the body, its `.error` is read nowhere, the iterated name was bound by
+// `await Promise.all(...)`, and at least one element of that wave resolves to a
+// Supabase select (through an array literal, or through the `push` calls that
+// built the array, since the real one is assembled conditionally).
+//
+// SCOPE (deliberate, honest boundary): the four shapes above are what this
+// covers. It intentionally does NOT chase the remaining one, so it never claims
 // coverage it does not have (a false-confidence check is Slate's most repeated
-// defect class):
-//   - an ARRAY destructure of OBJECT patterns, `const [{ data: a }, { data: b }]
-//     = await Promise.all([...])`; and
-//   - an inline member read, `(await db.from(...).select(...)).data`, including
-//     the loop form `for (const r of await Promise.all(qs)) use(r.data)`, where
-//     the result object is never given a name to track.
-// Both are discouraged by review; the two shapes above are the ones that keep
-// reappearing and are what this guards.
+// defect class): an ARRAY destructure of OBJECT patterns,
+// `const [{ data: a }, { data: b }] = await Promise.all([...])`. That form is
+// discouraged by review; the four above are the ones that keep reappearing and
+// are what this guards.
 //
 // THE ESCAPE HATCH (`// error-ok:`). A read that DELIBERATELY tolerates a null /
 // empty result on a query error opts out with a one-line reason on, or in the
@@ -90,9 +112,11 @@ export interface SwallowedReadFinding {
   /**
    * Which read site it is, so the failure message can name the right remedy:
    * `destructure` for `const { data } = await ...`, `result-object` for a whole
-   * result bound to a name and read later as `<name>.data`.
+   * result bound to a name and read later as `<name>.data`, `inline-await` for
+   * `(await ...).data` and `result-loop` for `for (const r of results) r.data`
+   * (the two where the result never gets a name at all).
    */
-  shape: "destructure" | "result-object";
+  shape: "destructure" | "result-object" | "inline-await" | "result-loop";
 }
 
 // `const { ... } = await` (also let / var). `[^{}]*` keeps it to a flat object
@@ -301,6 +325,61 @@ function resolveElementChain(masked: string, elementText: string, beforeIndex: n
   return masked.slice(defIndex, defEnd === -1 ? beforeIndex : defEnd);
 }
 
+/**
+ * The chain text for an expression whose LEAD is a name rather than a `.from(`
+ * of its own: `base().eq("external_id", id)` or `bucketsQuery.limit(20)`. The
+ * lead's nearest preceding `const/let/var <lead> = ...` definition is prepended,
+ * so a builder or a factory declared earlier still supplies the `.from(` /
+ * `.select(` that decides whether this is a Supabase read.
+ *
+ * Deliberately separate from `resolveElementChain` above rather than a loosening
+ * of it: that one is what #1629's four-read control rests on, and widening the
+ * rule it uses would re-open a decision that is already pinned.
+ *
+ * The real weak-match lookup needs this. Its wave is built as
+ * `queries.push(base().eq(...))` with `const base = () => supabaseAdmin().from(...)`,
+ * so nothing about an element names a table until `base` is resolved.
+ */
+function resolveLeadChain(masked: string, text: string, beforeIndex: number): string {
+  if (text.includes(".from(")) return text;
+  const lead = /^\s*([A-Za-z_$][\w$]*)\s*(?:\(|\.|$)/.exec(text);
+  if (!lead) return text;
+  const defRe = new RegExp(`(?:const|let|var)\\s+${lead[1]}\\s*=`, "g");
+  let defIndex = -1;
+  for (const dm of masked.slice(0, beforeIndex).matchAll(defRe)) defIndex = dm.index as number;
+  if (defIndex === -1) return text;
+  const defEnd = masked.indexOf(";", defIndex);
+  return `${masked.slice(defIndex, defEnd === -1 ? beforeIndex : defEnd)};${text}`;
+}
+
+/** The index of the bracket that OPENS the one closed at `closeIndex` (-1 if none). */
+function matchOpeningBracket(masked: string, closeIndex: number): number {
+  const close = masked[closeIndex];
+  const open = close === ")" ? "(" : close === "]" ? "[" : "{";
+  let depth = 0;
+  for (let i = closeIndex; i >= 0; i--) {
+    const c = masked[i];
+    if (c === close) depth++;
+    else if (c === open) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** The `{ ... }` (or single statement) a `for (...)` header at `headerEnd` runs. */
+function loopBodySpan(masked: string, headerEnd: number): { start: number; end: number } {
+  let i = headerEnd;
+  while (i < masked.length && /\s/.test(masked[i])) i++;
+  if (masked[i] === "{") {
+    const close = matchBracket(masked, i);
+    return { start: i, end: close === -1 ? masked.length : close };
+  }
+  const semi = masked.indexOf(";", i);
+  return { start: i, end: semi === -1 ? masked.length : semi };
+}
+
 /** Every index in `source` where `<name>.<member>` is read. */
 function memberReadIndexes(source: string, name: string, member: string): number[] {
   const re = new RegExp(`\\b${name}\\s*\\.\\s*${member}\\b`, "g");
@@ -382,6 +461,140 @@ function scanResultObjectReads(source: string, file: string): SwallowedReadFindi
   return findings;
 }
 
+/** A whitespace-collapsed, comment-stripped, length-capped quote of a read. */
+function snippetOf(source: string, start: number, end: number): string {
+  const shown = source
+    .slice(start, end)
+    .split("\n")
+    .filter((l) => !/^\s*\/\//.test(l))
+    .join("\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  return shown.length > 100 ? `${shown.slice(0, 97)}...` : shown;
+}
+
+/**
+ * The INLINE member read (#1641): `(await db.from(...).select(...)).data`.
+ *
+ * The result exists only for the length of the expression, so `.error` cannot be
+ * consulted anywhere: there is no compliant form of this read other than
+ * `unwrap` or a documented opt-out. The opt-out is honoured at the opening `(`
+ * and at the `.data`, which can sit on different lines when the chain is
+ * wrapped.
+ */
+function scanInlineAwaitReads(source: string, file: string): SwallowedReadFinding[] {
+  const findings: SwallowedReadFinding[] = [];
+  const masked = maskLiterals(source);
+  for (const m of masked.matchAll(/\)\s*\.\s*data\b/g)) {
+    const closeIndex = m.index as number;
+    const openIndex = matchOpeningBracket(masked, closeIndex);
+    if (openIndex === -1) continue;
+    const inner = masked.slice(openIndex + 1, closeIndex);
+    const awaited = /^\s*await\b/.exec(inner);
+    if (!awaited) continue;
+    const chain = resolveLeadChain(masked, inner.slice(awaited[0].length), openIndex);
+    if (!isSelectRead(chain)) continue; // a write, or not a supabase select
+    if (hasOptOut(source, openIndex) || hasOptOut(source, closeIndex)) continue;
+    findings.push({
+      file,
+      line: lineOf(source, openIndex),
+      binding: "(await ...).data",
+      snippet: snippetOf(source, openIndex, closeIndex + m[0].length),
+      shape: "inline-await",
+    });
+  }
+  return findings;
+}
+
+/**
+ * The LOOP over an unnamed wave (#1641):
+ *   const results = await Promise.all(queries);
+ *   for (const r of results) ... (r.data ?? [])
+ *
+ * `results` has a name but the individual results do not, so nothing in the file
+ * can consult `r.error` and no earlier shape can see the read. Flagged when the
+ * loop variable's `.data` is read in the body, its `.error` is read nowhere, and
+ * the iterated name really was bound by `await Promise.all(...)` over at least
+ * one Supabase select.
+ *
+ * That last condition is what keeps this from flagging every `Promise.all` of
+ * anything with a `.data` field (an HTTP client's response, say). The elements
+ * are resolved from an array LITERAL where there is one, and otherwise from the
+ * `<array>.push(...)` calls that built it, because a wave assembled per identity
+ * signal never appears as a literal anywhere.
+ */
+function scanResultLoopReads(source: string, file: string): SwallowedReadFinding[] {
+  const findings: SwallowedReadFinding[] = [];
+  const masked = maskLiterals(source);
+  const FOR_OF = /for\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+([A-Za-z_$][\w$]*)\s*\)/g;
+
+  for (const m of masked.matchAll(FOR_OF)) {
+    const forIndex = m.index as number;
+    const [loopVar, arrayName] = [m[1], m[2]];
+
+    // The wave: the nearest preceding `const <arrayName> = await Promise.all(`.
+    const bindRe = new RegExp(
+      `(?:const|let|var)\\s+${arrayName}\\s*=\\s*await\\s+Promise\\.all\\s*\\(`,
+      "g",
+    );
+    let bindIndex = -1;
+    let argOpen = -1;
+    for (const bm of masked.slice(0, forIndex).matchAll(bindRe)) {
+      bindIndex = bm.index as number;
+      argOpen = bindIndex + bm[0].length - 1;
+    }
+    if (bindIndex === -1) continue;
+
+    // The elements of that wave, as chain texts.
+    const argClose = matchBracket(masked, argOpen);
+    if (argClose === -1) continue;
+    const arg = masked.slice(argOpen + 1, argClose);
+    const elements: string[] = [];
+    const literal = /^\s*\[/.exec(arg);
+    if (literal) {
+      const listOpen = argOpen + 1 + arg.indexOf("[");
+      const listClose = matchBracket(masked, listOpen);
+      if (listClose === -1) continue;
+      const base = listOpen + 1;
+      for (const span of splitTopLevel(masked.slice(base, listClose))) {
+        elements.push(
+          resolveLeadChain(masked, masked.slice(base + span.start, base + span.end), bindIndex),
+        );
+      }
+    } else {
+      const arrayVar = /^\s*([A-Za-z_$][\w$]*)\s*$/.exec(arg);
+      if (!arrayVar) continue;
+      const pushRe = new RegExp(`\\b${arrayVar[1]}\\s*\\.\\s*push\\s*\\(`, "g");
+      for (const pm of masked.slice(0, bindIndex).matchAll(pushRe)) {
+        const open = (pm.index as number) + pm[0].length - 1;
+        const close = matchBracket(masked, open);
+        if (close === -1) continue;
+        elements.push(resolveLeadChain(masked, masked.slice(open + 1, close), open));
+      }
+    }
+    if (!elements.some((e) => isSelectRead(e))) continue;
+
+    // The read itself, inside the loop body, with `.error` consulted nowhere.
+    const body = loopBodySpan(masked, forIndex + m[0].length);
+    const dataReads = memberReadIndexes(masked, loopVar, "data").filter(
+      (i) => i >= body.start && i <= body.end,
+    );
+    if (dataReads.length === 0) continue;
+    if (memberReadIndexes(masked, loopVar, "error").length > 0) continue;
+    if (hasOptOut(source, bindIndex) || hasOptOut(source, forIndex)) continue;
+    if (dataReads.some((i) => hasOptOut(source, i))) continue;
+
+    findings.push({
+      file,
+      line: lineOf(source, forIndex),
+      binding: `${loopVar}.data`,
+      snippet: snippetOf(source, forIndex, Math.min(body.end + 1, forIndex + 220)),
+      shape: "result-loop",
+    });
+  }
+  return findings;
+}
+
 export function scanSwallowedErrorReads(source: string, file = "<source>"): SwallowedReadFinding[] {
   const findings: SwallowedReadFinding[] = [];
   for (const m of source.matchAll(DESTRUCTURE)) {
@@ -405,6 +618,8 @@ export function scanSwallowedErrorReads(source: string, file = "<source>"): Swal
     });
   }
   findings.push(...scanResultObjectReads(source, file));
+  findings.push(...scanInlineAwaitReads(source, file));
+  findings.push(...scanResultLoopReads(source, file));
   return findings.sort((a, b) => a.line - b.line);
 }
 

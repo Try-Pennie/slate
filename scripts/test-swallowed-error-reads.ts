@@ -28,6 +28,15 @@
 //     legitimate readings, several of them alarming), and several of those panels
 //     sit beside a control that writes back what they show.
 //
+// #1641 added the two shapes where the result never gets a NAME at all: the
+// inline `(await ...).data`, and a loop over an awaited `Promise.all` wave
+// reading each element's `.data`. The second is the weak-match booking lookup,
+// where an unreadable query resolved to an empty candidate list, which is not
+// "no failure" but the specific answer "this lead has no call booked", so the
+// dedupe gate passed and a SECOND booking was created for someone who already
+// had one. Both were invisible to every earlier shape for the same reason, which
+// is why they are guarded together.
+//
 // Widening the paths flagged 22 further reads across the admin tree. They were
 // triaged one at a time, not blanket-annotated: nineteen turned out to be the
 // "empty is indistinguishable from an answer" class and now `unwrap` (three of
@@ -215,6 +224,79 @@ const FIXTURES: Fixture[] = [
     name: "a non-supabase awaited result bound to a name",
     flagged: false,
     src: `const res = await fetch(url);\nconst body = res.data;\nreturn body;`,
+  },
+
+  // FLAGGED: the UNNAMED result (#1641) --------------------------------------
+  // Neither of the shapes above needs a name to exist; these are the two where
+  // the result never gets one, so `.error` cannot be consulted anywhere.
+  {
+    name: "inline (await ...).data, the result never bound at all",
+    flagged: true,
+    src: `const buckets = ((await db.from("buckets").select("*").in("id", ids)).data ?? []) as Bucket[];\nreturn buckets.length;`,
+  },
+  {
+    name: "inline (await ...).data wrapped across lines",
+    flagged: true,
+    src: `const manager = (\n  await db\n    .from("users")\n    .select("name, email")\n    .eq("id", managerId)\n    .maybeSingle()\n).data as User | null;\nreturn manager;`,
+  },
+  {
+    name: "a loop over an awaited Promise.all wave, reading each result's .data",
+    flagged: true,
+    // The weak-match booking lookup's own shape: the wave is built by pushing
+    // onto an array, so no element names a table until `base` is resolved.
+    src: `const base = () => db.from("bookings").select("*").limit(20);\nconst queries = [];\nif (a) queries.push(base().eq("external_id", a));\nif (b) queries.push(base().eq("salesforce_id", b));\nconst results = await Promise.all(queries);\nfor (const r of results) {\n  for (const row of (r.data ?? [])) byId.set(row.id, row);\n}\nreturn [...byId.values()];`,
+  },
+  {
+    name: "a loop over an awaited Promise.all ARRAY LITERAL of selects",
+    flagged: true,
+    src: `const results = await Promise.all([\n  db.from("users").select("*"),\n  db.from("buckets").select("*"),\n]);\nfor (const r of results) rows.push(...(r.data ?? []));\nreturn rows;`,
+  },
+
+  // NOT FLAGGED: the unnamed shapes, done correctly or opted out --------------
+  {
+    name: "inline await routed through unwrap (no bare .data)",
+    flagged: false,
+    src: `const buckets = (unwrap(await db.from("buckets").select("*").in("id", ids), "join") ?? []) as Bucket[];\nreturn buckets.length;`,
+  },
+  {
+    name: "inline await on a WRITE (mutator before the select)",
+    flagged: false,
+    src: `const ids = ((await db.from("bookings").update(patch).eq("id", id).select("id")).data ?? []) as Row[];\nreturn ids.length;`,
+  },
+  {
+    name: "inline await on something that is not a supabase chain",
+    flagged: false,
+    src: `const body = (await httpClient.get("/x")).data;\nreturn body;`,
+  },
+  {
+    name: "inline await carrying an error-ok opt-out above it",
+    flagged: false,
+    src: `// error-ok: a decorative org name; the next recompute refills it\nconst name = (await db.from("organizations").select("name").maybeSingle()).data;\nreturn name;`,
+  },
+  {
+    name: "loop over a wave whose results are unwrapped one at a time",
+    flagged: false,
+    src: `const base = () => db.from("bookings").select("*").limit(20);\nconst queries = [];\nqueries.push(base().eq("external_id", a));\nconst results = await Promise.all(queries);\nfor (const r of results) {\n  for (const row of (unwrap(r, "lookup") ?? [])) byId.set(row.id, row);\n}\nreturn [...byId.values()];`,
+  },
+  {
+    name: "loop over a wave of NON-supabase promises that happen to carry .data",
+    flagged: false,
+    src: `const queries = urls.map((u) => httpClient.get(u));\nconst results = await Promise.all(queries);\nfor (const r of results) rows.push(...(r.data ?? []));\nreturn rows;`,
+  },
+  {
+    name: "loop whose results DO have their .error consulted",
+    flagged: false,
+    src: `const results = await Promise.all([db.from("users").select("*")]);\nfor (const r of results) {\n  if (r.error) throw r.error;\n  rows.push(...(r.data ?? []));\n}\nreturn rows;`,
+  },
+  {
+    name: "loop over a wave carrying an error-ok opt-out above the binding",
+    flagged: false,
+    src: `// error-ok: best-effort prefetch; an unreadable wave leaves the cache cold and the next tick refills it\nconst results = await Promise.all([db.from("users").select("*")]);\nfor (const r of results) rows.push(...(r.data ?? []));\nreturn rows;`,
+  },
+  {
+    name: "loop over a plain array that was never an awaited wave",
+    flagged: false,
+    src: `const results = cachedResponses;\nfor (const r of results) rows.push(...(r.data ?? []));\nreturn rows;`,
   },
 ];
 
@@ -406,6 +488,74 @@ assert(
   `the finding names the read it is about (got: ${adminFindings.map((f) => f.snippet).join(" | ")})`,
 );
 
+// A control on the two UNNAMED shapes (#1641), driven off the real file the issue
+// was filed about. booking/service.ts now unwraps both the weak-match wave and the
+// bucket join in queryBookings; put each back the way it was and the guard must
+// catch it, and catch it as the shape that was blind to it. Without this the new
+// shapes are indistinguishable from a scanner that reads nothing: the tree is
+// clean either way (L1, L98).
+const loopReverted = serviceSrc.replace(
+  /const rows = unwrap\(r, "person booking lookup"\) as Booking\[\] \| null;\n(\s*)for \(const row of rows \?\? \[\]\)/,
+  "const rows = r.data as Booking[] | null;\n$1for (const row of rows ?? [])",
+);
+assert(
+  loopReverted !== serviceSrc,
+  "the weak-match revert control actually changed service.ts (else it proves nothing)",
+);
+const loopFindings = scanSwallowedErrorReads(loopReverted, servicePath);
+assert(
+  loopFindings.length === 1 && loopFindings[0].shape === "result-loop",
+  `positive control: the reverted weak-match lookup is caught as result-loop (got ${JSON.stringify(
+    loopFindings.map((f) => f.shape),
+  )})`,
+);
+assert(
+  loopFindings[0].binding === "r.data",
+  `the result-loop finding names the loop variable it is about (got ${loopFindings[0].binding})`,
+);
+
+const inlineReverted = serviceSrc.replace(
+  /\(\(unwrap\(\n(\s*)await supabaseAdmin\(\)\.from\("buckets"\)\.select\("\*"\)\.in\("id", bucketIds\),\n\s*"queryBookings bucket join",\n\s*\) \?\? \[\]\) as Bucket\[\]\)/,
+  '((await supabaseAdmin().from("buckets").select("*").in("id", bucketIds)).data ?? []) as Bucket[]',
+);
+assert(
+  inlineReverted !== serviceSrc,
+  "the bucket-join revert control actually changed service.ts (else it proves nothing)",
+);
+const inlineFindings = scanSwallowedErrorReads(inlineReverted, servicePath);
+assert(
+  inlineFindings.length === 1 && inlineFindings[0].shape === "inline-await",
+  `positive control: the reverted bucket join is caught as inline-await (got ${JSON.stringify(
+    inlineFindings.map((f) => f.shape),
+  )})`,
+);
+assert(
+  inlineFindings[0].snippet.includes('.from("buckets")'),
+  `the inline-await finding names the read it is about (got: ${inlineFindings[0].snippet})`,
+);
+
+// And the same on availability/service.ts, whose empty-bucket sweep read the
+// roster the inline way. A monitor that scores a failed read as an empty roster
+// pages about nothing and clears nothing.
+const availServicePath = join(ROOT, "src", "lib", "availability", "service.ts");
+const availServiceSrc = readFileSync(availServicePath, "utf8");
+assert(
+  scanSwallowedErrorReads(availServiceSrc, availServicePath).length === 0,
+  "the real availability/service.ts is clean",
+);
+const availReverted = availServiceSrc.replace(
+  /\(unwrap\(\n(\s*)await supabaseAdmin\(\)\.from\("buckets"\)\.select\("\*"\)\.eq\("is_test", false\),\n\s*"empty-bucket sweep roster",\n\s*\) \?\? \[\]\) as Bucket\[\]/,
+  '((await supabaseAdmin().from("buckets").select("*").eq("is_test", false)).data ?? []) as Bucket[]',
+);
+assert(
+  availReverted !== availServiceSrc,
+  "the empty-bucket revert control actually changed availability/service.ts (else it proves nothing)",
+);
+assert(
+  scanSwallowedErrorReads(availReverted, availServicePath).some((f) => f.shape === "inline-await"),
+  "positive control: the reverted empty-bucket roster read is caught as inline-await",
+);
+
 // --- repo invariant: the whole scan surface is clean --------------------------
 
 let siteCount = 0;
@@ -414,12 +564,15 @@ for (const file of surface) {
   const findings = scanSwallowedErrorReads(src, file.slice(ROOT.length + 1));
   siteCount += findings.length;
   for (const fnd of findings) {
+    const what: Record<typeof fnd.shape, string> = {
+      "result-object": `awaited select bound to a result object read later as \`${fnd.binding}\`, with its \`.error\` read nowhere`,
+      "inline-await": `awaited select read inline as \`(await ...).data\`, so nothing can ever consult its \`error\``,
+      "result-loop": `awaited select wave looped over, reading each result's \`${fnd.binding}\` with its \`.error\` read nowhere`,
+      destructure: `awaited select destructured for \`${fnd.binding}\` without consulting \`error\``,
+    };
     assert(
       false,
-      `${fnd.file}:${fnd.line} ` +
-        (fnd.shape === "result-object"
-          ? `awaited select bound to a result object read later as \`${fnd.binding}\`, with its \`.error\` read nowhere; `
-          : `awaited select destructured for \`${fnd.binding}\` without consulting \`error\`; `) +
+      `${fnd.file}:${fnd.line} ${what[fnd.shape]}; ` +
         `route it through unwrap (src/lib/db/result.ts), also read \`error\` and check it, ` +
         `or annotate // error-ok: <reason> if it deliberately tolerates a null/empty result. ` +
         `The question that decides which: not "can this read fail harmlessly" but ` +

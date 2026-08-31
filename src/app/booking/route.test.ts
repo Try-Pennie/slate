@@ -21,6 +21,10 @@ const service = vi.hoisted(() => {
       this.existingCall = existingCall;
     }
   }
+  // #1641: the one-call-per-person check could not be MADE (its bookings read
+  // failed). The route refuses with a retriable 503 rather than letting the read
+  // failure read as "this lead has no call" and creating a duplicate.
+  class ExistingCallCheckUnavailableError extends Error {}
   return {
     createBooking: vi.fn(),
     // Mirrors DuplicateWarning in src/lib/booking/orchestration.ts: a weak
@@ -36,6 +40,7 @@ const service = vi.hoisted(() => {
     VerifyUnavailableError,
     NoEligibleAgentsError,
     ExistingCallError,
+    ExistingCallCheckUnavailableError,
   };
 });
 const rateLimit = vi.hoisted(() => ({
@@ -150,6 +155,38 @@ describe("POST /booking (embed) error mapping", () => {
     expect(keysRefunded).toContain("203.0.113.1");
     expect(keysRefunded).toContain("email:dana@example.com");
     expect(keysRefunded).toContain("phone:2155550100");
+  });
+
+  it("answers a retriable 503 when the existing-call check could not be made (#1641)", async () => {
+    service.createBooking.mockRejectedValueOnce(
+      new service.ExistingCallCheckUnavailableError(
+        "We hit a temporary issue booking this time. Please try again in a moment.",
+      ),
+    );
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error?: string };
+    // One short human sentence, and nothing about the read that failed: the
+    // table name, the driver message and the stack belong in the log only.
+    expect(body.error).toBe(
+      "We hit a temporary issue booking this time. Please try again in a moment.",
+    );
+    expect(JSON.stringify(body)).not.toMatch(/bookings|select|supabase|Error:/i);
+    // A fault on our side must not burn the lead's budget, so they can retry at
+    // once. Same refund set as the other transient 503.
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
+    const keysRefunded = rateLimit.refundRequest.mock.calls.map((c) => rateLimitKey(c[0] as CallerKey));
+    expect(keysRefunded).toContain("203.0.113.1");
+    expect(keysRefunded).toContain("email:dana@example.com");
+    expect(keysRefunded).toContain("phone:2155550100");
+    // Counted as an error under its own code, so the booking-failure-rate window
+    // (#1313) names it rather than a run of these hiding inside "internal".
+    expect(recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "411",
+      "existing_call_unavailable",
+      { by: "bucket", code: "411" },
+    );
   });
 
   it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {

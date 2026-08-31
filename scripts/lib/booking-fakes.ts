@@ -134,7 +134,12 @@ export interface FakeOpts {
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
-  /** findActiveBookingsForPerson throws (#1337 fails open, loudly). */
+  /**
+   * findActiveBookingsForPerson throws, which is what a failed bookings read now
+   * does (#1641). The booker path fails CLOSED on it: the second booking is
+   * refused rather than created, because the only backstop the old fail-open
+   * relied on reads the same table through the same query.
+   */
   personBookingsThrows?: boolean;
   /** loadAgentDisplayName result, keyed by user id (#1337 / #1338). Absent id
    *  resolves to null, which is how an unresolvable advisor must present. */
@@ -221,6 +226,14 @@ export function makeDeps(opts: FakeOpts) {
     businessHours: 0,
     verifyFree: [] as string[][],
     createEvent: [] as { email: string; clientId?: string }[],
+    /**
+     * Every booking row the run tried to WRITE (#1641). `createEvent` is the
+     * proxy a lead would notice, but a booking row is the thing "a second
+     * booking was created" actually means, and the two are written in separate
+     * steps, so a test that asserts only the invite cannot tell a suppressed
+     * write from a suppressed invite.
+     */
+    insertBooking: [] as Record<string, unknown>[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
@@ -457,6 +470,7 @@ export function makeDeps(opts: FakeOpts) {
       (insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null,
     insertBooking: async (row) => {
       insertAttempted = true;
+      calls.insertBooking.push(row as unknown as Record<string, unknown>);
       if (opts.insertBookingConflict) return { ok: false, conflict: true };
       if (opts.insertBookingFails) return { ok: false, conflict: false };
       return { ok: true, booking: { ...row, id: "bk-new" } as unknown as Booking };
