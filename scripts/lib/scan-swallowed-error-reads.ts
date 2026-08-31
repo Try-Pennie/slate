@@ -80,12 +80,24 @@
 // built the array, since the real one is assembled conditionally).
 //
 // SCOPE (deliberate, honest boundary): the four shapes above are what this
-// covers. It intentionally does NOT chase the remaining one, so it never claims
+// covers. It intentionally does NOT chase the remaining two, so it never claims
 // coverage it does not have (a false-confidence check is Slate's most repeated
-// defect class): an ARRAY destructure of OBJECT patterns,
-// `const [{ data: a }, { data: b }] = await Promise.all([...])`. That form is
-// discouraged by review; the four above are the ones that keep reappearing and
-// are what this guards.
+// defect class):
+//
+//   - an ARRAY destructure of OBJECT patterns,
+//     `const [{ data: a }, { data: b }] = await Promise.all([...])`;
+//   - a CONDITIONAL await, where the awaited select is one arm of a ternary and
+//     the other arm supplies a literal result (#1647):
+//       const { data } = sched ? await db.from("t").select(...).eq(...) : { data: [] };
+//     `DESTRUCTURE` requires `await` immediately after the `=`, so a ternary
+//     never matches. `/me` read its `availability_rules` that way, and this scan
+//     reported clean over it while the sibling read three lines above it (which
+//     the scan CAN see) was the same defect on the same form.
+//
+// Both are discouraged by review; the four above are the ones that keep
+// reappearing and are what this guards. If a third conditional-await instance
+// turns up, widen the shape rather than the paths: #1629 is the worked example
+// of why widening paths alone fixes nothing.
 //
 // THE ESCAPE HATCH (`// error-ok:`). A read that DELIBERATELY tolerates a null /
 // empty result on a query error opts out with a one-line reason on, or in the

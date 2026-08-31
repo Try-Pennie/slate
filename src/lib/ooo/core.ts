@@ -290,9 +290,27 @@ export const DUPLICATE_REQUEST_MESSAGE =
  */
 export const NO_MANAGER_REVIEWER = "a team lead or admin";
 
+/**
+ * The reviewer named when a manager of record EXISTS but their row could not be
+ * read (#1647).
+ *
+ * A third state, because the other two are already spoken for and neither is
+ * true here: a name we do not have, and `NO_MANAGER_REVIEWER`, which is the
+ * moderator pool somebody with no manager routes to. Falling back to that one on
+ * a failed read tells a person with a manager that they have none, which is a
+ * claim the read never measured (L11). This says the true part (a manager signs
+ * this off) without naming one we could not read.
+ */
+export const UNNAMED_MANAGER_REVIEWER = "your manager";
+
+/** A reviewer descriptor at the start of a sentence, so there is one spelling of each. */
+export function capitalizeReviewer(reviewer: string): string {
+  return reviewer.charAt(0).toUpperCase() + reviewer.slice(1);
+}
+
 /** `NO_MANAGER_REVIEWER` at the start of a sentence, so there is still one spelling. */
 export function noManagerReviewerCapitalized(): string {
-  return NO_MANAGER_REVIEWER.charAt(0).toUpperCase() + NO_MANAGER_REVIEWER.slice(1);
+  return capitalizeReviewer(NO_MANAGER_REVIEWER);
 }
 
 /** The /me intro: who takes it from here once you submit. */
@@ -300,9 +318,15 @@ export function oooRequestIntro(managerName: string | null): string {
   return `Need a day off? Request it below and ${managerName ?? NO_MANAGER_REVIEWER} takes it from there.`;
 }
 
-/** The /me form subheading: who signs these off. */
+/**
+ * The /me form subheading: who signs these off.
+ *
+ * Capitalized through the shared helper rather than only in the null branch, so
+ * a lower-case reviewer descriptor (`UNNAMED_MANAGER_REVIEWER`) still opens the
+ * sentence properly and a real name is left exactly as it was stored.
+ */
 export function oooApproverLine(managerName: string | null): string {
-  return `${managerName ?? noManagerReviewerCapitalized()} signs off on these.`;
+  return `${capitalizeReviewer(managerName ?? NO_MANAGER_REVIEWER)} signs off on these.`;
 }
 
 export const DEFAULT_REJECTION_NOTE =

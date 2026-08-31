@@ -60,6 +60,11 @@ async function confirmationMessage(
   );
   let who = "Your manager";
   if (request.manager_id) {
+    // error-ok: empty degrades to the documented default. `who` is already the
+    // no-name fallback this read only ever narrows, the request is committed
+    // before this copy is built, and nothing acts on the sentence: a failed read
+    // renders "Your manager will confirm", which is exactly what a manager row
+    // holding no name renders and is true either way.
     const { data } = await supabaseAdmin()
       .from("users")
       .select("name")
