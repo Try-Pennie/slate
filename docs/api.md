@@ -7,22 +7,61 @@ rebook semantics, the read to book race), see `docs/booking-api.md`. This file i
 the flat reference: method, path, who may call it, request shape, response shape,
 status and error codes, and idempotency, for the whole surface.
 
+That first sentence is a claim, and `scripts/test-api-doc-coverage.ts` holds the
+file to it (#1044): every route under `src/app/api/` must be named here, and every
+`/api/...` path named here must exist. It is checked both ways, so a new endpoint
+cannot ship undocumented and a deleted one cannot leave an entry behind that reads
+as coverage of something real. A document that claims to be complete and is not is
+worse than having none, because a reader checks it, does not find an endpoint, and
+concludes the endpoint does not exist.
+
+## Versioning and compatibility
+
+There is **no version in any path**, and that is a deliberate consequence of who
+the callers are rather than an omission. Slate is an internal service with named
+consumers: the Pennie landing pages (through `widget.js`), the direct booking bot,
+the offboarding and roster automation, and Regal as the webhook subscriber. There
+is no public API and no unknown integrator to keep on an old shape.
+
+So the policy is:
+
+- **Additive changes ship freely.** A new optional request field, a new response
+  property, a new endpoint, a new webhook event. Every consumer ignores what it
+  does not read.
+- **Breaking changes are coordinated with the named consumer before they ship**,
+  not announced through a version bump. In practice that means a conversation, then
+  both sides deployed close together.
+- **Two shapes are frozen and are not ours to change.** The cal.com-compatible
+  booking URL contract (`/book?...`, mirrored by `widget.js`) exists so the embed is
+  a drop-in replacement, and the webhook payload shape Regal already consumes. Both
+  can be EXTENDED; neither can be renamed or narrowed without the coordination above.
+- **A key rotates rather than a version.** The booking API accepts a primary and a
+  secondary key at once, so a credential change never needs a second endpoint.
+- **Nothing here is deprecated on a timer.** A route that stops being needed is
+  removed in a change that also removes its caller, and the guard above then
+  requires its entry to go with it.
+
 ## Contents
 
+- [Versioning and compatibility](#versioning-and-compatibility)
 - [Credentials and auth models](#credentials-and-auth-models)
 - [Booking API (key-authed, machine caller)](#booking-api-key-authed-machine-caller)
   - [POST /api/bookings (create, rebook, dry run)](#post-apibookings)
   - [GET /api/bookings (lookup and list)](#get-apibookings)
   - [DELETE /api/bookings (cancel)](#delete-apibookings)
 - [GET /api/availability (public cached read)](#get-apiavailability)
+- [GET /api/availability/next (the next open days)](#get-apiavailabilitynext)
 - [POST /api/routing (public routing resolve)](#post-apirouting)
 - [POST /api/bookings/reassign (key-authed contact-owner reassign)](#post-apibookingsreassign)
 - [Offboarding lifecycle (key-authed)](#offboarding-lifecycle-key-authed)
 - [Bookable toggle (key-authed)](#bookable-toggle-key-authed)
+- [GET /api/bookings/bookable (key-authed validate-only check)](#get-apibookingsbookable)
 - [Webhooks emitted to Regal and Cadence](#webhooks-emitted-to-regal-and-cadence)
 - [Customer self-serve manage routes (token-authed)](#customer-self-serve-manage-routes-token-authed)
 - [Admin routes (session-authed, internal)](#admin-routes-session-authed-internal)
 - [Platform and infrastructure routes](#platform-and-infrastructure-routes)
+- [Scheduled cron lanes](#scheduled-cron-lanes)
+- [Smoke and probe routes (key-authed)](#smoke-and-probe-routes-key-authed)
 - [Environment variables that gate the API](#environment-variables-that-gate-the-api)
 
 ---
@@ -41,9 +80,10 @@ names which one it requires.
 | Cron secret | `Authorization: Bearer <secret>` | `CRON_SECRET` | every `GET /api/cron/*` lane |
 | Google channel token | `X-Goog-Channel-Token` header | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` |
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
-| Supabase session (staff) | session cookie | Supabase Auth | `/api/admin/*`, `/api/users` reads |
-| Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `.../reschedule` |
-| None (public) | n/a | n/a | `GET /api/availability`, `POST /api/routing`, `GET /api/health`, `GET /api/auth/callback` |
+| Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
+| Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone` |
+| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY` | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter` |
+| None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
 For the booking API, two keys are accepted at once (primary plus secondary) so
@@ -283,6 +323,28 @@ gone by book time; handle `SLOT_TAKEN` on `POST /api/bookings` by re-querying.
 
 ---
 
+## GET /api/availability/next
+
+Source: `src/app/api/availability/next/route.ts` (#1329, #1339). The first
+bookable days on the far side of a closure.
+
+The ordinary availability search is bounded for cost (#1326), so during a long
+closure it honestly returns nothing and a lead is left with no idea when to come
+back. This runs the longer search, and only for a lead who pressed the button, so
+the cost is paid by the few who arrive during a closure rather than by every
+booker load.
+
+**Auth:** public (no auth), same edge throttle as `/api/availability`.
+
+**Request:** `GET /api/availability/next?bucket=411`
+
+**Response** (`200`): the same payload shape as `/api/availability`, carrying the
+next days that do have times. An unknown bucket returns
+`404 { "error": "Unknown bucket" }`, matching the sibling route so a hidden test
+bucket stays indistinguishable from a code that does not exist.
+
+---
+
 ## POST /api/routing
 
 Source: `src/app/api/routing/route.ts`. Resolves an XBC code to the agents
@@ -445,6 +507,34 @@ Deactivation (`bookable: false`) is never blocked.
 
 ---
 
+## GET /api/bookings/bookable
+
+Source: `src/app/api/bookings/bookable/route.ts` (#541, #1017). A validate-only
+"is this time bookable?" check.
+
+The direct-booking bot asks whether a given bucket plus time COULD be booked
+before it collects the lead's details, so it never shows a lead a slot that then
+fails at confirm. Identity free: no lead, no dedupe, and it books nothing.
+
+It runs the REAL per-slot routing (round robin plus verify-on-book, cascading the
+tier ladder), which is the point: a check that consulted the cache instead would
+answer differently from the confirm it exists to predict.
+
+**Auth:** the same Bearer keys as `POST /api/bookings` (`BOOKING_API_KEY` or
+`BOOKING_API_KEY_2`). Wrong key: `401`. No key configured: `503`.
+
+**Request:** `GET /api/bookings/bookable?bucket=411&start=<ISO>`
+
+**Response** (`200`): whether the time is bookable, and when it is not, the
+reason from the shared slot predicate (business hours, working hours, calendar,
+daily cap, notice, buffer) rather than a bare false. A malformed `start` or a
+missing `bucket` is a `400`; an unknown bucket is a `404`.
+
+Note this is a point-in-time answer over live state, so it carries the same read
+to book race as `/api/availability`: handle `SLOT_TAKEN` on the confirm.
+
+---
+
 ## Webhooks emitted to Regal and Cadence
 
 Slate is the sender for these. Every booking lifecycle change funnels through one
@@ -541,6 +631,13 @@ URL; there is no header credential. Intended for humans, not machine callers.
 |---|---|---|---|
 | `POST /api/bookings/[token]/cancel` | `{ reason, reasonDetail? }` (reason mandatory, #326) | `200 { "ok": true }` | `400` invalid or missing reason; `409` meeting already completed so not cancellable (#618) |
 | `POST /api/bookings/[token]/reschedule` | `{ start, reason, reasonDetail? }` (start a parseable ISO instant, reason mandatory) | `200 { booking, manageUrl }` | `400` invalid start or reason; `409` slot taken or concurrent-change conflict; `503` verify unavailable |
+| `POST /api/bookings/[token]/phone` | `{ phone }` (#1341) | `200 { ok: true, phone }`, carrying the number as STORED, not as typed | `400` a number we cannot call, or a payload over the size ceiling |
+
+The phone edit is authorised by the same manage token, deliberately: it is a
+scoped edit of ONE field on a booking that token already governs, not a new
+identity surface, and it can reach nothing else on the row. Whether a number is
+callable is decided by the shared attendee rule inside the service, so this route
+can never become a second, laxer opinion about a phone number.
 
 The in-place reschedule enforces the booker's full slot rules (daily cap, buffer,
 notice, working hours, #539) and can decline with a `409` when the new time is not
@@ -578,6 +675,16 @@ request gets a `403` and is logged under `tag=same-origin`.
 | `POST /api/admin/bookings/[id]/cancel` | booking actor | Staff cancel a booking |
 | `POST /api/admin/bookings/[id]/reschedule` | booking actor | Staff reschedule a booking |
 | `POST /api/admin/bookings/[id]/reassign` | manager+ | Manager reassign by booking id (#546); at-cap returns a distinct `409` for the two-step "Reassign anyway", not-found `404`, terminal `409` |
+| `GET /api/admin/bookings/[id]/history` | manager+ | One booking's reschedule, cancel and reassign history (#561). Tenant-scoped by the caller's org, so a booking they cannot see is a `404` rather than an empty list. A read fault is a `500`, never an empty `200` |
+| `GET /api/admin/bookings/search` | manager+ | Booking lookup by attendee email, name or phone, or by booking id (#901). Tenant-scoped; bounded to 20 rows and reports when the bound was filled (#903). A read fault is a `500`, never an empty `200` |
+| `POST /api/admin/agents/[id]/bulk-reassign` | booking actor | Start a bulk coverage reassign for one out agent over a date range (#974). The accountable actor is recorded on the job (#549) |
+| `GET /api/admin/agents/[id]/bulk-reassign` | booking actor | Progress for that job, so the panel can report what has moved |
+| `POST /api/admin/erasure-purge` | admin, **or** `CRON_SECRET` | The warehouse half of a data-subject erasure (#1128). Only touches bookings that already appear in a `pii.erasure` audit row, so an id outside that trail is refused `400` rather than purged; `409` while a run is in flight. `ok` is true ONLY when the post-purge verify measured zero residual, so a run that left data behind reports false rather than success |
+| `GET /api/admin/snowflake-check` | admin | Archival-mirror connectivity check (#1110): account, host, key pair and grants, end to end. `200` healthy, `503` when the login or query fails or the mirror is not configured. Read-only |
+
+Every MUTATING admin route also refuses a request that says it came from another
+origin (see the note above); the reads do not, because a cross-site GET cannot
+have its response read.
 
 ---
 
@@ -590,9 +697,61 @@ accounted for.
 |---|---|---|
 | `GET /api/health` | none | Liveness for external uptime checks (#595, #685). One query proves the DB is reachable and ages every cron lane heartbeat against its own bound. `200 { status: "ok", … }` when healthy, `503 { status: "degraded", reason, staleLane, staleAgeMs }` otherwise (fail loud). Body carries no sensitive data. |
 | `POST /api/google/push` | `X-Goog-Channel-Token` = `GOOGLE_CHANNEL_TOKEN` | Google Calendar push notifications. Verifies the channel token (`403` on mismatch), then runs an incremental sync for the pinged calendar so the cache reflects external changes within seconds. Returns `200` immediately without blocking on the sync. |
-| `GET /api/cron/*` | `Authorization: Bearer <CRON_SECRET>` | Scheduled lanes: `agents`, `complete`, `monitor`, `ooo-approvals`, `ooo-digest`, `outbox`, `prune-routing`, `recompute`, `selfheal`, `sync`, `watch`. Each returns `401` without the secret (the secret is never accepted as a URL query param, #591). Overlapping runs are guarded by DB locks. Internal to the deployment's scheduler. |
+| `GET /api/cron/*` | `Authorization: Bearer <CRON_SECRET>` | The scheduled lanes, each named in its own section below. Each returns `401` without the secret (the secret is never accepted as a URL query param, #591). Overlapping runs are guarded by DB locks. Internal to the deployment's scheduler. |
+| `POST /api/client-errors` | none (public) | The client error beacon (#1368). A bundle that throws before the customer can submit produces no request at all, so every server-side detector stays green while nobody can book; this is the only signal for that. Rate limited per address and fails CLOSED on a caller it cannot identify, because an unmetered public path to Slack costs the pager. The report is scrubbed before it is stored. |
+| `GET /api/health/availability` | none (public) | Availability canary (#749), safe to expose to an external uptime monitor. `200` when the booker is genuinely offering times, `503` when a well-staffed tier or the whole fleet is silently empty, which `/api/health` cannot see (the database is up and the crons tick while the booker offers nothing). An unreadable tier depth answers `503` with `staffedBuckets: null`, never `0` (#1629). |
 | `POST /api/slack/interactions` | Slack request signature (`X-Slack-Signature` + timestamp) | Interactive Slack actions (OOO approvals, decline notes). Every request is signature-verified; `401 invalid signature` otherwise. |
 | `GET /api/auth/callback` | none (OAuth code exchange) | Supabase Auth OAuth callback for staff login. |
+
+---
+
+## Scheduled cron lanes
+
+Every lane is `GET /api/cron/<lane>` with `Authorization: Bearer <CRON_SECRET>`,
+returns `401` without it, and is guarded by a database lock so two ticks cannot
+overlap. They are internal to the deployment's scheduler (`wrangler.jsonc` crons
+plus `worker/cron-routes.ts`) and are listed here so the surface is complete.
+
+Four of them (`sync`, `recompute`, `outbox`, `selfheal`) share ONE Worker
+invocation budget on the every-minute trigger, which is why per-lane subrequest
+cost matters; see `docs/cloudflare-platform-notes.md`.
+
+| Lane | What it does |
+|---|---|
+| `GET /api/cron/sync` | Google calendar sync backstop: refreshes the cached busy blocks so an externally made calendar change lands within a minute even if its push notification was lost. |
+| `GET /api/cron/recompute` | Rebuilds the precomputed `bucket_slots` rows over the current horizon, and pages when rows go stale. |
+| `GET /api/cron/outbox` | Drains the booking outbox (#429): resumes any mutation whose side effects are not fully delivered, plus the reservation and abandoned-pin sweeps. |
+| `GET /api/cron/selfheal` | The booking-safety sweeps (#433): reconciles missing busy blocks, orphaned calendar events, and the other invariants a crash can break. |
+| `GET /api/cron/monitor` | The monitor lane: every health check, each inside its own boundary so one throw cannot take out the rest (#1281). |
+| `GET /api/cron/complete` | Flips due appointments to completed and fires `booking.completed`. |
+| `GET /api/cron/agents` | Hourly roster sync from Salesforce: agent and team changes, attributes, and departures. |
+| `GET /api/cron/watch` | Renews Google calendar push channels before they expire, and names persistently failing agents. |
+| `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |
+| `GET /api/cron/bulk-reassign` | Drains queued bulk coverage reassign jobs (#973, #562). |
+| `GET /api/cron/ooo-approvals` | Moves approved and declined time-off requests through their side effects. |
+| `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
+| `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
+| `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
+| `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
+| `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |
+| `GET /api/cron/prune-warehouse-pii` | The warehouse half of the same 24 month booking PII window (#1180). |
+| `GET /api/cron/snowflake-export` | The archival mirror export (#1099), on its own cron expression and lock. |
+| `GET /api/cron/snowflake-reconcile` | Runs the warehouse self-check on a schedule (#1144), including the rows stranded behind the export watermark. |
+| `GET /api/cron/erasure-audit` | The Snowflake half of a data-subject erasure audit (#1103). |
+
+---
+
+## Smoke and probe routes (key-authed)
+
+Three endpoints that exist for the deploy probe and the canary rather than for
+any integrator. All three take `Authorization: Bearer <BOOKING_API_KEY>` and
+answer `503` when no booking API key is configured.
+
+| Method + path | Purpose |
+|---|---|
+| `GET /api/smoke/version` | Which commit the live Worker is serving (#1037). The post-deploy probe polls this and refuses to judge health until the expected commit answers: without it, a probe hitting `/api/health` during Cloudflare's propagation window gets a `200` from the PREVIOUS version and reports a broken deploy as healthy. Key-authed deliberately, so the deployed commit is not public. |
+| `POST /api/smoke/heartbeat` | Liveness stamp for the scheduled booking-smoke canary (#525). The canary calls it on every successful run, so a schedule that silently stops firing goes stale and the lane watchdog pages. |
+| `POST /api/smoke/burst-counter` | The one step `pnpm verify:burst-counter` takes into the deployment (#1564): a Durable Object is reachable only through a binding inside the Worker. It reports one request against a FIXED monitor key, which is a constant in the route and never taken from the request, and answers with the count the object now holds. |
 
 ---
 
