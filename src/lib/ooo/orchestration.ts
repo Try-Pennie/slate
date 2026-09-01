@@ -148,14 +148,24 @@ export interface CoverageStopReport {
 
 export interface OooDeps {
   loadRequest(id: string): Promise<OooRequest | null>;
-  /** A user's still-active (pending/approved) requests, for overlap checks. */
+  /**
+   * A user's still-active (pending/approved) requests, for overlap checks.
+   *
+   * **null means the read FAILED**, and it is not interchangeable with `[]`
+   * (#1674). An empty array is a measured answer: this agent has no active
+   * request, so nothing can clash. A failed read has measured nothing, and
+   * before this it arrived here as `[]` and read as a clear calendar, so an
+   * overlapping absence was accepted with nothing anywhere saying a read failed.
+   * The overlap guard refuses on null rather than guessing (L530).
+   */
   listActiveRequests(
     userId: string,
   ): Promise<
-    Pick<
-      OooRequest,
-      "id" | "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label"
-    >[]
+    | Pick<
+        OooRequest,
+        "id" | "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label"
+      >[]
+    | null
   >;
   insertRequest(row: OooInsert): Promise<InsertOooResult>;
   /**
@@ -347,22 +357,45 @@ type OverlapCandidate = Pick<
   "id" | "starts_at" | "ends_at" | "display_tz_id" | "display_tz_label"
 >;
 
-/** The user's first still-active request that overlaps [start, end), or null. */
+/**
+ * Three outcomes, deliberately, because two of them look identical from the
+ * caller and mean opposite things (#1674):
+ *   { measured: true, clash: <request> }  something overlaps, refuse and link
+ *   { measured: true, clash: null }       nothing overlaps, go ahead
+ *   { measured: false }                   we could not tell, refuse retriably
+ */
+type OverlapOutcome =
+  | { measured: true; clash: OverlapCandidate | null }
+  | { measured: false };
+
 async function findOverlap(
   userId: string,
   startIso: string,
   endIso: string,
   deps: OooDeps,
   excludeId?: string,
-): Promise<OverlapCandidate | null> {
+): Promise<OverlapOutcome> {
   const active = await deps.listActiveRequests(userId);
-  return (
-    active.find(
-      (r) =>
-        r.id !== excludeId && overlaps(startIso, endIso, r.starts_at, r.ends_at),
-    ) ?? null
-  );
+  if (active === null) return { measured: false };
+  return {
+    measured: true,
+    clash:
+      active.find(
+        (r) =>
+          r.id !== excludeId &&
+          overlaps(startIso, endIso, r.starts_at, r.ends_at),
+      ) ?? null,
+  };
 }
+
+/**
+ * The refusal when the overlap check could not run. It is retriable and says so,
+ * because the agent has done nothing wrong and the same submission will go
+ * through once the read recovers. It deliberately does NOT claim there is a
+ * clash, and carries no `conflictRequestId`, because none was found.
+ */
+export const OVERLAP_UNREADABLE_MESSAGE =
+  "We could not check your existing time off just now. Please try again in a moment.";
 
 function overlapError(r: OverlapCandidate): string {
   return (
@@ -397,8 +430,14 @@ export async function submitOoo(
   // moderator pool below (`notifyManagerOfPending`) instead, which is who would
   // have approved it anyway. The old refusal named a step nobody can perform.
 
-  const clash = await findOverlap(agent.id, input.startIso, input.endIso, deps);
-  if (clash) return fail(overlapError(clash), clash.id);
+  const overlap = await findOverlap(
+    agent.id,
+    input.startIso,
+    input.endIso,
+    deps,
+  );
+  if (!overlap.measured) return fail(OVERLAP_UNREADABLE_MESSAGE);
+  if (overlap.clash) return fail(overlapError(overlap.clash), overlap.clash.id);
 
   const inserted = await deps.insertRequest({
     org_id: agent.org_id,
@@ -1166,14 +1205,15 @@ export async function modifyOoo(
   const windowError = validateWindow(input.startIso, input.endIso);
   if (windowError) return fail(windowError);
 
-  const clash = await findOverlap(
+  const overlap = await findOverlap(
     request.user_id,
     input.startIso,
     input.endIso,
     deps,
     requestId,
   );
-  if (clash) return fail(overlapError(clash), clash.id);
+  if (!overlap.measured) return fail(OVERLAP_UNREADABLE_MESSAGE);
+  if (overlap.clash) return fail(overlapError(overlap.clash), overlap.clash.id);
 
   const wasApproved = request.status === "approved";
   const agent = await deps.getUser(request.user_id);

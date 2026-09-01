@@ -461,6 +461,72 @@ const input = {
   );
   assert(clear.ok, "non-overlapping window accepted");
 
+  // #1674: the overlap guard must REFUSE when it could not read the existing
+  // requests, not accept. `listActiveRequests` resolving to null is "could not
+  // measure"; an empty array is "measured, and there are none". Before this the
+  // dep returned `(data ?? [])`, so a failed read arrived as a clear calendar and
+  // an overlapping absence was accepted with nothing anywhere saying a read
+  // failed. The healthy control below sits in the SAME world so the refusal
+  // cannot pass vacuously (L159).
+  {
+    const wUnreadable = makeWorld();
+    const seed = await submitOoo(agent, input, wUnreadable.deps);
+    assert(seed.ok, "control: the same window is accepted while the read works");
+
+    const before = wUnreadable.requests.size;
+    wUnreadable.deps.listActiveRequests = async () => null;
+    const unreadable = await submitOoo(
+      agent,
+      {
+        ...input,
+        startIso: "2026-07-15T13:00:00Z",
+        endIso: "2026-07-15T21:00:00Z",
+      },
+      wUnreadable.deps,
+    );
+    assert(
+      !unreadable.ok &&
+        /could not check your existing time off/i.test(unreadable.error ?? ""),
+      "an unreadable active-request list refuses the submission by name",
+    );
+    assert(
+      !unreadable.ok && unreadable.conflictRequestId === undefined,
+      "the unreadable refusal names no clashing request (it found none)",
+    );
+    assert(
+      wUnreadable.requests.size === before,
+      "nothing was written when the overlap check could not run",
+    );
+
+    // And the same on the modify path, which runs the same guard.
+    const modifyUnreadable = await modifyOoo(
+      seed.ok ? seed.request.id : "",
+      agent,
+      {
+        startIso: "2026-07-16T13:00:00Z",
+        endIso: "2026-07-16T21:00:00Z",
+        displayTzId: input.displayTzId,
+        displayTzLabel: input.displayTzLabel,
+        allDay: false,
+        reason: input.reason,
+      },
+      wUnreadable.deps,
+    );
+    assert(
+      !modifyUnreadable.ok &&
+        /could not check your existing time off/i.test(
+          modifyUnreadable.error ?? "",
+        ),
+      "modify refuses too when the overlap check could not run",
+    );
+    assert(
+      seed.ok &&
+        wUnreadable.requests.get(seed.request.id)?.starts_at ===
+          input.startIso,
+      "the modified request kept its original window",
+    );
+  }
+
   // Over the max length is rejected by validateWindow before any overlap check.
   const tooLong = await submitOoo(
     agent,

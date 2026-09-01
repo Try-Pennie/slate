@@ -321,7 +321,7 @@ for (const f of FIXTURES) {
   assert(found === f.flagged, `${f.flagged ? "flags" : "allows"}: ${f.name}`);
 }
 
-// --- the scan surface: availability, booking, google, routing (#865) ----------
+// --- the scan surface: availability, booking, google, routing (#865), ooo (#1674) ---
 
 function tsFiles(dir: string, recursive = false): string[] {
   const out: string[] = [];
@@ -366,6 +366,15 @@ const surface = [
   // duplicate users row (which splits one person's identity across the roster,
   // the bookable pool and the manager link).
   join(ROOT, "src", "lib", "provision.ts"),
+  // #1674: the time off tree. `listActiveRequests` returned `(data ?? [])`, so a
+  // failed read reached the overlap guard behind the time off form as a clear
+  // calendar and an overlapping absence was accepted; `loadRequest` and
+  // `getUser` turned a failed read into "Request not found." and "The requesting
+  // agent no longer exists.", both claims about rows nothing measured; and
+  // `agentPrimaryCalendarId` fell back to "primary" on error, writing the block
+  // to a calendar the agent may not be booked against. All four sat outside
+  // every scanned path, so the guard reported clean over the whole folder.
+  ...tsFiles(join(ROOT, "src", "lib", "ooo")),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -460,6 +469,32 @@ const emitReintroduced =
 assert(
   scanSwallowedErrorReads(emitReintroduced, emitPath).length > 0,
   "positive control: a reintroduced swallowed-error webhook read is caught",
+);
+
+// A control on the newly-scanned time off path (#1674): ooo/service.ts routes
+// its four reads through `unwrap` or through an explicitly checked `error` that
+// returns null. Put `listActiveRequests` back the way it was, as `(data ?? [])`,
+// and the guard must catch it, proving the scan actually reaches src/lib/ooo and
+// isn't a no-op there. That read is the one worth controlling on: an empty array
+// is the specific answer "this agent has no time off booked", so the overlap
+// guard passed on a read that never ran.
+const oooServicePath = join(ROOT, "src", "lib", "ooo", "service.ts");
+const oooServiceSrc = readFileSync(oooServicePath, "utf8");
+assert(
+  scanSwallowedErrorReads(oooServiceSrc, oooServicePath).length === 0,
+  "the real ooo/service.ts is clean",
+);
+const oooReverted = oooServiceSrc.replace(
+  "const { data, error } = await db()",
+  "const { data } = await db()",
+);
+assert(
+  oooReverted !== oooServiceSrc,
+  "the ooo revert control actually changed ooo/service.ts (else it proves nothing)",
+);
+assert(
+  scanSwallowedErrorReads(oooReverted, oooServicePath).length === 1,
+  "positive control: the reverted active-requests read is caught",
 );
 
 // A control on the newly-covered SHAPE (#1629), driven off the real file the
@@ -681,7 +716,7 @@ for (const file of surface) {
 if (siteCount === 0) {
   console.log(
     `ok: no swallowed-error reads across ${surface.length} availability, booking, ` +
-      `google, routing, salesforce, webhook, admin, agent-page and provisioning source files`,
+      `google, routing, salesforce, webhook, admin, agent-page, provisioning and time off source files`,
   );
 }
 
