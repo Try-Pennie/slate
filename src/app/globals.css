@@ -336,6 +336,40 @@ h1.pn-display {
   border: 0;
 }
 
+/* ---------------- Skip to content (#1054) ----------------
+   The internal pages put a branded bar and a nav before the content, so a keyboard
+   or switch user walks it on every page load. WCAG 2.4.1.
+
+   Written as its own recipe rather than `sr-only` plus a focus reversal, for two
+   reasons: `.sr-only` above uses `clip`, which cannot be undone by a utility
+   reliably, and this block sits UNLAYERED beside the :focus-visible recipes on
+   purpose (see the note above this section), so a layered utility cannot beat it.
+
+   `position: fixed`, not absolute: an absolutely positioned link inherits every
+   ancestor's clipping, and a skip link that is focusable but clipped out of view is
+   worse than none, because focus lands somewhere invisible. It is styled as a real
+   sky button when visible, because when it is visible it IS a control. */
+.pn-skip-link {
+  position: fixed;
+  left: 0.5rem;
+  top: -4rem;
+  z-index: 60; /* above the sticky header (z-30) and the impersonation banner */
+  padding: 0.5rem 0.875rem;
+  border-radius: 16px;
+  background: var(--accent);
+  color: var(--pennie-graphite); /* graphite on sky, the primary button pairing */
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  text-decoration: none;
+  transition: top 120ms ease-out;
+}
+.pn-skip-link:focus {
+  top: 0.5rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pn-skip-link { transition: none; }
+}
+
 /* ---------------- Confirmation delight entrance ----------------
    Opacity/transform ONLY (never height: the embed ResizeObserver posts
    scrollHeight and a height animation jitters the iframe). The resting

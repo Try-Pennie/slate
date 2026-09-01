@@ -56,7 +56,7 @@ export default async function ErasureWorklistPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main className="mx-auto w-full min-w-0 max-w-5xl space-y-8 px-6 py-10 sm:px-8">
+      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-5xl space-y-8 px-6 py-10 sm:px-8">
         <ErasureWorklist state={state} />
         <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
           Back to settings

@@ -405,7 +405,7 @@ export default async function OooQueuePage({
       <DeepLinkScroll
         targetId={sp.request ? `request-${sp.request}` : null}
       />
-      <main className="mx-auto w-full min-w-0 max-w-4xl space-y-10 px-6 py-10 sm:px-8">
+      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-4xl space-y-10 px-6 py-10 sm:px-8">
         {/* Navy header carrying the actionable status: how many wait on you. */}
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Team requests</p>

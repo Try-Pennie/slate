@@ -30,6 +30,16 @@ If a migration is included, SHIPPED_MIGRATION_VERSION is bumped in the same comm
 
 none
 
+## If this touches UI
+
+<!-- An axe run in BOTH themes, saved to docs/a11y/axe/<surface>-<theme>.axe.json (see
+.claude/skills/slate-ui-verification/SKILL.md). The contrast guard is the only a11y check
+that runs on its own; focus order, keyboard reachability, ARIA and accessible names are
+invisible to every gate here.
+
+Delete this section if the change is not visual. If it is, and there is no axe run, say
+why. -->
+
 ## Anything a reader should know
 
 <!-- Optional. A decision deliberately not taken, a follow-up issue, a risk accepted
