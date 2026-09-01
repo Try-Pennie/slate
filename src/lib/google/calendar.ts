@@ -140,7 +140,7 @@ export async function listCalendars(
   email: string,
   timeoutMs?: number,
 ): Promise<CalendarListEntry[]> {
-  if (LOADTEST) return stubCalendarList();
+  if (LOADTEST) return stubCalendarList(email);
   const entries: CalendarListEntry[] = [];
   let pageToken: string | undefined;
   for (let page = 0; ; page++) {
@@ -172,7 +172,7 @@ export async function freeBusy(
   timeMax: string,
   calendarIds: string[],
 ): Promise<Interval[]> {
-  if (LOADTEST) return stubFreeBusy();
+  if (LOADTEST) return stubFreeBusy(email);
   if (calendarIds.length === 0) return [];
   const res = await ok(
     await gfetch(email, `${BASE}/freeBusy`, {

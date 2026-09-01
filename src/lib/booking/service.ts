@@ -32,6 +32,7 @@ import {
   updateEventDescription,
 } from "@/lib/google/calendar";
 import {
+  insertFailureLogFields,
   joinBookingContexts,
   PAST_COMPLETION_BATCH_LIMIT,
   calendarIdsFromResult,
@@ -928,7 +929,18 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         // 23505 = unique_violation: the active-slot index rejected a racing
         // double-book. Surface it as a conflict (→ SlotUnavailableError).
         const conflict = error?.code === "23505";
-        if (!conflict) log.error("booking", { msg: "insertBooking failed" }, error);
+        // #1047: carry what identifies the ATTEMPT. There is no booking id yet (the
+        // row was never written), so the joinable facts are the slot and the agent,
+        // which is what ties this line to the confirm that produced it and to the
+        // busy_blocks and calendar work around it. Never the attendee: contact data
+        // does not go in logs (docs/pii.md).
+        if (!conflict) {
+          log.error(
+            "booking",
+            { msg: "insertBooking failed", ...insertFailureLogFields(row) },
+            error,
+          );
+        }
         return { ok: false, conflict };
       }
       return { ok: true, booking: data as Booking };

@@ -1,0 +1,308 @@
+# You were paged. What now?
+
+One procedure per FAMILY of alert, because the diagnosis clusters even though the keys
+do not: a stale lane is one procedure whichever lane it is, and every Google
+reachability alert is one procedure with three branches (#1047).
+
+There are 87 alert keys. Eighty-seven hand-written stanzas would rot, starting with the
+ones nobody has ever been paged by, and a runbook section that is wrong is worse than a
+missing one because somebody follows it at 7am. So the key-to-family map lives in code
+(`src/lib/notify/alert-runbook.ts`) and a guard checks both directions: every alert has
+a procedure here, and no procedure exists for nothing.
+
+## Before anything
+
+1. **Read the alert.** The copy names the condition in plain language and, where there
+   is one, the action. It is built to be read on a phone (`pnpm preview:alerts` renders
+   every message), so it is not a summary of a longer thing: it is the thing.
+2. **Ask whether it says it MEASURED something.** Several checks report "could not
+   read" rather than guessing, and that is a different problem from the condition they
+   watch for. A message saying it could not measure is about the read, not the subject.
+3. **Check the site is up**, once, before diagnosing anything specific:
+   `GET /api/health` (200 or a 503 naming the stale lane) and
+   `GET /api/health/availability` (200, or 503 when the booker is offering nothing).
+4. **Look for an all-clear.** Conditions send one when they clear
+   (`docs/../src/lib/notify/alert-catalog.ts` classifies each key), so a page from an
+   hour ago may already be over. Incidents never send one: they are finished events.
+
+Logs: `npx wrangler tail` for anything in the last few hours, because the query API can
+run hours behind (#1533). Filter on `tag=` (see `AGENTS.md`).
+
+---
+
+## A lane or schedule has gone quiet
+
+Keys: `cron_lane_stale:*`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
+`migration_version_lag`, `volume_count_unreadable`, `audit_write_failed`.
+
+**What fired it.** A lane stamps a heartbeat on every run and one has not stamped
+inside its bound (about 3x its cadence). Or a detector has not reached a measured
+verdict in far longer than its longest legitimate silence, which is a different thing
+from a lane that has stopped: the lane ran and could not conclude.
+
+**First checks.**
+- The Cloudflare dashboard's cron triggers: did the schedule fire at all?
+- `npx wrangler tail`, attach, and wait one cadence. A lane that is running logs a
+  cycle line every tick.
+- `GET /api/health` names the stale lane in its 503 body.
+- For `migration_version_lag`: has a migration been committed and not applied? That is
+  the usual cause, and `docs/migrations-runbook.md` is the fix.
+
+**Fix or escalate.** A lane that is not firing is a platform-level problem (a bad
+deploy, a Cloudflare incident): redeploy, and check the deploy actually landed
+(`GET /api/smoke/version`). A lane that fires and throws is a code problem: the tail
+shows the error. Four lanes share one invocation budget, so a lane that got slow can
+starve its neighbours (`docs/cloudflare-platform-notes.md`).
+
+---
+
+## The booker is offering nothing, or too little
+
+Keys: `empty_buckets:*`, `bucket_slots_stale`, `availability_booked_solid`,
+`availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
+`thin_tier_staffing`, `tier_fallback:*`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
+`low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`.
+
+**What fired it.** Something between the roster and the cache means a lead sees fewer
+times than they should, or none. The alerts are deliberately split by CAUSE, because
+"booked solid" is a staffing fact and "data anomaly" is a bug, and they call for
+opposite responses (#570).
+
+**First checks.**
+- `GET /api/health/availability`: 503 with `staffedBuckets` tells you whether the
+  fleet or one tier is empty. `staffedBuckets: null` means it could not measure, which
+  is its own answer (#1629).
+- `/admin/tiers` for the depth per tier, and `/admin/bucket-availability` for what a
+  bucket is actually offering.
+- Is this staffing or code? Booked solid and thin tier staffing are staffing. Data
+  anomaly, stale slots and drift are not.
+
+**Fix or escalate.** Staffing: the pool needs more bookable agents in that tier, which
+is a decision for whoever owns the roster, not a code fix. Stale slots: check the
+recompute lane is running (family above). Drift: the cache disagrees with Google, so
+run `pnpm verify:availability-truth` against a real agent and read what Google says.
+
+---
+
+## A sweep cannot keep up
+
+Keys: `completion_sweep_saturated`, `reconcile_cancelled_saturated`,
+`reconcile_missing_saturated`, `deletion_drain_saturated`, `pending_event_deletions`,
+`recompute_headroom`.
+
+**What fired it.** A per-tick budget was exhausted with work still waiting. This is not
+a failure: each of these sweeps is bounded on purpose so it cannot eat the invocation
+budget its neighbours need. It means the backlog is growing faster than the bound
+drains it.
+
+**First checks.**
+- Is it a spike or a trend? One saturated tick after a bulk operation is expected. Every
+  tick for an hour is not.
+- What is in the backlog? The alert names the table and the count.
+- Is the work itself failing, so nothing ever leaves the queue? That is a different
+  family (a side effect that did not complete, below).
+
+**Fix or escalate.** A one-off spike drains on its own; do nothing. A trend means the
+bound is now wrong for the volume, which is a deliberate change to a constant, with the
+subrequest budget in mind. A backlog that never drains means the work is failing, not
+that the budget is small.
+
+---
+
+## Google cannot be reached for an agent
+
+Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
+`verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`.
+
+**What fired it.** A calendar read failed, repeatedly, for one agent or for many.
+
+**The branch that decides everything** is the failure's classification, and the alert
+carries it (`gone`, `not-provisioned`, `transient`):
+
+- **`not-provisioned`** (`403 notACalendarUser`): the account has never been given
+  Calendar. Retrying can never fix it and nothing is wrong with the credentials. A
+  Workspace admin has to give that person Calendar. Expect this for a new hire who
+  reached Slate before their Google provisioning completed.
+- **`gone`** (any other 4xx): a credential or membership repair. The account was
+  removed from the Workspace, or delegation was revoked. Either fix the account or take
+  them out of the pool.
+- **`transient`** (5xx, timeout, rate limit): usually self-heals. If EVERY agent is
+  failing, it is not the agents: check domain-wide delegation and the service account,
+  because `hydration_all_failing` is the shape that means the credential itself broke.
+
+**Fix or escalate.** One agent, `gone` or `not-provisioned`: a person action, and
+`bookable` should go false until it is done, or the rotation spends its budget retrying
+a hopeless account. Everyone at once: the delegation. Never branch on `kind === "gone"`
+in code (see `AGENTS.md`).
+
+---
+
+## A booking side effect did not complete
+
+Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
+`booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
+`reconcile_missing_busy_blocks`, `creation_orphan_events`, `external_double_book:*`,
+`reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
+`stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`.
+
+**What fired it.** A booking exists and something that should have followed it did not:
+a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
+which is what makes this family different from the ones above.
+
+**First checks.**
+- The alert names the rows. `booking_outbox.last_error` is the diagnosis for a stuck
+  drain; `webhook_deliveries.last_error` for a dead endpoint.
+- Is it one booking or all of them? One is a data or a Google problem for that booking.
+  All is a broken code path, and the deploy that shipped it is the thing to look at.
+- For `webhook_event_no_subscriber`: this is a configuration gap, not a fault. A new
+  event type ships inert until the live endpoint's `events` array names it (#1459), and
+  that is a database update, not a deploy.
+
+**Fix or escalate.** The outbox retries with backoff and gives up at a cap, so a row
+past the cap needs the underlying cause fixed and then a re-drain. An orphaned calendar
+event or a missing busy block is repaired by the self-heal sweep once the cause is
+gone. A double book (`external_double_book`) is the one to treat as urgent: two people
+believe they have the same slot, and somebody has to talk to one of them.
+
+---
+
+## Time off cover or protection is in doubt
+
+Keys: `ooo_coverage_gap`, `ooo_coverage_gap_later`, `ooo_coverage_stop`,
+`coverage_needs_human`, `inactive_agent_bookings`, `ooo_protection_lost`,
+`ooo_busy_block_fallback`, `ooo_calcom`, `ooo_calcom_unprotected`,
+`ooo_calendar_create`, `ooo_agent_calendar`, `ooo_manager_calendar`.
+
+**What fired it.** Either somebody is off and their appointments have nobody covering
+them, or a time off window that Slate promised to protect may not actually be blocked.
+
+**First checks.**
+- `/admin/ooo` for the request, its status, and what its side effects recorded.
+- For anything about PROTECTION, do not trust the stored record: it was written by the
+  code under test. Run `OOO_VERIFY_REQUEST_ID=<uuid> pnpm verify:ooo-protection`, which
+  asks Google for the event AND for free/busy, because busy periods merge and a
+  neighbouring meeting can make an absent event look like a perfectly blocked window
+  (#1464).
+- For coverage: are the appointments still assigned to the person who is off?
+
+**Fix or escalate.** A missing calendar block is re-created by re-running the approval's
+side effects. A coverage gap is a decision about who takes those appointments, which the
+admin coverage panel does. `coverage_needs_human` means the automatic reassign declined
+on purpose and is waiting for somebody.
+
+---
+
+## The roster or routing data is wrong
+
+Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`,
+`roster_coverage_gap`, `salesforce_user_id_conflicts`, `salesforce_manager_ambiguous`,
+`misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
+`booker_empty_reason`.
+
+**What fired it.** Slate's picture of who works here, who they report to, or what they
+are eligible for disagrees with Salesforce, or with itself.
+
+**First checks.**
+- Salesforce is the source of truth for the roster and for `manager_id`; Slate cannot
+  fix those, only report them. A conflict or an ambiguity needs fixing THERE.
+- `/admin` for the agent list, `/admin/agents/<id>` for one agent's attributes and hours.
+- An agent with no schedule is expected before go-live (every agent sets their own hours
+  at cutover) and is a real problem after it.
+
+**Fix or escalate.** Data problems go to whoever owns the Salesforce record.
+`misroute` and `rr_ordering_degraded` are Slate's own routing reporting something it
+did not expect, which is a code question: read the routing decision log for the booking
+named.
+
+---
+
+## The warehouse mirror or an erasure is in doubt
+
+Keys: `snowflake_healthcheck`, `snowflake_reconcile_drift`, `snowflake_erasure_residual`,
+`snowflake_erasure_residual_test`, `snowflake_purge_sql_broken`, `retention_skipped:*`.
+
+**What fired it.** The archival mirror disagrees with Supabase, or contact data somebody
+asked us to delete is still in the warehouse.
+
+**First checks.**
+- `GET /api/admin/snowflake-check` (admin) proves the login, host, key pair and grants
+  end to end. If that fails, nothing else in this family will make sense.
+- For drift: the reconcile lane counts rows per table both sides and names the table. A
+  single stranded row counts, deliberately, with no tolerance.
+- For a residual: the erasure audit names the booking. Remember the export watermark: a
+  row written with an older timestamp than `export_cursor` is never fetched again, which
+  is the usual cause of a stranded row (`AGENTS.md`, the backfill convention).
+
+**Fix or escalate.** A residual is a compliance matter with a clock on it (45 days from
+the request), so it escalates rather than waits: `docs/pii-erasure-runbook.md` has the
+procedure, and `POST /api/admin/erasure-purge` is the automated half. Drift from a
+backfill is fixed by rewinding that table's cursor, in the same change as the write.
+
+---
+
+## A limit or a guard is not working
+
+Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:*`,
+`rate_limit_unidentified:*`.
+
+**What fired it.** A control that is supposed to bound something has stopped bounding
+it. Every limiter here fails OPEN, so the page means requests are being served
+UNMETERED, not that anybody is being turned away.
+
+**First checks.**
+- Is the binding there? A deploy without the `ratelimits` block or the
+  `durable_objects` block silently removes the ceiling.
+  `pnpm verify:burst-counter` proves the burst counter answers AND counts, and its exit
+  codes name which of the twelve things it met.
+- `rate_limit_unidentified` means requests arrived with no client address, which behind
+  Cloudflare should be impossible: something is in front of us that should not be.
+
+**Fix or escalate.** A missing binding is a deploy fix. Treat an unmetered public path
+as time-sensitive rather than urgent: nothing is broken for a customer, and nothing is
+stopping an abusive caller either.
+
+---
+
+## An unexpected fault was reported
+
+Keys: `internal_error:*`.
+
+**What fired it.** A route threw something nobody predicted. The alert carries a short
+human reason; the full text, with the stack, is in the log (never in the alert, #1133).
+
+**First checks.** The alert names the route as its context. `npx wrangler tail` for the
+last few hours, or filter the logs on that `tag=`. One occurrence with a plausible
+cause (a Google blip, a lost race) may need nothing. A route failing every request is a
+deploy to revert.
+
+---
+
+## Something was measured and is only worth knowing
+
+Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
+`ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`.
+
+**What fired it.** Nothing that needs action. These are classified `info` in the
+catalog, which means they exist so that a thing which happened is on the record, and
+they never send an all-clear because there is no condition to end.
+
+**What to do.** Read it and carry on. If one of these is arriving often enough to be
+noise, that is worth fixing at the source rather than muting: an alert channel that
+contains things nobody acts on is how a real page gets skimmed past.
+
+---
+
+## Adding an alert
+
+Give it a family in `src/lib/notify/alert-runbook.ts` and, if none of the above fits,
+write the section here first. `scripts/test-alerts-runbook-coverage.ts` fails a key with
+no procedure, because an alert nobody has written a procedure for is one somebody will
+be paged by at 7am with nothing to read.
+
+**Not done here, deliberately:** the alert messages do not carry a link to this file.
+The audit suggested one, and the reason against it is the reader: these are read on a
+phone, mid-incident, where a link into a private repo is friction, and the copy already
+names the condition and the action. Adding a line to 87 copy builders (which is what it
+would take, since `pnpm preview:alerts` must render exactly what ships) is a large
+change for a click. If a page ever arrives that a reader could not act on without this
+file, that is the evidence to revisit it.

@@ -1,0 +1,165 @@
+/**
+ * Which runbook procedure each alert belongs to (#1047).
+ *
+ * There are 87 alert keys and there is no world in which 87 hand-written stanzas stay
+ * true: the ones nobody has been paged by would rot first, and a runbook section that
+ * is wrong is worse than a missing one, because somebody follows it at 7am.
+ *
+ * What is actually true is that the DIAGNOSIS clusters. A stale lane is one procedure
+ * whichever lane it is. A saturated sweep is one procedure. Every Google reachability
+ * alert is one procedure with three branches. So the runbook is written per FAMILY, and
+ * this is the map from key to family, in code rather than in the prose, so a guard can
+ * check both directions: every alert has a procedure, and no procedure exists for
+ * nothing.
+ *
+ * A key ending in `:*` in the catalog is a prefix (one alert per lane, per agent, per
+ * endpoint), and matching here is on that prefix.
+ */
+
+/** The families, each a section in `docs/alerts-runbook.md` with this slug as its anchor. */
+export const ALERT_FAMILIES = [
+  "a-lane-or-schedule-has-gone-quiet",
+  "the-booker-is-offering-nothing-or-too-little",
+  "a-sweep-cannot-keep-up",
+  "google-cannot-be-reached-for-an-agent",
+  "a-booking-side-effect-did-not-complete",
+  "time-off-cover-or-protection-is-in-doubt",
+  "the-roster-or-routing-data-is-wrong",
+  "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  "a-limit-or-a-guard-is-not-working",
+  "an-unexpected-fault-was-reported",
+  "something-was-measured-and-is-only-worth-knowing",
+] as const;
+
+export type AlertFamily = (typeof ALERT_FAMILIES)[number];
+
+/**
+ * Key (or `prefix:` for a prefixed family) to family.
+ *
+ * Ordered longest-prefix-first at lookup, so a specific key always beats a prefix that
+ * would also match it.
+ */
+const FAMILY_BY_KEY: Record<string, AlertFamily> = {
+  // A lane, a schedule, or a detector has stopped producing.
+  cron_lane_stale: "a-lane-or-schedule-has-gone-quiet",
+  sync_staleness: "a-lane-or-schedule-has-gone-quiet",
+  detector_parked: "a-lane-or-schedule-has-gone-quiet",
+  detector_unpark: "a-lane-or-schedule-has-gone-quiet",
+  migration_version_lag: "a-lane-or-schedule-has-gone-quiet",
+  volume_count_unreadable: "a-lane-or-schedule-has-gone-quiet",
+  audit_write_failed: "a-lane-or-schedule-has-gone-quiet",
+
+  // A lead would find nothing to book, or too little.
+  empty_buckets: "the-booker-is-offering-nothing-or-too-little",
+  bucket_slots_stale: "the-booker-is-offering-nothing-or-too-little",
+  availability_booked_solid: "the-booker-is-offering-nothing-or-too-little",
+  availability_data_anomaly: "the-booker-is-offering-nothing-or-too-little",
+  availability_drift: "the-booker-is-offering-nothing-or-too-little",
+  fallback_covered_availability: "the-booker-is-offering-nothing-or-too-little",
+  thin_tier_staffing: "the-booker-is-offering-nothing-or-too-little",
+  tier_fallback: "the-booker-is-offering-nothing-or-too-little",
+  tier_fallback_deep: "the-booker-is-offering-nothing-or-too-little",
+  no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
+  low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
+  booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",
+  recompute_headroom: "a-sweep-cannot-keep-up",
+  calendar_window_uncovered: "the-booker-is-offering-nothing-or-too-little",
+  hydration_all_failing: "google-cannot-be-reached-for-an-agent",
+
+  // A backlog is growing faster than its sweep drains it.
+  completion_sweep_saturated: "a-sweep-cannot-keep-up",
+  reconcile_cancelled_saturated: "a-sweep-cannot-keep-up",
+  reconcile_missing_saturated: "a-sweep-cannot-keep-up",
+  deletion_drain_saturated: "a-sweep-cannot-keep-up",
+  pending_event_deletions: "a-sweep-cannot-keep-up",
+
+  // Google is refusing, for one agent or for many.
+  sync_failures: "google-cannot-be-reached-for-an-agent",
+  watch_lapse: "google-cannot-be-reached-for-an-agent",
+  bookable_blocked: "google-cannot-be-reached-for-an-agent",
+  bookable_unverified: "google-cannot-be-reached-for-an-agent",
+  verify_on_book_outage: "google-cannot-be-reached-for-an-agent",
+  verify_on_book_calendars_read: "google-cannot-be-reached-for-an-agent",
+
+  // A booking exists and one of its side effects did not land.
+  outbox_drain_stuck: "a-booking-side-effect-did-not-complete",
+  outbox_all_handed_off: "a-booking-side-effect-did-not-complete",
+  reservation_drain_stuck: "a-booking-side-effect-did-not-complete",
+  booking_event_insert: "a-booking-side-effect-did-not-complete",
+  busy_block_write_through: "a-booking-side-effect-did-not-complete",
+  reconcile_busy_blocks: "a-booking-side-effect-did-not-complete",
+  reconcile_missing_busy_blocks: "a-booking-side-effect-did-not-complete",
+  creation_orphan_events: "a-booking-side-effect-did-not-complete",
+  external_double_book: "a-booking-side-effect-did-not-complete",
+  reassign_intent_dropped: "a-booking-side-effect-did-not-complete",
+  reschedule_pin_dropped: "a-booking-side-effect-did-not-complete",
+  reschedule_lock_outage: "a-booking-side-effect-did-not-complete",
+  stale_phone_invite: "a-booking-side-effect-did-not-complete",
+  webhook_dead: "a-booking-side-effect-did-not-complete",
+  webhook_event_no_subscriber: "a-booking-side-effect-did-not-complete",
+
+  // Somebody is off and the cover, or the block itself, is in doubt.
+  ooo_coverage_gap: "time-off-cover-or-protection-is-in-doubt",
+  ooo_coverage_gap_later: "time-off-cover-or-protection-is-in-doubt",
+  ooo_coverage_stop: "time-off-cover-or-protection-is-in-doubt",
+  coverage_needs_human: "time-off-cover-or-protection-is-in-doubt",
+  inactive_agent_bookings: "time-off-cover-or-protection-is-in-doubt",
+  ooo_protection_lost: "time-off-cover-or-protection-is-in-doubt",
+  ooo_busy_block_fallback: "time-off-cover-or-protection-is-in-doubt",
+  ooo_calcom: "time-off-cover-or-protection-is-in-doubt",
+  ooo_calcom_unprotected: "time-off-cover-or-protection-is-in-doubt",
+  ooo_calendar_create: "time-off-cover-or-protection-is-in-doubt",
+  ooo_agent_calendar: "time-off-cover-or-protection-is-in-doubt",
+  ooo_manager_calendar: "time-off-cover-or-protection-is-in-doubt",
+  ooo_agent_dm: "something-was-measured-and-is-only-worth-knowing",
+  ooo_approvals_digest: "something-was-measured-and-is-only-worth-knowing",
+  "ooo-digest-unreachable": "something-was-measured-and-is-only-worth-knowing",
+  "ooo-digest-unrouted-unreachable": "something-was-measured-and-is-only-worth-knowing",
+  ooo_undo: "something-was-measured-and-is-only-worth-knowing",
+
+  // The roster or the routing inputs disagree with Salesforce, or with themselves.
+  agent_sync_failures: "the-roster-or-routing-data-is-wrong",
+  agents_without_routing: "the-roster-or-routing-data-is-wrong",
+  agents_without_schedule: "the-roster-or-routing-data-is-wrong",
+  roster_coverage_gap: "the-roster-or-routing-data-is-wrong",
+  salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
+  salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
+  misroute: "the-roster-or-routing-data-is-wrong",
+  rr_ordering_degraded: "the-roster-or-routing-data-is-wrong",
+  reassign_unknown_reason_code: "the-roster-or-routing-data-is-wrong",
+  "reassign-unknown-reason-code": "the-roster-or-routing-data-is-wrong",
+  booker_empty_reason: "the-roster-or-routing-data-is-wrong",
+
+  // The archival mirror, or a deletion we promised somebody.
+  snowflake_healthcheck: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  snowflake_reconcile_drift: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  snowflake_erasure_residual: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  snowflake_erasure_residual_test: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  snowflake_purge_sql_broken: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  retention_skipped: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+
+  // A control that is supposed to bound something has stopped bounding it.
+  edge_limiter_unusable: "a-limit-or-a-guard-is-not-working",
+  rate_limit_broken: "a-limit-or-a-guard-is-not-working",
+  rate_limit_refund_broken: "a-limit-or-a-guard-is-not-working",
+  rate_limit_unidentified: "a-limit-or-a-guard-is-not-working",
+  rate_limit_blocked: "something-was-measured-and-is-only-worth-knowing",
+
+  // A fault nothing predicted.
+  internal_error: "an-unexpected-fault-was-reported",
+};
+
+/**
+ * The family an alert key belongs to, or null when nothing claims it.
+ *
+ * Null is the answer a guard fails on, deliberately: an alert with no procedure is one
+ * somebody will be paged by at 7am with nothing to read.
+ */
+export function alertFamily(key: string): AlertFamily | null {
+  const exact = FAMILY_BY_KEY[key];
+  if (exact) return exact;
+  // A catalog entry ends `:*` for a prefixed family; a real page carries the instance
+  // (`cron_lane_stale:outbox`). Both resolve through the prefix before the colon.
+  const prefix = key.replace(/:\*$/, "").split(":")[0] ?? "";
+  return FAMILY_BY_KEY[prefix] ?? null;
+}

@@ -737,3 +737,28 @@ export function joinBookingContexts(
   }
   return out;
 }
+
+/**
+ * The fields that identify a FAILED booking insert (#1047).
+ *
+ * There is no booking id: the row was never written. So the joinable facts are the slot
+ * and the agent, which is what ties the line to the confirm that produced it and to the
+ * busy-block and calendar work around it.
+ *
+ * Pure and exported so the one rule that matters here is testable rather than a comment:
+ * **no attendee data**. Contact data does not go in logs (docs/pii.md), and an error
+ * path is exactly where somebody reaches for "log the whole row" while debugging.
+ */
+export function insertFailureLogFields(row: {
+  bucket_id?: string | null;
+  assigned_user_id?: string | null;
+  starts_at?: string | null;
+  gcal_event_id?: string | null;
+}): Record<string, string | null> {
+  return {
+    bucket_id: row.bucket_id ?? null,
+    user_id: row.assigned_user_id ?? null,
+    starts_at: row.starts_at ?? null,
+    gcal_event_id: row.gcal_event_id ?? null,
+  };
+}

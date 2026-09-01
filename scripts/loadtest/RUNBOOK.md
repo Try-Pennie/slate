@@ -158,6 +158,51 @@ is shown to be the cheaper mechanism for the orphan/legacy windows.
   the cancel path (whose Google step is pre-marked done) exercises the same shared drain
   executor and dedupe index without needing a Google write stub.
 
+## The fault-injection variant (#1050)
+
+The stub always succeeded, so a soak proved the lanes work when Google works, which was
+never the half in doubt. Degrading gracefully is what the sync coalescer, the
+reachability classifier, the failure-streak alerting and the verify-on-book re-route all
+exist for, and none of them had been exercised at scale.
+
+Add `SLATE_LOADTEST_FAULT_PCT=<0..100>` to the same run to fail that percentage of
+calendar reads:
+
+<!-- runbook-reference: the fragment is one env var added to the seeded soak command
+     above; it is not a command to run on its own. The injector's own behaviour (the
+     three failure shapes, determinism, the percentage tracking the setting, and that all
+     three stubbed reads really throw when it is set) is driven in a real process by
+     scripts/test-loadtest-fault-injection.ts. -->
+
+```
+SLATE_LOADTEST=true SLATE_LOADTEST_FAULT_PCT=20 ...
+```
+
+It is **deterministic**, not random, and that is the point. A random rate makes a soak
+irreproducible: a run that passed and a run that failed differ by the dice. The verdict
+is a hash of each call's own key, so the same agent fails on every pass. That also
+matters for what is under test, because the streak alerting fires on CONSECUTIVE
+failures for one agent, which a per-call coin flip would rarely produce.
+
+Each fault is one of the three shapes the reachability classifier distinguishes (a 503,
+a timeout, and a `403 notACalendarUser`), chosen by the key, so a run exercises every
+branch rather than the transient one repeatedly. Every message is marked
+`(loadtest fault)`, so an injected failure is never mistaken for a real Google one while
+reading the results.
+
+What to look for in a faulted run: the failing agents are named in a throttled Slack
+alert rather than one per failure; a `notACalendarUser` agent is treated as definitively
+failing rather than retried every minute; the booker still offers times from agents who
+are fine; and no lane's heartbeat goes stale, because a Google failure must not stop a
+lane running.
+
+**Not covered, and deliberately not built here:** a concurrent request-level burst
+(parallel availability reads plus simultaneous same-slot confirms). It needs a target
+that is not production, and there is not one (ADR 0007 records why there is no staging
+environment). The honest prerequisite is a Supabase branch plus a second Worker
+environment, which is the same reversal that ADR names; building the script first would
+leave a load test nobody has ever run, which is worse than not having it.
+
 ## Teardown
 Delete the branch DB. The `SLATE_LOADTEST` flag is inert anywhere it isn't set, so no
 production cleanup is needed.

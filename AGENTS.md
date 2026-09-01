@@ -302,8 +302,21 @@ directly above, the line, and it must carry a reason. The one use today is the
 `?bust=1` cache-busting dynamic import in `test-alert-preview-coverage.ts`, which
 no resolver can follow and which is the entire point of that check.
 
-`worker/` is still excluded: its two errors need `@cloudflare/workers-types`,
-which is not a dependency here.
+`worker/` is covered too now (#1050), and it is the file that most needed it:
+`worker/index.ts` is what `wrangler.jsonc` points `main` at, so every request and
+every cron tick passes through it, and esbuild bundles it without checking types.
+`tsconfig.worker.json` uses `@cloudflare/workers-types` (scoped to that config, so
+the Workers globals never enter the app's program) and
+`scripts/test-worker-typecheck.ts` runs it, failing on the same two classes and
+planting an undefined identifier to prove the run actually read the tree.
+
+`TS2578` (an unused `@ts-expect-error`) is deliberately out of scope there. The entry
+imports `../.open-next/worker.js`, which does not exist until
+`opennextjs-cloudflare build` has run; the import carries an `@ts-expect-error`, so
+it is silent either way, but the DIRECTIVE flips between used and unused depending on
+whether somebody has built recently. A check whose verdict depends on that would pass
+locally and fail in CI, and the response to a check that disagrees with itself is to
+stop reading it.
 
 # Where a new test goes
 
@@ -1131,6 +1144,17 @@ for a cron lane attach and wait one cadence. `scripts/logs.ts` now enforces the
 rule: it reads the control's newest non-empty bucket and reports UNVERIFIABLE when
 that is more than `CONTROL_FRESHNESS_MS` behind the window's end, in its own
 wording so a lagging pipeline is never mistaken for a broken query.
+
+**Stitching one request's lines together needs nothing from us.** Workers Logs has an
+Invocations view that groups every line from one invocation, so a request's confirm-path
+lines are already a unit. What that CANNOT do is join across invocations, and a booking's
+side effects live in a later cron invocation: the join key there is `booking_id`, which
+works because the outbox row carries it. That is the whole correlation story (#1047); a
+generated request id would be worse for the cross-invocation case, since the drain has no
+memory of the originating request unless it is persisted on the row, which is a schema
+cost for no gain over the id already there. Some lines deliberately carry no identity at
+all: contact data does not go in logs, so a pre-booking failure names the slot and the
+agent rather than the lead.
 
 Retention is 7 days and there is no alerting on top of it, so logs are for
 forensics after the fact. Anything that must page someone still needs a real
