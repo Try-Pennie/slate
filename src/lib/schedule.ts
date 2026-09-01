@@ -81,6 +81,13 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
     .filter((u) => hasRow.has(u.id))
     .map((u) => hasRow.get(u.id)!);
 
+  // Each agent's refill is its OWN failure. One that cannot be written must not
+  // abort the others, and must not abort the row creation below it either: the
+  // two populations are unrelated repairs, and a loop that throws on the first
+  // one silently leaves every later agent unfixed while the caller sees a single
+  // error (L71). Failures are collected and raised together at the end, so the
+  // monitor's recheck still reports whoever is left AND the reason is loud.
+  const refillFailures: string[] = [];
   let refilled = 0;
   for (const scheduleId of emptyScheduleIds) {
     const wanted = defaultRuleRows(scheduleId, defaults);
@@ -89,28 +96,40 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
     // are an org configuration fault, said as itself rather than as a Postgres
     // check violation.
     if (wanted.length === 0) {
-      throw new Error(
-        `cannot fill working hours for schedule ${scheduleId}: the org defaults produce no week`,
-      );
+      refillFailures.push(`${scheduleId}: the org defaults produce no week`);
+      continue;
     }
     const { data: written, error: rpcError } = await db.rpc("replace_availability_rules", {
       p_schedule_id: scheduleId,
       p_rules: wanted,
     });
     if (rpcError) {
-      throw new Error(`default rules refill failed: ${rpcError.message}`);
+      refillFailures.push(`${scheduleId}: ${rpcError.message}`);
+      continue;
     }
     // Same rule as every other caller of this RPC: claim success only on the count
     // the database reports, never on the absence of an error.
     if (written !== wanted.length) {
-      throw new Error(
-        `default rules refill wrote ${typeof written === "number" ? written : "an unreadable count"} of ${wanted.length} days`,
+      refillFailures.push(
+        `${scheduleId}: wrote ${typeof written === "number" ? written : "an unreadable count"} of ${wanted.length} days`,
       );
+      continue;
     }
     refilled += 1;
   }
 
-  if (missing.length === 0) return refilled;
+  const raiseRefillFailures = () => {
+    if (refillFailures.length) {
+      throw new Error(
+        `could not fill working hours for ${refillFailures.length} schedule(s): ${refillFailures.join("; ")}`,
+      );
+    }
+  };
+
+  if (missing.length === 0) {
+    raiseRefillFailures();
+    return refilled;
+  }
 
   // Upsert (not insert) so a concurrent fill settles on the (user_id) unique
   // index (#532): ignoreDuplicates makes each already-covered agent a no-op, and
@@ -141,5 +160,6 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
       throw new Error(`default rules insert failed: ${ruleError.message}`);
     }
   }
+  raiseRefillFailures();
   return created.length + refilled;
 }

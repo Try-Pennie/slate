@@ -12,10 +12,12 @@ type Result = { data: unknown; error: { message: string } | null };
 const tables = vi.hoisted(() => ({ results: {} as Record<string, Result> }));
 const inserted = vi.hoisted(() => ({ rows: [] as unknown[] }));
 const rpc = vi.hoisted(() =>
-  vi.fn(async (_fn: string, args: { p_rules: unknown[] }): Promise<Result> => ({
-    data: args.p_rules.length,
-    error: null,
-  })),
+  vi.fn(
+    async (
+      _fn: string,
+      args: { p_schedule_id: string; p_rules: unknown[] },
+    ): Promise<Result> => ({ data: args.p_rules.length, error: null }),
+  ),
 );
 const upserted = vi.hoisted(() => ({ rows: [] as { user_id: string }[] }));
 
@@ -64,7 +66,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   inserted.rows = [];
   upserted.rows = [];
-  rpc.mockImplementation(async (_fn: string, args: { p_rules: unknown[] }) => ({
+  rpc.mockImplementation(async (_fn: string, args: { p_schedule_id: string; p_rules: unknown[] }) => ({
     data: args.p_rules.length,
     error: null,
   }));
@@ -117,7 +119,7 @@ describe("ensureDefaultSchedules (#1670)", () => {
     tables.results.availability_schedules = { data: [{ id: "s1", user_id: "u1" }], error: null };
     rpc.mockResolvedValue({ data: 2, error: null });
 
-    await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/2 of 5 days/);
+    await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/wrote 2 of 5 days/);
   });
 
   it("throws when the refill itself errors, rather than leaving the week empty", async () => {
@@ -125,6 +127,30 @@ describe("ensureDefaultSchedules (#1670)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "deadlock detected" } });
 
     await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/deadlock detected/);
+  });
+
+  // L71: one agent's refill failing must not abort the others, or the repair for
+  // everyone after them silently never happens while the caller sees one error.
+  it("keeps repairing the other agents when one refill fails, then raises them together", async () => {
+    tables.results.users = { data: [{ id: "u1" }, { id: "u2" }, { id: "u3" }], error: null };
+    tables.results.availability_schedules = {
+      data: [
+        { id: "s1", user_id: "u1" },
+        { id: "s2", user_id: "u2" },
+      ],
+      error: null,
+    };
+    rpc.mockImplementation(async (_fn: string, args: { p_schedule_id: string; p_rules: unknown[] }) =>
+      args.p_schedule_id === "s1"
+        ? { data: null, error: { message: "deadlock detected" } }
+        : { data: args.p_rules.length, error: null },
+    );
+
+    await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/deadlock detected/);
+    // s2's refill still ran, and u3 (who has no row at all) still got one.
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(upserted.rows.map((r) => r.user_id)).toEqual(["u3"]);
+    expect(inserted.rows).toHaveLength(5);
   });
 
   it("says so when the org defaults cannot produce a week at all", async () => {
