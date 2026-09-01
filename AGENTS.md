@@ -1145,6 +1145,17 @@ rule: it reads the control's newest non-empty bucket and reports UNVERIFIABLE wh
 that is more than `CONTROL_FRESHNESS_MS` behind the window's end, in its own
 wording so a lagging pipeline is never mistaken for a broken query.
 
+**Stitching one request's lines together needs nothing from us.** Workers Logs has an
+Invocations view that groups every line from one invocation, so a request's confirm-path
+lines are already a unit. What that CANNOT do is join across invocations, and a booking's
+side effects live in a later cron invocation: the join key there is `booking_id`, which
+works because the outbox row carries it. That is the whole correlation story (#1047); a
+generated request id would be worse for the cross-invocation case, since the drain has no
+memory of the originating request unless it is persisted on the row, which is a schema
+cost for no gain over the id already there. Some lines deliberately carry no identity at
+all: contact data does not go in logs, so a pre-booking failure names the slot and the
+agent rather than the lead.
+
 Retention is 7 days and there is no alerting on top of it, so logs are for
 forensics after the fact. Anything that must page someone still needs a real
 sink (a Slack alert or an `alert_state` row); see the fail-loud rule.

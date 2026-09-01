@@ -35,6 +35,27 @@ incident.
 **On the RTO.** The restore is minutes; the reconciliation is not. Budget the
 whole morning and work the sections in order.
 
+**On the forensic window, which is a third objective nobody usually writes down**
+(#1047). Cloudflare keeps every log line for **7 days** and there is no export, so
+anything that happened longer ago than a week can only be reconstructed from the
+database: the tables, `booking_events`, `audit_log`, `webhook_deliveries`. That is
+enough to answer what HAPPENED (every state change a booking went through is a durable
+row) and not enough to answer WHY at the level a log line would (which agent's calendar
+read failed, what Google actually returned, which code path a request took).
+
+Accepted, for now, with the trade stated: a Logpush job shipping error-level lines to R2
+would extend it indefinitely and costs both money and a new place holding customer data
+for longer, which the PII inventory would have to account for (`docs/pii.md` names the
+request URL as carrying contact data, so a longer-lived log copy is a longer-lived PII
+copy, not just more diagnostics). What would change it: a compliance requirement for
+longer retention, or a second incident where the answer was genuinely a week old. In
+practice the constraint is simpler than it sounds, because an incident that matters is
+noticed by an alert within minutes, and every alert here fires while the window is wide
+open.
+
+The operational consequence, worth knowing before you need it: **when an incident starts,
+capture the logs first.** They expire; the database rows do not.
+
 ---
 
 ## 0. Before you restore

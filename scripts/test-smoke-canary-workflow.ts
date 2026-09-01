@@ -87,7 +87,7 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
 // --- alerting: any failure pages via Slack ---
 {
   const alertStep = wf.slice(wf.indexOf("Slack alert on failure"));
-  assert(/if:\s*failure\(\)/.test(alertStep), "the alert step fires on failure()");
+  assert(/failure\(\)/.test(alertStep), "the alert step fires on failure()");
   assert(/scripts\/notify-smoke-failure\.ts/.test(alertStep), "the alert posts via notify-smoke-failure.ts");
   assert(/SLACK_BOT_TOKEN/.test(alertStep), "the alert step has the Slack token");
   // #1598: the canary's own steps need the install, this one does not. Comment lines
@@ -102,6 +102,46 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   assert(
     !/register-paths/.test(alertCode),
     "the alert step runs on bare node, so it does not need the install to have worked",
+  );
+}
+
+// --- #1047: a continue-on-error check must still reach the alerter -------------
+{
+  // The latency step cannot fail the JOB: a latency budget is the classic source of a
+  // flapping alert, and failing the job would skip the heartbeat stamp below, paging
+  // the lane watchdog for a slow read. The consequence is that `failure()` is false
+  // when it trips, so the alert step has to consult its outcome explicitly, or a
+  // regression is written to the failure log and reported to nobody, which is the
+  // silent-check shape this repo exists to avoid.
+  const latencyStep = wf.slice(wf.indexOf("Availability latency"));
+  assert(latencyStep.length > 0, "the canary has a latency step");
+  assert(
+    /continue-on-error:\s*true/.test(latencyStep.slice(0, 400)),
+    "the latency step cannot fail the job",
+  );
+  assert(/id:\s*latency/.test(latencyStep.slice(0, 400)), "and it has an id to consult");
+  assert(
+    /scripts\/smoke-latency\.ts/.test(latencyStep),
+    "and it runs the latency script",
+  );
+  assert(
+    /SMOKE_FAILURE_FILE/.test(latencyStep.slice(0, 700)),
+    "and records its reason through the shared failure log, so the alerter names it",
+  );
+
+  const alertIf = wf.slice(wf.indexOf("Slack alert on failure"), wf.indexOf("Slack alert on failure") + 400);
+  assert(
+    /steps\.latency\.outcome == 'failure'/.test(alertIf),
+    "the alert step consults the latency step's outcome, since failure() cannot see it",
+  );
+
+  // And the heartbeat must still stamp when only latency tripped: the canary DID run
+  // and the funnel DID work, so a stale-lane page would be a second, wrong alarm for
+  // one cause.
+  const stamp = wf.slice(wf.indexOf("Stamp canary heartbeat"));
+  assert(
+    /if:\s*success\(\)/.test(stamp.slice(0, 300)),
+    "the heartbeat is gated on success(), which a continue-on-error step leaves true",
   );
 }
 

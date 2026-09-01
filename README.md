@@ -188,6 +188,9 @@ three writers that keep availability fresh), `CONTEXT.md` (domain glossary),
 Process: `docs/review-process.md` (how code gets reviewed here, and what the
 automated gates provably cannot do).
 
+Targets and alerting: `docs/slo.md` (what Slate promises and what watches each
+promise), `docs/alerts-runbook.md` (you were paged, what now).
+
 Runbooks: `docs/migrations-runbook.md` (applying a schema change),
 `docs/smoke-test-runbook.md`, `docs/dr-runbook.md`,
 `docs/pii-erasure-runbook.md`, and `docs/admin-lockout-runbook.md` (nobody can
