@@ -195,6 +195,7 @@ apart:
 | 1 | no commit to stamp, or a target that is not an https origin | run it inside the repo, on a real commit |
 | 2 | the working tree has uncommitted changes | commit first; locally is enough, an emergency does not require pushing |
 | 3 | `BOOKING_API_KEY` is unset | set it; without it nothing can confirm the deploy, which is the whole point |
+| 4 | it could not tell whether the tree is clean (`git status` did not answer) | fix git; this is not the same as a dirty tree, and "commit first" would be advice that cannot help |
 
 The dirty-tree refusal is the one that matters. The stamp writes a commit into the
 bundle and the probe then confirms that commit is serving, so with uncommitted changes

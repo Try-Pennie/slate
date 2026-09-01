@@ -37,11 +37,20 @@ function git(args: string[]): string | null {
   }
 }
 
+/** Clean, dirty, or unknown. The three states the plan distinguishes. */
+function dirtyState(): boolean | null {
+  const status = git(["status", "--porcelain", "--untracked-files=no"]);
+  return status === null ? null : status !== "";
+}
+
 const plan = planVerifiedDeploy({
   githubSha: process.env.GITHUB_SHA,
   headSha: git(["rev-parse", "HEAD"]),
   // Tracked files only: an untracked scratch file is not something that ships.
-  dirty: (git(["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "",
+  // null when git could not be asked, which is NOT the same as a clean tree: `?? ""`
+  // here would have scored an unreadable status as clean and quietly skipped the
+  // dirty-tree refusal on exactly the runs least able to vouch for the stamp.
+  dirty: dirtyState(),
   bookingApiKey: process.env.BOOKING_API_KEY,
   appUrl: process.env.APP_URL,
   allowDirty: process.env.ALLOW_DIRTY_DEPLOY === "1",

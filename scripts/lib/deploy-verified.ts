@@ -20,8 +20,17 @@ export interface DeployEnvironment {
   githubSha?: string;
   /** `git rev-parse HEAD`, or null when git could not answer. */
   headSha: string | null;
-  /** Whether the working tree has uncommitted changes to tracked files. */
-  dirty: boolean;
+  /**
+   * Whether the working tree has uncommitted changes to tracked files, or null when
+   * git could not be asked.
+   *
+   * Three states, not two, and deliberately so. An empty answer from `git status`
+   * means a clean tree; a FAILED `git status` means nothing at all, and scoring that
+   * as clean is how the dirty-tree refusal below silently stops applying (L11). The
+   * refusal exists to stop a deploy whose stamped commit would not describe what
+   * shipped, and a run that cannot tell is exactly the run where that is likeliest.
+   */
+  dirty: boolean | null;
   /** `BOOKING_API_KEY`, which the probe needs to read /api/smoke/version. */
   bookingApiKey?: string;
   /** `APP_URL`, defaulted by the caller to production. */
@@ -71,6 +80,17 @@ export function planVerifiedDeploy(env: DeployEnvironment): DeployPlan {
       ok: false,
       code: 1,
       reason: `refusing to stamp "${sha}" as a commit: expected a 7 to 40 character hex sha`,
+    };
+  }
+  if (env.dirty === null && !env.allowDirty) {
+    // Its own reason, not the dirty one: "commit your changes" is useless advice to
+    // somebody whose git is not answering, and a message may only claim what its
+    // check actually measured.
+    return {
+      ok: false,
+      code: 4,
+      reason:
+        "could not read whether the working tree is clean (git status did not answer), so there is no way to tell whether the commit stamped into the bundle would describe what shipped. Fix git, or set ALLOW_DIRTY_DEPLOY=1 to proceed knowing the stamp is unverified",
     };
   }
   if (env.dirty && !env.allowDirty) {
