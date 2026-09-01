@@ -26,6 +26,18 @@ const server = vi.hoisted(() => ({
 const logError = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: vi.fn() } }));
 
+// #1046: the channel token is the ONLY credential on this endpoint, and it was
+// the last machine-endpoint secret in the tree still compared with a plain `!==`
+// after #594 consolidated every other one onto the shared constant-time verifier.
+// The spy wraps the REAL implementation, so the behaviour under test is the real
+// comparison and only the delegation is observed.
+const timingSafeEqualSpy = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/bearer-auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/bearer-auth")>();
+  timingSafeEqualSpy.mockImplementation(actual.timingSafeEqual);
+  return { ...actual, timingSafeEqual: timingSafeEqualSpy };
+});
+
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/google/sync", () => sync);
 vi.mock("next/server", async (importOriginal) => {
@@ -141,5 +153,56 @@ describe("Google push handler background failures are recorded", () => {
     expect(res.status).toBe(200);
     await Promise.resolve();
     expect(logError).not.toHaveBeenCalled();
+  });
+});
+
+// #1046: every other machine endpoint compares its secret through the one
+// constant-time verifier (`src/lib/bearer-auth.ts`, #594). This one compared with
+// `!==`, which leaks how many leading characters of the channel token a guess got
+// right. The pair of tests below is deliberate: the delegation test pins the
+// MECHANISM (a plain `===` would satisfy every behavioural assertion in this
+// file), and the missing-header test pins the case the mechanism change can
+// break, because `timingSafeEqual` takes two strings and the header is nullable.
+describe("Google push channel token is compared in constant time", () => {
+  it("compares through the shared constant-time verifier", async () => {
+    const res = await POST(
+      push({
+        "x-goog-channel-token": "secret-token",
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(timingSafeEqualSpy).toHaveBeenCalledWith("secret-token", "secret-token");
+  });
+
+  it("still 403s a wrong token through the verifier", async () => {
+    const res = await POST(
+      push({
+        "x-goog-channel-token": "wrong",
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(timingSafeEqualSpy).toHaveBeenCalledWith("wrong", "secret-token");
+  });
+
+  it("403s a request with no channel token at all, without comparing a null", async () => {
+    const res = await POST(
+      push({
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    // A missing header must be refused BEFORE the comparison: passing null into a
+    // string comparison would throw a 500, which reads to Google as retriable.
+    expect(timingSafeEqualSpy).not.toHaveBeenCalled();
+    expect(server.after).not.toHaveBeenCalled();
+    expect(sync.syncByChannel).not.toHaveBeenCalled();
   });
 });

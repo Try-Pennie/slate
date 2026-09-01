@@ -107,7 +107,13 @@ async function requireManageAgent(
     await supabaseAdmin().from("users").select("role").eq("id", userId).maybeSingle(),
     "manage-agent target role",
   );
-  const targetRole = (data as { role: Role } | null)?.role ?? "agent";
+  // #1046: and a read that finds NOTHING must refuse too. The `?? "agent"` this
+  // replaces defaulted an absent target to the one role every manager may edit, so
+  // a stale or mistyped id passed the escalation guard and recorded an audit row
+  // against a user that does not exist. Absent is not a role; it is a refusal.
+  const target = data as { role: Role } | null;
+  if (!target) throw new Error("Not authorized");
+  const targetRole = target.role;
   if (!canManageUser(actor.role, targetRole, actor.id === userId)) {
     throw new Error("Not authorized");
   }

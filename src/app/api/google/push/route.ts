@@ -1,5 +1,6 @@
 import { NextResponse, after, type NextRequest } from "next/server";
 import { log } from "@/lib/log";
+import { timingSafeEqual } from "@/lib/bearer-auth";
 import { googleChannelToken } from "@/lib/env";
 import { syncByChannel } from "@/lib/google/sync";
 
@@ -11,8 +12,13 @@ export const dynamic = "force-dynamic";
  * externally-made calendar changes within seconds.
  */
 export async function POST(req: NextRequest) {
+  // #1046: constant time, through the one shared verifier every other machine
+  // endpoint uses (#594). A plain `!==` short circuits on the first differing
+  // character, so the response time leaks how much of the token a guess got right.
+  // The null check comes first because the verifier takes two strings and a thrown
+  // TypeError would answer 500, which Google reads as retriable.
   const token = req.headers.get("x-goog-channel-token");
-  if (token !== googleChannelToken()) {
+  if (!token || !timingSafeEqual(token, googleChannelToken())) {
     return new NextResponse("forbidden", { status: 403 });
   }
 

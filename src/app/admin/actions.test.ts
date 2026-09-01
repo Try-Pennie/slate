@@ -590,6 +590,50 @@ describe("setUserLifecycle (#278)", () => {
   });
 });
 
+// #1046: `requireManageAgent` is the escalation guard on every agent-edit action,
+// and it was the one guard in the file that did not fail closed. #1629 stopped it
+// swallowing a read ERROR, but a read that succeeds and finds NOTHING still fell
+// back to the role `agent`, which is exactly the role a manager is allowed to edit.
+// So a target id that does not exist passed the guard, and an audit row was written
+// naming a user that is not there. Nothing downstream corrupted anything (the
+// service writes match zero rows), which is why it survived: the only visible trace
+// was an audit trail asserting an edit to a nonexistent person.
+//
+// Driven through setUserLifecycle because it is the shortest path to the guard; the
+// guard is shared, so refusing here refuses for every action that calls it.
+describe("requireManageAgent fails closed on a target that does not exist (#1046)", () => {
+  beforeEach(() => {
+    auth.requireManager.mockResolvedValue(admin);
+  });
+
+  it("refuses when the target user row is absent, and writes nothing", async () => {
+    dbState.single = null; // read succeeded, no such user
+    dbState.singleError = null;
+
+    await expect(
+      setUserLifecycle(form({ user_id: "ghost", action: "deactivate" })),
+    ).rejects.toThrow(/not authorized/i);
+
+    expect(offboarding.applyLifecycleByUserId).not.toHaveBeenCalled();
+    // No audit row either: an audit entry against an id with no user is worse than
+    // no entry, because it reads as a real edit that happened.
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("still permits a target that DOES exist and outranks nobody", async () => {
+    // The positive control. Without it, a guard that refused every call would pass
+    // the test above while making the whole admin surface unusable.
+    dbState.single = { role: "agent" };
+
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
+
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate");
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "agent.deactivate", targetUserId: "u2" }),
+    );
+  });
+});
+
 // #912: the admin bookable toggle now runs the same Google-reachability gate as
 // the API (via applyBookableByUserId). A blocked result must HARD-BLOCK: throw a
 // clear error and NOT revalidate (nothing changed), so a manager can't put a

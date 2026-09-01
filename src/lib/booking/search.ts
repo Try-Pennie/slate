@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../supabase/admin.ts";
 import { unwrap } from "../db/result.ts";
+import { escapeLike } from "../sql-like.ts";
 import {
   rosterNameResolver,
   type HistoryRosterUser,
@@ -11,6 +12,36 @@ export const SEARCH_LIMIT = 20;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The columns a text lookup matches, each searched as its OWN query (#1046).
+ *
+ * This used to be one PostgREST `.or()` filter string with the query interpolated
+ * into it. PostgREST parses that string as grammar, so a comma or a parenthesis in
+ * what somebody typed either injected extra OR clauses or broke the parse outright:
+ * searching for "Doe, Jane" errored. One `.ilike()` per column leaves supabase-js
+ * to encode each value, so there is no grammar to inject into, and it matches the
+ * shape the person lookup in `service.ts` already uses.
+ *
+ * Order is the order the queries are issued in, which the tests assert on.
+ */
+export const TEXT_SEARCH_COLUMNS = [
+  "attendee_email",
+  "attendee_name",
+  "attendee_phone",
+] as const;
+
+/**
+ * The ILIKE pattern a text lookup matches with: the query as a LITERAL substring.
+ *
+ * `escapeLike` is what makes it literal (#620): `_` and `%` are ILIKE wildcards, so
+ * a search for `john_doe@` would otherwise also return `johnXdoe@`, and a lone `%`
+ * would return every booking in the org. The surrounding `%` are ours, added after
+ * the escaping, so they stay wildcards.
+ */
+export function textSearchPattern(q: string): string {
+  return `%${escapeLike(q)}%`;
+}
 
 /** Whether the query is a booking id (a UUID), so it routes to an exact lookup. */
 export function isBookingIdQuery(q: string): boolean {
@@ -79,21 +110,33 @@ const defaultDeps: BookingSearchDeps = {
     ) as BookingSearchInput[];
   },
   async byText(q, orgId, limit) {
-    const like = `%${q}%`;
-    return unwrap(
-      await supabaseAdmin()
-        .from("bookings")
-        .select(
-          "id,attendee_name,attendee_email,attendee_phone,starts_at,assigned_user_id,status",
-        )
-        .eq("org_id", orgId)
-        .or(
-          `attendee_email.ilike.${like},attendee_name.ilike.${like},attendee_phone.ilike.${like}`,
-        )
-        .order("starts_at", { ascending: false })
-        .limit(limit),
-      "booking-search by text",
-    ) as BookingSearchInput[];
+    const pattern = textSearchPattern(q);
+    // One bounded, org-scoped query per column, merged here. Each is ordered and
+    // limited the same way the single query was, which returns the same rows: the
+    // newest `limit` matches overall are a subset of the newest `limit` matches per
+    // column, so nothing the combined query would have shown is lost.
+    const results = await Promise.all(
+      TEXT_SEARCH_COLUMNS.map((column) =>
+        supabaseAdmin()
+          .from("bookings")
+          .select(
+            "id,attendee_name,attendee_email,attendee_phone,starts_at,assigned_user_id,status",
+          )
+          .eq("org_id", orgId)
+          .ilike(column, pattern)
+          .order("starts_at", { ascending: false })
+          .limit(limit),
+      ),
+    );
+    const byId = new Map<string, BookingSearchInput>();
+    for (const r of results) {
+      const rows = unwrap(r, "booking-search by text") as BookingSearchInput[] | null;
+      // A booking matching on two columns arrives twice; the map keeps one.
+      for (const row of rows ?? []) byId.set(row.id, row);
+    }
+    return [...byId.values()]
+      .sort((a, b) => (a.starts_at < b.starts_at ? 1 : a.starts_at > b.starts_at ? -1 : 0))
+      .slice(0, limit);
   },
   async users(ids) {
     if (!ids.length) return [];
