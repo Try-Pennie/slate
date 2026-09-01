@@ -214,6 +214,23 @@ function bookingsPerLocalDay(
  * `dailyCap === null` means uncapped. `dayCounts` may be a precomputed
  * local-date -> count map (the booker's hot loop builds it once); otherwise the
  * count is derived from `bookingStartsMs`.
+ *
+ * THE CAP IS A SOFT LIMIT, and that is a decision rather than an oversight (#1048).
+ * Enforcement is check-then-act: this counts, and the insert happens after. Two
+ * bookings for DIFFERENT slots on the same local day can therefore both pass the
+ * count and both insert, so an agent can end a day one or two over their cap. The
+ * active-slot unique index only arbitrates the same slot, which is the case that
+ * matters (two people cannot take one appointment).
+ *
+ * Making it hard would mean counting and inserting inside one transaction with the
+ * agent row locked, or an advisory lock keyed on agent plus day, on the booking
+ * insert: the highest risk path in the system. That was weighed against what the
+ * softness costs, which is an agent seeing one extra call on a busy day, and the
+ * softness won. It is a workload preference, not a correctness boundary: nothing
+ * downstream reads the cap as a guarantee, and no double booking can come from it.
+ *
+ * Revisit if the cap ever becomes a compliance or contractual limit rather than a
+ * workload one, because then a soft ceiling is the wrong shape entirely.
  */
 export function isUnderDailyCap(
   bookingStartsMs: number[],
