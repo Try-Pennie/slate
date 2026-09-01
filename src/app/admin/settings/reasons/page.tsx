@@ -9,7 +9,6 @@ import { SettingsSaveNotice } from "../SettingsSaveNotice";
 import { resolveEditorRows, type ReasonOptionRow as PureReasonRow } from "@/lib/booking/reason-options";
 import {
   loadReasonUsageCounts,
-  emptyReasonUsage,
   type ReasonUsageCounts,
 } from "@/lib/booking/reason-usage";
 import { log } from "@/lib/log";
@@ -85,13 +84,19 @@ export default async function ReasonOptionsPage({
   const initial = resolveEditorRows(stored as PureReasonRow[]);
 
   // Recent usage per reason (#990), so an admin sees how often a reason is picked
-  // before retiring it. Best-effort: a read failure (or the RPC missing during a
-  // migrate-before-deploy window) degrades to no hint rather than 500ing the page.
-  let usage: ReasonUsageCounts = emptyReasonUsage();
+  // before retiring it. A read failure (or the RPC missing during a
+  // migrate-before-deploy window) degrades to NULL, never to zeros (#1657):
+  // `loadReasonUsageCounts` throws for exactly this reason, and degrading the
+  // throw to an empty map is the outcome it exists to prevent. Zero is the real
+  // answer "nobody has picked this in 90 days", it renders as a positive claim,
+  // and the same number gates the confirm before retiring a still-used reason, so
+  // zeroing it turns a false all clear into a disabled guardrail on the one screen
+  // where the destructive edit is made.
+  let usage: ReasonUsageCounts | null = null;
   try {
     usage = await loadReasonUsageCounts();
-  } catch {
-    log.warn("reason-options", { msg: "usage counts unavailable; hiding the hint" });
+  } catch (err) {
+    log.error("reason-options", { msg: "usage counts unreadable" }, err);
   }
 
   return (
