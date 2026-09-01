@@ -1,6 +1,7 @@
 /**
  * What replacing a user's weekly hours should write, or why it must be refused
- * (#1293). Pure, no `@/` imports, so it runs node-native.
+ * (#1293). Pure, no `@/` imports, so it runs node-native (luxon is a package, and
+ * `IANAZone.isValidZone` is the repo's existing zone validator).
  *
  * The write path deletes every rule for the schedule and reinserts, so a REFUSED
  * input is not a cosmetic validation matter: clearing the rules removes that agent
@@ -20,6 +21,8 @@
  * Weekdays follow Luxon (1 = Monday .. 7 = Sunday), so 0 would silently match no day.
  */
 
+import { IANAZone } from "luxon";
+
 export interface ScheduleRule {
   weekday: number;
   start_minute: number;
@@ -27,7 +30,7 @@ export interface ScheduleRule {
 }
 
 export type ScheduleReplacementPlan =
-  | { ok: true; rules: ScheduleRule[] }
+  | { ok: true; rules: ScheduleRule[]; timezone: string }
   | { ok: false; error: string };
 
 const DAY_END_MINUTE = 1440;
@@ -53,7 +56,29 @@ const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "
  * whole save, since a partial write would leave a week nobody chose while reporting
  * success.
  */
-export function planScheduleReplacement(days: ScheduleRule[]): ScheduleReplacementPlan {
+export function planScheduleReplacement(
+  days: ScheduleRule[],
+  /**
+   * The zone the week is expressed in. REQUIRED, so `tsc` names every write path
+   * rather than letting one skip the check (#1671).
+   *
+   * It is not cosmetic. `isWithinWorkingHours` compares `rule.weekday !== day.weekday`,
+   * and a zone Luxon cannot read makes `day.weekday` NaN, so every comparison is
+   * false, every rule misses, and the agent is bookable at NO time at all. The
+   * column is `text not null` with no CHECK and a CHECK cannot call the timezone
+   * catalog (it is not immutable), so this validated write path is what keeps a
+   * predicate-breaking value out of it (L150).
+   */
+  timezone: string,
+): ScheduleReplacementPlan {
+  if (!IANAZone.isValidZone(timezone)) {
+    return {
+      ok: false,
+      error:
+        `"${timezone}" is not a timezone we can read, so your hours were not saved. ` +
+        `Pick one from the list, for example America/New_York.`,
+    };
+  }
   if (days.length === 0) {
     return {
       ok: false,
@@ -87,6 +112,7 @@ export function planScheduleReplacement(days: ScheduleRule[]): ScheduleReplaceme
   return {
     ok: true,
     rules: [...days].sort((a, b) => a.weekday - b.weekday),
+    timezone,
   };
 }
 
@@ -96,6 +122,7 @@ export function planUniformSchedule(
   weekdays: number[],
   startMinute: number,
   endMinute: number,
+  timezone: string,
 ): ScheduleReplacementPlan {
   return planScheduleReplacement(
     weekdays.map((weekday) => ({
@@ -103,5 +130,6 @@ export function planUniformSchedule(
       start_minute: startMinute,
       end_minute: endMinute,
     })),
+    timezone,
   );
 }

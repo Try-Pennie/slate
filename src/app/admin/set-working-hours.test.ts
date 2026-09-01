@@ -39,7 +39,28 @@ vi.mock("@/lib/supabase/admin", () => ({
     from: (t: string) => {
       fromTable(t);
       return {
-        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { role: "agent" } }) }) }),
+        // #1670 reads the org defaults and the agent's existing zone through this
+        // same fake, so `single` and `maybeSingle` both answer, keyed by table.
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data:
+                t === "availability_schedules"
+                  ? { timezone: "America/New_York" }
+                  : { role: "agent" },
+              error: null,
+            }),
+            single: async () => ({
+              data: {
+                default_timezone: "America/New_York",
+                default_start_minute: 480,
+                default_end_minute: 1200,
+                default_weekdays: [1, 2, 3, 4, 5],
+              },
+              error: null,
+            }),
+          }),
+        }),
         delete: () => ({ eq: async () => ({}) }),
         insert: async () => ({ error: null }),
         update: (row: Record<string, unknown>) => {
@@ -61,7 +82,7 @@ vi.mock("@/lib/bookable/service", () => ({ applyBookableByUserId: vi.fn(), apply
 vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_SYNC_STREAK_KEY: "k" }));
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
-import { setWorkingHours, setOrgDefaultHours } from "./actions";
+import { setWorkingHours, setOrgDefaultHours, useDefaultHours } from "./actions";
 
 /**
  * The form as the per-day hours editor submits it (#1308): a checkbox and its own
@@ -260,5 +281,83 @@ describe("setOrgDefaultHours", () => {
     // the fallback exists so a blank cannot write 09:00 over the backfilled
     // roster, and it must not be able to write midnight either.
     expect(written()?.default_end_minute).toBe(1020);
+  });
+});
+
+// #1671: the timezone is a stored value the availability engine COMPARES against,
+// not a label. `isWithinWorkingHours` tests `rule.weekday !== day.weekday`, and a
+// zone Luxon cannot read makes that weekday NaN, so every comparison is false,
+// every rule misses, and the agent is bookable at no time at all. Their hours
+// still render correctly afterwards, so nothing tells them and nothing tells
+// anyone else. Refused at the write, before anything is deleted.
+describe("the timezone on a working-hours save (#1671)", () => {
+  it("refuses an unreadable zone and writes nothing", async () => {
+    const fd = hoursForm();
+    fd.set("timezone", "Eastern");
+    await expect(setWorkingHours(fd)).rejects.toThrow(/time ?zone/i);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(upsertUserSchedule).not.toHaveBeenCalled();
+  });
+
+  it("refuses a blank zone and writes nothing", async () => {
+    const fd = hoursForm();
+    fd.set("timezone", "   ");
+    await expect(setWorkingHours(fd)).rejects.toThrow(/time ?zone/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  // The control: a real zone still saves, so the refusals above are about the
+  // value and not about the action having stopped working.
+  it("CONTROL: a real zone still writes the week", async () => {
+    const fd = hoursForm();
+    fd.set("timezone", "America/Los_Angeles");
+    await setWorkingHours(fd);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(upsertUserSchedule).toHaveBeenCalledWith("u1", "America/Los_Angeles");
+  });
+
+  it("refuses an unreadable org default zone, so no new agent adopts it", async () => {
+    const fd = new FormData();
+    fd.set("default_timezone", "Eastern");
+    fd.set("default_start", "08:00");
+    fd.set("default_end", "20:00");
+    for (const d of [1, 2, 3, 4, 5]) fd.set(`dday_${d}`, "on");
+    updated.row = null;
+    await expect(setOrgDefaultHours(fd)).rejects.toThrow(/time ?zone/i);
+    expect(updated.row).toBeNull();
+  });
+});
+
+// #1670: "Apply company default hours" was the straggler write on this path, a
+// bare delete then insert with neither error bound, no transaction and no
+// validation. A half failure left the agent with a schedule row holding NO rules,
+// which makes isWithinWorkingHours reject every instant, so that agent offers no
+// times permanently, while the reloaded page drew the org default week (it renders
+// the org fallback for zero rules) and the coverage monitor saw a row and moved on.
+describe("useDefaultHours (#1670)", () => {
+  const form = () => {
+    const fd = new FormData();
+    fd.set("user_id", "u1");
+    return fd;
+  };
+
+  it("goes through the one transactional call, and never deletes rules itself", async () => {
+    await useDefaultHours(form());
+    expect(rpc).toHaveBeenCalledTimes(1);
+    const [fn, args] = rpc.mock.calls[0] as [string, { p_rules: unknown[] }];
+    expect(fn).toBe("replace_availability_rules");
+    expect(args.p_rules).toHaveLength(5);
+    // A direct touch of the rules table is the defect itself.
+    expect(fromTable).not.toHaveBeenCalledWith("availability_rules");
+  });
+
+  it("refuses to report a save when the database recorded a different number of days", async () => {
+    rpc.mockResolvedValue({ data: 2, error: null });
+    await expect(useDefaultHours(form())).rejects.toThrow(/could not be saved/i);
+  });
+
+  it("surfaces a failed write instead of leaving the agent with an empty week", async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: "deadlock detected" } });
+    await expect(useDefaultHours(form())).rejects.toThrow(/deadlock detected/);
   });
 });
