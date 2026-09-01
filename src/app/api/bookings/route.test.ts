@@ -407,6 +407,29 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
     expect(await res.json()).toMatchObject({ bookings: [{ id: "bk-1" }], nextCursor: null });
   });
 
+  // #1675: an unreadable page refuses retriably. A 200 with an empty list is the
+  // answer "that is everything" to a caller that pages, so it would move its
+  // watermark past bookings nobody read.
+  it("GET list mode refuses with 503 when the page cannot be read", async () => {
+    service.listBookings.mockRejectedValue(new Error("read failed [queryBookings rows]: statement timeout"));
+    const res = await authedGet("http://localhost/api/bookings?status=confirmed");
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("LIST_UNAVAILABLE");
+    expect(body.bookings).toBeUndefined();
+    // The refusal must not leak the underlying read error to the caller.
+    expect(JSON.stringify(body)).not.toMatch(/statement timeout/);
+  });
+
+  // The control: a genuinely empty page is still a 200 empty page, so the
+  // refusal above cannot be satisfied by a route that refuses everything.
+  it("GET list mode returns 200 for a genuinely empty page", async () => {
+    service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
+    const res = await authedGet("http://localhost/api/bookings?status=confirmed");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ bookings: [], nextCursor: null });
+  });
+
   it("GET with blank externalId -> 400", async () => {
     const res = await authedGet("http://localhost/api/bookings?externalId=");
     expect(res.status).toBe(400);

@@ -1643,12 +1643,20 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       if (filter.updatedSince) q = q.gt("updated_at", filter.updatedSince);
       if (filter.bucketId) q = q.eq("bucket_id", filter.bucketId);
       if (filter.assignedUserId) q = q.eq("assigned_user_id", filter.assignedUserId);
-      // error-ok: admin cross-person list read; an empty result surfaces in the admin UI, not the booker's availability.
-      const { data } = await q
-        .order(filter.orderBy, { ascending: true })
-        .order("id", { ascending: true })
-        .range(filter.offset, filter.offset + filter.limit - 1);
-      const rows = (data ?? []) as Booking[];
+      // #1675: NOT null-tolerant, despite the opt-out that used to sit here
+      // calling this an admin read. Its only consumer is `listBookings`, the
+      // machine booking API's list endpoint, and an integrator pages it: an
+      // empty page with a null cursor is the answer "that is everything", so a
+      // failed page advances the caller's watermark past bookings nobody read
+      // and they are never asked for again. This is the read side of what #1641
+      // closed on the write side.
+      const rows = (unwrap(
+        await q
+          .order(filter.orderBy, { ascending: true })
+          .order("id", { ascending: true })
+          .range(filter.offset, filter.offset + filter.limit - 1),
+        "queryBookings rows",
+      ) ?? []) as Booking[];
       const bucketIds = [...new Set(rows.map((b) => b.bucket_id))];
       // The bucket join is NOT null-tolerant like the row read above it (#1641).
       // Its only job is to turn each row's bucket_id into the code the caller

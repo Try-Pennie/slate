@@ -197,6 +197,7 @@ other unexpected fault (#802).
 | `NO_ELIGIBLE_AGENTS` | 409 | Bucket has zero eligible agents | Config error, stop and escalate |
 | `SLOT_TAKEN` | 409 | Slot filled before booking | Re-query availability, pick another slot |
 | `VERIFY_UNAVAILABLE` | 503 | Could not confirm calendars (transient) | Retry shortly |
+| `LIST_UNAVAILABLE` | 503 | The bookings page could not be read (list mode only) | Retry the SAME cursor; do not advance it |
 | `INTERNAL` | 500 | Unexpected | Retry once, then escalate |
 
 **Idempotency.** Re-submitting the same `externalId` plus slot is safe: it
@@ -241,6 +242,13 @@ reporting. All filters optional:
 Response: `{ "bookings": [ <view + bucketCode>, … ], "nextCursor": "<opaque>" | null }`.
 `nextCursor` is present only when the page came back full. The offset is capped at
 10000 rows; beyond it returns `VALIDATION` (narrow the date range instead).
+
+A page that could not be READ returns `503 LIST_UNAVAILABLE`, never an empty page
+(#1675). That distinction is the whole contract for a paging caller: an empty page
+with a null cursor means "that is everything", so answering one on a failed read
+would move your watermark past bookings nobody read and they would never be
+offered again. On a `503`, retry the same `cursor` and leave your watermark where
+it is.
 
 Passing `externalId=` blank, or mixing list-only filters into a lookup request,
 returns `400 VALIDATION`.

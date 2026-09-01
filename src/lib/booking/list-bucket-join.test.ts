@@ -78,6 +78,28 @@ describe("listBookings bucket join (wired, not injected)", () => {
     await expect(listBookings(QUERY)).rejects.toThrow(/queryBookings bucket join/);
   });
 
+  // #1675: the ROW read above the join had the opposite treatment, and it is the
+  // worse of the two. A failed page resolved to `[]`, so the API answered 200
+  // with `bookings: []` and `nextCursor: null`, which an integrator paging the
+  // list reads as "that is everything": the watermark advances past bookings
+  // nobody read and they are never asked for again.
+  it("throws when the bookings page itself errors, rather than reporting an empty page", async () => {
+    resultByTable.set("bookings", { data: null, error: { message: "statement timeout" } });
+    resultByTable.set("buckets", { data: [{ id: "b-411", code: "411" }], error: null });
+
+    await expect(listBookings(QUERY)).rejects.toThrow(/queryBookings rows/);
+  });
+
+  // The control the refusal above needs: a page that genuinely holds nothing
+  // must still come back as an empty page, not as a failure (L159).
+  it("reports a genuinely empty page as an empty page", async () => {
+    resultByTable.set("bookings", { data: [], error: null });
+
+    const res = await listBookings(QUERY);
+    expect(res.items).toEqual([]);
+    expect(res.nextCursor).toBeNull();
+  });
+
   it("still tags each booking with its bucket code when the join reads", async () => {
     resultByTable.set("bookings", { data: [BOOKING], error: null });
     resultByTable.set("buckets", { data: [{ id: "b-411", code: "411" }], error: null });
