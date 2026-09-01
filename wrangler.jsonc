@@ -33,7 +33,23 @@
 			"custom_domain": true
 		}
 	],
-	"workers_dev": true,
+	// #1052: production answers on the custom domain ONLY. workers.dev was a second
+	// live origin serving the same code and the same bindings (so the same database
+	// and the same Google credentials), outside the trypennie.app zone and outside
+	// anything zone level, and it confused every NEXT_PUBLIC_APP_URL relative flow:
+	// an OAuth redirect, an embed, a manage link.
+	//
+	// `preview_urls` is set EXPLICITLY and that is the part worth knowing. Wrangler
+	// defaults it to whatever `workers_dev` is, so leaving it out would have turned
+	// off `wrangler versions upload` previews as a side effect of this line, and
+	// would silently turn them back on for anybody who ever re-enables workers.dev.
+	// Off is the right answer for both here: a preview URL serves a real version with
+	// production bindings on a public address, which is the same exposure this line
+	// closes, and a preview emits no observability events anyway (see AGENTS.md), so
+	// it is a weak debugging tool. To use one deliberately, set `preview_urls` true,
+	// upload, and set it back.
+	"workers_dev": false,
+	"preview_urls": false,
 	"compatibility_date": "2025-08-01",
 	// nodejs_compat is required for OpenNext + googleapis/node:crypto.
 	"compatibility_flags": [
@@ -50,6 +66,15 @@
 		// dashboard plain var gets wiped on the next `wrangler deploy`.
 		"GOOGLE_HOSTED_DOMAIN": "trypennie.com",
 		"NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN": "trypennie.com",
+		// The two launch flags. Flipping either costs a DEPLOY (about two minutes),
+		// which is accepted rather than overlooked (#1052): both govern a cutover
+		// step somebody decides on purpose, not an incident somebody reacts to, so
+		// neither wants an instant switch. What that costs is that there is no kill
+		// switch here: if a flag ever gates something that has to be turnable off in
+		// seconds under load, back it with a monitor_settings row (the pattern the
+		// alert cooldowns already use, read per tick from the database) rather than
+		// adding a var. DEPLOY.md's "Feature flags and the kill switch" section
+		// carries the decision and what would change it.
 		"OOO_CALCOM_DUAL_WRITE": "true",
 		"AGENT_SCHEDULING_LIVE": "false",
 		"CALCOM_BASE_URL": "https://api.cal.com/v2",

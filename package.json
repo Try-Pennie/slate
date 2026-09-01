@@ -15,6 +15,7 @@
     "cf:build": "opennextjs-cloudflare build",
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf:deploy:verified": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/deploy-verified.ts",
     "prepare": "git config core.hooksPath .githooks || true",
     "preview:booker": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-booker.ts",
     "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
