@@ -53,6 +53,8 @@ import {
 } from "@/lib/monitor/settings";
 import { AppHeader } from "@/components/AppHeader";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
+import { log } from "@/lib/log";
 import { SettingsSaveNotice } from "./SettingsSaveNotice";
 import { labelCls, inputCls, cardCls, btnCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
@@ -182,49 +184,60 @@ export default async function MonitorSettingsPage({
   }
 
   // --- Business hours (#1297) -------------------------------------------------
-  // The raw week (including closed days and their kept windows), the org's own
-  // seeding defaults, and who is actually rostered inside the open hours.
+  // Four reads feed the hours block, and each one answers for ITSELF (#1658).
   //
-  // The roster read THROWS on failure rather than returning empty, and that has to
-  // survive to the screen: rendering an unreadable roster as "nobody covers this"
-  // reads as a staffing problem someone would go and fix. So a failure becomes the
-  // could-not-check state, never a zero.
-  let businessDays: BusinessHoursDay[] = [];
-  // #1363: the dates that override the weekly pattern. Read here rather than
-  // inside the component so a failure lands in the same catch the week's does,
-  // and the screen shows a seeded week with no exceptions rather than throwing.
-  let exceptions: BusinessHoursException[] = [];
-  let coverage: CoverageReadout = { ok: false };
+  // They used to share one `try`, so one shared `catch` set the only
+  // could-not-measure state there was, `coverage = { ok: false }`, whose wording
+  // names the ROSTER. A failed WEEK read therefore drew seven unchecked weekdays
+  // (this page stating Pennie is closed every day, on the screen whose job is to
+  // say what the hours are) beside a notice blaming a read that may have been
+  // perfectly fine, and a failed EXCEPTIONS read drew "No dates are set", a
+  // categorical all clear about holiday closures produced by a read that never
+  // ran. Distinct causes get distinct messages (L11), and a surface derived from
+  // several reads gates on every one of them (L530).
+  //
+  // `null` is the unreadable state throughout, never an empty value: an empty
+  // week and an empty exception list are both legitimate readings, and both are
+  // the reassuring one.
   type OrgDefaults = {
     default_timezone: string;
     default_start_minute: number;
     default_end_minute: number;
     default_weekdays: number[];
   };
-  let org: OrgDefaults | null = null;
-  try {
-    const db = supabaseAdmin();
-    const [rowsRaw, exceptionRows, orgRes] = await Promise.all([
-      loadBusinessHoursRows(),
-      loadBusinessHoursExceptions(
-        DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01",
-      ),
-      db
-        .from("organizations")
-        .select("default_timezone, default_start_minute, default_end_minute, default_weekdays")
-        .eq("id", me.org_id)
-        .maybeSingle(),
-    ]);
+  const db = supabaseAdmin();
+  const [weekRead, exceptionsRead, orgRead, agentsRead] = await Promise.allSettled([
+    loadBusinessHoursRows(),
+    // #1363: the dates that override the weekly pattern. Read here rather than
+    // inside the component so the page, not the component, owns the failure.
+    loadBusinessHoursExceptions(
+      DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01",
+    ),
+    db
+      .from("organizations")
+      .select("default_timezone, default_start_minute, default_end_minute, default_weekdays")
+      .eq("id", me.org_id)
+      .maybeSingle(),
+    // The pool and their rules, through the SAME loader the monitor lane's
+    // roster-coverage alarm uses (#1454), so the screen and the alarm can never
+    // disagree about who covers what. It THROWS rather than returning empty:
+    // rendering an unreadable roster as "nobody covers this" reads as a staffing
+    // problem someone would go and fix.
+    loadCoverageAgents(db),
+  ]);
+
+  let businessDays: BusinessHoursDay[] | null = null;
+  if (weekRead.status === "fulfilled") {
     // An unconfigured table resolves to the seeded week, matching what the gate
     // itself would use, so the editor never shows a blank week that saving would
-    // then make real.
+    // then make real. That is a READ that succeeded and found nothing, which is a
+    // different thing from a read that failed.
     const week =
-      rowsRaw.length === 7
-        ? rowsRaw
+      weekRead.value.length === 7
+        ? weekRead.value
         : SEEDED_BUSINESS_HOURS.map((r) => ({ ...r, is_open: true })).concat(
             [7].map((weekday) => ({ weekday, is_open: false, start_minute: 480, end_minute: 1200 })),
           );
-    exceptions = exceptionRows;
     businessDays = [...week]
       .sort((a, b) => a.weekday - b.weekday)
       .map((r) => ({
@@ -233,15 +246,41 @@ export default async function MonitorSettingsPage({
         start: minutesToTime(r.start_minute),
         end: minutesToTime(r.end_minute),
       }));
-    if (!orgRes.error && orgRes.data) {
-      org = orgRes.data as OrgDefaults;
-    }
+  } else {
+    log.error("admin-settings", { msg: "business hours week unreadable" }, weekRead.reason);
+  }
 
-    // The pool and their rules, through the SAME loader the monitor lane's
-    // roster-coverage alarm uses (#1454), so the screen and the alarm can never
-    // disagree about who covers what.
-    const agents = await loadCoverageAgents(db);
+  let exceptions: BusinessHoursException[] | null = null;
+  if (exceptionsRead.status === "fulfilled") {
+    exceptions = exceptionsRead.value;
+  } else {
+    log.error("admin-settings", { msg: "business hours exceptions unreadable" }, exceptionsRead.reason);
+  }
 
+  // #1651: binding `error` satisfies the swallowed-read scanner, but its only
+  // consequence used to be `org = null`, and the section renders behind
+  // `{org && …}`, so the whole panel vanished with nothing said. An absent panel
+  // is indistinguishable from a page that never had one.
+  let org: OrgDefaults | null = null;
+  let orgUnreadable = false;
+  if (orgRead.status === "fulfilled" && !orgRead.value.error) {
+    org = (orgRead.value.data as OrgDefaults | null) ?? null;
+  } else {
+    orgUnreadable = true;
+    log.error("admin-settings", {
+      msg: "org defaults unreadable",
+      reason:
+        orgRead.status === "rejected"
+          ? String(orgRead.reason)
+          : (orgRead.value.error?.message ?? "unknown"),
+    });
+  }
+
+  // Coverage needs BOTH the week and the roster, so it is measured only when both
+  // read. When the week is the one that failed the form is not drawn at all, so
+  // this readout is never the thing explaining that failure.
+  let coverage: CoverageReadout = { ok: false };
+  if (agentsRead.status === "fulfilled" && businessDays) {
     coverage = coverageForWeek({
       businessHours: businessDays.map((d) => ({
         weekday: d.weekday,
@@ -250,13 +289,11 @@ export default async function MonitorSettingsPage({
         end_minute: Number(d.end.slice(0, 2)) * 60 + Number(d.end.slice(3, 5)),
       })),
       zone: BUSINESS_ZONE,
-      agents,
+      agents: agentsRead.value,
       weekStartIso: currentWeekStartIso(),
     });
-  } catch {
-    // Any of those reads failing leaves coverage in its could-not-check state and
-    // the week on the seeded default, which is what the gate would serve anyway.
-    coverage = { ok: false };
+  } else if (agentsRead.status === "rejected") {
+    log.error("admin-settings", { msg: "coverage roster unreadable" }, agentsRead.reason);
   }
 
   const armed = process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
@@ -574,12 +611,20 @@ export default async function MonitorSettingsPage({
             bucket, whatever an agent&apos;s own schedule says. A change applies to
             everyone straight away.
           </p>
-          <BusinessHoursForm
-            action={setBusinessHours}
-            days={businessDays}
-            zoneLabel={humanizeZone(BUSINESS_ZONE)}
-            coverage={coverage}
-          />
+          {businessDays ? (
+            <BusinessHoursForm
+              action={setBusinessHours}
+              days={businessDays}
+              zoneLabel={humanizeZone(BUSINESS_ZONE)}
+              coverage={coverage}
+            />
+          ) : (
+            <UnreadableNotice>
+              The hours for the week could not be read just now, so this is not saying
+              Pennie is closed. Reload in a moment. The hours themselves are unchanged
+              and the booker is still using them.
+            </UnreadableNotice>
+          )}
         </section>
 
         {/* Specific dates, adjacent to the weekly pattern they override (#1363). */}
@@ -592,13 +637,32 @@ export default async function MonitorSettingsPage({
             rather than that every time is taken. Appointments already in the diary
             stay put.
           </p>
-          <BusinessHoursExceptions
-            action={setBusinessHoursException}
-            removeAction={removeBusinessHoursException}
-            exceptions={exceptions}
-            zoneLabel={humanizeZone(BUSINESS_ZONE)}
-          />
+          {exceptions ? (
+            <BusinessHoursExceptions
+              action={setBusinessHoursException}
+              removeAction={removeBusinessHoursException}
+              exceptions={exceptions}
+              zoneLabel={humanizeZone(BUSINESS_ZONE)}
+            />
+          ) : (
+            <UnreadableNotice>
+              The dates that override the weekly pattern could not be read just now, so
+              this is not saying there are none. Reload in a moment. Any dates already
+              set are unchanged and the booker is still honouring them.
+            </UnreadableNotice>
+          )}
         </section>
+
+        {orgUnreadable && (
+          <section className={cardCls}>
+            <h2 className="mb-1 text-sm font-semibold">Starting hours for a new agent</h2>
+            <UnreadableNotice className="mt-3">
+              The starting hours for a new agent could not be read just now, so nothing is
+              shown here. Reload in a moment. The stored defaults are unchanged, and
+              adding an agent still applies them.
+            </UnreadableNotice>
+          </section>
+        )}
 
         {org && (
           <section className={cardCls}>

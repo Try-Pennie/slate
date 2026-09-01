@@ -32,13 +32,17 @@ const from = vi.hoisted(() => {
       return Promise.resolve(db.results[table] ?? { data: null, error: null });
     };
     const b: Record<string, unknown> = {
-      select: () => b,
-      eq: () => b,
-      order: () => res(),
       maybeSingle: () => res(),
-      in: () => res(),
-      then: (resolve: (v: unknown) => void) => res().then(resolve),
+      single: () => res(),
+      then: (resolve: (v: unknown) => void, reject?: (e: unknown) => void) =>
+        res().then(resolve, reject),
     };
+    // Every filter/ordering method is chainable and the builder is awaitable, so
+    // a read that ends on `.limit()` or `.is()` resolves the same way one ending
+    // on `.order()` does (#1658 drives reads with both shapes).
+    for (const m of ["select", "eq", "order", "in", "gte", "lte", "is", "limit", "neq", "range"]) {
+      b[m] = () => b;
+    }
     return b;
   });
 });
@@ -306,5 +310,128 @@ describe("MonitorSettingsPage alert toggles", () => {
       expect(name).not.toMatch(/\barm\b/i);
       expect(name).not.toMatch(/\bpage Slack\b/i);
     }
+  });
+});
+
+// #1658: three reads feed the hours block, and until now one shared catch gave
+// them one shared outcome, `coverage = { ok: false }`. That outcome's own wording
+// blames the ROSTER, so a failed WEEK read drew seven unchecked weekdays (the
+// screen stating Pennie is closed every day) beside a notice about a read that may
+// have been perfectly fine, and a failed EXCEPTIONS read drew the categorical all
+// clear "No dates are set. Every day follows the weekly pattern above." on a read
+// that never ran. Distinct causes get distinct messages (L11), and a surface
+// derived from several reads gates on every one of them (L530).
+describe("MonitorSettingsPage hours block: each read answers for itself (#1658)", () => {
+  const READ_ERROR = { data: null, error: { message: "statement timeout" } };
+  const WEEK = [1, 2, 3, 4, 5].map((weekday) => ({
+    weekday,
+    is_open: true,
+    start_minute: 480,
+    end_minute: 1200,
+  }));
+  const EXCEPTIONS = [
+    { on_date: "2026-12-25", is_open: false, start_minute: null, end_minute: null, note: "Christmas" },
+  ];
+
+  beforeEach(() => {
+    db.results.business_hours = { data: WEEK, error: null };
+    db.results.business_hours_exceptions = { data: EXCEPTIONS, error: null };
+    db.results.organizations = {
+      data: {
+        default_timezone: "America/New_York",
+        default_start_minute: 540,
+        default_end_minute: 1020,
+        default_weekdays: [1, 2, 3, 4, 5],
+      },
+      error: null,
+    };
+  });
+
+  // The control every negative below needs: with all three readable, the week is
+  // drawn, the exceptions are drawn, and no unreadable notice appears at all. A
+  // "the false all clear is gone" assertion is otherwise satisfied by a page that
+  // renders nothing (L159).
+  it("CONTROL: draws the week and the dates when every read succeeds", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.getByText(/Christmas/)).toBeTruthy();
+    expect(screen.queryByText(/No dates are set/i)).toBeNull();
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+    // Five open weekdays are actually ticked, so an unchecked week below is a
+    // difference in the ANSWER and not in what the page can draw.
+    const openDays = [...document.querySelectorAll('input[type="checkbox"]')].filter(
+      (el) => (el as HTMLInputElement).checked,
+    );
+    expect(openDays.length).toBeGreaterThan(0);
+  });
+
+  it("says the week could not be read instead of drawing Pennie closed every day", async () => {
+    db.results.business_hours = READ_ERROR;
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.getByText(/hours for the week could not be read/i)).toBeTruthy();
+    // And it must not draw the week at all: an unchecked weekday is the claim
+    // that Pennie is shut that day.
+    expect(screen.queryByLabelText(/Monday/i)).toBeNull();
+    // The roster wording belongs to the roster read, which was fine here.
+    expect(screen.queryByText(/roster could not be read/i)).toBeNull();
+  });
+
+  it("says the dates could not be read instead of claiming no dates are set", async () => {
+    db.results.business_hours_exceptions = READ_ERROR;
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.getByText(/dates that override the weekly pattern could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/No dates are set/i)).toBeNull();
+    // The week is a different read and was readable, so it still draws.
+    expect(screen.queryByText(/hours for the week could not be read/i)).toBeNull();
+  });
+
+  it("keeps the roster wording for a roster failure, with the week and dates still drawn", async () => {
+    db.results.users = READ_ERROR;
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.getByText(/roster could not be read/i)).toBeTruthy();
+    expect(screen.getByText(/Christmas/)).toBeTruthy();
+    expect(screen.queryByText(/hours for the week could not be read/i)).toBeNull();
+    expect(screen.queryByText(/dates that override/i)).toBeNull();
+  });
+});
+
+// #1651 item 3: a bound `error` satisfies the swallowed-read scanner, but its only
+// consequence here was `org = null`, and the section renders behind `{org && …}`,
+// so the whole panel vanished with nothing said. The guard checks that `error` is
+// BOUND, never that it produces a distinct screen.
+describe("MonitorSettingsPage org defaults panel (#1651)", () => {
+  it("says the starting hours could not be read rather than dropping the panel", async () => {
+    db.results.organizations = { data: null, error: { message: "statement timeout" } };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.getByText(/starting hours for a new agent could not be read/i)).toBeTruthy();
+    // The heading stays, so the panel is visibly present and unreadable rather
+    // than absent, which is indistinguishable from a page that never had it.
+    expect(screen.getAllByText(/Starting hours for a new agent/i).length).toBeGreaterThan(0);
+  });
+
+  it("CONTROL: renders the editable defaults when the read succeeds", async () => {
+    db.results.organizations = {
+      data: {
+        default_timezone: "America/New_York",
+        default_start_minute: 540,
+        default_end_minute: 1020,
+        default_weekdays: [1, 2, 3, 4, 5],
+      },
+      error: null,
+    };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await MonitorSettingsPage(props));
+
+    expect(screen.queryByText(/starting hours for a new agent could not be read/i)).toBeNull();
+    expect((screen.getByLabelText("Timezone") as HTMLInputElement).value).toBe("America/New_York");
   });
 });
