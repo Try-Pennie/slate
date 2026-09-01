@@ -21,12 +21,26 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 
 import { POST } from "./route";
 
-const req = (body?: unknown) =>
+/** Same-origin headers, which is what Slate's own UI sends. The route refuses a
+ *  request that says it came from elsewhere (#1046), so every fake carries them;
+ *  the refusal test below overrides them. */
+const SAME_ORIGIN_HEADERS = {
+  origin: "https://slate.trypennie.app",
+  "sec-fetch-site": "same-origin",
+  host: "slate.trypennie.app",
+};
+const CROSS_ORIGIN_HEADERS = {
+  ...SAME_ORIGIN_HEADERS,
+  origin: "https://evil.example",
+  "sec-fetch-site": "cross-site",
+};
+const req = (body?: unknown, headers: Record<string, string> = SAME_ORIGIN_HEADERS) =>
   ({
     json: async () => {
       if (body === undefined) throw new Error("no body");
       return body;
     },
+    headers: new Headers(headers),
   }) as unknown as Parameters<typeof POST>[0];
 
 const clean = {
@@ -138,5 +152,28 @@ describe("POST /api/admin/erasure-purge", () => {
       await POST(req());
       expect(locks.releaseLock).toHaveBeenCalledWith("erasure_warehouse_purge", "lease");
     });
+  });
+});
+
+// #1046: the session cookie is this route's only credential, so a request that says
+// it came from another site is refused before the auth check and before the body is
+// read. The static guard (scripts/test-same-origin-coverage.ts) proves every
+// cookie-authed mutation route carries the CALL; this proves the call on this route
+// actually refuses rather than sitting unreachable behind an earlier return.
+describe("erasure purge refuses a cross-origin request (#1046)", () => {
+  it("403s a cross-site request without authenticating or writing", async () => {
+    const res = await POST(req(undefined, CROSS_ORIGIN_HEADERS));
+
+    expect(res.status).toBe(403);
+    expect(auth.requireAdmin).not.toHaveBeenCalled();
+    expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
+    expect(locks.acquireLock).not.toHaveBeenCalled();
+  });
+
+  it("still serves the same-origin request the UI sends", async () => {
+    // The positive control: a guard that refused everything would pass the test
+    // above while breaking the whole surface.
+    const res = await POST(req());
+    expect(res.status).not.toBe(403);
   });
 });

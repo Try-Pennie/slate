@@ -11,6 +11,7 @@ import {
   startBulkReassign,
 } from "@/lib/booking/service";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,12 @@ const startSchema = z.object({
  * actor is recorded on the job (created_by / acting_as_user_id, #549).
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // #1046: this route's only credential is the session cookie, so refuse a request
+  // that says it came from somewhere else, before the auth check and before the body
+  // is read. See src/lib/api/same-origin.ts for why silence is allowed through.
+  const crossOrigin = crossOriginRefusal(req, "admin/agents/[id]/bulk-reassign");
+  if (crossOrigin) return crossOrigin;
+
   let actor: Awaited<ReturnType<typeof requireBookingActor>>;
   try {
     actor = await requireBookingActor();

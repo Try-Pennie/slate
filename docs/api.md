@@ -557,6 +557,14 @@ key. A caller without a session or sufficient role gets a `403` from
 `forbiddenResponse`. They are not part of the external integration surface and are
 listed here for completeness.
 
+Every MUTATING route here also refuses a request that says it came from another
+origin (#1046): `Origin` must match the `Host` the request arrived on, and
+`Sec-Fetch-Site`, when the browser sends it, must be `same-origin`. A caller that
+sends neither header (a script, `curl`) is unaffected, so this costs machine callers
+nothing; it removes the reliance on the session cookie's `SameSite=Lax` default as
+the only thing keeping a third-party page from driving these writes. A refused
+request gets a `403` and is logged under `tag=same-origin`.
+
 | Method + path | Guard | Purpose |
 |---|---|---|
 | `GET /api/admin/agents` | manager+ | List agents |

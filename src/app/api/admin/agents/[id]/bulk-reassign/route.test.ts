@@ -26,8 +26,27 @@ vi.mock("@/lib/booking/service", () => service);
 import { GET, POST } from "./route";
 import { NotAuthorizedError } from "@/lib/auth/http";
 
-function postReq(body: unknown): Parameters<typeof POST>[0] {
-  return { json: async () => body } as unknown as Parameters<typeof POST>[0];
+/** Same-origin headers, which is what Slate's own UI sends. The route refuses a
+ *  request that says it came from elsewhere (#1046), so every fake carries them;
+ *  the refusal test below overrides them. */
+const SAME_ORIGIN_HEADERS = {
+  origin: "https://slate.trypennie.app",
+  "sec-fetch-site": "same-origin",
+  host: "slate.trypennie.app",
+};
+const CROSS_ORIGIN_HEADERS = {
+  ...SAME_ORIGIN_HEADERS,
+  origin: "https://evil.example",
+  "sec-fetch-site": "cross-site",
+};
+function postReq(
+  body: unknown,
+  headers: Record<string, string> = SAME_ORIGIN_HEADERS,
+): Parameters<typeof POST>[0] {
+  return {
+    json: async () => body,
+    headers: new Headers(headers),
+  } as unknown as Parameters<typeof POST>[0];
 }
 function getReq(query: string): Parameters<typeof GET>[0] {
   return { url: `https://slate.test/api/admin/agents/out1/bulk-reassign${query}` } as unknown as Parameters<
@@ -130,5 +149,27 @@ describe("GET /admin/agents/[id]/bulk-reassign", () => {
     service.getBulkReassignProgress.mockResolvedValueOnce(null);
     const res = await GET(getReq("?jobId=nope"), params);
     expect(res.status).toBe(404);
+  });
+});
+
+// #1046: the session cookie is this route's only credential, so a request that says
+// it came from another site is refused before the auth check and before the body is
+// read. The static guard (scripts/test-same-origin-coverage.ts) proves every
+// cookie-authed mutation route carries the CALL; this proves the call on this route
+// actually refuses rather than sitting unreachable behind an earlier return.
+describe("bulk reassign start refuses a cross-origin request (#1046)", () => {
+  it("403s a cross-site request without authenticating or writing", async () => {
+    const res = await POST(postReq({ reason: "coverage" }, CROSS_ORIGIN_HEADERS), params);
+
+    expect(res.status).toBe(403);
+    expect(auth.requireBookingActor).not.toHaveBeenCalled();
+    expect(service.startBulkReassign).not.toHaveBeenCalled();
+  });
+
+  it("still serves the same-origin request the UI sends", async () => {
+    // The positive control: a guard that refused everything would pass the test
+    // above while breaking the whole surface.
+    const res = await POST(postReq({ reason: "coverage" }), params);
+    expect(res.status).not.toBe(403);
   });
 });
