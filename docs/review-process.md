@@ -73,6 +73,23 @@ needs later and cannot reconstruct: what changed and why, the test evidence, and
 migration status. Those are the fields, and they exist because the PR body is the
 only durable record of a decision made without a conversation.
 
+## When a UI PR is ready
+
+The gates cover a11y in exactly one place: the contrast guard, which checks the token
+pairings in both themes on every push. Everything else about an interface (focus order,
+keyboard reachability, an ARIA misuse, a heading jump, a control with no accessible
+name) is invisible to every check in this repo, and axe finds most of it in seconds.
+
+So a PR that adds or restyles a surface carries **an axe run in both themes**, saved to
+`docs/a11y/axe/<surface>-<theme>.axe.json`, following
+`.claude/skills/slate-ui-verification/SKILL.md`. Both themes is not thoroughness for its
+own sake: the internal pages support light and dark, and a contrast or focus defect
+routinely exists in exactly one of them.
+
+If a UI change ships without one, the PR says why in the body. That is the whole
+enforcement, and it is honest about what it is: an axe job in CI is a deliberate non-goal
+(ADR 0004), so this is a habit written down where a PR author is looking, not a gate.
+
 ## When to break the model
 
 Get a second pair of eyes, before merging, when the change:

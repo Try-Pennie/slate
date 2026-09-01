@@ -176,6 +176,16 @@ export async function AppHeader({
   }
   return (
     <>
+    {/* #1054: the first focusable thing on every internal page, so a keyboard or
+        switch user can jump the branded bar and the nav rather than walking them on
+        every load (WCAG 2.4.1). It is here rather than in each page because there is
+        one header: the pages own the target id, and
+        scripts/test-skip-link-target.ts requires every page that renders this header
+        to carry it, since a skip link pointing at nothing is a control that appears
+        to work and moves focus nowhere. */}
+    <a href="#main" className="pn-skip-link">
+      Skip to content
+    </a>
     {impersonation.status === "active" && (
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-pennie-navy px-4 py-2 text-center text-sm text-pennie-beige">
         <span>

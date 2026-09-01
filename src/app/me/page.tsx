@@ -296,7 +296,7 @@ export default async function MePage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main className="mx-auto w-full min-w-0 max-w-2xl space-y-10 px-6 py-10 sm:px-8">
+      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-2xl space-y-10 px-6 py-10 sm:px-8">
         {oooOnly ? (
           /* Compact navy header: greeting + at-a-glance status (earns its weight). */
           <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface-elevated dark:border dark:border-border">

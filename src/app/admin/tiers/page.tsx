@@ -112,7 +112,7 @@ export default async function TiersPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-6 py-10 sm:px-8">
+      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-6 py-10 sm:px-8">
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Staffing depth</h1>

@@ -94,7 +94,7 @@ export default async function BookingDetailPage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
+      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
         <a
           href="/admin"
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
