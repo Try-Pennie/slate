@@ -98,6 +98,8 @@ import {
   creationOrphanAlert,
   outboxDrainRecovery,
   outboxDrainStuckAlert,
+  outboxAllHandedOffAlert,
+  outboxHandoffRecovery,
   pendingDeletionAlert,
   pendingDeletionRecovery,
   reassignIntentDroppedAlert,
@@ -124,7 +126,7 @@ import type {
   EventType,
   User,
 } from "@/lib/db/types";
-import { processBookingOutbox } from "@/lib/booking/outbox";
+import { processBookingOutbox, everyLeasedRowStoodDown } from "@/lib/booking/outbox";
 import { drainBackoffMs, DRAIN_GIVE_UP_AT, DRAIN_ALERT_AFTER } from "@/lib/booking/drain-backoff";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -150,6 +152,15 @@ const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 // Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
 // failing row alerts at most twice an hour, not every tick.
 const DRAIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+// #1048: a tick where EVERY leased row stood down charges no attempt to any row, so
+// it can never reach the attempt-cap alert. Five consecutive ticks on a lane that
+// runs every minute: long enough that one genuine overlap with the inline path stays
+// quiet, short enough that a drain delivering nothing is named within minutes. The
+// window comfortably exceeds the lane's interval so consecutive ticks land in one
+// window rather than each looking like the first.
+const OUTBOX_HANDOFF_STREAK_KEY = "outbox_all_handed_off";
+const OUTBOX_HANDOFF_STREAK_WINDOW_S = 15 * 60;
+const OUTBOX_HANDOFF_ALERT_AFTER = 5;
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -345,6 +356,7 @@ export {
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
+import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
@@ -2508,6 +2520,32 @@ export async function drainBookingOutbox() {
     OUTBOX_DRAIN_LIMIT,
     orchestration.OUTBOX_HANDLERS,
   );
+  // #1048: did this tick actually MEASURE delivery? A row that stood down (its lease
+  // had moved on, or a gated write failed) is charged no failed attempt, deliberately,
+  // so a tick where every leased row stood down learns nothing about whether side
+  // effects are completing. Two consequences, and the second is the one that bites:
+  // it needs its own alarm, because it can never reach the attempt-cap one; and it
+  // must not send the all-clear, which would be a recovery notice off a signal that
+  // measured nothing (#1152).
+  const leased = result.processed - result.skipped;
+  const allHandedOff = everyLeasedRowStoodDown(result);
+  if (allHandedOff) {
+    const page = await recordConsecutiveStreak(
+      OUTBOX_HANDOFF_STREAK_KEY,
+      OUTBOX_HANDOFF_STREAK_WINDOW_S,
+      OUTBOX_HANDOFF_ALERT_AFTER,
+    );
+    if (page) {
+      await sendThrottledAlert(
+        OUTBOX_HANDOFF_STREAK_KEY,
+        DRAIN_ALERT_COOLDOWN_MS,
+        outboxAllHandedOffAlert(leased, OUTBOX_HANDOFF_ALERT_AFTER),
+      ).catch(() => {});
+    }
+  } else {
+    await clearFailureStreak(OUTBOX_HANDOFF_STREAK_KEY);
+  }
+
   if (result.stuck.length > 0) {
     const ids = result.stuck.map((r) => r.id).slice(0, 10).join(", ");
     await sendThrottledAlert(
@@ -2515,15 +2553,14 @@ export async function drainBookingOutbox() {
       DRAIN_ALERT_COOLDOWN_MS,
       outboxDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
     ).catch(() => {});
-  } else {
+  } else if (!allHandedOff) {
     // #1151: a backing-off outbox is a CONDITION (the side effects of real
     // bookings are not completing), so say when it drains. Measured, not assumed:
-    // a drain that threw never gets here.
+    // a drain that threw never gets here, and neither does one that stood every
+    // row down.
     await resolveRecovered([
-      {
-        key: "outbox_drain_stuck",
-        text: outboxDrainRecovery(),
-      },
+      { key: "outbox_drain_stuck", text: outboxDrainRecovery() },
+      { key: OUTBOX_HANDOFF_STREAK_KEY, text: outboxHandoffRecovery() },
     ]);
   }
   // #1048: a handed-off row means a run stood down because its lease had moved on

@@ -6,6 +6,7 @@
 import {
   runOutboxSteps,
   processBookingOutbox,
+  everyLeasedRowStoodDown,
   type OutboxHandlers,
 } from "../src/lib/booking/outbox.ts";
 import type { BookingDeps } from "../src/lib/booking/orchestration.ts";
@@ -320,6 +321,35 @@ async function run() {
     assert(
       JSON.stringify(calls.releasedWith) === JSON.stringify([LEASE]),
       "the release is gated on the token this holder was given",
+    );
+  }
+
+  // --- #1048: the tick verdict the alarm and the all-clear both read ------------
+  // A stood-down row is charged no failed attempt, so a tick where every leased row
+  // stood down can never reach the attempt-cap alert. That makes it its own alarm,
+  // and it must not send the attempt-cap alert's all-clear either: a recovery notice
+  // off a signal that measured nothing is #1152 exactly. One predicate, so the alarm
+  // and the all-clear can never disagree about what happened (L144).
+  {
+    assert(
+      everyLeasedRowStoodDown({ processed: 3, skipped: 0, handedOff: 3 }),
+      "every leased row standing down is a stand-down tick",
+    );
+    assert(
+      everyLeasedRowStoodDown({ processed: 5, skipped: 3, handedOff: 2 }),
+      "rows leased elsewhere do not count against it: the two we held both stood down",
+    );
+    assert(
+      !everyLeasedRowStoodDown({ processed: 3, skipped: 0, handedOff: 2 }),
+      "one row that did NOT stand down means the tick measured delivery",
+    );
+    assert(
+      !everyLeasedRowStoodDown({ processed: 0, skipped: 0, handedOff: 0 }),
+      "an empty outbox is not a stand-down, it is the normal quiet state",
+    );
+    assert(
+      !everyLeasedRowStoodDown({ processed: 4, skipped: 4, handedOff: 0 }),
+      "a tick that leased nothing at all attempted nothing, so it is not a stand-down",
     );
   }
 }

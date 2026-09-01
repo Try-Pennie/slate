@@ -174,3 +174,26 @@ export async function processBookingOutbox(
 
   return { processed: rows.length, delivered, skipped, handedOff, stuck };
 }
+
+/**
+ * Did this drain tick actually MEASURE whether side effects are completing? (#1048)
+ *
+ * A row that stood down is charged no failed attempt, deliberately, so a tick where
+ * every row the drain leased stood down learns nothing: it cannot reach the
+ * attempt-cap alert, and it must not send that alert's all-clear either, which would
+ * be a recovery notice off a signal that measured nothing (#1152).
+ *
+ * Pure, and the ONE place the comparison is made, so the alarm and the all-clear both
+ * consult the same predicate rather than each rebuilding it (L144).
+ *
+ * A tick with nothing to drain, or one where every row was already leased elsewhere,
+ * is NOT a stand-down: nothing was attempted, which is the normal quiet state.
+ */
+export function everyLeasedRowStoodDown(result: {
+  processed: number;
+  skipped: number;
+  handedOff: number;
+}): boolean {
+  const leased = result.processed - result.skipped;
+  return leased > 0 && result.handedOff === leased;
+}

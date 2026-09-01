@@ -249,6 +249,14 @@ it. The inline path (straight after a booking mutation) honours a null lease the
 way: a drain already holds the row and is running those very steps, so it leaves it
 alone.
 
+That exemption needs its own alarm, and this is the part worth understanding.
+`outbox_drain_stuck` fires off `attempts >= DRAIN_ALERT_AFTER`, so a row that never
+bumps attempts can never reach it: a drain standing every row down forever would look
+exactly like an empty outbox, and would even post the "backlog has cleared" all-clear.
+So `everyLeasedRowStoodDown` (one predicate, read by both the alarm and the all-clear)
+decides whether a tick MEASURED delivery at all. Five consecutive ticks that did not
+page `outbox_all_handed_off`, and such a tick sends no recovery notice for either key.
+
 ## How the three share one pattern
 
 | | Create | Reschedule | Reassign |

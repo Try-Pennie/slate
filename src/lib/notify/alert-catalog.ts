@@ -261,6 +261,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Outbox rows are backing off past the attempt cap until they drain; the sweep re-measures.",
   },
   {
+    key: "outbox_all_handed_off",
+    kind: "condition",
+    why:
+      "The drain is standing every row it leases down, so nothing is being delivered and no row " +
+      "is being charged an attempt; a tick that completes a row ends it.",
+  },
+  {
     key: "reservation_drain_stuck",
     kind: "condition",
     why: "Reservations are backing off past the attempt cap until they drain; the sweep re-measures.",
