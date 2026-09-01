@@ -6,6 +6,7 @@ import { oooOnlyFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
 import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
@@ -127,14 +128,11 @@ export default async function TiersPage() {
 
         <section className={cardCls}>
           {rows === null ? (
-            <p
-              role="alert"
-              className="rounded-md border border-[var(--error)] px-4 py-3 text-sm text-error"
-            >
+            <UnreadableNotice>
               Staffing depth could not be read, so this page is not showing your
               tiers. No tier has lost its agents. Reload in a moment, and if it keeps
               saying this, the database read is failing rather than the roster.
-            </p>
+            </UnreadableNotice>
           ) : (
           <>
           <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">

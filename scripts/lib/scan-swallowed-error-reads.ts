@@ -110,6 +110,26 @@
 // next tick, a re-route, a caller null / empty branch), and say why. A read whose
 // swallowed error would silently show no availability must use `unwrap` instead.
 //
+// WHAT A BOUND `error` DOES AND DOES NOT PROVE (#1651). This scan asks whether
+// `error` is BOUND, and it can never ask whether binding it produces a distinct
+// SCREEN. Both are real defects and only the first is statically decidable:
+//
+//   const { data, error } = await db.from("organizations").select(...).maybeSingle();
+//   if (!error && data) org = data;      // passes this scan
+//   ...
+//   {org && (<section>…</section>)}      // and the whole panel silently vanishes
+//
+// That is /admin/settings before #1651: the read was compliant, and an unreadable
+// organizations row drew a page with one fewer panel than it has, which is
+// indistinguishable from a page that never had that panel (L10). Whether a bound
+// error reaches a rendered state depends on JSX several hundred lines away, on
+// which component consumes the value, and on what that component draws for an
+// empty one, so it is beyond any text scan and beyond a parser that does not
+// render. It belongs in review, and in the component tests that assert the
+// unreadable screen differs from the empty one, which is where the #1651 fix is
+// pinned. Recorded here so a green run on this scan is never read as proof that
+// every read on the surface reaches an honest screen.
+//
 // Like the sibling scan-src-capped-reads.ts this is a deliberate text scan, not a
 // full parser: lightweight, dependency free, with an escape hatch that keeps it
 // from false flagging the legitimately null tolerant reads.

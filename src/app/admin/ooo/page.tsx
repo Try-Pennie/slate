@@ -164,11 +164,17 @@ export default async function OooQueuePage({
     "id" | "name" | "email" | "manager_id" | "role"
   >[];
   // error-ok: the org's default timezone falls back to the documented canonical
-  // one (America/New_York, the whole roster's zone), which is what this read
-  // returns in practice. Nothing reads the fallback as a measurement: it decides
-  // how a date is FORMATTED, and every consumer of it renders the same times the
-  // real value would. It is the one read on this page whose empty is a default
-  // rather than an answer.
+  // one (America/New_York), which is the value this read returns in practice for
+  // the only organization that exists, so the fallback and the stored value are
+  // the same string.
+  //
+  // #1651 corrected what this used to claim. The zone does NOT only decide how a
+  // date is FORMATTED: it is handed to buildInsights, which passes it to
+  // coverageAlerts and busiestMonth, and those BUCKET requests by day and by
+  // month in that zone, so a wrong zone would move a request across a boundary
+  // and change a count. The exemption is safe because the fallback equals the
+  // stored value, not because the value is cosmetic. A second organization, or a
+  // changed default, breaks that and this becomes an unwrap.
   const orgRow = orgRes.data as { default_timezone: string } | null;
   const orgZone = orgRow?.default_timezone ?? "America/New_York";
 
