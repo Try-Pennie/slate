@@ -188,3 +188,57 @@ describe("LoginPage sign-in error copy", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+// #1046: signing in requests only what signing in needs.
+//
+// Slate reads calendars through domain-wide delegation with a service account, and
+// stores no OAuth tokens for the person signing in (nothing anywhere reads
+// provider_token). So a calendar.events scope on the login request is a write
+// permission over every staff member's calendar that the app never exercises, asked
+// for and re-consented at every sign-in.
+//
+// Asserted on the ARGUMENTS rather than on a rendered result, because that is where
+// the request lives: nothing a person can see changes, so a scope creeping back in
+// would be invisible to every other test in this file.
+describe("what the sign-in asks Google for (#1046)", () => {
+  function optionsFromClick() {
+    signInWithOAuth.mockResolvedValue({ error: null });
+    render(<LoginPage />);
+    clickSignIn();
+    const call = signInWithOAuth.mock.calls[0] as [
+      { provider: string; options: { scopes?: string; queryParams?: Record<string, string>; redirectTo?: string } },
+    ];
+    return call[0];
+  }
+
+  it("asks for no calendar access at all", () => {
+    const arg = optionsFromClick();
+
+    expect(arg.provider).toBe("google");
+    // Any calendar scope, not just the two that were here: the point is that this
+    // request grants nothing over anybody's calendar.
+    expect(arg.options.scopes ?? "").not.toMatch(/calendar/i);
+  });
+
+  it("does not ask for offline access or force a consent screen", () => {
+    const arg = optionsFromClick();
+    const qp = arg.options.queryParams ?? {};
+
+    // access_type=offline asks for a refresh token nothing here stores, and
+    // prompt=consent re-shows the grant screen to every person on every sign-in.
+    expect(qp.access_type).toBeUndefined();
+    expect(qp.prompt).toBeUndefined();
+  });
+
+  it("still sends the callback and the hosted-domain hint", () => {
+    // The positive control. Stripping the scopes must not take the rest of the
+    // request with it: without redirectTo the code never comes back, and the hd
+    // hint is what puts a person on the Pennie account picker (the real domain gate
+    // is server side, #589).
+    const arg = optionsFromClick();
+
+    expect(arg.options.redirectTo).toMatch(/\/api\/auth\/callback$/);
+    const hd = process.env.NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN;
+    if (hd) expect(arg.options.queryParams?.hd).toBe(hd);
+  });
+});
