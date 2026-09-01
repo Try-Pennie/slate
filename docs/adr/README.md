@@ -11,8 +11,9 @@ says what was decided, why, and what breaks if it is reversed.
 | [0004](./0004-no-browser-tests-in-ci.md) | No browser or end-to-end tests in CI; a production canary covers the funnel post-deploy | `AGENTS.md` "What CI covers", `.github/workflows/smoke-canary.yml` |
 | [0005](./0005-post-commit-side-effects-through-an-outbox.md) | Post-commit side effects are delivered through a durable, idempotent outbox | `docs/crash-safe-booking-mutations.md` |
 | [0006](./0006-cal-com-compatibility-is-a-frozen-contract.md) | The cal.com URL and embed contract is frozen and extended, never renamed | `README.md` URL contract, `public/widget.js`, `docs/slate-vs-calcom.md` |
+| [0007](./0007-no-staging-environment.md) | No staging environment; production is the first real environment, with the compensating controls named | `DEPLOY.md`, `docs/review-process.md`, `.github/workflows/smoke-canary.yml` |
 
-Records 0003 to 0006 were backfilled in #1053. Each was a real decision, already
+Records 0003 to 0006 were backfilled in #1053, and 0007 in #1038. Each was a real decision, already
 in force and already reasoned about, that lived only in `AGENTS.md`, `CLAUDE.md` or a
 closed issue: findable if you knew it existed, invisible if you did not. The
 mechanics stay where they are (they change more often than the decision does); these
