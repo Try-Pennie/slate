@@ -14,10 +14,23 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // in scripts/test-precompute-core.ts.
 
 const getBucketSlots = vi.hoisted(() => vi.fn());
-const upsert = vi.hoisted(() =>
+// #1048: the row is written by a gated UPDATE (overwrite only a row older than this
+// compute), falling back to an INSERT when the bucket has no row yet. This fake has no
+// row, so the update matches nothing and the insert is what carries the payload; the
+// gating itself is driven in scripts/test-slot-row-write.ts.
+const insert = vi.hoisted(() =>
   vi.fn(async (_row: { payload: { slots: string[] } }) => ({ error: null })),
 );
-const from = vi.hoisted(() => vi.fn(() => ({ upsert })));
+const from = vi.hoisted(() =>
+  vi.fn(() => ({
+    insert,
+    update: () => ({
+      eq: () => ({
+        lt: () => ({ select: async () => ({ data: [], error: null }) }),
+      }),
+    }),
+  })),
+);
 
 vi.mock("./service", () => ({ getBucketSlots }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
@@ -41,7 +54,7 @@ const WIDE = {
 };
 
 const writtenSlots = (): string[] => {
-  return upsert.mock.calls[0][0].payload.slots;
+  return insert.mock.calls[0][0].payload.slots;
 };
 const daysIn = (slots: string[]) => [...new Set(slots.map((s) => s.slice(0, 10)))];
 
@@ -97,6 +110,6 @@ describe("recomputeBucketSlots bookable-day trim", () => {
     );
 
     expect(res).toBeNull();
-    expect(upsert).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
   });
 });

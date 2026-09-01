@@ -34,7 +34,12 @@ export interface ReadDeps {
   /** Bounded fail-open: the live multi-agent compute (rare). */
   compute(code: string, fromIso: string, toIso: string): Promise<BucketSlots | null>;
   /** Self-heal: persist a freshly computed blob; returns its computed_at stamp. */
-  writeRow(code: string, val: BucketSlots): Promise<string>;
+  /** Store the row and return the stamp to label the L1 entry with. `computedAtMs` is
+   *  when the COMPUTE began, not when the write happens (#1048): the row's computed_at
+   *  has to describe the data, or a slow compute landing last reports a fresh stamp
+   *  over stale slots and the overwrite is invisible on the header that exists to
+   *  show it. Required rather than defaulted, so every call site has to say. */
+  writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<string>;
   /**
    * The org's CURRENT opening hours (#1296), read through a short per-isolate
    * cache. Gate 1 runs at compute time, which leaves one hole: a slot computed
@@ -100,6 +105,9 @@ export async function resolveBucketSlots(
   // or served, exactly as the recompute path does. Without this the fail-open path
   // would store more days than the setting asks for, and the one bucket that took
   // this branch would quietly offer a longer strip than every other.
+  // #1048: taken before the compute reads anything, so the stored stamp describes the
+  // state these slots were computed from.
+  const computeStartedMs = Date.now();
   const computed = await deps.compute(code, nf, nt);
   if (!computed) return null;
   // Days are grouped in the ORG's zone, the same clock the hours are judged in: a
@@ -110,7 +118,7 @@ export async function resolveBucketSlots(
     ...computed,
     slots: trimToBookableDays(computed.slots, zone, horizonDays),
   };
-  const computedAt = await deps.writeRow(code, fresh);
+  const computedAt = await deps.writeRow(code, fresh, computeStartedMs);
   const cached: CachedBucketSlots = { ...fresh, computedAt };
   await deps.cachePut(key, cached);
   return served(cached, "compute");

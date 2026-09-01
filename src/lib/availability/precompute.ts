@@ -8,6 +8,7 @@ import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import type { Attributes, Criteria } from "@/lib/db/types";
 import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
+import { writeSlotRow } from "@/lib/availability/slot-row-write";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -189,19 +190,29 @@ export async function clearMassInvalidation(): Promise<void> {
   }
 }
 
-/** Upsert a freshly computed blob for a bucket. */
+/**
+ * Store a freshly computed blob for a bucket, stamped from when the COMPUTE began and
+ * overwriting only a row older than that (#1048, see slot-row-write.ts for why both
+ * halves are needed).
+ *
+ * Returns the stamp, which the caller labels its L1 cache entry with. That stays the
+ * caller's OWN stamp even when a fresher row was left alone: the payload really was
+ * computed then, so labelling it with the fresher row's stamp would be the lie this
+ * change exists to remove, and the entry expires within the slot TTL anyway.
+ */
 export async function writeBucketSlotsRow(
   code: string,
   val: BucketSlots,
+  computedAtMs: number,
 ): Promise<string> {
-  const computedAt = new Date().toISOString();
-  await supabaseAdmin()
-    .from("bucket_slots")
-    .upsert(
-      { bucket_code: code, payload: val as unknown, computed_at: computedAt },
-      { onConflict: "bucket_code" },
-    );
-  return computedAt;
+  const outcome = await writeSlotRow(supabaseAdmin(), code, val as unknown, computedAtMs);
+  if (outcome === "kept-newer") {
+    // Worth a line: it means two computes for one bucket overlapped and the slower one
+    // finished last. Harmless (the fresher row is the one serving) but it is the only
+    // way to see the overlap from outside.
+    log.info("precompute", { msg: "kept a fresher slot row", bucket: code });
+  }
+  return new Date(computedAtMs).toISOString();
 }
 
 /**
@@ -218,6 +229,10 @@ export async function recomputeBucketSlots(
   bookableDays?: number,
 ): Promise<BucketSlots | null> {
   let fresh: BucketSlots | null = null;
+  // #1048: stamped from HERE, before the compute reads anything, so the row's
+  // computed_at describes the state the slots were computed from rather than the moment
+  // the write happened to land.
+  const startedMs = Date.now();
   try {
     fresh = await getBucketSlots(code, fromIso, toIso, resolveEligible);
     // #1326: [fromIso, toIso) is a SEARCH window, deliberately wider than the number
@@ -242,7 +257,7 @@ export async function recomputeBucketSlots(
     log.error("precompute", { msg: "recompute skipped", bucket: code }, err);
     fresh = null;
   }
-  if (fresh) await writeBucketSlotsRow(code, fresh);
+  if (fresh) await writeBucketSlotsRow(code, fresh, startedMs);
   return fresh;
 }
 
