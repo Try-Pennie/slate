@@ -47,10 +47,13 @@ export type SameOriginVerdict = { ok: true } | { ok: false; reason: string };
  * a POST from Slate's own UI never is.
  *
  * `Origin` is then compared by host and port against the `Host` the request
- * arrived on, rather than against a configured app URL. The deployment answers on
- * more than one hostname (the custom domain and, today, workers.dev), and a check
- * pinned to one configured value would refuse legitimate traffic on the other while
- * reading as a working guard.
+ * arrived on, rather than against a configured app URL. Production answers on one
+ * hostname today (#1052 closed the workers.dev origin), but local development
+ * answers on localhost and a configured value pinned to production would refuse
+ * every legitimate request there while still reading as a working guard. Comparing
+ * against the host the request actually arrived on is correct in both, and an
+ * attacker cannot influence it: the browser sets `Host` to the site it reached and
+ * `Origin` to the page that initiated the request.
  */
 export function sameOriginVerdict(headers: OriginHeaders): SameOriginVerdict {
   const site = headers.secFetchSite?.trim();

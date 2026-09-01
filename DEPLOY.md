@@ -164,8 +164,48 @@ it fails the job, and a failed job on a push to `main` posts a Slack alert
 canary notices, up to 30 minutes" into "broken and someone is told in about a
 minute".
 
-A hand-run `pnpm cf:deploy` skips both steps, so the live site will report commit
-`dev` and the next CI probe is the first thing to confirm the version again.
+### Deploying by hand, verified (#1190)
+
+`pnpm cf:deploy` on its own skips both steps, so the live site reports commit `dev`
+and the next CI deploy is the first thing to confirm a version again. The occasion for
+a hand deploy is an urgent fix when the pipeline is unavailable or too slow, which is
+exactly when an unverified release is most expensive, so use:
+
+<!-- runbook-unverified: it deploys production, so running it to prove the command
+     would ship whatever happened to be checked out. What IS proven offline is every
+     decision it makes before deploying, and that it drives CI's own two scripts in
+     CI's own order rather than a second implementation:
+     scripts/test-deploy-verified.ts. The deploy and probe steps themselves are the
+     same ones the deploy job executes several times a week. -->
+
+```bash
+BOOKING_API_KEY=<the key the deployment holds> pnpm cf:deploy:verified
+```
+
+It runs the same three steps as CI, calling the same two scripts, so the two paths
+cannot drift into verifying different things: stamp the commit from `git rev-parse
+HEAD`, deploy, then poll the live version and judge health. `APP_URL` targets
+something other than production.
+
+Four things it refuses to do, each with its own exit code so a script can tell them
+apart:
+
+| exit | what it met | what to do |
+|---|---|---|
+| 1 | no commit to stamp, or a target that is not an https origin | run it inside the repo, on a real commit |
+| 2 | the working tree has uncommitted changes | commit first; locally is enough, an emergency does not require pushing |
+| 3 | `BOOKING_API_KEY` is unset | set it; without it nothing can confirm the deploy, which is the whole point |
+
+The dirty-tree refusal is the one that matters. The stamp writes a commit into the
+bundle and the probe then confirms that commit is serving, so with uncommitted changes
+the pair is a lie in its most convincing form: the probe passes, the version endpoint
+reports a real sha, and the code running exists nowhere in git. `ALLOW_DIRTY_DEPLOY=1`
+overrides it, because refusing outright would make the one command with a safety net
+unusable in the emergency it was built for, and it warns that the reported version
+does not describe what shipped. Say that wherever the deploy is recorded.
+
+It restores `src/lib/build-info.ts` on every path, including a failed deploy, so a
+stamped source file is never left behind for the next commit to carry.
 
 ## 4. Post-deploy config
 - **Offboarding API (optional):** to let the offboarding automation deactivate
@@ -328,6 +368,48 @@ present agents pages on its own; otherwise it pages only when at least 3 staffed
 tiers, and at least half of them, are empty at once, or the slot cache is entirely
 absent. The horizon is the 4 days of Slate's precomputed slot cache; a stalled
 recompute (a stale cache) is caught by check 1, not check 2.
+
+## Feature flags and the kill switch (#1052)
+
+The launch flags (`AGENT_SCHEDULING_LIVE`, `OOO_CALCOM_DUAL_WRITE`) are wrangler
+`vars`, so flipping one is a config edit plus a redeploy, about two minutes. That is
+**accepted rather than overlooked**: both govern a cutover step somebody decides on
+purpose, not an incident somebody reacts to, so neither wants an instant switch, and
+a var in `wrangler.jsonc` survives every deploy where a dashboard-only value would be
+wiped.
+
+What it costs is that **there is no kill switch**. Nothing here can be turned off
+without shipping. If a flag ever gates something that has to be turnable off in
+seconds under load, do not add another var: back it with a `monitor_settings` row,
+which is the pattern the alert cooldowns already use (read from the database per
+tick, changed from the admin UI, no deploy). That is the reversal, and it is per flag
+rather than a general mechanism, deliberately: a general flag system nobody needs yet
+is a second source of truth for behaviour.
+
+## Spend and usage alerts (#1052)
+
+Cost posture is cheap and documented (`docs/cloudflare-platform-notes.md`), but the
+alerts that would tell somebody it stopped being cheap live only in provider
+dashboards. Recorded here so the configuration is discoverable and survives a change
+of ownership:
+
+**Cloudflare (Workers usage notification).** Dashboard > Notifications > Add >
+Workers > "Usage Based Billing" (or "Workers Usage"), destination
+`systemsteam@trypennie.com`, at a threshold meaningfully above the current monthly
+figure. Slate is a single Worker with four every-minute cron lanes, so a runaway is
+far likelier to be a loop than growth, and the number to watch is requests plus CPU
+time rather than spend alone.
+
+**Supabase (spend cap).** Organization > Billing > Cost control: leave the **spend
+cap enabled**, which is the default and means the project throttles rather than
+bills over. Verify it after any plan change, since the cap is per organization and a
+plan change is when it moves.
+
+Neither is verifiable from this repo, which is the honest limitation of writing them
+down here: nothing fails when somebody deletes the notification. What compensates is
+that both providers are cheap by architecture rather than by policing (a request
+that costs money is a lead booking, and the crons are bounded), and that the
+observability notes carry the real headroom numbers to compare against.
 
 ## Rollback
 Both the app and its crons run on the single **main** Worker, so a rollback is one

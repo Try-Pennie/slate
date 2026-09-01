@@ -44,10 +44,13 @@ describe("httpsRedirect", () => {
   });
 
   it("preserves the hostname rather than hardcoding one", () => {
-    // The Worker also serves a workers.dev host; a hardcoded target would send
-    // that traffic to the wrong origin.
-    const res = httpsRedirect(req("http://slate-preview.workers.dev/api/health"));
-    expect(res!.headers.get("location")).toBe("https://slate-preview.workers.dev/api/health");
+    // Production answers on one hostname now (#1052 closed the workers.dev origin),
+    // so this is no longer about a second live origin. It is about the redirect
+    // deriving its target from the request rather than from a constant: a hardcoded
+    // target sends a request that arrived on any other host to the wrong place, which
+    // is what a local or a future host would be.
+    const res = httpsRedirect(req("http://slate-other.example/api/health"));
+    expect(res!.headers.get("location")).toBe("https://slate-other.example/api/health");
   });
 
   it("passes an already-secure request straight through", () => {
