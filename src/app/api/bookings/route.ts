@@ -216,11 +216,28 @@ export async function GET(req: NextRequest) {
       // refusal: api_query_invalid
       return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
     }
-    const { bookings, nextCursor } = await listBookings(parsed.value).then((r) => ({
-      bookings: r.items,
-      nextCursor: r.nextCursor,
-    }));
-    return NextResponse.json({ bookings, nextCursor });
+    // #1675: an unreadable page is refused, never answered as an empty one. The
+    // caller pages this endpoint, so `bookings: []` with a null cursor is the
+    // answer "that is everything" and it moves its watermark past bookings
+    // nobody read. A 503 is the one answer that makes it come back.
+    let listed;
+    try {
+      listed = await listBookings(parsed.value);
+    } catch (err) {
+      // refusal: api_list_unavailable
+      log.error("booking-api", { msg: "list read failed", key: authd.keyId }, err);
+      return NextResponse.json(
+        {
+          error: "The bookings list could not be read just now. Please retry.",
+          code: "LIST_UNAVAILABLE",
+        },
+        { status: 503 },
+      );
+    }
+    return NextResponse.json({
+      bookings: listed.items,
+      nextCursor: listed.nextCursor,
+    });
   }
 
   // Lookup mode: externalId present. Reject blank, and reject list filters mixed in.
