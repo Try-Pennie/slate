@@ -87,7 +87,12 @@ import {
   newlyUncoveredWarning,
 } from "@/lib/monitor/roster-coverage";
 import { __clearChannelCache } from "@/lib/notify/channels";
-import { planScheduleReplacement, type ScheduleRule } from "@/lib/schedule-replacement";
+import {
+  planScheduleReplacement,
+  planUniformSchedule,
+  type ScheduleReplacementPlan,
+  type ScheduleRule,
+} from "@/lib/schedule-replacement";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 
 /**
@@ -137,16 +142,22 @@ async function requireManageAgent(
  */
 async function replaceUserSchedule(
   userId: string,
-  timezone: string,
-  /** A window PER DAY (#1308). The same window on every day is a caller's choice
-   *  now, not a shape this function imposes. */
-  days: ScheduleRule[],
+  /**
+   * The plan, already validated by the caller through `planScheduleReplacement`
+   * (a window PER DAY, #1308) or `planUniformSchedule` (one window on several
+   * days, which is what the org default and the "use company hours" button mean).
+   * Taking the PLAN rather than raw days is what puts every writer on one
+   * validator: the org-default button used to bypass it entirely (#1670).
+   */
+  plan: ScheduleReplacementPlan,
 ): Promise<void> {
-  const plan = planScheduleReplacement(days);
   if (!plan.ok) throw new Error(plan.error);
 
   const db = supabaseAdmin();
-  const scheduleId = await upsertUserSchedule(userId, timezone);
+  // The VALIDATED zone, never the raw argument: an unreadable one makes every
+  // weekday comparison in `isWithinWorkingHours` false, so the agent is bookable
+  // at no time at all while the form still renders their hours (#1671).
+  const scheduleId = await upsertUserSchedule(userId, plan.timezone);
   const { data, error } = await db.rpc("replace_availability_rules", {
     p_schedule_id: scheduleId,
     p_rules: plan.rules,
@@ -199,16 +210,16 @@ async function applyOrgDefaultToUser(
   );
   const tz =
     (existing as { timezone: string } | null)?.timezone ?? o.default_timezone;
+  // The org default IS one window on several days, which is exactly what
+  // `planUniformSchedule` is for: put this agent back on the company's hours.
   await replaceUserSchedule(
     userId,
-    tz,
-    // The org default IS one window on several days, which is exactly what this
-    // button means: put this agent back on the company's hours.
-    o.default_weekdays.map((weekday) => ({
-      weekday,
-      start_minute: o.default_start_minute,
-      end_minute: o.default_end_minute,
-    })),
+    planUniformSchedule(
+      o.default_weekdays,
+      o.default_start_minute,
+      o.default_end_minute,
+      tz,
+    ),
   );
 }
 
@@ -237,8 +248,10 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   if (!me) return;
   await replaceUserSchedule(
     me.id,
-    String(form.get("timezone") ?? "America/New_York"),
-    perDayFrom(form),
+    planScheduleReplacement(
+      perDayFrom(form),
+      String(form.get("timezone") ?? "America/New_York"),
+    ),
   );
   revalidatePath("/me");
 }
@@ -408,7 +421,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
 
   // One schedule per user (enforced by the availability_schedules(user_id)
   // unique index, #532): replaceUserSchedule upserts it, then replaces its rules.
-  await replaceUserSchedule(userId, timezone, perDayFrom(form));
+  await replaceUserSchedule(userId, planScheduleReplacement(perDayFrom(form), timezone));
   revalidatePath("/admin");
 }
 
@@ -673,10 +686,24 @@ export async function setReasonOptions(form: FormData): Promise<void> {
 export async function setOrgDefaultHours(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const weekdays = [1, 2, 3, 4, 5, 6, 7].filter((d) => form.get(`dday_${d}`));
+  // #1671: validated before it is stored, because this value is what an agent
+  // with no zone of their own ADOPTS, so an unreadable one here makes every new
+  // agent bookable at no time at all. `planUniformSchedule` is the same validator
+  // the per-agent writes use, so the two can never disagree about what a
+  // storable week is.
+  const defaultTimezone = String(form.get("default_timezone") ?? "America/New_York");
+  const defaults = planUniformSchedule(
+    weekdays.length ? weekdays : [1, 2, 3, 4, 5],
+    readableMinutes(String(form.get("default_start") ?? ""), SEED_START_TIME),
+    readableMinutes(roundUpToQuarterHour(String(form.get("default_end") ?? "")), SEED_END_TIME),
+    defaultTimezone,
+  );
+  if (!defaults.ok) throw new Error(defaults.error);
+
   await supabaseAdmin()
     .from("organizations")
     .update({
-      default_timezone: String(form.get("default_timezone") ?? "America/New_York"),
+      default_timezone: defaultTimezone,
       // The fallbacks come from the seeded day (#1299), never a literal: a blank
       // field must not be able to write 09:00 back over the backfilled roster.
       // An unreadable time falls back to the SEEDED day rather than to midnight
@@ -732,16 +759,27 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   );
   const tz =
     (existing as { timezone: string } | null)?.timezone ?? o.default_timezone;
-  const scheduleId = await upsertUserSchedule(userId, tz);
 
-  await db.from("availability_rules").delete().eq("schedule_id", scheduleId);
-  await db.from("availability_rules").insert(
-    o.default_weekdays.map((weekday) => ({
-      schedule_id: scheduleId,
-      weekday,
-      start_minute: o.default_start_minute,
-      end_minute: o.default_end_minute,
-    })),
+  // #1670: through `replaceUserSchedule`, like every other writer on this path.
+  // This button used to be the straggler: a bare delete then insert, with neither
+  // `error` bound, no transaction and no validation. If the insert errored, or the
+  // isolate died between the two statements, the action still reported success and
+  // left the agent with a schedule row holding NO rules, which makes
+  // `isWithinWorkingHours` reject every instant, so that agent offers no times,
+  // permanently. Two things hid it: the reloaded page draws
+  // `workingHoursDays(rules, org.default_weekdays)`, so zero rules renders as the
+  // org default week the admin just asked for, and the #838 coverage monitor looks
+  // for agents with no availability_schedules ROW, which a row with no rules is
+  // not. `planUniformSchedule`, whose own docstring says it is what this button
+  // means, had no callers at all.
+  await replaceUserSchedule(
+    userId,
+    planUniformSchedule(
+      o.default_weekdays,
+      o.default_start_minute,
+      o.default_end_minute,
+      tz,
+    ),
   );
   revalidatePath("/admin");
 }

@@ -8,6 +8,7 @@ import {
   formatScheduleGapNotice,
   missingScheduleAgents,
   runScheduleCoverageCheck,
+  usableScheduleUserIds,
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
 
@@ -35,6 +36,38 @@ describe("missingScheduleAgents (#1158)", () => {
 
   it("an empty schedule set flags every agent", () => {
     expect(missingScheduleAgents([agent("a"), agent("b")], new Set()).length).toBe(2);
+  });
+});
+
+// #1670: the check keyed on a schedule ROW existing, and a row with NO rules is
+// not a schedule an agent can be booked in. `isWithinWorkingHours` rejects every
+// instant against an empty rule set, so that agent offers no times, permanently,
+// and the monitor written to catch exactly that saw a row and moved on.
+describe("usableScheduleUserIds (#1670)", () => {
+  const sched = (id: string, user_id: string) => ({ id, user_id });
+
+  it("counts an agent whose schedule holds at least one rule", () => {
+    const out = usableScheduleUserIds([sched("s1", "a")], new Set(["s1"]));
+    expect([...out]).toEqual(["a"]);
+  });
+
+  it("does NOT count an agent whose schedule holds no rules", () => {
+    expect([...usableScheduleUserIds([sched("s1", "a")], new Set())]).toEqual([]);
+  });
+
+  it("counts only the agents whose own schedule has rules", () => {
+    const out = usableScheduleUserIds(
+      [sched("s1", "a"), sched("s2", "b"), sched("s3", "c")],
+      new Set(["s1", "s3"]),
+    );
+    expect([...out].sort()).toEqual(["a", "c"]);
+  });
+
+  // Which is the whole point: fed through the existing set difference, an agent
+  // with an empty schedule is reported exactly like one with no schedule at all.
+  it("makes an empty-rule agent visible to missingScheduleAgents", () => {
+    const usable = usableScheduleUserIds([sched("s1", "a")], new Set());
+    expect(missingScheduleAgents([agent("a")], usable).map((x) => x.id)).toEqual(["a"]);
   });
 });
 

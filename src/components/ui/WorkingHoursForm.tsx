@@ -1,6 +1,36 @@
 import { TimeField } from "@/components/ui/TimeField";
 import { labelCls, inputCls, btnCls } from "@/components/ui/styles";
 import { minutesToTime } from "@/lib/schedule-core";
+import {
+  allTimeZones,
+  CURATED_ZONES,
+  humanizeZone,
+  type TimezoneOption,
+} from "@/lib/booking/timezones";
+
+/**
+ * The zones the picker offers: the curated business zones first, then every zone
+ * the runtime knows, and always the agent's CURRENT value so the select can never
+ * render blank (which would submit whatever happened to be first and silently move
+ * somebody's hours).
+ *
+ * `allTimeZones()` is guarded and answers [] on a runtime without
+ * `Intl.supportedValuesOf`, in which case this degrades to the curated list plus
+ * the current value rather than losing the field.
+ */
+function zoneChoices(current: string): TimezoneOption[] {
+  const seen = new Set<string>();
+  const out: TimezoneOption[] = [];
+  const add = (id: string, label?: string) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push({ id, label: label ?? `${humanizeZone(id)} (${id})` });
+  };
+  add(current);
+  for (const z of CURATED_ZONES) add(z.id, z.label);
+  for (const id of allTimeZones().sort()) add(id);
+  return out;
+}
 
 /** One weekday's row, as the page reads it back from the stored rules. */
 export interface WorkingHoursDay {
@@ -77,13 +107,27 @@ export function WorkingHoursForm({
         <label className={labelCls} htmlFor="hours_timezone">
           {timezoneLabel}
         </label>
-        <input
+        {/* A picker, not free text (#1671). The stored zone drives
+            `isWithinWorkingHours`, which compares `rule.weekday !== day.weekday`,
+            and a zone Luxon cannot read makes that weekday NaN, so every rule
+            misses and the agent is bookable at NO time at all, with their hours
+            still rendering correctly afterwards. Typing "Eastern" here used to be
+            enough to do that silently. A list makes the broken value
+            unrepresentable rather than merely rejected; the server refuses one
+            anyway, because a picker is not a validator. */}
+        <select
           id="hours_timezone"
           name="timezone"
           aria-label={timezoneLabel}
           defaultValue={timezone}
-          className={`${inputCls} w-48`}
-        />
+          className={`${inputCls} w-64`}
+        >
+          {zoneChoices(timezone).map((z) => (
+            <option key={z.id} value={z.id}>
+              {z.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="space-y-2">

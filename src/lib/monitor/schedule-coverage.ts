@@ -12,9 +12,29 @@ export type ScheduleLessAgent = {
   org_id: string;
 };
 
-/** From the bookable agents and the user ids that have an availability_schedules
- *  row, the agents with NO row (#838). Pure so the set difference is pinned by
- *  tests (#1158); the paged reads live in the cron route. */
+/**
+ * The agents who have a schedule that can actually produce a bookable time
+ * (#1670): a schedule ROW is not enough, its rules are what the engine reads.
+ *
+ * `isWithinWorkingHours` loops the rules matching a weekday, so an empty rule set
+ * rejects every instant and that agent offers no times, permanently. Keying this
+ * check on the row alone made that state invisible to the one monitor written to
+ * catch an agent who is silently unbookable, which is how "Apply company default
+ * hours" could half fail and leave nothing anywhere saying so.
+ */
+export function usableScheduleUserIds(
+  schedules: { id: string; user_id: string }[],
+  scheduleIdsWithRules: Set<string>,
+): Set<string> {
+  return new Set(
+    schedules.filter((s) => scheduleIdsWithRules.has(s.id)).map((s) => s.user_id),
+  );
+}
+
+/** From the bookable agents and the user ids with a USABLE schedule (a row that
+ *  holds rules, see above), the agents who have none (#838, widened by #1670).
+ *  Pure so the set difference is pinned by tests (#1158); the paged reads live in
+ *  the cron route. */
 export function missingScheduleAgents(
   agents: ScheduleLessAgent[],
   scheduledUserIds: Set<string>,
@@ -43,8 +63,11 @@ export function formatScheduleGapNotice(agents: ScheduleLessAgent[]): string {
   if (!agents.length) return "";
   const lines = agents.slice(0, NAME_CAP).map(agentLine);
   const more = agents.length > NAME_CAP ? ` (and ${agents.length - NAME_CAP} more)` : "";
+  // "no working hours" rather than "no schedule row" (#1670): the check now also
+  // catches an agent whose schedule exists but holds no rules, and the two are the
+  // same thing to the reader (this person takes no bookings) and to the repair.
   return (
-    `Could not auto-create a working-hours schedule for ${agents.length} ` +
+    `Could not auto-create working hours for ${agents.length} ` +
     `bookable agent(s); they show zero availability and take no bookings until fixed ` +
     `(admin > agent hours, or check the roster sync).${more}\n` +
     lines.join("\n")

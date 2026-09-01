@@ -119,6 +119,7 @@ import { EFFECTS } from "@/lib/ooo/orchestration";
 import {
   missingScheduleAgents,
   runScheduleCoverageCheck,
+  usableScheduleUserIds,
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
 import {
@@ -846,15 +847,20 @@ export async function GET(req: NextRequest) {
       }),
     );
 
-    // --- Schedule coverage (#838): a bookable agent with no availability_schedules
-    // row silently shows zero availability and takes no bookings. The row should
-    // exist (ensureDefaultSchedules fills it on roster sync), so first try to
+    // --- Schedule coverage (#838): a bookable agent with no working hours silently
+    // shows zero availability and takes no bookings. They should have some
+    // (ensureDefaultSchedules fills them on roster sync), so first try to
     // self-heal the benign case (a new agent between syncs), then whisper ONLY for
-    // the ones the fill could not create. Both reads are paged past PostgREST's
-    // 1,000-row cap; the schedule read is re-run after the heal so the recheck
-    // sees what the fill actually created. ---
+    // the ones the fill could not create. Every read is paged past PostgREST's
+    // 1,000-row cap; they are re-run after the heal so the recheck sees what the
+    // fill actually created.
+    //
+    // #1670 widened what counts as covered. A schedule ROW is not working hours:
+    // `isWithinWorkingHours` reads its RULES, and an empty rule set rejects every
+    // instant, so an agent with a row and no rules is exactly as unbookable as one
+    // with no row, and this check could not see them. ---
     const loadMissingAgents = async (): Promise<ScheduleLessAgent[]> => {
-      const [agents, scheds] = await Promise.all([
+      const [agents, scheds, ruleRows] = await Promise.all([
         selectAllPages<ScheduleLessAgent>(
           "monitor schedule-coverage bookable agents",
           (from, to) =>
@@ -866,12 +872,19 @@ export async function GET(req: NextRequest) {
               .eq("is_test", false)
               .range(from, to),
         ),
-        selectAllPages<{ user_id: string }>(
+        selectAllPages<{ id: string; user_id: string }>(
           "monitor schedule-coverage schedules",
-          (from, to) => db.from("availability_schedules").select("user_id").range(from, to),
+          (from, to) => db.from("availability_schedules").select("id, user_id").range(from, to),
+        ),
+        selectAllPages<{ schedule_id: string }>(
+          "monitor schedule-coverage rules",
+          (from, to) => db.from("availability_rules").select("schedule_id").range(from, to),
         ),
       ]);
-      return missingScheduleAgents(agents, new Set(scheds.map((s) => s.user_id)));
+      return missingScheduleAgents(
+        agents,
+        usableScheduleUserIds(scheds, new Set(ruleRows.map((r) => r.schedule_id))),
+      );
     };
     const scheduleCoverage = await steps.run("schedule_coverage", null, () =>
       runScheduleCoverageCheck({

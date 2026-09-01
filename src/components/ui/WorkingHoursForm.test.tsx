@@ -124,4 +124,43 @@ describe("WorkingHoursForm (#1308)", () => {
     );
     expect(document.querySelector('[name="user_id"]')).toBeNull();
   });
+
+  // #1671: a bare text input here let an agent type "Eastern", which stores fine,
+  // renders fine, and makes every weekday comparison in `isWithinWorkingHours`
+  // false, so they are bookable at NO time at all with nothing telling anyone.
+  it("offers the timezone as a list of real zones, never as free text", () => {
+    render(
+      <WorkingHoursForm
+        action={noop}
+        days={workingHoursDays([])}
+        timezone="America/New_York"
+        timezoneLabel="Timezone"
+      />,
+    );
+    const field = screen.getByLabelText("Timezone");
+    expect(field.tagName).toBe("SELECT");
+    const values = [...(field as HTMLSelectElement).options].map((o) => o.value);
+    // Every offered value is one the runtime can actually resolve, so no choice
+    // on this control can produce the NaN weekday.
+    for (const v of values) {
+      expect(() => new Intl.DateTimeFormat("en-US", { timeZone: v })).not.toThrow();
+    }
+    expect(values).toContain("America/Los_Angeles");
+    expect(values).not.toContain("Eastern");
+  });
+
+  // A zone outside the curated list must still be offered and SELECTED, or the
+  // control silently submits somebody else's zone the first time it is saved.
+  it("keeps an uncurated stored zone as the selected option", () => {
+    render(
+      <WorkingHoursForm
+        action={noop}
+        days={workingHoursDays([])}
+        timezone="America/Puerto_Rico"
+        timezoneLabel="Timezone"
+      />,
+    );
+    const field = screen.getByLabelText("Timezone") as HTMLSelectElement;
+    expect(field.value).toBe("America/Puerto_Rico");
+  });
 });
