@@ -394,9 +394,11 @@ function buildDeps(
     // --- Outbox (not used in createBooking path, provide stubs) ---
     enqueueOutbox: async () => randomUUID(),
     loadDrainableOutbox: async () => [],
-    leaseOutbox: async () => false,
-    saveOutboxSteps: async () => {},
-    markOutboxDelivered: async () => {},
+    // #1048: no lease means the inline path leaves the row to the drain, which is
+    // what this harness wants (it exercises createBooking, not delivery).
+    leaseOutbox: async () => null,
+    saveOutboxSteps: async () => "written" as const,
+    markOutboxDelivered: async () => "written" as const,
     releaseOutboxLease: async () => {},
 
     // --- Reservations ---

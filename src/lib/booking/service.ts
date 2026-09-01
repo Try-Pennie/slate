@@ -1,5 +1,11 @@
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  leaseOutboxRow,
+  saveOutboxStepsRow,
+  markOutboxDeliveredRow,
+  releaseOutboxLeaseRow,
+} from "@/lib/booking/outbox-lease";
 import { unwrap, type DbResult } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import {
@@ -134,7 +140,6 @@ const ABANDONED_PIN_GRACE_MS = 2 * 60 * 1000;
 const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
-const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
 const OUTBOX_DRAIN_LIMIT = 50;
 // Reservation lease + drain bounds (#429 P4). Crash-during-create is rare, so a
 // small cap with a multi-tick backlog is fine; bounds Worker CPU. Retention
@@ -1199,43 +1204,15 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data ?? []) as BookingOutbox[];
     },
 
-    leaseOutbox: async (id) => {
-      // Atomic claim: the WHERE gates on the lease being free/expired, so two
-      // concurrent drains can't both take it (the loser updates 0 rows).
-      const now = Date.now();
-      const { data } = await supabaseAdmin()
-        .from("booking_outbox")
-        .update({ lease_until: new Date(now + OUTBOX_LEASE_TTL_MS).toISOString() })
-        .eq("id", id)
-        .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
-        .select("id");
-      return ((data ?? []) as unknown[]).length > 0;
-    },
-
-    saveOutboxSteps: async (id, steps) => {
-      await supabaseAdmin()
-        .from("booking_outbox")
-        .update({ steps, updated_at: new Date().toISOString() })
-        .eq("id", id);
-    },
-
-    markOutboxDelivered: async (id) => {
-      await supabaseAdmin()
-        .from("booking_outbox")
-        .update({
-          status: "delivered",
-          lease_until: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", id);
-    },
-
-    releaseOutboxLease: async (id) => {
-      await supabaseAdmin()
-        .from("booking_outbox")
-        .update({ lease_until: null })
-        .eq("id", id);
-    },
+    // #1048: the lease and the three writes it guards live in one db-injected
+    // module so the compare and swap on the token is unit-tested rather than being
+    // the one part of the fix nothing can see (scripts/test-outbox-lease.ts).
+    leaseOutbox: (id) => leaseOutboxRow(supabaseAdmin(), id, Date.now()),
+    saveOutboxSteps: (id, steps, lease) =>
+      saveOutboxStepsRow(supabaseAdmin(), id, steps, lease, Date.now()),
+    markOutboxDelivered: (id, lease) =>
+      markOutboxDeliveredRow(supabaseAdmin(), id, lease, Date.now()),
+    releaseOutboxLease: (id, lease) => releaseOutboxLeaseRow(supabaseAdmin(), id, lease),
 
     bumpOutboxAttempt: async (id, attempts, lastError) => {
       await supabaseAdmin()
@@ -2548,6 +2525,19 @@ export async function drainBookingOutbox() {
         text: outboxDrainRecovery(),
       },
     ]);
+  }
+  // #1048: a handed-off row means a run stood down because its lease had moved on
+  // (or a gated write failed). Under normal operation this is zero, so a non-zero
+  // count is worth a line: it says a holder overran the two minute lease while a
+  // second one took the row, which is the only way to see that from outside.
+  // Logged rather than alerted, because nothing is broken and nothing is lost: the
+  // holder that owns the row finishes it.
+  if (result.handedOff > 0) {
+    log.warn("outbox", {
+      msg: "rows handed off mid-run",
+      handed_off: result.handedOff,
+      processed: result.processed,
+    });
   }
   // Return a PII-free summary: the full stuck rows carry attendee data in their
   // payload, and this flows into the cron HTTP response body.

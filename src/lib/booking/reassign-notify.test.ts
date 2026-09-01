@@ -129,9 +129,10 @@ function makeDeps(): BookingDeps {
     loadBusyBlockBookingIds: async () => new Set<string>(),
     enqueueOutbox: async () => "ob-1",
     loadDrainableOutbox: async () => [] as BookingOutbox[],
-    leaseOutbox: async () => true,
-    saveOutboxSteps: noop,
-    markOutboxDelivered: noop,
+    // #1048: the lease is a token, and the writes it guards report their outcome.
+    leaseOutbox: async () => "lease-tok",
+    saveOutboxSteps: async () => "written" as const,
+    markOutboxDelivered: async () => "written" as const,
     releaseOutboxLease: noop,
     bumpOutboxAttempt: noop,
     insertReservation: async (row: Record<string, unknown>) => ({

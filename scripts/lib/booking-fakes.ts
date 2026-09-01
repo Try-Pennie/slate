@@ -680,10 +680,13 @@ export function makeDeps(opts: FakeOpts) {
       return e === -1 ? null : `evt-${e + 1}`;
     },
     enqueueOutbox: async () => "ob-test",
-    leaseOutbox: async () => true,
+    // #1048: the lease is a token, and the writes it guards report whether they
+    // landed. "written" is the healthy answer; the stand-down paths are driven in
+    // scripts/test-booking-outbox.ts.
+    leaseOutbox: async () => "lease-tok",
     releaseOutboxLease: async () => {},
-    saveOutboxSteps: async () => {},
-    markOutboxDelivered: async () => {},
+    saveOutboxSteps: async () => "written" as const,
+    markOutboxDelivered: async () => "written" as const,
     insertReservation: async (row) => {
       calls.reservations.push({
         idempotency_key: row.idempotency_key,

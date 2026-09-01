@@ -44,6 +44,7 @@ import {
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
+import type { OutboxWriteOutcome } from "./outbox-lease.ts";
 import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
 import { resolveBucketPool } from "../availability/service.ts";
@@ -740,16 +741,23 @@ export interface BookingDeps {
   enqueueOutbox(row: BookingOutboxInsert): Promise<string>;
   /** Undelivered rows whose lease is free or expired, for the drain. */
   loadDrainableOutbox(limit: number): Promise<BookingOutbox[]>;
-  /** Gated claim of one row (set lease_until only if free/expired); true if THIS
-   *  call took the lease, so the drain and inline path never double-run a row. */
-  leaseOutbox(id: string): Promise<boolean>;
-  /** Persist the row's steps array after a transition (whole-array write; the
-   *  row is leased during the run so there's no concurrent writer). */
-  saveOutboxSteps(id: string, steps: OutboxStep[]): Promise<void>;
-  /** Flip the row to delivered once all its steps are done. */
-  markOutboxDelivered(id: string): Promise<void>;
-  /** Clear the lease so the row is reclaimable (run in a finally). */
-  releaseOutboxLease(id: string): Promise<void>;
+  /** Gated claim of one row (set lease_until only if free/expired). Returns the
+   *  lease TOKEN this call wrote, which every later write on the row is gated on,
+   *  or null when somebody else holds it (#1048). */
+  leaseOutbox(id: string): Promise<string | null>;
+  /** Persist the row's steps array after a transition. A whole-array write, so it
+   *  is gated on the caller's own lease: two live holders would otherwise overwrite
+   *  each other's progress. Reports which of the three things happened. */
+  saveOutboxSteps(
+    id: string,
+    steps: OutboxStep[],
+    lease: string,
+  ): Promise<OutboxWriteOutcome>;
+  /** Flip the row to delivered once all its steps are done, gated on the lease. */
+  markOutboxDelivered(id: string, lease: string): Promise<OutboxWriteOutcome>;
+  /** Clear the lease so the row is reclaimable (run in a finally), gated on the
+   *  token this holder wrote so it can never release a lease it has lost. */
+  releaseOutboxLease(id: string, lease: string): Promise<void>;
   /** Record a failed drain pass (#445): bump attempts, store last_error, and set
    *  next_attempt_at to now + exponential backoff so the row isn't re-attempted
    *  until then. */
@@ -3240,28 +3248,36 @@ async function applyReschedule(
     steps,
     payload,
   });
-  await deps.leaseOutbox(outboxId);
-  try {
-    await runOutboxSteps(
-      deps,
-      {
-        id: outboxId,
-        booking_id: booking.id,
-        action: "reschedule",
-        status: "pending",
-        steps,
-        payload,
-        lease_until: null,
-        attempts: 0,
-        last_error: null,
-        next_attempt_at: null,
-        created_at: "",
-        updated_at: "",
-      },
-      OUTBOX_HANDLERS,
-    );
-  } finally {
-    await deps.releaseOutboxLease(outboxId);
+  // #1048: honour the lease answer. A null means a drain tick already holds this
+  // row and is running the very steps we would run, so the right thing is to leave
+  // it alone rather than run them alongside it. The row is durable, so nothing is
+  // lost: whoever holds it finishes the delivery.
+  const lease = await deps.leaseOutbox(outboxId);
+  if (lease) {
+    try {
+      await runOutboxSteps(
+        deps,
+        {
+          id: outboxId,
+          booking_id: booking.id,
+          action: "reschedule",
+          status: "pending",
+          steps,
+          payload,
+          // The token this holder owns; every write the executor makes is gated on it.
+          lease_until: lease,
+          attempts: 0,
+          last_error: null,
+          next_attempt_at: null,
+          created_at: "",
+          updated_at: "",
+        },
+        OUTBOX_HANDLERS,
+        lease,
+      );
+    } finally {
+      await deps.releaseOutboxLease(outboxId, lease);
+    }
   }
 
   return {
@@ -3514,28 +3530,36 @@ export async function reassignBooking(
     steps,
     payload,
   });
-  await deps.leaseOutbox(outboxId);
-  try {
-    await runOutboxSteps(
-      deps,
-      {
-        id: outboxId,
-        booking_id: booking.id,
-        action: "reassign",
-        status: "pending",
-        steps,
-        payload,
-        lease_until: null,
-        attempts: 0,
-        last_error: null,
-        next_attempt_at: null,
-        created_at: "",
-        updated_at: "",
-      },
-      OUTBOX_HANDLERS,
-    );
-  } finally {
-    await deps.releaseOutboxLease(outboxId);
+  // #1048: honour the lease answer. A null means a drain tick already holds this
+  // row and is running the very steps we would run, so the right thing is to leave
+  // it alone rather than run them alongside it. The row is durable, so nothing is
+  // lost: whoever holds it finishes the delivery.
+  const lease = await deps.leaseOutbox(outboxId);
+  if (lease) {
+    try {
+      await runOutboxSteps(
+        deps,
+        {
+          id: outboxId,
+          booking_id: booking.id,
+          action: "reassign",
+          status: "pending",
+          steps,
+          payload,
+          // The token this holder owns; every write the executor makes is gated on it.
+          lease_until: lease,
+          attempts: 0,
+          last_error: null,
+          next_attempt_at: null,
+          created_at: "",
+          updated_at: "",
+        },
+        OUTBOX_HANDLERS,
+        lease,
+      );
+    } finally {
+      await deps.releaseOutboxLease(outboxId, lease);
+    }
   }
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token), overCap };
 }
@@ -3619,28 +3643,36 @@ export async function cancelBooking(
   // run the same steps concurrently (which could double-insert history and so
   // double-fire the webhook). Released in finally; a crash leaves the lease to
   // expire so the drain reclaims it.
-  await deps.leaseOutbox(outboxId);
-  try {
-    await runOutboxSteps(
-      deps,
-      {
-        id: outboxId,
-        booking_id: booking.id,
-        action: "cancel",
-        status: "pending",
-        steps,
-        payload,
-        lease_until: null,
-        attempts: 0,
-        last_error: null,
-        next_attempt_at: null,
-        created_at: "",
-        updated_at: "",
-      },
-      OUTBOX_HANDLERS,
-    );
-  } finally {
-    await deps.releaseOutboxLease(outboxId);
+  // #1048: honour the lease answer. A null means a drain tick already holds this
+  // row and is running the very steps we would run, so the right thing is to leave
+  // it alone rather than run them alongside it. The row is durable, so nothing is
+  // lost: whoever holds it finishes the delivery.
+  const lease = await deps.leaseOutbox(outboxId);
+  if (lease) {
+    try {
+      await runOutboxSteps(
+        deps,
+        {
+          id: outboxId,
+          booking_id: booking.id,
+          action: "cancel",
+          status: "pending",
+          steps,
+          payload,
+          // The token this holder owns; every write the executor makes is gated on it.
+          lease_until: lease,
+          attempts: 0,
+          last_error: null,
+          next_attempt_at: null,
+          created_at: "",
+          updated_at: "",
+        },
+        OUTBOX_HANDLERS,
+        lease,
+      );
+    } finally {
+      await deps.releaseOutboxLease(outboxId, lease);
+    }
   }
   return true;
 }

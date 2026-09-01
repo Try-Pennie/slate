@@ -10,6 +10,7 @@
 import type { BookingDeps } from "./orchestration.ts";
 import type { BookingOutbox } from "@/lib/db/types";
 import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
+import type { OutboxWriteOutcome } from "./outbox-lease.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 
 // Bounded fan-out for the drain (AUD-062). Rows are leased independently, so
@@ -23,20 +24,43 @@ export const OUTBOX_DRAIN_CONCURRENCY = 8;
 export type OutboxStepHandler = (deps: BookingDeps, row: BookingOutbox) => Promise<void>;
 export type OutboxHandlers = Record<string, OutboxStepHandler>;
 
+/** Why a row's run ended early, or null when it ran to the end (#1048). Named
+ *  separately from the step outcomes because neither is the row's own fault and
+ *  neither should count as a delivery attempt. */
+export type OutboxRunStop = "lease-lost" | "write-failed";
+
+export interface OutboxRunResult {
+  delivered: boolean;
+  ran: string[];
+  failed: string[];
+  /** Set when a lease-gated write told us to stop; null on a normal run. */
+  stopped: OutboxRunStop | null;
+}
+
 /**
  * Run every not-`done` step of one outbox row. Each step is independently
  * idempotent, so re-running after a crash is safe; a `done` step is skipped, a
  * throwing step is marked failed (and recorded) without blocking the rest. The
  * row is marked delivered only when ALL steps are done. Pure over `deps` — the
- * caller owns leasing.
+ * caller owns leasing and passes the token it holds.
+ *
+ * Every write goes through that token (#1048), so the run STOPS the moment a write
+ * reports the lease is gone. That is not a failure of this row: another holder owns
+ * it and is running the same steps, so pressing on would mean two holders writing
+ * whole steps arrays over each other, which is how a step that already ran gets
+ * re-opened and a recorded failure text is erased.
  */
 export async function runOutboxSteps(
   deps: BookingDeps,
   row: BookingOutbox,
   handlers: OutboxHandlers,
-): Promise<{ delivered: boolean; ran: string[]; failed: string[] }> {
+  lease: string,
+): Promise<OutboxRunResult> {
   const ran: string[] = [];
   const failed: string[] = [];
+  /** Maps a write's outcome to whether the run may continue. */
+  const stopFor = (outcome: OutboxWriteOutcome): OutboxRunStop | null =>
+    outcome === "written" ? null : outcome === "lease-lost" ? "lease-lost" : "write-failed";
 
   for (const step of row.steps) {
     if (step.state === "done") continue;
@@ -47,7 +71,8 @@ export async function runOutboxSteps(
       step.state = "failed";
       step.error = `no handler for step "${step.name}"`;
       failed.push(step.name);
-      await deps.saveOutboxSteps(row.id, row.steps);
+      const stop = stopFor(await deps.saveOutboxSteps(row.id, row.steps, lease));
+      if (stop) return { delivered: false, ran, failed, stopped: stop };
       continue;
     }
     try {
@@ -60,14 +85,21 @@ export async function runOutboxSteps(
       step.error = err instanceof Error ? err.message : String(err);
       failed.push(step.name);
     }
-    // Persist progress after each step so a crash mid-row resumes from here
-    // (the row is leased, so no concurrent writer races this whole-array write).
-    await deps.saveOutboxSteps(row.id, row.steps);
+    // Persist progress after each step so a crash mid-row resumes from here. The
+    // write is gated on this holder's lease, so the whole-array write can only ever
+    // land while this really is the only holder.
+    const stop = stopFor(await deps.saveOutboxSteps(row.id, row.steps, lease));
+    if (stop) return { delivered: false, ran, failed, stopped: stop };
   }
 
-  const delivered = row.steps.every((s) => s.state === "done");
-  if (delivered) await deps.markOutboxDelivered(row.id);
-  return { delivered, ran, failed };
+  const allDone = row.steps.every((s) => s.state === "done");
+  if (!allDone) return { delivered: false, ran, failed, stopped: null };
+
+  // Declaring delivery is gated too: a stale holder whose steps all read done must
+  // not close a row that a live holder still has work left on.
+  const stop = stopFor(await deps.markOutboxDelivered(row.id, lease));
+  if (stop) return { delivered: false, ran, failed, stopped: stop };
+  return { delivered: true, ran, failed, stopped: null };
 }
 
 /**
@@ -84,26 +116,39 @@ export async function processBookingOutbox(
   processed: number;
   delivered: number;
   skipped: number;
+  /** Rows whose run stopped because a gated write said the lease was gone or the
+   *  write failed (#1048). Counted apart from `skipped`, which is a row we never got
+   *  the lease for at all: one means we never started, the other means we started and
+   *  had to stand down, and a single number could not tell anybody which. */
+  handedOff: number;
   stuck: BookingOutbox[];
 }> {
   const rows = await deps.loadDrainableOutbox(limit);
   let delivered = 0;
   let skipped = 0;
+  let handedOff = 0;
   const stuck: BookingOutbox[] = [];
 
   // Drain rows concurrently but bounded (AUD-062). Each row is leased before its
   // steps run, so a large backlog clears in far fewer ticks without two drains
   // ever double-running the same row. A row already leased elsewhere is skipped.
   await mapWithConcurrency(rows, OUTBOX_DRAIN_CONCURRENCY, async (row) => {
-    const leased = await deps.leaseOutbox(row.id);
-    if (!leased) {
+    const lease = await deps.leaseOutbox(row.id);
+    if (!lease) {
       skipped++;
       return;
     }
     try {
-      const res = await runOutboxSteps(deps, row, handlers);
+      const res = await runOutboxSteps(deps, row, handlers, lease);
       if (res.delivered) {
         delivered++;
+      } else if (res.stopped) {
+        // Not this row's failure, so it must NOT count as a delivery attempt: bumping
+        // attempts here would walk a healthy row toward the give-up cap on the
+        // strength of somebody else holding it. It stays pending with its own lease
+        // holder (or, on a write failure, its untouched backoff) and is picked up
+        // again on a later tick.
+        handedOff++;
       } else {
         // A step failed this pass (#445): bump attempts + record why, and let the
         // dep schedule the next retry with backoff so we don't re-hit the failing
@@ -121,9 +166,11 @@ export async function processBookingOutbox(
         }
       }
     } finally {
-      await deps.releaseOutboxLease(row.id);
+      // Gated on the token this holder wrote, so a run that overran its lease cannot
+      // release the lease a second holder now owns (#1048).
+      await deps.releaseOutboxLease(row.id, lease);
     }
   });
 
-  return { processed: rows.length, delivered, skipped, stuck };
+  return { processed: rows.length, delivered, skipped, handedOff, stuck };
 }
