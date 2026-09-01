@@ -48,8 +48,27 @@ vi.mock("@/lib/booking/service", () => service);
 import { POST } from "./route";
 import { NotAuthorizedError } from "@/lib/auth/http";
 
-function req(body: unknown): Parameters<typeof POST>[0] {
-  return { json: async () => body } as unknown as Parameters<typeof POST>[0];
+/** Same-origin headers, which is what Slate's own UI sends. The route refuses a
+ *  request that says it came from elsewhere (#1046), so every fake carries them;
+ *  the refusal test below overrides them. */
+const SAME_ORIGIN_HEADERS = {
+  origin: "https://slate.trypennie.app",
+  "sec-fetch-site": "same-origin",
+  host: "slate.trypennie.app",
+};
+const CROSS_ORIGIN_HEADERS = {
+  ...SAME_ORIGIN_HEADERS,
+  origin: "https://evil.example",
+  "sec-fetch-site": "cross-site",
+};
+function req(
+  body: unknown,
+  headers: Record<string, string> = SAME_ORIGIN_HEADERS,
+): Parameters<typeof POST>[0] {
+  return {
+    json: async () => body,
+    headers: new Headers(headers),
+  } as unknown as Parameters<typeof POST>[0];
 }
 const params = { params: Promise.resolve({ id: "bk1" }) };
 
@@ -116,5 +135,27 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(500);
     expect((await res.json()).error).not.toMatch(/bookings|does not exist/);
+  });
+});
+
+// #1046: the session cookie is this route's only credential, so a request that says
+// it came from another site is refused before the auth check and before the body is
+// read. The static guard (scripts/test-same-origin-coverage.ts) proves every
+// cookie-authed mutation route carries the CALL; this proves the call on this route
+// actually refuses rather than sitting unreachable behind an earlier return.
+describe("admin reschedule refuses a cross-origin request (#1046)", () => {
+  it("403s a cross-site request without authenticating or writing", async () => {
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }, CROSS_ORIGIN_HEADERS), params);
+
+    expect(res.status).toBe(403);
+    expect(auth.requireBookingActor).not.toHaveBeenCalled();
+    expect(service.adminRescheduleBooking).not.toHaveBeenCalled();
+  });
+
+  it("still serves the same-origin request the UI sends", async () => {
+    // The positive control: a guard that refused everything would pass the test
+    // above while breaking the whole surface.
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).not.toBe(403);
   });
 });

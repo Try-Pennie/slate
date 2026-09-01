@@ -4,6 +4,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { purgeSnowflakeErasure } from "@/lib/snowflake/purge";
 import { log } from "@/lib/log";
+import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,12 @@ const LOCK_TTL_MS = 120_000;
  * that ran but left data behind reports false rather than success.
  */
 export async function POST(req: NextRequest) {
+  // #1046: this route's only credential is the session cookie, so refuse a request
+  // that says it came from somewhere else, before the auth check and before the body
+  // is read. See src/lib/api/same-origin.ts for why silence is allowed through.
+  const crossOrigin = crossOriginRefusal(req, "admin/erasure-purge");
+  if (crossOrigin) return crossOrigin;
+
   const caller = await resolveCaller(req);
   if (!caller) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 

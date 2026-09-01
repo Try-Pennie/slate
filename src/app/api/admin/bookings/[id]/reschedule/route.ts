@@ -13,6 +13,7 @@ import {
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,12 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // #1046: this route's only credential is the session cookie, so refuse a request
+  // that says it came from somewhere else, before the auth check and before the body
+  // is read. See src/lib/api/same-origin.ts for why silence is allowed through.
+  const crossOrigin = crossOriginRefusal(req, "admin/bookings/[id]/reschedule");
+  if (crossOrigin) return crossOrigin;
+
   let actor: Awaited<ReturnType<typeof requireBookingActor>>;
   try {
     actor = await requireBookingActor();
