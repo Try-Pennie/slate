@@ -313,9 +313,11 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "them again, so the loss is permanent and silent on both sides. It is deliberately not " +
       "counted, for the same reason api_query_invalid is not: this is read traffic, and putting " +
       "it in the denominator of a booking failure share is the dilution the rate limits are kept " +
-      "out for. A bookings table that cannot be read is not invisible while this stays quiet: " +
-      "every write path reads the same table, so a sustained failure surfaces through the share " +
-      "there, and each refusal here logs under tag=booking-api."
+      "out for. What catches a SUSTAINED one is the write path, which reads the same table for " +
+      "the one-call-per-person check and counts that failure as existing_call_unavailable, so " +
+      "the share pages there. That backstop is only as good as the write traffic beside it, " +
+      "which is none until the automated booker goes live, and until then each refusal here is " +
+      "visible only as a log line under tag=booking-api."
   },
   // #1429 split what used to be one `api_auth_refused` entry. The authorizer now
   // reports WHICH refusal it made, so the two opposite things behind that branch
