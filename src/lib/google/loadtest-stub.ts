@@ -9,6 +9,76 @@ import { parseStampMs } from "@/lib/date/stamp";
 
 export const LOADTEST = process.env.SLATE_LOADTEST === "true";
 
+/**
+ * Deterministic Google fault injection for the soak (#1050).
+ *
+ * The stub always succeeded, so the 200-agent soak proved the lanes work when Google
+ * works, which is the half that was never in doubt. What it could not say is whether
+ * they degrade gracefully: the sync coalescer, the reachability classifier, the
+ * failure-streak alerting and the verify-on-book re-route all exist for a Google that
+ * fails, and none of them was exercised at scale.
+ *
+ * `SLATE_LOADTEST_FAULT_PCT` is the percentage of calendar reads that throw. Zero (the
+ * default) is the previous behaviour exactly, so an existing soak run is unchanged.
+ *
+ * DETERMINISTIC, not random, and that is the point. A random failure rate makes a soak
+ * irreproducible: a run that passed and a run that failed differ by the dice, so
+ * neither tells you anything about the code. The verdict is a hash of the call's own
+ * key, so the same key fails on every run and a failing agent stays the failing agent
+ * across passes. That also matters for what is being tested: the streak alerting fires
+ * on CONSECUTIVE failures for one agent, which a per-call coin flip would rarely
+ * produce.
+ */
+export const LOADTEST_FAULT_PCT = (() => {
+  const raw = process.env.SLATE_LOADTEST_FAULT_PCT;
+  if (raw === undefined) return 0;
+  const n = Number(raw);
+  // An unreadable value is 0, never NaN: NaN compares false against every threshold, so
+  // it would silently mean "no faults" while reading as configured (L50). Zero means the
+  // same thing, and says it.
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
+})();
+
+/** A stable small hash, so a key's verdict is the same in every run and on every machine. */
+function keyHash(key: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h);
+}
+
+/** Whether this call should fail. Pure over the key and the configured percentage. */
+export function shouldFault(key: string, pct: number = LOADTEST_FAULT_PCT): boolean {
+  if (pct <= 0) return false;
+  if (pct >= 100) return true;
+  return keyHash(key) % 100 < pct;
+}
+
+/**
+ * The shape of failure a fault raises, chosen by the key so a run covers all three
+ * without a caller picking one. Each is a real thing Google does, and the three are the
+ * three the reachability classifier distinguishes, so the soak exercises every branch
+ * rather than only the transient one:
+ *
+ *   a 503 backendError, which self-heals and must NOT take an agent out of the pool;
+ *   a timeout, which is transient and must not either;
+ *   a 403 notACalendarUser, which retrying can never fix (#1396).
+ */
+export function loadtestFault(key: string): Error {
+  const kind = keyHash(key) % 3;
+  if (kind === 0) return new Error("Google API error 503: backendError (loadtest fault)");
+  if (kind === 1) return new Error("Google API request timed out (loadtest fault)");
+  return new Error("Google API error 403: notACalendarUser (loadtest fault)");
+}
+
+/** Throw for this key when the configured percentage says so. Called by each stubbed
+ *  read, so a fault lands where a real Google failure would: inside the call. */
+export function faultIfDue(key: string): void {
+  if (shouldFault(key)) throw loadtestFault(key);
+}
+
 // How many busy events a bootstrap sync returns per calendar (realistic batch
 // the sync lane then writes to busy_blocks). Incrementals return ~nothing.
 const HORIZON_MS = 4 * 86_400_000;
@@ -24,13 +94,14 @@ const CALENDAR_GRID_PAST_MS = 30 * 86_400_000;
 const CALENDAR_GRID_SLOTS = Math.floor((30 + 60) * 86_400_000 / CALENDAR_GRID_STEP_MS);
 
 /** One owned primary calendar (what listCalendars would surface). */
-export function stubCalendarList(): {
+export function stubCalendarList(email = "unknown"): {
   id: string;
   accessRole: string;
   primary: boolean;
   selected: boolean;
   summary: string;
 }[] {
+  faultIfDue(`calendarList:${email}`);
   return [
     { id: "primary", accessRole: "owner", primary: true, selected: true, summary: "primary" },
   ];
@@ -63,6 +134,7 @@ export function stubSyncEvents(
   nowMs: number,
   window: { timeMinIso: string; timeMaxIso: string },
 ): { events: GoogleEvent[]; nextSyncToken: string | null; truncated: boolean } {
+  faultIfDue(`sync:${window.timeMinIso}:${syncToken ?? "bootstrap"}`);
   const minMs = parseStampMs(window.timeMinIso);
   const maxMs = parseStampMs(window.timeMaxIso);
   // An unreadable window returns NOTHING, not everything. Falling back to the unscoped set
@@ -134,6 +206,7 @@ export function stubWatch(channelId: string, nowMs: number): {
 }
 
 /** Verify-on-book free/busy: report no live conflicts under load. */
-export function stubFreeBusy(): Interval[] {
+export function stubFreeBusy(email = "unknown"): Interval[] {
+  faultIfDue(`freeBusy:${email}`);
   return [];
 }

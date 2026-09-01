@@ -302,8 +302,21 @@ directly above, the line, and it must carry a reason. The one use today is the
 `?bust=1` cache-busting dynamic import in `test-alert-preview-coverage.ts`, which
 no resolver can follow and which is the entire point of that check.
 
-`worker/` is still excluded: its two errors need `@cloudflare/workers-types`,
-which is not a dependency here.
+`worker/` is covered too now (#1050), and it is the file that most needed it:
+`worker/index.ts` is what `wrangler.jsonc` points `main` at, so every request and
+every cron tick passes through it, and esbuild bundles it without checking types.
+`tsconfig.worker.json` uses `@cloudflare/workers-types` (scoped to that config, so
+the Workers globals never enter the app's program) and
+`scripts/test-worker-typecheck.ts` runs it, failing on the same two classes and
+planting an undefined identifier to prove the run actually read the tree.
+
+`TS2578` (an unused `@ts-expect-error`) is deliberately out of scope there. The entry
+imports `../.open-next/worker.js`, which does not exist until
+`opennextjs-cloudflare build` has run; the import carries an `@ts-expect-error`, so
+it is silent either way, but the DIRECTIVE flips between used and unused depending on
+whether somebody has built recently. A check whose verdict depends on that would pass
+locally and fail in CI, and the response to a check that disagrees with itself is to
+stop reading it.
 
 # Where a new test goes
 

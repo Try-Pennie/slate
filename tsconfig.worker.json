@@ -1,0 +1,32 @@
+{
+  "//": [
+    "Typecheck config for the Cloudflare Worker entry (#1050).",
+    "",
+    "worker/index.ts is what wrangler.jsonc points `main` at, so it is the",
+    "production entry point, and it was excluded from every typecheck: bundled by",
+    "esbuild, which strips types without checking them. An undefined name there",
+    "throws on the first request the Worker serves.",
+    "",
+    "Two things make this its own config rather than part of the app's:",
+    "",
+    "  * `types` is the Workers runtime, not the DOM plus Node. `ExecutionContext`",
+    "    and friends exist only there, and pulling those globals into the app's",
+    "    program would change what typechecks across every file in src/.",
+    "  * the entry imports `../.open-next/worker.js`, which does not exist until",
+    "    `opennextjs-cloudflare build` has run. That import carries an",
+    "    @ts-expect-error, so it is silent either way, but the DIRECTIVE flips",
+    "    between used and unused depending on whether the artifact is present.",
+    "    scripts/test-worker-typecheck.ts therefore ignores TS2578 and says why:",
+    "    a check whose verdict depends on whether somebody has built recently is",
+    "    not a check.",
+    "",
+    "Like the scripts tree, this is NOT demanded to be clean; the guard fails on",
+    "the classes that break at runtime."
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["worker/**/*.ts"],
+  "exclude": ["node_modules"]
+}
