@@ -1,0 +1,10 @@
+{
+  "surface": "/admin/bookings/[id] (BookingHistory, panel EXPANDED with 2 change rows)",
+  "theme": "dark",
+  "capturedAt": "2026-09-01",
+  "axeVersion": "4.10.2",
+  "tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "violations": [],
+  "passes": 26,
+  "incomplete": []
+}

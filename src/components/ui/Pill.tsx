@@ -7,6 +7,19 @@ import type { ReactNode } from "react";
  *
  * The ink-fill `role-admin` variant gets a dark treatment (outline +
  * sky-soft text) because a navy fill is invisible on the dark navy page.
+ *
+ * ON A DARK BAND, pass `onDark` (#1054). The transparent variants (`role-agent`,
+ * `outline`) draw their label in `--fg`, which follows the PAGE theme, so they are
+ * only legible on the page's own background. Placed inside a band that paints its
+ * own dark fill they keep the light theme's graphite label: measured at 1.28:1 on
+ * the agent detail page's navy identity band, which is an invisible pill rather
+ * than a low-contrast one.
+ *
+ * This is the pair problem (L213): a call site that overrides only the BACKGROUND
+ * silently keeps the base variant's foreground, and nothing reports it because both
+ * halves are individually correct. `onDark` overrides the pair, so a call site has
+ * the right thing to reach for instead of inventing a className, and the token
+ * contrast guard covers the pairing it produces.
  */
 
 export type PillVariant =
@@ -19,6 +32,17 @@ export type PillVariant =
   | "status-error"
   | "status-pending"
   | "outline";
+
+/**
+ * The transparent variants, whose legibility depends on what is BEHIND them rather
+ * than on a fill they carry. Only these need the `onDark` override; every other
+ * variant paints its own background and is self-contained.
+ */
+const TRANSPARENT_VARIANTS: readonly PillVariant[] = ["role-agent", "outline"];
+
+/** The pairing for a transparent pill sitting on a dark band: cream label on a cream
+ *  hairline. Both halves change together, which is the entire point. */
+const ON_DARK_CLS = "border-pennie-beige/40 text-pennie-beige";
 
 const VARIANT_CLS: Record<PillVariant, string> = {
   "role-agent": "border-border text-fg",
@@ -54,16 +78,22 @@ export function Pill({
   children,
   className,
   title,
+  onDark,
 }: {
   variant: PillVariant;
   children: ReactNode;
   className?: string;
   title?: string;
+  /** Set when the pill sits on a band that paints its OWN dark fill, so a
+   *  transparent variant does not keep the page theme's dark label (#1054). */
+  onDark?: boolean;
 }) {
+  const variantCls =
+    onDark && TRANSPARENT_VARIANTS.includes(variant) ? ON_DARK_CLS : VARIANT_CLS[variant];
   return (
     <span
       title={title}
-      className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] font-semibold leading-none ${VARIANT_CLS[variant]}${className ? ` ${className}` : ""}`}
+      className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] font-semibold leading-none ${variantCls}${className ? ` ${className}` : ""}`}
     >
       {children}
     </span>

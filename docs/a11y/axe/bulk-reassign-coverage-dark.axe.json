@@ -1,0 +1,11 @@
+{
+  "surface": "/admin/agents/[id] (BulkReassignCoverage, identity band, role and status pills)",
+  "theme": "dark",
+  "capturedAt": "2026-09-01",
+  "axeVersion": "4.10.2",
+  "tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "violations": [],
+  "passes": 26,
+  "incomplete": [],
+  "note": "This theme was clean BEFORE the fix too, which is the point of capturing both: the band is navy in light and --surface in dark, so the light theme's graphite label was the only broken pairing."
+}

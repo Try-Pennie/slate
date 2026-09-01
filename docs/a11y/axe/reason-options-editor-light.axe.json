@@ -1,0 +1,11 @@
+{
+  "surface": "/admin/settings/reasons (ReasonOptionsEditor)",
+  "theme": "light",
+  "capturedAt": "2026-09-01",
+  "axeVersion": "4.10.2",
+  "tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "violations": [],
+  "passes": 26,
+  "incomplete": ["color-contrast"],
+  "incompleteResolved": "axe declines to judge the reorder buttons because their content is only an arrow glyph (its nonBmp case), which is 'could not measure' rather than a pass. Measured by hand instead: graphite on white at 12.45:1, 14px semibold, against a 4.5 floor. Each button also carries an aria-label naming the option it moves, so the glyph is not the accessible name."
+}

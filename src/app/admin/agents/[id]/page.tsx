@@ -209,9 +209,16 @@ export default async function AgentProfilePage({
             <p className="truncate text-sm text-pennie-beige/75">{agent.email}</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Pill variant={`role-${agent.role}`}>{roleLabel(agent.role)}</Pill>
-            {!active && <Pill variant="outline">Deactivated</Pill>}
-            <Pill variant={agent.bookable ? "status-ok" : "outline"}>
+            {/* #1054: this band paints its own navy fill, so a transparent pill needs
+                the band's foreground rather than the page theme's. Without onDark the
+                label is graphite on navy at 1.28:1, which axe found here. */}
+            <Pill variant={`role-${agent.role}`} onDark>{roleLabel(agent.role)}</Pill>
+            {!active && (
+              <Pill variant="outline" onDark>
+                Deactivated
+              </Pill>
+            )}
+            <Pill variant={agent.bookable ? "status-ok" : "outline"} onDark>
               {agent.bookable ? "Bookable" : "Not bookable"}
             </Pill>
           </div>
