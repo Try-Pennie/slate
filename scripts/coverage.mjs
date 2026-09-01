@@ -7,15 +7,20 @@
 // captures V8 coverage from BOTH, converts each to istanbul format, merges them
 // into the true union, and emits one lcov + text summary.
 //
-// Report-only by design (#603): it never fails the build on a low number. A hard
-// threshold on this mixed harness would be noisy. Run: pnpm test:coverage
+// Report-only on the NUMBER by design (#603): there is no target percentage, because a
+// hard threshold on this mixed harness would be noisy. What it is not is indifferent to
+// EROSION (#1050): it compares against a committed floor and fails on a real drop. The
+// difference matters, and the decision in #603 survives it: nothing here demands a
+// number be reached, only that a gain already made is not quietly given back.
+// Run: pnpm test:coverage
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import libCoverage from "istanbul-lib-coverage";
 import { createContext } from "istanbul-lib-report";
 import reports from "istanbul-reports";
+import { judgeCoverage, statementsPct } from "./lib/coverage-ratchet.mjs";
 
 /**
  * Merge istanbul coverage-final.json objects into one coverage map. This is the
@@ -68,6 +73,8 @@ const ROOT = resolve(import.meta.dirname, "..");
 const COV = resolve(ROOT, "coverage");
 const NODE_RAW = resolve(COV, "node-v8");
 const NODE_OUT = resolve(COV, "node");
+// The committed floor the ratchet compares against (#1050).
+const FLOOR_FILE = resolve(ROOT, "scripts", "coverage-floor.json");
 const VITEST_OUT = resolve(COV, "vitest");
 
 function run(cmd, args, env = {}) {
@@ -135,4 +142,27 @@ const context = createContext({ dir: COV, coverageMap: map });
 reports.create("text-summary").execute(context);
 reports.create("lcovonly").execute(context);
 console.log(`\ncoverage: merged lcov written to ${resolve(COV, "lcov.info")}`);
+
+// 4. The ratchet (#1050). Read the number off the merged map rather than by scraping
+//    the printed summary: the text report is for a person, and parsing it would make
+//    this depend on istanbul's formatting.
+const measured = statementsPct(map.getCoverageSummary().toJSON());
+const floor = JSON.parse(readFileSync(FLOOR_FILE, "utf8")).statements;
+const judgement = judgeCoverage({ floor, measured });
+console.log(`\ncoverage: ${judgement.message}`);
+
+// Written where a person sees it without opening a log, since the whole complaint
+// about the old report-only number was that reading it depended on somebody choosing to.
+if (process.env.GITHUB_STEP_SUMMARY) {
+  const mark = judgement.verdict === "pass" ? "" : ` (${judgement.verdict})`;
+  appendFileSync(
+    process.env.GITHUB_STEP_SUMMARY,
+    `### Coverage${mark}\n\n${judgement.message}\n`,
+  );
+}
+
+if (judgement.verdict === "regressed" || judgement.verdict === "unmeasured") {
+  console.error(`\ncoverage: FAILING because ${judgement.verdict}.`);
+  process.exit(1);
+}
 }

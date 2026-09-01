@@ -53,6 +53,34 @@ Three things, stated plainly because they are what a second person would be for:
    one written all over this codebase: a guard is only real once it has been seen to
    fail, so a new guard ships with a control that proves it catches the defect.
 
+## The one boundary nothing pre-merge touches
+
+Named because it is the highest-risk uncovered thing in the repo, and leaving it unnamed
+makes it look overlooked (#1050): **no test before a merge talks to a real Supabase or a
+real Google.** The Supabase query chain is mocked, which means a mock and the real
+client agree by construction, and a chain that is subtly wrong (a filter that does not
+apply, a column that no longer exists) passes every gate here.
+
+What covers it instead, and it is a real set rather than a shrug:
+
+- the **`migration-drift`** job, so code cannot merge expecting schema that is not applied;
+- the **swallowed-error guards**, which is the class that made a broken query
+  indistinguishable from an empty result, the thing that actually hurt (#277, #1629, #1641);
+- the **capped-read guards**, for the other way a query lies quietly;
+- the **post-deploy probe** and the **canary**, which run the funnel against the real
+  database within minutes of a merge.
+
+The depth increase the audit suggested was a nightly lane running a handful of
+booking and availability tests against a disposable Supabase branch. It is **not built**,
+deliberately: it would catch a query-chain break a few hours earlier than the canary
+already does, and it needs a second environment to keep in sync, which is the cost ADR
+0007 declines for the same reason.
+
+What would change it: a query-chain break actually reaching production and not being
+caught by the canary. That is the evidence this decision is wrong, and none exists yet.
+If it happens, the nightly lane is the answer, and the Supabase branch it needs is the
+same reversal ADR 0007 names.
+
 ## What compensates after the merge
 
 Because the gates are pre-merge and the risk is post-merge, the net is deliberately

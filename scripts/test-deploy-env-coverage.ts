@@ -20,8 +20,11 @@ import { assert, fail, finish } from "./lib/harness.ts";
 const CODE_DIRS = ["src", "worker"];
 
 // Not deployment secrets: framework-provided or test/load-only toggles. These
-// legitimately never appear in the DR runbook.
-const IGNORE = new Set(["NODE_ENV", "SLATE_LOADTEST"]);
+// legitimately never appear in the DR runbook. Both loadtest flags are documented
+// where they are actually used, in scripts/loadtest/RUNBOOK.md: putting a soak-only
+// knob in the deploy runbook would imply production reads it, and production must
+// never set either (SLATE_LOADTEST replaces every Google call with a stub).
+const IGNORE = new Set(["NODE_ENV", "SLATE_LOADTEST", "SLATE_LOADTEST_FAULT_PCT"]);
 
 // How the code reads a named env var. `process.env[dynamic]` is intentionally
 // excluded (no static name); the csvEnv/requireEnv/present wrappers pass the
