@@ -6,11 +6,6 @@ import { supabaseBrowser } from "@/lib/supabase/browser";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { ArrowRightIcon } from "@/components/icons";
 
-const CALENDAR_SCOPES = [
-  "https://www.googleapis.com/auth/calendar.events",
-  "https://www.googleapis.com/auth/calendar.freebusy",
-].join(" ");
-
 // Sign-in failures the callback can bounce back with. Kept plain and
 // non-technical; the domain case is the security gate from #589.
 const ERROR_MESSAGES: Record<string, string> = {
@@ -67,16 +62,19 @@ export default function LoginPage() {
     // the redirect never happened (#631): unwind loading and show the failure so
     // the only button doesn't stay stuck on "Redirecting…".
     try {
+      // #1046: identity only. Slate reads calendars through domain-wide delegation
+      // with a service account and stores no OAuth tokens for the person signing in
+      // (nothing reads provider_token), so a calendar.events scope here would be a
+      // write permission over every staff calendar that the app never exercises,
+      // granted and re-consented on every single sign-in. `access_type=offline`
+      // asked for a refresh token nothing keeps, and `prompt=consent` re-showed the
+      // grant screen every time. The `hd` hint stays: it puts a person on the right
+      // account picker, though the real domain gate is server side (#589).
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
           redirectTo: `${window.location.origin}/api/auth/callback`,
-          scopes: CALENDAR_SCOPES,
-          queryParams: {
-            access_type: "offline",
-            prompt: "consent",
-            ...(hd ? { hd } : {}),
-          },
+          queryParams: hd ? { hd } : {},
         },
       });
       if (error) {
