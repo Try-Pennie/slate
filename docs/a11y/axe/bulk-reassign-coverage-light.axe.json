@@ -1,0 +1,11 @@
+{
+  "surface": "/admin/agents/[id] (BulkReassignCoverage, identity band, role and status pills)",
+  "theme": "light",
+  "capturedAt": "2026-09-01",
+  "axeVersion": "4.10.2",
+  "tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "violations": [],
+  "passes": 26,
+  "incomplete": [],
+  "note": "Clean AFTER the fix in this change. The first run of this surface found a serious color-contrast violation on two pills in the navy identity band: graphite label on navy at 1.28:1, light theme only. The pills used a transparent variant whose label follows the PAGE theme, inside a band that paints its own navy fill."
+}

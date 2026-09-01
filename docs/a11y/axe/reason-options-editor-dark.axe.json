@@ -1,0 +1,11 @@
+{
+  "surface": "/admin/settings/reasons (ReasonOptionsEditor)",
+  "theme": "dark",
+  "capturedAt": "2026-09-01",
+  "axeVersion": "4.10.2",
+  "tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "violations": [],
+  "passes": 26,
+  "incomplete": ["color-contrast"],
+  "incompleteResolved": "Same arrow-glyph case as the light capture. Measured by hand: beige on the dark surface at 10.86:1."
+}

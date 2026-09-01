@@ -143,4 +143,20 @@ atLeast(roseDark, navy, 4.5, "dark error rose-on-navy bg"); // 6.72
 const skySoft = r("--pennie-sky-soft");
 atLeast(graphite, skySoft, 4.5, "erasure purge result graphite-on-sky-soft");
 
+// #1054: a transparent Pill on a band that paints its OWN dark fill.
+//
+// Found by an axe run, not by this guard, and that is the lesson in it. The pills in
+// the agent detail page's navy identity band drew their label in `--fg`, which follows
+// the PAGE theme, so the light theme put graphite on navy at 1.28:1: an invisible pill,
+// not a low-contrast one. This guard could not have caught it, because it checks token
+// PAIRINGS and that was a call site composing two individually correct tokens (L213).
+//
+// What it CAN do is hold the pairing the fix introduced, so `Pill`'s `onDark` treatment
+// cannot drift below the line. Both halves are raw tokens, so it does not move between
+// themes.
+atLeast(beige, navy, 4.5, "Pill onDark beige-on-navy (the #1054 fix)");
+// And the pairing that was broken must STAY broken, so nobody reintroduces it believing
+// it passes. A guard that only asserts the good pair says nothing about the bad one.
+below(graphite, navy, 4.5, "graphite-on-navy is NOT a legible pill label (1.28 fail)");
+
 finish();
