@@ -546,6 +546,13 @@ The in-place reschedule enforces the booker's full slot rules (daily cap, buffer
 notice, working hours, #539) and can decline with a `409` when the new time is not
 bookable for the current agent.
 
+All three of these routes (cancel, reschedule, and the `POST
+/api/bookings/[token]/phone` number correction) are throttled per client address at
+20 requests a minute, at the edge, and answer `429` above it (#1046). That is far
+above moving one appointment; it exists so a caller guessing manage tokens cannot
+buy unmetered database round trips. It fails OPEN, so a limiter fault never stops a
+real customer cancelling.
+
 ---
 
 ## Admin routes (session-authed, internal)

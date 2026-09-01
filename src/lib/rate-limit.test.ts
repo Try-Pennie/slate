@@ -41,6 +41,7 @@ import {
   bookingApiWriteWithinLimit,
   bookingApiIpWithinLimit,
   bookingApiReadWithinLimit,
+  manageWithinLimit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { BURST_ESCALATE_AT } from "@/lib/rate-limit-burst";
@@ -831,6 +832,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
       "booking-api": bookingApiWriteWithinLimit,
       "booking-api-ip": bookingApiIpWithinLimit,
       "booking-api-read": bookingApiReadWithinLimit,
+      manage: manageWithinLimit,
     };
     expect(Object.keys(wrappers).sort()).toEqual(EDGE_LIMITERS.map((l) => l.area).sort());
 

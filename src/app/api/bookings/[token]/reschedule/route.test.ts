@@ -36,13 +36,22 @@ const service = vi.hoisted(() => {
 });
 
 const recordApiOutcome = vi.hoisted(() => vi.fn());
+/** #1046: the two manage routes and the phone edit are the only unauthenticated
+ *  write paths with no throttle. The limiter is mocked so these tests drive the
+ *  route's reaction to a refusal rather than Cloudflare's counter. */
+const rateLimit = vi.hoisted(() => ({ manageWithinLimit: vi.fn(async () => true) }));
+vi.mock("@/lib/rate-limit", () => rateLimit);
+
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 
 import { POST } from "./route";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
-  return { json: async () => body } as unknown as Parameters<typeof POST>[0];
+  return {
+    json: async () => body,
+    headers: new Headers({ "cf-connecting-ip": "203.0.113.9" }),
+  } as unknown as Parameters<typeof POST>[0];
 }
 const params = { params: Promise.resolve({ token: "tok1" }) };
 
@@ -181,5 +190,36 @@ describe("POST /api/bookings/[token]/reschedule outcome tally (#1318)", () => {
     // rejects is hand made. If the PAGE ever sent the wrong shape, every reschedule
     // would fail and the codes above would report it as a share within minutes.
     expect(outcomes()).toEqual([]);
+  });
+});
+
+// #1046: token guessing is infeasible (nanoid(24), about 143 bits) and the reschedule
+// lock bounds hammering one real booking, but a garbage token still bought an
+// unauthenticated caller a database round trip per request with nothing counting them.
+// A per address edge window bounds that. It fails OPEN by design, so the test that
+// matters is the one proving a refusal actually stops the work.
+describe("manage reschedule is throttled per address (#1046)", () => {
+  it("429s a refused address before touching the booking layer", async () => {
+    rateLimit.manageWithinLimit.mockResolvedValueOnce(false);
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+
+    expect(res.status).toBe(429);
+    expect(service.rescheduleBooking).not.toHaveBeenCalled();
+  });
+
+  it("serves an address inside the window", async () => {
+    // The positive control: a throttle that refused everything would pass the test
+    // above while taking the manage link away from every customer.
+    rateLimit.manageWithinLimit.mockResolvedValueOnce(true);
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).not.toBe(429);
   });
 });

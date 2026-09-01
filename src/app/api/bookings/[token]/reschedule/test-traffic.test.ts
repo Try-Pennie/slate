@@ -45,6 +45,9 @@ const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn(() => ({ rpc, from })) })
 // run it, which is exactly what Cloudflare does after the response is sent.
 const deferred = vi.hoisted(() => ({ work: null as null | (() => Promise<unknown>) }));
 
+/** #1046: the route throttles per address. Stubbed permissive here; the refusal
+ *  itself is covered in route.test.ts beside this file. */
+vi.mock("@/lib/rate-limit", () => ({ manageWithinLimit: vi.fn(async () => true) }));
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -62,7 +65,11 @@ vi.mock("@/lib/booking/reason-options", () => ({
 import { POST } from "./route";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
-  return { json: async () => body } as unknown as Parameters<typeof POST>[0];
+  return {
+    json: async () => body,
+    // The route throttles per address (#1046), so the fake carries one.
+    headers: new Headers({ "cf-connecting-ip": "203.0.113.9" }),
+  } as unknown as Parameters<typeof POST>[0];
 }
 const BODY = { start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" };
 const params = (token: string) => ({ params: Promise.resolve({ token }) });
