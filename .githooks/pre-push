@@ -109,6 +109,19 @@ changed_paths="$(git diff --name-only "@{push}"..HEAD 2>/dev/null)" \
 # Cost: one `git fetch --no-tags origin main`, a single ref, on every push.
 "$root_dir/.githooks/lib/stale-main-guard.sh" "$branch" || exit 1
 
+# --- 1d. Security-review reminder (#1043) -----------------------------------
+#
+# Review here is self-merge with the automated gates as the only reviewer, which is
+# a deliberate trade (docs/review-process.md). Its one soft spot is judgement about
+# who may do what: the gates prove the code does what it says, and cannot notice
+# that what it says is too permissive.
+#
+# So a push touching the authorization, webhook, routing or schema surfaces prints a
+# reminder. It NEVER blocks, on purpose: nothing in CI can run a review that needs a
+# person, so a blocking version would be a gate whose only satisfying action is to
+# set its own skip variable. It reuses the changed-path list computed above.
+"$root_dir/.githooks/lib/security-review-reminder.sh" "$changed_paths"
+
 # --- 2. CI parity checks ----------------------------------------------------
 if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
   exit 0

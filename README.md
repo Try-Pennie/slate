@@ -185,6 +185,9 @@ three writers that keep availability fresh), `CONTEXT.md` (domain glossary),
 `docs/booking-api.md` (Direct Booking API integrator guide), and `docs/adr/`
 (architecture decisions, indexed in `docs/adr/README.md`).
 
+Process: `docs/review-process.md` (how code gets reviewed here, and what the
+automated gates provably cannot do).
+
 Runbooks: `docs/migrations-runbook.md` (applying a schema change),
 `docs/smoke-test-runbook.md`, `docs/dr-runbook.md`,
 `docs/pii-erasure-runbook.md`, and `docs/admin-lockout-runbook.md` (nobody can
