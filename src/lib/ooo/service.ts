@@ -24,6 +24,7 @@ import { approvalBlocks } from "@/lib/notify/ooo-slack-blocks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { shortFailureReason } from "@/lib/notify/error-text";
 import { recordAudit } from "@/lib/audit";
+import { unwrap } from "@/lib/db/result";
 import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import * as orchestration from "@/lib/ooo/orchestration";
@@ -51,22 +52,31 @@ const OOO_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 export function realDeps(): OooDeps {
   const db = supabaseAdmin;
   return {
-    loadRequest: async (id) => {
-      const { data } = await db()
-        .from("ooo_requests")
-        .select("*")
-        .eq("id", id)
-        .maybeSingle();
-      return (data as OooRequest | null) ?? null;
-    },
+    // #1674: `unwrap` rather than `data ?? null`, because a failed read here
+    // arrives at every caller as "Request not found.", a claim about the row
+    // that the read never measured. A throw is loud and is what the caller's own
+    // error boundary is for.
+    loadRequest: async (id) =>
+      (unwrap(
+        await db().from("ooo_requests").select("*").eq("id", id).maybeSingle(),
+        "ooo.loadRequest",
+      ) as OooRequest | null) ?? null,
 
+    // #1674: null on a read error, NEVER `[]`. The overlap guard behind the time
+    // off form treats `[]` as a measured empty calendar and accepts the request;
+    // null is "could not measure" and refuses it retriably. The two are not
+    // interchangeable and the empty one fails open.
     listActiveRequests: async (userId) => {
-      const { data } = await db()
+      const { data, error } = await db()
         // cap-safe: one user's active (pending/approved) time off requests.
         .from("ooo_requests")
         .select("id, starts_at, ends_at, display_tz_id, display_tz_label")
         .eq("user_id", userId)
         .in("status", ["pending", "approved"]);
+      if (error) {
+        log.error("ooo", { msg: "active requests unreadable", user_id: userId }, error);
+        return null;
+      }
       return (data ?? []) as {
         id: string;
         starts_at: string;
@@ -111,24 +121,31 @@ export function realDeps(): OooDeps {
       await db().from("ooo_requests").update(patch).eq("id", id);
     },
 
-    getUser: async (userId) => {
-      const { data } = await db()
-        .from("users")
-        .select("*")
-        .eq("id", userId)
-        .maybeSingle();
-      return (data as User | null) ?? null;
-    },
+    // #1674: a swallowed error here reads as "the requesting agent no longer
+    // exists", which is a claim about the roster made by a read that never ran.
+    getUser: async (userId) =>
+      (unwrap(
+        await db().from("users").select("*").eq("id", userId).maybeSingle(),
+        "ooo.getUser",
+      ) as User | null) ?? null,
 
-    agentPrimaryCalendarId: async (userId) => {
-      const { data } = await db()
-        .from("agent_calendars")
-        .select("calendar_id")
-        .eq("user_id", userId)
-        .limit(1)
-        .maybeSingle();
-      return (data as { calendar_id: string } | null)?.calendar_id ?? "primary";
-    },
+    // #1674: a swallowed error here silently falls back to "primary", i.e. it
+    // writes the time off block to a DIFFERENT calendar than the one the agent
+    // is actually booked against, so the absence would not block anything. The
+    // fallback is only correct for an agent with no agent_calendars row, which
+    // is a null data with a null error and still passes through unwrap.
+    agentPrimaryCalendarId: async (userId) =>
+      (
+        unwrap(
+          await db()
+            .from("agent_calendars")
+            .select("calendar_id")
+            .eq("user_id", userId)
+            .limit(1)
+            .maybeSingle(),
+          "ooo.agentPrimaryCalendarId",
+        ) as { calendar_id: string } | null
+      )?.calendar_id ?? "primary",
 
     createCalendarEvent: (actorEmail, calendarId, args, clientId) =>
       createEventOnCalendar(actorEmail, calendarId, args, clientId),
