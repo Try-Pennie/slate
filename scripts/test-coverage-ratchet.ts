@@ -100,6 +100,15 @@ for (const bad of [undefined, null, {}, { statements: {} }, { statements: { pct:
     (parsed.statements as number) >= 50,
     "and it is not a floor so low that nothing could ever trip it",
   );
+  // And it must be MEASURED, not inherited. The first floor here was 63.30, copied from
+  // the audit report that asked for the ratchet, while the suite actually covered 85.83:
+  // a floor 22 points below reality is a ratchet that reads as protection and cannot
+  // fire. A stamp does not prove it is current, but it does mean a stale floor is
+  // visible rather than silent.
+  assert(
+    typeof (parsed as { measuredOn?: unknown }).measuredOn === "string",
+    "the floor records WHEN it was measured, so a stale one is visible",
+  );
 }
 
 // --- the runner actually consults it -----------------------------------------

@@ -1,1 +1,5 @@
-{ "//": "The coverage floor the ratchet compares against (#1050). Moved by hand, in a commit somebody reviews: a bot pushing this to main would trip the main-push guard, correctly. scripts/coverage.mjs prints the value to raise it to when coverage improves.", "statements": 63.3 }
+{
+  "//": "The coverage floor the ratchet compares against (#1050). MEASURED, not inherited: the 63.30 this replaces came from the 2026-07-23 audit report and was 22.5 points stale, so the ratchet read as protection while allowing a 22 point slide. Moved by hand, in a commit somebody reviews: a bot pushing this to main would trip the main-push guard, correctly. scripts/coverage.mjs prints the value to raise it to.",
+  "statements": 85.83,
+  "measuredOn": "2026-09-01"
+}
