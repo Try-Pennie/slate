@@ -29,15 +29,17 @@ v4 · Luxon. Package manager: pnpm.
 ## Setup
 
 1. **Supabase project:** create one, link it (`supabase link`), then apply the
-   whole migration set with `supabase db push`. The `supabase/migrations/` folder
-   runs to `0060_monitor_settings.sql`; applying only `0001_init.sql` leaves a
-   broken schema (missing `bucket_slots`, the booking outbox, `monitor_settings`,
-   `is_test`, and more).
+   whole migration set with `supabase db push`. Applying only `0001_init.sql`
+   leaves a broken schema (missing `bucket_slots`, the booking outbox,
+   `monitor_settings`, `is_test`, and more), so it is the whole set or nothing.
+   `SHIPPED_MIGRATION_VERSION` (`src/lib/db/migration-version.ts`) is the one place
+   that names the current tail, and a guard keeps it equal to the highest file.
 2. **Google Cloud** — create an OAuth client (Web). Authorized redirect URIs
    must include your Supabase auth callback **and** `${APP_URL}/api/auth/callback`.
    Enable the Calendar API.
-3. **Supabase Auth** — enable the Google provider with the same client
-   id/secret. Add the Calendar scopes.
+3. **Supabase Auth** enable the Google provider with the same client
+   id/secret. No Calendar scopes: sign-in asks for identity only, and calendar
+   access is domain-wide delegation through the service account (#1046).
 4. **Env:** copy `.env.example` to `.env.local` and fill it in. Beyond Supabase
    and the Google OAuth client, a working instance now also needs the Google
    **service account** for domain-wide delegation (`GOOGLE_SA_CLIENT_EMAIL` /
@@ -174,9 +176,16 @@ src/app/login          Google SSO
 worker/                Cloudflare Worker entry (index.ts) + cron dispatch (cron-routes.ts)
 scripts/               node-native tests (test-*.ts) + migration / env / doc drift guards
 public/widget.js       embed SDK (inline + popup)
-supabase/migrations    schema (runs to 0060)
+supabase/migrations    schema (apply the whole set; see SHIPPED_MIGRATION_VERSION)
 ```
 
-Deeper context: `CONTEXT.md` (domain glossary), `DEPLOY.md` (deploy + cron runbook),
-`docs/api.md` (full HTTP API reference), `docs/booking-api.md` (Direct Booking API
-integrator guide), and `docs/adr/` (architecture decisions).
+Deeper context: `docs/architecture.md` (two diagrams: the booking path, and the
+three writers that keep availability fresh), `CONTEXT.md` (domain glossary),
+`DEPLOY.md` (deploy + cron runbook), `docs/api.md` (full HTTP API reference),
+`docs/booking-api.md` (Direct Booking API integrator guide), and `docs/adr/`
+(architecture decisions, indexed in `docs/adr/README.md`).
+
+Runbooks: `docs/migrations-runbook.md` (applying a schema change),
+`docs/smoke-test-runbook.md`, `docs/dr-runbook.md`,
+`docs/pii-erasure-runbook.md`, and `docs/admin-lockout-runbook.md` (nobody can
+reach `/admin`).

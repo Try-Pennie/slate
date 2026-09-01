@@ -5,12 +5,11 @@ The app runs on Cloudflare Workers via `@opennextjs/cloudflare`. Run these in a
 prompts, so values never land in a transcript).
 
 ## Prerequisites
-- The canonical production host is **`slate.trypennie.app`**. `wrangler.jsonc`'s
-  `routes` bind it as a `custom_domain` (and also bind a secondary domain);
-  `custom_domain` auto-creates the DNS record + TLS cert. Each host's apex zone
-  must exist in the target Cloudflare account. If one isn't there, add it to
-  Cloudflare first, or drop that `routes` entry and bind the domain in the
-  dashboard later.
+- The canonical production host is **`slate.trypennie.app`**, and it is the only
+  one: `wrangler.jsonc`'s `routes` bind that single host as a `custom_domain`, which
+  auto-creates the DNS record and the TLS cert. Its apex zone must exist in the
+  target Cloudflare account; if it is not there, add it to Cloudflare first, or drop
+  the `routes` entry and bind the domain in the dashboard later.
 - `.env.local` is filled in (it provides the `NEXT_PUBLIC_*` values inlined at
   build time; `NEXT_PUBLIC_APP_URL` is set to `https://slate.trypennie.app`).
 

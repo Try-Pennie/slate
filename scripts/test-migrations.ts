@@ -284,6 +284,36 @@ assert(
   );
 }
 
+// #1053: no document may state WHICH migration the set runs to.
+//
+// The README said the set ran to 0060 while it ran to 0111, a 51 migration drift
+// that nothing checked. The fix is not to correct the number: a number in prose has
+// to be re-edited on every migration forever, and the one thing everybody forgets is
+// the edit nobody's change depends on. So the claim is removed and this guard keeps
+// it removed, which is the only version of the fix that cannot rot.
+//
+// Naming a SPECIFIC file for a specific reason is still fine (`0001_init.sql` is the
+// first one and always will be). What is banned is a claim about the TAIL, because
+// only the tail moves.
+{
+  const claims: string[] = [];
+  for (const doc of ["README.md", "DEPLOY.md"]) {
+    const text = readFileSync(doc, "utf8");
+    // "runs to 0060", "runs to `0060_monitor_settings.sql`", "up to 0111", and the
+    // parenthesised form the README used in its tree listing.
+    for (const m of text.matchAll(/(runs? to|up to|through)\s+`?(\d{4})/gi)) {
+      claims.push(`${doc}: "${m[0]}"`);
+    }
+  }
+  assert(
+    claims.length === 0,
+    claims.length === 0
+      ? "no document claims which migration the set runs to"
+      : `a document names the migration tail, which drifts on the next migration ` +
+          `(#1053). Say "the whole set" instead: ${claims.join("; ")}`,
+  );
+}
+
 // A routing GATE must default to its OFF value, so that forgetting to set it
 // produces the safe state rather than the live one (#1266). `users.bookable`
 // shipped defaulting to TRUE, so the login provisioning path, which does not name

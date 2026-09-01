@@ -30,7 +30,7 @@ holding some of it.
 | **Google Calendar** (the assigned agent's own calendar) | attendee name and email as a real invitee; phone in the event description | Indefinite. A completed meeting's event stays | **No** |
 | **Regal / Cadence** (webhook subscriber) | name, email, phone, prefill, manage URL, plus asserted `voiceOptIn` / `smsOptIn` / `emailOptIn` | Theirs, unknown to Slate | **No** |
 | **Snowflake** (archival mirror) | name, email, phone, prefill, **and the manage token** | 24 months, stated to match Supabase | **Yes**, but by a separate purge that must be run |
-| **Cloudflare** (Worker logs) | whatever a log line or a serialized error happens to carry | 7 days, then gone | **No**, and it does not need to be |
+| **Cloudflare** (Worker logs) | whatever a log line or a serialized error happens to carry, **plus the full request URL**, which for a prefilled booking link holds name, email and phone (#1046) | 7 days, then gone | **No**, and it does not need to be |
 | **Slack** (alerts) | **no lead contact data at all** | Slack's own | n/a |
 
 The two rows worth pausing on are Google Calendar and Regal: both hold direct
@@ -145,6 +145,33 @@ again on the server, and its own header states the limit plainly: it catches
 carries it through. What bounds that is what the beacon sends: a page level
 signature and a short reason to Slack, full text to the log only, with field caps.
 Residual, not eliminated.
+
+### The booking URL itself carries contact data, on every request
+
+This is the one path here that is not incidental, and it is an accepted position
+rather than a gap (#1046).
+
+The cal.com compatible entry point takes the lead's details as **query parameters**:
+`/book?bucket=411&name=…&email=…&phone=…`, which is how cal.com's own embed works
+and therefore how Slate's has to work to be a drop in replacement. Cloudflare
+records the full request URL on every invocation, so for a lead who arrives with a
+prefilled link, their name, email and phone are in the log for the 7 day window. Not
+because anything logged them, but because they are in the address that was fetched.
+
+The reduction was considered and declined. Passing prefill through `postMessage` or
+`sessionStorage` would keep it out of the URL for a JavaScript embed host, but the
+bare link fallback is a real supported path (an email or an SMS with a prefilled
+booking link, no host page to talk to), and query parameters are the frozen contract
+`widget.js` mirrors. Splitting the two would mean two prefill mechanisms and a
+different one taken depending on how a lead arrived, for a copy that ages out in a
+week inside a log only Pennie can read.
+
+What makes it acceptable, stated plainly so it can be challenged: the window is 7
+days and there is no export, the log is reachable only with Cloudflare account
+access, and nothing downstream reads a URL back out of it. What would change the
+decision is log retention growing (a Logpush job to R2 would turn a 7 day residue
+into an indefinite one, and would need this reconsidered first) or the bare link
+path being retired.
 
 Seven day retention means this needs no erasure step: any copy here ages out well
 inside the 45 day response deadline.
