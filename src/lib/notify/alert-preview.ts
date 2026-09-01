@@ -198,6 +198,8 @@ import {
   creationOrphanAlert,
   outboxDrainRecovery,
   outboxDrainStuckAlert,
+  outboxAllHandedOffAlert,
+  outboxHandoffRecovery,
   pendingDeletionAlert,
   pendingDeletionRecovery,
   reassignIntentDroppedAlert,
@@ -1623,6 +1625,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the backlog delivered",
     channel: "recovery",
     text: outboxDrainRecovery(),
+  },
+  {
+    key: "outbox_all_handed_off",
+    state: "every leased row stood down",
+    channel: "alert",
+    text: outboxAllHandedOffAlert(3, 5),
+  },
+  {
+    key: "outbox_all_handed_off",
+    state: "the drain is completing rows again",
+    channel: "recovery",
+    text: outboxHandoffRecovery(),
   },
   {
     key: "reservation_drain_stuck",

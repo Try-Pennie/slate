@@ -220,6 +220,43 @@ through the outbox. Abandoned intents are swept by
 the booking's live one and **alerts** on a genuinely-lost reassign (the machine
 caller has no human retry loop).
 
+## The outbox lease is a token, not a flag (#1048)
+
+Post-commit side effects are delivered by the outbox executor, and a row is
+**leased** before its steps run so only one holder acts on it at a time. That is what
+lets the executor persist the WHOLE `steps` array after each step: a single holder
+cannot race itself.
+
+Holding the lease is therefore an invariant other code relies on, and every write on
+a leased row is a compare and swap on the **token** the holder wrote
+(`src/lib/booking/outbox-lease.ts`):
+
+- `leaseOutbox` claims a free or expired lease and returns the token, read back from
+  the row rather than from the ISO string we sent, so a store that renders a
+  timestamp its own way cannot make every later comparison quietly false.
+- `saveOutboxSteps` and `markOutboxDelivered` are gated on that token and report
+  `written`, `lease-lost` or `failed`. A run STOPS on either of the last two.
+- `releaseOutboxLease` is gated too, which is the point: a holder that overran the
+  two minute TTL must not free the lease a second holder now legitimately owns. An
+  ungated release let a third holder start while the second was mid flight, and two
+  live holders writing whole `steps` arrays re-open a step that already ran and erase
+  the recorded failure text of one that did not.
+
+A row that stands down is counted as `handedOff` by the drain, separately from a row
+it never leased, and is charged **no** failed attempt: bumping attempts there would
+walk a healthy row toward the give-up cap on the strength of somebody else holding
+it. The inline path (straight after a booking mutation) honours a null lease the same
+way: a drain already holds the row and is running those very steps, so it leaves it
+alone.
+
+That exemption needs its own alarm, and this is the part worth understanding.
+`outbox_drain_stuck` fires off `attempts >= DRAIN_ALERT_AFTER`, so a row that never
+bumps attempts can never reach it: a drain standing every row down forever would look
+exactly like an empty outbox, and would even post the "backlog has cleared" all-clear.
+So `everyLeasedRowStoodDown` (one predicate, read by both the alarm and the all-clear)
+decides whether a tick MEASURED delivery at all. Five consecutive ticks that did not
+page `outbox_all_handed_off`, and such a tick sends no recovery notice for either key.
+
 ## How the three share one pattern
 
 | | Create | Reschedule | Reassign |

@@ -130,6 +130,30 @@ export function outboxDrainRecovery(): string {
   );
 }
 
+/**
+ * Every row the drain leased stood down (#1048). Its own alert, because such a
+ * tick charges no failed attempt to any row, so it can never reach the
+ * attempt-cap alert above: without this, a drain that delivers nothing forever
+ * looks exactly like an empty outbox.
+ */
+export function outboxAllHandedOffAlert(leasedCount: number, ticks: number): string {
+  return (
+    `Every booking-outbox row the drain leased stood down, for ${ticks} ticks running ` +
+    `(${leasedCount} row(s) in the last one), so no side effects are being delivered and no ` +
+    `row is being charged a failed attempt. Expected causes: holders overrunning the two ` +
+    `minute lease, or the lease comparison itself never matching. Diagnose via the ` +
+    `tag=outbox log lines and booking_outbox.lease_until.`
+  );
+}
+
+/** The all-clear for a drain that had stood every row down (#1048). */
+export function outboxHandoffRecovery(): string {
+  return (
+    "The booking-outbox drain is completing rows again rather than standing every one of them " +
+    "down, so calendar invites and webhooks are being delivered. No action is needed."
+  );
+}
+
 /** Crash-recovered creates that are not completing. */
 export function reservationDrainStuckAlert(stuckCount: number, after: number, ids: string): string {
   return (

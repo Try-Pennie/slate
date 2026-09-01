@@ -1,5 +1,11 @@
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  leaseOutboxRow,
+  saveOutboxStepsRow,
+  markOutboxDeliveredRow,
+  releaseOutboxLeaseRow,
+} from "@/lib/booking/outbox-lease";
 import { unwrap, type DbResult } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import {
@@ -92,6 +98,8 @@ import {
   creationOrphanAlert,
   outboxDrainRecovery,
   outboxDrainStuckAlert,
+  outboxAllHandedOffAlert,
+  outboxHandoffRecovery,
   pendingDeletionAlert,
   pendingDeletionRecovery,
   reassignIntentDroppedAlert,
@@ -118,7 +126,7 @@ import type {
   EventType,
   User,
 } from "@/lib/db/types";
-import { processBookingOutbox } from "@/lib/booking/outbox";
+import { processBookingOutbox, everyLeasedRowStoodDown } from "@/lib/booking/outbox";
 import { drainBackoffMs, DRAIN_GIVE_UP_AT, DRAIN_ALERT_AFTER } from "@/lib/booking/drain-backoff";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -134,7 +142,6 @@ const ABANDONED_PIN_GRACE_MS = 2 * 60 * 1000;
 const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
-const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
 const OUTBOX_DRAIN_LIMIT = 50;
 // Reservation lease + drain bounds (#429 P4). Crash-during-create is rare, so a
 // small cap with a multi-tick backlog is fine; bounds Worker CPU. Retention
@@ -145,6 +152,15 @@ const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 // Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
 // failing row alerts at most twice an hour, not every tick.
 const DRAIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+// #1048: a tick where EVERY leased row stood down charges no attempt to any row, so
+// it can never reach the attempt-cap alert. Five consecutive ticks on a lane that
+// runs every minute: long enough that one genuine overlap with the inline path stays
+// quiet, short enough that a drain delivering nothing is named within minutes. The
+// window comfortably exceeds the lane's interval so consecutive ticks land in one
+// window rather than each looking like the first.
+const OUTBOX_HANDOFF_STREAK_KEY = "outbox_all_handed_off";
+const OUTBOX_HANDOFF_STREAK_WINDOW_S = 15 * 60;
+const OUTBOX_HANDOFF_ALERT_AFTER = 5;
 
 const VERIFY_READ_ALERT_KEY = "verify_on_book_calendars_read";
 const VERIFY_READ_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -340,6 +356,7 @@ export {
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
+import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
@@ -1199,43 +1216,15 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data ?? []) as BookingOutbox[];
     },
 
-    leaseOutbox: async (id) => {
-      // Atomic claim: the WHERE gates on the lease being free/expired, so two
-      // concurrent drains can't both take it (the loser updates 0 rows).
-      const now = Date.now();
-      const { data } = await supabaseAdmin()
-        .from("booking_outbox")
-        .update({ lease_until: new Date(now + OUTBOX_LEASE_TTL_MS).toISOString() })
-        .eq("id", id)
-        .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
-        .select("id");
-      return ((data ?? []) as unknown[]).length > 0;
-    },
-
-    saveOutboxSteps: async (id, steps) => {
-      await supabaseAdmin()
-        .from("booking_outbox")
-        .update({ steps, updated_at: new Date().toISOString() })
-        .eq("id", id);
-    },
-
-    markOutboxDelivered: async (id) => {
-      await supabaseAdmin()
-        .from("booking_outbox")
-        .update({
-          status: "delivered",
-          lease_until: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", id);
-    },
-
-    releaseOutboxLease: async (id) => {
-      await supabaseAdmin()
-        .from("booking_outbox")
-        .update({ lease_until: null })
-        .eq("id", id);
-    },
+    // #1048: the lease and the three writes it guards live in one db-injected
+    // module so the compare and swap on the token is unit-tested rather than being
+    // the one part of the fix nothing can see (scripts/test-outbox-lease.ts).
+    leaseOutbox: (id) => leaseOutboxRow(supabaseAdmin(), id, Date.now()),
+    saveOutboxSteps: (id, steps, lease) =>
+      saveOutboxStepsRow(supabaseAdmin(), id, steps, lease, Date.now()),
+    markOutboxDelivered: (id, lease) =>
+      markOutboxDeliveredRow(supabaseAdmin(), id, lease, Date.now()),
+    releaseOutboxLease: (id, lease) => releaseOutboxLeaseRow(supabaseAdmin(), id, lease),
 
     bumpOutboxAttempt: async (id, attempts, lastError) => {
       await supabaseAdmin()
@@ -2531,6 +2520,32 @@ export async function drainBookingOutbox() {
     OUTBOX_DRAIN_LIMIT,
     orchestration.OUTBOX_HANDLERS,
   );
+  // #1048: did this tick actually MEASURE delivery? A row that stood down (its lease
+  // had moved on, or a gated write failed) is charged no failed attempt, deliberately,
+  // so a tick where every leased row stood down learns nothing about whether side
+  // effects are completing. Two consequences, and the second is the one that bites:
+  // it needs its own alarm, because it can never reach the attempt-cap one; and it
+  // must not send the all-clear, which would be a recovery notice off a signal that
+  // measured nothing (#1152).
+  const leased = result.processed - result.skipped;
+  const allHandedOff = everyLeasedRowStoodDown(result);
+  if (allHandedOff) {
+    const page = await recordConsecutiveStreak(
+      OUTBOX_HANDOFF_STREAK_KEY,
+      OUTBOX_HANDOFF_STREAK_WINDOW_S,
+      OUTBOX_HANDOFF_ALERT_AFTER,
+    );
+    if (page) {
+      await sendThrottledAlert(
+        OUTBOX_HANDOFF_STREAK_KEY,
+        DRAIN_ALERT_COOLDOWN_MS,
+        outboxAllHandedOffAlert(leased, OUTBOX_HANDOFF_ALERT_AFTER),
+      ).catch(() => {});
+    }
+  } else {
+    await clearFailureStreak(OUTBOX_HANDOFF_STREAK_KEY);
+  }
+
   if (result.stuck.length > 0) {
     const ids = result.stuck.map((r) => r.id).slice(0, 10).join(", ");
     await sendThrottledAlert(
@@ -2538,16 +2553,28 @@ export async function drainBookingOutbox() {
       DRAIN_ALERT_COOLDOWN_MS,
       outboxDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
     ).catch(() => {});
-  } else {
+  } else if (!allHandedOff) {
     // #1151: a backing-off outbox is a CONDITION (the side effects of real
     // bookings are not completing), so say when it drains. Measured, not assumed:
-    // a drain that threw never gets here.
+    // a drain that threw never gets here, and neither does one that stood every
+    // row down.
     await resolveRecovered([
-      {
-        key: "outbox_drain_stuck",
-        text: outboxDrainRecovery(),
-      },
+      { key: "outbox_drain_stuck", text: outboxDrainRecovery() },
+      { key: OUTBOX_HANDOFF_STREAK_KEY, text: outboxHandoffRecovery() },
     ]);
+  }
+  // #1048: a handed-off row means a run stood down because its lease had moved on
+  // (or a gated write failed). Under normal operation this is zero, so a non-zero
+  // count is worth a line: it says a holder overran the two minute lease while a
+  // second one took the row, which is the only way to see that from outside.
+  // Logged rather than alerted, because nothing is broken and nothing is lost: the
+  // holder that owns the row finishes it.
+  if (result.handedOff > 0) {
+    log.warn("outbox", {
+      msg: "rows handed off mid-run",
+      handed_off: result.handedOff,
+      processed: result.processed,
+    });
   }
   // Return a PII-free summary: the full stuck rows carry attendee data in their
   // payload, and this flows into the cron HTTP response body.
