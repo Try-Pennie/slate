@@ -57,8 +57,10 @@ describe("ReasonOptionsEditor", () => {
     expect(payload(container).cancel.at(-1)).toEqual({ code: "", label: "", active: true });
   });
 
+  // A MEASURED zero, because a component handed no usage knows nothing and asks
+  // before retiring (#1657); this test's subject is the flip itself.
   it("retiring a reason flips its active flag in the payload", () => {
-    const { container } = render(<ReasonOptionsEditor initial={initial} />);
+    const { container } = render(<ReasonOptionsEditor initial={initial} usage={emptyUsage} />);
     // Scope to the "No longer interested" row (there are several Active checkboxes).
     const row = (screen.getByDisplayValue("No longer interested") as HTMLElement).closest("li")!;
     const checkbox = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
@@ -124,6 +126,40 @@ describe("ReasonOptionsEditor", () => {
   });
 
   it("retires an UNUSED reason immediately with no confirm (#990)", () => {
+    const { container } = render(<ReasonOptionsEditor initial={initial} usage={emptyUsage} />);
+    const li = liFor("No longer interested");
+    fireEvent.click(li.querySelector('input[type="checkbox"]') as HTMLInputElement);
+    expect(within(li).queryByRole("button", { name: /retire it anyway/i })).toBeNull();
+    expect(payload(container).cancel.find((r) => r.code === "no_longer_interested")!.active).toBe(false);
+  });
+
+  // #1657: the counts come from a read that can FAIL, and zero is a real answer
+  // ("nobody has picked this in 90 days"), so an unmeasured count must not
+  // borrow it. Null is could-not-measure, and it fails toward ASKING.
+  it("says the recent use could not be read rather than claiming the reason is unused", () => {
+    render(<ReasonOptionsEditor initial={initial} usage={null} />);
+    const li = liFor("No longer interested");
+    expect(within(li).getByText(/recent use could not be read/i)).toBeTruthy();
+    expect(within(li).queryByText(/not used in the last/i)).toBeNull();
+  });
+
+  it("still asks before retiring a reason whose recent use could not be read", () => {
+    const { container } = render(<ReasonOptionsEditor initial={initial} usage={null} />);
+    const li = liFor("No longer interested");
+    fireEvent.click(li.querySelector('input[type="checkbox"]') as HTMLInputElement);
+    // The confirm appears, and nothing has flipped yet.
+    expect(within(liFor("No longer interested")).getByRole("button", { name: /retire it anyway/i })).toBeTruthy();
+    expect(payload(container).cancel.find((r) => r.code === "no_longer_interested")!.active).toBe(true);
+    // And the question says what is unknown, rather than asserting a count. It
+    // appears twice in the row: the standing hint, and inside the confirm.
+    expect(
+      within(liFor("No longer interested")).getAllByText(/recent use could not be read/i).length,
+    ).toBeGreaterThan(1);
+  });
+
+  // The control: a MEASURED zero still retires straight through, so the confirm
+  // above is a response to the unmeasured state and not to every retire.
+  it("CONTROL: a measured zero still retires with no confirm", () => {
     const { container } = render(<ReasonOptionsEditor initial={initial} usage={emptyUsage} />);
     const li = liFor("No longer interested");
     fireEvent.click(li.querySelector('input[type="checkbox"]') as HTMLInputElement);

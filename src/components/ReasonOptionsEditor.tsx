@@ -24,14 +24,20 @@ const ACTION_TITLES: Record<ReasonAction, string> = {
 };
 const ACTION_ORDER: ReasonAction[] = ["reschedule", "cancel", "reassign"];
 
-const EMPTY_USAGE: ReasonUsageCounts = { reschedule: {}, cancel: {}, reassign: {} };
-
 function toEditRow(r: ReasonOptionRow): EditRow {
   return { code: r.code, label: r.label, active: r.active, locked: r.locked };
 }
 
-/** The per-row "used N times in the last 90 days" hint copy (#990). */
-function usageHint(n: number): string {
+/**
+ * The per-row usage hint copy (#990), with a third state (#1657).
+ *
+ * `null` is "could not measure" and must never borrow the wording for zero:
+ * zero is the real and useful answer "nobody has picked this in 90 days", and a
+ * failed read saying that is a false all clear on the very screen where a reason
+ * gets retired.
+ */
+function usageHint(n: number | null): string {
+  if (n === null) return "Recent use could not be read";
   if (n <= 0) return `Not used in the last ${REASON_USAGE_WINDOW_DAYS} days`;
   return `Used ${n} time${n === 1 ? "" : "s"} in the last ${REASON_USAGE_WINDOW_DAYS} days`;
 }
@@ -46,12 +52,18 @@ function usageHint(n: number): string {
  */
 export default function ReasonOptionsEditor({
   initial,
-  usage = EMPTY_USAGE,
+  usage = null,
 }: {
   initial: Record<ReasonAction, ReasonOptionRow[]>;
-  /** Recent per-reason usage from booking_events (#990); drives the hint and the
-   *  confirm before retiring a still-used reason. Absent -> no counts (safe degrade). */
-  usage?: ReasonUsageCounts;
+  /**
+   * Recent per-reason usage from booking_events (#990); drives the hint and the
+   * confirm before retiring a still-used reason.
+   *
+   * `null` means the counts could not be MEASURED, which is not the same as a
+   * measured zero and is deliberately the default: a component handed nothing
+   * knows nothing (#1657).
+   */
+  usage?: ReasonUsageCounts | null;
 }) {
   const [rows, setRows] = useState<Record<ReasonAction, EditRow[]>>({
     reschedule: initial.reschedule.map(toEditRow),
@@ -61,7 +73,12 @@ export default function ReasonOptionsEditor({
   // The row awaiting a "retire a still-used reason" confirm, keyed `${action}:${i}`.
   const [confirming, setConfirming] = useState<string | null>(null);
 
-  const usesFor = (action: ReasonAction, code: string) => (code ? (usage[action]?.[code] ?? 0) : 0);
+  /** Recent uses of `code`, or null when the counts could not be measured. */
+  const usesFor = (action: ReasonAction, code: string): number | null => {
+    if (!code) return 0;
+    if (usage === null) return null;
+    return usage[action]?.[code] ?? 0;
+  };
 
   const update = (action: ReasonAction, next: EditRow[]) =>
     setRows((prev) => ({ ...prev, [action]: next }));
@@ -81,7 +98,13 @@ export default function ReasonOptionsEditor({
     const r = rows[action][i];
     // Retiring (active -> inactive) a reason still in recent use holds the toggle
     // behind an inline confirm (#990); everything else applies immediately.
-    if (r.active && usesFor(action, r.code) > 0) {
+    //
+    // An UNMEASURED count asks too (#1657). An unreadable count must fail toward
+    // asking, never toward waving the destructive edit through: the alternative
+    // is that the one guard against retiring a reason people actively use is
+    // silently off exactly when nothing can tell whether they do.
+    const uses = usesFor(action, r.code);
+    if (r.active && (uses === null || uses > 0)) {
       setConfirming(`${action}:${i}`);
       return;
     }
