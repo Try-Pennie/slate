@@ -147,6 +147,16 @@
 			"name": "BOOKINGAPI_READ_RATE_LIMITER",
 			"namespace_id": "1006",
 			"simple": { "limit": 600, "period": 60 }
+		},
+		// The customer's own manage link (#1046), keyed per IP: 20/min across cancel,
+		// reschedule and the phone edit. Far above any real customer (moving one
+		// appointment is a handful of requests); it exists so a garbage manage token
+		// cannot buy unthrottled unauthenticated database round trips. Edge only, with
+		// no hourly cap behind it, since the round trip is the thing being bounded.
+		{
+			"name": "MANAGE_RATE_LIMITER",
+			"namespace_id": "1007",
+			"simple": { "limit": 20, "period": 60 }
 		}
 	],
 	// The second ceiling behind EVERY limiter above (#1536 for availability, #1556

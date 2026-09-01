@@ -497,6 +497,32 @@ export const BOOKING_API_READ_LIMITER = {
   burstCeilingPerMinute: 6000,
 } as const satisfies EdgeLimiterSpec;
 
+/**
+ * The customer's own manage link (#1046): cancel, reschedule, and the phone edit.
+ *
+ * These are the only unauthenticated WRITE paths that had no throttle at all. Guessing
+ * a manage token is infeasible (nanoid(24), about 143 bits) and the reschedule lock
+ * bounds hammering one real booking, so this is not about a caller getting in; it is
+ * about what a caller who is not getting in costs. Every garbage token was a database
+ * round trip nothing counted.
+ *
+ * 20 a minute is far above any real customer: cancelling or moving one appointment is a
+ * handful of requests, and the phone edit one. It is deliberately edge only, with no
+ * hourly cap in the database behind it, because the whole point is to refuse before the
+ * request reaches Postgres and an hourly cap would put the round trip back.
+ */
+export const MANAGE_LIMITER = {
+  binding: "MANAGE_RATE_LIMITER",
+  area: "manage",
+  friendly: "booking manage links",
+  keyKind: "ip",
+  onUnidentified: "serve",
+  unidentifiedWhy:
+    "the only way to reach a booking here is to already hold its unguessable manage token, so a caller we cannot identify can still act only on the one appointment somebody sent them the link for, and the reschedule lock bounds repeat attempts on it",
+  perMinute: 20,
+  burstCeilingPerMinute: 200,
+} as const satisfies EdgeLimiterSpec;
+
 /** Every edge limiter, in the one list the tests and the monitor lane walk. */
 export const EDGE_LIMITERS = [
   AVAILABILITY_LIMITER,
@@ -505,6 +531,7 @@ export const EDGE_LIMITERS = [
   BOOKING_API_WRITE_LIMITER,
   BOOKING_API_IP_LIMITER,
   BOOKING_API_READ_LIMITER,
+  MANAGE_LIMITER,
 ] as const;
 
 export type EdgeLimiterBinding = (typeof EDGE_LIMITERS)[number]["binding"];

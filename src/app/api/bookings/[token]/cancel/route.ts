@@ -4,6 +4,10 @@ import { cancelBooking, BookingNotCancellableError } from "@/lib/booking/service
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { manageWithinLimit } from "@/lib/rate-limit";
+// From the pure core rather than the re-export, so a test can stub the limiter without
+// also having to hand back a working clientIp.
+import { clientIp } from "@/lib/rate-limit-core";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +20,17 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ token: string }> },
 ) {
+  // #1046: bound what an unauthenticated caller costs us. Guessing a manage token is
+  // infeasible, so this is not about getting in; it is about a garbage token buying a
+  // database round trip per request with nothing counting them. Fails OPEN, so a
+  // limiter hiccup can never stop a real customer cancelling.
+  if (!(await manageWithinLimit(clientIp(req.headers)))) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again in a moment." },
+      { status: 429 },
+    );
+  }
+
   const { token } = await params;
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {

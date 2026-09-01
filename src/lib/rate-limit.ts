@@ -18,6 +18,7 @@ import {
   BOOKING_API_WRITE_LIMITER,
   BOOKING_API_IP_LIMITER,
   BOOKING_API_READ_LIMITER,
+  MANAGE_LIMITER,
 } from "@/lib/rate-limit-core";
 
 export {
@@ -203,6 +204,16 @@ export async function bookingApiIpWithinLimit(ip: string): Promise<boolean> {
 
 export async function bookingApiReadWithinLimit(keyId: string): Promise<boolean> {
   return edgeWithinLimit(keyId, BOOKING_API_READ_LIMITER);
+}
+
+/**
+ * The customer's manage link (#1046), keyed per address: cancel, reschedule and the
+ * phone edit. Edge only, with no hourly cap behind it, because the cost being bounded
+ * IS the database round trip an unthrottled garbage token bought. Fails OPEN + LOUD
+ * like the rest: a limiter hiccup must never stop a real customer cancelling.
+ */
+export async function manageWithinLimit(ip: string): Promise<boolean> {
+  return edgeWithinLimit(ip, MANAGE_LIMITER);
 }
 
 /** The Cloudflare edge rate-limit binding shape (`.limit({ key }) -> { success }`). */

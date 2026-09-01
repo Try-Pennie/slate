@@ -23,6 +23,11 @@ const errors = vi.hoisted(() => ({
   ),
 }));
 
+/** #1046: the manage write paths are throttled per address. Mocked so these tests
+ *  drive the route's reaction to a refusal rather than Cloudflare's counter. */
+const rateLimit = vi.hoisted(() => ({ manageWithinLimit: vi.fn(async () => true) }));
+vi.mock("@/lib/rate-limit", () => rateLimit);
+
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/api/errors", () => errors);
 
@@ -101,5 +106,37 @@ describe("POST /api/bookings/[token]/phone", () => {
     // The detail is kept server-side rather than handed to a lead.
     expect(errors.internalErrorResponse).toHaveBeenCalled();
     expect(JSON.stringify(body)).not.toContain("booking phone update failed");
+  });
+});
+
+// #1046: token guessing is infeasible (nanoid(24), about 143 bits) and the reschedule
+// lock bounds hammering one real booking, but a garbage token still bought an
+// unauthenticated caller a database round trip per request with nothing counting them.
+// A per address edge window bounds that. It fails OPEN by design, so the test that
+// matters is the one proving a refusal actually stops the work.
+describe("manage phone edit is throttled per address (#1046)", () => {
+  // The suite above scopes its own beforeEach to its describe, so this block clears
+  // and re-arms for itself rather than inheriting stale calls from the last test.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service.updateBookingPhone.mockResolvedValue({ ok: true, phone: "(215) 555-9999" });
+  });
+
+  it("429s a refused address before touching the booking layer", async () => {
+    rateLimit.manageWithinLimit.mockResolvedValueOnce(false);
+
+    const res = await post({ phone: "2155559999" });
+
+    expect(res.status).toBe(429);
+    expect(service.updateBookingPhone).not.toHaveBeenCalled();
+  });
+
+  it("serves an address inside the window", async () => {
+    // The positive control: a throttle that refused everything would pass the test
+    // above while taking the manage link away from every customer.
+    rateLimit.manageWithinLimit.mockResolvedValueOnce(true);
+
+    const res = await post({ phone: "2155559999" });
+    expect(res.status).not.toBe(429);
   });
 });

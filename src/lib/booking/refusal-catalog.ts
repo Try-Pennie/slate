@@ -433,6 +433,22 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "to stay safe. It pages on its own, and the share catches a sustained one.",
   },
   {
+    id: "reschedule_rate_limited",
+    surface: "manage page",
+    outcome: "429, asked to try again in a moment",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The same reasoning as the booker's burst window (#1046 added this one). Twenty requests a " +
+      "minute is far above moving one appointment, and reaching a booking at all needs its " +
+      "unguessable manage token, so a trip is one host hammering tokens rather than a customer " +
+      "being turned away. Counting it would put that volume in the denominator the failure share " +
+      "is measured against and make a real outage look proportionally smaller during a flood. " +
+      "Every trip is logged under the limiter's own tag with the scope and address. What would " +
+      "change this decision is many DISTINCT addresses tripping it, a cardinality this counter " +
+      "cannot express.",
+  },
+  {
     id: "reschedule_internal",
     surface: "manage page",
     outcome: "500, a generic failure",
