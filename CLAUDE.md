@@ -27,8 +27,14 @@ v4 · Luxon. Package manager: pnpm.
   which THROWS on an unreadable week rather than degrading, because serving
   unfiltered hours would silently re-open a narrowing and look like a healthy day.
   The two hour windows are each judged in their OWN zone and never intersected:
-  clipping is correct only for an agent in the business zone, and every live agent
-  is Eastern, so no production data can tell the two apart. `scripts/test-availability-zones.ts`
+  clipping is correct only for an agent in the business zone. **The roster is NOT
+  all Eastern** (#1739, corrected 2026-09-02): it spans seven zones, 27 in Phoenix
+  and 16 in Los Angeles among them, so production data now CAN tell the two apart
+  and a mistake here is visible rather than theoretical. It used to read "every
+  live agent is Eastern, so no production data can tell the two apart", which was
+  true of the stored data and false about the world: every schedule said
+  `America/New_York` because that was the seeded default nobody had edited.
+  `scripts/test-availability-zones.ts`
   (#1316) is what does tell them apart: it drives a Pacific, a Tokyo and a London
   agent at instants where the correct answer and minute-clipping DISAGREE, including
   the org's day spanning two of the agent's local weekdays and the three weeks a year
