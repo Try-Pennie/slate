@@ -64,6 +64,23 @@ const dbState = vi.hoisted(() => ({
   insertError: null as { message: string } | null,
   count: 0,
   countError: null as { message: string } | null,
+  /**
+   * Per TABLE read seams (#1649). The single `singleError` above fails EVERY
+   * read at once, which cannot tell "this action refuses when its authorization
+   * read fails" from "this action refuses when anything fails": the assertion
+   * would pass on a version that only guarded a different read. Each action here
+   * reads at most one row per table, so the table name is a sufficient key, and a
+   * test can break exactly one read and leave its neighbours healthy.
+   */
+  rowsByTable: {} as Record<string, unknown>,
+  errorByTable: {} as Record<string, { message: string } | undefined>,
+  /**
+   * The RPC behind a schedule write. `null` means "report back the number of
+   * rules you were handed", which is what a working database does; a test that
+   * wants the count check to FAIL sets a number here instead.
+   */
+  rpcWritten: null as number | null,
+  rpcError: null as { message: string } | null,
 }));
 const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
 const update = vi.hoisted(() =>
@@ -75,8 +92,26 @@ const insert = vi.hoisted(() =>
 const upsert = vi.hoisted(() =>
   vi.fn(async (_rows: unknown, _opts?: { onConflict: string }) => ({})),
 );
+const rpc = vi.hoisted(() =>
+  vi.fn(async (_name: string, args?: { p_rules?: unknown[] }) => ({
+    data: dbState.rpcError ? null : (dbState.rpcWritten ?? args?.p_rules?.length ?? 0),
+    error: dbState.rpcError,
+  })),
+);
+
 const from = vi.hoisted(() =>
   vi.fn((_table: string) => {
+    // A per-table seam wins over the shared one, so a test can fail ONE read.
+    // Falls through to `single` / `singleError` when the table is not registered,
+    // which is what keeps every test written before #1649 working unchanged.
+    const readOne = async () => {
+      const err = dbState.errorByTable[_table];
+      if (err) return { data: null, error: err };
+      if (Object.hasOwn(dbState.rowsByTable, _table)) {
+        return { data: dbState.rowsByTable[_table], error: null };
+      }
+      return { data: dbState.singleError ? null : dbState.single, error: dbState.singleError };
+    };
     const q: Record<string, unknown> = {
       select: vi.fn(() => q),
       eq: vi.fn(() => q),
@@ -84,11 +119,21 @@ const from = vi.hoisted(() =>
         count: dbState.countError ? null : dbState.count,
         error: dbState.countError,
       })),
-      maybeSingle: vi.fn(async () => ({
-        data: dbState.singleError ? null : dbState.single,
-        error: dbState.singleError,
-      })),
+      maybeSingle: vi.fn(readOne),
+      single: vi.fn(readOne),
       limit: vi.fn(() => q),
+      // A LIST read is awaited straight off the chain with no terminal, so the
+      // builder itself has to be thenable. Without this the awaited value is the
+      // builder, `unwrap` sees no error and no data, and a failed read arrives as
+      // an EMPTY LIST: exactly the swallow #1629 removed, reintroduced inside the
+      // test double, where it would have made the guard pass on the bug (L143).
+      then: (resolve: (v: unknown) => unknown) =>
+        Promise.resolve({
+          data: dbState.errorByTable[_table]
+            ? null
+            : (dbState.rowsByTable[_table] ?? []),
+          error: dbState.errorByTable[_table] ?? null,
+        }).then(resolve),
       update,
       insert,
       upsert,
@@ -101,7 +146,14 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from, rpc }) }));
+// The schedule write is seamed rather than driven, so "the read refused" is
+// asserted on whether the WRITE was reached, not on how far the write got.
+const schedule = vi.hoisted(() => ({
+  upsertUserSchedule: vi.fn(async () => "sched-1"),
+  ensureDefaultSchedules: vi.fn(async () => 0),
+}));
+vi.mock("@/lib/schedule", () => schedule);
 vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/locks", () => locks);
@@ -123,6 +175,11 @@ import {
   setUserLifecycle,
   setBookable,
   syncSalesforceNow,
+  setWorkingHours,
+  setAgentAttributes,
+  useDefaultHours,
+  useMyDefaultHours,
+  setDefaultBucket,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
@@ -142,6 +199,10 @@ beforeEach(() => {
   dbState.insertError = null;
   dbState.count = 0;
   dbState.countError = null;
+  dbState.rowsByTable = {};
+  dbState.errorByTable = {};
+  dbState.rpcWritten = null;
+  dbState.rpcError = null;
   locks.acquireLock.mockResolvedValue("claim");
 });
 
@@ -947,5 +1008,287 @@ describe("grantStaffAccess", () => {
     await expect(grantStaffAccess(staffForm())).rejects.toThrow(/NEXT_REDIRECT/);
     expect(redirectedTo()).toContain("staff=write_failed");
     expect(recordAudit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1649: the fail open fixes #1629 shipped, driven
+// ---------------------------------------------------------------------------
+//
+// #1629 turned nine swallowed reads in this file into `unwrap`, and touched no
+// test file. Each one is the reason that PR was written, and a guard is only real
+// once it has been seen to fail (L1).
+//
+// Every case below FAILS ONE READ and leaves its neighbours healthy, using the
+// per table seam, because a fixture that fails everything at once cannot tell
+// "this action refuses when its authorization read fails" from "this action
+// refuses when anything fails": the assertion would pass on a version that only
+// guarded a different read.
+//
+// Each failing case is asserted on the SPECIFIC refusal, never merely that
+// something threw (L140): a test satisfied by any throw is satisfied by its own
+// fixture throwing. And each sits beside a healthy control in the same fixture,
+// so the refusal cannot pass vacuously on an action that stopped working (L159).
+//
+// WHY THE PUSH GATE PASSED #1629, which the issue asks about. The gate blocks a
+// push whose source changes carry ZERO tests, and otherwise asks a model whether
+// each DISTINCT logical change is covered. #1629 carried six test files with real
+// content (page-unreadable.test.tsx alone was 294 lines), so the zero-test floor
+// never fired, and to a judge grading distinct changes the PR was ONE change:
+// "stop the admin surface reading an unreadable table as an empty one", tested.
+// The nine sites in this file were, at that altitude, the same change as the
+// sites in page.tsx that did get tests.
+//
+// So the gap is not that the gate was switched off. It is that a sweep touching
+// twenty sites under one heading reads as one covered change however few of the
+// sites are actually driven, and the more files a sweep touches the more
+// convincing that reads. Worth knowing when the next sweep is written: a change
+// that alters AUTHORIZATION is its own distinct change no matter what heading it
+// arrived under.
+describe("the reads that decide authorization or a write must refuse, not guess (#1649)", () => {
+  const manager = { id: "m1", role: "manager", org_id: "o1" };
+
+  beforeEach(() => {
+    auth.requireManager.mockResolvedValue(manager);
+    auth.requireAdmin.mockResolvedValue(admin);
+  });
+
+  // 1. requireManageAgent. The sharpest of the nine: a null `data` defaulted the
+  //    TARGET's role to "agent", which is the role a manager may edit, so an
+  //    unreadable users row let a manager edit an admin.
+  describe("requireManageAgent, the escalation guard", () => {
+    it("refuses when the target's role cannot be read, and writes NOTHING", async () => {
+      dbState.errorByTable.users = { message: "permission denied for table users" };
+      await expect(
+        setBookable(form({ user_id: "u2", bookable: "true" })),
+      ).rejects.toThrow(/manage-agent target role/);
+      // The whole point: no bookable write, no audit row, nothing revalidated as
+      // though something had changed.
+      expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+      expect(recordAudit).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(insert).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
+    it("still lets a manager edit an agent when the read works", async () => {
+      dbState.rowsByTable.users = { role: "agent" };
+      await setBookable(form({ user_id: "u2", bookable: "true" }));
+      expect(bookable.applyBookableByUserId).toHaveBeenCalled();
+    });
+
+    // The guard's own job, proved in the same fixture as the refusal above, so
+    // "it refused" cannot be read as "it refuses everything".
+    it("refuses a manager editing an admin when the read works fine", async () => {
+      dbState.rowsByTable.users = { role: "admin" };
+      await expect(
+        setBookable(form({ user_id: "u2", bookable: "true" })),
+      ).rejects.toThrow(/Not authorized/);
+      expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+    });
+
+    // #1046, riding in the same guard: a read that finds NOTHING is not a role
+    // either. Absent used to default to "agent" and recorded an audit row against
+    // a user that does not exist.
+    it("refuses a target that does not exist, rather than treating absent as agent", async () => {
+      dbState.rowsByTable.users = null;
+      await expect(
+        setBookable(form({ user_id: "ghost", bookable: "true" })),
+      ).rejects.toThrow(/Not authorized/);
+      expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    // The guard is shared, so the refusal has to hold on every action behind it,
+    // not just the one a test happened to pick.
+    it("refuses on every action that goes through it", async () => {
+      for (const drive of [
+        () => setBookable(form({ user_id: "u2", bookable: "true" })),
+        () => setUserLifecycle(form({ user_id: "u2", action: "deactivate" })),
+        () => setAgentAttributes(form({ user_id: "u2", debt_team: "low" })),
+        () => setWorkingHours(form({ user_id: "u2", day_1: "on", start_1: "09:00", end_1: "17:00" })),
+      ]) {
+        vi.clearAllMocks();
+        auth.requireManager.mockResolvedValue(manager);
+        dbState.errorByTable = { users: { message: "permission denied for table users" } };
+        await expect(drive()).rejects.toThrow(/manage-agent target role/);
+        expect(recordAudit).not.toHaveBeenCalled();
+      }
+    });
+  });
+
+  // 2 and 3. The timezone overwrite pair. An unreadable schedule read as "this
+  //    agent has no timezone of their own", and the write then REPLACED their
+  //    real one with the org default, which moves every hour they are bookable.
+  describe("the timezone overwrite pair", () => {
+    const orgDefaults = {
+      default_timezone: "America/Chicago",
+      default_start_minute: 540,
+      default_end_minute: 1020,
+      default_weekdays: [1, 2, 3, 4, 5],
+    };
+
+    it("refuses when the agent's own schedule cannot be read, and writes no schedule", async () => {
+      dbState.rowsByTable.users = { role: "agent" };
+      dbState.rowsByTable.organizations = orgDefaults;
+      dbState.errorByTable.availability_schedules = { message: "deadlock detected" };
+      await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
+        /agent schedule timezone/,
+      );
+      expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the org defaults cannot be read", async () => {
+      dbState.rowsByTable.users = { role: "agent" };
+      dbState.errorByTable.organizations = { message: "column default_weekdays does not exist" };
+      dbState.rowsByTable.availability_schedules = { timezone: "America/Denver" };
+      await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
+        /org default schedule/,
+      );
+      expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
+    });
+
+    // The control, and the behaviour the pair exists to protect: with both reads
+    // healthy the agent KEEPS their own zone rather than adopting the org's.
+    it("keeps the agent's own timezone when both reads work", async () => {
+      dbState.rowsByTable.users = { role: "agent" };
+      dbState.rowsByTable.organizations = orgDefaults;
+      dbState.rowsByTable.availability_schedules = { timezone: "America/Denver" };
+      await useDefaultHours(form({ user_id: "u2" }));
+      expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Denver");
+    });
+
+    it("adopts the org default only when the agent genuinely has no schedule", async () => {
+      dbState.rowsByTable.users = { role: "agent" };
+      dbState.rowsByTable.organizations = orgDefaults;
+      dbState.rowsByTable.availability_schedules = null;
+      await useDefaultHours(form({ user_id: "u2" }));
+      expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Chicago");
+    });
+
+    // The same pair on the SELF service path, which reaches them through a
+    // different function. A test on one would say nothing about the other.
+    it("refuses on the agent's own use of the default hours too", async () => {
+      auth.currentUser.mockResolvedValue({ id: "m1", role: "agent", org_id: "o1" });
+      dbState.rowsByTable.organizations = orgDefaults;
+      dbState.errorByTable.availability_schedules = { message: "deadlock detected" };
+      await expect(useMyDefaultHours()).rejects.toThrow(/agent schedule timezone/);
+      expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
+    });
+  });
+
+  // 4. setDefaultBucket. An empty valid set makes EVERY code invalid, so a failed
+  //    read told the admin their real bucket code does not exist, sending them
+  //    hunting for a typo that is not there.
+  describe("the default bucket's valid code set", () => {
+    it("refuses when the bucket list cannot be read, rather than calling the code invalid", async () => {
+      dbState.errorByTable.buckets = { message: "permission denied for table buckets" };
+      await expect(
+        setDefaultBucket(form({ default_bucket_code: "120" })),
+      ).rejects.toThrow(/default bucket valid codes/);
+      // And specifically NOT the "not a current bucket code" redirect, which is
+      // the false reason this replaced.
+      expect(redirect).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
+    it("still refuses a genuinely unknown code when the read works", async () => {
+      dbState.rowsByTable.buckets = [{ code: "120", is_test: false }];
+      await expect(
+        setDefaultBucket(form({ default_bucket_code: "999" })),
+      ).rejects.toThrow(/NEXT_REDIRECT/);
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
+    it("stores a code that really exists", async () => {
+      dbState.rowsByTable.buckets = [{ code: "120", is_test: false }];
+      // The success path redirects too, so the difference between the three cases
+      // is WHICH redirect and whether the write happened, never whether one threw.
+      await expect(
+        setDefaultBucket(form({ default_bucket_code: "120" })),
+      ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/settings\?ok=1/);
+      expect(upsert).toHaveBeenCalled();
+    });
+  });
+
+  // 7. startImpersonation. A null on error took the "No user with email X" branch,
+  //    which tells an admin the person does not exist when the read merely failed.
+  //    The next thing somebody does with that answer is create the account again.
+  describe("the impersonation target lookup", () => {
+    it("refuses when the lookup fails, and never claims the person does not exist", async () => {
+      auth.realCurrentUser.mockResolvedValueOnce(admin);
+      dbState.errorByTable.users = { message: "permission denied for table users" };
+      await expect(
+        startImpersonation(form({ email: "someone@trypennie.com" })),
+      ).rejects.toThrow(/impersonation target lookup/);
+      expect(cookieStore.set).not.toHaveBeenCalled();
+      const said = redirect.mock.calls.map((c) => String(c[0])).join(" ");
+      expect(said).not.toMatch(/No\+user\+with\+email/);
+    });
+
+    it("still says so when the person really is absent", async () => {
+      auth.realCurrentUser.mockResolvedValueOnce(admin);
+      dbState.rowsByTable.users = null;
+      await expect(
+        startImpersonation(form({ email: "nobody@trypennie.com" })),
+      ).rejects.toThrow(/NEXT_REDIRECT/);
+      // URLSearchParams encodes a space as `+`, not `%20`.
+      expect(redirect.mock.calls.map((c) => String(c[0])).join(" ")).toMatch(
+        /No\+user\+with\+email/,
+      );
+      expect(cookieStore.set).not.toHaveBeenCalled();
+    });
+  });
+
+  // 8. setUserRole. The read feeds `canSetRole`, so guessing it is a guess at an
+  //    authorization input, and the swallow made the action return SILENTLY: the
+  //    admin pressed the button, the page re-rendered unchanged, nothing said why.
+  describe("the set-role target read", () => {
+    it("refuses when the target's current role cannot be read, and writes nothing", async () => {
+      dbState.errorByTable.users = { message: "permission denied for table users" };
+      await expect(
+        setUserRole(form({ user_id: "u2", role: "manager" })),
+      ).rejects.toThrow(/set-role target role/);
+      expect(update).not.toHaveBeenCalled();
+      expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("writes the role when the read works", async () => {
+      dbState.rowsByTable.users = { role: "agent" };
+      dbState.count = 5;
+      await setUserRole(form({ user_id: "u2", role: "manager" }));
+      expect(update).toHaveBeenCalledWith({ role: "manager" });
+      expect(recordAudit).toHaveBeenCalled();
+    });
+  });
+
+  // 9. setWebhookEndpoint. The swallow decided UPDATE versus INSERT, so a failed
+  //    read created a SECOND endpoint row and every event was then delivered twice.
+  describe("the webhook endpoint's update-versus-insert decision", () => {
+    const endpointForm = () =>
+      form({ url: "https://example.com/hook", events: "booking.created", active: "true" });
+
+    it("refuses when the existing endpoint read fails, so it cannot create a duplicate", async () => {
+      dbState.errorByTable.webhook_endpoints = { message: "permission denied" };
+      await expect(setWebhookEndpoint(endpointForm())).rejects.toThrow(
+        /webhook endpoint/,
+      );
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it("updates the endpoint that already exists", async () => {
+      dbState.rowsByTable.webhook_endpoints = { id: "ep1" };
+      await setWebhookEndpoint(endpointForm());
+      expect(update).toHaveBeenCalled();
+      expect(insert).not.toHaveBeenCalled();
+    });
+
+    it("inserts only when the read really found nothing", async () => {
+      dbState.rowsByTable.webhook_endpoints = null;
+      await setWebhookEndpoint(endpointForm());
+      expect(insert).toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
   });
 });
