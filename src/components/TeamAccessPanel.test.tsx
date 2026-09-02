@@ -87,7 +87,7 @@ describe("TeamAccessPanel", () => {
     render(
       panel({
         pending: [
-          row({ lookalike: { id: "u2", email: "geoff.smith@trypennie.com" } }),
+          row({ lookalike: { id: "u2", email: "geoff.smith@trypennie.com", role: "agent" } }),
         ],
       }),
     );
@@ -96,6 +96,40 @@ describe("TeamAccessPanel", () => {
     // leaves the person exactly where the panel found them.
     expect(
       screen.getByRole("button", { name: /give admin access to geoff\.smith@trypennie\.com/i }),
+    ).toBeTruthy();
+  });
+
+  // #1669. The button posted the PENDING row's role and nothing consulted the
+  // lookalike's own. A seeded manager row beside a real account since made admin
+  // rendered "Give manager access to geoff.smith", and one click demoted him.
+  it("offers no button when the lookalike already holds that access or more", () => {
+    render(
+      panel({
+        pending: [
+          row({
+            role: "manager",
+            lookalike: { id: "u2", email: "geoff.smith@trypennie.com", role: "admin" },
+          }),
+        ],
+      }),
+    );
+    expect(screen.queryByRole("button", { name: /give .* access to geoff/i })).toBeNull();
+    expect(screen.getByText(/already has/i)).toBeTruthy();
+  });
+
+  it("still offers the button when the lookalike would genuinely gain access", () => {
+    render(
+      panel({
+        pending: [
+          row({
+            role: "manager",
+            lookalike: { id: "u2", email: "geoff.smith@trypennie.com", role: "agent" },
+          }),
+        ],
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /give manager access to geoff\.smith@trypennie\.com/i }),
     ).toBeTruthy();
   });
 

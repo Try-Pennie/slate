@@ -868,12 +868,15 @@ describe("grantStaffAccess", () => {
   // through on the same non-answer.
   it("refuses with an unreadable-count message, not a last-admin claim, when the count read fails", async () => {
     auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    // Unclaimed on purpose: a row somebody HAS signed in to is refused by the
+    // #1669 surface rule before the count is ever consulted, so an unreadable
+    // count only decides for a grant nobody has used.
     dbState.single = {
       id: "u9",
       org_id: "o1",
       role: "admin",
       deactivated_at: null,
-      auth_user_id: "a9",
+      auth_user_id: null,
     };
     dbState.count = 5; // plenty of admins; only the READ is broken
     dbState.countError = { message: "permission denied for table users" };
@@ -881,6 +884,42 @@ describe("grantStaffAccess", () => {
     expect(redirectedTo()).toContain("staff=admin_count_unreadable");
     expect(redirectedTo()).not.toContain("last_admin");
     expect(update).not.toHaveBeenCalled();
+  });
+
+  // #1669: the lookalike remedy posted the PENDING row's role and nothing read
+  // the target's own, so one click could drop a signed in admin to manager as an
+  // ordinary success. Nothing may be written.
+  it("refuses to lower a colleague who has signed in, and writes nothing", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = {
+      id: "u9",
+      org_id: "o1",
+      role: "admin",
+      deactivated_at: null,
+      auth_user_id: "a9",
+    };
+    dbState.count = 5; // plenty of admins, so the last-admin rule is not what refuses
+    await expect(grantStaffAccess(staffForm({ role: "manager" }))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=signed_in_demotion");
+    expect(update).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  // The healthy control in the same fixture, so the refusal above cannot be
+  // passing because this surface stopped writing at all.
+  it("still raises a signed in colleague's access, which is what the panel is for", async () => {
+    auth.requireSuperAdmin.mockResolvedValueOnce(superAdmin);
+    dbState.single = {
+      id: "u9",
+      org_id: "o1",
+      role: "manager",
+      deactivated_at: null,
+      auth_user_id: "a9",
+    };
+    dbState.count = 5;
+    await expect(grantStaffAccess(staffForm({ role: "admin" }))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirectedTo()).toContain("staff=updated");
+    expect(update).toHaveBeenCalled();
   });
 
   // The count only decides a change that TAKES org power away, so a broken count

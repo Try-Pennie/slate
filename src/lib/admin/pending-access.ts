@@ -40,8 +40,13 @@ export interface PendingAccessRow {
    * A signed in account whose address is nearly identical. A SUGGESTION built by
    * comparing text, never a recorded fact, so the copy that renders it has to
    * stay tentative.
+   *
+   * It carries the lookalike's OWN current role (#1669). Without it the remedy
+   * button was labelled from the pending row's role and offered "give manager
+   * access" to somebody already holding admin, which was both a false label and,
+   * on one click, a silent demotion.
    */
-  lookalike: { id: string; email: string } | null;
+  lookalike: { id: string; email: string; role: Role } | null;
 }
 
 /**
@@ -106,7 +111,7 @@ export function pendingPrivilegedAccess(
   // person really uses. An unclaimed neighbour is another guess, not evidence.
   const claimed = users
     .filter((u) => u.auth_user_id !== null && isActive(u) && !u.is_test)
-    .map((u) => ({ id: u.id, email: u.email, key: emailLocalKey(u.email) }));
+    .map((u) => ({ id: u.id, email: u.email, role: u.role, key: emailLocalKey(u.email) }));
 
   const waiting = users.filter(
     (u) =>
@@ -119,7 +124,7 @@ export function pendingPrivilegedAccess(
   const rows = waiting.map((u) => {
     const key = emailLocalKey(u.email);
     const budget = lookalikeBudget(key);
-    let lookalike: { id: string; email: string } | null = null;
+    let lookalike: { id: string; email: string; role: Role } | null = null;
     if (budget > 0) {
       let bestDistance = budget + 1;
       for (const c of claimed) {
@@ -127,7 +132,7 @@ export function pendingPrivilegedAccess(
         const d = editDistance(key, c.key, budget);
         if (d <= budget && d < bestDistance) {
           bestDistance = d;
-          lookalike = { id: c.id, email: c.email };
+          lookalike = { id: c.id, email: c.email, role: c.role };
         }
       }
     }
