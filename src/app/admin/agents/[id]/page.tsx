@@ -59,6 +59,7 @@ function attrToText(v: Attributes[string] | undefined): string {
   return String(v);
 }
 
+// nav-ok: a row in the roster opens this, so no navigation entry can name it: the address contains the agent's id
 export default async function AgentProfilePage({
   params,
   searchParams,

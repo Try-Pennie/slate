@@ -21,6 +21,7 @@ export const dynamic = "force-dynamic";
  * recent-routing rows and the booking lookup. Manager+ gated and tenant-scoped
  * (a booking outside the caller's org is a 404).
  */
+// nav-ok: a booking lookup result opens this, so no navigation entry can name it: the address contains the booking's id
 export default async function BookingDetailPage({
   params,
 }: {
