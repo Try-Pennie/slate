@@ -25,6 +25,7 @@ function seen(over: Partial<EmbedObservation> = {}): EmbedObservation {
   return {
     modalPresent: true,
     loadFailedShown: false,
+    bookerMounted: true,
     frameText:
       "Loan Consultation. Pick a time that works for you. Nobody is available before then.",
     consoleErrors: [],
@@ -67,7 +68,7 @@ eq(
   "the embed's own retry panel means the iframe never loaded",
 );
 eq(
-  judgeEmbedRender(seen({ frameText: "" })).outcome,
+  judgeEmbedRender(seen({ bookerMounted: false, frameText: "" })).outcome,
   "frame-blank",
   "a modal with nothing drawn inside it is the blank booker this check exists for",
 );
@@ -75,28 +76,72 @@ eq(
 // Whitespace is not content. A frame holding a newline and two spaces is exactly
 // as blank to a lead as an empty one.
 eq(
-  judgeEmbedRender(seen({ frameText: "   \n\t  " })).outcome,
+  judgeEmbedRender(seen({ bookerMounted: false, frameText: "   \n\t  " })).outcome,
   "frame-blank",
   "whitespace does not count as having rendered",
 );
 
-// The floor is a floor, checked from both sides so it cannot quietly become zero
-// (which would pass any stray character) or the whole page (which would fail the
-// shortest real state).
+// ---------------------------------------------------------------------------
+// The correction that this check would have shipped wrong without (#1006)
+// ---------------------------------------------------------------------------
+//
+// The first version judged on how much TEXT was in the frame, and measuring it
+// against the real deployment on 2026-09-02 showed it wrong in BOTH directions.
+// The booker's own refusal screens are text, so a length floor is answered by
+// whatever the surface paints for itself (L146, L115).
+//
+// These two fixtures are the REAL strings, measured, not invented.
+{
+  // 56 characters, which sailed past the old floor and reported a broken link as
+  // a healthy render. The worst direction: false confidence on the check whose
+  // whole job is to notice the embed is broken.
+  const misconfigured = judgeEmbedRender(
+    seen({
+      bookerMounted: false,
+      frameText: "This booking link is missing its configuration (no xbc).",
+    }),
+  );
+  eq(misconfigured.outcome, "link-refused",
+    "the booker's own 'missing configuration' screen is a refused link, never a healthy render");
+  assert(misconfigured.reason.includes("missing its configuration"),
+    "and the message quotes what the booker actually said, so the reader is not guessing");
+
+  // 35 characters, which failed the old floor and named the wrong repair: it sent
+  // the reader to look at a blank booker when the link was simply refused.
+  const unavailable = judgeEmbedRender(
+    seen({ bookerMounted: false, frameText: "This booking link is not available." }),
+  );
+  eq(unavailable.outcome, "link-refused",
+    "and so is 'not available', which is a configuration problem rather than an outage");
+  assert(/not an outage/i.test(unavailable.reason),
+    "the message says so plainly, because this must not be read as the embed being down");
+}
+
+// The text floor now separates a blank frame from a refused link, which is a much
+// smaller job than deciding whether the booker mounted. Checked from both sides so
+// it cannot quietly become zero or swallow a real refusal.
 {
   const justUnder = "x".repeat(FRAME_TEXT_FLOOR - 1);
   const justOver = "x".repeat(FRAME_TEXT_FLOOR);
-  eq(judgeEmbedRender(seen({ frameText: justUnder })).outcome, "frame-blank",
-    "one character under the floor is still blank");
-  eq(judgeEmbedRender(seen({ frameText: justOver })).outcome, "rendered",
-    "and the floor itself counts as rendered");
+  eq(judgeEmbedRender(seen({ bookerMounted: false, frameText: justUnder })).outcome,
+    "frame-blank", "under the floor, an unmounted booker is blank");
+  eq(judgeEmbedRender(seen({ bookerMounted: false, frameText: justOver })).outcome,
+    "link-refused", "over it, the frame is holding something the booker chose to say");
 }
+
+// And the whole point of the structural marker: plenty of text does NOT mean the
+// booker mounted. Without this, any error page long enough passes.
+eq(
+  judgeEmbedRender(seen({ bookerMounted: false })).outcome,
+  "link-refused",
+  "a frame full of text has still not rendered the booker if none of its chrome is there",
+);
 
 // The ORDER matters, and is asserted rather than assumed. The embed's load-failed
 // panel is itself short text inside a modal, so a blankness test asked first would
 // swallow it and name the wrong repair.
 eq(
-  judgeEmbedRender(seen({ loadFailedShown: true, frameText: "" })).outcome,
+  judgeEmbedRender(seen({ loadFailedShown: true, bookerMounted: false, frameText: "" })).outcome,
   "load-failed",
   "the embed's own failure panel is reported as itself, not as a blank frame",
 );
@@ -104,7 +149,13 @@ eq(
 // is meaningless without it.
 eq(
   judgeEmbedRender(
-    seen({ modalPresent: false, loadFailedShown: true, frameText: "", consoleErrors: ["boom"] }),
+    seen({
+      modalPresent: false,
+      loadFailedShown: true,
+      bookerMounted: false,
+      frameText: "",
+      consoleErrors: ["boom"],
+    }),
   ).outcome,
   "modal-missing",
   "a missing modal outranks every later question, which it makes meaningless",
@@ -126,7 +177,7 @@ eq(
 // Deliberately LAST: it is the only outcome that can be true of a page that drew
 // correctly, so it must never mask an actual render fault.
 eq(
-  judgeEmbedRender(seen({ frameText: "", consoleErrors: ["boom"] })).outcome,
+  judgeEmbedRender(seen({ bookerMounted: false, frameText: "", consoleErrors: ["boom"] })).outcome,
   "frame-blank",
   "a blank frame is reported as blank even when the console also complained",
 );
@@ -147,7 +198,8 @@ const byOutcome = new Map(
   [
     seen({ modalPresent: false }),
     seen({ loadFailedShown: true }),
-    seen({ frameText: "" }),
+    seen({ bookerMounted: false, frameText: "" }),
+    seen({ bookerMounted: false, frameText: "This booking link is not available." }),
     seen({ consoleErrors: ["boom"] }),
     seen(),
   ].map((o) => {

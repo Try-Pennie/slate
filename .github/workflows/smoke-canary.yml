@@ -190,9 +190,15 @@ jobs:
         continue-on-error: true
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
+        # Deliberately NO BOOKING_API_KEY and NO SMOKE_BUCKET here. The other
+        # canary steps drive the hidden SMOKE bucket with a bearer token; a BROWSER
+        # cannot send one, so the booker correctly refuses that bucket and this
+        # check would false-page every full pass. It drives a real bucket instead.
+        # Measured against the real deployment on 2026-09-02, which is the only way
+        # this was going to be found.
+        #
         # Run WITH the alias hook, unlike the latency step next door. That flag is
         # how scripts/test-dependency-free-scripts.ts tells an invocation that
         # depends on the install from one that must survive without it: the three

@@ -48,13 +48,31 @@ import {
 import { failureLogPath, recordFailure } from "./lib/smoke-failure-log.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
-// env-ok: SMOKE_BUCKET (a local override; CI wants the seeded SMOKE bucket)
-const bucket = process.env.SMOKE_BUCKET ?? "SMOKE";
+// A REAL bucket, deliberately NOT the hidden SMOKE one the other canary steps use.
+// That bucket is gated on a bearer token (#396) which a BROWSER cannot send, so the
+// booker correctly answers "This booking link is not available" and the check would
+// have false-paged every full pass. Measured against the real deployment on
+// 2026-09-02, which is the only way this was ever going to be found.
+//
+// A bucket that is missing or refused now reports `link-refused` by name rather
+// than as a blank booker, so pointing this at the wrong code is a clear failure
+// instead of a misleading one.
+// env-ok: SMOKE_EMBED_BUCKET (a local override for driving another bucket by hand)
+const bucket = process.env.SMOKE_EMBED_BUCKET || "120";
 
 /** How long to give the modal and the frame. Generous: this is a real browser
  *  against a real deployment over the public internet, and a check that failed on
  *  a slow morning would be the flapping alert this is meant not to become. */
 const MODAL_TIMEOUT_MS = 20_000;
+
+/**
+ * The booker's own chrome: its timezone control and its heading. Both live in the
+ * event panel and are NOT conditional on there being any slots, so the empty-week
+ * state this check is built to tolerate still counts as mounted. Measured against
+ * the real deployment: a working booker has both, and each of the booker's refusal
+ * screens has neither.
+ */
+const BOOKER_CHROME = "#booker-tz, h1";
 const FRAME_TIMEOUT_MS = 30_000;
 
 const io = { append: (path: string, line: string) => appendFileSync(path, line), read: () => null };
@@ -90,7 +108,13 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
       modalPresent = false;
     }
     if (!modalPresent) {
-      return { modalPresent: false, loadFailedShown: false, frameText: "", consoleErrors };
+      return {
+        modalPresent: false,
+        loadFailedShown: false,
+        bookerMounted: false,
+        frameText: "",
+        consoleErrors,
+      };
     }
 
     // The embed's own failure panel, asked for by its copy rather than by a class,
@@ -102,28 +126,32 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
       .isVisible()
       .catch(() => false);
 
-    // What the BOOKER drew, from inside the iframe. Read through the frame rather
-    // than off the modal, because the modal's own chrome (the close button, the
-    // loading text) would otherwise count as content and a blank booker inside a
-    // present modal would read as healthy.
+    // Whether the BOOKER's own chrome mounted, plus the text as evidence. Read
+    // through the frame rather than off the modal, because the modal's own chrome
+    // (the close button, the loading text) would otherwise count as content and a
+    // blank booker inside a present modal would read as healthy.
     let frameText = "";
+    let bookerMounted = false;
     try {
       const frame = page.frameLocator('iframe[title]');
       const body = frame.locator("body");
       await body.waitFor({ state: "attached", timeout: FRAME_TIMEOUT_MS });
       // Wait for the booker's own heading rather than a fixed sleep, so a fast
       // deployment is not paid for and a slow one is not failed early (L290).
+      // Wait on the booker's own chrome rather than a fixed sleep, so a fast
+      // deployment is not paid for and a slow one is not failed early (L290).
       await frame
-        .locator("h1, h2")
+        .locator(BOOKER_CHROME)
         .first()
         .waitFor({ state: "visible", timeout: FRAME_TIMEOUT_MS })
         .catch(() => {});
+      bookerMounted = (await frame.locator(BOOKER_CHROME).count().catch(() => 0)) > 0;
       frameText = (await body.innerText().catch(() => "")) ?? "";
     } catch {
       frameText = "";
     }
 
-    return { modalPresent, loadFailedShown, frameText, consoleErrors };
+    return { modalPresent, loadFailedShown, bookerMounted, frameText, consoleErrors };
   } catch (err) {
     return { driverError: String(err) };
   } finally {
@@ -155,7 +183,9 @@ async function main(): Promise<number> {
     }
     const verdict = judgeEmbedRender(seen);
     if (verdict.outcome === "rendered") {
-      console.log(`embed render: ok (${seen.frameText.trim().length} characters drawn)`);
+      console.log(
+        `embed render: ok (booker chrome mounted, ${seen.frameText.trim().length} characters drawn)`,
+      );
       return 0;
     }
     const line = `embed render (${verdict.outcome}): ${verdict.reason}`;

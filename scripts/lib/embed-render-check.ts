@@ -48,6 +48,7 @@ export const EMBED_RENDER_OUTCOMES = [
   "rendered",
   "modal-missing",
   "frame-blank",
+  "link-refused",
   "load-failed",
   "console-errors",
 ] as const;
@@ -62,14 +63,36 @@ export interface EmbedObservation {
   /** The embed showed its own "we couldn't load the booking form" panel. */
   loadFailedShown: boolean;
   /**
-   * Text the booker rendered INSIDE the frame. Empty (or whitespace) means the
-   * frame is there and nothing mounted in it, which is the blank booker.
+   * Whether the BOOKER ITSELF mounted, judged by its own chrome rather than by
+   * how much text is on screen.
+   *
+   * This is the correction that matters. Judging on text alone was measured wrong
+   * in BOTH directions against the real deployment on 2026-09-02: the booker's own
+   * refusal screens ("This booking link is missing its configuration (no xbc)",
+   * 56 characters) sailed past a length floor and reported a broken link as a
+   * healthy render, while a shorter one ("This booking link is not available",
+   * 35 characters) reported a correctly-refused link as a blank booker and named
+   * the wrong repair. A quantity computed over the whole surface is answered by
+   * whatever that surface paints for itself (L146, L115).
+   *
+   * The marker is the booker's own timezone control or its heading, both of which
+   * live in the event panel and are NOT conditional on there being any slots, so
+   * the empty-week state this check is built to tolerate still counts as mounted.
+   * Measured on the real deployment: a working booker has both, and each refusal
+   * screen has neither.
+   */
+  bookerMounted: boolean;
+  /**
+   * Text the booker rendered INSIDE the frame. Kept as EVIDENCE for the message
+   * rather than as the verdict: it is what tells a blank frame from a frame
+   * holding the booker's own refusal.
    */
   frameText: string;
   /** Browser console errors and uncaught page errors, in the order seen. */
   consoleErrors: string[];
 }
 
+/** The booker's own refusal, quoted so the reader sees which one it was. */
 export interface EmbedVerdict {
   outcome: EmbedRenderOutcome;
   /** One sentence, naming what to do rather than what broke. */
@@ -77,15 +100,14 @@ export interface EmbedVerdict {
 }
 
 /**
- * How much rendered text counts as "the booker mounted".
+ * Whether the frame holds anything at all.
  *
- * A blank panel is not always literally empty: a mounted-but-failed React tree can
- * leave a stray character behind, and the embed's own chrome contributes a close
- * button. So the floor is a handful of characters rather than one, chosen to be
- * comfortably under the shortest real state (the booker's own heading plus its
- * empty-week explanation) and comfortably over any stray punctuation.
+ * No longer the test for "the booker mounted" (see `bookerMounted`), only the
+ * test for whether there is a frame with content in it, which is what separates a
+ * blank panel from the booker's own refusal screen. A blank panel is not always
+ * literally empty, so the floor is a few characters rather than one.
  */
-export const FRAME_TEXT_FLOOR = 40;
+export const FRAME_TEXT_FLOOR = 10;
 
 /**
  * The verdict, in a fixed order.
@@ -115,7 +137,18 @@ export function judgeEmbedRender(o: EmbedObservation): EmbedVerdict {
         "booker being broken: check the deployment and anything in front of it.",
     };
   }
-  if (o.frameText.trim().length < FRAME_TEXT_FLOOR) {
+  if (!o.bookerMounted) {
+    // The booker did not mount. WHY it did not is the difference between a fault
+    // and a correctly refused link, and the frame's text is what tells them apart.
+    if (o.frameText.trim().length >= FRAME_TEXT_FLOOR) {
+      return {
+        outcome: "link-refused",
+        reason:
+          "The booker refused the link rather than failing: it drew its own message and none " +
+          "of its booking chrome. That is a configuration problem with the link this check " +
+          `uses, not an outage. It said: ${o.frameText.trim().slice(0, 120)}`,
+      };
+    }
     return {
       outcome: "frame-blank",
       reason:
@@ -136,7 +169,7 @@ export function judgeEmbedRender(o: EmbedObservation): EmbedVerdict {
   }
   return {
     outcome: "rendered",
-    reason: "The embedded booker opened and drew its own content.",
+    reason: "The embedded booker opened and drew its own booking chrome.",
   };
 }
 
