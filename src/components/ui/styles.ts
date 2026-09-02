@@ -18,3 +18,14 @@ export const cardCls =
 export const btnCls = "pn-btn pn-btn--small pn-btn--primary";
 
 export const btnSecondaryCls = "pn-btn pn-btn--small pn-btn--additional";
+
+/**
+ * Reading width for a block of prose (#1745). The page container is wide so
+ * tables and multi-column content can use the window; a sentence set across the
+ * whole of it is unreadable, so the constraint lives on the prose rather than on
+ * the page. 65ch is about 75 characters, the top of the comfortable range.
+ *
+ * Put it on the descriptive paragraph under a heading, never on the container
+ * holding a table or a control grid.
+ */
+export const proseCls = "max-w-[65ch]";

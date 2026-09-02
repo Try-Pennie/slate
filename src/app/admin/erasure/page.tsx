@@ -5,6 +5,7 @@ import { oooOnlyFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
 import { ErasureWorklist } from "@/components/ErasureWorklist";
 import { loadErasureWorklist } from "@/lib/snowflake/erasure-worklist-load";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -56,12 +57,12 @@ export default async function ErasureWorklistPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-5xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <ErasureWorklist state={state} />
         <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
           Back to settings
         </a>
-      </main>
+      </PageShell>
     </>
   );
 }

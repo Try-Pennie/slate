@@ -6,7 +6,7 @@ import { ROLE_RANK, roleLabel } from "@/lib/auth/roles";
 import { isRole } from "@/lib/auth/roles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 
 /**
  * Team access (#160): give somebody who is not a Salesforce agent the access they
@@ -49,7 +49,7 @@ export function TeamAccessPanel({
   return (
     <section id="team-access" className={cardCls}>
       <h2 className="mb-1 text-sm font-semibold">Team access</h2>
-      <p className="mb-4 text-xs text-fg-muted">
+      <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
         For people who need Slate but are not debt team agents, so nothing creates
         them automatically. They pick the access up the first time they sign in
         with this exact address, so the address is the thing to get right.
@@ -121,7 +121,7 @@ export function TeamAccessPanel({
 
       <div className="mt-6 border-t border-border pt-4">
         <h3 className="mb-1 text-sm font-semibold">Waiting for a first sign in</h3>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           Access nobody has used yet. A long wait usually means the address is not
           the one they actually sign in with, which looks exactly like nothing
           happening at all.
@@ -203,7 +203,7 @@ function Lookalike({
   const wouldGain = ROLE_RANK[row.role] > ROLE_RANK[lookalike.role];
   return (
     <div className="mt-3 rounded-md bg-[var(--pennie-sky-soft)] px-3 py-3 text-sm text-pennie-navy dark:border dark:border-border dark:bg-transparent dark:text-fg">
-      <p>
+      <p className={proseCls}>
         <span className="font-semibold">{lookalike.email}</span> has signed in and
         looks like the same person.{" "}
         {wouldGain

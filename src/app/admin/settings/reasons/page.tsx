@@ -13,6 +13,7 @@ import {
 } from "@/lib/booking/reason-usage";
 import { log } from "@/lib/log";
 import type { ReasonOptionRow, User } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -111,7 +112,7 @@ export default async function ReasonOptionsPage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="text-2xl font-semibold text-white dark:text-fg">Reason options</h1>
@@ -127,7 +128,7 @@ export default async function ReasonOptionsPage({
         <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
 
         <ReasonOptionsEditor initial={initial} usage={usage} />
-      </main>
+      </PageShell>
     </>
   );
 }

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AccountMenu } from "@/components/AccountMenu";
+import { PAGE_WIDTHS } from "@/components/ui/PageShell";
 import { LinkPending } from "@/components/ui/LinkPending";
 import { oooOnlyFor } from "@/lib/env";
 import {
@@ -179,10 +180,12 @@ export async function AppHeader({
     {/* #1054: the first focusable thing on every internal page, so a keyboard or
         switch user can jump the branded bar and the nav rather than walking them on
         every load (WCAG 2.4.1). It is here rather than in each page because there is
-        one header: the pages own the target id, and
-        scripts/test-skip-link-target.ts requires every page that renders this header
-        to carry it, since a skip link pointing at nothing is a control that appears
-        to work and moves focus nowhere. */}
+        one header. The TARGET is on the other side of that split: since #1745 it
+        lives in PageShell, which every internal page renders, and
+        scripts/test-skip-link-target.ts checks both halves (the shell really
+        provides a focusable target, and every page really reaches the shell), since
+        a skip link pointing at nothing is a control that appears to work and moves
+        focus nowhere. */}
     <a href="#main" className="pn-skip-link">
       Skip to content
     </a>
@@ -218,7 +221,10 @@ export async function AppHeader({
       </div>
     )}
     <header className="sticky top-0 z-30 border-b border-border bg-bg">
-      <div className="mx-auto flex min-h-16 max-w-4xl flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2">
+      {/* #1745: the same cap the page content uses, so the wordmark and the nav
+          line up with the left edge of the content under them rather than sitting
+          in from it. Read from PAGE_WIDTHS so the two cannot drift apart. */}
+      <div className={`mx-auto flex min-h-16 ${PAGE_WIDTHS.wide} flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2`}>
         {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
         <img
           src="/brand/logo-pennie-charcoal.svg"

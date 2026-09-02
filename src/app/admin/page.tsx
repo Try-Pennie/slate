@@ -45,7 +45,7 @@ import { TeamAccessPanel } from "@/components/TeamAccessPanel";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { isStaffAccessOutcome } from "@/lib/admin/staff-access";
 import { pendingPrivilegedAccess } from "@/lib/admin/pending-access";
-import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
 import { auditActionLabel, auditActorText, auditDetailText } from "@/lib/audit-display";
@@ -66,6 +66,7 @@ import type {
   WebhookDelivery,
   WebhookEndpoint,
 } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 type DeliveryRow = Pick<
   WebhookDelivery,
@@ -713,7 +714,7 @@ export default async function AdminPage({
       bookable={me.bookable}
         avatarUrl={me.avatar_url}
     />
-    <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-6 py-10 sm:px-8">
+    <PageShell>
       <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
         <p className="pn-eyebrow text-pennie-sky">Admin</p>
         <h1 className="pn-h3 mt-2 text-pennie-beige">Slate admin</h1>
@@ -792,7 +793,7 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">View as another user</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           See the app exactly as someone else does. While viewing as them, what
           you do happens as them, so be careful. A banner stays up the whole time
           with a way back to yourself.
@@ -832,7 +833,7 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Alert settings</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           Tune how often the monitor alerts fire and which Slack channel they post
           to, without a deploy.
         </p>
@@ -1195,7 +1196,7 @@ export default async function AdminPage({
       {/* Availability grid (#1302): which hours of which days anyone can book */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Availability</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           Every hour of the next fortnight and whether a lead could book it, saying
           which of the five reasons it was when they could not, so an hour nobody is
           rostered for is not mistaken for one that is simply full.
@@ -1208,7 +1209,7 @@ export default async function AdminPage({
       {/* Bucket availability (per bucket per day supply, #1254) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Bucket availability</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           How many times each debt bucket is offering each day, against how many that
           day could have held, so a thin pool is visible next to a closed one.
         </p>
@@ -1220,7 +1221,7 @@ export default async function AdminPage({
       {/* Staffing depth (thin-tier early warning, #584) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Staffing depth</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           See how many bookable agents can take each tier&rsquo;s bookings, so a tier
           resting on a single person is visible before it runs out of times.
         </p>
@@ -1233,7 +1234,7 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Buckets (round-robin pools)</h2>
-        <p className="mb-4 text-xs text-fg-muted">
+        <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
           Edit routing live. Changes apply without a deploy. Routing matches
           agents by attribute; leave all groups empty to pick members manually.
         </p>
@@ -1296,7 +1297,7 @@ export default async function AdminPage({
       {/* Look up any booking's history (beyond the recent list, #901) */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Look up a booking</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           Find any booking by attendee email, name, phone, or booking id to see
           its reschedule, cancel, and reassign history, including bookings older
           than the recent list below.
@@ -1316,7 +1317,7 @@ export default async function AdminPage({
           </UnreadableNotice>
         ) : (
           <>
-            <p className="mb-3 text-xs text-fg-muted">
+            <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
               How the last {recent.length} bookings routed: agents considered, who
               was chosen, whether the fallback fired, and any manual reassignments.
             </p>
@@ -1329,7 +1330,7 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Reassign API</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           Force a booking onto a specific owning advisor (the contact owner
           override). Send <code className="break-all">POST {appUrl()}/api/bookings/reassign</code> with
           a bearer token and a JSON body of <code>bookingId</code> and{" "}
@@ -1347,7 +1348,7 @@ export default async function AdminPage({
       {isAdmin && (
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Webhook endpoint</h2>
-        <p className="mb-3 text-xs text-fg-muted">
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           Slate POSTs booking.* events here. <strong>Regal</strong> format sends
           the Regal event shape with your API key as the Authorization header;{" "}
           <strong>Generic</strong> sends a signed <code>{"{event,data}"}</code>{" "}
@@ -1367,7 +1368,7 @@ export default async function AdminPage({
         ) : (
           <>
         {webhook && (
-          <p className="mb-3 text-xs text-fg-muted">
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
             Current: <code className="break-all">{webhook.url}</code> · {webhook.format} ·{" "}
             {webhook.format === "regal"
               ? webhook.auth_header
@@ -1444,7 +1445,7 @@ export default async function AdminPage({
               not a report that nothing was sent.
             </UnreadableNotice>
           )}
-          <p className="mb-3 text-xs text-fg-muted">
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
             {deliveriesUnreadable
               ? "Resend re-fires one delivery immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent."
               : `The last ${deliveries.length} delivery attempts. Resend re-fires one immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent.`}
@@ -1546,7 +1547,7 @@ export default async function AdminPage({
           <h2 className="mb-1 text-sm font-semibold">Audit log</h2>
           {/* #1222: what this view is actually showing. A filtered table that reads
               like the whole trail is how somebody concludes nothing happened. */}
-          <p className="mb-3 text-xs text-fg-muted">
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
             {auditUnreadable
               ? "The audit trail could not be read just now, so this is showing nothing rather than nothing having happened. Reload to try again."
               : describeAuditFilters(auditFilters, auditTotal)}{" "}
@@ -1685,7 +1686,7 @@ export default async function AdminPage({
           )}
         </section>
       )}
-    </main>
+    </PageShell>
     </>
   );
 }

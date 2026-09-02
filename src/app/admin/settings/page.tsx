@@ -56,8 +56,9 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { log } from "@/lib/log";
 import { SettingsSaveNotice } from "./SettingsSaveNotice";
-import { labelCls, inputCls, cardCls, btnCls } from "@/components/ui/styles";
+import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -312,7 +313,7 @@ export default async function MonitorSettingsPage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="text-2xl font-semibold text-white dark:text-fg">Booking and alert settings</h1>
@@ -371,7 +372,7 @@ export default async function MonitorSettingsPage({
         <form action={setMonitorSettings} className="space-y-8">
           <section className={cardCls}>
             <h2 className="mb-1 text-sm font-semibold">Alert cooldowns (minutes)</h2>
-            <p className="mb-4 text-xs text-fg-muted">
+            <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
               The minimum time between repeats of the same alert.
             </p>
             <div className="space-y-4">
@@ -410,7 +411,7 @@ export default async function MonitorSettingsPage({
 
           <section className={cardCls}>
             <h2 className="mb-1 text-sm font-semibold">Low-volume floors (booking counts)</h2>
-            <p className="mb-4 text-xs text-fg-muted">
+            <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
               Expected minimum bookings in each window; below the floor triggers the
               low-volume alert (when armed).
             </p>
@@ -518,7 +519,7 @@ export default async function MonitorSettingsPage({
 
           <section className={cardCls}>
             <h2 className="mb-1 text-sm font-semibold">Slack destinations</h2>
-            <p className="mb-4 text-xs text-fg-muted">
+            <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
               Where alerts post. These apply to all alerts app-wide. Blank uses the
               server-configured channel. The info channel falls back to the alerts
               channel.
@@ -565,7 +566,7 @@ export default async function MonitorSettingsPage({
 
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Direct-booking default bucket</h2>
-          <p className="mb-4 text-xs text-fg-muted">
+          <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
             When a direct-booking API caller does not pass a bucket code (XBC), Slate
             routes to this bucket. Leave it as &ldquo;No default&rdquo; to make a missing
             code an explicit error instead of a silent guess.
@@ -794,7 +795,7 @@ export default async function MonitorSettingsPage({
 
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Booking reasons</h2>
-          <p className="mb-3 text-xs text-fg-muted">
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
             The reasons staff and customers pick when rescheduling, cancelling, or
             reassigning a booking. Add, rename, reorder, or retire them without a deploy.
           </p>
@@ -808,7 +809,7 @@ export default async function MonitorSettingsPage({
 
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Diagnostics</h2>
-          <p className="mb-3 text-xs text-fg-muted">
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
             When a booking&apos;s side effects (calendar, webhook) or a
             crash-recovered create keep failing to deliver, the row backs off and
             alerts. This view lists what is currently wedged and why.
@@ -834,7 +835,7 @@ export default async function MonitorSettingsPage({
             </a>
           </div>
         </section>
-      </main>
+      </PageShell>
     </>
   );
 }

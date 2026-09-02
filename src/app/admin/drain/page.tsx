@@ -12,8 +12,9 @@ import {
 } from "@/lib/booking/stuck-drain";
 import { AppHeader } from "@/components/AppHeader";
 import { Pill } from "@/components/ui/Pill";
-import { cardCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import type { BookingOutbox, BookingReservation } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -79,7 +80,7 @@ export default async function StuckDrainPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-5xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Diagnostics</p>
           <h1 className="pn-h2 mt-2 text-pennie-beige">
@@ -87,7 +88,7 @@ export default async function StuckDrainPage() {
               ? "Nothing wedged."
               : `${summary.total} stuck ${summary.total === 1 ? "delivery" : "deliveries"}`}
           </h1>
-          <p className="mt-2 text-pennie-beige/75">
+          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
             Rows whose drain has failed at least {DRAIN_ALERT_AFTER} times and is
             backing off.
             {summary.gaveUp > 0 && (
@@ -165,7 +166,7 @@ export default async function StuckDrainPage() {
         <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
           Back to settings
         </a>
-      </main>
+      </PageShell>
     </>
   );
 }
