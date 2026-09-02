@@ -21,6 +21,7 @@
     "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
     "check:workflow-settings": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-workflow-settings.ts",
     "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts",
+    "verify:availability-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-parity-live.ts",
     "verify:burst-counter": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts",
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts"
   },
