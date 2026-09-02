@@ -17,6 +17,12 @@
  * - The SLOT CACHE failing is the same: with no cached rows there is nothing to
  *   report, and rendering sixty empty buckets would say the exact opposite of the
  *   truth.
+ * - The HORIZON failing is fatal too (#1654). It sets how many day columns there
+ *   are and where each bucket's own allowance runs out, so taking the coded
+ *   default would not make a share unavailable, it would quietly change what
+ *   every share on the page MEANS while the numbers still looked normal. The
+ *   monitor lane already refuses on these grounds; this page used to take the
+ *   default and present the result as measured, and the two cannot both be right.
  * - The ROSTER failing is not fatal. The supply half of the page is still worth
  *   reading, so the depth column reads as unknown and the page says so. It never
  *   reads as zero eligible agents.
@@ -24,7 +30,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
-import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { readBookingHorizonDays } from "@/lib/booking/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
 import {
@@ -102,10 +108,13 @@ export async function loadBucketSupply(
     depthByCode = null;
   }
 
-  // A failed horizon read falls back to the documented default, exactly as every
-  // other consumer of this setting does. It shapes how many columns are shown and
-  // where a bucket's own allowance runs out, never what is counted in a column.
-  const horizonDays = await loadBookingHorizonDays();
+  // Null means the READ failed, never "no override stored" (that resolves to the
+  // documented default and is a real answer). See the header: this one is fatal.
+  const horizonDays = await readBookingHorizonDays();
+  if (horizonDays === null) {
+    log.error("bucket-supply", { msg: "booking horizon unreadable" });
+    return { measurable: false, reason: "booking-horizon" };
+  }
 
   return bucketSupplyReport({
     hours,
