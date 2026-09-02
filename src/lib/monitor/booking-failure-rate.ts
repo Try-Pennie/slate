@@ -43,6 +43,21 @@ export interface OutcomeReading {
   failures: number;
   /** Today's error totals by error code. */
   byCode: Record<string, number>;
+  /**
+   * Today's SELF INFLICTED refusal totals (#1442 / #1450 / #1709), carried
+   * through the same window as everything else.
+   *
+   * Deliberately NOT added to `attempts` or `failures`: the failure share is
+   * unchanged by this, which is the whole reason these are counted apart. They
+   * ride here because the window machinery is already exactly what they need
+   * (a cumulative daily counter differenced into 5-minute intervals, rebasing at
+   * the ET rollover) and building a second copy of it would be two things that
+   * must agree about what "an hour" means.
+   *
+   * Optional, like the sample's, so an absent map reads as "nothing measured"
+   * rather than taking the step down on the first tick after a deploy.
+   */
+  refusals?: Record<string, number>;
 }
 
 /** What changed between two consecutive readings: a real measurement of one
@@ -52,6 +67,11 @@ export interface RateSample {
   attempts: number;
   failures: number;
   byCode: Record<string, number>;
+  /** #1442 / #1450 / #1709. Optional on the way IN, because a state row written
+   *  before this shipped has samples without it, and a missing key must read as
+   *  "not measured then" rather than crash the lane on the first tick after a
+   *  deploy. */
+  refusals?: Record<string, number>;
 }
 
 /** The single persisted state row: the last reading (the baseline the next delta
@@ -61,6 +81,9 @@ export interface RateWindowState {
   attempts: number;
   failures: number;
   byCode: Record<string, number>;
+  /** The refusal baseline the next delta is measured against. Same optionality
+   *  as the sample's, and for the same reason. */
+  refusals?: Record<string, number>;
   samples: RateSample[];
 }
 
@@ -115,6 +138,7 @@ export function advanceWindow(
     attempts: reading.attempts,
     failures: reading.failures,
     byCode: reading.byCode,
+    refusals: reading.refusals,
     samples: prune(prev?.samples ?? [], atMs, windowMs),
   };
 
@@ -136,6 +160,16 @@ export function advanceWindow(
     attempts: reading.attempts - prev.attempts,
     failures: reading.failures - prev.failures,
     byCode: codeDeltas(prev.byCode, reading.byCode),
+    // Same delta rule as the codes, and for the same reason: the tally is
+    // cumulative per ET day, so only the difference between two readings measures
+    // an interval. A rebase records NO sample at all, so the refusals cannot be
+    // credited to the wrong day either.
+    // Both sides defaulted: a state row written before migration 0113 has no
+    // baseline, and a reading assembled by anything that predates this carries no
+    // refusals. Either absence must read as "nothing measured", never throw, or a
+    // check that exists to speak where nothing else does would take the whole
+    // lane's step down on the first tick after a deploy.
+    refusals: codeDeltas(prev.refusals ?? {}, reading.refusals ?? {}),
   };
   return {
     state: { ...baseline, samples: prune([...baseline.samples, sample], atMs, windowMs) },
@@ -291,7 +325,22 @@ export type FailureRateResult =
   /** The tick could not read what it needs, so it claims nothing in either
    *  direction. Deliberately NOT folded into a zero-failure "healthy". */
   | { status: "unverified"; why: "state" | "tally" }
-  | { status: "checked"; armed: boolean; verdict: RateVerdict; rebased: Rebase };
+  | {
+      status: "checked";
+      armed: boolean;
+      verdict: RateVerdict;
+      rebased: Rebase;
+      /**
+       * The window this tick just advanced and persisted (#1442/#1450/#1709).
+       *
+       * Handed back rather than re-read by the refusal signals beside it: four
+       * cron lanes share one invocation's subrequest budget, and a second load of
+       * a row this step has already written would spend that budget to learn
+       * nothing. It also removes any chance of the two checks judging different
+       * windows, which is how two things that must agree drift apart (L53).
+       */
+      state: RateWindowState;
+    };
 
 /**
  * The monitor-lane step: read, advance the window, judge, and decide whether a
@@ -382,7 +431,7 @@ export async function runBookingFailureRateCheck(deps: {
       .resolve(FAILURE_RATE_ALERT_KEY, formatFailureRateAllClear({ ...verdict, windowMinutes }))
       .catch((err) => deps.onError?.("resolve", err));
   }
-  return { status: "checked", armed: deps.armed, verdict, rebased };
+  return { status: "checked", armed: deps.armed, verdict, rebased, state };
 }
 
 /** The all-clear. Hung off a MEASURED healthy window, never off a quiet tick, so

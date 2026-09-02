@@ -98,6 +98,23 @@ import {
   runMigrationDriftCheck,
   readAppliedMigrationVersions,
 } from "@/lib/monitor/migration-drift";
+import {
+  CEILING_ALERT_KEY,
+  CREDENTIAL_ALERT_KEY,
+  LIST_ALERT_KEY,
+  judgeRefusalSignals,
+  refusalAllClear,
+  refusalSignalCopy,
+  samplesFromWindow,
+  type CeilingLimits,
+  type RefusalThresholds,
+} from "@/lib/monitor/api-refusal-signals";
+import {
+  BOOKING_API_IP_LIMITER,
+  BOOKING_API_WRITE_LIMITER,
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+} from "@/lib/rate-limit-core";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
@@ -206,6 +223,45 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = {
   windowMs: 60 * 60_000,
   minAttempts: 20,
   failPct: 20,
+};
+
+// --- The booking API turning its own caller away (#1442, #1450, #1709) ---
+//
+// Three refusals Slate makes to its own integration, all deliberately OUTSIDE the
+// failure share above (counting them there would put a noisy caller's volume in
+// the denominator a real outage has to move), and until now visible only as a log
+// line with seven days of retention and no alerting on it.
+//
+// These ship ARMED, unlike the two checks either side of them, and the reason is
+// their floors rather than confidence in the numbers. A share check on a quiet
+// endpoint is noisy, which is why the failure rate ships disarmed; each of these
+// instead needs volume or PERSISTENCE that a quiet endpoint cannot produce: 20
+// ceiling refusals at over a tenth of everything sent, or a refusal in three
+// separate five-minute intervals. With no traffic they cannot fire.
+//
+// Shipping them disarmed would mean the notify path never executed even once
+// before the day it matters (L535), on checks whose whole purpose is to speak
+// where nothing else does. The smoke canary exercises the endpoint with a valid
+// key every 30 minutes, so the measured-clear path gets real exercise either way.
+//
+// The limits the ceiling page names, DERIVED from the rules that actually refuse
+// rather than copied into the copy builder (L41). A figure written by hand beside
+// the rule it describes goes stale the first time somebody changes one, and a
+// message carrying a wrong number is worse than one carrying none: a reader who
+// checks it once and finds it right stops checking.
+const CEILING_LIMITS: CeilingLimits = {
+  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
+  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
+  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
+  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
+};
+
+const REFUSAL_THRESHOLDS: RefusalThresholds = {
+  windowMs: 60 * 60_000,
+  ceilingMinRefusals: 20,
+  ceilingPct: 10,
+  credentialMinSamples: 3,
+  listMinSamples: 3,
 };
 
 // --- Are the times we offer actually free (#1315) ---
@@ -780,6 +836,87 @@ export async function GET(req: NextRequest) {
             log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
         }),
     );
+
+    // --- Is the booking API refusing its own caller (#1442, #1450, #1709)? ---
+    //
+    // Three refusals kept OUT of the failure share above, judged against their own
+    // totals instead. Reuses the window that step just advanced and PERSISTED,
+    // rather than reading the row again: four cron lanes share one invocation's
+    // subrequest budget, and a second read would spend it to learn nothing. It
+    // also removes any chance of the two checks judging different windows (L53).
+    //
+    // Its own failure boundary (L73), like its two neighbours.
+    //
+    // A tick that could not measure sends NOTHING in either direction. That is the
+    // whole reason the judge has an `unmeasured` status distinct from `clear`: an
+    // empty window has not found the ceiling healthy, it has failed to look, and
+    // an all-clear hung off it would be a claim nobody measured (#1134, #1152).
+    await steps.run("api_refusals", null, async () => {
+      if (failureRate.status !== "checked") {
+        log.warn("monitor", {
+          msg: "api refusal signals skipped",
+          why: failureRate.status === "unverified" ? failureRate.why : "failure rate step errored",
+        });
+        return null;
+      }
+      const verdicts = judgeRefusalSignals(
+        samplesFromWindow(failureRate.state.samples),
+        now,
+        REFUSAL_THRESHOLDS,
+      );
+      log.info("monitor", {
+        msg: "api refusals",
+        ceiling: verdicts.ceiling.status,
+        ceiling_pct: verdicts.ceiling.status === "paging" ? verdicts.ceiling.pct : null,
+        credential: verdicts.credential.status,
+        credential_cause:
+          verdicts.credential.status === "paging" ? verdicts.credential.cause : null,
+        list: verdicts.list.status,
+        samples: failureRate.state.samples.length,
+      });
+
+      const cooldown = settings.cooldownMs.booking_failure_rate;
+      // Each signal pages and clears on its OWN key, so one condition ending
+      // cannot clear another and a reader can always tell what stopped.
+      const ceilingText = refusalSignalCopy.ceiling(
+        verdicts.ceiling,
+        REFUSAL_THRESHOLDS.windowMs,
+        CEILING_LIMITS,
+      );
+      if (ceilingText) {
+        // alert-key: booking_api_ceiling
+        // alert-text-ok: our own copy, built from measured counts; no error text
+        // can reach it.
+        await sendThrottledAlert(CEILING_ALERT_KEY, cooldown, ceilingText);
+      } else if (verdicts.ceiling.status === "clear") {
+        // alert-key: booking_api_ceiling
+        await resolveAlert(CEILING_ALERT_KEY, refusalAllClear.ceiling);
+      }
+
+      const credentialText = refusalSignalCopy.credential(
+        verdicts.credential,
+        REFUSAL_THRESHOLDS.windowMs,
+      );
+      if (credentialText) {
+        // alert-key: booking_api_credential
+        // alert-text-ok: our own copy, built from measured counts.
+        await sendThrottledAlert(CREDENTIAL_ALERT_KEY, cooldown, credentialText);
+      } else if (verdicts.credential.status === "clear") {
+        // alert-key: booking_api_credential
+        await resolveAlert(CREDENTIAL_ALERT_KEY, refusalAllClear.credential);
+      }
+
+      const listText = refusalSignalCopy.list(verdicts.list, REFUSAL_THRESHOLDS.windowMs);
+      if (listText) {
+        // alert-key: booking_api_list_read
+        // alert-text-ok: our own copy, built from measured counts.
+        await sendThrottledAlert(LIST_ALERT_KEY, cooldown, listText);
+      } else if (verdicts.list.status === "clear") {
+        // alert-key: booking_api_list_read
+        await resolveAlert(LIST_ALERT_KEY, refusalAllClear.list);
+      }
+      return null;
+    });
 
     // --- Are the times we offer actually free (#1315) ---
     // The LEADING half of the pair with #1313. That one sees customers already

@@ -27,6 +27,7 @@ export const ALERT_FAMILIES = [
   "the-roster-or-routing-data-is-wrong",
   "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   "a-limit-or-a-guard-is-not-working",
+  "the-booking-api-is-refusing-its-caller",
   "an-unexpected-fault-was-reported",
   "something-was-measured-and-is-only-worth-knowing",
 ] as const;
@@ -62,6 +63,16 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
   booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",
+
+  // Slate is turning its own integration away (#1442, #1450, #1709). Its own
+  // family rather than folded into the limiter one next door, because that
+  // section's whole premise is the opposite: those limiters fail OPEN, so the page
+  // means requests are being served UNMETERED. These three mean somebody IS being
+  // refused, and following the wrong procedure at 7am is what a runbook section
+  // that is wrong costs.
+  booking_api_ceiling: "the-booking-api-is-refusing-its-caller",
+  booking_api_credential: "the-booking-api-is-refusing-its-caller",
+  booking_api_list_read: "the-booking-api-is-refusing-its-caller",
   recompute_headroom: "a-sweep-cannot-keep-up",
   calendar_window_uncovered: "the-booker-is-offering-nothing-or-too-little",
   hydration_all_failing: "google-cannot-be-reached-for-an-agent",

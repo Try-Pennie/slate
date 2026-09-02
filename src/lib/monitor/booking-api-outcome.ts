@@ -28,6 +28,54 @@ export const OUTCOME_ORDER = [
 
 export type OutcomeName = (typeof OUTCOME_ORDER)[number];
 
+/**
+ * Refusals Slate made to its OWN caller, recorded in the same tally table and
+ * deliberately OUTSIDE `OUTCOME_ORDER` (#1442, #1450, #1709).
+ *
+ * That exclusion is the whole mechanism, and it needs no schema change: `total`
+ * is summed over `OUTCOME_ORDER` alone, so a name that is not in it can never
+ * enter the denominator the booking failure SHARE is measured against. Counting
+ * these there would put a noisy caller's volume in that denominator and make a
+ * real outage look proportionally smaller exactly while it is happening.
+ *
+ * The mix RPC's `by_error` slice filters on `outcome = 'error'`, so these never
+ * pollute the error codes the failure-rate page names either.
+ *
+ * The two ceilings are keyed APART rather than summed, because they mean
+ * different things and their repairs are different numbers: the key ceiling
+ * bounds total volume, the IP backstop bounds any one host.
+ */
+export const SELF_INFLICTED_REFUSALS = [
+  "refused_ceiling_key",
+  "refused_ceiling_ip",
+  "refused_list_read",
+  /**
+   * A Bearer token that was PRESENT and is not one of ours (#1450).
+   *
+   * Deliberately narrower than the API_KEY_REJECTED error code beside it, which
+   * also counts a request carrying no credential at all. The endpoint is public,
+   * so anything crawling the internet produces those continuously and a signal
+   * built on the error code would page on background noise. A present and wrong
+   * token is the one that means a real integration is locked out.
+   */
+  "refused_key_wrong",
+  /** No key configured on the Worker at all, so every call is refused. */
+  "refused_not_configured",
+] as const;
+
+export type SelfInflictedRefusal = (typeof SELF_INFLICTED_REFUSALS)[number];
+
+/** Zero-filled counts, so a reader never has to decide what an absent key meant. */
+export type RefusalCounts = Record<SelfInflictedRefusal, number>;
+
+export const emptyRefusalCounts = (): RefusalCounts => ({
+  refused_ceiling_key: 0,
+  refused_ceiling_ip: 0,
+  refused_list_read: 0,
+  refused_key_wrong: 0,
+  refused_not_configured: 0,
+});
+
 export interface TallyArgs {
   p_day: string;
   p_outcome: string;
@@ -96,6 +144,15 @@ export interface OutcomeMix {
    * the issue rules out.
    */
   testTotal: number | null;
+  /**
+   * The self-inflicted refusals (#1442 / #1450 / #1709), carried on the SAME
+   * reading rather than fetched separately: four cron lanes share one invocation's
+   * subrequest budget, so a second RPC for three numbers already in this row
+   * would be spending that budget to learn nothing new.
+   *
+   * Deliberately NOT folded into `total` or `outcomes`: see SELF_INFLICTED_REFUSALS.
+   */
+  refusals: RefusalCounts;
 }
 
 /** The jsonb shape the booking_api_outcome_mix RPC returns for a window. */
@@ -124,7 +181,9 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
     .map(([code, count]) => ({ code, count }))
     .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
   const testTotal = typeof raw?.test_total === "number" ? raw.test_total : null;
-  return { total, outcomes, errors, testTotal };
+  const refusals = emptyRefusalCounts();
+  for (const name of SELF_INFLICTED_REFUSALS) refusals[name] = byOutcome[name] ?? 0;
+  return { total, outcomes, errors, testTotal, refusals };
 }
 
 /**

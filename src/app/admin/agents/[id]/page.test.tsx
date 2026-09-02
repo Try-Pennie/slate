@@ -37,6 +37,20 @@ const dbState = vi.hoisted(() => ({
   } as unknown,
   usersList: [] as unknown[],
   rules: [] as unknown[],
+  /**
+   * #1649: one error seam per READ, not one for the page. The four reads here
+   * fail differently and each draws a different wrong screen, so a fixture that
+   * fails everything at once could not tell them apart: the assertion would pass
+   * on a page that only guarded one of them.
+   *
+   * `users` is read twice (the target agent by maybeSingle, the roster by the
+   * awaited builder), which is exactly why the key is the read and not the table.
+   */
+  agentError: null as { message: string } | null,
+  schedError: null as { message: string } | null,
+  rosterError: null as { message: string } | null,
+  orgError: null as { message: string } | null,
+  rulesError: null as { message: string } | null,
 }));
 const from = vi.hoisted(() =>
   vi.fn((table: string) => {
@@ -45,24 +59,36 @@ const from = vi.hoisted(() =>
       eq: () => q,
       order: () => q,
       limit: () => q,
-      maybeSingle: async () => ({
-        data:
-          table === "users"
-            ? dbState.agent
-            : table === "availability_schedules"
-              ? dbState.sched
-              : null,
-      }),
-      single: async () => ({ data: dbState.org }),
-      then: (res: (v: { data: unknown }) => void) =>
-        res({
+      maybeSingle: async () => {
+        const err = table === "users" ? dbState.agentError : dbState.schedError;
+        if (err) return { data: null, error: err };
+        return {
+          data:
+            table === "users"
+              ? dbState.agent
+              : table === "availability_schedules"
+                ? dbState.sched
+                : null,
+          error: null,
+        };
+      },
+      single: async () =>
+        dbState.orgError
+          ? { data: null, error: dbState.orgError }
+          : { data: dbState.org, error: null },
+      then: (res: (v: { data: unknown; error?: unknown }) => void) => {
+        const err = table === "users" ? dbState.rosterError : dbState.rulesError;
+        if (err) return res({ data: null, error: err });
+        return res({
           data:
             table === "users"
               ? dbState.usersList
               : table === "availability_rules"
                 ? dbState.rules
                 : [],
-        }),
+          error: null,
+        });
+      },
     };
     return q;
   }),
@@ -129,7 +155,80 @@ beforeEach(() => {
   dbState.sched = null;
   dbState.usersList = [];
   dbState.rules = [];
+  dbState.agentError = null;
+  dbState.schedError = null;
+  dbState.rosterError = null;
+  dbState.orgError = null;
+  dbState.rulesError = null;
   previewBulkReassign.mockResolvedValue(0);
+});
+
+// #1649: #1629 turned four reads on this page into `unwrap` and touched no test.
+// Each draws a DIFFERENT wrong screen when swallowed, and three of the four feed
+// a FORM whose save replaces exactly what the form is showing, so a blank drawn
+// from a failed read is not merely wrong to look at: the next click writes it
+// back as fact.
+describe("the reads behind this page refuse rather than draw a blank (#1649)", () => {
+  const asManager = () =>
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+
+  it("does not report a 404 when the agent row could not be READ", async () => {
+    asManager();
+    dbState.agentError = { message: "permission denied for table users" };
+    await expect(AgentProfilePage(props)).rejects.toThrow(/agent detail row/);
+    // Specifically not notFound(): telling an admin the agent does not exist
+    // sends them to create an account that is already there.
+    expect(notFound).not.toHaveBeenCalled();
+  });
+
+  it("still reports a real 404 when the read works and finds nothing", async () => {
+    asManager();
+    dbState.agent = null;
+    await expect(AgentProfilePage(props)).rejects.toThrow(/NEXT_NOT_FOUND/);
+    expect(notFound).toHaveBeenCalled();
+  });
+
+  it("refuses when the agent's schedule could not be read, rather than rendering an empty week", async () => {
+    asManager();
+    dbState.agent = agentOf("agent");
+    dbState.schedError = { message: "deadlock detected" };
+    await expect(AgentProfilePage(props)).rejects.toThrow(/agent schedule/);
+  });
+
+  it("refuses when the schedule's rules could not be read", async () => {
+    asManager();
+    dbState.agent = agentOf("agent");
+    dbState.sched = { id: "s1", timezone: "America/New_York" };
+    dbState.rulesError = { message: "statement timeout" };
+    await expect(AgentProfilePage(props)).rejects.toThrow(/agent schedule rules/);
+  });
+
+  it("refuses when the roster could not be read, rather than showing the manager as unassigned", async () => {
+    asManager();
+    dbState.agent = agentOf("agent");
+    dbState.rosterError = { message: "permission denied for table users" };
+    await expect(AgentProfilePage(props)).rejects.toThrow(/agent detail roster/);
+  });
+
+  it("refuses when the org could not be read", async () => {
+    asManager();
+    dbState.agent = agentOf("agent");
+    dbState.orgError = { message: "permission denied for table organizations" };
+    await expect(AgentProfilePage(props)).rejects.toThrow(/agent detail org/);
+  });
+
+  // The control, in the same fixture: with every read healthy the page renders,
+  // so the six refusals above cannot be passing because this page stopped
+  // rendering at all.
+  it("renders the profile when every read works", async () => {
+    asManager();
+    dbState.agent = agentOf("agent");
+    dbState.sched = { id: "s1", timezone: "America/New_York" };
+    dbState.rules = [{ weekday: 1, start_minute: 540, end_minute: 1020 }];
+    dbState.usersList = [{ id: "x1", name: "Aria", email: "aria@trypennie.com", role: "agent", deactivated_at: null }];
+    render(await AgentProfilePage(props));
+    expect(screen.getByRole("button", { name: /deactivate account/i })).toBeTruthy();
+  });
 });
 
 // #1215. The count in the confirm and the work the coverage sweep would enqueue

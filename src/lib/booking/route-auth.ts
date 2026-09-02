@@ -8,6 +8,7 @@ import {
   refusalReasonForStatus,
 } from "@/lib/booking/api-auth";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import type { SelfInflictedRefusal } from "@/lib/monitor/booking-api-outcome";
 import { log } from "@/lib/log";
 import {
   allowRequest,
@@ -49,8 +50,44 @@ function refuse(
   status: 401 | 429 | 503,
   readPath: boolean,
   keyId?: "primary" | "secondary",
+  /** Whether a Bearer token was actually SENT (#1450). Only meaningful for a
+   *  credential refusal, and only on the write path. */
+  tokenPresent = false,
 ): AuthOutcome {
   const counting = authRefusalCounting(reason, readPath ? "read" : "write");
+  // #1442: a ceiling trip stays OUT of the failure share, and that decision is
+  // unchanged. What it left invisible is a SUSTAINED trip on the write path,
+  // which does not mean the caller is abusive, it means the ceiling is wrong for
+  // the bot's real volume and leads are being turned away by us. So it is counted
+  // under its own name, outside OUTCOME_ORDER, where it can be measured against
+  // the ceiling instead of diluting the share.
+  //
+  // Write path only. A read that is throttled costs a poll, not a lead, and the
+  // catalog already keeps read traffic out of every booking measurement.
+  //
+  // #1450 rides the same counter for the two credential facts, and each is
+  // NARROWER than the error code beside it. A missing key is our own deployment;
+  // a present and wrong token is a caller holding a stale one. A request carrying
+  // NO credential records nothing here at all, because the endpoint is public and
+  // anything crawling the internet produces those continuously: a signal built on
+  // the error code would page on background noise (L36).
+  const ownCounter: SelfInflictedRefusal | null = readPath
+    ? null
+    : reason === "throttled_key"
+      ? "refused_ceiling_key"
+      : reason === "throttled_ip"
+        ? "refused_ceiling_ip"
+        : reason === "not_configured"
+          ? "refused_not_configured"
+          : reason === "bad_credential" && tokenPresent
+            ? "refused_key_wrong"
+            : null;
+  if (ownCounter) {
+    recordApiOutcome(ownCounter, "", null, {
+      by: "unidentifiable",
+      why: "refused before any bucket or booking was read",
+    });
+  }
   if (counting.kind === "error") {
     // No bucket is known yet: the body has not been read. "" is the tally's
     // existing convention for an outcome recorded before routing (#418), and for
@@ -70,6 +107,7 @@ function refuse(
     status,
     key: keyId ?? "none",
     counted: counting.kind === "error" ? counting.code : "no",
+    own_counter: ownCounter ?? "none",
   });
   return { ok: false, reason, response: NextResponse.json({ error }, { status }) };
 }
@@ -95,7 +133,14 @@ export async function authorizeBookingApi(
   if (!auth.ok) {
     // The reason is DERIVED from the status the authenticator already decided, so
     // the classification and the response cannot disagree (L53).
-    return refuse(refusalReasonForStatus(auth.status), auth.error, auth.status, readPath);
+    return refuse(
+      refusalReasonForStatus(auth.status),
+      auth.error,
+      auth.status,
+      readPath,
+      undefined,
+      auth.tokenPresent,
+    );
   }
   const keyBudget = "Rate limit exceeded for this API key.";
   // Per-key: edge per-minute burst window first (no DB round-trip), then the hourly cap.
