@@ -627,6 +627,80 @@ Google says for a revoked licence as well as for an account that never had one.
 Reading that as a provisioning ticket would have sent somebody to re-license a
 departed employee, and left the sweep red forever while they did not.
 
+# Comparing Slate against cal.com (`pnpm verify:availability-parity`)
+
+The fourth command in the family above, and the one that only makes sense while
+BOTH systems are live. During the parallel run (`docs/parallel-run-plan.md`)
+Slate computes availability nobody can book while cal.com keeps taking every
+lead. This is what turns that silence into a measurement (#1731).
+
+**It is not a correctness check, and the distinction matters.** cal.com is the
+incumbent, not the source of truth: a time both systems offer can be busy in
+both. That question belongs to `verify:availability-truth`, which asks Google.
+This one catches CONFIGURATION drift, which is invisible from inside Slate
+alone: working hours never set to the real 8am to 8pm (#1255), a bucket whose
+membership does not match cal.com's routing, business hours closing a day
+cal.com keeps open, an agent whose calendar never connected.
+
+**The comparison is at the (day, hour) level, deliberately.** The two systems
+carry their own slot interval (cal.com offers the review event every 10
+minutes), duration, buffers and minimum notice, so demanding equal instants
+would be red from the day it shipped for reasons nobody should fix (L36). An
+hour either system offers anything in is an hour it considers open, and that
+survives every one of those differences while still catching a roster scheduled
+9 to 17 against a cal.com week running 8 to 20.
+
+**The pin is the dangerous part.** cal.com narrows the pool with
+`routedTeamMemberIds[]`, and when an id is not a host on the event type it
+IGNORES the pin and answers **200 with the whole pool**. Against one bucket that
+reads as Slate under-offering: a false finding pointing at agents who are fine.
+So every pinned read is paired with a bogus-id read whose answer is known to be
+the pool, and an identical pair refuses the run rather than reporting it.
+
+```
+pnpm verify:availability-parity                     # sweep every active bucket
+PARITY_BUCKET=411 pnpm verify:availability-parity   # one bucket
+```
+
+`CALCOM_API_KEY` is required (it resolves an agent email to a cal.com user id and
+is a wrangler secret on the deployment, so it has to be added to `.env.local` to
+run this); `CALCOM_ORG_ID`, `CALCOM_EVENT_TYPE_ID`, `SLATE_BASE_URL`,
+`PARITY_DAYS` (default 7) and `PARITY_ZONE` carry working defaults. The slots
+read itself needs no key.
+
+**Only agreement passes, and every other outcome exits non-zero on its own
+code**, so a shell caller can branch on which one it met. Finding nothing to
+compare is never a pass (L98), and both systems offering nothing is the state the
+dark roster produces today:
+
+| exit | what it met |
+|---|---|
+| 0 | every compared bucket agrees on open hours |
+| 1 | no `CALCOM_API_KEY`, or an unreadable `PARITY_DAYS`; nothing was attempted |
+| 2 | no bucket could be compared (all dark, or the named code does not exist) |
+| 3 | Slate did not answer, or answered with no readable slots array |
+| 4 | cal.com did not answer |
+| 5 | cal.com answered with something unreadable |
+| 6 | no member of a bucket exists in cal.com, so nothing could be pinned |
+| 7 | **cal.com ignored the pin** and answered with the pool; every verdict built on it would be false |
+| 8 | neither system offers anything: perfect agreement, zero information |
+| 9 | cal.com offers nothing while Slate does; not ours to fix, and not comparable |
+| 10 | **Slate offers nothing** while cal.com offers a week |
+| 11 | **Slate under-offers**: hours cal.com opens and Slate does not |
+| 12 | Slate over-offers: usually cal.com holding an out of office Slate has not been told about |
+
+Under-offering outranks over-offering when a sweep meets both, because the
+direction that costs a lead a bookable time is the one somebody must act on;
+both are always printed, so the ranking decides only which one names the run.
+
+**It has never reached a real verdict, and cannot until the roster is hot.**
+Every real agent is `bookable = false` (#1272), so every real bucket resolves to
+an empty pool and the sweep exits 2. That is the honest state and the command
+says so rather than passing. The first run that matters is the one taken
+immediately after the Phase 1 flip, and its findings ARE the phase's evidence.
+Its decision logic is pinned offline by `scripts/test-availability-parity.ts`,
+which drives every verdict through hand written fixtures.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
