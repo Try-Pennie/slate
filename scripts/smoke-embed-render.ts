@@ -1,0 +1,176 @@
+// The canary's browser check: does the EMBEDDED booker actually draw (#1006)?
+//
+// Run: SLATE_BASE_URL=... node --experimental-strip-types scripts/smoke-embed-render.ts
+//
+// The uptime canary proves the server responds; nothing proved the front end
+// draws. cal.com is watched by a Checkly browser check that loads the embedded
+// scheduler and confirms the modal appears; Slate's embed had no equivalent, so a
+// front end or embed regression leaving the booker blank would go unnoticed.
+//
+// ## Why this lives in the canary rather than in CI
+//
+// AGENTS.md records a deliberate decision not to add a browser layer to CI (#611,
+// audit AUD-037): `next dev` screenshots are unstable to automate (the `.pn-*`
+// entrance keyframes never settle, font loading stalls a full page shot), so a
+// headless browser job would be flaky for the payoff, and the risky seams are
+// covered post deploy by the canary instead.
+//
+// This does not reverse that. It runs POST DEPLOY, against the real deployment,
+// on the canary's own schedule, and it drives the DEPLOYED widget.js rather than a
+// dev server, so none of the instability that decision was about applies. It is
+// the compensating control being extended, not the rejected one being added.
+//
+// ## What it asserts, and the one thing it deliberately does not
+//
+// It does NOT demand that slots are offered. Before cutover the roster is
+// deliberately dark (#1272), so a real bucket legitimately offers nothing and a
+// check that demanded times would be red every run from the day it shipped. An
+// alert that cries wolf gets ignored (L36), and this one has to still be believed
+// on the day the embed actually breaks.
+//
+// It asserts the booker SAYS SOMETHING: a working embed either offers times or
+// states in its own words why it has none, and a broken one shows a blank panel,
+// a stuck loader, or the embed's own load-failed message. The rules are in
+// scripts/lib/embed-render-check.ts and are pinned offline by
+// scripts/test-embed-render-check.ts, so they are tested where no browser exists.
+//
+// Failures are recorded through the SAME failure log the booking smoke uses, so
+// the existing Slack alerter names this check alongside the others rather than
+// needing a second alerting path, which would be a second thing to keep working
+// on the surface whose whole job is to still work when something else has broken.
+import { appendFileSync } from "node:fs";
+import { chromium, type Browser } from "playwright";
+import {
+  embedHostPage,
+  judgeEmbedRender,
+  type EmbedObservation,
+} from "./lib/embed-render-check.ts";
+import { failureLogPath, recordFailure } from "./lib/smoke-failure-log.ts";
+
+const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
+// env-ok: SMOKE_BUCKET (a local override; CI wants the seeded SMOKE bucket)
+const bucket = process.env.SMOKE_BUCKET ?? "SMOKE";
+
+/** How long to give the modal and the frame. Generous: this is a real browser
+ *  against a real deployment over the public internet, and a check that failed on
+ *  a slow morning would be the flapping alert this is meant not to become. */
+const MODAL_TIMEOUT_MS = 20_000;
+const FRAME_TIMEOUT_MS = 30_000;
+
+const io = { append: (path: string, line: string) => appendFileSync(path, line), read: () => null };
+const failureLog = failureLogPath(process.env);
+
+/** Drive the embed and report what was seen. Never throws: a driver fault is
+ *  itself an observation the judge has to be able to act on, and a crash here
+ *  would leave the canary reporting nothing at all rather than a failure. */
+async function observe(browser: Browser): Promise<EmbedObservation | { driverError: string }> {
+  const consoleErrors: string[] = [];
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  // Both channels: a thrown exception never reaches console.error, and a logged
+  // error never becomes a page error, so listening to one discards half of what
+  // the browser is telling us (L219).
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text());
+  });
+  page.on("pageerror", (err) => consoleErrors.push(String(err)));
+
+  try {
+    // A data URL rather than a local server: the page is three lines and starting
+    // a server is a second thing that can fail on the surface whose job is to
+    // still work when something else has.
+    await page.setContent(embedHostPage(base, bucket), { waitUntil: "load" });
+    await page.click("#book");
+
+    const modal = page.locator('[role="dialog"]');
+    let modalPresent = true;
+    try {
+      await modal.waitFor({ state: "visible", timeout: MODAL_TIMEOUT_MS });
+    } catch {
+      modalPresent = false;
+    }
+    if (!modalPresent) {
+      return { modalPresent: false, loadFailedShown: false, frameText: "", consoleErrors };
+    }
+
+    // The embed's own failure panel, asked for by its copy rather than by a class,
+    // so a restyle cannot silently stop this check noticing it. The wording lives
+    // in widget.js's COPY block, which the embed preview reads.
+    const loadFailedShown = await page
+      .getByText(/couldn't load the booking form/i)
+      .first()
+      .isVisible()
+      .catch(() => false);
+
+    // What the BOOKER drew, from inside the iframe. Read through the frame rather
+    // than off the modal, because the modal's own chrome (the close button, the
+    // loading text) would otherwise count as content and a blank booker inside a
+    // present modal would read as healthy.
+    let frameText = "";
+    try {
+      const frame = page.frameLocator('iframe[title]');
+      const body = frame.locator("body");
+      await body.waitFor({ state: "attached", timeout: FRAME_TIMEOUT_MS });
+      // Wait for the booker's own heading rather than a fixed sleep, so a fast
+      // deployment is not paid for and a slow one is not failed early (L290).
+      await frame
+        .locator("h1, h2")
+        .first()
+        .waitFor({ state: "visible", timeout: FRAME_TIMEOUT_MS })
+        .catch(() => {});
+      frameText = (await body.innerText().catch(() => "")) ?? "";
+    } catch {
+      frameText = "";
+    }
+
+    return { modalPresent, loadFailedShown, frameText, consoleErrors };
+  } catch (err) {
+    return { driverError: String(err) };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function main(): Promise<number> {
+  let browser: Browser;
+  try {
+    browser = await chromium.launch();
+  } catch (err) {
+    // The browser itself is missing or would not start. That is a fault in the
+    // CHECK, not in the embed, and it must say so: reporting it as a render
+    // failure would send somebody to look at a booker that is fine (L11).
+    const line = `embed render: the browser could not be launched, so the embed was NOT checked: ${String(err)}`;
+    console.error(line);
+    if (failureLog) recordFailure(io, failureLog, line);
+    return 1;
+  }
+
+  try {
+    const seen = await observe(browser);
+    if ("driverError" in seen) {
+      const line = `embed render: the check could not drive the page, so the embed was NOT checked: ${seen.driverError}`;
+      console.error(line);
+      if (failureLog) recordFailure(io, failureLog, line);
+      return 1;
+    }
+    const verdict = judgeEmbedRender(seen);
+    if (verdict.outcome === "rendered") {
+      console.log(`embed render: ok (${seen.frameText.trim().length} characters drawn)`);
+      return 0;
+    }
+    const line = `embed render (${verdict.outcome}): ${verdict.reason}`;
+    console.error(line);
+    if (failureLog) {
+      recordFailure(io, failureLog, line);
+    } else {
+      console.error(
+        "embed render: the failure could not be recorded for the alerter (no SMOKE_FAILURE_FILE), so it is printed here only",
+      );
+    }
+    return 1;
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+process.exit(await main());
