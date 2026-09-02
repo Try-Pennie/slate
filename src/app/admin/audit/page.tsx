@@ -199,7 +199,7 @@ export default async function AuditLogPage({
             Apply
           </button>
           {(auditFilters.actions || auditFilters.actorId || auditFilters.fromIso || auditFilters.toIso) && (
-            <InPlaceLink href="/admin#audit" className={btnSecondaryCls}>
+            <InPlaceLink href="/admin/audit" className={btnSecondaryCls}>
               Clear
             </InPlaceLink>
           )}

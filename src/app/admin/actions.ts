@@ -657,12 +657,12 @@ export async function setReasonOptions(form: FormData): Promise<void> {
   try {
     raw = JSON.parse(String(form.get("payload") ?? "{}"));
   } catch {
-    redirect(`/admin/settings/reasons?error=${encodeURIComponent("Could not read the submitted form.")}`);
+    redirect(`/admin/booking-reasons?error=${encodeURIComponent("Could not read the submitted form.")}`);
   }
 
   const { rows, errors } = parseReasonOptionsForm(coerceReasonOptionsForm(raw));
   if (errors.length) {
-    redirect(`/admin/settings/reasons?error=${encodeURIComponent([...new Set(errors)].join(" "))}`);
+    redirect(`/admin/booking-reasons?error=${encodeURIComponent([...new Set(errors)].join(" "))}`);
   }
 
   const now = new Date().toISOString();
@@ -679,8 +679,8 @@ export async function setReasonOptions(form: FormData): Promise<void> {
     action: "reason.options",
     details: { rows: rows.map((r) => ({ action: r.action, code: r.code, active: r.active })) },
   });
-  revalidatePath("/admin/settings/reasons");
-  redirect("/admin/settings/reasons?ok=1");
+  revalidatePath("/admin/booking-reasons");
+  redirect("/admin/booking-reasons?ok=1");
 }
 
 export async function setOrgDefaultHours(form: FormData): Promise<void> {
