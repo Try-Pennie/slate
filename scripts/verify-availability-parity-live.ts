@@ -173,10 +173,13 @@ async function slateSlots(code: string): Promise<string[]> {
 
 // --- which buckets to compare -------------------------------------------------
 const db = supabaseAdmin();
+// No `active` column exists on buckets: every row is live, and `is_test` is the
+// only thing that hides one (#396). Filtering on a column that is not there is a
+// PostgREST 42703, which `unwrap` turns into a throw, so the sweep could never
+// have run. `tsc` cannot catch it because the column name is a string.
 const bucketRes = await db
   .from("buckets")
-  .select("id, code, org_id, criteria, fallback_user_id, is_test")
-  .eq("active", true);
+  .select("id, code, org_id, criteria, fallback_user_id, is_test");
 const allBuckets = (unwrap(bucketRes, "buckets") ?? []) as {
   id: string;
   code: string;
