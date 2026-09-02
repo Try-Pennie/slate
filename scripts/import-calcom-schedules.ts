@@ -38,9 +38,8 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { planScheduleReplacement } = await import("@/lib/schedule-replacement");
-const { mapCalcomSchedule, diffSchedule, retryDelayMs, classifySkip } = await import(
-  "./lib/calcom-schedule-import.ts"
-);
+const { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs } =
+  await import("./lib/calcom-schedule-import.ts");
 
 const apply = process.env.APPLY === "1";
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
@@ -83,8 +82,9 @@ async function calGet(path: string): Promise<{ status: number; json: unknown }> 
   }
 }
 
-/** Between agents, so a 103-agent run does not trip the limit in the first place. */
-const PACE_MS = Number(envOr(process.env.CALCOM_PACE_MS, "250"));
+/** Between agents, so a 103-agent run does not trip the limit in the first place.
+ *  Parsed through `paceMs`, which refuses a value a timer would treat as zero. */
+const PACE_MS = paceMs(process.env.CALCOM_PACE_MS);
 
 function stop(code: number, why: string): never {
   console.error(`\nFAILED (${code}): ${why}`);
@@ -149,7 +149,7 @@ interface Change {
 }
 const changes: Change[] = [];
 const unchanged: string[] = [];
-const skipped: { email: string; why: string }[] = [];
+const skipped: { email: string; why: string; kind: "transient" | "permanent" }[] = [];
 
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const render = (rs: { weekday: number; start_minute: number; end_minute: number }[]) => {
@@ -161,12 +161,12 @@ const render = (rs: { weekday: number; start_minute: number; end_minute: number 
 for (const agent of agents) {
   const sched = schedByUser.get(agent.id);
   if (!sched) {
-    skipped.push({ email: agent.email, why: "no availability_schedules row in Slate" });
+    skipped.push({ email: agent.email, why: "no availability_schedules row in Slate", kind: "permanent" });
     continue;
   }
   const cid = calId.get(agent.email.toLowerCase());
   if (!cid) {
-    skipped.push({ email: agent.email, why: "no cal.com account, so there is nothing to import" });
+    skipped.push({ email: agent.email, why: "no cal.com account, so there is nothing to import", kind: "permanent" });
     continue;
   }
   let calSchedule: unknown;
@@ -174,22 +174,27 @@ for (const agent of agents) {
     await sleep(PACE_MS);
     const r = await calGet(`/organizations/${org}/users/${cid}/schedules`);
     if (r.status < 200 || r.status >= 300) {
-      skipped.push({ email: agent.email, why: `cal.com schedules returned ${r.status}` });
+      skipped.push({
+        email: agent.email,
+        why: `cal.com schedules returned ${r.status}`,
+        kind: skipKindForStatus(r.status),
+      });
       continue;
     }
     const list = ((r.json as { data?: { isDefault?: boolean }[] })?.data ?? []);
     calSchedule = list.find((x) => x.isDefault) ?? list[0];
   } catch (err) {
-    skipped.push({ email: agent.email, why: `cal.com read threw: ${String(err).slice(0, 80)}` });
+    // A thrown fetch is a transport problem, the same class as a 5xx.
+    skipped.push({ email: agent.email, why: `cal.com read threw: ${String(err).slice(0, 80)}`, kind: "transient" });
     continue;
   }
   if (!calSchedule) {
-    skipped.push({ email: agent.email, why: "no schedule in cal.com" });
+    skipped.push({ email: agent.email, why: "no schedule in cal.com", kind: "permanent" });
     continue;
   }
   const mapped = mapCalcomSchedule(calSchedule as never);
   if (!mapped.ok) {
-    skipped.push({ email: agent.email, why: mapped.why });
+    skipped.push({ email: agent.email, why: mapped.why, kind: "permanent" });
     continue;
   }
   // Slate's own validator decides whether this week may be written. A split shift
@@ -197,7 +202,7 @@ for (const agent of agents) {
   // into one would invent hours the agent never set.
   const plan = planScheduleReplacement(mapped.rules, mapped.timezone);
   if (!plan.ok) {
-    skipped.push({ email: agent.email, why: `Slate will not accept this week: ${plan.error}` });
+    skipped.push({ email: agent.email, why: `Slate will not accept this week: ${plan.error}`, kind: "permanent" });
     continue;
   }
   const currentRules = rules.filter((r) => r.schedule_id === sched.id);
@@ -227,8 +232,8 @@ console.log(`would change: ${changes.length}`);
 console.log(`already matching: ${unchanged.length}`);
 // Transient and permanent skips are reported apart, because the action is
 // completely different: one wants another run, the other wants a person.
-const transient = skipped.filter((s) => classifySkip(s.why) === "transient");
-const permanent = skipped.filter((s) => classifySkip(s.why) === "permanent");
+const transient = skipped.filter((s) => s.kind === "transient");
+const permanent = skipped.filter((s) => s.kind === "permanent");
 console.log(`skipped, needs a person: ${permanent.length}`);
 for (const s of permanent) console.log(`   ${s.email}: ${s.why}`);
 console.log(`skipped, transient (re-run reaches them): ${transient.length}`);

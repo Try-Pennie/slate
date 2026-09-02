@@ -181,12 +181,34 @@ export function retryDelayMs(
  * Whether a skipped agent needs a PERSON or just another run.
  *
  * Both were reported under one heading on the first run, which told a reader to go
- * and sort out 89 people by hand when 89 of them needed nothing but a slower
- * retry. Distinct causes get distinct messages, and here they get distinct exit
- * codes too, because the action is completely different.
+ * and sort out 89 people by hand when 89 of them needed nothing but a slower retry.
+ *
+ * The kind is decided from the STATUS and carried on the record, never re-derived
+ * from the message text later. A classifier that reads its own prose is one reworded
+ * sentence away from silently reclassifying a whole population, and it cannot be
+ * checked against the thing that actually failed.
  */
-export function classifySkip(why: string): "transient" | "permanent" {
-  if (/returned (429|5\d\d)/.test(why)) return "transient";
-  if (/read threw/.test(why)) return "transient";
-  return "permanent";
+export type SkipKind = "transient" | "permanent";
+
+/** The kind for a failed HTTP read. Anything not a rate limit or a server fault is
+ *  permanent: another attempt cannot create a schedule that is not there. */
+export function skipKindForStatus(status: number): SkipKind {
+  return status === 429 || status >= 500 ? "transient" : "permanent";
+}
+
+/**
+ * Milliseconds to wait between agents, from the environment.
+ *
+ * Handed straight to a timer, so an unreadable value must never become NaN:
+ * `setTimeout(NaN)` fires immediately, which silently removes the pacing that
+ * keeps a 103-agent run under cal.com's rate limit, and the run then fails the way
+ * the first one did while the setting still reads as configured (L50).
+ */
+export const DEFAULT_PACE_MS = 250;
+
+export function paceMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_PACE_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PACE_MS;
+  return n;
 }

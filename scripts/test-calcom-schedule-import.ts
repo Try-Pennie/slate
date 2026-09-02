@@ -15,7 +15,7 @@
 // Every unreadable input is REFUSED rather than defaulted. Defaulting to Eastern is
 // precisely how the roster came to claim one timezone it does not have, so a
 // mapping that silently fell back would recreate the defect it exists to fix.
-import { mapCalcomSchedule, diffSchedule, retryDelayMs, classifySkip } from "./lib/calcom-schedule-import.ts";
+import { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs } from "./lib/calcom-schedule-import.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const uniform = {
@@ -193,13 +193,30 @@ const current = {
 }
 
 // --- transient and permanent skips are different things ------------------------
+// Decided from the STATUS and carried on the record, never re-derived from the
+// message. A classifier reading its own prose is one reworded sentence away from
+// silently reclassifying a whole population.
 {
-  eq(classifySkip("cal.com schedules returned 429"), "transient", "a rate limit is transient");
-  eq(classifySkip("cal.com schedules returned 503"), "transient", "so is an unavailable");
-  eq(classifySkip("cal.com read threw: fetch failed"), "transient", "so is a dropped connection");
-  eq(classifySkip("Slate will not accept this week: same day twice"), "permanent", "a split shift needs a person");
-  eq(classifySkip("no cal.com account, so there is nothing to import"), "permanent", "so does a missing account");
-  eq(classifySkip("the schedule carries no availability windows"), "permanent", "so does an empty schedule");
+  eq(skipKindForStatus(429), "transient", "a rate limit is transient");
+  eq(skipKindForStatus(500), "transient", "so is a server fault");
+  eq(skipKindForStatus(503), "transient", "and an unavailable");
+  eq(skipKindForStatus(404), "permanent", "a missing schedule needs a person, not another attempt");
+  eq(skipKindForStatus(403), "permanent", "so does a refusal");
+  eq(skipKindForStatus(400), "permanent", "so does a bad request");
+}
+
+// --- the pace between agents ---------------------------------------------------
+// It is read from the environment and handed straight to a timer. An unreadable
+// value becoming NaN would fire immediately, dropping the pacing that exists to
+// keep the run under the rate limit, and the run would fail the way the first one
+// did while the setting still read as configured.
+{
+  eq(paceMs(undefined), 250, "an unset pace uses the default");
+  eq(paceMs(""), 250, "so does an empty one");
+  eq(paceMs("abc"), 250, "and one that is not a number, rather than becoming NaN");
+  eq(paceMs("-5"), 250, "a negative pace is not a pace");
+  eq(paceMs("500"), 500, "a real value is honoured");
+  eq(paceMs("0"), 0, "and zero is a deliberate choice, not a missing one");
 }
 
 finish();
