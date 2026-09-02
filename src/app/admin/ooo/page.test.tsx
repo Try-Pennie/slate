@@ -25,6 +25,10 @@ const dbState = vi.hoisted(() => ({
   jobs: [] as unknown[],
   /** Make that read FAIL, which is a different thing from it finding no sweep. */
   jobsError: false,
+  /** #1649: make the OVERLAP read fail, which is a different thing from it
+   *  finding no clash. An empty result here is the absence of a WARNING, and a
+   *  manager reads absence of a warning as "this clashes with nothing". */
+  bookingsError: false,
   /** Which ooo_requests read this is: the page runs pending, then history. Reset
    *  per test, or a later test's pending read serves the (empty) history and every
    *  absence assertion passes on a blank page. */
@@ -52,6 +56,9 @@ const from = vi.hoisted(() =>
       then: (res: (v: { data: unknown; error: unknown }) => void) => {
         if (table === "bulk_reassign_jobs" && dbState.jobsError) {
           return res({ data: null, error: { message: "read failed" } });
+        }
+        if (table === "bookings" && dbState.bookingsError) {
+          return res({ data: null, error: { message: "permission denied for table bookings" } });
         }
         // The page runs the pending query before the history query, so serve them
         // in call order rather than guessing from the table name (both read
@@ -388,5 +395,93 @@ describe("OooQueuePage: link to the coverage sweep (#1239)", () => {
     // The row itself is still there: the failure took the link, not the page.
     expect(screen.getAllByText("Aria Agent").length).toBeGreaterThan(0);
     expect(screen.getByText(/Recent decisions/i)).toBeTruthy();
+  });
+});
+
+// #1649: #1629 gave this page a whole new "could not check" state for the clash
+// warning and touched no test. It is the sharpest kind of empty result on this
+// screen: the panel exists to warn a manager BEFORE they approve, so an unread
+// bookings table renders as "this time off clashes with nothing", which is the
+// answer that gets the approval pressed.
+describe("the clash warning's could-not-check state (#1649)", () => {
+  const requestRow = () => ({
+    id: "r1",
+    org_id: "o1",
+    user_id: "u-agent",
+    manager_id: null,
+    status: "pending",
+    starts_at: "2026-09-01T13:00:00Z",
+    ends_at: "2026-09-01T21:00:00Z",
+    display_tz_id: "America/New_York",
+    display_tz_label: "ET",
+    all_day: false,
+    reason: "Vacation",
+    notes: null,
+    rejection_note: null,
+    decided_by: null,
+    decided_at: null,
+    cancelled_at: null,
+    side_effects: {},
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+  });
+
+  beforeEach(() => {
+    dbState.oooReads = 0;
+    dbState.history = [];
+    dbState.bookings = [];
+    dbState.bookingsError = false;
+    dbState.pending = [requestRow()];
+    dbState.users = [
+      { id: "u-agent", name: "Aria Agent", email: "aria@trypennie.com", role: "agent", manager_id: null },
+    ];
+    auth.currentUser.mockResolvedValue({
+      id: "u-lead",
+      role: "team_lead",
+      org_id: "o1",
+      email: "lead@trypennie.com",
+    });
+  });
+
+  it("says the clash check could not run, rather than showing a queue with no clashes", async () => {
+    dbState.bookingsError = true;
+    render(await OooQueuePage(props));
+    // The row is on screen first. Without this the assertion below would pass
+    // just as happily on an empty queue.
+    expect(screen.getByText(/Vacation/i)).toBeTruthy();
+    const notice = screen.getByText(/booked meetings could not be read/i);
+    expect(notice).toBeTruthy();
+    // And it must say what the absence of a flag does NOT mean, because that is
+    // the whole reason the state exists.
+    expect(notice.textContent).toMatch(/not a check that came back clear/i);
+  });
+
+  // The control in the same fixture: a readable table with no clash shows the
+  // queue and says nothing, so the notice above cannot be passing because the
+  // page shows it always.
+  it("says nothing when the read works and there is genuinely no clash", async () => {
+    dbState.bookingsError = false;
+    render(await OooQueuePage(props));
+    expect(screen.getByText(/Vacation/i)).toBeTruthy();
+    expect(screen.queryByText(/booked meetings could not be read/i)).toBeNull();
+  });
+
+  // And the notice must not stand in for the clash itself: a real overlap is
+  // still flagged when the read works.
+  it("still flags a real clash when the read works", async () => {
+    dbState.bookingsError = false;
+    dbState.bookings = [
+      {
+        id: "b1",
+        org_id: "o1",
+        assigned_user_id: "u-agent",
+        status: "confirmed",
+        starts_at: "2026-09-01T14:00:00Z",
+        ends_at: "2026-09-01T14:30:00Z",
+      },
+    ];
+    render(await OooQueuePage(props));
+    expect(screen.queryByText(/booked meetings could not be read/i)).toBeNull();
+    expect(screen.getByText(/Vacation/i)).toBeTruthy();
   });
 });
