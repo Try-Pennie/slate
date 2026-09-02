@@ -27,7 +27,6 @@ import {
   rejectOooAction,
   retryOooAction,
 } from "@/app/admin/ooo/actions";
-import { AppHeader } from "@/components/AppHeader";
 import { btnCls, btnSecondaryCls, proseCls } from "@/components/ui/styles";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { unwrap } from "@/lib/db/result";
@@ -37,7 +36,6 @@ import { DeepLinkScroll } from "@/components/ui/DeepLinkScroll";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { DeclineConfirm } from "@/components/ui/DeclineConfirm";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -399,20 +397,10 @@ export default async function OooQueuePage({
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="ooo"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
       <DeepLinkScroll
         targetId={sp.request ? `request-${sp.request}` : null}
       />
-      <PageShell>
+      <>
         {/* Navy header carrying the actionable status: how many wait on you. */}
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Team requests</p>
@@ -791,7 +779,7 @@ export default async function OooQueuePage({
           )}
         </section>
 
-      </PageShell>
+      </>
     </>
   );
 }

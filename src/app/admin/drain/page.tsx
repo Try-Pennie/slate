@@ -10,11 +10,9 @@ import {
   summarizeStuck,
   type StuckRow,
 } from "@/lib/booking/stuck-drain";
-import { AppHeader } from "@/components/AppHeader";
 import { Pill } from "@/components/ui/Pill";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import type { BookingOutbox, BookingReservation } from "@/lib/db/types";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -70,17 +68,7 @@ export default async function StuckDrainPage() {
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell>
+      <>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Diagnostics</p>
           <h1 className="pn-h2 mt-2 text-pennie-beige">
@@ -166,7 +154,7 @@ export default async function StuckDrainPage() {
         <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
           Back to settings
         </a>
-      </PageShell>
+      </>
     </>
   );
 }

@@ -20,7 +20,6 @@ import {
   setAgentAttributes,
   setUserLifecycle,
 } from "@/app/admin/actions";
-import { AppHeader } from "@/components/AppHeader";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
 import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
 import { previewBulkReassign } from "@/lib/booking/service";
@@ -31,7 +30,6 @@ import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHours
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import type { Attributes, Organization, User } from "@/lib/db/types";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -170,17 +168,7 @@ export default async function AgentProfilePage({
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell width="narrow">
+      <>
         <a
           href="/admin"
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
@@ -486,7 +474,7 @@ export default async function AgentProfilePage({
             />
           </div>
         )}
-      </PageShell>
+      </>
     </>
   );
 }
