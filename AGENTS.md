@@ -689,6 +689,7 @@ dark roster produces today:
 | 11 | **Slate under-offers**: hours cal.com opens and Slate does not |
 | 12 | Slate over-offers: usually cal.com holding an out of office Slate has not been told about |
 | 13 | the two answers cover no day in common, so nothing could be compared |
+| 14 | **the roster is still draining its calendar onboarding**, so comparing would measure the drain |
 
 Under-offering outranks over-offering when a sweep meets both, because the
 direction that costs a lead a bookable time is the one somebody must act on;
@@ -703,6 +704,19 @@ check this probe exists not to be. Days past either system's reach are printed a
 their own fact instead. The clip is by RANGE, never by the set of days each system
 holds: clipping to the shared set would excuse the finding that matters most, a day
 sitting inside both reaches that one of them offers nothing on.
+
+**It refuses to measure a roster that is still settling.** An agent flipped
+bookable holds no cached busy time until the watch lane has discovered their
+calendar and the sync lane has hydrated it (#1736), and during that window the
+cache-first booker sees them as free for every hour their working hours allow. A
+run taken then measures the drain and reports it as Slate over-offering, which is
+a finding about our own timing dressed as one about the roster. So before any
+cal.com call, each bucket's pool is checked for a calendar row and a
+`sync_window_to` reaching the end of the compared range, and a bucket that fails
+is skipped by name with exit 14. The remedy could have been a sentence in the
+runbook saying to wait; a rule that lives only in an instruction is a hope, and
+that one would be read exactly once, by whoever is most eager to see the first
+numbers after the flip.
 
 **It has never reached a real verdict, and cannot until the roster is hot.**
 Every real agent is `bookable = false` (#1272), so every real bucket resolves to

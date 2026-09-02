@@ -49,7 +49,8 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { resolveBucketAgentIds } = await import("@/lib/availability/service");
 const { unwrap } = await import("@/lib/db/result");
-const { compareCoverage, parseCalcomSlots, parseSlateSlots, detectPinIgnored } = await import(
+const { compareCoverage, parseCalcomSlots, parseSlateSlots, detectPinIgnored, rosterReadiness } =
+  await import(
   "./lib/availability-parity.ts"
 );
 type ParityVerdict = import("./lib/availability-parity.ts").ParityVerdict;
@@ -74,6 +75,7 @@ const EXIT = {
   slateUnderOffers: 11,
   slateOverOffers: 12,
   noSharedDays: 13,
+  rosterNotHydrated: 14,
 } as const;
 
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
@@ -205,7 +207,7 @@ console.log(`Slate: ${baseUrl}   cal.com event type: ${eventTypeId}\n`);
 
 interface Outcome {
   code: string;
-  verdict: ParityVerdict | "no-members" | "no-calcom-identity";
+  verdict: ParityVerdict | "no-members" | "no-calcom-identity" | "roster-not-hydrated";
   detail: string;
 }
 const outcomes: Outcome[] = [];
@@ -220,6 +222,54 @@ for (const bucket of buckets) {
     console.log(`${bucket.code}: no bookable agents, nothing to compare`);
     continue;
   }
+  // The roster gate, BEFORE any cal.com call. An agent flipped bookable holds no
+  // cached busy time until their calendar is discovered and hydrated (#1736), and a
+  // comparison taken during that drain measures the drain. Asked first so the run
+  // does not spend cal.com reads to produce a verdict it must then throw away.
+  const calRes = await db
+    .from("agent_calendars")
+    .select("user_id, sync_window_to")
+    .in("user_id", agentIds);
+  const windows = new Map<string, string | null>();
+  for (const row of (unwrap(calRes, "agent calendars") ?? []) as {
+    user_id: string;
+    sync_window_to: string | null;
+  }[]) {
+    // An agent with several calendars is ready only when the EARLIEST window
+    // reaches the range: the least hydrated calendar is the one that can hide busy
+    // time, and taking the furthest would let it pass behind a healthier sibling.
+    const prev = windows.get(row.user_id);
+    if (prev === undefined || prev === null || (row.sync_window_to ?? "") < prev) {
+      windows.set(row.user_id, row.sync_window_to);
+    }
+  }
+  const readiness = rosterReadiness(
+    agentIds.map((id) => {
+      const stamp = windows.get(id);
+      const ms = stamp ? Date.parse(stamp) : NaN;
+      // An unreadable stamp becomes null, never NaN: NaN fails every comparison,
+      // which would land this agent on the READY side of the gate.
+      return {
+        userId: id,
+        hasCalendar: windows.has(id),
+        syncWindowToMs: Number.isFinite(ms) ? ms : null,
+      };
+    }),
+    Date.parse(endIso),
+  );
+  if (!readiness.ready) {
+    outcomes.push({
+      code: bucket.code,
+      verdict: "roster-not-hydrated",
+      detail: `${readiness.noCalendar} without a calendar, ${readiness.notHydrated} not hydrated to ${endIso}`,
+    });
+    console.log(
+      `${bucket.code}: roster not hydrated (${readiness.noCalendar} of ${agentIds.length} with no calendar, ` +
+        `${readiness.notHydrated} whose sync window stops short); comparing now would measure the drain`,
+    );
+    continue;
+  }
+
   const emailRes = await db.from("users").select("email").in("id", agentIds);
   const emails = ((unwrap(emailRes, "agent emails") ?? []) as { email: string }[])
     .map((u) => u.email)
@@ -285,6 +335,7 @@ const ranked: [Outcome["verdict"], number][] = [
   ["calcom-offers-nothing", EXIT.calcomOffersNothing],
   ["neither-offers", EXIT.neitherOffers],
   ["no-shared-days", EXIT.noSharedDays],
+  ["roster-not-hydrated", EXIT.rosterNotHydrated],
   ["no-calcom-identity", EXIT.noCalcomIdentity],
 ];
 const counts = new Map<Outcome["verdict"], number>();
@@ -293,12 +344,18 @@ console.log(
   "\n" + [...counts].map(([v, n]) => `${v}: ${n}`).join("   "),
 );
 
-const compared = outcomes.filter((o) => o.verdict !== "no-members" && o.verdict !== "no-calcom-identity");
+const compared = outcomes.filter(
+  (o) =>
+    o.verdict !== "no-members" &&
+    o.verdict !== "no-calcom-identity" &&
+    o.verdict !== "roster-not-hydrated",
+);
 if (compared.length === 0) {
   stop(
     EXIT.noBuckets,
-    "not one bucket could be compared: every one had no bookable agents or no cal.com identity. " +
-      "That is the expected state while the roster is dark (#1272), and it is not a pass.",
+    "not one bucket could be compared: every one had no bookable agents, an un-hydrated " +
+      "roster, or no cal.com identity. A dark roster (#1272) and a roster still draining " +
+      "its calendar onboarding (#1736) both look like this, and neither is a pass.",
   );
 }
 for (const [verdict, code] of ranked) {

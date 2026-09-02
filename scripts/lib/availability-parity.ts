@@ -271,6 +271,59 @@ export function compareCoverage(input: ParityInput): ParityResult {
   return { verdict: "agree", ...result };
 }
 
+/** One agent's calendar readiness, as read from `agent_calendars`. */
+export interface AgentReadiness {
+  userId: string;
+  /** An `agent_calendars` row exists at all. */
+  hasCalendar: boolean;
+  /** `sync_window_to` as epoch ms; null when never hydrated OR unreadable. */
+  syncWindowToMs: number | null;
+}
+
+/**
+ * Whether a bucket's pool is hydrated enough for a comparison to mean anything.
+ *
+ * An agent flipped bookable holds NO cached busy time until the watch lane has
+ * discovered their calendar and the sync lane has hydrated it (#1736). Until then
+ * the cache-first booker sees them as free for every hour their working hours
+ * allow, so a parity run taken during that drain measures the drain and reports it
+ * as Slate over-offering: a finding about our own timing dressed as a finding about
+ * the roster.
+ *
+ * The remedy could have been a sentence in the runbook saying to wait. A rule that
+ * lives only in an instruction is a hope (L27), and this one would be read exactly
+ * once, by whoever is most eager to see the first numbers after the flip. So the
+ * probe refuses instead.
+ *
+ * A null window is NOT ready, matching `calendar-window-coverage`'s own reasoning:
+ * no recorded coverage is precisely the state worth noticing, and an unreadable
+ * stamp scored as fine is the shape where NaN lands on the healthy branch.
+ *
+ * An EMPTY pool is not ready either. Letting it through would hand a bucket with
+ * nobody in it to a comparison where two empty answers agree perfectly and prove
+ * nothing (L98).
+ */
+export function rosterReadiness(
+  agents: AgentReadiness[],
+  needCoverageToMs: number,
+): { ready: boolean; noCalendar: number; notHydrated: number } {
+  let noCalendar = 0;
+  let notHydrated = 0;
+  for (const a of agents) {
+    // Counted as ONE reason each, the more fundamental first: an agent with no
+    // calendar row cannot have a window, and reporting them under both headings
+    // would make the two counts sum to more than the pool and read as worse than
+    // it is.
+    if (!a.hasCalendar) noCalendar++;
+    else if (a.syncWindowToMs === null || a.syncWindowToMs < needCoverageToMs) notHydrated++;
+  }
+  return {
+    ready: agents.length > 0 && noCalendar === 0 && notHydrated === 0,
+    noCalendar,
+    notHydrated,
+  };
+}
+
 /**
  * Whether cal.com ignored the `routedTeamMemberIds` pin and answered with the
  * whole pool.
