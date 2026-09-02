@@ -22,6 +22,9 @@ interface FakeOpts {
 function makeDb(opts: FakeOpts) {
   let insertPayload: Record<string, unknown> | null = null;
   let roleCounted = false;
+  /** Every (column, value) a lookup filtered on, so a test can assert WHAT was
+   *  asked for and not merely which column was consulted. */
+  const eqFilters: { col: string; value: unknown }[] = [];
   const updatePayloads: Record<string, unknown>[] = [];
 
   function builder() {
@@ -45,8 +48,9 @@ function makeDb(opts: FakeOpts) {
       select: () => b,
       order: () => b,
       limit: () => b,
-      eq: (col: string) => {
+      eq: (col: string, value?: unknown) => {
         eqCols.push(col);
+        eqFilters.push({ col, value });
         // The legacy code counts users with role='admin'; flag it so the test
         // can prove the fixed code no longer consults role at all.
         if (col === "role") roleCounted = true;
@@ -74,7 +78,16 @@ function makeDb(opts: FakeOpts) {
           return { data: opts.linked ?? null, error: null };
         }
         if (eqCols.includes("email")) {
-          return { data: opts.existingByEmail ?? null, error: null };
+          // The stored row answers ONLY to its own exact address. Without this the
+          // fake would hand the row back whatever case was queried, and a test for
+          // case-insensitive matching would pass on a lookup that never normalised
+          // anything (L52: a fake agrees with your assumption by construction).
+          const asked = eqFilters.find((f) => f.col === "email")?.value;
+          const stored = (opts.existingByEmail as { email?: string } | undefined)?.email;
+          if (opts.existingByEmail && (stored === undefined || stored === asked)) {
+            return { data: opts.existingByEmail, error: null };
+          }
+          return { data: null, error: null };
         }
         return { data: null, error: null };
       },
@@ -106,6 +119,7 @@ function makeDb(opts: FakeOpts) {
     getInsertedRole: () => insertPayload?.role as string | undefined,
     getInsertedPayload: () => insertPayload,
     getUpdates: () => updatePayloads,
+    getEqFilters: () => eqFilters,
     roleWasCounted: () => roleCounted,
   };
 }
@@ -201,5 +215,65 @@ describe("provisionUser and the bookable gate (#1266)", () => {
     for (const payload of db.current.getUpdates()) {
       expect("bookable" in payload).toBe(false);
     }
+  });
+});
+
+// #1663: `users.email` is unique but CASE SENSITIVE, and Google addresses are
+// effectively case insensitive, so one person can arrive under two spellings. A
+// row synced as agent@trypennie.com and a login arriving as Agent@trypennie.com
+// would miss the by-email read AND pass users_email_key, leaving one person with
+// two identities that never converge: the roster, the bookable pool, the manager
+// link and every per agent count can each resolve to a different half.
+describe("provisionUser matches an address case insensitively (#1663)", () => {
+  beforeEach(() => {
+    db.current = null;
+  });
+
+  it("links the login to the stored row when the cases differ", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: {
+        id: "synced-1",
+        email: "newperson@trypennie.com",
+        name: "New Person",
+        bookable: true,
+      },
+    });
+    const user = await provisionUser({ ...input, email: "NewPerson@TryPennie.com" });
+    // The linked row, not a second one: an insert here is the duplicate identity.
+    expect(user.id).toBe("existing-user");
+    expect(db.current.getInsertedPayload()).toBeNull();
+  });
+
+  it("asks for the address in its normalised form, so the read can match", async () => {
+    db.current = makeDb({ org: { id: "org-1" }, adminExists: true });
+    await provisionUser({ ...input, email: "  NewPerson@TryPennie.com " });
+    const asked = db.current
+      .getEqFilters()
+      .filter((f) => f.col === "email")
+      .map((f) => f.value);
+    expect(asked).toContain("newperson@trypennie.com");
+    expect(asked).not.toContain("  NewPerson@TryPennie.com ");
+  });
+
+  it("stores the normalised address, so the row login matches on is the row that exists", async () => {
+    db.current = makeDb({ org: { id: "org-1" }, adminExists: true });
+    await provisionUser({ ...input, email: "NewPerson@TryPennie.com" });
+    expect(db.current.getInsertedPayload()?.email).toBe("newperson@trypennie.com");
+  });
+
+  // The control beside it: an address that is ALREADY lower case still resolves
+  // the same way, so the three assertions above cannot be passing because
+  // provisioning stopped matching or stopped inserting altogether.
+  it("still links an address that needed no normalising", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: { id: "synced-1", email: "newperson@trypennie.com", name: "New Person" },
+    });
+    const user = await provisionUser(input);
+    expect(user.id).toBe("existing-user");
+    expect(db.current.getInsertedPayload()).toBeNull();
   });
 });

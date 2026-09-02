@@ -7,6 +7,7 @@ import {
   roleLabel,
 } from "../auth/roles.ts";
 import { isAllowedEmail } from "../auth/domain.ts";
+import { normalizeEmail } from "../auth/email.ts";
 import type { Role } from "../db/types.ts";
 
 /**
@@ -100,8 +101,11 @@ export interface StaffAccessInput {
   adminCount: number | null;
 }
 
-/** Login matches on the stored address, so the stored address is what login sees. */
-export const normalizeStaffEmail = (raw: string): string => raw.trim().toLowerCase();
+/** Login matches on the stored address, so the stored address is what login sees.
+ *  One shared normaliser with every other writer (#1663), never a second copy of
+ *  the rule: two writers normalising differently is how the case sensitive unique
+ *  key lets one person become two rows. */
+export const normalizeStaffEmail = normalizeEmail;
 
 /** Only a super admin may grant staff access, and it is checked here as well as at the route. */
 export const canGrantStaffAccess = (actor: Role): boolean => actor === "super_admin";
