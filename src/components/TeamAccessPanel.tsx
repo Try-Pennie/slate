@@ -73,7 +73,13 @@ export function TeamAccessPanel({
         </div>
       )}
 
-      <form action={grantStaffAccess} className="flex flex-wrap items-end gap-3">
+      {/* #1761: the hint sits UNDER the row, not inside the email column.
+          The row aligns its children on their bottom edges, so a hint inside that
+          column made the column's bottom edge the hint's bottom, and the select
+          and the button were pushed down by exactly the hint's height to meet it.
+          It stays the field's aria-describedby wherever it sits in the DOM. */}
+      <form action={grantStaffAccess}>
+        <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
           <label className={labelCls} htmlFor="staff-email">
             Work email address
@@ -89,9 +95,6 @@ export function TeamAccessPanel({
             aria-describedby="staff-email-hint"
             className={`${inputCls} w-full`}
           />
-          <p id="staff-email-hint" className="mt-1 text-xs text-fg-muted">
-            The address they sign in to Google with.
-          </p>
         </div>
         <div>
           <label className={labelCls} htmlFor="staff-role">
@@ -117,6 +120,10 @@ export function TeamAccessPanel({
         >
           Give access
         </SubmitButton>
+        </div>
+        <p id="staff-email-hint" className="mt-1 text-xs text-fg-muted">
+          The address they sign in to Google with.
+        </p>
       </form>
 
       <div className="mt-6 border-t border-border pt-4">
