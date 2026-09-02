@@ -14,6 +14,7 @@ import { SyncButton } from "@/components/SyncButton";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { Pill } from "@/components/ui/Pill";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
+import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import { attrToText, teamsOf } from "@/lib/admin/agent-display";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { User } from "@/lib/db/types";
@@ -149,40 +150,6 @@ export default async function AgentRosterPage({
         >
           Salesforce sync failed: {sp.sync_error}
         </div>
-      )}
-      {isAdmin && (
-      <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">View as another user</h2>
-        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
-          See the app exactly as someone else does. While viewing as them, what
-          you do happens as them, so be careful. A banner stays up the whole time
-          with a way back to yourself.
-        </p>
-        {sp.imp_error && (
-          <p role="alert" className="mb-3 text-sm text-error">
-            {sp.imp_error}
-          </p>
-        )}
-        <form action={startImpersonation} className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className={labelCls}>Their email</label>
-            <input
-              name="email"
-              type="email"
-              required
-              // #141: repopulate the typed email when a "view as" attempt failed,
-              // so the admin doesn't have to retype it.
-              defaultValue={sp.imp_email ?? ""}
-              aria-label="Email of the user to view as"
-              placeholder="agent@trypennie.com"
-              className={`${inputCls} w-72`}
-            />
-          </div>
-          <SubmitButton className={btnCls} pendingLabel="Switching…">
-            View as them
-          </SubmitButton>
-        </form>
-      </section>
       )}
       <section id="agents" className={cardCls}>
         {rosterUnreadable && (
@@ -358,12 +325,23 @@ export default async function AgentRosterPage({
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <a
-                        href={`/admin/agents/${u.id}`}
-                        className="text-sm text-pennie-blue underline dark:text-pennie-sky"
-                      >
-                        Manage
-                      </a>
+                      <div className="flex items-center justify-end gap-4">
+                        {/* #1749: the action is on the person, so nobody has to
+                            copy an address out of this table and paste it into a
+                            field two screens away. It renders only where it could
+                            actually work. */}
+                        <ViewAsButton
+                          actorRole={me.role}
+                          actorId={me.id}
+                          target={u}
+                        />
+                        <a
+                          href={`/admin/agents/${u.id}`}
+                          className="text-sm text-pennie-blue underline dark:text-pennie-sky"
+                        >
+                          Manage
+                        </a>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -412,6 +390,41 @@ export default async function AgentRosterPage({
           </nav>
         )}
       </section>
+      {isAdmin && (
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">View as somebody not in this list</h2>
+        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
+          Each row above carries its own <strong>View as</strong> action, so this
+          is only for somebody the roster does not hold. While viewing as them,
+          what you do happens as them, so be careful. A banner stays up the whole
+          time with a way back to yourself.
+        </p>
+        {sp.imp_error && (
+          <p role="alert" className="mb-3 text-sm text-error">
+            {sp.imp_error}
+          </p>
+        )}
+        <form action={startImpersonation} className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className={labelCls}>Their email</label>
+            <input
+              name="email"
+              type="email"
+              required
+              // #141: repopulate the typed email when a "view as" attempt failed,
+              // so the admin doesn't have to retype it.
+              defaultValue={sp.imp_email ?? ""}
+              aria-label="Email of the user to view as"
+              placeholder="agent@trypennie.com"
+              className={`${inputCls} w-72`}
+            />
+          </div>
+          <SubmitButton className={btnCls} pendingLabel="Switching…">
+            View as them
+          </SubmitButton>
+        </form>
+      </section>
+      )}
     </>
   );
 }
