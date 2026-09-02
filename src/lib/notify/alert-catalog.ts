@@ -215,6 +215,26 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",
   },
+  // #1442 / #1450 / #1709. All three are CONDITIONS: each is an ongoing state
+  // somebody ends by changing something (raising a ceiling, fixing a key, the
+  // table becoming readable), so each owes an all-clear. Each is hung off a
+  // MEASURED clear verdict, never off "we did not page this run", which is why
+  // the judge has an `unmeasured` status that is neither (#1134, #1152).
+  {
+    key: "booking_api_ceiling",
+    kind: "condition",
+    why: "Our own rate ceiling is turning the booking API's caller away; it ends when the share drops, either because the caller slowed or because the limit was raised.",
+  },
+  {
+    key: "booking_api_credential",
+    kind: "condition",
+    why: "The booking API is refusing its caller's credential, so every lead it handles is refused; it ends when the key or the secret is fixed and calls are accepted again.",
+  },
+  {
+    key: "booking_api_list_read",
+    kind: "condition",
+    why: "The bookings list cannot be read, so the caller's sync has stalled; it ends when the table is readable again.",
+  },
   {
     key: "recompute_headroom",
     kind: "condition",

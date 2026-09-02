@@ -62,6 +62,22 @@ import {
   formatFailureRateAlert,
   formatFailureRateAllClear,
 } from "@/lib/monitor/booking-failure-rate";
+import { refusalAllClear, refusalSignalCopy } from "@/lib/monitor/api-refusal-signals";
+import {
+  BOOKING_API_IP_LIMITER,
+  BOOKING_API_WRITE_LIMITER,
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+} from "@/lib/rate-limit-core";
+
+/** The same figures the lane passes, read from the rules that actually refuse, so
+ *  the preview shows the sentence that really ships rather than a lookalike. */
+const PREVIEW_CEILING_LIMITS = {
+  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
+  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
+  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
+  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
+};
 import {
   formatVolumeCountUnreadableAlert,
   formatVolumeCountReadableNotice,
@@ -426,6 +442,85 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the count reads again",
     channel: "recovery",
     text: formatVolumeCountReadableNotice(),
+  },
+  // #1442 / #1450 / #1709. Every state that reads differently, because each of
+  // these names a DIFFERENT repair in a different place and the wrong one at 7am
+  // is worse than none.
+  {
+    key: "booking_api_ceiling",
+    state: "our own per key ceiling is turning the booker away",
+    channel: "alert",
+    text: refusalSignalCopy.ceiling({
+      status: "paging",
+      dominant: "key",
+      key: 240,
+      ip: 12,
+      sent: 900,
+      pct: 28,
+    }, 60 * 60_000, PREVIEW_CEILING_LIMITS)!,
+  },
+  {
+    // The other ceiling, whose repair is a different number, so it has to be
+    // readable separately.
+    key: "booking_api_ceiling",
+    state: "the per IP backstop is the one refusing",
+    channel: "alert",
+    text: refusalSignalCopy.ceiling({
+      status: "paging",
+      dominant: "ip",
+      key: 4,
+      ip: 310,
+      sent: 1100,
+      pct: 29,
+    }, 60 * 60_000, PREVIEW_CEILING_LIMITS)!,
+  },
+  {
+    key: "booking_api_ceiling",
+    state: "the ceiling stopped refusing",
+    channel: "recovery",
+    text: refusalAllClear.ceiling,
+  },
+  {
+    key: "booking_api_credential",
+    state: "the caller's key is being rejected",
+    channel: "alert",
+    text: refusalSignalCopy.credential({
+      status: "paging",
+      cause: "rejected",
+      total: 48,
+      intervals: 11,
+    })!,
+  },
+  {
+    // A different fact with a different repair: this one is our deployment, not
+    // the caller. Sharing one sentence would name a fix that cannot work.
+    key: "booking_api_credential",
+    state: "no key is configured on the Worker at all",
+    channel: "alert",
+    text: refusalSignalCopy.credential({
+      status: "paging",
+      cause: "not_configured",
+      total: 63,
+      intervals: 12,
+    })!,
+  },
+  {
+    key: "booking_api_credential",
+    state: "the key is accepted again",
+    channel: "recovery",
+    text: refusalAllClear.credential,
+  },
+  {
+    key: "booking_api_list_read",
+    state: "the bookings list keeps coming back unreadable",
+    channel: "alert",
+    text: refusalSignalCopy.list({ status: "paging", total: 19, intervals: 8 })!,
+  },
+  {
+    key: "booking_api_list_read",
+    state: "the list is readable again",
+    channel: "recovery",
+    text: refusalAllClear.list,
   },
   {
     // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers

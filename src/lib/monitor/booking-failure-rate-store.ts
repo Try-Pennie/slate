@@ -30,7 +30,7 @@ export async function loadRateState(): Promise<RateWindowState | null> {
   const row = unwrap(
     await supabaseAdmin()
       .from("booking_failure_rate_state")
-      .select("key, day, attempts, failures, by_code, samples")
+      .select("key, day, attempts, failures, by_code, refusals, samples")
       .eq("key", STATE_KEY)
       .maybeSingle(),
     "booking_failure_rate_state",
@@ -41,6 +41,12 @@ export async function loadRateState(): Promise<RateWindowState | null> {
     attempts: row.attempts,
     failures: row.failures,
     byCode: row.by_code ?? {},
+    // #1442 / #1450 / #1709. The baseline the next delta is taken against, in its
+    // own column (0113) for the same reason attempts and failures have theirs: a
+    // baseline that did not survive between ticks would make every tick rebase,
+    // record no sample, and leave the three signals reporting `unmeasured`
+    // forever while the lane looked healthy (#1394).
+    refusals: row.refusals ?? {},
     samples: row.samples ?? [],
   };
 }
@@ -57,6 +63,7 @@ export async function saveRateState(state: RateWindowState): Promise<void> {
         attempts: state.attempts,
         failures: state.failures,
         by_code: state.byCode,
+        refusals: state.refusals ?? {},
         samples: state.samples,
         updated_at: new Date().toISOString(),
       },
@@ -90,5 +97,7 @@ export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> 
   const failures = mix.outcomes.find((o) => o.outcome === "error")?.count ?? 0;
   const byCode: Record<string, number> = {};
   for (const e of mix.errors) byCode[e.code] = e.count;
-  return { day, attempts: mix.total, failures, byCode };
+  // `mix.total` is summed over OUTCOME_ORDER alone, so the refusals below are
+  // NOT in `attempts` and the failure share is untouched by carrying them here.
+  return { day, attempts: mix.total, failures, byCode, refusals: mix.refusals };
 }

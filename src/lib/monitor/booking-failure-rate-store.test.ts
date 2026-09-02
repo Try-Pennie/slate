@@ -49,7 +49,19 @@ describe("loadRateState", () => {
         attempts: 900,
         failures: 40,
         by_code: { slot_unavailable: 30 },
-        samples: [{ atMs: 1, attempts: 2, failures: 1, byCode: { internal: 1 } }],
+        // #1442/#1450/#1709, migration 0113: the baseline the self-inflicted
+        // refusal counts are differenced against, in its own column for the same
+        // reason attempts and failures have theirs.
+        refusals: { refused_ceiling_key: 12 },
+        samples: [
+          {
+            atMs: 1,
+            attempts: 2,
+            failures: 1,
+            byCode: { internal: 1 },
+            refusals: { refused_ceiling_key: 3 },
+          },
+        ],
       },
       error: null,
     });
@@ -59,8 +71,37 @@ describe("loadRateState", () => {
       attempts: 900,
       failures: 40,
       byCode: { slot_unavailable: 30 },
-      samples: [{ atMs: 1, attempts: 2, failures: 1, byCode: { internal: 1 } }],
+      refusals: { refused_ceiling_key: 12 },
+      samples: [
+        {
+          atMs: 1,
+          attempts: 2,
+          failures: 1,
+          byCode: { internal: 1 },
+          refusals: { refused_ceiling_key: 3 },
+        },
+      ],
     });
+  });
+
+  // A row written before 0113 has no refusal baseline. That must read as an empty
+  // map rather than throwing on the first tick after the deploy: a check that
+  // exists to speak where nothing else does must not take its own step down.
+  it("tolerates a row written before the refusal baseline existed", async () => {
+    maybeSingle.mockResolvedValue({
+      data: {
+        key: "monitor",
+        day: "2026-08-11",
+        attempts: 1,
+        failures: 0,
+        by_code: {},
+        samples: [{ atMs: 1, attempts: 1, failures: 0, byCode: {} }],
+      },
+      error: null,
+    });
+    const state = await loadRateState();
+    expect(state?.refusals).toEqual({});
+    expect(state?.samples[0].refusals).toBeUndefined();
   });
 
   it("tolerates a row written before the jsonb columns had values", async () => {

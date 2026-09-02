@@ -263,6 +263,43 @@ stopping an abusive caller either.
 
 ---
 
+## The booking API is refusing its caller
+
+Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`.
+
+**What fired it.** Slate is turning its own integration away. Note this is the opposite
+of the limiter section above: those controls fail OPEN, so a page there means requests
+are being served unmetered. Here somebody is actually being refused, and if the caller
+is the automated booker then every lead in those requests was refused too.
+
+Each of the three is deliberately kept out of the booking failure share, because
+`attempts` there is every recorded outcome summed and putting a noisy caller's volume in
+that denominator would make a real outage look proportionally smaller while it is
+happening. They are measured against their own totals instead, which is why they page on
+their own keys.
+
+**First checks.**
+- `booking_api_ceiling` names which ceiling and its current limit. Decide first whether
+  the caller is the real booker or something abusive: the log line
+  `tag=booking-api reason=throttled_key` carries the key and the scope on every trip. If
+  it is the real booker, the ceiling is wrong for its volume and the repair is a number
+  in `src/lib/rate-limit-core.ts`.
+- `booking_api_credential` has two causes and they are different repairs. A rejected key
+  is a stale or rotated secret at the CALLER, so compare the key it holds against the
+  Worker's. A missing key is our own deployment: `BOOKING_API_KEY` is not set, so every
+  call is refused, and the fix is a secret plus a redeploy. The alert says which one.
+- `booking_api_list_read` means the bookings table could not be read for the list
+  endpoint. The caller is refused and retries the same cursor, so nothing is lost, but
+  its sync has stalled. The same table is on the booking write path, so check whether
+  bookings are still completing.
+
+**Fix or escalate.** A missing secret and a rejected key are both time-sensitive once
+the automated booker is live: leads are being refused for as long as it lasts. A ceiling
+trip is a capacity decision rather than a fault, so it can wait for someone who can
+choose the number. All three clear on their own once the condition ends.
+
+---
+
 ## An unexpected fault was reported
 
 Keys: `internal_error:*`.

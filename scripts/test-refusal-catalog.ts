@@ -69,6 +69,34 @@ const sources = FILES.map((f) => {
           `outcome; a covered signal over an uncounted path is a decision that cannot be true`,
       );
     }
+    // #1442 / #1709: a path kept OUT of the share carries its own counter and its
+    // own signal, and the two halves check each other. A counter nothing reads is
+    // a stored value with no reader (L46); a signal over a path that records
+    // nothing is a decision that cannot be true.
+    if (r.counting.kind === "own-counter") {
+      eq(
+        r.rateSignal.kind,
+        "uncounted-but-pages",
+        `${r.id} records into its own counter, so it must page from that counter; a private ` +
+          `counter nobody judges is a number with no reader`,
+      );
+      assert(
+        r.counting.outcome.trim().length > 0,
+        `${r.id} names the outcome it records under, so the counter can be found`,
+      );
+    }
+    if (r.rateSignal.kind === "uncounted-but-pages") {
+      eq(
+        r.counting.kind,
+        "own-counter",
+        `${r.id} claims its own signal, so it must really record somewhere; a page over a path ` +
+          `that records nothing can never fire`,
+      );
+      assert(
+        r.rateSignal.alertKey.trim().length > 0,
+        `${r.id} names the alert key it pages on, so the all-clear can find it again`,
+      );
+    }
     // And the reverse: you cannot page on a share of something you never count.
     if (r.counting.kind === "none") {
       assert(

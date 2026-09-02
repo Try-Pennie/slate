@@ -24,7 +24,17 @@ export interface ApiKey {
 
 export type AuthResult =
   | { ok: true; keyId: ApiKey["id"] }
-  | { ok: false; status: 401 | 503; error: string };
+  /**
+   * `tokenPresent` (#1450) separates two things a 401 cannot: a caller that sent
+   * a Bearer token which is not one of ours, and a request that carried no usable
+   * credential at all.
+   *
+   * The endpoint is public, so anything crawling the internet produces the second
+   * kind continuously. A signal that could not tell them apart would page on
+   * background noise, and an alert that cries wolf gets ignored (L36). A PRESENT
+   * and wrong token is the one that means a real integration is locked out.
+   */
+  | { ok: false; status: 401 | 503; error: string; tokenPresent: boolean };
 
 /**
  * WHICH refusal the shared authorizer made (#1429).
@@ -141,7 +151,8 @@ export function authenticateBearer(
   keys: ApiKey[],
 ): AuthResult {
   if (keys.length === 0) {
-    return { ok: false, status: 503, error: "booking api not configured" };
+    // No key configured, so nothing about the request was even looked at.
+    return { ok: false, status: 503, error: "booking api not configured", tokenPresent: false };
   }
   const token = bearerToken(header);
   if (token !== null) {
@@ -151,5 +162,5 @@ export function authenticateBearer(
       }
     }
   }
-  return { ok: false, status: 401, error: "unauthorized" };
+  return { ok: false, status: 401, error: "unauthorized", tokenPresent: token !== null };
 }

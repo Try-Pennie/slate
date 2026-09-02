@@ -155,12 +155,27 @@ import { assert, eq, finish } from "./lib/harness.ts";
       decided.kind === "error" ? decided.code : "",
       `${id} names the SAME code the authorizer records, not a hand-copied one`,
     );
-    eq(e?.rateSignal.kind, "covered", `${id} is covered by the failure rate window`);
+    // #1450: still counted into the failure share, AND now carrying a signal of
+    // its own, because that window ignores quiet periods (minAttempts 20 an hour)
+    // and a completely locked out integration below that floor would stay silent
+    // while every lead it handles is refused.
+    eq(
+      e?.rateSignal.kind,
+      "covered-and-pages",
+      `${id} is counted in the failure share AND pages independently of it`,
+    );
+    assert(
+      e?.rateSignal.kind === "covered-and-pages" && e.rateSignal.alertKey === "booking_api_credential",
+      `${id} pages on the credential key, so its all clear can find it again`,
+    );
   }
 
   const throttled = entry("api_rate_limited");
   assert(!!throttled, "api_rate_limited is in the catalog");
-  eq(throttled?.counting.kind, "none", "the throttle stays out of the failure share");
+  // #1442: still out of the failure SHARE, which was always the settled half, but
+  // no longer uncounted. It records under its own outcome names, outside
+  // OUTCOME_ORDER, so it can be measured without entering the denominator.
+  eq(throttled?.counting.kind, "own-counter", "the throttle stays out of the failure share");
   assert(
     !!throttled && /dilut|denominator/i.test(throttled.why),
     "with the dilution cost written down, matching the booker's rate limit entries",
@@ -168,12 +183,18 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // L77 is only half answered by not counting it. A SUSTAINED trip on the write
   // path means the ceiling is wrong for the bot's real volume, so leads are turned
   // away by our own limit with nothing saying so, and one benign trip and a
-  // systemic one arrive on the identical path. That gap is recorded as a deferred
-  // signal with the issue that builds it, never as a bare no (L65).
-  eq(throttled?.rateSignal.kind, "deferred", "the sustained case is a deferred signal, not a settled no");
+  // systemic one arrive on the identical path. That was recorded as a deferred
+  // signal naming its issue (L65); #1442 built it, so the entry now names the
+  // measurement rather than the promise.
+  eq(
+    throttled?.rateSignal.kind,
+    "uncounted-but-pages",
+    "the sustained case is measured against the ceiling, not against the share",
+  );
   assert(
-    throttled?.rateSignal.kind === "deferred" && throttled.rateSignal.issue > 0,
-    "naming the issue that will build it, so a later cannot quietly become a never",
+    throttled?.rateSignal.kind === "uncounted-but-pages" &&
+      throttled.rateSignal.alertKey === "booking_api_ceiling",
+    "naming the key it pages on, so the all clear can find it again",
   );
 }
 
