@@ -135,6 +135,47 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
     "the alert step consults the latency step's outcome, since failure() cannot see it",
   );
 
+  // #1006: the browser check, the same shape and for the same reasons. A real
+  // browser against the public internet is the other classic source of a flapping
+  // check, and one that failed the JOB would stop the heartbeat below being
+  // stamped, which would page the lane watchdog for a slow page load.
+  const embedStep = wf.slice(wf.indexOf("Embed render check"));
+  assert(embedStep.length > 0, "the canary has an embed render step");
+  assert(
+    /continue-on-error:\s*true/.test(embedStep.slice(0, 400)),
+    "the embed step cannot fail the job",
+  );
+  assert(/id:\s*embed/.test(embedStep.slice(0, 400)), "and it has an id to consult");
+  assert(
+    /scripts\/smoke-embed-render\.ts/.test(embedStep),
+    "and it runs the embed render script",
+  );
+  assert(
+    /SMOKE_FAILURE_FILE/.test(embedStep.slice(0, 900)),
+    "and records its reason through the shared failure log, rather than a second alerting path",
+  );
+  // FULL PASS ONLY. This is a private repo, so a real browser on every 30 minute
+  // tick is roughly 48 billed runs a day against 4 for the same class of fault,
+  // and an embed regression arrives with a deploy rather than drifting in.
+  assert(
+    /steps\.mode\.outputs\.full == '1'/.test(embedStep.slice(0, 400)),
+    "the embed check runs on the 6h full pass only, because a browser is billed minutes",
+  );
+  assert(
+    /steps\.embed\.outcome == 'failure'/.test(alertIf),
+    "the alert step consults the embed step's outcome too, or its failures are recorded and read by nobody",
+  );
+  // The browser has to be there before the step that drives it, and cached, or the
+  // download is paid on every full pass forever.
+  assert(
+    wf.indexOf("playwright install") < wf.indexOf("Embed render check"),
+    "the browser is installed before the step that drives it",
+  );
+  assert(
+    /path:\s*~\/.cache\/ms-playwright/.test(wf),
+    "and cached, so the download is not paid on every run",
+  );
+
   // And the heartbeat must still stamp when only latency tripped: the canary DID run
   // and the funnel DID work, so a stale-lane page would be a second, wrong alarm for
   // one cause.

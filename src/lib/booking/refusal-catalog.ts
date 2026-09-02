@@ -42,6 +42,18 @@ export type RefusalCounting =
   /** Recorded as a non-error outcome: the caller made an attempt, and the result
    *  is not a fault, so it belongs in the denominator and not the numerator. */
   | { kind: "outcome"; outcome: string }
+  /**
+   * Recorded under an outcome name OUTSIDE `OUTCOME_ORDER` (#1442, #1709), so it
+   * is measured without ever entering the denominator the failure SHARE is taken
+   * against. The distinction from `outcome` above is the whole point: that one is
+   * in the denominator, this one is deliberately not.
+   *
+   * Its pair is `uncounted-but-pages` below, and the two are checked against each
+   * other: a path recorded this way must carry its own signal (a counter nothing
+   * reads is a stored value with no reader, L46), and a signal claimed this way
+   * must have a path that really records.
+   */
+  | { kind: "own-counter"; outcome: string }
   /** Deliberately not recorded anywhere. The entry's `why` must say what counting
    *  it would COST, not merely that it seemed unnecessary. */
   | { kind: "none" };
@@ -52,6 +64,22 @@ export type RefusalRateSignal =
   | { kind: "covered" }
   /** Counted, and it ALSO pages on its own, independently of any share. */
   | { kind: "covered-and-pages"; alertKey: string }
+  /**
+   * Deliberately OUT of the failure share, and carrying its own signal instead
+   * (#1442, #1709).
+   *
+   * A third answer, because the first two could not express the decision that was
+   * actually made and forcing it into either would have been a lie the guard
+   * correctly refused. "Covered" claims the share sees it, which would be false
+   * and would stop anyone building the real signal; "none" claims nobody is
+   * watching, which would be false the other way and would hide a live alert key
+   * from the recovery-coverage guard.
+   *
+   * The path is recorded under an outcome name OUTSIDE `OUTCOME_ORDER`, so it
+   * never enters the denominator the share is measured against, and it is judged
+   * against its own total by `src/lib/monitor/api-refusal-signals.ts`.
+   */
+  | { kind: "uncounted-but-pages"; alertKey: string }
   /** Deliberately none. `why` carries the reasoning. */
   | { kind: "none" }
   /** Warranted, and not built here. Carries the issue that will, so a decision
@@ -304,20 +332,21 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     id: "api_list_unavailable",
     surface: "booking API",
     outcome: "503 LIST_UNAVAILABLE, told it is temporary and to retry",
-    counting: { kind: "none" },
-    rateSignal: { kind: "none" },
+    counting: { kind: "own-counter", outcome: "refused_list_read" },
+    rateSignal: { kind: "uncounted-but-pages", alertKey: "booking_api_list_read" },
     why:
       "The bookings page could not be READ (#1675). It refuses rather than answering, because " +
       "the empty page a failed read used to produce is the answer 'that is everything': the " +
       "caller advances its pagination watermark past bookings nobody read and never asks for " +
-      "them again, so the loss is permanent and silent on both sides. It is deliberately not " +
-      "counted, for the same reason api_query_invalid is not: this is read traffic, and putting " +
-      "it in the denominator of a booking failure share is the dilution the rate limits are kept " +
-      "out for. What catches a SUSTAINED one is the write path, which reads the same table for " +
-      "the one-call-per-person check and counts that failure as existing_call_unavailable, so " +
-      "the share pages there. That backstop is only as good as the write traffic beside it, " +
-      "which is none until the automated booker goes live, and until then each refusal here is " +
-      "visible only as a log line under tag=booking-api."
+      "them again, so the loss is permanent and silent on both sides. It stays out of the " +
+      "failure SHARE, for the same reason api_query_invalid does: this is read traffic, and " +
+      "putting it in that denominator is the dilution the rate limits are kept out for. The " +
+      "write path's existing_call_unavailable catches a sustained one once there IS write " +
+      "traffic, but there is none until the automated booker goes live, so #1709 added a signal " +
+      "that does not depend on it: refusals are counted under refused_list_read, outside " +
+      "OUTCOME_ORDER, and a run of them spread across several separate intervals pages as " +
+      "booking_api_list_read, a condition. One alone stays quiet, because a single unreadable " +
+      "page is a blip the caller's own retry clears."
   },
   // #1429 split what used to be one `api_auth_refused` entry. The authorizer now
   // reports WHICH refusal it made, so the two opposite things behind that branch
@@ -328,12 +357,17 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     outcome: "401, the credential is missing, malformed, or no longer one of ours",
     counting: { kind: "error", code: "API_KEY_REJECTED" },
     codeFrom: "authorizer",
-    rateSignal: { kind: "covered" },
+    rateSignal: { kind: "covered-and-pages", alertKey: "booking_api_credential" },
     why:
       "A rotated or wrong key means the bot cannot book AT ALL, so every lead it handles is " +
-      "refused for as long as the key is wrong. That is a config outage wearing a 401, and it is " +
-      "exactly what a failure share exists to notice: a sustained share of attempts refused on " +
-      "the credential means the integration is locked out. Its own code, distinct from " +
+      "refused for as long as the key is wrong. That is a config outage wearing a 401. It is " +
+      "counted into the failure share, and #1450 added a SECOND signal independent of the share, " +
+      "because that window deliberately ignores quiet periods (minAttempts 20 an hour) and a " +
+      "completely locked out integration below that floor would stay silent while every lead it " +
+      "handles is refused. The second signal judges PERSISTENCE rather than volume: this " +
+      "endpoint is public, so one 401 is as likely to be a scanner with a junk bearer, and " +
+      "paging on that would teach everyone to ignore the key (L36). Rejections spread across " +
+      "several separate intervals are a lockout. Its own code, distinct from " +
       "API_NOT_CONFIGURED, because the repair differs: this one is a key to fix at the caller.",
   },
   {
@@ -342,29 +376,36 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     outcome: "503, no booking API key is configured at all",
     counting: { kind: "error", code: "API_NOT_CONFIGURED" },
     codeFrom: "authorizer",
-    rateSignal: { kind: "covered" },
+    rateSignal: { kind: "covered-and-pages", alertKey: "booking_api_credential" },
     why:
       "The endpoint is effectively switched off, so every call is refused. Counted for the same " +
       "reason as a rejected key, under a DIFFERENT code because the instruction to the reader is " +
       "not the same: a secret nobody set is a deploy or environment gap, not a caller holding a " +
-      "stale key. Sharing one code would let the page name a repair that cannot work.",
+      "stale key. Sharing one code would let the page name a repair that cannot work. It shares " +
+      "the booking_api_credential key with the rejected key but is its own CAUSE within it " +
+      "(#1450), and it pages on the FIRST one rather than on persistence: only our own deploy " +
+      "can produce it, there is no scanner that can make Slate forget its own key, and when both " +
+      "are present this one wins because it explains every call failing.",
   },
   {
     id: "api_rate_limited",
     surface: "booking API",
     outcome: "429, the per-key ceiling or the per-IP backstop",
-    counting: { kind: "none" },
-    rateSignal: { kind: "deferred", issue: 1442 },
+    counting: { kind: "own-counter", outcome: "refused_ceiling_key / refused_ceiling_ip" },
+    rateSignal: { kind: "uncounted-but-pages", alertKey: "booking_api_ceiling" },
     why:
       "Not counted into the failure SHARE, and that part is settled: a trip is normally one " +
       "caller going faster than its budget, which is what the ceiling is FOR, and counting it " +
       "would put that caller's volume in the denominator the share is measured against, diluting " +
       "what a real outage has to move. But the same trip means something else entirely when it " +
       "is SUSTAINED on the write path: it means the ceiling is wrong for the bot's real volume, " +
-      "so leads are being turned away by our own limit with nothing saying so. One benign trip " +
-      "and a systemic one arrive on the identical path (L77). That needs attempts measured " +
-      "against the ceiling in its OWN counter rather than in the share, which is #1442. Until " +
-      "then the log line is the only signal, and it carries the scope and key on every trip.",
+      "so leads are being turned away by our own limit. One benign trip and a systemic one " +
+      "arrive on the identical path (L77). #1442 built the second measurement: write-path trips " +
+      "are counted under refused_ceiling_key and refused_ceiling_ip, which sit OUTSIDE " +
+      "OUTCOME_ORDER and so can never enter the share's denominator, and are judged as a share " +
+      "of everything the caller sent. The two ceilings are kept apart because their repairs are " +
+      "different numbers. It pages as booking_api_ceiling, a condition, naming which ceiling and " +
+      "its current limit, because a reader cannot act on 'rate limited'.",
   },
   {
     id: "api_confirm_required",

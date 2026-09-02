@@ -154,6 +154,56 @@ jobs:
           SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types scripts/smoke-latency.ts
 
+      # #1006: the uptime canary proves the SERVER responds and cannot prove the
+      # front end draws. cal.com is watched by a Checkly browser check that loads
+      # the embedded scheduler and confirms the modal appears; Slate's embed had no
+      # equivalent, so a regression leaving the booker blank would go unnoticed.
+      #
+      # FULL PASS ONLY (every 6h), not the 30-minute tick. This is a private repo,
+      # so Actions minutes are billed, and a real browser on every tick is roughly
+      # 48 runs a day against 4 for the same class of fault. An embed regression
+      # arrives with a deploy rather than drifting in, so six hours is the right
+      # granularity for the money.
+      #
+      # `continue-on-error`, for the same reason the latency step carries it: a
+      # browser against the public internet is the classic source of a flapping
+      # check, and one that failed the JOB would stop the heartbeat below being
+      # stamped, which would page the lane watchdog for a slow page load. It
+      # records its failure, the alert step reports it, and the run continues.
+      - name: Cache the browser
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Keyed on the pinned playwright version in the lockfile, so a bump
+          # fetches a matching browser instead of silently reusing an old one.
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install the browser
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        # chromium only, and --with-deps for the system libraries a headless run
+        # needs. A cache hit makes this a few seconds.
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Embed render check (full pass only)
+        id: embed
+        continue-on-error: true
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          SMOKE_FAILURE_FILE: smoke-failures.txt
+        # Run WITH the alias hook, unlike the latency step next door. That flag is
+        # how scripts/test-dependency-free-scripts.ts tells an invocation that
+        # depends on the install from one that must survive without it: the three
+        # alerters run bare because they are what has to still work when something
+        # else has already gone wrong, and every dependency is another way for them
+        # to be unavailable in exactly those conditions. This step is not one of
+        # those. It drives a real browser, so it cannot be dependency free, and
+        # marking it bare would either weaken that guard or make it fail on a
+        # script it was never written about.
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-embed-render.ts
+
       - name: Stamp canary heartbeat (success only)
         if: success() && steps.pre.outputs.configured == '1'
         env:
@@ -178,11 +228,13 @@ jobs:
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=smoke-canary-full" \
             -H "authorization: Bearer $BOOKING_API_KEY"
 
-      # The latency step is `continue-on-error`, so a latency regression does NOT make
-      # the job fail, so `failure()` alone would leave it recorded in the failure log
-      # and reported to nobody. Its outcome is consulted explicitly (#1047).
+      # The latency and embed steps are `continue-on-error`, so a failure in either
+      # does NOT make the job fail, and `failure()` alone would leave it recorded in
+      # the failure log and reported to nobody. Each outcome is consulted explicitly
+      # (#1047, #1006). A step added here without being named on this line is a
+      # check whose failures are written down and read by no one.
       - name: Slack alert on failure
-        if: (failure() || steps.latency.outcome == 'failure') && steps.pre.outputs.configured == '1'
+        if: (failure() || steps.latency.outcome == 'failure' || steps.embed.outcome == 'failure') && steps.pre.outputs.configured == '1'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}

@@ -373,6 +373,23 @@ would be flaky for the payoff. The risky mock seams that a browser layer would
 guard, the Supabase query chains and the Google Calendar shapes, and the embed
 (`widget.js`) contract and full booking funnel, are covered a different way:
 
+**There IS one browser check, and it is post deploy rather than pre merge (#1006).**
+The canary's 6-hourly full pass drives the DEPLOYED `widget.js` in headless
+chromium against live prod (`scripts/smoke-embed-render.ts`) and asserts the
+embedded booker actually draws. None of the instability above applies: it never
+touches `next dev`, and it waits on the booker's own heading rather than on a
+settled animation. It deliberately does NOT demand that slots are offered, because
+before cutover the roster is dark (#1272) and a check that demanded times would be
+red every run from the day it shipped; it asserts the booker SAYS SOMETHING, since
+a working embed either offers times or states in its own words why it has none.
+The verdict rules live in `scripts/lib/embed-render-check.ts` and are pinned
+offline by `scripts/test-embed-render-check.ts`, so they are tested where no
+browser exists. Full pass only, because this is a private repo and Actions minutes
+are billed: a browser on every 30 minute tick is about 48 runs a day against 4 for
+a fault that arrives with a deploy rather than drifting in.
+
+The rest:
+
 - **The scheduled production canary** (`.github/workflows/smoke-canary.yml`, the
   #455 / #483 / #525 cluster) runs the real smoke scripts against **live prod** on
   the isolated SMOKE test agents and buckets (#396, so they can never touch a real

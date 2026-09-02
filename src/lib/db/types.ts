@@ -765,7 +765,19 @@ export interface BookingFailureRateState {
   attempts: number;
   failures: number;
   by_code: Record<string, number>;
-  samples: { atMs: number; attempts: number; failures: number; byCode: Record<string, number> }[];
+  /** #1442/#1450/#1709, migration 0113: the cumulative self-inflicted refusal
+   *  counts from the last reading, which is the baseline the next tick
+   *  differences against. Never part of the booking failure share. */
+  refusals: Record<string, number>;
+  samples: {
+    atMs: number;
+    attempts: number;
+    failures: number;
+    byCode: Record<string, number>;
+    /** Optional: a sample written before 0113 has none, which reads as "not
+     *  measured in that interval", not as zero refusals. */
+    refusals?: Record<string, number>;
+  }[];
   updated_at: string;
 }
 

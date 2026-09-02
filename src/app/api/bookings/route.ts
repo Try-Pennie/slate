@@ -224,8 +224,18 @@ export async function GET(req: NextRequest) {
     try {
       listed = await listBookings(parsed.value);
     } catch (err) {
-      // refusal: api_list_unavailable
+      // #1709: counted under its own name, outside OUTCOME_ORDER, so a sustained
+      // run of these pages without read traffic entering the denominator the
+      // booking failure share is measured against. One is a blip the caller's
+      // retry clears; a run is the bookings table unreadable, which nothing else
+      // sees until the automated booker goes live and the write path fails beside
+      // it.
+      recordApiOutcome("refused_list_read", "", null, {
+        by: "unidentifiable",
+        why: "the bookings page could not be read, so no booking is identified",
+      });
       log.error("booking-api", { msg: "list read failed", key: authd.keyId }, err);
+      // refusal: api_list_unavailable
       return NextResponse.json(
         {
           error: "The bookings list could not be read just now. Please retry.",
