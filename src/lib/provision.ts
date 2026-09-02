@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isUniqueViolation, unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
+import { normalizeEmail } from "@/lib/auth/email";
 import type { Organization, User } from "@/lib/db/types";
 
 const DEFAULT_ORG_NAME = "Pennie";
@@ -127,7 +128,15 @@ async function resolveOrCreateUser(
   }
 
   // Existing row by email (e.g. a Salesforce-synced agent now logging in).
-  const byEmail = await readUserBy("email", input.email, `user by email (${pass})`);
+  //
+  // The NORMALISED address, on the read as well as the write (#1663). `users.email`
+  // is unique but case sensitive and Google addresses are not, so asking for the
+  // exact string Google handed us is asking the wrong question: the read correctly
+  // returns nothing, provisioning treats the person as new, and the insert then
+  // passes users_email_key because the two spellings genuinely differ. That is one
+  // person with two identities, and nothing reports it.
+  const email = normalizeEmail(input.email);
+  const byEmail = await readUserBy("email", email, `user by email (${pass})`);
   if (byEmail) {
     const updated = unwrap(
       await db
@@ -166,7 +175,9 @@ async function resolveOrCreateUser(
     .insert({
       org_id: orgId,
       auth_user_id: input.authUserId,
-      email: input.email,
+      // The same normalised value the read above asked for, so the row that gets
+      // created is the row the next login will find.
+      email,
       name: input.name,
       google_sub: input.googleSub,
       avatar_url: input.avatarUrl,

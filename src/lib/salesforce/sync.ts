@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { normalizeEmail } from "@/lib/auth/email";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
@@ -133,7 +134,7 @@ async function queryInactiveEmails(
       `SELECT Email FROM User WHERE IsActive = false AND Email IN (${sfInList(chunk)})`,
     );
     for (const r of rows) {
-      const em = (r.Email ?? "").toLowerCase();
+      const em = normalizeEmail(r.Email ?? "");
       if (em) out.add(em);
     }
   }
@@ -150,7 +151,7 @@ async function queryInactiveEmails(
 function idCandidates(rows: SfUser[]): SfIdCandidate[] {
   const out: SfIdCandidate[] = [];
   for (const r of rows) {
-    const email = (r.Email ?? "").trim().toLowerCase();
+    const email = normalizeEmail(r.Email ?? "");
     const salesforceUserId = (r.Id ?? "").trim();
     if (email && salesforceUserId) out.push({ email, salesforceUserId });
   }
@@ -282,7 +283,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const byEmail = new Map(
     (existing ?? []).map((u) => {
       const row = u as { id: string; email: string; attributes: Attributes };
-      return [row.email.toLowerCase(), row];
+      return [normalizeEmail(row.email), row];
     }),
   );
 
@@ -296,7 +297,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const updates: Partial<User>[] = [];
 
   for (const u of sfUsers) {
-    const email = (u.Email ?? "").toLowerCase();
+    const email = normalizeEmail(u.Email ?? "");
     if (!email) continue;
     const attributes = toAttributes(u);
     const current = byEmail.get(email);
@@ -304,7 +305,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       updates.push({
         id: current.id,
         org_id: org.id,
-        email: current.email,
+        email: normalizeEmail(current.email),
         name: u.Name,
         attributes: mergeSfAttributes(current.attributes, attributes),
       });
@@ -410,7 +411,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     sfUsers.map((u) => {
       const mgrName = (u.Agent_Manager__c ?? "").trim();
       return {
-        email: (u.Email ?? "").toLowerCase(),
+        email: normalizeEmail(u.Email ?? ""),
         managerEmail: mgrName ? (nameToEmail.get(mgrName) ?? null) : null,
         managerName: mgrName || null,
       };
@@ -441,7 +442,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const idByEmail = new Map(
     (afterInsert ?? []).map((u) => {
       const row = u as { id: string; email: string };
-      return [row.email.toLowerCase(), row.id];
+      return [normalizeEmail(row.email), row.id];
     }),
   );
   const managerIdByUser = new Map(
@@ -538,7 +539,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const toPromote = (afterInsert ?? [])
     .map((u) => u as { id: string; email: string; role: Role })
     .filter(
-      (u) => u.role === "agent" && managerEmails.has(u.email.toLowerCase()),
+      (u) => u.role === "agent" && managerEmails.has(normalizeEmail(u.email)),
     )
     .map((u) => u.id);
   let managersPromoted = 0;
@@ -579,7 +580,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   // again.
   const coveredEmails = new Set(sfIdCandidates.map((c) => c.email));
   const remainingEmails = rosterRows
-    .map((r) => r.email.toLowerCase())
+    .map((r) => normalizeEmail(r.email))
     .filter((e) => e && !coveredEmails.has(e));
   for (const chunk of chunkSoqlValues(remainingEmails)) {
     const rows = await queryAll(
@@ -676,7 +677,7 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     const inactive = await queryInactiveEmails(
       instanceUrl,
       token,
-      reapableRows.map((u) => u.email.toLowerCase()),
+      reapableRows.map((u) => normalizeEmail(u.email)),
     );
     // Deactivate every SF-inactive reapable user. No "skip OOO-history managers"
     // carve-out anymore: deactivation preserves the row, so attribution holds.
