@@ -94,7 +94,8 @@ Supabase project **`slate`**, ref `drukfvgaynzrralbzkzj`
 
 Dashboard → Database → Backups → choose the backup → Restore.
 
-<!-- runbook-unverified: a real restore replaces the production database, so this cannot be executed to prove it. The steps mirror DEPLOY.md's backup section and Supabase's dashboard flow. -->
+<!-- runbook-unverified: a real restore replaces the production database, so this cannot be executed to prove it. The 2026-09-02 rehearsal (#1584) used a Supabase preview branch, which is a fresh database with the migrations applied rather than a backup restored into it, so it exercised everything AFTER this step and not this step itself. The steps mirror DEPLOY.md's backup section and Supabase's dashboard flow. -->
+<!-- runbook-verified: 2026-09-02 (fd5067c4) rehearsal for #1584. The health check below was run against production and returned exactly the shape this section tells you to expect: {"status":"ok","reason":"ok","db":"ok","alerting":"ok","staleLane":null,...}. The migration catch-up instruction is confirmed too: the rehearsal branch reported 113 of 113 migrations applied, so a target behind production is brought forward by the documented flow. -->
 ```
 # Confirm the app is talking to a live database again before going further.
 curl -s https://slate.trypennie.app/api/health
@@ -129,7 +130,15 @@ coarser than push.
 
 The fix is to make every calendar read as due, then run the lane:
 
-<!-- runbook-unverified: clearing the watch columns across the live roster cannot be rehearsed without tearing down production push channels. The columns and the renewal predicate are read from src/lib/google/sync.ts (dueForRenewal treats a null expiry as due). -->
+<!-- runbook-verified: 2026-09-02 (065e6dd7) rehearsal for #1584. The statement below was run against a Supabase preview branch carrying the identical schema (all 113 migrations applied), with its SET clause exactly as written here and a RETURNING appended so it reported the rows it touched. This is the claim the issue singled out as a deduction rather than an observation, and both directions were measured on three seeded calendars.
+
+BEFORE: a calendar whose restored expiry sits 6 days out reported due_for_renewal = FALSE against the lane's own predicate (watch_expiration is null or watch_expiration - now() < interval '3 days', transcribed from src/lib/google/sync.ts:951-957). One at 1 day and one already lapsed reported TRUE. So the paragraph above is right: after a restore the lane really does read a healthy-looking expiry as current and do nothing.
+
+AFTER: the statement below affected all 3 rows and every one reported due_for_renewal = TRUE. So the fix really does make them due.
+
+The other half of the claim was confirmed by reading the live code path rather than by pushing a real notification: syncByChannel (src/lib/google/sync.ts:846-858) resolves the channel with .eq("watch_channel_id", channelId).maybeSingle() and returns "unknown-channel" when there is no row, and /api/google/push ignores that resolved value and answers 200 (only a THROWN error is logged). So an orphaned channel is dropped with no error and no alert, exactly as written.
+
+What is still not proven here: running this across the LIVE roster, which would tear down production push channels. -->
 ```sql
 -- Force every calendar to re-register its push channel on the next watch tick.
 -- Safe: a null expiry reads as "due for renewal", and the renewal stops the old
@@ -145,7 +154,7 @@ set watch_channel_id = null,
 
 Then trigger the watch lane rather than waiting up to five minutes for it:
 
-<!-- runbook-unverified: hitting a production cron lane by hand is a live action against the real roster, so it is written from the route itself (src/app/api/cron/watch/route.ts exports GET; src/lib/cron.ts requires Bearer CRON_SECRET) rather than executed here. -->
+<!-- runbook-unverified: running this with the CORRECT secret re-registers push channels across the live roster, which is an action on production rather than a check, so it stays for a real recovery. What the 2026-09-02 rehearsal (#1584) DID confirm is that the line is not wrong: GET https://slate.trypennie.app/api/cron/watch answers 401 with no bearer and 401 with a wrong one, so the URL is right, the route is deployed, and the Bearer CRON_SECRET it uses is really what the route wants. -->
 ```
 curl -s -H "Authorization: Bearer $CRON_SECRET" \
   https://slate.trypennie.app/api/cron/watch
@@ -173,7 +182,7 @@ Two lanes do it, and they do different halves:
   since the restored sync token.
 - **`/api/cron/sync`** is the every-minute backstop and will catch up on its own.
 
-<!-- runbook-unverified: same reason as the watch lane above, a live production lane. The route (src/app/api/cron/hydrate-calendars/route.ts) exports GET and its schedule comes from DEPLOY.md's cron table. -->
+<!-- runbook-unverified: same as the watch lane above, running it for real is a live action against the roster. The 2026-09-02 rehearsal (#1584) confirmed the line itself: GET https://slate.trypennie.app/api/cron/hydrate-calendars answers 401 with no bearer, so the URL is right and the route is deployed behind the Bearer CRON_SECRET this uses. -->
 ```
 curl -s -H "Authorization: Bearer $CRON_SECRET" \
   https://slate.trypennie.app/api/cron/hydrate-calendars
@@ -312,7 +321,18 @@ Recorded here rather than in an issue nobody reads during an incident:
   to buy before real leads are booking.
 - **A pre-restore export of `bookings` inside the gap window**, taken as step 0
   every time, is what makes section 4 tractable at all. Never skip it.
-- **A rehearsal.** Every step on this page above section 6 is marked
-  `runbook-unverified` for an honest reason: nobody has performed a restore
-  here. The first time these steps run should not be the first time they are
-  read.
+- **A rehearsal of the RESTORE ITSELF.** Most of this page has now been
+  exercised (2026-09-02, #1584): section 2's SQL was run verbatim against a
+  branch with the identical schema and both directions were measured, the two
+  cron lanes were confirmed deployed and correctly gated, and section 1's health
+  check was run against production. What has still never happened here is a real
+  restore, because there is nothing to restore INTO short of production: a
+  Supabase preview branch is a fresh database with the migrations applied, not a
+  backup restored into it. So section 1 and the live-roster halves of sections 2
+  and 3 remain deductions. Buying that would mean a scratch project big enough to
+  take a real backup, and it is worth deciding deliberately rather than
+  discovering the answer mid-incident.
+- **The rehearsal is worth repeating** whenever `dueForRenewal`, the watch
+  columns, or the push channel lookup changes. What was measured was the
+  BEHAVIOUR of those three, and a change to any of them makes this page a
+  deduction again.
