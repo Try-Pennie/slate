@@ -325,6 +325,22 @@ h1.pn-display {
   box-shadow: none;
 }
 
+/* Segmented control (#1746, the account menu's theme picker). The radio input is
+   visually hidden and the segment it labels is what gets painted, so the ring has
+   to move to the segment: a ring drawn on a 1px sr-only input is a focus
+   indicator nobody can see. Suppress the input's own ring and reproduce the S3
+   recipe on the segment, from the same tokens, so light and dark both keep the
+   3:1 outline. Unlayered beside its siblings above so a utility cannot beat it. */
+.pn-seg-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.pn-seg:has(.pn-seg-input:focus-visible) {
+  outline: 2px solid var(--focus-ring-line);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+}
+
 /* ---------------- Visually-hidden utility (S7) ---------------- */
 .sr-only {
   position: absolute;

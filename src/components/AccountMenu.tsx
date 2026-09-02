@@ -153,8 +153,10 @@ export function AccountMenu({
             </div>
           )}
 
+          {/* #1746: the control carries its own <legend>Theme</legend>, so the
+              heading that used to sit here would be a second, unlinked copy of
+              the same word. */}
           <div className="mt-3 border-t border-border pt-3">
-            <p className="mb-1.5 text-xs font-semibold text-fg-muted">Theme</p>
             <ThemeToggle preference={themePreference} />
           </div>
 
