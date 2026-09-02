@@ -437,4 +437,158 @@ eq(
 
 eq(emailLocalKey("Geoff.Smith+slate@TryPennie.com"), "geoffsmith", "the comparison key drops dots, tags and case");
 
+// ---------------------------------------------------------------------------
+// #1669: this panel adds access, it never lowers a signed in colleague's
+// ---------------------------------------------------------------------------
+//
+// The lookalike remedy button posts the PENDING row's role, and nothing consulted
+// the lookalike account's own current role. A seeded `geof.smith` at manager next
+// to the real `geoff.smith` who has since been made admin rendered as "Give
+// manager access to geoff.smith", and one click dropped Geoff from admin to
+// manager as an ordinary `updated` success.
+//
+// The rule: a downward move on an account somebody has SIGNED IN to is not this
+// surface's job. An unclaimed row is, which is the whole point of the panel, so
+// the guard keys on `auth_user_id` rather than on the direction alone.
+
+const claimedDemotion = planStaffAccess({
+  ...SUPER,
+  email: "geoff.smith@trypennie.com",
+  requestedRole: "manager",
+  existing: target({ role: "admin", auth_user_id: "auth-1" }),
+  adminCount: 9,
+});
+assert(
+  !claimedDemotion.ok && claimedDemotion.outcome === "signed_in_demotion",
+  "lowering a signed in colleague is refused here, not recorded as an ordinary update",
+);
+
+// The healthy control in the same fixture, so the refusal cannot pass vacuously:
+// the identical account moving UP is still an ordinary update.
+const claimedPromotion = planStaffAccess({
+  ...SUPER,
+  email: "geoff.smith@trypennie.com",
+  requestedRole: "admin",
+  existing: target({ role: "manager", auth_user_id: "auth-1" }),
+  adminCount: 9,
+});
+assert(
+  claimedPromotion.ok && claimedPromotion.outcome === "updated",
+  "the same signed in account moving UP is still an ordinary update",
+);
+
+// An UNCLAIMED row may still be lowered: redirecting or correcting a grant nobody
+// has ever used is exactly what this panel exists for, and the last admin
+// invariant still governs it.
+const unclaimedDemotion = planStaffAccess({
+  ...SUPER,
+  email: "seeded@trypennie.com",
+  requestedRole: "manager",
+  existing: target({ role: "admin", auth_user_id: null }),
+  adminCount: 9,
+});
+assert(
+  unclaimedDemotion.ok && unclaimedDemotion.outcome === "updated",
+  "a grant nobody has signed in to can still be corrected downward",
+);
+
+// Rank, not the admin threshold: a team lead dropping to manager takes real
+// power away and never touches `requiresAdminCount`, so a guard written on the
+// admin boundary alone would let the commonest demotion straight through.
+const claimedSmallDrop = planStaffAccess({
+  ...SUPER,
+  email: "geoff.smith@trypennie.com",
+  requestedRole: "manager",
+  existing: target({ role: "team_lead", auth_user_id: "auth-1" }),
+  adminCount: 9,
+});
+assert(
+  !claimedSmallDrop.ok && claimedSmallDrop.outcome === "signed_in_demotion",
+  "a drop that never reaches the admin boundary is still a demotion",
+);
+
+// Your OWN account keeps the sharper refusal: `self_change` says nothing in Slate
+// could give it back, which is a different and more useful fact.
+const selfClaimed = planStaffAccess({
+  ...SUPER,
+  email: "me@trypennie.com",
+  requestedRole: "manager",
+  existing: target({ id: "me", role: "admin", auth_user_id: "auth-me" }),
+  adminCount: 9,
+});
+assert(
+  !selfClaimed.ok && selfClaimed.outcome === "self_change",
+  "your own demotion is still reported as self_change, which is the sharper fact",
+);
+
+// Three refusals can be true of one downward move at once, so the ORDER is pinned
+// rather than left to whichever branch happens to come first.
+const claimedLastAdmin = planStaffAccess({
+  ...SUPER,
+  email: "geoff.smith@trypennie.com",
+  requestedRole: "manager",
+  existing: target({ role: "admin", auth_user_id: "auth-1" }),
+  adminCount: 1,
+});
+assert(
+  !claimedLastAdmin.ok && claimedLastAdmin.outcome === "last_admin",
+  "the org wide impossibility outranks the surface rule, so the reader is not sent to a second refusal",
+);
+
+const claimedUnreadableCount = planStaffAccess({
+  ...SUPER,
+  email: "geoff.smith@trypennie.com",
+  requestedRole: "manager",
+  existing: target({ role: "admin", auth_user_id: "auth-1" }),
+  adminCount: null,
+});
+assert(
+  !claimedUnreadableCount.ok && claimedUnreadableCount.outcome === "signed_in_demotion",
+  "a measured surface refusal beats one that admits it could not read the count",
+);
+
+// The refusal has to be readable and has to say where the change really belongs,
+// or it is a dead end on the exact surface somebody opened to fix access (L111).
+const demotionText = staffAccessMessage(
+  "signed_in_demotion",
+  "geoff.smith@trypennie.com",
+  "manager",
+).text;
+assert(
+  demotionText.includes("geoff.smith@trypennie.com"),
+  "the demotion refusal names the account it protected",
+);
+assert(
+  demotionText !== staffAccessMessage("not_authorized", "geoff.smith@trypennie.com").text,
+  "the demotion refusal is its own sentence, not a reused authorization one",
+);
+
+// A change to an EXISTING account must not read like a fresh grant. Before this
+// the update message was "has been updated as manager", which does not read as a
+// removal and does not read as a change to somebody who already had access.
+const updatedText = staffAccessMessage("updated", "geoff.smith@trypennie.com", "admin").text;
+const grantedText = staffAccessMessage("granted", "geoff.smith@trypennie.com", "admin").text;
+assert(updatedText !== grantedText, "an update and a grant are different sentences");
+assert(
+  /already/i.test(updatedText),
+  "the update message says the account already existed, so it cannot be read as a new grant",
+);
+
+// The panel can only tell the truth about its own button if the row carries the
+// lookalike's CURRENT role. Without it the label is built from the pending row's
+// role and claims to give access the person may already outrank.
+const outranked = pendingPrivilegedAccess(
+  [
+    user({ email: "geof.smith@trypennie.com", role: "manager", created_at: new Date(NOW - 4 * DAY).toISOString() }),
+    user({ email: "geoff.smith@trypennie.com", role: "admin", auth_user_id: "auth-9" }),
+  ],
+  NOW,
+) ?? [];
+eq(
+  outranked[0].lookalike?.role,
+  "admin",
+  "the lookalike carries its own current role, so the button can never offer a demotion",
+);
+
+
 finish();

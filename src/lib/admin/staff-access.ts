@@ -1,4 +1,5 @@
 import {
+  ROLE_RANK,
   atLeast,
   canChangeRole,
   canSetRole,
@@ -29,6 +30,11 @@ import type { Role } from "../db/types.ts";
  *  - It never mints a `super_admin`. That role is the only one that can grant or
  *    revoke itself, and doing it from a typed address means the target is a string
  *    rather than a row somebody has looked at. It stays on the per user editor.
+ *  - It never LOWERS an account somebody has signed in to (#1669). The panel's
+ *    job is granting access, and correcting a grant nobody ever used; taking real
+ *    access away from a live colleague belongs on that person's own page, where
+ *    the reader is looking at the row rather than at a typed string. An unclaimed
+ *    row may still be moved in either direction, which is what the panel is for.
  *  - It never treats an unreadable admin count as a number. #1165 scored a FAILED
  *    count as zero and refused with "cannot remove the last admin", a claim the
  *    check had not measured. Here `adminCount: null` means "could not tell" and
@@ -52,6 +58,7 @@ export const STAFF_ACCESS_OUTCOMES = [
   "invalid_role",
   "not_authorized",
   "self_change",
+  "signed_in_demotion",
   "deactivated",
   "other_org",
   "lookup_failed",
@@ -117,6 +124,22 @@ export function staffEmailError(email: string): string | null {
 }
 
 /**
+ * Whether this change would take access AWAY from somebody who has actually
+ * signed in (#1669).
+ *
+ * Judged on RANK, not on the admin boundary. `requiresAdminCount` asks a narrower
+ * question (is org power being lost), and a guard written on that boundary alone
+ * would wave through the commonest demotion of all: a team lead dropped to
+ * manager, which takes real power away and never touches an admin count.
+ *
+ * `auth_user_id` is what separates the two populations. An unclaimed row is a
+ * grant nobody has ever used, and correcting or redirecting one is exactly what
+ * this panel exists for. A claimed row is a colleague with live access.
+ */
+export const lowersClaimedAccess = (target: StaffAccessTarget, next: Role): boolean =>
+  target.auth_user_id !== null && ROLE_RANK[next] < ROLE_RANK[target.role];
+
+/**
  * Whether the admin count decides this change. It only does when org power is
  * being taken away, so a broken count read can never block a grant that never
  * depended on it.
@@ -177,9 +200,30 @@ export function planStaffAccess(input: StaffAccessInput): StaffAccessPlan {
   if (isSelfDemotion(existing.id === actorId, current, next)) {
     return { ok: false, outcome: "self_change" };
   }
-  if (requiresAdminCount(current, next)) {
-    if (adminCount === null) return { ok: false, outcome: "admin_count_unreadable" };
-    if (!canChangeRole(current, next, adminCount)) return { ok: false, outcome: "last_admin" };
+
+  // Three refusals can be true of one downward move at once, so the ORDER decides
+  // which sentence the reader gets, and the order is by how far each fact reaches
+  // (L11). Your own lockout first, because nothing in Slate could give it back.
+  const countDecides = requiresAdminCount(current, next);
+
+  // Then the org wide impossibility. "No admin would remain" is true wherever you
+  // try it, so speaking the surface rule first would send the reader to their own
+  // page and a second refusal.
+  if (countDecides && adminCount !== null && !canChangeRole(current, next, adminCount)) {
+    return { ok: false, outcome: "last_admin" };
+  }
+
+  // Then the surface rule (#1669). Before the unreadable count, deliberately:
+  // this decision does not depend on the count at all, so it is a real measured
+  // answer where "we could not tell" is an absence of one.
+  if (lowersClaimedAccess(existing, next)) {
+    return { ok: false, outcome: "signed_in_demotion" };
+  }
+
+  // And last, the refusal that admits it measured nothing (#1165). Only reachable
+  // where the count genuinely decides and could not be read.
+  if (countDecides && adminCount === null) {
+    return { ok: false, outcome: "admin_count_unreadable" };
   }
   return { ok: true, outcome: "updated", userId: existing.id, email, from: current, role: next };
 }
@@ -209,7 +253,7 @@ export function staffAccessMessage(
     case "updated":
       return {
         tone: "success",
-        text: `${email} has been updated${asRole}.`,
+        text: `${email} already had an account, and it is now set${asRole}.`,
       };
     case "unchanged":
       return {
@@ -237,6 +281,11 @@ export function staffAccessMessage(
       return {
         tone: "error",
         text: "You cannot take away your own admin access here, because nothing in Slate could give it back.",
+      };
+    case "signed_in_demotion":
+      return {
+        tone: "error",
+        text: `${email} has signed in and already has more access than that, so nothing was changed. This panel only adds access. To lower it, open their row in the people list and change the role there.`,
       };
     case "deactivated":
       return {

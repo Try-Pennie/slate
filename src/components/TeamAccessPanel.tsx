@@ -2,7 +2,7 @@ import { grantStaffAccess } from "@/app/admin/actions";
 import { GRANTABLE_STAFF_ROLES, staffAccessMessage } from "@/lib/admin/staff-access";
 import type { StaffAccessOutcome } from "@/lib/admin/staff-access";
 import { pendingWaitText, type PendingAccessRow } from "@/lib/admin/pending-access";
-import { roleLabel } from "@/lib/auth/roles";
+import { ROLE_RANK, roleLabel } from "@/lib/auth/roles";
 import { isRole } from "@/lib/auth/roles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -173,28 +173,56 @@ function PendingList({ pending }: { pending: PendingAccessRow[] | null }) {
             )}
           </div>
           {row.name && <p className="mt-1 text-xs text-fg-muted">{row.name}</p>}
-          {row.lookalike && (
-            <div className="mt-3 rounded-md bg-[var(--pennie-sky-soft)] px-3 py-3 text-sm text-pennie-navy dark:border dark:border-border dark:bg-transparent dark:text-fg">
-              <p>
-                <span className="font-semibold">{row.lookalike.email}</span> has
-                signed in and looks like the same person. If that is the address
-                they really use, give the access to it instead.
-              </p>
-              <form action={grantStaffAccess} className="mt-2">
-                <input type="hidden" name="email" value={row.lookalike.email} />
-                <input type="hidden" name="role" value={row.role} />
-                <SubmitButton
-                  className={`${btnSecondaryCls} min-h-[44px]`}
-                  pendingLabel="Giving access"
-                  slowLabel="Still giving access"
-                >
-                  Give {roleLabel(row.role)} access to {row.lookalike.email}
-                </SubmitButton>
-              </form>
-            </div>
-          )}
+          {row.lookalike && <Lookalike row={row} lookalike={row.lookalike} />}
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * The remedy, and the one thing it must never do (#1669).
+ *
+ * The button used to post the PENDING row's role and nothing consulted the
+ * lookalike's own, so a seeded `manager` row beside a real account since promoted
+ * to `admin` rendered "Give manager access to geoff.smith" and, on one click,
+ * dropped Geoff to manager as an ordinary success.
+ *
+ * A grant that would LOWER the signed in account is not a remedy at all, so there
+ * is no button for it: the person already has what the seeded row was promising.
+ * `planStaffAccess` refuses the same move on its own, so this is the honest label
+ * rather than the control, and a second entry point still could not demote.
+ */
+function Lookalike({
+  row,
+  lookalike,
+}: {
+  row: PendingAccessRow;
+  lookalike: NonNullable<PendingAccessRow["lookalike"]>;
+}) {
+  const wouldGain = ROLE_RANK[row.role] > ROLE_RANK[lookalike.role];
+  return (
+    <div className="mt-3 rounded-md bg-[var(--pennie-sky-soft)] px-3 py-3 text-sm text-pennie-navy dark:border dark:border-border dark:bg-transparent dark:text-fg">
+      <p>
+        <span className="font-semibold">{lookalike.email}</span> has signed in and
+        looks like the same person.{" "}
+        {wouldGain
+          ? "If that is the address they really use, give the access to it instead."
+          : `That account already has ${roleLabel(lookalike.role)} access, so there is nothing to give it. The row above is most likely an address nobody signs in with.`}
+      </p>
+      {wouldGain && (
+        <form action={grantStaffAccess} className="mt-2">
+          <input type="hidden" name="email" value={lookalike.email} />
+          <input type="hidden" name="role" value={row.role} />
+          <SubmitButton
+            className={`${btnSecondaryCls} min-h-[44px]`}
+            pendingLabel="Giving access"
+            slowLabel="Still giving access"
+          >
+            Give {roleLabel(row.role)} access to {lookalike.email}
+          </SubmitButton>
+        </form>
+      )}
+    </div>
   );
 }
