@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Pill, type PillVariant } from "@/components/ui/Pill";
-import { btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, proseCls } from "@/components/ui/styles";
 import { postJson } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import {
@@ -286,7 +286,7 @@ export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
             confirmPanel({ kind: "all" })
           ) : (
             <>
-              <p className="mb-3 text-xs text-fg-muted">{purgeAllConfirm(trail)}</p>
+              <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>{purgeAllConfirm(trail)}</p>
               <button
                 type="button"
                 className={btnCls}

@@ -4,10 +4,11 @@ import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
-import { cardCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadBucketSupply } from "@/lib/admin/bucket-supply-load";
 import { BucketSupplyTable } from "@/components/BucketSupplyTable";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -51,11 +52,11 @@ export default async function BucketAvailabilityPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-6xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Bucket availability</h1>
-          <p className="mt-2 text-pennie-beige/75">
+          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
             How many appointment times each debt bucket is offering on each day, against how
             many that day could have held. A count on its own cannot tell a thin pool from a
             closed one, so every number is a share of what was possible. All times are{" "}
@@ -72,7 +73,7 @@ export default async function BucketAvailabilityPage() {
                   ? "The booking horizon could not be read"
                   : "The slot cache could not be read"}
             </h2>
-            <p className="text-sm text-fg-muted">
+            <p className={`text-sm text-fg-muted ${proseCls}`}>
               {report.reason === "business-hours"
                 ? "Every figure on this page is measured against the office day, so with the week unreadable there is nothing honest to show. Nothing below was measured, and this is not a report that no bucket has availability."
                 : report.reason === "booking-horizon"
@@ -91,7 +92,7 @@ export default async function BucketAvailabilityPage() {
             />
           </section>
         )}
-      </main>
+      </PageShell>
     </>
   );
 }

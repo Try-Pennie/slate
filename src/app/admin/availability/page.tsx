@@ -4,10 +4,11 @@ import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
-import { cardCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadAvailabilityGrid, GRID_DAYS } from "@/lib/admin/availability-grid-load";
 import { AvailabilityGridTable } from "@/components/AvailabilityGridTable";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -47,11 +48,11 @@ export default async function AvailabilityGridPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-5xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Availability</h1>
-          <p className="mt-2 text-pennie-beige/75">
+          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
             Every hour of the next {GRID_DAYS} days, and whether a lead could book it.
             When they could not, this says which of the five reasons it was, because
             an hour nobody is rostered for, an hour the whole team is away, and an
@@ -63,7 +64,7 @@ export default async function AvailabilityGridPage() {
         {!grid.measurable ? (
           <section className={cardCls}>
             <h2 className="mb-1 text-sm font-semibold">The roster could not be read</h2>
-            <p className="text-sm text-fg-muted">
+            <p className={`text-sm text-fg-muted ${proseCls}`}>
               Nothing below was measured, so this is not a report that nobody is
               rostered. Reload in a moment; if it persists, the agents or working
               hours tables are not readable and availability itself is at risk.
@@ -74,7 +75,7 @@ export default async function AvailabilityGridPage() {
             <AvailabilityGridTable grid={grid} />
           </section>
         )}
-      </main>
+      </PageShell>
     </>
   );
 }

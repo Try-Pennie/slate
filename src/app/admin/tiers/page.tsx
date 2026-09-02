@@ -4,12 +4,13 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
-import { cardCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -113,11 +114,11 @@ export default async function TiersPage() {
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Staffing depth</h1>
-          <p className="mt-2 text-pennie-beige/75">
+          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
             How many currently-bookable agents can take each tier&rsquo;s bookings, and how
             many are actually available today once you set aside anyone who is out, so a
             tier resting on one person (now or this week) is visible before it runs out of
@@ -230,7 +231,7 @@ export default async function TiersPage() {
           </>
           )}
         </section>
-      </main>
+      </PageShell>
     </>
   );
 }

@@ -28,9 +28,10 @@ import { log } from "@/lib/log";
 import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHoursForm";
-import { labelCls, inputCls, btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import type { Attributes, Organization, User } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -179,7 +180,7 @@ export default async function AgentProfilePage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell width="narrow">
         <a
           href="/admin"
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
@@ -206,7 +207,7 @@ export default async function AgentProfilePage({
             <h1 className="pn-h4 truncate text-pennie-beige">
               {agent.name ?? agent.email}
             </h1>
-            <p className="truncate text-sm text-pennie-beige/75">{agent.email}</p>
+            <p className={`truncate text-sm text-pennie-beige/75 ${proseCls}`}>{agent.email}</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
             {/* #1054: this band paints its own navy fill, so a transparent pill needs
@@ -485,7 +486,7 @@ export default async function AgentProfilePage({
             />
           </div>
         )}
-      </main>
+      </PageShell>
     </>
   );
 }

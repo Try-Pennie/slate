@@ -16,13 +16,14 @@ import {
 } from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
-import { btnCls, cardCls } from "@/components/ui/styles";
+import { btnCls, cardCls, proseCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHoursForm";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -296,14 +297,14 @@ export default async function MePage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-2xl space-y-10 px-6 py-10 sm:px-8">
+      <PageShell width="narrow">
         {oooOnly ? (
           /* Compact navy header: greeting + at-a-glance status (earns its weight). */
           <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface-elevated dark:border dark:border-border">
             <h1 className="pn-h3 text-pennie-beige">
               {firstName ? `Hi, ${firstName}.` : "Hi there."}
             </h1>
-            <p className="mt-2 text-pennie-beige/85">
+            <p className={`mt-2 text-pennie-beige/85 ${proseCls}`}>
               {oooUnreadable ? (
                 // #1647: every other sentence in this band is a count, and a
                 // count off a read that never ran is the one thing this greeting
@@ -348,7 +349,7 @@ export default async function MePage({
           <>
             <div>
               <h1 className="pn-h3">Your availability</h1>
-              <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+              <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted ${proseCls}`}>
                 <span>{me.name ?? me.email}</span>
                 <Pill variant={me.bookable ? "status-ok" : "outline"}>
                   {me.bookable ? "Bookable" : "Not bookable yet"}
@@ -388,7 +389,7 @@ export default async function MePage({
                 </UnreadableNotice>
               ) : (
                 <>
-                  <p className="mb-4 text-xs text-fg-muted">
+                  <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
                     Set your home timezone and weekly hours. Leads always see times
                     in their own timezone.
                   </p>
@@ -417,7 +418,7 @@ export default async function MePage({
                 ? "Change your request"
                 : "Request time away"}
             </h2>
-            <p className="mt-1.5 text-sm text-fg-muted">
+            <p className={`mt-1.5 text-sm text-fg-muted ${proseCls}`}>
               {oooApproverLine(reviewerName)}
             </p>
           </header>
@@ -513,7 +514,7 @@ export default async function MePage({
             you&apos;re on.
           </p>
         )}
-      </main>
+      </PageShell>
     </>
   );
 }

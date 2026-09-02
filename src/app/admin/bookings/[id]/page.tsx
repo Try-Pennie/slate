@@ -12,6 +12,7 @@ import { loadBookingDetail } from "@/lib/booking/detail";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import type { HistoryRosterUser } from "@/lib/booking/event-display";
 import type { Booking } from "@/lib/db/types";
+import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -94,7 +95,7 @@ export default async function BookingDetailPage({
         bookable={me.bookable}
         avatarUrl={me.avatar_url}
       />
-      <main id="main" tabIndex={-1} className="mx-auto w-full min-w-0 max-w-3xl space-y-8 px-6 py-10 sm:px-8">
+      <PageShell width="narrow">
         <a
           href="/admin"
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
@@ -152,7 +153,7 @@ export default async function BookingDetailPage({
             <p className="text-sm text-fg-muted">No routing trace recorded.</p>
           )}
         </section>
-      </main>
+      </PageShell>
     </>
   );
 }
