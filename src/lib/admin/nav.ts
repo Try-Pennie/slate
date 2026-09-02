@@ -13,8 +13,9 @@ import type { Role } from "@/lib/db/types";
  *
  * So this is the one place the admin area's shape is written: which sections
  * exist, which group each belongs to, and who may see it. The sidebar renders it
- * and `scripts/test-admin-nav-gates.ts` holds it to the routes it names, so a
- * link cannot claim a different audience than the page it opens.
+ * and `scripts/test-admin-nav-reachability.ts` holds it to the routes it names, so a
+ * link cannot claim a different audience than the page it opens, and no admin
+ * screen can exist with nothing pointing at it.
  *
  * ONE list, not two. A hand-maintained sidebar beside hand-written page gates is
  * exactly the shape where a link stays after its page is gated tighter, and the
