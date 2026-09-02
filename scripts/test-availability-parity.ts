@@ -185,16 +185,54 @@ const base = (over: Partial<ParityInput>): ParityInput => ({
   eq(r.verdict, "neither-offers", "two empty answers agree perfectly and prove nothing");
   assert(r.verdict !== "agree", "and must never be reported as agreement");
 }
+// --- the shared reach ---------------------------------------------------------
+// The two systems do not look equally far ahead. Measured against live cal.com on
+// 2026-09-02, its pool reached about two days while Slate's horizon runs much
+// further, so every day past cal.com's reach would be reported as Slate offering
+// more, on every run, forever. That is the always-red check this file's header
+// refuses to build (L36). So the hours are compared only across the range BOTH
+// systems answered for, and each system's extra days are reported as their own
+// fact rather than as a finding about the other.
 {
-  // A day only one system reaches at all (a horizon difference) is a missing DAY,
-  // not twenty-four missing hours, so the report says what actually differs.
   const r = compareCoverage(base({
     calcomSlots: [at(9), "2026-09-20T13:00:00.000Z"],
     slateSlots: [at(9)],
   }));
-  eq(r.verdict, "slate-under-offers", "a day cal.com reaches and Slate does not is under-offering");
-  eq(r.missingInSlate.map((d) => d.day), ["2026-09-20"], "reported against that day");
-  eq(r.daysCompared, 1, "and the day count reflects only the days BOTH systems could answer for");
+  eq(r.verdict, "agree", "a day only cal.com reaches is not an hours finding");
+  eq(r.calcomOnlyDays, ["2026-09-20"], "it is reported as a day beyond the shared range");
+  eq(r.daysCompared, 1, "and only the shared day is compared");
+}
+{
+  // The direction that actually happens: Slate looks further ahead than cal.com.
+  const r = compareCoverage(base({
+    calcomSlots: [at(9)],
+    slateSlots: [at(9), "2026-09-20T13:00:00.000Z", "2026-09-21T13:00:00.000Z"],
+  }));
+  eq(r.verdict, "agree", "days past cal.com's reach are not Slate over-offering");
+  eq(r.slateOnlyDays, ["2026-09-20", "2026-09-21"], "they are reported as beyond the shared range");
+}
+{
+  // Inside the shared range a missing day IS the finding, and must not be excused
+  // by the same rule that excuses the horizon. Slate answers for the 9th and the
+  // 11th, so the 10th sits INSIDE its reach and is genuinely missing.
+  const r = compareCoverage(base({
+    calcomSlots: [at(9), "2026-09-10T13:00:00.000Z", "2026-09-11T13:00:00.000Z"],
+    slateSlots: [at(9), "2026-09-11T13:00:00.000Z"],
+  }));
+  eq(r.verdict, "slate-under-offers", "a day missing INSIDE the shared range is still a finding");
+  eq(r.missingInSlate.map((d) => d.day), ["2026-09-10"], "named as that day");
+  eq(r.slateOnlyDays.length, 0, "and nothing is excused as horizon");
+}
+{
+  // No overlap at all: cal.com answers for one week, Slate for another. Nothing can
+  // be compared, and reporting agreement would be a pass over a run that measured
+  // nothing (L98).
+  const r = compareCoverage(base({
+    calcomSlots: [at(9)],
+    slateSlots: ["2026-09-20T13:00:00.000Z"],
+  }));
+  eq(r.verdict, "no-shared-days", "two non-overlapping ranges compare nothing");
+  eq(r.daysCompared, 0, "and nothing is counted as compared");
 }
 
 // --- the silent pin fallback --------------------------------------------------

@@ -73,6 +73,7 @@ const EXIT = {
   slateOffersNothing: 10,
   slateUnderOffers: 11,
   slateOverOffers: 12,
+  noSharedDays: 13,
 } as const;
 
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
@@ -253,10 +254,18 @@ for (const bucket of buckets) {
   const result = compareCoverage({ calcomSlots: pinned, slateSlots: slate, zone });
   const gap = (label: string, gaps: { day: string; hours: number[] }[]) =>
     gaps.length === 0 ? "" : `\n    ${label}: ` + gaps.map((g) => `${g.day} h${g.hours.join(",")}`).join("; ");
+  // The reach is printed on every line, passing or not. The hours verdict is only
+  // as wide as the range both systems answered for, so a reader who cannot see that
+  // range cannot tell a thorough agreement from one covering a single day.
+  const reach =
+    result.sharedFrom === null
+      ? "no shared days"
+      : `${result.sharedFrom}..${result.sharedTo}, ${result.daysCompared} day(s) compared` +
+        (result.calcomOnlyDays.length ? `, cal.com alone reaches ${result.calcomOnlyDays.length} more` : "") +
+        (result.slateOnlyDays.length ? `, Slate alone reaches ${result.slateOnlyDays.length} more` : "");
   console.log(
     `${bucket.code}: ${result.verdict} ` +
-      `(${ids.length} agent(s) pinned${unknown.length ? `, ${unknown.length} not in cal.com` : ""}, ` +
-      `${result.daysCompared} day(s) both answered for)` +
+      `(${ids.length} agent(s) pinned${unknown.length ? `, ${unknown.length} not in cal.com` : ""}; ${reach})` +
       gap("Slate does not offer", result.missingInSlate) +
       gap("cal.com does not offer", result.missingInCalcom),
   );
@@ -272,6 +281,7 @@ const ranked: [Outcome["verdict"], number][] = [
   ["slate-over-offers", EXIT.slateOverOffers],
   ["calcom-offers-nothing", EXIT.calcomOffersNothing],
   ["neither-offers", EXIT.neitherOffers],
+  ["no-shared-days", EXIT.noSharedDays],
   ["no-calcom-identity", EXIT.noCalcomIdentity],
 ];
 const counts = new Map<Outcome["verdict"], number>();

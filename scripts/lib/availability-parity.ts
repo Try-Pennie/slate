@@ -33,7 +33,9 @@ export type ParityVerdict =
   /** Slate offers and cal.com does not: cannot compare, and never Slate's fault. */
   | "calcom-offers-nothing"
   /** Both empty. Perfect agreement, zero information, never a pass (L98). */
-  | "neither-offers";
+  | "neither-offers"
+  /** The two answers cover no day in common, so nothing could be compared. */
+  | "no-shared-days";
 
 /** Hours open on one day in one system but not the other. */
 export interface DayGap {
@@ -45,9 +47,17 @@ export interface ParityResult {
   verdict: ParityVerdict;
   missingInSlate: DayGap[];
   missingInCalcom: DayGap[];
-  /** Days BOTH systems returned something for. The hour comparison can only say
-   *  anything about these, so it is the honest denominator for the report. */
+  /** Days inside the shared reach that BOTH systems answered for. The hour
+   *  comparison can only say anything about these, so it is the honest
+   *  denominator for the report. */
   daysCompared: number;
+  /** The day range both systems answered within, or null when they share none. */
+  sharedFrom: string | null;
+  sharedTo: string | null;
+  /** Days each system reached BEYOND the shared range. Excluded from the gaps and
+   *  reported on their own: they are a horizon difference, not an hours finding. */
+  calcomOnlyDays: string[];
+  slateOnlyDays: string[];
 }
 
 type CalcomSlot = { start?: unknown };
@@ -164,24 +174,93 @@ function gapsBetween(
   return gaps.sort((x, y) => x.day.localeCompare(y.day));
 }
 
+/** The first and last day a system answered for, or null when it answered for none. */
+function span(days: Iterable<string>): { from: string; to: string } | null {
+  const sorted = [...days].sort();
+  if (sorted.length === 0) return null;
+  return { from: sorted[0], to: sorted[sorted.length - 1] };
+}
+
+/**
+ * Restrict a system's answer to the days inside `[from, to]`.
+ *
+ * Everything outside is a HORIZON difference, and the reasoning is measured rather
+ * than assumed: against live cal.com on 2026-09-02 its pool reached about two days
+ * ahead while Slate's booking horizon runs much further, so comparing over a fixed
+ * week would report Slate offering more on every run forever, which is the
+ * always-red check this module exists not to be (L36).
+ *
+ * It clips by RANGE, not by which days each system happens to hold. Clipping to the
+ * shared day SET would excuse the finding that matters most: a day sitting inside
+ * both systems' reach that one of them offers nothing on.
+ */
+function within(
+  byDay: Map<string, Set<number>>,
+  from: string,
+  to: string,
+): { inside: Map<string, Set<number>>; outside: string[] } {
+  const inside = new Map<string, Set<number>>();
+  const outside: string[] = [];
+  for (const [day, hours] of byDay) {
+    if (day >= from && day <= to) inside.set(day, hours);
+    else outside.push(day);
+  }
+  return { inside, outside: outside.sort() };
+}
+
 export function compareCoverage(input: ParityInput): ParityResult {
   const calcom = bucketByDayHour(input.calcomSlots, input.zone);
   const slate = bucketByDayHour(input.slateSlots, input.zone);
 
-  const missingInSlate = gapsBetween(calcom, slate);
-  const missingInCalcom = gapsBetween(slate, calcom);
-  let daysCompared = 0;
-  for (const day of calcom.keys()) if (slate.has(day)) daysCompared++;
-
-  const result = { missingInSlate, missingInCalcom, daysCompared };
+  const empty = {
+    missingInSlate: [] as DayGap[],
+    missingInCalcom: [] as DayGap[],
+    daysCompared: 0,
+    sharedFrom: null,
+    sharedTo: null,
+    calcomOnlyDays: [] as string[],
+    slateOnlyDays: [] as string[],
+  };
 
   // The three "nothing to compare" states come FIRST and each says something
   // different, because collapsing any two of them sends the reader after the wrong
   // thing: an empty Slate is a roster problem, an empty cal.com is not ours, and
   // two empties are a run that measured nothing (L11).
-  if (calcom.size === 0 && slate.size === 0) return { verdict: "neither-offers", ...result };
-  if (slate.size === 0) return { verdict: "slate-offers-nothing", ...result };
-  if (calcom.size === 0) return { verdict: "calcom-offers-nothing", ...result };
+  if (calcom.size === 0 && slate.size === 0) return { verdict: "neither-offers", ...empty };
+  if (slate.size === 0) return { verdict: "slate-offers-nothing", ...empty };
+  if (calcom.size === 0) return { verdict: "calcom-offers-nothing", ...empty };
+
+  const calSpan = span(calcom.keys())!;
+  const slateSpan = span(slate.keys())!;
+  const sharedFrom = calSpan.from > slateSpan.from ? calSpan.from : slateSpan.from;
+  const sharedTo = calSpan.to < slateSpan.to ? calSpan.to : slateSpan.to;
+  // Two answers that overlap on no day compare nothing at all, which is a run that
+  // measured nothing rather than a run that found agreement (L98).
+  if (sharedFrom > sharedTo) {
+    return {
+      verdict: "no-shared-days",
+      ...empty,
+      calcomOnlyDays: [...calcom.keys()].sort(),
+      slateOnlyDays: [...slate.keys()].sort(),
+    };
+  }
+
+  const cal = within(calcom, sharedFrom, sharedTo);
+  const sl = within(slate, sharedFrom, sharedTo);
+  const missingInSlate = gapsBetween(cal.inside, sl.inside);
+  const missingInCalcom = gapsBetween(sl.inside, cal.inside);
+  let daysCompared = 0;
+  for (const day of cal.inside.keys()) if (sl.inside.has(day)) daysCompared++;
+
+  const result = {
+    missingInSlate,
+    missingInCalcom,
+    daysCompared,
+    sharedFrom,
+    sharedTo,
+    calcomOnlyDays: cal.outside,
+    slateOnlyDays: sl.outside,
+  };
 
   // Under-offering outranks over-offering when both are present. Slate offering
   // less costs a lead a bookable time, which is the failure this phase is watching

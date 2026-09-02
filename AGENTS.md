@@ -688,10 +688,21 @@ dark roster produces today:
 | 10 | **Slate offers nothing** while cal.com offers a week |
 | 11 | **Slate under-offers**: hours cal.com opens and Slate does not |
 | 12 | Slate over-offers: usually cal.com holding an out of office Slate has not been told about |
+| 13 | the two answers cover no day in common, so nothing could be compared |
 
 Under-offering outranks over-offering when a sweep meets both, because the
 direction that costs a lead a bookable time is the one somebody must act on;
 both are always printed, so the ranking decides only which one names the run.
+
+**The hours are only compared across the range BOTH systems answered for**, and
+that is measured rather than assumed. Against live cal.com on 2026-09-02 its pool
+reached about two days ahead (43 slots on the second day, nothing beyond) while
+Slate's booking horizon runs much further. Comparing over a fixed week would
+therefore report Slate over-offering on every run forever, which is the always-red
+check this probe exists not to be. Days past either system's reach are printed as
+their own fact instead. The clip is by RANGE, never by the set of days each system
+holds: clipping to the shared set would excuse the finding that matters most, a day
+sitting inside both reaches that one of them offers nothing on.
 
 **It has never reached a real verdict, and cannot until the roster is hot.**
 Every real agent is `bookable = false` (#1272), so every real bucket resolves to
