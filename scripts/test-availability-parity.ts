@@ -25,6 +25,7 @@ import {
   parseCalcomSlots,
   parseSlateSlots,
   detectPinIgnored,
+  rosterReadiness,
   type ParityInput,
 } from "./lib/availability-parity.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -264,6 +265,58 @@ const base = (over: Partial<ParityInput>): ParityInput => ({
   // no availability and a pool with none look the same here, and calling that
   // "ignored" would refuse a run whose real finding is that both are empty.
   assert(!detectPinIgnored([], []), "two empty answers do not prove the pin was ignored");
+}
+
+// --- the roster must be hydrated before any of this means anything ------------
+// An agent flipped bookable holds no cached busy time until the watch lane has
+// discovered their calendar and the sync lane has hydrated it (#1736). During that
+// window the booker sees them as free for every hour their working hours allow, so
+// a parity run taken then measures the DRAIN and reports it as a roster finding.
+// The instruction "wait for it to settle" lives in an issue, and a rule that lives
+// only in an issue is a hope (L27), so the probe refuses instead.
+const NEED = Date.UTC(2026, 8, 16);
+const ready = (over: Partial<{ hasCalendar: boolean; syncWindowToMs: number | null }> = {}) => ({
+  userId: "u",
+  hasCalendar: true,
+  syncWindowToMs: NEED + 86_400_000,
+  ...over,
+});
+{
+  const r = rosterReadiness([ready(), ready()], NEED);
+  assert(r.ready, "every agent with a calendar hydrated past the window is ready");
+  eq(r.noCalendar, 0, "with nothing missing a calendar");
+  eq(r.notHydrated, 0, "and nothing under-hydrated");
+}
+{
+  const r = rosterReadiness([ready(), ready({ hasCalendar: false })], NEED);
+  assert(!r.ready, "one agent with no calendar row makes the pool unready");
+  eq(r.noCalendar, 1, "counted as missing a calendar");
+  eq(r.notHydrated, 0, "and not double counted as under-hydrated");
+}
+{
+  const r = rosterReadiness([ready({ syncWindowToMs: null })], NEED);
+  assert(!r.ready, "a calendar that has never hydrated is not ready");
+  eq(r.notHydrated, 1, "counted as under-hydrated");
+}
+{
+  // An unreadable stamp arrives as null for the same reason the existing coverage
+  // check scores it UNCOVERED: a stamp nobody can read, silently scored as fine, is
+  // the shape where NaN lands on the healthy branch.
+  const r = rosterReadiness([ready({ syncWindowToMs: NEED - 1 })], NEED);
+  assert(!r.ready, "a window ending before the compared range is not ready");
+  eq(r.notHydrated, 1, "and says so as under-hydration, not as a missing calendar");
+}
+{
+  // Exactly reaching the end of the window counts as covered: the comparison asks
+  // nothing about instants past it.
+  assert(rosterReadiness([ready({ syncWindowToMs: NEED })], NEED).ready, "a window reaching exactly the end is ready");
+}
+{
+  // An empty pool is NOT ready. Reporting it ready would let a bucket with nobody
+  // in it pass the gate and go on to compare, where two empty answers agree
+  // perfectly and prove nothing (L98).
+  const r = rosterReadiness([], NEED);
+  assert(!r.ready, "an empty pool is never ready: there is nothing to be ready");
 }
 
 finish();
