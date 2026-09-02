@@ -49,7 +49,7 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { resolveBucketAgentIds } = await import("@/lib/availability/service");
 const { unwrap } = await import("@/lib/db/result");
-const { compareCoverage, parseCalcomSlots, detectPinIgnored } = await import(
+const { compareCoverage, parseCalcomSlots, parseSlateSlots, detectPinIgnored } = await import(
   "./lib/availability-parity.ts"
 );
 type ParityVerdict = import("./lib/availability-parity.ts").ParityVerdict;
@@ -162,13 +162,12 @@ async function slateSlots(code: string): Promise<string[]> {
   if (!res.ok) {
     stop(EXIT.slateUnreachable, `Slate returned ${res.status} for bucket ${code}`);
   }
-  const body = (await res.json().catch(() => null)) as { slots?: unknown } | null;
-  if (!body || !Array.isArray(body.slots)) {
-    // An unreadable body must never collapse into an empty slot list: that reads
-    // as Slate offering nothing, which is a real and very different finding.
-    stop(EXIT.slateUnreachable, `Slate's answer for bucket ${code} carried no readable slots array`);
+  const body = await res.json().catch(() => null);
+  const parsed = parseSlateSlots(body);
+  if (!parsed.ok) {
+    stop(EXIT.slateUnreachable, `Slate's answer for bucket ${code} could not be read: ${parsed.why}`);
   }
-  return (body.slots as unknown[]).filter((s): s is string => typeof s === "string");
+  return parsed.slots;
 }
 
 // --- which buckets to compare -------------------------------------------------

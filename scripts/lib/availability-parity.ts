@@ -80,10 +80,50 @@ export function parseCalcomSlots(
       if (typeof start !== "string") {
         return { ok: false, why: `a slot on ${date} carries no readable start` };
       }
+      // A string that is not a readable instant is refused HERE rather than left
+      // to be dropped during bucketing. A dropped instant is a smaller answer,
+      // which is indistinguishable from cal.com genuinely offering less, and would
+      // be reported as Slate over-offering: a finding about the payload wearing the
+      // costume of a finding about the roster (L340).
+      if (!DateTime.fromISO(start).isValid) {
+        return { ok: false, why: `a slot on ${date} carries an unreadable start: ${start}` };
+      }
       slots.push(start);
     }
   }
   return { ok: true, slots };
+}
+
+/**
+ * Read the slot list out of Slate's `/api/availability` body.
+ *
+ * The mirror of `parseCalcomSlots`, and refusing for the same reason in the
+ * opposite direction: filtering out an entry it cannot read would make Slate's
+ * answer SMALLER, and a smaller Slate answer is reported as Slate under-offering,
+ * which is the headline finding this probe exists to make. A defect in our own
+ * reading would then arrive dressed as a defect in the roster (L340). A missing or
+ * non-array `slots` is refused too, because collapsing it to an empty list is the
+ * `slate-offers-nothing` verdict, which is a real and very different finding.
+ */
+export function parseSlateSlots(
+  body: unknown,
+): { ok: true; slots: string[] } | { ok: false; why: string } {
+  if (body === null || typeof body !== "object") {
+    return { ok: false, why: "the availability body is not an object" };
+  }
+  const slots = (body as { slots?: unknown }).slots;
+  if (!Array.isArray(slots)) {
+    return { ok: false, why: "the availability body carries no slots array" };
+  }
+  for (const entry of slots as unknown[]) {
+    if (typeof entry !== "string") {
+      return { ok: false, why: `a slot is not a string: ${JSON.stringify(entry)}` };
+    }
+    if (!DateTime.fromISO(entry).isValid) {
+      return { ok: false, why: `a slot is not a readable instant: ${entry}` };
+    }
+  }
+  return { ok: true, slots: slots as string[] };
 }
 
 /**

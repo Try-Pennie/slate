@@ -23,6 +23,7 @@ import {
   compareCoverage,
   bucketByDayHour,
   parseCalcomSlots,
+  parseSlateSlots,
   detectPinIgnored,
   type ParityInput,
 } from "./lib/availability-parity.ts";
@@ -72,6 +73,47 @@ const base = (over: Partial<ParityInput>): ParityInput => ({
   // number of slots that still looks like an answer (L340).
   const parsed = parseCalcomSlots({ "2026-09-09": "09:00" });
   assert(!parsed.ok, "a date whose value is not a list of slots is refused");
+}
+{
+  // A start that is a string but not an instant would survive parsing and then be
+  // dropped during bucketing, which yields a SMALLER cal.com answer. That is
+  // indistinguishable from cal.com genuinely offering less, and gets reported as
+  // Slate over-offering: a finding about the payload dressed as one about the
+  // roster. So it is refused at the parse.
+  const parsed = parseCalcomSlots({ "2026-09-09": [{ start: at(9) }, { start: "half past nine" }] });
+  assert(!parsed.ok, "a start that is not a readable instant is refused, never silently dropped");
+}
+
+// --- reading Slate's answer ---------------------------------------------------
+// The same refusals in the opposite direction. A SMALLER Slate answer is reported
+// as Slate under-offering, the headline finding, so a read defect here would be
+// indistinguishable from the roster problem the probe exists to catch.
+{
+  const parsed = parseSlateSlots({ slots: [at(9), at(10)] });
+  assert(parsed.ok, "a well-formed availability body parses");
+  if (parsed.ok) eq(parsed.slots.length, 2, "keeping every slot");
+}
+{
+  const parsed = parseSlateSlots({ slots: [] });
+  assert(parsed.ok, "an empty slots array parses: Slate offering nothing is a real answer");
+}
+{
+  // Not the same as an empty array. Collapsing it into one would report
+  // `slate-offers-nothing`, a finding about the roster, from a body we could not read.
+  const parsed = parseSlateSlots({ orgName: "Pennie" });
+  assert(!parsed.ok, "a body with no slots array is refused, never read as offering nothing");
+}
+{
+  const parsed = parseSlateSlots(null);
+  assert(!parsed.ok, "a null body is refused");
+}
+{
+  const parsed = parseSlateSlots({ slots: [at(9), 42] });
+  assert(!parsed.ok, "a non-string slot is refused, never filtered out");
+}
+{
+  const parsed = parseSlateSlots({ slots: [at(9), "tomorrow morning"] });
+  assert(!parsed.ok, "a slot that is not a readable instant is refused, never dropped");
 }
 
 // --- bucketing ----------------------------------------------------------------
