@@ -56,7 +56,14 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 
-import MonitorSettingsPage from "./page";
+// #1748 broke the single "Booking and alert settings" hub into four routes. Each
+// block below now drives the route that owns the panel it was written about; the
+// tests did not move because the behaviour changed, they moved because the screen
+// they assert on did.
+import AlertSettingsPage from "../alerts/page";
+import BucketsPage from "../buckets/page";
+import BusinessHoursPage from "../business-hours/page";
+import DefaultHoursPage from "../default-hours/page";
 
 const props = { searchParams: Promise.resolve({}) };
 const ADMIN = {
@@ -89,27 +96,27 @@ beforeEach(() => {
   };
 });
 
-describe("MonitorSettingsPage guard", () => {
+describe("AlertSettings guard", () => {
   it("redirects an unauthenticated visitor to /login", async () => {
     auth.currentUser.mockResolvedValueOnce(null);
-    await expect(MonitorSettingsPage(props)).rejects.toThrow(/NEXT_REDIRECT:\/login/);
+    await expect(AlertSettingsPage(props)).rejects.toThrow(/NEXT_REDIRECT:\/login/);
   });
 
   it("diverts a non-super-admin to /admin/ooo while the OOO-only flag is on", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
     env.oooOnlyFor.mockReturnValueOnce(true);
-    await expect(MonitorSettingsPage(props)).rejects.toThrow(/NEXT_REDIRECT:\/admin\/ooo/);
+    await expect(AlertSettingsPage(props)).rejects.toThrow(/NEXT_REDIRECT:\/admin\/ooo/);
   });
 
   it("shows the deny notice to a below-admin caller once scheduling is live", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
     env.oooOnlyFor.mockReturnValueOnce(false);
-    render(await MonitorSettingsPage(props));
-    expect(screen.getByText(/admin account to change alert settings/i)).toBeTruthy();
+    render(await AlertSettingsPage(props));
+    expect(screen.getByText(/admin account to open this page/i)).toBeTruthy();
   });
 });
 
-describe("MonitorSettingsPage default-bucket section (#1016)", () => {
+describe("Buckets default-bucket section (#1016)", () => {
   /**
    * Run one render with the settings and bucket reads rejecting, and put the fake
    * back whatever happens (#1555).
@@ -133,7 +140,7 @@ describe("MonitorSettingsPage default-bucket section (#1016)", () => {
 
   it("renders the non-test buckets as options with the current default selected", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await BucketsPage(props));
 
     // Asserted BEFORE the value, and separately, because the page turns a failed
     // read into the same empty select a genuinely missing default produces. Read
@@ -153,7 +160,7 @@ describe("MonitorSettingsPage default-bucket section (#1016)", () => {
   it("falls back to no-default without crashing when the config table is missing", async () => {
     await withSettingsReadsFailing(async () => {
       auth.currentUser.mockResolvedValueOnce(ADMIN);
-      render(await MonitorSettingsPage(props));
+      render(await BucketsPage(props));
       const select = screen.getByLabelText("Default bucket") as HTMLSelectElement;
       expect(select.value).toBe("");
       expect(screen.getByText(/No bookable buckets found/i)).toBeTruthy();
@@ -165,7 +172,7 @@ describe("MonitorSettingsPage default-bucket section (#1016)", () => {
   // one with no default set, nothing here could tell them apart (L1).
   it("renders a different screen when the reads fail than when they succeed", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await BucketsPage(props));
     const healthy = (screen.getByLabelText("Default bucket") as HTMLSelectElement).value;
     const healthyReads = [...db.reads];
     cleanup();
@@ -173,7 +180,7 @@ describe("MonitorSettingsPage default-bucket section (#1016)", () => {
     db.reads = [];
     await withSettingsReadsFailing(async () => {
       auth.currentUser.mockResolvedValueOnce(ADMIN);
-      render(await MonitorSettingsPage(props));
+      render(await BucketsPage(props));
       const failed = (screen.getByLabelText("Default bucket") as HTMLSelectElement).value;
       expect(failed).not.toBe(healthy);
       // Both attempted the same reads, so the difference is the read's ANSWER and
@@ -188,7 +195,7 @@ describe("MonitorSettingsPage default-bucket section (#1016)", () => {
 // routing pool is off, and nothing in the product said so. An alarm quieted for a
 // good reason is indistinguishable from an alarm that was always quiet, so the
 // screen now names every one that repeats less often than the code intends.
-describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
+describe("AlertSettings quieted-alarm notice (#1289)", () => {
   const quietRows = [
     {
       key: "empty_buckets",
@@ -207,7 +214,7 @@ describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
   it("names each quieted alarm with its value, its default and when it changed", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     db.results.monitor_settings = { data: quietRows, error: null };
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
 
     expect(screen.getByText(/2 alarms are set to repeat less often/i)).toBeTruthy();
     // Said in units a person reads, not as 10080 against 360.
@@ -235,7 +242,7 @@ describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
       ],
       error: null,
     };
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
     expect(screen.queryByText(/repeat less often/i)).toBeNull();
   });
 
@@ -248,7 +255,7 @@ describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
       data: [{ key: "empty_buckets", cooldown_min: 0, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null }],
       error: null,
     };
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
     expect(screen.queryByText(/repeat less often/i)).toBeNull();
   });
 
@@ -257,7 +264,7 @@ describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
   it("shows each field's default even when a value is stored", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     db.results.monitor_settings = { data: quietRows, error: null };
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
 
     const help = screen.getByText(/Urgent page when the cache disagrees/).textContent ?? "";
     expect(help).toContain("Default 30 minutes");
@@ -265,7 +272,7 @@ describe("MonitorSettingsPage quieted-alarm notice (#1289)", () => {
   });
 });
 
-describe("MonitorSettingsPage alert toggles", () => {
+describe("AlertSettings alert toggles", () => {
   // The label IS the contract (L21). "Arm the low-volume alert (page Slack when
   // ...)" told the reader neither what turning it on does nor, more importantly,
   // what is still happening while it is off, and "page" read as a web page rather
@@ -276,7 +283,7 @@ describe("MonitorSettingsPage alert toggles", () => {
 
   it("names each toggle by what it makes happen, in plain words", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
 
     expect(screen.getByRole("checkbox", { name: /send a slack alert when bookings drop off/i })).toBeTruthy();
     expect(
@@ -289,7 +296,7 @@ describe("MonitorSettingsPage alert toggles", () => {
 
   it("says what is still happening while a toggle is OFF, so 'off' is not read as 'not running'", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
 
     // Both checks keep measuring while disarmed; only the notification stops.
     expect(screen.getByText(/Slate still counts bookings, but nobody is notified/i)).toBeTruthy();
@@ -303,7 +310,7 @@ describe("MonitorSettingsPage alert toggles", () => {
 
   it("uses no alerting jargon in either label", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await AlertSettingsPage(props));
 
     for (const box of screen.getAllByRole("checkbox")) {
       const name = box.getAttribute("aria-label") ?? box.parentElement?.textContent ?? "";
@@ -321,7 +328,7 @@ describe("MonitorSettingsPage alert toggles", () => {
 // clear "No dates are set. Every day follows the weekly pattern above." on a read
 // that never ran. Distinct causes get distinct messages (L11), and a surface
 // derived from several reads gates on every one of them (L530).
-describe("MonitorSettingsPage hours block: each read answers for itself (#1658)", () => {
+describe("BusinessHours hours block: each read answers for itself (#1658)", () => {
   const READ_ERROR = { data: null, error: { message: "statement timeout" } };
   const WEEK = [1, 2, 3, 4, 5].map((weekday) => ({
     weekday,
@@ -353,7 +360,7 @@ describe("MonitorSettingsPage hours block: each read answers for itself (#1658)"
   // renders nothing (L159).
   it("CONTROL: draws the week and the dates when every read succeeds", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await BusinessHoursPage(props));
 
     expect(screen.getByText(/Christmas/)).toBeTruthy();
     expect(screen.queryByText(/No dates are set/i)).toBeNull();
@@ -369,7 +376,7 @@ describe("MonitorSettingsPage hours block: each read answers for itself (#1658)"
   it("says the week could not be read instead of drawing Pennie closed every day", async () => {
     db.results.business_hours = READ_ERROR;
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await BusinessHoursPage(props));
 
     expect(screen.getByText(/hours for the week could not be read/i)).toBeTruthy();
     // And it must not draw the week at all: an unchecked weekday is the claim
@@ -382,7 +389,7 @@ describe("MonitorSettingsPage hours block: each read answers for itself (#1658)"
   it("says the dates could not be read instead of claiming no dates are set", async () => {
     db.results.business_hours_exceptions = READ_ERROR;
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await BusinessHoursPage(props));
 
     expect(screen.getByText(/dates that override the weekly pattern could not be read/i)).toBeTruthy();
     expect(screen.queryByText(/No dates are set/i)).toBeNull();
@@ -393,7 +400,7 @@ describe("MonitorSettingsPage hours block: each read answers for itself (#1658)"
   it("keeps the roster wording for a roster failure, with the week and dates still drawn", async () => {
     db.results.users = READ_ERROR;
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await BusinessHoursPage(props));
 
     expect(screen.getByText(/roster could not be read/i)).toBeTruthy();
     expect(screen.getByText(/Christmas/)).toBeTruthy();
@@ -406,11 +413,11 @@ describe("MonitorSettingsPage hours block: each read answers for itself (#1658)"
 // consequence here was `org = null`, and the section renders behind `{org && …}`,
 // so the whole panel vanished with nothing said. The guard checks that `error` is
 // BOUND, never that it produces a distinct screen.
-describe("MonitorSettingsPage org defaults panel (#1651)", () => {
+describe("DefaultHours org defaults panel (#1651)", () => {
   it("says the starting hours could not be read rather than dropping the panel", async () => {
     db.results.organizations = { data: null, error: { message: "statement timeout" } };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await DefaultHoursPage(props));
 
     expect(screen.getByText(/starting hours for a new agent could not be read/i)).toBeTruthy();
     // The heading stays, so the panel is visibly present and unreadable rather
@@ -429,7 +436,7 @@ describe("MonitorSettingsPage org defaults panel (#1651)", () => {
       error: null,
     };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await MonitorSettingsPage(props));
+    render(await DefaultHoursPage(props));
 
     expect(screen.queryByText(/starting hours for a new agent could not be read/i)).toBeNull();
     expect((screen.getByLabelText("Timezone") as HTMLInputElement).value).toBe("America/New_York");

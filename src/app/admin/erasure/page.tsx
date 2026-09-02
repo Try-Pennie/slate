@@ -2,10 +2,8 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
-import { AppHeader } from "@/components/AppHeader";
 import { ErasureWorklist } from "@/components/ErasureWorklist";
 import { loadErasureWorklist } from "@/lib/snowflake/erasure-worklist-load";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -47,22 +45,12 @@ export default async function ErasureWorklistPage() {
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell>
+      <>
         <ErasureWorklist state={state} />
         <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
           Back to settings
         </a>
-      </PageShell>
+      </>
     </>
   );
 }

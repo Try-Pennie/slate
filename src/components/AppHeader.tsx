@@ -1,7 +1,6 @@
-import Link from "next/link";
 import { AccountMenu } from "@/components/AccountMenu";
+import { HeaderNav, type HeaderTab } from "@/components/HeaderNav";
 import { PAGE_WIDTHS } from "@/components/ui/PageShell";
-import { LinkPending } from "@/components/ui/LinkPending";
 import { oooOnlyFor } from "@/lib/env";
 import {
   atLeast,
@@ -34,51 +33,9 @@ function hasLiveWatch(rows: { watch_expiration: string | null }[]): boolean {
  * hidden one from the accessibility tree).
  */
 
-function NavTab({
-  href,
-  current,
-  badge,
-  children,
-}: {
-  href: string;
-  current: boolean;
-  /** Optional count shown as a sky-soft badge (e.g. pending approvals). */
-  badge?: number;
-  children: string;
-}) {
-  return (
-    <Link
-      href={href}
-      aria-current={current ? "page" : undefined}
-      className={`flex min-h-11 min-w-11 items-center gap-1.5 ${
-        current
-          ? "pn-small-bold"
-          : "text-sm text-fg-muted transition-colors hover:text-fg"
-      }`}
-    >
-      {children}
-      {!!badge && badge > 0 && (
-        <>
-          <span
-            aria-hidden="true"
-            className="inline-flex h-5 min-w-5 items-center justify-center rounded-pill bg-pennie-sky-soft px-1.5 text-xs font-semibold tabular-nums text-pennie-blue dark:bg-accent/15 dark:text-pennie-sky"
-          >
-            {badge > 99 ? "99+" : badge}
-          </span>
-          <span className="sr-only">
-            ({badge} {badge === 1 ? "request" : "requests"} pending)
-          </span>
-        </>
-      )}
-      <LinkPending />
-    </Link>
-  );
-}
-
 export async function AppHeader({
   email,
   role,
-  active,
   themePreference = "system",
   userId,
   orgId,
@@ -87,7 +44,6 @@ export async function AppHeader({
 }: {
   email: string;
   role?: string;
-  active: "admin" | "me" | "ooo";
   themePreference?: ThemePreference;
   userId?: string;
   orgId?: string;
@@ -175,6 +131,17 @@ export async function AppHeader({
     }
     pendingOoo = count ?? 0;
   }
+
+  // Which tab is CURRENT is decided by HeaderNav from the path, not here: since
+  // #1748 the admin console renders this header once from its layout, which wraps
+  // /admin and /admin/ooo alike, so there is no page left in a position to say.
+  const tabs: HeaderTab[] = [
+    ...(showAdmin ? [{ href: "/admin", label: "Admin" }] : []),
+    { href: "/me", label: meLabel },
+    ...(showTimeOff
+      ? [{ href: "/admin/ooo", label: "Team Requests", badge: pendingOoo }]
+      : []),
+  ];
   return (
     <>
     {/* #1054: the first focusable thing on every internal page, so a keyboard or
@@ -237,21 +204,7 @@ export async function AppHeader({
           alt="Pennie"
           className="hidden h-[22px] w-auto dark:block"
         />
-        <nav aria-label="Slate sections" className="flex items-center gap-5">
-          {showAdmin && (
-            <NavTab href="/admin" current={active === "admin"}>
-              Admin
-            </NavTab>
-          )}
-          <NavTab href="/me" current={active === "me"}>
-            {meLabel}
-          </NavTab>
-          {showTimeOff && (
-            <NavTab href="/admin/ooo" current={active === "ooo"} badge={pendingOoo}>
-              Team Requests
-            </NavTab>
-          )}
-        </nav>
+        <HeaderNav tabs={tabs} />
         <div className="ml-auto flex items-center">
           <AccountMenu
             email={email}

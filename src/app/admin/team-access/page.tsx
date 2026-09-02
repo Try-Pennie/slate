@@ -1,0 +1,59 @@
+import { redirect } from "next/navigation";
+import { currentUser } from "@/lib/auth";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { oooOnlyFor } from "@/lib/env";
+import { unwrap } from "@/lib/db/result";
+import { TeamAccessPanel } from "@/components/TeamAccessPanel";
+import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
+import { isStaffAccessOutcome } from "@/lib/admin/staff-access";
+import { pendingPrivilegedAccess } from "@/lib/admin/pending-access";
+import type { User } from "@/lib/db/types";
+
+export const dynamic = "force-dynamic";
+
+// Read once, outside the render tree, so how long each unclaimed grant has waited
+// is measured against a single instant and not a different one per row.
+function pendingAccessNow(users: User[]) {
+  return pendingPrivilegedAccess(users, Date.now());
+}
+
+export default async function TeamAccessPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ staff?: string; staff_email?: string; staff_role?: string }>;
+}) {
+  const sp = await searchParams;
+  const me = await currentUser();
+  if (!me) redirect("/login");
+  // Granting Slate access to somebody outside the debt team is a super admin
+  // action, and the server action enforces that itself. This is presentation.
+  if (me.role !== "super_admin") return <AdminDenied need="a super admin" />;
+  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+
+  // #1629: unwrap rather than `(data ?? [])`. An unreadable roster draws the same
+  // empty queue an actually-empty one draws, and this page's whole subject is who
+  // is waiting, so the empty picture reads as "nobody is waiting for access".
+  const users = unwrap(
+    await supabaseAdmin()
+      .from("users")
+      .select("*")
+      .eq("org_id", me.org_id)
+      .eq("is_test", false),
+    "team-access roster",
+  ) as User[];
+
+  return (
+    <>
+      <AdminPageHeader title="Team access">
+        Slate accounts for people who are not debt team agents, so nothing creates
+        them automatically.
+      </AdminPageHeader>
+      <TeamAccessPanel
+        outcome={sp.staff && isStaffAccessOutcome(sp.staff) ? sp.staff : null}
+        outcomeEmail={sp.staff_email ?? ""}
+        outcomeRole={sp.staff_role ?? ""}
+        pending={pendingAccessNow(users)}
+      />
+    </>
+  );
+}

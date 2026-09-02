@@ -4,7 +4,6 @@ import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
-import { AppHeader } from "@/components/AppHeader";
 import { cardCls } from "@/components/ui/styles";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import BookingHistory from "@/components/BookingHistory";
@@ -12,7 +11,6 @@ import { loadBookingDetail } from "@/lib/booking/detail";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import type { HistoryRosterUser } from "@/lib/booking/event-display";
 import type { Booking } from "@/lib/db/types";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -85,17 +83,7 @@ export default async function BookingDetailPage({
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell width="narrow">
+      <>
         <a
           href="/admin"
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
@@ -153,7 +141,7 @@ export default async function BookingDetailPage({
             <p className="text-sm text-fg-muted">No routing trace recorded.</p>
           )}
         </section>
-      </PageShell>
+      </>
     </>
   );
 }

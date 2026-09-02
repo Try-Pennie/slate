@@ -18,19 +18,17 @@ vi.mock("next/navigation", () => ({ redirect, notFound: vi.fn() }));
 
 import AdminPage from "./page";
 
-const props = { searchParams: Promise.resolve({}) };
-
 beforeEach(() => vi.clearAllMocks());
 
 describe("AdminPage guard", () => {
   it("redirects an unauthenticated visitor to /login", async () => {
     auth.currentUser.mockResolvedValueOnce(null);
-    await expect(AdminPage(props)).rejects.toThrow(/NEXT_REDIRECT:\/login/);
+    await expect(AdminPage()).rejects.toThrow(/NEXT_REDIRECT:\/login/);
   });
 
   it("shows the deny notice to a signed-in agent instead of the roster", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "a1", role: "agent", org_id: "o1" });
-    render(await AdminPage(props));
-    expect(screen.getByText(/manager or admin account to manage Slate/i)).toBeTruthy();
+    render(await AdminPage());
+    expect(screen.getByText(/manager or admin account to open this page/i)).toBeTruthy();
   });
 });

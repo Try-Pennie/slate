@@ -62,11 +62,17 @@ vi.mock("@/app/admin/actions", () => ({
   revokeStaffAccess: vi.fn(),
   startImpersonation: vi.fn(),
   setWebhookEndpoint: vi.fn(),
+  setDefaultBucket: vi.fn(),
   syncSalesforceNow: vi.fn(),
   updateBucket: vi.fn(),
 }));
 
-import AdminPage from "./page";
+import AdminHealthPage from "./page";
+import AgentRosterPage from "./agents/page";
+import BucketsPage from "./buckets/page";
+import EventTypesPage from "./event-types/page";
+import RecentRoutingPage from "./routing/page";
+import WebhooksPage from "./webhooks/page";
 
 const SUPER_ADMIN = {
   id: "s1",
@@ -212,28 +218,62 @@ beforeEach(() => {
   auth.currentUser.mockResolvedValue(SUPER_ADMIN);
 });
 
-describe("AdminPage with every read healthy (the control)", () => {
-  it("renders each panel's real content and raises no unreadable notice", async () => {
+// #1748 split these panels across five routes. The control has to follow them:
+// one control over one page would leave the other four's assertions satisfiable
+// by a page that renders nothing at all (L159), which is the whole reason this
+// file has a control.
+describe("every read healthy (the control)", () => {
+  it("draws the health page's real counts and raises no unreadable notice", async () => {
     mockDb();
-    render(await AdminPage(props));
-    // Without this control every assertion below is satisfied by a page that
-    // renders nothing at all (L159).
-    expect(screen.getAllByText(/Ada Byron/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/No deliveries yet/i)).toBeTruthy();
-    expect(screen.queryByText(/could not be read/i)).toBeNull();
+    render(await AdminHealthPage());
+    expect(screen.getByText(/bookable of/)).toBeTruthy();
     // #1646: the sync-health panel's positive control. Every case below asserts
     // this panel is ABSENT and a notice stands in its place, which proves nothing
     // unless the panel is present when every read succeeded.
     expect(screen.getByText(/1 agent with a calendar problem/i)).toBeTruthy();
     expect(screen.getByText(/failing to sync, 4 consecutive failures/i)).toBeTruthy();
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it("draws the roster's real agents and raises no unreadable notice", async () => {
+    mockDb();
+    render(await AgentRosterPage(props));
+    expect(screen.getAllByText(/Ada Byron/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it("draws the real pools and offers the editor", async () => {
+    mockDb();
+    render(await BucketsPage(props));
+    expect(screen.getByText(/New bucket/i)).toBeTruthy();
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it("draws the real event types", async () => {
+    mockDb();
+    render(await EventTypesPage());
+    expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it("draws the delivery log's real empty state", async () => {
+    mockDb();
+    render(await WebhooksPage(props));
+    expect(screen.getByText(/No deliveries yet/i)).toBeTruthy();
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it("draws the recent routing table", async () => {
+    mockDb();
+    render(await RecentRoutingPage());
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
   });
 });
 
-describe("AdminPage on an unreadable table (#1629)", () => {
+describe("an unreadable table (#1629)", () => {
   it("says the event types could not be read instead of listing none", async () => {
     mockDb({ event_types: fails("event_types read exploded") });
-    render(await AdminPage(props));
+    render(await EventTypesPage());
     expect(screen.getAllByText(/event types could not be read/i).length).toBeGreaterThan(0);
     // "None yet." beside a create form is an invitation to make a duplicate.
     expect(screen.queryByText(/^None yet\.$/)).toBeNull();
@@ -241,7 +281,7 @@ describe("AdminPage on an unreadable table (#1629)", () => {
 
   it("says the buckets could not be read, and withholds the routing editor", async () => {
     mockDb({ buckets: fails("buckets read exploded") });
-    render(await AdminPage(props));
+    render(await BucketsPage(props));
     expect(screen.getByText(/buckets could not be read/i)).toBeTruthy();
     // The editor writes what it shows, so it must not be offered over blanks.
     expect(screen.queryByText(/New bucket/i)).toBeNull();
@@ -249,21 +289,21 @@ describe("AdminPage on an unreadable table (#1629)", () => {
 
   it("says the memberships could not be read rather than showing empty pools", async () => {
     mockDb({ bucket_members: fails("bucket_members read exploded") });
-    render(await AdminPage(props));
+    render(await BucketsPage(props));
     expect(screen.getByText(/memberships could not be read/i)).toBeTruthy();
     expect(screen.queryByText(/New bucket/i)).toBeNull();
   });
 
   it("says the recent bookings could not be read, not that nothing was booked", async () => {
     mockDb({ bookings: fails("bookings read exploded") });
-    render(await AdminPage(props));
+    render(await RecentRoutingPage());
     expect(screen.getByText(/recent bookings could not be read/i)).toBeTruthy();
     expect(screen.queryByText(/How the last .* bookings routed/i)).toBeNull();
   });
 
   it("withholds the webhook form when the endpoint could not be read", async () => {
     mockDb({ webhook_endpoints: fails("webhook_endpoints read exploded") });
-    render(await AdminPage(props));
+    render(await WebhooksPage(props));
     expect(screen.getByText(/webhook endpoint could not be read/i)).toBeTruthy();
     // Saving a blank prefill would overwrite the live Regal endpoint.
     expect(screen.queryByLabelText(/Authorization header/i)).toBeNull();
@@ -271,7 +311,7 @@ describe("AdminPage on an unreadable table (#1629)", () => {
 
   it("reports push health as unavailable, never as zero watched", async () => {
     mockDb({ agent_calendars: fails("agent_calendars read exploded") });
-    render(await AdminPage(props));
+    render(await AdminHealthPage());
     expect(screen.getByText(/push health unavailable/i)).toBeTruthy();
     // "push 0/1 watched" is a fleet-wide push outage that is not happening.
     expect(screen.queryByText(/push \d+\/\d+ watched/)).toBeNull();
@@ -290,7 +330,7 @@ describe("AdminPage on an unreadable table (#1629)", () => {
   // silently reading as a clean bill of health (L530).
   it("says calendar sync health could not be measured when the ROSTER read fails", async () => {
     mockDb({ users: fails("users read exploded") });
-    render(await AdminPage(props));
+    render(await AdminHealthPage());
     expect(
       screen.getByText(/failing calendar cannot be matched to the agent/i),
     ).toBeTruthy();
@@ -303,7 +343,7 @@ describe("AdminPage on an unreadable table (#1629)", () => {
 
   it("says the delivery log could not be read, not that nothing was sent", async () => {
     mockDb({ webhook_deliveries: fails("webhook_deliveries read exploded") });
-    render(await AdminPage(props));
+    render(await WebhooksPage(props));
     expect(screen.getByText(/delivery log could not be read/i)).toBeTruthy();
     // This panel is opened to check whether a webhook was sent, so "No deliveries
     // yet." off a failed read answers the exact question with a wrong answer.
@@ -312,14 +352,14 @@ describe("AdminPage on an unreadable table (#1629)", () => {
 
   it("reports the roster count as absent, never as zero of zero", async () => {
     mockDb({ users: fails("users read exploded") });
-    render(await AdminPage(props));
+    render(await AdminHealthPage());
     expect(screen.getByText(/roster could not be read, so there is no count/i)).toBeTruthy();
     expect(screen.queryByText(/bookable of/)).toBeNull();
   });
 
   it("one failing read does not blank the panels whose reads succeeded", async () => {
     mockDb({ bookings: fails("bookings read exploded") });
-    render(await AdminPage(props));
+    render(await BucketsPage(props));
     // The six sibling reads in the same Promise.all still render their content.
     expect(screen.getAllByText(/Ada Byron/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);

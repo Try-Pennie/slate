@@ -16,9 +16,17 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { stripComments } from "./lib/strip-comments.ts";
 
 const APP_DIR = "src/app";
 const SHELL = "src/components/ui/PageShell.tsx";
+/**
+ * A LAYOUT can decide the width for every page beneath it, which is how the admin
+ * console works since #1748: one content column around twenty section routes. It
+ * still has to take that width from the shell's table rather than writing its own,
+ * or "one place" quietly becomes two.
+ */
+const LAYOUTS = ["src/app/admin/layout.tsx"];
 
 /**
  * The internal surfaces, and only those. The lead-facing pages (`/book`,
@@ -59,19 +67,6 @@ function mainTags(text: string): string[] {
   return [...stripComments(text).matchAll(/<main[^>]*>/gs)].map((m) => m[0]);
 }
 
-/**
- * Comments out, before anything looks for markup. Both of these files EXPLAIN
- * themselves by naming the thing they are about: PageShell's own doc comment
- * contains a literal `<main>` and the words `max-w-4xl`, and so does this file.
- * Scanning the raw text picks the prose up as markup, so the shell's "tag" comes
- * back as the four characters in a sentence and every verdict built on it is about
- * a comment (L135, L103, and the reason a check on a whole file is satisfied by
- * any occurrence in it). Two of the controls below were written before this and
- * failed on exactly that.
- */
-function stripComments(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-}
 
 // --- the shell is the only place a page width is written ----------------------
 const shell = readFileSync(SHELL, "utf8");
@@ -102,14 +97,34 @@ assert(
     : `these set their own width instead of naming a PageShell variant: ${offenders.join(", ")}`,
 );
 
-// And they really do reach the shell, or the rule above is satisfied by a tree
-// with no `<main>` in it at all, which is a different bug wearing the same green.
-const viaShell = internal.filter((p) =>
-  /<PageShell[\s/>]/.test(readFileSync(p, "utf8")),
-);
+// Each layout takes its width from the shell's table by NAME, never as a number.
+// A layout is the one place a hard-coded cap would be invisible to the rule above,
+// because it writes no `<main>` the pages own and nobody reads it looking for one.
+const layoutDirs = LAYOUTS.map((l) => [l.replace(/\/layout\.tsx$/, "/"), l] as const);
+for (const [, file] of LAYOUTS.map((l) => [null, l] as const)) {
+  const text = stripComments(readFileSync(file, "utf8"));
+  assert(
+    /PAGE_WIDTHS\.\w+/.test(text),
+    `${file} names a PageShell width rather than writing one`,
+  );
+  assert(
+    !HARDCODED_WIDTH.test(text),
+    `${file} writes no width of its own`,
+  );
+}
+
+// And the pages really do reach one of those providers, or the rule above is
+// satisfied by a tree with no `<main>` in it at all, which is a different bug
+// wearing the same green.
+const covered = internal.filter((p) => {
+  const text = readFileSync(p, "utf8");
+  return /<PageShell[\s/>]/.test(text) || layoutDirs.some(([dir]) => p.startsWith(dir));
+});
 assert(
-  viaShell.length >= 12,
-  `and they get their width from the shell (${viaShell.length} of ${internal.length})`,
+  covered.length === internal.length,
+  covered.length === internal.length
+    ? `and every one of them gets its width from a shared provider (${covered.length})`
+    : `these get their width from nowhere: ${internal.filter((p) => !covered.includes(p)).join(", ")}`,
 );
 
 // --- positive controls --------------------------------------------------------
@@ -118,6 +133,8 @@ assert(
   //    markup so the fixture is the thing that would actually be written back.
   const shellMain = mainTags(shell)[0];
   assert(shellMain !== undefined, "the shell writes the <main> the pages used to write");
+  const viaShell = internal.filter((p) => /<PageShell[\s/>]/.test(readFileSync(p, "utf8")));
+  assert(viaShell.length >= 1, `at least one internal page still renders the shell directly (${viaShell.length})`);
   const reverted = readFileSync(viaShell[0]!, "utf8").replace(
     /<PageShell[^>]*>/,
     shellMain!.replace("${PAGE_WIDTHS[width]}", "max-w-4xl").replace(/[{}`]/g, ""),
@@ -128,12 +145,25 @@ assert(
     "a page that writes its own max-width again is caught",
   );
 
-  // 1b. and it is caught on the SECOND <main>, which is where it would land: the
-  //     deny notice comes first and never carries a width.
+  // 1b. and it is caught on a LATER <main>, not only the first one in the file.
+  //
+  //     Synthetic, deliberately, and worth saying why. When this guard was written
+  //     every internal page opened with an early-return deny notice
+  //     (`<main className="p-8 ...">`) and put its content `<main>` after it, so a
+  //     scan reading only the first tag inspected the deny notice, found no width,
+  //     and reported the page clean however wide the second one was hard coded to
+  //     be. #1748 removed those early returns, so no page in the tree has two
+  //     `<main>` tags today and the real-text version of this control cannot be
+  //     built any more. That is exactly the moment a guard quietly stops covering
+  //     the thing it was written for, so the fixture stays and states its own
+  //     provenance rather than the rule being relaxed to match the current tree.
+  const twoMains =
+    '<main className="p-8 text-sm text-fg-muted">no access</main>' +
+    '\n<main id="main" className="mx-auto w-full max-w-4xl">content</main>';
   eq(
-    mainTags(reverted).findIndex((t) => HARDCODED_WIDTH.test(t)) > 0,
-    true,
-    "caught on the content <main>, not on the deny notice that precedes it",
+    mainTags(twoMains).findIndex((tag) => HARDCODED_WIDTH.test(tag)),
+    1,
+    "a width on a later <main> is caught, not just one on the first",
   );
 
   // 2. the rule must not fire on a width that is NOT the page's own, or every

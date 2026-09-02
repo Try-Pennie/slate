@@ -3,14 +3,12 @@ import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
-import { AppHeader } from "@/components/AppHeader";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -104,17 +102,7 @@ export default async function TiersPage() {
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell>
+      <>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Staffing depth</h1>
@@ -231,7 +219,7 @@ export default async function TiersPage() {
           </>
           )}
         </section>
-      </PageShell>
+      </>
     </>
   );
 }

@@ -3,12 +3,10 @@ import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
-import { AppHeader } from "@/components/AppHeader";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadBucketSupply } from "@/lib/admin/bucket-supply-load";
 import { BucketSupplyTable } from "@/components/BucketSupplyTable";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -42,17 +40,7 @@ export default async function BucketAvailabilityPage() {
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell>
+      <>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Admin</p>
           <h1 className="pn-h3 mt-2 text-pennie-beige">Bucket availability</h1>
@@ -92,7 +80,7 @@ export default async function BucketAvailabilityPage() {
             />
           </section>
         )}
-      </PageShell>
+      </>
     </>
   );
 }

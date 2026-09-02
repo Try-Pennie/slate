@@ -290,7 +290,6 @@ export default async function MePage({
       <AppHeader
         email={me.email}
         role={me.role}
-        active="me"
         themePreference={me.theme_preference}
         userId={me.id}
         orgId={me.org_id}

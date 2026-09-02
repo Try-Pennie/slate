@@ -17,12 +17,21 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { stripComments } from "./lib/strip-comments.ts";
 
 const APP_DIR = "src/app";
 const HEADER = "src/components/AppHeader.tsx";
 const SHELL = "src/components/ui/PageShell.tsx";
 /** A page reaches the shared target by rendering the shell, in either form. */
 const SHELL_USE = /<PageShell[\s/>]/;
+/**
+ * A LAYOUT can provide the header and the target for every page beneath it, which
+ * is how the admin console works since #1748: one header and one `<main>` around
+ * twenty section routes. So the two questions this file asks are answered per
+ * page by whichever provider covers it, and a page under such a layout carries
+ * neither itself.
+ */
+const LAYOUTS = ["src/app/admin/layout.tsx"];
 
 function pages(dir: string): string[] {
   const out: string[] = [];
@@ -60,31 +69,65 @@ const css = readFileSync("src/app/globals.css", "utf8");
 assert(css.includes(".pn-skip-link {"), "the skip link has a style recipe");
 assert(css.includes(".pn-skip-link:focus {"), "and a focus rule that brings it on screen");
 
-// --- the shared shell that provides the target -------------------------------
+/** Every file that can PROVIDE the target: the shell, and each layout. */
+const providers = [SHELL, ...LAYOUTS];
+
+// --- everything that provides the target really provides one -----------------
 // #1745: the target used to be repeated on every page, because every page also
 // carried its own hard-coded max-width on the same `<main>`. Both moved into
 // PageShell, so this guard follows it there. The page-level check below then asks
 // a slightly different question, and the two halves are blind where each other
 // looks: this half proves the shell really renders a focusable target, and that
 // half proves each page actually reaches the shell.
+/**
+ * The rendered `<main id>` tag, if the file writes one. Comments are stripped
+ * first: a file that renders this tag almost always also NAMES it in a doc
+ * comment explaining why, the comment comes first, and matching that reports a
+ * correct file as having a non-focusable target (see ./lib/strip-comments.ts).
+ */
+const mainTag = (text: string) =>
+  stripComments(text).match(new RegExp(`<main[^>]*\\sid="${targetId}"[^>]*>`, "s"));
+
+for (const file of providers) {
+  const tag = mainTag(readFileSync(file, "utf8"));
+  assert(
+    tag !== null,
+    tag !== null
+      ? `${file} renders the <main id="${targetId}"> the pages beneath it skip to`
+      : `${file} no longer renders a #${targetId} target, so every page it covers has none`,
+  );
+  // Safari does not focus a non-focusable fragment target, so without this the
+  // link scrolls the page and leaves focus on the link, and the next tab goes
+  // back into the nav being skipped.
+  assert(
+    (tag?.[0] ?? "").includes("tabIndex={-1}"),
+    `and ${file}'s target is focusable, so focus really moves there`,
+  );
+}
 const shell = readFileSync(SHELL, "utf8");
-const shellMain = shell.match(new RegExp(`<main[^>]*\\sid="${targetId}"[^>]*>`, "s"));
-assert(
-  shellMain !== null,
-  shellMain !== null
-    ? `${SHELL} renders the <main id="${targetId}"> every page skips to`
-    : `${SHELL} no longer renders a #${targetId} target, so every page that uses it has none`,
-);
-assert(
-  (shellMain?.[0] ?? "").includes("tabIndex={-1}"),
-  "and the shell's target is focusable, so focus really moves there",
-);
+const shellMain = mainTag(shell);
 
 // --- every page that shows it carries the target -----------------------------
 const all = pages(APP_DIR);
 assert(all.length > 15, `read the app tree (${all.length} pages)`);
 
-const withHeader = all.filter((p) => readFileSync(p, "utf8").includes("AppHeader"));
+/** The directories each layout covers, with the layout that covers them. */
+const layoutDirs = LAYOUTS.map((l) => [l.replace(/\/layout\.tsx$/, "/"), l] as const);
+const layoutFor = (page: string) =>
+  layoutDirs.find(([dir]) => page.startsWith(dir))?.[1] ?? null;
+
+// Each layout that claims to render the header must actually render one, or the
+// pages beneath it are counted as covered by nothing.
+for (const [, file] of layoutDirs) {
+  assert(
+    readFileSync(file, "utf8").includes("AppHeader"),
+    `${file} renders the header for the pages beneath it`,
+  );
+}
+
+const withHeader = all.filter(
+  (p) => readFileSync(p, "utf8").includes("AppHeader") || layoutFor(p) !== null,
+);
 // The enumeration is the fragile half: a scan that found no pages reports the same
 // empty result as a fully compliant tree (L98).
 assert(
@@ -99,14 +142,15 @@ assert(
  * that demanded the shell would be a check on how the page is built rather than on
  * whether the skip link lands anywhere.
  */
-function targetFor(text: string): "shell" | "own" | null {
+function targetFor(page: string, text: string): "layout" | "shell" | "own" | null {
+  if (layoutFor(page) !== null) return "layout";
   if (SHELL_USE.test(text)) return "shell";
-  const own = text.match(new RegExp(`<main[^>]*\\sid="${targetId}"[^>]*>`, "s"));
+  const own = mainTag(text);
   if (own && own[0].includes("tabIndex={-1}")) return "own";
   return null;
 }
 
-const missing = withHeader.filter((p) => targetFor(readFileSync(p, "utf8")) === null);
+const missing = withHeader.filter((p) => targetFor(p, readFileSync(p, "utf8")) === null);
 assert(
   missing.length === 0,
   missing.length === 0
@@ -118,12 +162,20 @@ assert(
 // went through the shell, the shell half above would be checking a component no
 // page renders, and this file would be green while proving nothing about the
 // pages (L98).
+const shared = withHeader.filter((p) => {
+  const how = targetFor(p, readFileSync(p, "utf8"));
+  return how === "shell" || how === "layout";
+});
+assert(
+  shared.length >= 10,
+  `and most of them reach it through a shared provider (${shared.length} of ${withHeader.length})`,
+);
 const viaShell = withHeader.filter(
-  (p) => targetFor(readFileSync(p, "utf8")) === "shell",
+  (p) => targetFor(p, readFileSync(p, "utf8")) === "shell",
 );
 assert(
-  viaShell.length >= 10,
-  `and most of them reach it through ${SHELL} (${viaShell.length} of ${withHeader.length})`,
+  viaShell.length >= 1,
+  `at least one page still reaches it through ${SHELL} directly (${viaShell.length}), so the shell half above is not checking a component nothing renders`,
 );
 
 // --- positive controls -------------------------------------------------------
@@ -161,10 +213,28 @@ assert(
   const victim = viaShell[0]!;
   const orphaned = readFileSync(victim, "utf8").replace(/<PageShell/g, "<div");
   eq(
-    targetFor(orphaned),
+    targetFor(victim, orphaned),
     null,
     "a page that stops rendering the shell and has no <main> of its own is caught",
   );
+
+  // 4. a layout stops providing one, which silently orphans every page under it
+  //    while each of those pages still reads as perfectly fine on its own.
+  for (const [dir, file] of layoutDirs) {
+    const covered = withHeader.filter((p) => p.startsWith(dir));
+    assert(covered.length > 0, `${file} actually covers pages (${covered.length})`);
+    const layoutText = readFileSync(file, "utf8");
+    const tag = mainTag(layoutText)![0];
+    const broken = stripComments(layoutText).replace(
+      tag,
+      tag.replace(`id="${targetId}"`, 'id="gone"'),
+    );
+    eq(
+      mainTag(broken),
+      null,
+      `removing the target from ${file} is caught, so its pages are not silently orphaned`,
+    );
+  }
 }
 
 finish();

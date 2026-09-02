@@ -10,9 +10,7 @@ import {
   type OutcomeMix,
   type RawMix,
 } from "@/lib/monitor/booking-api-outcome";
-import { AppHeader } from "@/components/AppHeader";
 import { cardCls, proseCls } from "@/components/ui/styles";
-import { PageShell } from "@/components/ui/PageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -111,17 +109,7 @@ export default async function BookingOutcomesPage() {
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        active="admin"
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell>
+      <>
         <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           <p className="pn-eyebrow text-pennie-sky">Diagnostics</p>
           <h1 className="pn-h2 mt-2 text-pennie-beige">Booking API outcomes</h1>
@@ -145,7 +133,7 @@ export default async function BookingOutcomesPage() {
         <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
           Back to settings
         </a>
-      </PageShell>
+      </>
     </>
   );
 }

@@ -1,0 +1,68 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { activeAdminHref, type AdminNavGroup } from "@/lib/admin/nav";
+import { LinkPending } from "@/components/ui/LinkPending";
+
+/**
+ * The admin area's map, always on screen (#1748).
+ *
+ * `/admin` used to be one flat scroll of about 15 sections and `/admin/settings`
+ * a second one of 12, with no way to jump between them and four screens
+ * reachable only by going through a card labelled "Alert settings". Every section
+ * is its own route now, and this lists all of them with the current one marked,
+ * so the whole area is visible at once and anything is one click from anything.
+ *
+ * The groups are given by the caller already filtered for the person's role
+ * (`adminNavFor`), so this renders what it is handed and makes no access decision
+ * of its own. It is a client component only to read the current path.
+ *
+ * `aria-current="page"` carries the highlight to assistive tech, and the marker
+ * is a filled left edge plus a weight change, so it is never colour alone.
+ */
+export function AdminSidebar({ groups }: { groups: AdminNavGroup[] }) {
+  const pathname = usePathname();
+  const active = activeAdminHref(pathname ?? "");
+
+  if (groups.length === 0) return null;
+
+  return (
+    <nav
+      aria-label="Admin sections"
+      className="shrink-0 border-border py-8 lg:sticky lg:top-16 lg:h-[calc(100dvh-4rem)] lg:w-56 lg:overflow-y-auto lg:border-r lg:pr-6"
+    >
+      {/* Horizontal and scrollable below lg, where a 224px column would take most
+          of the width. The groups stay as headings either way, so the map reads
+          the same on a phone as on a desktop. */}
+      <ul className="flex gap-6 overflow-x-auto lg:block lg:gap-0 lg:overflow-visible">
+        {groups.map((group) => (
+          <li key={group.title} className="min-w-max lg:mb-6 lg:min-w-0 lg:last:mb-0">
+            <h2 className="pn-eyebrow mb-2 text-fg-muted">{group.title}</h2>
+            <ul className="flex gap-1 lg:block lg:space-y-0.5">
+              {group.items.map((item) => {
+                const current = item.href === active;
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      aria-current={current ? "page" : undefined}
+                      className={`flex min-h-11 items-center rounded-sm border-l-2 px-3 text-sm transition-colors ${
+                        current
+                          ? "border-accent bg-pennie-sky-soft font-semibold text-fg dark:bg-accent/15"
+                          : "border-transparent font-normal text-fg-muted hover:bg-[var(--bg-alt)] hover:text-fg"
+                      }`}
+                    >
+                      {item.label}
+                      <LinkPending />
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
