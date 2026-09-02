@@ -164,8 +164,13 @@ export type BucketSupplyReport =
        * page could be derived and no share could be honest.
        * `slot-cache`: `bucket_slots` could not be read, so nothing is known about
        * what is being offered.
+       * `booking-horizon`: the org's horizon could not be read (#1654). It sets
+       * both how many day columns exist and where each bucket's own allowance
+       * runs out, so a guessed one does not make a share unavailable, it silently
+       * changes what every share MEANS. That is the worst of the three to get
+       * wrong, because the resulting number looks entirely normal.
        */
-      reason: "business-hours" | "slot-cache";
+      reason: "business-hours" | "slot-cache" | "booking-horizon";
     }
   | {
       measurable: true;

@@ -13,7 +13,7 @@ import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
-import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { readBookingHorizonDays } from "@/lib/booking/settings";
 import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
 import {
   runEmptyReasonCheck,
@@ -506,8 +506,14 @@ export async function GET(req: NextRequest) {
     // Probe the SAME window the rows are computed over (#216): comparing a 4-day
     // probe against a 7-day row would flag a false data anomaly. Loaded once and
     // reused by the self-heal.
+    // `readBookingHorizonDays`, not `loadBookingHorizonDays` (#1654). The gate
+    // below could never fire while this read swallowed its own error and returned
+    // the coded default: the step never failed, `horizonDays` was never null, and
+    // the lane was already measuring against a guessed horizon while reading as
+    // if it refused to (L109). The step boundary stays, because the read can
+    // still throw for reasons the reader does not catch.
     const horizonDays = await steps.run<number | null>("setup_horizon", null, () =>
-      loadBookingHorizonDays(),
+      readBookingHorizonDays(),
     );
     const bucketByCode = new Map((buckets ?? []).map((b) => [b.code, b]));
 

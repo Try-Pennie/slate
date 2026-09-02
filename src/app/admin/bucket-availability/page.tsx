@@ -68,12 +68,16 @@ export default async function BucketAvailabilityPage() {
             <h2 className="mb-1 text-sm font-semibold">
               {report.reason === "business-hours"
                 ? "The office hours could not be read"
-                : "The slot cache could not be read"}
+                : report.reason === "booking-horizon"
+                  ? "The booking horizon could not be read"
+                  : "The slot cache could not be read"}
             </h2>
             <p className="text-sm text-fg-muted">
               {report.reason === "business-hours"
                 ? "Every figure on this page is measured against the office day, so with the week unreadable there is nothing honest to show. Nothing below was measured, and this is not a report that no bucket has availability."
-                : "Nothing below was measured, so this is not a report that the buckets are empty. Reload in a moment; if it persists, the slot cache is unreadable and the booker itself is at risk."}
+                : report.reason === "booking-horizon"
+                  ? "The horizon sets how many days ahead are offered, so it decides both which days appear here and how many times each one could have held. Showing the standard window instead would change what every share on this page means, and nothing about the resulting numbers would look wrong. Reload in a moment."
+                  : "Nothing below was measured, so this is not a report that the buckets are empty. Reload in a moment; if it persists, the slot cache is unreadable and the booker itself is at risk."}
             </p>
           </section>
         ) : (

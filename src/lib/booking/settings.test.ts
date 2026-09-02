@@ -24,6 +24,7 @@ import {
   parseDefaultBucketForm,
   resolveHorizonDays,
   loadBookingHorizonDays,
+  readBookingHorizonDays,
   parseHorizonForm,
   HORIZON_DEFAULT,
   HORIZON_MIN,
@@ -152,5 +153,52 @@ describe("loadBookingHorizonDays", () => {
   it("degrades to the default (never throws) on a read error, unlike getDefaultBucketCode", async () => {
     maybeSingle.mockResolvedValue({ data: null, error: { message: "column horizon_days does not exist" } });
     await expect(loadBookingHorizonDays()).resolves.toBe(HORIZON_DEFAULT);
+  });
+});
+
+// #1654. The degrade above is right for the BOOKER (booking must keep working
+// with the standard window) and wrong for anything that MEASURES against the
+// window, because a reading taken over a window nobody chose looks exactly like
+// one taken over the right window. `readBookingHorizonDays` is the honest read
+// both of those callers now share.
+describe("readBookingHorizonDays", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    delete process.env.SLATE_BOOKING_HORIZON_DAYS;
+  });
+
+  it("returns null when the read FAILED, so a caller can refuse to measure", async () => {
+    maybeSingle.mockResolvedValue({
+      data: null,
+      error: { message: "column horizon_days does not exist" },
+    });
+    await expect(readBookingHorizonDays()).resolves.toBeNull();
+  });
+
+  // The distinction that makes the null meaningful: no stored override is not a
+  // failed read, it is the documented fall through to env and then the default.
+  // Collapsing the two would make every unconfigured org unmeasurable (L214).
+  it("returns the resolved default when the read SUCCEEDED with no override stored", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readBookingHorizonDays()).resolves.toBe(HORIZON_DEFAULT);
+  });
+
+  it("returns the stored horizon when one is set", async () => {
+    maybeSingle.mockResolvedValue({ data: { horizon_days: 6 }, error: null });
+    await expect(readBookingHorizonDays()).resolves.toBe(6);
+  });
+
+  // The pair, asserted together: on the SAME failure the booker keeps a usable
+  // window and the measuring caller gets an explicit unknown. Either one alone
+  // would pass on a reader hard wired to a single answer.
+  it("differs from loadBookingHorizonDays on exactly the failing read", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
+    expect(await readBookingHorizonDays()).toBeNull();
+    expect(await loadBookingHorizonDays()).toBe(HORIZON_DEFAULT);
+
+    maybeSingle.mockResolvedValue({ data: { horizon_days: 5 }, error: null });
+    expect(await readBookingHorizonDays()).toBe(5);
+    expect(await loadBookingHorizonDays()).toBe(5);
   });
 });

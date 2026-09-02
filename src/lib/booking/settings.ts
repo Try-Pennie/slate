@@ -129,14 +129,33 @@ const envHorizon = (): number | undefined => {
 };
 
 /**
- * The resolved org-wide horizon for the server to use. Unlike getDefaultBucketCode
- * (which throws on a read error, because a false "no default" is dangerous), a
- * config read error here degrades to the coded default: booking must keep working
- * with the standard window rather than collapse. The catch logs so a persistently
- * broken column is visible in Cloudflare forensics rather than silently pinning the
- * whole org to the default forever (fail-loud).
+ * The org-wide horizon, or **null** when the read FAILED (#1654).
+ *
+ * The honest read, and the one predicate every caller that MEASURES against the
+ * window shares. Two consumers used to disagree about what an unreadable horizon
+ * means, and they cannot both have been right: the admin supply page took the
+ * coded default and presented the result as measured, while the monitor lane
+ * treats a guessed horizon as unsafe because a probe compared against a row
+ * computed over a different window reads as drift (#216).
+ *
+ * The monitor is the one that was right, and the reason generalises: the horizon
+ * decides both how far ahead the booker offers and the window availability is
+ * computed over, so a guessed one silently changes what a reading MEANS rather
+ * than making it unavailable. A number computed against the wrong window is worse
+ * than a missing one, because nothing about it looks wrong.
+ *
+ * Worse, the monitor's refusal could never actually FIRE. It reads the horizon
+ * inside a step boundary and gates on the step returning null, but
+ * `loadBookingHorizonDays` catches its own error and returns the default, so the
+ * step never failed, the gate never opened, and the lane was already measuring
+ * against a guessed horizon while reading as if it refused to (L109).
+ *
+ * Null means the READ failed, never "no override is stored". A row that reads
+ * fine with a null `horizon_days` is the documented fall through to the env value
+ * and then the coded default, which is a real answer; collapsing the two would
+ * make every org that never set an override unmeasurable (L214).
  */
-export async function loadBookingHorizonDays(): Promise<number> {
+export async function readBookingHorizonDays(): Promise<number | null> {
   try {
     const db = supabaseAdmin();
     const row = unwrap(
@@ -145,9 +164,28 @@ export async function loadBookingHorizonDays(): Promise<number> {
     ) as Pick<BookingSettings, "horizon_days"> | null;
     return resolveHorizonDays(row?.horizon_days ?? null, envHorizon(), HORIZON_DEFAULT);
   } catch (err) {
-    log.error("booking-settings", { msg: "horizon read failed; using default" }, err);
-    return resolveHorizonDays(null, envHorizon(), HORIZON_DEFAULT);
+    log.error("booking-settings", { msg: "horizon read failed" }, err);
+    return null;
   }
+}
+
+/**
+ * The resolved horizon for the BOOKING path, which degrades deliberately.
+ *
+ * Unlike getDefaultBucketCode (which throws on a read error, because a false "no
+ * default" is dangerous), a config read error here falls back to the coded
+ * default: booking must keep working with the standard window rather than
+ * collapse, and serving the standard window is a correct thing to do, not a
+ * measurement anybody will draw a conclusion from.
+ *
+ * That is the whole difference from `readBookingHorizonDays`, and the fallback is
+ * written here ONCE so the choice is visible at the site that makes it rather
+ * than repeated at each caller. Anything that measures against the window must
+ * use the nullable read instead.
+ */
+export async function loadBookingHorizonDays(): Promise<number> {
+  const read = await readBookingHorizonDays();
+  return read ?? resolveHorizonDays(null, envHorizon(), HORIZON_DEFAULT);
 }
 
 /**

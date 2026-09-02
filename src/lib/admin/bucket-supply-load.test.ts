@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //  - an unreadable slot cache rendering as sixty buckets with no availability,
 //    which is the exact opposite of what is known;
 //  - an unreadable roster rendering as zero eligible agents, which sends somebody
-//    to fix a routing pool that was fine.
+//    to fix a routing pool that was fine;
+//  - an unreadable HORIZON (#1654) rendering a page of shares measured against a
+//    window nobody chose. That one is the worst of the four to get wrong, because
+//    the number LOOKS right: the horizon decides both how many day columns are
+//    shown and where each bucket's own allowance runs out, so a guessed one
+//    silently changes what every share MEANS rather than making it unavailable.
 //
 // Each of those is a read that CAN fail, so each gets a test that makes it fail.
 
@@ -28,7 +33,9 @@ const hours = vi.hoisted(() => ({
   })),
 }));
 
-const settings = vi.hoisted(() => ({ loadBookingHorizonDays: vi.fn(async () => 4) }));
+const settings = vi.hoisted(() => ({
+  readBookingHorizonDays: vi.fn(async (): Promise<number | null> => 4),
+}));
 
 const depth = vi.hoisted(() => ({
   loadTierDepths: vi.fn(async () => [
@@ -100,7 +107,7 @@ beforeEach(() => {
       end_minute: 17 * 60,
     })),
   });
-  settings.loadBookingHorizonDays.mockResolvedValue(4);
+  settings.readBookingHorizonDays.mockResolvedValue(4);
   depth.loadTierDepths.mockResolvedValue([
     { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3 },
     { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9 },
@@ -223,5 +230,24 @@ describe("loadBucketSupply (#1254)", () => {
     await loadBucketSupply("org-42", NOW);
     expect(eq).toHaveBeenCalledWith("org_id", "org-42");
     spy.mockRestore();
+  });
+
+  // #1654: the horizon is a measuring bound, so a guessed one is not a safe
+  // stand in here. The monitor lane already refuses on this grounds; this surface
+  // used to take the coded default and present the result as measured.
+  it("refuses to report at all when the booking horizon could not be read", async () => {
+    settings.readBookingHorizonDays.mockResolvedValue(null);
+    const report = await loadBucketSupply("o1", new Date("2026-08-04T14:00:00Z"));
+    expect(report.measurable).toBe(false);
+    expect(report.measurable === false && report.reason).toBe("booking-horizon");
+  });
+
+  // The control beside it, in the same fixture: a horizon that reads fine still
+  // produces a report, so the refusal above cannot be passing because this loader
+  // stopped reporting altogether.
+  it("still reports when the horizon reads fine", async () => {
+    settings.readBookingHorizonDays.mockResolvedValue(4);
+    const report = await loadBucketSupply("o1", new Date("2026-08-04T14:00:00Z"));
+    expect(report.measurable).toBe(true);
   });
 });
