@@ -29,6 +29,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm, workingHoursDays } from "@/components/ui/WorkingHoursForm";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
+import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -212,6 +213,16 @@ export default async function AgentProfilePage({
             </Pill>
           </div>
         </section>
+        {/* #1749: this page had no view-as action at all, so an admin looking at a
+            specific person still had to copy their address to a field elsewhere.
+            It renders only where it could actually work, and the whole banner and
+            two hour expiry behind it are unchanged. */}
+        <ViewAsButton
+          actorRole={me.role}
+          actorId={me.id}
+          target={agent}
+          className={btnSecondaryCls}
+        />
 
         {/* Access: role + bookable + manager */}
         <section className={cardCls}>
