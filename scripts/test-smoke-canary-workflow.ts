@@ -165,6 +165,55 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
     /steps\.embed\.outcome == 'failure'/.test(alertIf),
     "the alert step consults the embed step's outcome too, or its failures are recorded and read by nobody",
   );
+  // The bucket, which is the thing that shipped wrong. Every OTHER canary step
+  // drives the hidden SMOKE bucket with a bearer token (#396), and a BROWSER
+  // cannot send one, so the booker correctly refuses that bucket and the check
+  // false-pages every full pass. Measured against the real deployment on
+  // 2026-09-02. Neither variable may come back to this step.
+  // Comment lines stripped, or this reads the comment ABOVE the run line that
+  // explains these two must not be here and fails on the prose banning them
+  // (L518, which this suite met on its own first run).
+  const embedEnv = embedStep
+    .slice(0, embedStep.indexOf("run:"))
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+  assert(
+    !/BOOKING_API_KEY/.test(embedEnv),
+    "the embed step carries no API key: a browser cannot send one, and its presence invites the hidden test bucket back",
+  );
+  assert(
+    !/SMOKE_BUCKET/.test(embedEnv),
+    "and no SMOKE_BUCKET, which would point the browser at a bucket the booker refuses",
+  );
+  // Overlay control, which is what proves the sweep rather than the regex: put the
+  // two variables back into the REAL step in memory and require the same predicate
+  // to catch it. A check that only ever sees a clean file cannot tell a working
+  // guard from one whose slice quietly stopped matching (L98).
+  {
+    const sabotaged = embedEnv.replace(
+      "SMOKE_FAILURE_FILE:",
+      "BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}\n          SMOKE_BUCKET: SMOKE\n          SMOKE_FAILURE_FILE:",
+    );
+    assert(
+      /BOOKING_API_KEY/.test(sabotaged) && /SMOKE_BUCKET/.test(sabotaged),
+      "overlay control: the guard catches the API key and the test bucket coming back",
+    );
+  }
+
+  // And the script's own default is a real bucket, not the hidden one. Read from
+  // the source, because the workflow being clean says nothing about what the
+  // script falls back to when nothing is set.
+  {
+    const src = readFileSync(join(ROOT, "scripts/smoke-embed-render.ts"), "utf8");
+    const fallback = /SMOKE_EMBED_BUCKET \|\| "([^"]+)"/.exec(src);
+    assert(fallback !== null, "the embed check has a readable default bucket");
+    assert(
+      fallback![1] !== "SMOKE",
+      `the default bucket is a real one, not the bearer-gated test bucket (got "${fallback?.[1]}")`,
+    );
+  }
+
   // The browser has to be there before the step that drives it, and cached, or the
   // download is paid on every full pass forever.
   assert(
