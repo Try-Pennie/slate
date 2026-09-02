@@ -38,7 +38,7 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { planScheduleReplacement } = await import("@/lib/schedule-replacement");
-const { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs } =
+const { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs, dropSplitDays } =
   await import("./lib/calcom-schedule-import.ts");
 
 const apply = process.env.APPLY === "1";
@@ -140,11 +140,16 @@ const calId = new Map((listJson.data ?? []).map((u) => [u.email.toLowerCase(), u
 console.log(`${agents.length} bookable agents, ${calId.size} users listed in cal.com\n`);
 
 // --- compare ------------------------------------------------------------------
+/** Weekday names for a message a person reads, so a dropped day is named rather
+ *  than being an index they have to decode. */
+const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
 interface Change {
   email: string;
   userId: string;
   scheduleId: string;
   reasons: string[];
+  droppedDays: number[];
   plan: { rules: { weekday: number; start_minute: number; end_minute: number }[]; timezone: string };
 }
 const changes: Change[] = [];
@@ -197,10 +202,22 @@ for (const agent of agents) {
     skipped.push({ email: agent.email, why: mapped.why, kind: "permanent" });
     continue;
   }
-  // Slate's own validator decides whether this week may be written. A split shift
-  // (two windows on one weekday) is refused here BY DESIGN, and merging the two
-  // into one would invent hours the agent never set.
-  const plan = planScheduleReplacement(mapped.rules, mapped.timezone);
+  // Slate stores ONE window per weekday, so a day carrying two shifts cannot be
+  // represented. It is left out and the rest of the week is imported (Dan, 
+  // 2026-09-02): merging them would make the agent bookable through a break they
+  // never offered, and taking the first would delete the second half of their day.
+  const { rules: usableRules, droppedDays } = dropSplitDays(mapped.rules);
+  if (usableRules.length === 0) {
+    skipped.push({
+      email: agent.email,
+      why: droppedDays.length > 0
+        ? `every day is a split shift (${droppedDays.map((d) => DAY_NAMES[d]).join(", ")}), so there is no week left to write`
+        : "the schedule has no usable days",
+      kind: "permanent",
+    });
+    continue;
+  }
+  const plan = planScheduleReplacement(usableRules, mapped.timezone);
   if (!plan.ok) {
     skipped.push({ email: agent.email, why: `Slate will not accept this week: ${plan.error}`, kind: "permanent" });
     continue;
@@ -219,12 +236,18 @@ for (const agent of agents) {
     userId: agent.id,
     scheduleId: sched.id,
     reasons: diff.reasons,
+    droppedDays,
     plan: { rules: plan.rules, timezone: plan.timezone },
   });
   console.log(`${agent.email}`);
   console.log(`   now:  ${sched.timezone}  ${render(currentRules)}`);
   console.log(`   new:  ${plan.timezone}  ${render(plan.rules)}`);
   console.log(`   why:  ${diff.reasons.join("; ")}`);
+  if (droppedDays.length > 0) {
+    // Said at the agent, and again in the summary, because it is a real loss: they
+    // will be offered NOTHING on these days until somebody sets them by hand.
+    console.log(`   NOTE: ${droppedDays.map((d) => DAY_NAMES[d]).join(", ")} left out (two shifts that day); they will be offered nothing then`);
+  }
 }
 
 console.log(`\n--- summary ---`);
@@ -234,6 +257,13 @@ console.log(`already matching: ${unchanged.length}`);
 // completely different: one wants another run, the other wants a person.
 const transient = skipped.filter((s) => s.kind === "transient");
 const permanent = skipped.filter((s) => s.kind === "permanent");
+const withDropped = changes.filter((c) => c.droppedDays.length > 0);
+if (withDropped.length > 0) {
+  console.log(`imported WITHOUT some days (two shifts that day, so Slate cannot hold them): ${withDropped.length}`);
+  for (const c of withDropped) {
+    console.log(`   ${c.email}: no ${c.droppedDays.map((d) => DAY_NAMES[d]).join(", ")}`);
+  }
+}
 console.log(`skipped, needs a person: ${permanent.length}`);
 for (const s of permanent) console.log(`   ${s.email}: ${s.why}`);
 console.log(`skipped, transient (re-run reaches them): ${transient.length}`);

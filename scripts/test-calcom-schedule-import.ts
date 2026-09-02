@@ -15,7 +15,7 @@
 // Every unreadable input is REFUSED rather than defaulted. Defaulting to Eastern is
 // precisely how the roster came to claim one timezone it does not have, so a
 // mapping that silently fell back would recreate the defect it exists to fix.
-import { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs } from "./lib/calcom-schedule-import.ts";
+import { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs, dropSplitDays } from "./lib/calcom-schedule-import.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const uniform = {
@@ -217,6 +217,62 @@ const current = {
   eq(paceMs("-5"), 250, "a negative pace is not a pace");
   eq(paceMs("500"), 500, "a real value is honoured");
   eq(paceMs("0"), 0, "and zero is a deliberate choice, not a missing one");
+}
+
+// --- split shifts: import the days we CAN represent ---------------------------
+// Slate stores one window per weekday, so an agent with two shifts on a Tuesday
+// cannot be represented. Merging them into 08:00 to 18:00 would make that agent
+// bookable straight through a break they never offered, so the split DAY is left
+// out and every other day is imported. Dan's call, 2026-09-02.
+//
+// Leaving a day out is not free: the agent is offered nothing that day. So the
+// dropped days are returned rather than swallowed, and the caller has to say so.
+{
+  const rules = [
+    { weekday: 1, start_minute: 480, end_minute: 1020 },
+    { weekday: 2, start_minute: 480, end_minute: 720 },
+    { weekday: 2, start_minute: 840, end_minute: 1080 },
+    { weekday: 3, start_minute: 480, end_minute: 1020 },
+  ];
+  const r = dropSplitDays(rules);
+  eq(r.rules.map((x) => x.weekday), [1, 3], "the split day is left out and the others are kept");
+  eq(r.droppedDays, [2], "and the day that was dropped is reported, never silently lost");
+}
+{
+  const clean = [
+    { weekday: 1, start_minute: 480, end_minute: 1020 },
+    { weekday: 5, start_minute: 480, end_minute: 1020 },
+  ];
+  const r = dropSplitDays(clean);
+  eq(r.rules.length, 2, "a week with no split days is untouched");
+  eq(r.droppedDays.length, 0, "and reports nothing dropped");
+}
+{
+  // Three windows on one day is still one day to drop, not two.
+  const r = dropSplitDays([
+    { weekday: 4, start_minute: 480, end_minute: 600 },
+    { weekday: 4, start_minute: 660, end_minute: 780 },
+    { weekday: 4, start_minute: 840, end_minute: 1020 },
+  ]);
+  eq(r.rules.length, 0, "every window on the split day goes");
+  eq(r.droppedDays, [4], "reported once");
+}
+{
+  // An agent whose ENTIRE week is split shifts has nothing left. Writing an empty
+  // week would remove them from every bucket's availability while reporting a
+  // successful import, so the caller must be able to tell this apart from a normal
+  // result rather than writing zero rules.
+  const r = dropSplitDays([
+    { weekday: 1, start_minute: 480, end_minute: 720 },
+    { weekday: 1, start_minute: 840, end_minute: 1020 },
+  ]);
+  eq(r.rules.length, 0, "nothing survives");
+  eq(r.droppedDays, [1], "and the day is named so the caller refuses rather than writing an empty week");
+}
+{
+  const r = dropSplitDays([]);
+  eq(r.rules.length, 0, "an empty week drops nothing");
+  eq(r.droppedDays.length, 0, "and reports nothing");
 }
 
 finish();
