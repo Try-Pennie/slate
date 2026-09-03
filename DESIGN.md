@@ -149,6 +149,7 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 - **Graphite** (`rgb(52, 52, 52)`): all primary text, and the label on every sky fill. There is no black in the system.
 - **Navy** (`rgb(29, 33, 47)`): the occasional full bleed band, a page hero or a footer, carrying beige text.
 - **Muted** (`rgb(106, 106, 112)`): secondary and supporting text.
+- **Quiet Letter** (`rgb(158, 155, 166)`, dark theme only): an unfilled mark a reader has to read a position off, which is currently the tier ledger's uncovered letters. Chosen by measurement because nothing else cleared both bars: 6.59:1 on the dark page, 4.29 on a card, 3.50 on a hovered row, and a 2.54:1 step down from the foreground, where the theme's own muted text is 1.00:1 from it and carries no step at all. Light uses Muted for the same job.
 - **Mercury** (`rgb(227, 227, 229)`): strokes, outlines, and the unfilled half of a meter or track whose FILLED half carries the meaning. It measures 1.28:1 on a card, so it cannot be used for an unfilled mark a reader has to read a POSITION off: the tier ledger's uncovered letters say which rung is which, so they take `--ledger-off` at 3:1 instead (#1812).
 
 ### Tertiary

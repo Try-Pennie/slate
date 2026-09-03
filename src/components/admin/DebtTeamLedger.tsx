@@ -3,6 +3,7 @@ import {
   debtTeamCoverage,
   debtTeamLabel,
   debtTeamRungLabel,
+  debtTeamRungLetter,
 } from "@/lib/admin/debt-team";
 
 /**
@@ -28,7 +29,11 @@ import {
  * comparison the bars could not do.
  *
  * The letters are their own legend, so the column needs no key: L M H V U reads
- * as the ladder it is. V and U are the two that are not obvious, and their
+ * as the ladder it is. They are DERIVED from the tier names rather than written
+ * out beside the table, which is what keeps them from drifting, and
+ * `scripts/test-ledger-letters.ts` is what keeps that safe rather than lucky: two
+ * tiers sharing an initial would draw two identical positions with nothing
+ * failing (#1817). V and U are the two that are not obvious, and their
  * expansion lives ONCE on the column header rather than on every row.
  *
  * THREE SIGNALS SEPARATE COVERED FROM UNCOVERED: case, weight and tone. Colour is
@@ -46,15 +51,12 @@ import {
  * NO MOTION, and nothing per row that varies in size, so 136 of these stay calm.
  */
 
-/** The letter for each rung, from the label rather than invented beside it. */
-const LETTER_FOR = (rank: number) => debtTeamRungLabel(rank).charAt(0).toUpperCase();
-
 /**
  * What L M H V U stand for, for the column header. Built from `DEBT_TIER` so it
  * cannot drift from the letters, and stated ONCE rather than per row.
  */
 export const LEDGER_LEGEND = DEBT_TEAM_RUNGS.map(
-  (rank) => `${LETTER_FOR(rank)} ${debtTeamRungLabel(rank)}`,
+  (rank) => `${debtTeamRungLetter(rank)} ${debtTeamRungLabel(rank)}`,
 ).join(", ");
 
 export function DebtTeamLedger({ teams }: { teams: string[] }) {
@@ -74,7 +76,7 @@ export function DebtTeamLedger({ teams }: { teams: string[] }) {
       >
         {DEBT_TEAM_RUNGS.map((rank) => {
           const on = coverage.ranks.includes(rank);
-          const letter = LETTER_FOR(rank);
+          const letter = debtTeamRungLetter(rank);
           return (
             <span
               key={rank}
