@@ -99,6 +99,15 @@
      which is why it is not simply the accent here. Aliased rather than copied so
      one edit moves both, and measured by name in scripts/test-contrast.ts. */
   --cue-line: var(--focus-ring-line);
+  /* The tier ledger's two letter tones (#1812). Five letters sit in fixed
+     positions, one per rung; the covered ones are the data and the uncovered
+     ones establish WHICH position is which, so a reader can tell "l M H V u"
+     from "L M H v u" without counting. That makes the quiet one a functional
+     mark rather than decoration, so it takes the 3:1 floor and is measured by
+     name in scripts/test-contrast.ts. Mercury, which DESIGN.md nominates for
+     the unfilled half of a meter, is 1.19:1 here and cannot do this job. */
+  --ledger-on:  var(--fg);
+  --ledger-off: var(--fg-muted);
   --focus-ring-offset:  2px; /* a control may tighten this; see .pn-nav-item */
 
   /* ---------------- Radii (private names; mapped in @theme inline) ---------------- */
@@ -204,6 +213,15 @@
      card/field edges, and inputs need a 3:1 boundary for WCAG 1.4.11. */
   --border:           rgba(246, 246, 246, 0.38);
   --focus-ring-line:  var(--accent); /* S3: sky outline on navy (graphite stays light-only) */
+  /* Dark needs its OWN quiet letter. The dark theme's `--fg-muted` measures
+     1.00:1 against its own `--fg`, so reusing it would leave the tone half of
+     the distinction doing nothing, and the light theme's muted is 1.78:1 on a
+     hovered dark row so it cannot come across either. Nothing already in the
+     palette clears both bars: the only tokens that do are sky-deep and green,
+     which mean "action" and "healthy". Chosen by measurement (#1812): 6.59:1 on
+     the page, 4.29 on a card, 3.50 on a hovered row, and a 2.54:1 step down
+     from the foreground. */
+  --ledger-off: rgb(158, 155, 166);
   /* Rose lightened 45% toward white: base rose is 2.30:1 on ink-2 / 3.12:1 on navy (AA fail);
      this reads 4.96:1 on ink-2 and 6.72:1 on navy. */
   --error:            rgb(223, 148, 148);

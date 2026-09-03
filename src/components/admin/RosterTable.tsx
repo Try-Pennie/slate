@@ -8,7 +8,7 @@ import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import { isActive } from "@/lib/active-user";
 import { teamsOf } from "@/lib/admin/agent-display";
-import { DebtTeamLadder } from "@/components/admin/DebtTeamLadder";
+import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
@@ -241,7 +241,13 @@ export function RosterTable({
             <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
               <th className="px-4 py-2.5 font-semibold">Member</th>
               <th className="px-3 py-2.5 font-semibold">Role</th>
-              <th className="px-3 py-2.5 font-semibold">Team</th>
+              {/* The legend lives here ONCE (#1812). V and U are the two letters
+                  nobody guesses, and repeating the expansion on 136 rows is the
+                  duplication this design exists to remove. */}
+              <th className="px-3 py-2.5 font-semibold" title={LEDGER_LEGEND}>
+                Team
+                <span className="sr-only">{` (${LEDGER_LEGEND})`}</span>
+              </th>
               <th className="px-3 py-2.5 font-semibold">Manager</th>
               <th className="px-3 py-2.5 font-semibold">Bookable</th>
               <th className="px-4 py-2.5" />
@@ -280,9 +286,11 @@ export function RosterTable({
                   <Pill variant={`role-${u.role}`}>{roleLabel(u.role)}</Pill>
                 </td>
                 <td className="px-3 py-3 text-fg-muted">
-                  {/* #1796: a five rung ladder, fixed width, so the cell is the
-                      same size whether an agent covers one tier or five. */}
-                  <DebtTeamLadder teams={teamsOf(u)} />
+                  {/* #1812: five ledger letters in fixed positions, so the cell
+                      is the same size for one tier or five AND the positions
+                      align down every row, which is the comparison the drawn
+                      version could not do. */}
+                  <DebtTeamLedger teams={teamsOf(u)} />
                 </td>
                 <td className="px-3 py-3 text-fg-muted">
                   {u.manager_id ? (nameById.get(u.manager_id) ?? "-") : "-"}

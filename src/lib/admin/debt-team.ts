@@ -74,20 +74,6 @@ export function debtTeamCoverage(teams: string[]): DebtTeamCoverage {
   return { ranks: [...ranks].sort((a, b) => a - b), offLadder };
 }
 
-/**
- * The band ALONE, for the cell that renders off ladder values as their own chips.
- * `debtTeamLabel` carries everything and is what assistive tech and the hover
- * title get; this is what is printed beside the glyph, so the chips are not named
- * twice. Both derive from `bandPhrase`, so the two can never describe the same
- * rungs differently.
- */
-export function debtTeamBandLabel(coverage: DebtTeamCoverage): string {
-  const { ranks, offLadder } = coverage;
-  if (ranks.length === 0 && offLadder.length === 0) return "No team set";
-  if (ranks.length === 0) return "";
-  return `Covers ${bandPhrase(ranks)}`;
-}
-
 /** The rungs as a phrase: a range when contiguous, a list when there is a gap. */
 function bandPhrase(ranks: number[]): string {
   if (ranks.length === DEBT_TEAM_RUNGS.length) return "every tier";
