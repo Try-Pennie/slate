@@ -11,6 +11,8 @@ import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { BucketForm } from "@/components/admin/BucketForm";
+import { RosterProvider } from "@/components/admin/BucketMembersPicker";
+import { rosterSectionFor, type RosterEntry } from "@/lib/admin/bucket-member-picker";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { Bucket, BucketMember, EventType, User } from "@/lib/db/types";
 
@@ -61,6 +63,20 @@ export default async function BucketsPage({
   const members = (membersRes.data ?? []) as BucketMember[];
   const membersUnreadable = membersRes.error != null;
   const attrCatalog = deriveAttributeCatalog(users.map((u) => u.attributes));
+  // #1760: the members picker is a client component, so only the three strings it
+  // can draw cross to the browser, and they cross ONCE (RosterProvider) rather
+  // than per bucket form. Sorting and grouping live in the shared predicate, not
+  // here, so the server render and the browser's filtering cannot drift.
+  //
+  // #1762 owns the question of whether departed and non bookable people belong in
+  // this list at all; the sections are the seam that answer hangs on, and nothing
+  // here pre-empts it.
+  const roster: RosterEntry[] = users.map((u) => ({
+    id: u.id,
+    name: u.name ?? "",
+    email: u.email,
+    section: rosterSectionFor(u.role),
+  }));
   // `null` (not a zeroed map) when either input could not be read: the eligible
   // count beside each bucket then says nothing instead of saying zero.
   const depthByBucketCode =
@@ -154,14 +170,14 @@ export default async function BucketsPage({
             really configured.
           </UnreadableNotice>
         ) : (
-          <>
+          <RosterProvider roster={roster}>
             <div className="space-y-4">
               {buckets.map((b) => (
                 <BucketForm
                   key={b.id}
                   bucket={b}
                   eventTypes={eventTypes}
-                  users={users}
+                  roster={roster}
                   memberIds={
                     new Set(
                       members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
@@ -181,12 +197,12 @@ export default async function BucketsPage({
               </h3>
               <BucketForm
                 eventTypes={eventTypes}
-                users={users}
+                roster={roster}
                 memberIds={new Set()}
                 catalog={attrCatalog}
               />
             </div>
-          </>
+          </RosterProvider>
         )}
       </section>
     </>

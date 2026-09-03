@@ -1,74 +1,51 @@
 import { createBucket, updateBucket } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import {
+  BucketCriteriaPicker,
+  BucketMembersPicker,
+} from "@/components/admin/BucketMembersPicker";
 import { btnCls, inputCls, labelCls } from "@/components/ui/styles";
-import type { Bucket, Criteria, EventType, User } from "@/lib/db/types";
+import type { RosterEntry } from "@/lib/admin/bucket-member-picker";
+import type { Bucket, EventType } from "@/lib/db/types";
 
 /**
  * The routing pool editor (#1748). Both of these were local helpers on the old
  * single page /admin; Buckets is its own route now, so they moved out with it
  * rather than being copied.
+ *
+ * The two pickers inside it are on-demand client components since #1760: this
+ * form is rendered once per bucket (about 60 of them), and drawing the whole
+ * roster and the whole attribute catalog inside each one put 8,820 `<input>`
+ * elements on the page (9,450 measured on the served page across its 64 forms).
+ * See `BucketMembersPicker.tsx` for the measurement and the form contract.
  */
-/** Checkbox grid of routable attribute keys/values, derived from live agents. */
-export function CriteriaEditor({
-  catalog,
-  current,
-}: {
-  catalog: Record<string, string[]>;
-  current: Criteria;
-}) {
-  const keys = Object.keys(catalog);
-  if (keys.length === 0) {
-    return (
-      <p className="mt-1 text-xs text-fg-muted">
-        No agent attributes synced yet. Sync from Salesforce to route by attribute.
-      </p>
-    );
-  }
-  return (
-    <div className="mt-1 space-y-2">
-      {keys.map((key) => {
-        const cur = current[key];
-        const selected = new Set(
-          (Array.isArray(cur) ? cur : cur != null ? [cur] : []).map(String),
-        );
-        return (
-          <div key={key} className="flex flex-wrap items-center gap-2">
-            <code className="rounded-xs bg-[var(--pennie-wild-sand)] px-1 text-xs dark:bg-fg/10">{key}</code>
-            {catalog[key].map((v) => (
-              <label key={v} className="flex items-center gap-1 text-xs">
-                <input
-                  type="checkbox"
-                  name={`crit_${key}`}
-                  value={v}
-                  defaultChecked={selected.has(v)}
-                  className="accent-pennie-sky"
-                />
-                {v}
-              </label>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export function BucketForm({
   bucket,
   eventTypes,
-  users,
+  roster,
   memberIds,
   catalog,
   eligibleCount = 0,
 }: {
   bucket?: Bucket;
   eventTypes: EventType[];
-  users: User[];
+  /**
+   * The org roster, already projected to what the editor draws. The picker reads
+   * the same list from `RosterProvider`; this copy is what the fallback-agent
+   * select and the label copy need on the server.
+   */
+  roster: RosterEntry[];
   memberIds: Set<string>;
   catalog: Record<string, string[]>;
   eligibleCount?: number;
 }) {
   const editing = !!bucket;
+  const memberList = roster
+    .map((u) => u.id)
+    .filter((id) => memberIds.has(id))
+    // A membership whose user is not on the roster still has to be posted back,
+    // or saving this form would silently drop it (#1762).
+    .concat([...memberIds].filter((id) => !roster.some((u) => u.id === id)));
   return (
     <form
       action={editing ? updateBucket : createBucket}
@@ -76,22 +53,34 @@ export function BucketForm({
     >
       {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
       {editing && (
-        <p
-          className={`text-xs ${
-            eligibleCount === 0
+        <>
+          <p
+            className={`text-xs ${
+              eligibleCount === 0
+                ? bucket.fallback_user_id
+                  ? "text-fg-muted"
+                  : "text-[var(--error)]"
+                : "text-fg-muted"
+            }`}
+          >
+            {eligibleCount} eligible agent{eligibleCount === 1 ? "" : "s"}
+            {eligibleCount === 0
               ? bucket.fallback_user_id
-                ? "text-fg-muted"
-                : "text-[var(--error)]"
-              : "text-fg-muted"
-          }`}
-        >
-          {eligibleCount} eligible agent{eligibleCount === 1 ? "" : "s"}
-          {eligibleCount === 0
-            ? bucket.fallback_user_id
-              ? " (using fallback agent)"
-              : " (no fallback set, bookings will fail)"
-            : ""}
-        </p>
+                ? " (using fallback agent)"
+                : " (no fallback set, bookings will fail)"
+              : ""}
+          </p>
+          {/* #1760: two numbers sit on this panel and neither said what it
+              measured. The eligible count is this bucket's depth; the manual
+              members list is the whole org roster. Both are correct, and the gap
+              between them read as a bug. */}
+          <p className="text-xs text-fg-muted" data-testid="bucket-count-note">
+            Eligible agents are the bookable people whose attributes match the
+            criteria below, plus this bucket&rsquo;s manual members. The manual
+            members list is drawn from the whole roster, so the two counts measure
+            different things.
+          </p>
+        </>
       )}
       <div className="flex flex-wrap items-end gap-3">
         <div>
@@ -136,37 +125,16 @@ export function BucketForm({
             className={inputCls}
           >
             <option value="">None</option>
-            {users.map((u) => (
+            {roster.map((u) => (
               <option key={u.id} value={u.id}>
-                {u.name ?? u.email}
+                {u.name || u.email}
               </option>
             ))}
           </select>
         </div>
       </div>
-      <div>
-        <span className={labelCls}>
-          Route to agents matching every group below (any value within a group)
-        </span>
-        <CriteriaEditor catalog={catalog} current={bucket?.criteria ?? {}} />
-      </div>
-      <div>
-        <label className={labelCls}>Manual members (optional)</label>
-        <div className="mt-1 flex flex-wrap gap-3">
-          {users.map((u) => (
-            <label key={u.id} className="flex items-center gap-1 text-sm">
-              <input
-                type="checkbox"
-                name="members"
-                value={u.id}
-                defaultChecked={memberIds.has(u.id)}
-                className="accent-pennie-sky"
-              />
-              {u.name ?? u.email}
-            </label>
-          ))}
-        </div>
-      </div>
+      <BucketCriteriaPicker catalog={catalog} current={bucket?.criteria ?? {}} />
+      <BucketMembersPicker selectedIds={memberList} rosterTotal={roster.length} />
       <SubmitButton className={btnCls} pendingLabel={editing ? "Saving…" : "Creating…"}>
         {editing ? "Save bucket" : "Create bucket"}
       </SubmitButton>
