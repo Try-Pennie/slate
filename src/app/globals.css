@@ -69,7 +69,14 @@
 
   /* ---------------- Semantic ---------------- */
   --bg:                 var(--pennie-beige);
-  --bg-alt:             var(--pennie-cream-2);
+  /* #1851: cream-3, not cream-2. Cream-2 differs from the page by ONE point per
+     channel (1.009:1), so the hover tint tinted nothing, the zebra rows did not
+     stripe, and the table header on /admin/tiers was not a header row. Cream-3
+     is an existing brand tone rather than a new colour, it reads immediately as
+     a stripe, and it keeps muted text at 4.60:1, above AA. Held by
+     scripts/test-contrast.ts, which now measures a surface against the surface
+     it sits on and not only against the text it carries. */
+  --bg-alt:             var(--pennie-cream-3);
   --bg-ink:             var(--pennie-navy);
   --surface:            var(--pennie-white);
   --surface-elevated:   var(--pennie-white);
