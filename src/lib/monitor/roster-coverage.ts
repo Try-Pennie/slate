@@ -31,7 +31,7 @@
  * Pure (no `@/` imports) so the node suite drives it directly.
  */
 import type { CoverageReadout } from "../booking/business-hours-coverage.ts";
-import { minutesToTime } from "../schedule-core.ts";
+import { minutesToTime, weekdayPhrase } from "../schedule-core.ts";
 
 /** alert_state row key for the page and its all-clear. Lives with the feature so
  *  the cron and the settings screen refer to the one constant. */
@@ -100,36 +100,9 @@ function makeGap(
 
 // --------------------------------------------------------------- the copy
 
-const WEEKDAY_NAMES = [
-  "",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-  "Sunday",
-];
-
-/** Weekdays as a phrase, collapsing consecutive runs: `Monday to Friday` rather
- *  than five names. The five identical weekday tails in the production shape are
- *  one finding, and spelling them out pushes the whole uncovered Saturday off the
- *  bottom of a phone notification. */
-function weekdayPhrase(weekdays: number[]): string {
-  const runs: number[][] = [];
-  for (const w of [...weekdays].sort((a, b) => a - b)) {
-    const last = runs[runs.length - 1];
-    if (last && w === last[last.length - 1] + 1) last.push(w);
-    else runs.push([w]);
-  }
-  const parts = runs.map((run) =>
-    run.length >= 3
-      ? `${WEEKDAY_NAMES[run[0]]} to ${WEEKDAY_NAMES[run[run.length - 1]]}`
-      : run.map((w) => WEEKDAY_NAMES[w]).join(" and "),
-  );
-  if (parts.length <= 1) return parts[0] ?? "";
-  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-}
+// `weekdayPhrase` and the weekday names live in `schedule-core` (#1764), because
+// the hours editor states a week in the same words this alert does and two
+// groupings would drift the first time one was changed (L41).
 
 /** Gaps that share a window and a shape, so the days can be stated once. */
 function groupGaps(gaps: CoverageGap[]): {

@@ -139,7 +139,9 @@ describe("MePage with every read healthy (the control)", () => {
     // The stored Tuesday-only rule, which the default-week fallback never draws.
     expect((screen.getByLabelText("Tuesday") as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText("Monday") as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByLabelText("Tuesday start time hour") as HTMLSelectElement).value).toBe("8");
+    // One typeable field per bound now (#1764), spelled the way a person reads it,
+    // rather than an hour, a minute and an AM or PM select.
+    expect((screen.getByLabelText("Tuesday start time") as HTMLInputElement).value).toBe("8:00am");
     // The schedule's own timezone reached the form, not the fallback.
     expect((screen.getByLabelText("Your timezone") as HTMLInputElement).value).toBe(
       "America/Chicago",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { labelCls, btnCls } from "@/components/ui/styles";
@@ -8,6 +8,7 @@ import type { BusinessHoursFormState } from "@/app/admin/actions";
 import type { CoverageReadout } from "@/lib/booking/business-hours-coverage";
 import { coverageGapPhrases, gapsFromCoverage } from "@/lib/monitor/roster-coverage";
 import { Pill } from "@/components/ui/Pill";
+import { businessHoursSummary, type WorkingHoursDay } from "@/lib/schedule-week";
 
 const DAYS: [number, string][] = [
   [1, "Monday"],
@@ -56,7 +57,39 @@ export function BusinessHoursForm({
   const [state, formAction] = useActionState<BusinessHoursFormState, FormData>(action, {
     error: null,
   });
-  const byDay = new Map(days.map((d) => [d.weekday, d]));
+
+  /**
+   * The week as it is on screen (#1764), so the sentence above the rows describes
+   * what is being edited rather than what is stored. A summary that silently
+   * described a mixture of saved and unsaved hours would be worse than none, which
+   * is the same reason the coverage panel below says out loud that it describes the
+   * SAVED hours.
+   *
+   * ONE window per day here, deliberately: `windowOnDate` finds a single rule per
+   * weekday and returns one bound pair, so a second org window would be silently
+   * ignored rather than honoured. Split business hours is its own change, and it
+   * changes that return type and every caller of it.
+   */
+  const [week, setWeek] = useState(() =>
+    DAYS.map(([weekday]) => {
+      const d = days.find((x) => x.weekday === weekday);
+      return {
+        weekday,
+        open: d?.is_open ?? false,
+        start: d?.start ?? "08:00",
+        end: d?.end ?? "20:00",
+      };
+    }),
+  );
+
+  const set = (weekday: number, change: Partial<(typeof week)[number]>) =>
+    setWeek((w) => w.map((d) => (d.weekday === weekday ? { ...d, ...change } : d)));
+
+  const summaryDays: WorkingHoursDay[] = week.map((d) => ({
+    weekday: d.weekday,
+    on: d.open,
+    windows: [{ start: d.start, end: d.end }],
+  }));
 
   return (
     <form action={formAction} className="space-y-5">
@@ -109,39 +142,62 @@ export function BusinessHoursForm({
         </p>
       )}
 
+      <p
+        data-testid="business-hours-summary"
+        // Announced when it changes, without claiming `role="status"`: that role is
+        // for the outcome of an action, and this panel already has one for what a
+        // save came back with. Two status regions on one form is noise.
+        aria-live="polite"
+        className="text-sm font-semibold text-fg"
+      >
+        {businessHoursSummary(summaryDays)}
+      </p>
+
       <div className="space-y-2">
         {DAYS.map(([weekday, name]) => {
-          const d = byDay.get(weekday);
-          const open = d?.is_open ?? false;
+          const d = week.find((x) => x.weekday === weekday);
+          if (!d) return null;
           return (
             <div
               key={weekday}
-              className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[var(--radius-md)] border border-border px-4 py-3"
+              data-weekday={weekday}
+              data-day-off={d.open ? "false" : "true"}
+              className={[
+                "flex flex-wrap items-start gap-x-4 gap-y-2 rounded-[var(--radius-md)] border border-border px-4 py-3",
+                // Reinforcement only: the unticked box and the sentence above both
+                // already say the day is closed.
+                d.open ? "" : "opacity-60",
+              ].join(" ")}
             >
-              <label className="flex min-w-[9.5rem] cursor-pointer items-center gap-3">
+              <label className="flex min-h-11 min-w-[9.5rem] cursor-pointer items-center gap-3">
                 <input
                   type="checkbox"
                   name={`bh_open_${weekday}`}
-                  defaultChecked={open}
-                  className="h-5 w-5 shrink-0 rounded-[var(--radius-xs)] border-border accent-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus-ring)]"
+                  checked={d.open}
+                  onChange={(e) => set(weekday, { open: e.target.checked })}
+                  className="h-5 w-5 shrink-0 rounded-[var(--radius-xs)] border-border accent-[var(--accent)]"
                 />
                 <span className="text-sm font-semibold">{name}</span>
               </label>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-start gap-2">
                 <TimeField
                   name={`bh_start_${weekday}`}
                   ariaLabel={`${name} opening time`}
-                  defaultValue={d?.start ?? "08:00"}
+                  defaultValue={d.start}
+                  enforce={d.open}
+                  onValueChange={(v) => set(weekday, { start: v })}
                 />
-                <span aria-hidden="true" className="text-sm text-fg-muted">
+                <span aria-hidden="true" className="mt-3 text-sm text-fg-muted">
                   to
                 </span>
                 <TimeField
                   name={`bh_end_${weekday}`}
                   ariaLabel={`${name} closing time`}
                   round="up"
-                  defaultValue={d?.end ?? "20:00"}
+                  defaultValue={d.end}
+                  enforce={d.open}
+                  onValueChange={(v) => set(weekday, { end: v })}
                 />
               </div>
             </div>

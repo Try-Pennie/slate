@@ -58,3 +58,46 @@ export function defaultRuleRows(scheduleId: string, org: OrgDefaults): RuleRow[]
     end_minute: org.default_end_minute,
   }));
 }
+
+/** Weekday names by Luxon's numbering (1 = Monday .. 7 = Sunday), so index 0 is
+ *  deliberately empty and a 0 weekday reads as blank rather than as Sunday. */
+export const WEEKDAY_NAMES = [
+  "",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+/**
+ * Weekdays as a phrase, collapsing consecutive runs: `Monday to Friday` rather
+ * than five names.
+ *
+ * Two readers, one grouping (#1764). The roster coverage alert needs it because
+ * five identical weekday tails are one finding and spelling them out pushes the
+ * uncovered Saturday off the bottom of a phone notification; the hours editor needs
+ * it to say what a week is in one sentence. A second copy would drift the first time
+ * either was changed.
+ */
+export function weekdayPhrase(weekdays: number[]): string {
+  const runs: number[][] = [];
+  for (const w of [...weekdays].sort((a, b) => a - b)) {
+    const last = runs[runs.length - 1];
+    if (last && w === last[last.length - 1] + 1) last.push(w);
+    else runs.push([w]);
+  }
+  // A run of one or two contributes its names SEPARATELY rather than pre-joined
+  // with "and", or a week off on Tuesday, Thursday, Saturday and Sunday reads
+  // "Tuesday, Thursday and Saturday and Sunday": two ands in one clause, because
+  // the run had already used the one the final join was going to add.
+  const parts = runs.flatMap((run) =>
+    run.length >= 3
+      ? [`${WEEKDAY_NAMES[run[0]]} to ${WEEKDAY_NAMES[run[run.length - 1]]}`]
+      : run.map((w) => WEEKDAY_NAMES[w]),
+  );
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}

@@ -361,3 +361,85 @@ describe("useDefaultHours (#1670)", () => {
     await expect(useDefaultHours(form())).rejects.toThrow(/deadlock detected/);
   });
 });
+
+// #1764: a weekday can hold SEVERAL windows now, so the form repeats the field
+// names (`start_1` twice for a split Monday) and the action pairs them by
+// position. What matters here is that the extra windows actually REACH the write,
+// and that the two shapes a repeated field can arrive in are told apart: a blank
+// row somebody added and left alone is ignored, while a half filled one is a
+// mistake and refuses the save.
+describe("setWorkingHours, several windows a day (#1764)", () => {
+  /** A form with repeated window fields, the way the rebuilt editor submits. */
+  function splitForm(windows: Record<number, [string, string][]>): FormData {
+    const fd = new FormData();
+    fd.set("user_id", "u1");
+    fd.set("timezone", "America/New_York");
+    for (const [day, list] of Object.entries(windows)) {
+      fd.set(`day_${day}`, "on");
+      for (const [start, end] of list) {
+        fd.append(`start_${day}`, start);
+        fd.append(`end_${day}`, end);
+      }
+    }
+    return fd;
+  }
+
+  it("writes BOTH windows of a split day", async () => {
+    rpc.mockResolvedValue({ data: 3, error: null });
+    await setWorkingHours(
+      splitForm({ 1: [["08:00", "12:00"], ["14:00", "17:00"]], 2: [["09:00", "17:00"]] }),
+    );
+
+    const [, args] = rpc.mock.calls[0] as [
+      string,
+      { p_rules: { weekday: number; start_minute: number; end_minute: number }[] },
+    ];
+    expect(args.p_rules).toHaveLength(3);
+    expect(args.p_rules).toEqual([
+      { weekday: 1, start_minute: 480, end_minute: 720 },
+      { weekday: 1, start_minute: 840, end_minute: 1020 },
+      { weekday: 2, start_minute: 540, end_minute: 1020 },
+    ]);
+  });
+
+  it("ignores a blank added window rather than refusing the whole week", async () => {
+    rpc.mockResolvedValue({ data: 1, error: null });
+    // Clicking + and saving without filling it in is an ordinary thing to do.
+    await setWorkingHours(splitForm({ 1: [["09:00", "17:00"], ["", ""]] }));
+
+    const [, args] = rpc.mock.calls[0] as [string, { p_rules: { weekday: number }[] }];
+    expect(args.p_rules).toHaveLength(1);
+  });
+
+  it("refuses a HALF filled window and names the day, writing nothing", async () => {
+    // A start with no end is not a window, and quietly dropping it would save a
+    // week missing hours the person had just entered.
+    await expect(
+      setWorkingHours(splitForm({ 1: [["09:00", "17:00"], ["14:00", ""]] })),
+    ).rejects.toThrow(/Monday/);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses two windows on one day that overlap, and names the day", async () => {
+    await expect(
+      setWorkingHours(splitForm({ 5: [["09:00", "17:00"], ["16:00", "18:00"]] })),
+    ).rejects.toThrow(/Friday.*overlap/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("still ignores every window on a day that is not ticked", async () => {
+    const fd = splitForm({ 1: [["09:00", "17:00"]] });
+    // Saturday keeps its times in the form (the dimming does not remove them) and
+    // must contribute nothing while it is unticked.
+    fd.append("start_6", "09:00");
+    fd.append("end_6", "17:00");
+    fd.append("start_6", "20:00");
+    fd.append("end_6", "08:00");
+
+    rpc.mockResolvedValue({ data: 1, error: null });
+    await setWorkingHours(fd);
+
+    const [, args] = rpc.mock.calls[0] as [string, { p_rules: { weekday: number }[] }];
+    expect(args.p_rules.map((r) => r.weekday)).toEqual([1]);
+  });
+});
