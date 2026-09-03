@@ -288,6 +288,82 @@ below(
   "the LIGHT muted tone reused on a hovered dark row - why dark needs its own value",
 );
 
+// --- #1822: which semantic colours may be a BARE MARK ----------------------
+//
+// A mark that carries meaning with no text beside it needs 3:1 (WCAG 2.1 SC
+// 1.4.11): a status dot, a meter fill, a mark in a chart. DESIGN.md nominated
+// green for "a healthy or bookable state" and said nothing about the fact that no
+// green in the palette could carry that meaning on its own. Nothing had caught it
+// because every existing green use is a WASH behind dark text, where a word does
+// the work.
+//
+// The record read as permission, which is how the 25 focus rings shipped at
+// 1.57:1 (#1768): somebody reaches for the colour the file nominates, gets a mark
+// nobody can see, and nothing fails. So the reason each colour is or is not
+// available is recorded here as a measurement rather than as a sentence somebody
+// can disagree with.
+const greenMark = r("--pennie-green-mark");
+const wash = r("--pennie-green-wash");
+
+// The new green, on every LIGHT surface a mark lands on, plus the wash it sits on
+// inside a status pill.
+for (const [name, surface] of [
+  ["a white card", r("--surface")],
+  ["the beige page", r("--bg")],
+  ["a hovered row", r("--bg-alt")],
+  ["the green wash inside a status pill", wash],
+] as [string, RGB][]) {
+  atLeast(greenMark, surface, 3, `green mark on ${name}`);
+}
+
+// Its LIMIT, which the proposal did not check and which is the reason it is
+// scoped rather than blanket "the green for marks". On a hovered dark row it is
+// 2.68:1, so it is legal on light surfaces and on the wash (which is
+// theme-independent, so a dot inside a status pill is fine in both themes) and NOT
+// as a bare mark on the dark theme's own row tint.
+below(
+  greenMark,
+  rDark("--bg-alt"),
+  3,
+  "green mark on a hovered DARK row - why it is scoped to light surfaces and the wash",
+);
+
+// Neither existing green can be a bare mark. Held as tripwires, so the reason the
+// palette green is unavailable stays a measurement.
+for (const [label, token] of [
+  ["the palette green", "--pennie-green"],
+  ["the deepest green", "--pennie-green-deep"],
+] as [string, string][]) {
+  below(r(token), r("--surface"), 3, `${label} as a bare mark on a white card`);
+  below(r(token), r("--bg"), 3, `${label} as a bare mark on the beige page`);
+  below(r(token), wash, 3, `${label} as a bare mark on the green wash`);
+}
+
+// The other two semantic colours, asked the same question rather than left to be
+// discovered the same way.
+//
+// ROSE IS LEGAL as a bare mark, in both themes, which is worth recording because
+// it is the one nobody would have guessed: the dark theme lightens it, so both
+// halves of the flip clear.
+for (const [name, surface] of [
+  ["a white card", r("--surface")],
+  ["the beige page", r("--bg")],
+  ["a hovered row", r("--bg-alt")],
+] as [string, RGB][]) {
+  atLeast(rose, surface, 3, `rose as a bare mark on ${name} (light)`);
+}
+for (const [name, surface] of [
+  ["a dark card", rDark("--surface")],
+  ["a hovered dark row", rDark("--bg-alt")],
+] as [string, RGB][]) {
+  atLeast(rDark("--error"), surface, 3, `rose as a bare mark on ${name} (dark)`);
+}
+
+// YELLOW CANNOT, on light, by a wide margin. It has to work in both themes to be
+// usable, so it is illustration only and that is now measured.
+below(r("--pennie-yellow"), r("--surface"), 3, "yellow as a bare mark on a white card");
+below(r("--pennie-yellow"), r("--bg"), 3, "yellow as a bare mark on the beige page");
+
 // --- D17: forbidden-as-text tripwires — must STAY failing -------------------
 // (an accidental palette shift that "fixes" one of these is a regression signal)
 below(graphite, skyDeep, 4.5, "graphite-on-sky-deep - must NOT be a CTA text bg (4.32 fail)");

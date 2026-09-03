@@ -154,12 +154,15 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 
 ### Tertiary
 - **Rose** (`rgb(196, 61, 61)`): errors and destructive confirmations, at 4.77:1 on beige. Muted on purpose; the design system shipped without an error colour and this one was added to be readable rather than alarming.
-- **Green** (`rgb(85, 207, 144)`): a healthy or bookable state.
+- **Green** (`rgb(85, 207, 144)`): a healthy or bookable state, as a WASH behind dark text. It measures 1.82:1 on beige, so it can never be a mark on its own; see the Bare Mark Rule.
+- **Green Mark** (`rgb(0, 155, 104)`): the one green legible with no word beside it, at 3.57:1 on a white card, 3.31 on the page and 3.32 on the green wash. Scoped to light surfaces and to the wash, since on a hovered dark row it is 2.68:1. The wash is theme independent, which is what makes a dot inside a status pill safe in both themes.
 - **Yellow** (`rgb(255, 208, 115)`) and **Mint** (`rgb(134, 231, 179)`): illustration and accent only.
 
 ### Named Rules
 
 **The One Pen Rule.** Sky is the only colour that may mean "do this". Yellow, mint and peach are illustration accents and may never carry a call to action. If two things on a screen are competing to be the next action, one of them is wrong.
+
+**The Bare Mark Rule.** A colour carrying meaning with no word beside it needs 3:1, and most of the palette cannot. Measured: neither green (1.82 and 2.44 on beige) and not yellow (1.34), which is why those are washes and illustration. Rose can, in both themes, at 4.01 at its worst. Green Mark exists so healthy has something to reach for, and it is scoped rather than general. The trap is that the record reads as permission: somebody reaches for the colour named beside the meaning, gets a mark nobody can see, and nothing fails, which is exactly how 25 focus rings shipped at 1.57:1.
 
 **The Functional Mark Rule.** A mark is decoration only if removing it loses nothing a reader needs. The unfilled rungs of a meter are decoration; the unfilled letters of the tier ledger are not, because they establish which position is which. Anything in the second class takes the 3:1 floor and is measured, whatever its neighbours in the same graphic do.
 

@@ -44,6 +44,18 @@
   --pennie-green:       rgb(85, 207, 144);  /* secondary green */
   --pennie-green-deep:  rgb(0, 182, 122);   /* success deep */
   --pennie-green-wash:  rgb(240, 249, 241); /* green wash bg */
+  /* The only green legible as a BARE MARK, meaning one carrying meaning with no
+     word beside it: a status dot, a meter fill, a mark in a chart (#1822). The
+     palette green is 1.82:1 on beige and the deepest is 2.44:1, so neither can
+     do it, and nothing had caught that because every existing green use is a wash
+     behind dark text where the word does the work. This one is the deepest green
+     darkened: 3.57:1 on a white card, 3.31 on the page, 3.32 on the green wash.
+     SCOPED TO LIGHT SURFACES AND THE WASH: on a hovered dark row it is 2.68:1, so
+     it is not a general purpose mark colour, and the wash being theme independent
+     is what makes a dot inside a status pill safe in both themes. Measured by name
+     in scripts/test-contrast.ts, where both unusable greens are kept as
+     tripwires. */
+  --pennie-green-mark:  rgb(0, 155, 104);
 
   /* ---- Error / rose (S1 — DS has no rose token; downstream
      error states + the Task 4.3 contrast guard depend on one) ---- */
