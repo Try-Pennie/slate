@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // #1749: "View as another user" used to be the first card on /admin, asking for a
 // free text email. In practice you almost always want a SPECIFIC person you are
@@ -13,6 +14,12 @@ import { render, screen } from "@testing-library/react";
 // that refusal arrives after you type and press, which is acceptable. A per row
 // control is different: rendering it on every row puts a visible control on rows
 // where pressing it can only ever produce that error (L109).
+//
+// #1794 moved that control inside a per row actions menu, so every assertion here
+// has to OPEN the menu first. That is not a mechanical adjustment: with the menu
+// closed the three refusal cases below pass without rendering anything at all,
+// which is the exact vacuous pass the positive control in this file was written to
+// catch, and it caught it.
 
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
@@ -76,9 +83,22 @@ const asRole = (role: string, id = "me1") =>
     avatar_url: null,
   });
 
-/** The per-row control for one person, by the name in their row. */
-const viewAsFor = (name: string) =>
-  screen.queryByRole("button", { name: new RegExp(`View as ${name}`, "i") });
+/** That person's row menu trigger, or null when the row is not on screen. */
+const menuFor = (name: string) =>
+  screen.queryByRole("button", { name: new RegExp(`Actions for ${name}`, "i") });
+
+/**
+ * Open one person's row menu and hand back the "View as" item inside it, or null.
+ *
+ * Opening a second menu closes the first (the trigger's mousedown lands outside
+ * the open one), so these are asked one at a time rather than all at once.
+ */
+async function viewAsFor(name: string) {
+  const trigger = menuFor(name);
+  if (!trigger) return null;
+  await userEvent.click(trigger);
+  return screen.queryByRole("menuitem", { name: new RegExp(`View as ${name}`, "i") });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -91,8 +111,8 @@ describe("view as, from the row (#1749)", () => {
     asRole("admin", "adminme");
     render(await AgentRosterPage(props));
 
-    expect(viewAsFor("Ada Agent")).toBeTruthy();
-    expect(viewAsFor("Mo Manager")).toBeTruthy();
+    expect(await viewAsFor("Ada Agent")).toBeTruthy();
+    expect(await viewAsFor("Mo Manager")).toBeTruthy();
   });
 
   it("does not render it on a peer, whose row could only ever refuse", async () => {
@@ -102,14 +122,14 @@ describe("view as, from the row (#1749)", () => {
     // canImpersonate requires ranking STRICTLY below, so an admin viewing another
     // admin is refused. A control that can only produce that error is worse than
     // no control, because it reads as available until it is pressed.
-    expect(viewAsFor("Alex Admin")).toBeNull();
+    expect(await viewAsFor("Alex Admin")).toBeNull();
   });
 
   it("does not render it on someone who outranks you", async () => {
     asRole("admin", "adminme");
     render(await AgentRosterPage(props));
 
-    expect(viewAsFor("Su Super")).toBeNull();
+    expect(await viewAsFor("Su Super")).toBeNull();
   });
 
   it("gives a super admin the action on the admin below them", async () => {
@@ -118,8 +138,8 @@ describe("view as, from the row (#1749)", () => {
     asRole("super_admin", "superme");
     render(await AgentRosterPage(props));
 
-    expect(viewAsFor("Alex Admin")).toBeTruthy();
-    expect(viewAsFor("Ada Agent")).toBeTruthy();
+    expect(await viewAsFor("Alex Admin")).toBeTruthy();
+    expect(await viewAsFor("Ada Agent")).toBeTruthy();
   });
 
   it("offers a super admin nothing on their own row", async () => {
@@ -127,7 +147,7 @@ describe("view as, from the row (#1749)", () => {
     render(await AgentRosterPage(props));
 
     // Viewing as yourself is refused by the action, so the row must not offer it.
-    expect(viewAsFor("Su Super")).toBeNull();
+    expect(await viewAsFor("Su Super")).toBeNull();
   });
 
   it("shows a manager no view-as controls at all", async () => {
@@ -136,18 +156,35 @@ describe("view as, from the row (#1749)", () => {
     asRole("manager", "mgrme");
     render(await AgentRosterPage(props));
 
-    expect(screen.queryAllByRole("button", { name: /View as/i })).toHaveLength(0);
+    // The menu is still there, because every row keeps the same shape (#1794);
+    // what a manager must never find inside it is an impersonation control. Asked
+    // with a menu OPEN, or this passes on a page that drew nothing.
+    const trigger = menuFor("Ada Agent");
+    expect(trigger).toBeTruthy();
+    await userEvent.click(trigger!);
+    expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(0);
+    expect(screen.queryAllByRole("menuitem", { name: /View as/i })).toHaveLength(0);
   });
 
   it("names the person in the control, so the row it acts on is unambiguous", async () => {
     asRole("super_admin", "superme");
     render(await AgentRosterPage(props));
 
-    // A table of identical "View as" buttons is a control addressed by POSITION
-    // (L237). The accessible name has to carry who it is for.
-    const names = screen
-      .getAllByRole("button", { name: /View as/i })
-      .map((b) => b.textContent ?? "");
+    // A table of identical controls is one addressed by POSITION (L237), and a
+    // three dot menu makes every TRIGGER identical on purpose, so the identity has
+    // to live in two places now: the trigger's accessible name, and the item.
+    const triggers = screen
+      .getAllByRole("button", { name: /^Actions for /i })
+      .map((b) => b.getAttribute("aria-label") ?? "");
+    expect(triggers.length).toBeGreaterThan(1);
+    expect(new Set(triggers).size).toBe(triggers.length);
+
+    const names: string[] = [];
+    for (const who of ["Ada Agent", "Alex Admin"]) {
+      const item = await viewAsFor(who);
+      expect(item).toBeTruthy();
+      names.push(item!.textContent ?? "");
+    }
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -156,12 +193,20 @@ describe("view as, from the row (#1749)", () => {
     const { container } = render(await AgentRosterPage(props));
 
     // The action looks the target up by email, so the row's form must submit the
-    // row's own address rather than whatever is typed in the fallback field.
-    const emails = [...container.querySelectorAll('input[name="email"][type="hidden"]')].map(
-      (i) => (i as HTMLInputElement).value,
-    );
-    expect(emails).toContain("agent@x.com");
-    expect(emails).toContain("adm@x.com");
-    expect(emails).not.toContain("sup@x.com");
+    // row's OWN address. Only the open menu's form is in the document, so each row
+    // is opened and read in turn.
+    const emailIn = async (who: string) => {
+      const t = menuFor(who);
+      if (!t) return [];
+      await userEvent.click(t);
+      return [...container.querySelectorAll('input[name="email"][type="hidden"]')].map(
+        (i) => (i as HTMLInputElement).value,
+      );
+    };
+    expect(await emailIn("Ada Agent")).toEqual(["agent@x.com"]);
+    expect(await emailIn("Alex Admin")).toEqual(["adm@x.com"]);
+    // A super admin cannot view as themselves, so their row carries no form at all.
+    asRole("super_admin", "u4");
+    expect(await emailIn("Su Super")).toEqual([]);
   });
 });

@@ -9,6 +9,7 @@ import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import { isActive } from "@/lib/active-user";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { DebtTeamLadder } from "@/components/admin/DebtTeamLadder";
+import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
   ROSTER_PAGE_SIZE,
@@ -46,6 +47,10 @@ import {
  * JavaScript a submit reloads the page with new params and the server render
  * answers. Both sides call `filterRoster`, so they cannot drift.
  */
+/** One recipe for both items, so the two cannot drift apart visually (L370). */
+const MENU_ITEM_CLS =
+  "flex min-h-11 w-full items-center whitespace-nowrap rounded-md px-3 text-left text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg";
+
 export function RosterTable({
   rows,
   initialFilters,
@@ -290,15 +295,28 @@ export function RosterTable({
                   )}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <div className="flex items-center justify-end gap-4">
-                    <ViewAsButton actorRole={actorRole} actorId={actorId} target={u} />
+                  {/* #1794: one menu per row. The label spelled the agent's whole
+                      name into a narrow column, so it wrapped and every row was a
+                      different height. The menu is rendered on EVERY row, even
+                      when it holds only Manage, because a control that moves
+                      depending on who you are is harder to scan than one extra
+                      click. */}
+                  <RowActionsMenu label={`Actions for ${u.name ?? u.email}`}>
+                    <ViewAsButton
+                      actorRole={actorRole}
+                      actorId={actorId}
+                      target={u}
+                      role="menuitem"
+                      className={MENU_ITEM_CLS}
+                    />
                     <InPlaceLink
                       href={`/admin/agents/${u.id}`}
-                      className="text-sm text-pennie-blue underline dark:text-pennie-sky"
+                      role="menuitem"
+                      className={MENU_ITEM_CLS}
                     >
                       Manage
                     </InPlaceLink>
-                  </div>
+                  </RowActionsMenu>
                 </td>
               </tr>
             ))}
