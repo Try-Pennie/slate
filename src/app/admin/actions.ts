@@ -58,6 +58,7 @@ import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
+import { isActive } from "@/lib/active-user";
 import {
   parseMonitorSettingsForm,
   ALERT_KEYS as MONITOR_ALERT_KEYS,
@@ -895,15 +896,26 @@ export async function setUserLifecycle(form: FormData): Promise<void> {
  * only takes effect for a real admin+ session and only for a lower-ranked target
  * (resolveEffectiveUserId + canImpersonate gate it downstream), so it can't be
  * used to escalate. Lands on /me — the impersonated user's home.
+ *
+ * OFFBOARDED TARGETS ARE REFUSED HERE (#1795), and not because the cookie would
+ * otherwise work: `resolveImpersonationState` filters the target on
+ * `deactivated_at` and has always refused a departed user. The defect was what
+ * happened instead. The cookie was set, an `impersonate.start` audit row was
+ * written, and the very next request found the target ineligible and reverted the
+ * admin to themselves, so the audit log recorded a session that never existed and
+ * the admin got a silent round trip. Two distinct causes were sharing one
+ * outcome (L11), and the fix is to give this one its own refusal before anything
+ * is written.
  */
 export async function startImpersonation(form: FormData): Promise<void> {
   const admin = await realCurrentUser();
   if (!admin || !atLeast(admin.role, "admin")) throw new Error("Not authorized");
 
   const email = String(form.get("email") ?? "").trim().toLowerCase();
-  // #141: echo the typed email back on every failure so the form repopulates it
-  // instead of wiping it (the field is uncontrolled and the redirect re-renders).
-  if (!email) redirect(impersonationErrorUrl("Enter an email."));
+  // Every remaining caller is a per row control submitting that row's own address
+  // in a hidden field (#1749), so an empty email is a malformed call rather than a
+  // typo. It still refuses rather than looking up the empty string.
+  if (!email) redirect(impersonationErrorUrl("No address was submitted."));
 
   // #1629: a null on error took the "No user with email X." branch, which tells an
   // admin the person does not exist when the read simply failed. The next thing
@@ -911,22 +923,28 @@ export async function startImpersonation(form: FormData): Promise<void> {
   const data = unwrap(
     await supabaseAdmin()
       .from("users")
-      .select("id, role")
+      .select("id, role, deactivated_at")
       .eq("org_id", admin.org_id)
       .eq("email", email)
       .maybeSingle(),
     "impersonation target lookup",
   );
-  const target = data as { id: string; role: Role } | null;
+  const target = data as { id: string; role: Role; deactivated_at: string | null } | null;
   if (!target) {
-    redirect(impersonationErrorUrl(`No user with email ${email}.`, email));
+    redirect(impersonationErrorUrl(`No user with email ${email}.`));
   }
   if (target.id === admin.id) {
-    redirect(impersonationErrorUrl("That is already you.", email));
+    redirect(impersonationErrorUrl("That is already you."));
+  }
+  // #1795: a departed employee. Refused before the cookie and before the audit
+  // row, since downstream would drop the session on the next request anyway and
+  // the only trace left would be an audit entry for something that never ran.
+  if (!isActive(target)) {
+    redirect(impersonationErrorUrl(`${email} has been offboarded.`));
   }
   // Role ceiling (#588): can't view-as someone who outranks or equals you.
   if (!canImpersonate(admin.role, target.role)) {
-    redirect(impersonationErrorUrl(`You can't impersonate a ${roleLabel(target.role)}.`, email));
+    redirect(impersonationErrorUrl(`You can't impersonate a ${roleLabel(target.role)}.`));
   }
 
   const store = await cookies();
