@@ -1,4 +1,5 @@
 import { isActive } from "@/lib/active-user";
+import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 import { teamsOf } from "@/lib/admin/agent-display";
 import type { User } from "@/lib/db/types";
 
@@ -38,6 +39,9 @@ export interface RosterFilters {
    * `filterRoster`: a caller that builds filters by hand and passes "Ada" would
    * otherwise match nothing at all, with no error anywhere, which is a wrong
    * answer that reads exactly like a correct empty one.
+   *
+   * A TRAILING space is part of the filter and is not stripped (#1791): it is
+   * how the person says "this is the whole word". See `@/lib/search-query`.
    */
   q: string;
   role: string;
@@ -59,7 +63,12 @@ export const EMPTY_ROSTER_FILTERS: RosterFilters = {
 };
 
 export function hasAnyRosterFilter(f: RosterFilters): boolean {
-  return Boolean(f.q || f.role || f.team || f.manager || f.bookable);
+  // The search is judged NORMALISED, so a box holding only spaces is not a
+  // filter. Otherwise the table would show everyone while the surface offered a
+  // Clear button for a filter doing nothing.
+  return Boolean(
+    normalizeSearchQuery(f.q) || f.role || f.team || f.manager || f.bookable,
+  );
 }
 
 /**
@@ -69,7 +78,7 @@ export function hasAnyRosterFilter(f: RosterFilters): boolean {
  * roster at all, so no filter may bring one back.
  */
 export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): T[] {
-  const needle = f.q.trim().toLowerCase();
+  const needle = normalizeSearchQuery(f.q);
   return rows.filter((u) => {
     if (!isActive(u)) return false;
     if (f.role && u.role !== f.role) return false;
@@ -77,12 +86,30 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
     if (f.bookable === "no" && u.bookable) return false;
     if (f.team && !teamsOf(u as unknown as User).includes(f.team)) return false;
     if (f.manager && u.manager_id !== f.manager) return false;
-    if (needle) {
-      const hay = `${u.name ?? ""} ${u.email}`.toLowerCase();
-      if (!hay.includes(needle)) return false;
-    }
+    // Name and email as SEPARATE fields, never joined (#1791). The old join
+    // inserted a space no record holds, which a query with a space could match
+    // across.
+    if (!matchesSearchQuery(needle, u.name, u.email)) return false;
     return true;
   });
+}
+
+/**
+ * What the table says when it has no rows to show.
+ *
+ * Four different states, said four different ways (L10, L11). The one that
+ * matters is the search: now that a trailing space filters (#1791), an
+ * ACCIDENTAL one empties the table for a reason nobody can see, because a space
+ * is invisible. So the query is QUOTED, and the quotes are what make the space
+ * visible. It is quoted in its NORMALISED form, or the sentence would show a
+ * query that is not the one the rows were matched against.
+ */
+export function rosterEmptyText(f: RosterFilters): string {
+  const q = normalizeSearchQuery(f.q);
+  const others = Boolean(f.role || f.team || f.manager || f.bookable);
+  if (q) return others ? `Nothing matches "${q}" with those filters.` : `Nothing matches "${q}".`;
+  if (others) return "Nobody on the roster matches those filters.";
+  return "No agents yet.";
 }
 
 /**
@@ -110,13 +137,16 @@ export function sortRoster<T extends RosterRow>(rows: T[]): T[] {
 }
 
 /**
- * The filters a URL is carrying. The search is lowercased and trimmed HERE rather
- * than at the point of comparison, so a URL holding "  Ada " and one holding "ada"
- * are the same filter and the address bar cannot disagree with the table.
+ * The filters a URL is carrying.
+ *
+ * The search is normalised HERE rather than at the point of comparison, so a URL
+ * holding "  Ada" and one holding "ada" are the same filter and the address bar
+ * cannot disagree with the table. Only the LEADING space is dropped: a trailing
+ * one is the filter (#1791), so it survives the round trip in both directions.
  */
 export function rosterFiltersFromParams(params: URLSearchParams): RosterFilters {
   return {
-    q: (params.get("q") ?? "").trim().toLowerCase(),
+    q: normalizeSearchQuery(params.get("q") ?? ""),
     role: params.get("role") ?? "",
     team: params.get("team") ?? "",
     manager: params.get("manager") ?? "",
