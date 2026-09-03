@@ -362,7 +362,7 @@
     "donts": [
       "Don't use yellow, mint or peach for a call to action. They are illustration accents.",
       "Don't reach for a weight above 600, or let the browser synthesise one.",
-      "Don't put white text on the sky fill. It measures 1.56:1. The label on sky is always graphite, in both themes.",
+      "Don't put the theme's foreground on a sky fill. Beige on sky is 1.57:1 and white on sky is 1.69:1, both far under 4.5. The label on sky is always graphite, in both themes.",
       "Don't use a hard black, in text or in a shadow.",
       "Don't make a button a pill. Pills are badges.",
       "Don't uppercase or letter space a label.",

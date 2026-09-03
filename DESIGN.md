@@ -138,7 +138,7 @@ The same world covers two very different densities: a consumer booking flow with
 Warm neutrals doing almost all the work, with a single cool accent that means "this is the next action".
 
 ### Primary
-- **Pennie Sky** (`rgb(130, 208, 255)`): the only action colour in the product. Primary buttons, the active nav marker, the top load bar, the working spinner. It carries graphite text, never white, because white on sky measures 1.56:1 and fails at any size.
+- **Pennie Sky** (`rgb(130, 208, 255)`): the only action colour in the product. Primary buttons, the active nav marker, the top load bar, the working spinner. It carries graphite text in BOTH themes, never the theme's own foreground: beige on sky measures 1.57:1 and white on sky 1.69:1, so the dark theme pins graphite rather than letting the foreground flip.
 - **Sky Hover** (`#6dc5f7`): the primary button's hover fill, chosen so graphite on it still measures 6.51:1.
 - **Sky Wash** (`rgb(236, 248, 255)`): a pale sky tint for the selected state of a row or nav item, and for informational panels. Light theme only; the dark theme uses a translucent accent instead.
 - **Brand Blue** (`rgb(72, 108, 202)`): the focus ring line on ordinary light surfaces, measuring 4.56:1 on beige. Not a fill colour and not a text colour.
@@ -272,7 +272,7 @@ Two deliberate cues rather than one. Lead facing surfaces use three bobbing dots
 ### Don't:
 - **Don't** use yellow, mint or peach for a call to action. They are illustration accents.
 - **Don't** reach for a weight above 600, or let the browser synthesise one.
-- **Don't** put white text on the sky fill. It measures 1.56:1. The label on sky is always graphite, in both themes.
+- **Don't** put the theme's foreground on a sky fill. Beige on sky is 1.57:1 and white on sky is 1.69:1, both far under 4.5. The label on sky is always graphite, in both themes.
 - **Don't** use a hard black, in text or in a shadow.
 - **Don't** make a button a pill. Pills are badges.
 - **Don't** uppercase or letter space a label.
