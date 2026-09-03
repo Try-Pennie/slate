@@ -147,7 +147,6 @@ export default async function AgentRosterPage({
           roleOptions={rolesPresent}
           teamOptions={teamOptions}
           managerOptions={managerOptions}
-          totalRoster={users.length}
         />
       </section>
     </>

@@ -46,7 +46,6 @@ const base = {
   roleOptions: ["agent", "manager", "admin"] as const,
   teamOptions: [] as string[],
   managerOptions: [] as [string, string][],
-  totalRoster: ROWS.length,
 };
 
 const bodyRows = () =>
@@ -151,7 +150,7 @@ describe("RosterTable", () => {
   });
 
   it("distinguishes an empty roster from a filter that matched nothing", () => {
-    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={[]} totalRoster={0} />);
+    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={[]} />);
 
     // Different causes, different sentences: "no agents yet" and "your filter
     // matched nobody" send you to different places.
@@ -185,8 +184,23 @@ describe("RosterTable", () => {
       expect(count()).toBe("No matches");
     });
 
+    // Found by looking at the real page: with no filter on it read
+    // "117 of 136 agents", because the number handed in counted offboarded
+    // people too, and `filterRoster` treats those as not on the roster at all.
+    // So an unfiltered roster looked like a filtered one. The total is DERIVED
+    // from the rows now, so no caller can supply a different one (L63).
+    it("counts only people who are on the roster, not offboarded ones", () => {
+      const rows = [
+        row("x", "Active One"),
+        row("y", "Active Two"),
+        row("z", "Gone", { deactivated_at: "2026-01-01T00:00:00Z" }),
+      ];
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={rows} />);
+      expect(count()).toBe("2 agents");
+    });
+
     it("counts nothing at all for an empty roster", () => {
-      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={[]} totalRoster={0} />);
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={[]} />);
       expect(count()).toBe("");
     });
 
@@ -214,7 +228,7 @@ describe("RosterTable", () => {
     const many = Array.from({ length: ROSTER_PAGE_SIZE + 5 }, (_, i) =>
       row(`u${i}`, `Person ${String(i).padStart(3, "0")}`),
     );
-    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={many} totalRoster={many.length} />);
+    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={many} />);
     expect(bodyRows()).toHaveLength(ROSTER_PAGE_SIZE);
 
     await userEvent.click(screen.getByRole("button", { name: /Next/i }));
@@ -228,7 +242,7 @@ describe("RosterTable", () => {
     const many = Array.from({ length: ROSTER_PAGE_SIZE + 5 }, (_, i) =>
       row(`u${i}`, `Person ${String(i).padStart(3, "0")}`),
     );
-    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={many} totalRoster={many.length} />);
+    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={many} />);
     await userEvent.click(screen.getByRole("button", { name: /Next/i }));
 
     await userEvent.type(screen.getByLabelText(/Search by name or email/i), "Person 0");
