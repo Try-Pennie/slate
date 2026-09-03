@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
+import { Spinner } from "@/components/ui/Spinner";
 
 /** Below this a count would flicker on and off for a save that was simply fast. */
 const SHOW_ELAPSED_AFTER_MS = 3_000;
@@ -114,17 +115,19 @@ export function SubmitPending({
   const seconds = Math.floor(elapsedMs / 1_000);
 
   return (
-    <span className="inline-flex items-center gap-2">
-      <span
-        aria-hidden="true"
-        className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
-      />
-      {slow ? slowLabel : pendingLabel}
-      {showElapsed && <span className="tabular-nums opacity-80">{seconds}s</span>}
-      {/* Announced once, when the wait flips to slow. A live region on the ticking
-          count itself would read a number out every second. */}
-      <span className="sr-only" role="status" aria-live="polite">
-        {slow ? "This is taking longer than usual." : ""}
+    // No gap on the outer row: the Spinner carries its own margin (#1792), and a
+    // gap here would add to it and space the cue further from its own label than
+    // the label is from the count. The inner row keeps the gap for the words.
+    <span className="inline-flex items-center">
+      <Spinner />
+      <span className="inline-flex items-center gap-2">
+        {slow ? slowLabel : pendingLabel}
+        {showElapsed && <span className="tabular-nums opacity-80">{seconds}s</span>}
+        {/* Announced once, when the wait flips to slow. A live region on the
+            ticking count itself would read a number out every second. */}
+        <span className="sr-only" role="status" aria-live="polite">
+          {slow ? "This is taking longer than usual." : ""}
+        </span>
       </span>
     </span>
   );

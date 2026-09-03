@@ -92,6 +92,13 @@
      there as tripwires. */
   --focus-ring-line:    var(--pennie-blue);
   --focus-ring-line-on-accent: var(--pennie-graphite); /* 7.36:1 on sky */
+  /* The internal working cue's arc (#1792). A thin line drawn ON a surface is the
+     same contrast problem the focus ring already solved, and it has the same
+     answer: no single token clears 3:1 on both a beige page and a sky button, so
+     the SURFACE chooses. Sky itself is 1.57:1 on beige and 1.00:1 on a sky fill,
+     which is why it is not simply the accent here. Aliased rather than copied so
+     one edit moves both, and measured by name in scripts/test-contrast.ts. */
+  --cue-line: var(--focus-ring-line);
   --focus-ring-offset:  2px; /* a control may tighten this; see .pn-nav-item */
 
   /* ---------------- Radii (private names; mapped in @theme inline) ---------------- */
@@ -337,6 +344,17 @@ h1.pn-display {
 .pn-skip-link:focus-visible,
 [data-focus-ring="on-accent"]:focus-visible {
   outline-color: var(--focus-ring-line-on-accent);
+}
+/* The same flip for the working cue, on the same surfaces. Set as a custom
+   property rather than as a colour so it INHERITS to the spinner drawn inside the
+   control, which is where the arc actually lands (a primary button's own fill is
+   sky, so an arc coloured for the page behind it would be invisible on it, L213).
+   No `:focus-visible` here: a spinner appears whether or not the control is
+   focused. */
+.pn-btn--primary,
+.pn-skip-link,
+[data-cue-line="on-accent"] {
+  --cue-line: var(--focus-ring-line-on-accent);
 }
 /* DateTimeField segments live inside one bordered field that already shows the
    focus ring via focus-within. Suppress the per-segment ring (unlayered, higher
