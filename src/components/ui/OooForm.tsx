@@ -38,7 +38,11 @@ type Editing = {
 const formLabelCls = "block text-xs font-semibold text-fg";
 const fieldBaseCls =
   "h-[44px] rounded-sm border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted";
+// #1854: the timezone SELECT and the text input beside it shared one class,
+// which is the defect that issue is about: a select spends its right padding on
+// the arrow and an input spends it on empty space, so one value cannot suit both.
 const tzInputCls = `${fieldBaseCls} text-sm`;
+const tzSelectCls = `h-[44px] rounded-sm border border-border bg-[var(--field)] pl-3 pr-9 text-fg text-sm`;
 
 export function OooForm({
   action,
@@ -304,7 +308,7 @@ export function OooForm({
                 setTimezone(e.target.value);
                 setShowAllZones(false);
               }}
-              className={tzInputCls}
+              className={tzSelectCls}
             >
               {selectOptions.map((tz) => (
                 <option key={tz.value} value={tz.value}>

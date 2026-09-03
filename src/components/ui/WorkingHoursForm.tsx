@@ -1,5 +1,5 @@
 import { WorkingHoursWeek } from "@/components/ui/WorkingHoursWeek";
-import { labelCls, inputCls } from "@/components/ui/styles";
+import { labelCls, selectCls } from "@/components/ui/styles";
 import type { WorkingHoursDay } from "@/lib/schedule-week";
 import {
   allTimeZones,
@@ -102,7 +102,7 @@ export function WorkingHoursForm({
               name="timezone"
               aria-label={timezoneLabel}
               defaultValue={timezone}
-              className={`${inputCls} w-64`}
+              className={`${selectCls} w-64`}
             >
               {zoneChoices(timezone).map((z) => (
                 <option key={z.id} value={z.id}>

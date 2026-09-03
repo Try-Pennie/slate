@@ -6,7 +6,7 @@ import { ROLE_RANK, roleLabel } from "@/lib/auth/roles";
 import { isRole } from "@/lib/auth/roles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls, selectCls } from "@/components/ui/styles";
 
 /**
  * Team access (#160): give somebody who is not a Salesforce agent the access they
@@ -104,7 +104,7 @@ export function TeamAccessPanel({
             id="staff-role"
             name="role"
             defaultValue="manager"
-            className={`${inputCls} w-44`}
+            className={`${selectCls} w-44`}
           >
             {GRANTABLE_STAFF_ROLES.map((r) => (
               <option key={r} value={r}>

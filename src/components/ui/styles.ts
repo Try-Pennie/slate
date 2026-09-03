@@ -10,6 +10,32 @@ export const inputCls =
   "mt-1 w-full rounded-sm border border-border bg-[var(--field)] px-3 text-fg " +
   "h-[44px] placeholder:text-fg-muted";
 
+/**
+ * A select's box (#1854).
+ *
+ * NOT `inputCls`, and that is the whole point. A select and a text input cannot
+ * share one horizontal padding and both look right: an input spends its right
+ * padding on empty space after the text, while a select spends it on the arrow.
+ * Every select in the app took its padding from the input's class, so the arrow
+ * sat hard against the right border with nothing between it and the edge, on
+ * every filter, form and settings screen at once.
+ *
+ * So a select reserves MORE on the right than on the left. Measured in a browser
+ * rather than guessed: `padding-right` really does move the native arrow inward,
+ * and at 36px it clears the edge while a long option's text still stops short of
+ * it. Widening `inputCls` was the other way to reach this and is the wrong one,
+ * since it would put unwanted empty space inside every text field in the app.
+ *
+ * THE ARROW IS STILL THE BROWSER'S. Drawing our own would make the spacing exact
+ * across browsers, and #1849 will do exactly that, because the picker replacing
+ * these has to draw a chevron regardless and needs a wrapper element per control
+ * to position it. Doing it here would be that work twice. `scripts/test-select-not-input.ts`
+ * holds the two classes apart so the padding decision survives into it.
+ */
+export const selectCls =
+  "mt-1 w-full rounded-sm border border-border bg-[var(--field)] pl-3 pr-9 text-fg " +
+  "h-[44px]";
+
 // Cards lean on a soft shadow in light mode; shadows vanish on dark, so a
 // subtle border restores the card edge there.
 export const cardCls =

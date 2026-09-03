@@ -29,7 +29,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
@@ -257,7 +257,7 @@ export default async function AgentProfilePage({
                     name="role"
                     aria-label="Role"
                     defaultValue={agent.role}
-                    className={`${inputCls} w-40`}
+                    className={`${selectCls} w-40`}
                   >
                     {roleOptions(agent.role).map((r) => (
                       <option key={r} value={r}>
@@ -432,7 +432,7 @@ export default async function AgentProfilePage({
                       ? "false"
                       : ""
                 }
-                className={inputCls}
+                className={selectCls}
               >
                 <option value="">Not set</option>
                 <option value="true">Yes</option>
