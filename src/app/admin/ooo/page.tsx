@@ -27,7 +27,7 @@ import {
   rejectOooAction,
   retryOooAction,
 } from "@/app/admin/ooo/actions";
-import { btnCls, btnSecondaryCls, proseCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
@@ -36,6 +36,7 @@ import { DeepLinkScroll } from "@/components/ui/DeepLinkScroll";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { DeclineConfirm } from "@/components/ui/DeclineConfirm";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -401,20 +402,18 @@ export default async function OooQueuePage({
         targetId={sp.request ? `request-${sp.request}` : null}
       />
       <>
-        {/* Navy header carrying the actionable status: how many wait on you. */}
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Team requests</p>
-          <h1 className="pn-h2 mt-2 text-pennie-beige">
-            {pending.length === 0
+        {/* The header carries the actionable status: how many wait on you. */}
+        <AdminPageHeader
+          title={
+            pending.length === 0
               ? "You're all caught up."
-              : `${pending.length} waiting on you`}
-          </h1>
-          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
+              : `${pending.length} waiting on you`
+          }
+        >
             {seesAll
               ? "Requests across the team."
               : "Requests from your reports."}
-          </p>
-        </section>
+        </AdminPageHeader>
 
         {sp.msg && (
           <div

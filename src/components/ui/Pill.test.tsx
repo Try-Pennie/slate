@@ -3,81 +3,21 @@ import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { Pill, PILL_TEXT_INSET_PX, ALL_VARIANTS, type PillVariant } from "./Pill";
 
-// #1054: a Pill on a band that paints its OWN dark fill.
+// #1054 USED TO BE PINNED HERE, and #1838 consumed it.
 //
-// Found by an axe run against the agent detail page, where two pills in the navy
-// identity band drew a graphite label on navy at 1.28:1. Not low contrast: invisible.
+// A Pill inside the agent detail page's navy identity band drew a graphite label
+// on navy at 1.28:1, so `onDark` overrode the foreground and background as a pair
+// (L213). #1838 turned every page header into an ordinary card, which left that
+// prop with no call sites anywhere, so the prop is gone and the tests that
+// required it are DELETED rather than adjusted: a test whose whole content is a
+// behaviour that has been reversed stops being coverage and becomes the guard
+// defending the rejected behaviour (L252).
 //
-// The cause is the pair problem (L213). The transparent variants draw their label in
-// `--fg`, which follows the PAGE theme, so they are legible on the page's own
-// background and nowhere else. A call site that overrides only the BACKGROUND keeps the
-// base variant's foreground, and nothing reports it because both halves are
-// individually correct: the token contrast guard checks pairings, and this was a
-// composition of two valid tokens.
-//
-// So `onDark` overrides the pair. These tests pin the rule rather than the exact
-// classes: what must hold is that a transparent variant on a dark band does not keep
-// the theme-following foreground, and that a variant carrying its own fill is left
-// alone (overriding one of those would break the fill it depends on).
-
-const TRANSPARENT = ["role-agent", "outline"] as const;
-const SELF_CONTAINED = [
-  "role-manager",
-  "role-admin",
-  "role-super_admin",
-  "status-ok",
-  "status-pending",
-] as const;
-
-describe("Pill onDark", () => {
-  it("drops the theme-following foreground on the transparent variants", () => {
-    for (const variant of TRANSPARENT) {
-      const { container } = render(
-        <Pill variant={variant} onDark>
-          label
-        </Pill>,
-      );
-      const cls = container.firstElementChild!.className;
-      expect(cls, `${variant} must not keep text-fg on a dark band`).not.toMatch(/\btext-fg\b/);
-      expect(cls, `${variant} needs the band's own foreground`).toMatch(/text-pennie-beige/);
-    }
-  });
-
-  it("keeps the theme-following foreground when NOT on a dark band", () => {
-    // The positive control. Without it, a fix that hardcoded beige everywhere would
-    // pass the test above while making every pill on a beige page unreadable.
-    for (const variant of TRANSPARENT) {
-      const { container } = render(<Pill variant={variant}>label</Pill>);
-      expect(container.firstElementChild!.className).toMatch(/\btext-fg\b/);
-    }
-  });
-
-  it("leaves a variant that paints its own fill untouched", () => {
-    // These carry a background AND a foreground chosen together, so overriding half of
-    // one is the very mistake this prop exists to fix.
-    for (const variant of SELF_CONTAINED) {
-      const plain = render(<Pill variant={variant}>label</Pill>).container.firstElementChild!
-        .className;
-      const dark = render(
-        <Pill variant={variant} onDark>
-          label
-        </Pill>,
-      ).container.firstElementChild!.className;
-      expect(dark, `${variant} is self-contained and must not change`).toBe(plain);
-    }
-  });
-
-  it("renders its children and any caller class either way", () => {
-    const { container } = render(
-      <Pill variant="outline" onDark className="ml-2">
-        Deactivated
-      </Pill>,
-    );
-    const el = container.firstElementChild!;
-    expect(el.textContent).toBe("Deactivated");
-    expect(el.className).toMatch(/ml-2/);
-  });
-});
+// What survives is in `scripts/test-contrast.ts`, which still holds graphite on
+// navy as a FORBIDDEN pairing. The navy surfaces that remain (the login brand
+// panel, the impersonation banner and its dropped session notice, the time off
+// stat grid) render no Pill, so nothing today needs the remedy; the record of
+// why it would be needed is what is kept.
 
 // #1821: a Pill in a table cell put its label 9px right of the column header's,
 // so the header lined up with the pill's rounded edge instead of with its word.
@@ -199,18 +139,4 @@ describe("the role ladder (#1844)", () => {
     }
   });
 
-  it("still holds up on a dark band, where muting it would make it vanish", () => {
-    // The muting is a decision about DENSITY on a long table, not about the role.
-    // On a band that paints its own dark fill there is exactly one of these, and
-    // graphite-muted on navy is the invisible pill `onDark` exists to prevent
-    // (L213), so agent takes the shared on-dark pairing like any other
-    // transparent variant.
-    const cls = render(
-      <Pill variant="role-agent" onDark>
-        label
-      </Pill>,
-    ).container.firstElementChild!.className;
-    expect(cls).toMatch(/text-pennie-beige/);
-    expect(cls).not.toMatch(/text-fg-muted/);
-  });
 });

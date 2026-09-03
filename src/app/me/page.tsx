@@ -27,6 +27,7 @@ import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import { PageShell } from "@/components/ui/PageShell";
 import { BookablePill } from "@/components/ui/BookablePill";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -301,12 +302,11 @@ export default async function MePage({
       />
       <PageShell width="narrow">
         {oooOnly ? (
-          /* Compact navy header: greeting + at-a-glance status (earns its weight). */
-          <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface-elevated dark:border dark:border-border">
-            <h1 className="pn-h3 text-pennie-beige">
-              {firstName ? `Hi, ${firstName}.` : "Hi there."}
-            </h1>
-            <p className={`mt-2 text-pennie-beige/85 ${proseCls}`}>
+          /* The greeting plus at-a-glance status. #1838 made this the same card
+             the console uses; Dan chose to convert /me too, so no navy page
+             header survives anywhere in the app. */
+          <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
+            <p>
               {oooUnreadable ? (
                 // #1647: every other sentence in this band is a count, and a
                 // count off a read that never ran is the one thing this greeting
@@ -326,18 +326,18 @@ export default async function MePage({
                 <>
                   {summary.pending > 0 && (
                     <span>
-                      <span className="font-semibold tabular-nums text-pennie-beige">
+                      <span className="font-semibold tabular-nums text-fg">
                         {summary.pending}
                       </span>{" "}
                       waiting on {reviewerName ?? NO_MANAGER_REVIEWER}
                     </span>
                   )}
                   {summary.pending > 0 && summary.upcomingApproved > 0 && (
-                    <span className="px-2 text-pennie-beige/40">·</span>
+                    <span className="px-2 text-fg-muted">·</span>
                   )}
                   {summary.upcomingApproved > 0 && (
                     <span>
-                      <span className="font-semibold tabular-nums text-pennie-beige">
+                      <span className="font-semibold tabular-nums text-fg">
                         {summary.upcomingApproved}
                       </span>{" "}
                       approved and coming up
@@ -346,7 +346,7 @@ export default async function MePage({
                 </>
               )}
             </p>
-          </section>
+          </AdminPageHeader>
         ) : (
           <>
             <div>

@@ -7,6 +7,7 @@ import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadAvailabilityGrid, GRID_DAYS } from "@/lib/admin/availability-grid-load";
 import { AvailabilityGridTable } from "@/components/AvailabilityGridTable";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -37,17 +38,13 @@ export default async function AvailabilityGridPage() {
   return (
     <>
       <>
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Admin</p>
-          <h1 className="pn-h3 mt-2 text-pennie-beige">Availability</h1>
-          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
+        <AdminPageHeader title="Availability">
             Every hour of the next {GRID_DAYS} days, and whether a lead could book it.
             When they could not, this says which of the five reasons it was, because
             an hour nobody is rostered for, an hour the whole team is away, and an
             hour that is simply full are different problems for different people.
             All times are {zoneLabel}.
-          </p>
-        </section>
+        </AdminPageHeader>
 
         {!grid.measurable ? (
           <section className={cardCls}>

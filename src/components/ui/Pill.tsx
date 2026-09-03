@@ -8,18 +8,19 @@ import type { ReactNode } from "react";
  * The ink-fill `role-admin` variant gets a dark treatment (outline +
  * sky-soft text) because a navy fill is invisible on the dark navy page.
  *
- * ON A DARK BAND, pass `onDark` (#1054). The transparent variants (`role-agent`,
- * `outline`) draw their label in `--fg`, which follows the PAGE theme, so they are
- * only legible on the page's own background. Placed inside a band that paints its
- * own dark fill they keep the light theme's graphite label: measured at 1.28:1 on
- * the agent detail page's navy identity band, which is an invisible pill rather
- * than a low-contrast one.
+ * THERE IS NO `onDark` ANY MORE (#1838). It existed because the agent detail page
+ * put three pills inside a navy identity band, where a transparent variant drew
+ * its `--fg` label on navy at 1.28:1: an invisible pill rather than a low
+ * contrast one (#1054, the pair problem, L213). #1838 turned every page header
+ * into an ordinary card, which left that prop with zero call sites, and a
+ * mechanism with no users plus a docstring arguing for its necessity is exactly
+ * what the next reader argues with instead of deleting (L29).
  *
- * This is the pair problem (L213): a call site that overrides only the BACKGROUND
- * silently keeps the base variant's foreground, and nothing reports it because both
- * halves are individually correct. `onDark` overrides the pair, so a call site has
- * the right thing to reach for instead of inventing a className, and the token
- * contrast guard covers the pairing it produces.
+ * The navy surfaces that remain (the login brand panel, the impersonation banner
+ * and its dropped session notice, the time off stat grid) render no Pill at all,
+ * which is why nothing needs it. If a pill is ever put on one of them the pair
+ * problem returns; `scripts/test-contrast.ts` still holds graphite on navy as a
+ * FORBIDDEN pairing, so that failure is recorded even with the remedy gone.
  *
  * IN A TABLE CELL, pass `alignToColumn` (#1821). The pill's label sits 9px in
  * from its own edge (a 1px transparent border plus 8px of padding), so a pill
@@ -66,20 +67,6 @@ export type PillVariant =
   | "status-error"
   | "status-pending"
   | "outline";
-
-/**
- * The transparent variants, whose legibility depends on what is BEHIND them rather
- * than on a fill they carry. Only these need the `onDark` override; every other
- * variant paints its own background and is self-contained.
- */
-const TRANSPARENT_VARIANTS: readonly PillVariant[] = ["role-agent", "outline"];
-
-/** The pairing for a transparent pill sitting on a dark band: cream label on a cream
- *  hairline. Both halves change together, which is the entire point.
- *
- *  It carries its own weight because it REPLACES the variant's classes outright,
- *  so a variant's own `font-semibold` does not reach the dark path. */
-const ON_DARK_CLS = "border-pennie-beige/40 text-pennie-beige font-semibold";
 
 /**
  * WEIGHT LIVES HERE, NOT IN THE BASE (#1844). Every variant carries its own
@@ -136,16 +123,12 @@ export function Pill({
   children,
   className,
   title,
-  onDark,
   alignToColumn,
 }: {
   variant: PillVariant;
   children: ReactNode;
   className?: string;
   title?: string;
-  /** Set when the pill sits on a band that paints its OWN dark fill, so a
-   *  transparent variant does not keep the page theme's dark label (#1054). */
-  onDark?: boolean;
   /**
    * Set on a pill that starts a TABLE CELL, so its label lines up with the
    * column header's rather than 9px right of it (#1821).
@@ -157,8 +140,7 @@ export function Pill({
    */
   alignToColumn?: boolean;
 }) {
-  const variantCls =
-    onDark && TRANSPARENT_VARIANTS.includes(variant) ? ON_DARK_CLS : VARIANT_CLS[variant];
+  const variantCls = VARIANT_CLS[variant];
   return (
     <span
       title={title}

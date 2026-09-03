@@ -10,7 +10,8 @@ import {
   type OutcomeMix,
   type RawMix,
 } from "@/lib/monitor/booking-api-outcome";
-import { cardCls, proseCls } from "@/components/ui/styles";
+import { cardCls } from "@/components/ui/styles";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -110,16 +111,12 @@ export default async function BookingOutcomesPage() {
   return (
     <>
       <>
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Diagnostics</p>
-          <h1 className="pn-h2 mt-2 text-pennie-beige">Booking API outcomes</h1>
-          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
+        <AdminPageHeader title="Booking API outcomes">
             The mix of direct booking API results: whether person-dedupe,
             cross-bucket moves, and no-eligible-agents are behaving. Customer
             attempts only, so it matches the failure rate check; smoke canary
             calls are counted out separately below. Visibility only, not an alert.
-          </p>
-        </section>
+        </AdminPageHeader>
 
         {readError && (
           <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">

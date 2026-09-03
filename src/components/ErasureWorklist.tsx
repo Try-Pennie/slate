@@ -33,6 +33,7 @@ import {
   worklistHeadline,
 } from "@/lib/snowflake/erasure-worklist-copy";
 import { summarizeWorklist } from "@/lib/snowflake/erasure-worklist";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 /**
  * The operator worklist for pending Snowflake erasure purges (#1124).
@@ -213,15 +214,11 @@ export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-        <p className="pn-eyebrow text-pennie-sky">Data subject erasures</p>
-        <h1 className="pn-h2 mt-2 text-pennie-beige">{worklistHeadline(summary)}</h1>
-        <p className="mt-2 text-pennie-beige/75">
-          The Supabase half of every erasure is already done. This is the warehouse
-          half: what Snowflake still holds for the people whose data Slate has
-          erased, and the control that clears it.
-        </p>
-      </section>
+      <AdminPageHeader title={worklistHeadline(summary)}>
+        The Supabase half of every erasure is already done. This is the warehouse
+        half: what Snowflake still holds for the people whose data Slate has
+        erased, and the control that clears it.
+      </AdminPageHeader>
 
       {warehouse.kind === "unreadable" && (
         <div role="alert" className="rounded-xl border border-[var(--error)] px-5 py-4 text-sm text-error">

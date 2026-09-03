@@ -7,6 +7,7 @@ import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadBucketSupply } from "@/lib/admin/bucket-supply-load";
 import { BucketSupplyTable } from "@/components/BucketSupplyTable";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -41,16 +42,12 @@ export default async function BucketAvailabilityPage() {
   return (
     <>
       <>
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Admin</p>
-          <h1 className="pn-h3 mt-2 text-pennie-beige">Bucket availability</h1>
-          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
+        <AdminPageHeader title="Bucket availability">
             How many appointment times each debt bucket is offering on each day, against how
             many that day could have held. A count on its own cannot tell a thin pool from a
             closed one, so every number is a share of what was possible. All times are{" "}
             {zoneLabel}.
-          </p>
-        </section>
+        </AdminPageHeader>
 
         {!report.measurable ? (
           <section className={cardCls}>
