@@ -14,7 +14,7 @@ import { btnSecondaryCls } from "@/components/ui/styles";
  */
 
 const ghost =
-  "rounded-md px-3 py-1.5 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
+  "rounded-md px-3 py-1.5 text-sm font-semibold transition-colors";
 
 export function DeclineConfirm({ agentName }: { agentName: string }) {
   const [confirming, setConfirming] = useState(false);

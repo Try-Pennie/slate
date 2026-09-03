@@ -84,7 +84,7 @@ export function BookerStrip({
               type="button"
               aria-pressed={selected}
               onClick={() => onSelect(chip.iso)}
-              className={`flex min-h-11 min-w-16 flex-1 flex-col items-center rounded-lg border px-3 py-2 tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky motion-reduce:transition-none ${
+              className={`flex min-h-11 min-w-16 flex-1 flex-col items-center rounded-lg border px-3 py-2 tabular-nums transition-colors motion-reduce:transition-none ${
                 selected
                   ? "border-pennie-sky bg-pennie-sky text-pennie-graphite"
                   : "border-border text-fg hover:border-pennie-sky"

@@ -713,7 +713,7 @@ export default function Booker({
               href={manageHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-5 inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+              className="mt-5 inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline"
             >
               {CONFIRMED_COPY.manageLink}
               <span aria-hidden="true">→</span>
@@ -741,7 +741,7 @@ export default function Booker({
                   </p>
                   <a
                     href={confirmed.duplicateWarning.manageUrl}
-                    className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                    className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-[var(--accent-ink,inherit)] underline underline-offset-2 hover:no-underline"
                   >
                     {DUPLICATE_COPY.viewOrCancel}
                     <span aria-hidden="true">→</span>

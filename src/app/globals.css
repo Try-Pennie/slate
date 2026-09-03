@@ -83,7 +83,16 @@
 
   /* Focus (S3): decorative sky glow + theme-aware contrast-carrying line */
   --focus-ring:         rgba(130, 208, 255, 0.45); /* decorative sky glow */
-  --focus-ring-line:    var(--fg); /* graphite outline on light (~11.5:1); flipped to sky on navy */
+  /* #1768: brand blue on ordinary light surfaces (4.56:1 on beige, 4.55:1 on the
+     sidebar's sky wash). It was graphite, which passes everywhere on light and
+     reads as a hard dark box floating off the thing it is marking. Flipped to sky
+     on navy below; flipped to graphite on a sky FILL, because no one colour clears
+     3:1 on both a beige page and a sky button. Every pairing is measured in
+     scripts/test-contrast.ts, and the three colours that do NOT clear are held
+     there as tripwires. */
+  --focus-ring-line:    var(--pennie-blue);
+  --focus-ring-line-on-accent: var(--pennie-graphite); /* 7.36:1 on sky */
+  --focus-ring-offset:  2px; /* a control may tighten this; see .pn-nav-item */
 
   /* ---------------- Radii (private names; mapped in @theme inline) ---------------- */
   --pn-radius-xs:  4px;
@@ -302,20 +311,32 @@ h1.pn-display {
 
 } /* end @layer components */
 
-/* ---------------- Theme-aware focus (S3) ----------------
+/* ---------------- Theme-aware focus (S3, #1768) ----------------
    UNLAYERED on purpose (#39): the ring must beat layered utilities.
-   The outline carries the 3:1 contrast (graphite on light, sky on navy);
-   the sky box-shadow is purely decorative. */
-:focus-visible {
+   The outline carries the 3:1 contrast; the sky box-shadow is decorative only.
+
+   ONE declaration list for every selector that draws a ring, rather than the
+   same three lines written out per selector: they have to agree, and the copy on
+   .pn-seg had already been written a third time. What varies between contexts is
+   the TOKEN, not the recipe. */
+:focus-visible,
+.pn-btn:focus-visible,
+.pn-seg:has(.pn-seg-input:focus-visible),
+.dt-field:focus-within {
   outline: 2px solid var(--focus-ring-line);
-  outline-offset: 2px;
+  outline-offset: var(--focus-ring-offset);
   box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
 }
-/* S3: same recipe on .pn-btn explicitly (kept with its sibling, unlayered) */
-.pn-btn:focus-visible {
-  outline: 2px solid var(--focus-ring-line);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+
+/* A ring drawn ON a sky or accent fill has to clear against that fill, not
+   against the page behind it (L213). Brand blue on sky measures 2.91:1, so the
+   most focused control in the product would sit under the line; graphite on sky
+   is 7.36:1. `data-focus-ring="on-accent"` is the hook for any other control that
+   paints its own accent fill. */
+.pn-btn--primary:focus-visible,
+.pn-skip-link:focus-visible,
+[data-focus-ring="on-accent"]:focus-visible {
+  outline-color: var(--focus-ring-line-on-accent);
 }
 /* DateTimeField segments live inside one bordered field that already shows the
    focus ring via focus-within. Suppress the per-segment ring (unlayered, higher
@@ -335,10 +356,18 @@ h1.pn-display {
   outline: none;
   box-shadow: none;
 }
-.pn-seg:has(.pn-seg-input:focus-visible) {
-  outline: 2px solid var(--focus-ring-line);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 4px var(--focus-ring); /* sky glow, decorative only */
+/* The segment's ring is drawn by the shared recipe above, which names this
+   selector. Only the input's own ring is suppressed here. */
+
+/* The admin sidebar item (#1768). Its current state is already carried by a sky
+   wash plus a filled left edge, so a ring offset two pixels OUTSIDE the box made
+   three markers on one element and read as a separate floating object rather than
+   as a highlight of the thing. Drawn INSIDE the item instead, with no decorative
+   glow, so focus frames what it is on and the fill and the bar go on meaning
+   selected. Unlayered, beside the recipe it overrides. */
+.pn-nav-item:focus-visible {
+  --focus-ring-offset: -2px;
+  box-shadow: none;
 }
 
 /* ---------------- Visually-hidden utility (S7) ---------------- */

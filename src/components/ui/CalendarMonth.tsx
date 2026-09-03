@@ -96,7 +96,7 @@ export function CalendarMonth({
           aria-label="Previous month"
           disabled={!canPrev}
           onClick={() => onMonthChange(month.minus({ months: 1 }))}
-          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
             <path d="M10 4L6 8l4 4" />
@@ -110,7 +110,7 @@ export function CalendarMonth({
           aria-label="Next month"
           disabled={!canNext}
           onClick={() => onMonthChange(month.plus({ months: 1 }))}
-          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
             <path d="M6 4l4 4-4 4" />
@@ -147,7 +147,7 @@ export function CalendarMonth({
                 if (!disabled) onSelect(d);
               }}
               onKeyDown={(e) => onGridKey(e, d)}
-              className={`relative flex min-h-11 items-center justify-center rounded-full text-sm tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky motion-reduce:transition-none ${
+              className={`relative flex min-h-11 items-center justify-center rounded-full text-sm tabular-nums transition-colors motion-reduce:transition-none ${
                 disabled
                   ? "cursor-not-allowed text-fg-muted opacity-30"
                   : selected

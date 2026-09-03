@@ -47,7 +47,13 @@ export function AdminSidebar({ groups }: { groups: AdminNavGroup[] }) {
                     <Link
                       href={item.href}
                       aria-current={current ? "page" : undefined}
-                      className={`flex min-h-11 items-center rounded-sm border-l-2 px-3 text-sm transition-colors ${
+                      // `pn-nav-item` is what moves the focus ring INSIDE this
+                      // item (#1768). Its current state is already carried by a
+                      // sky wash and a filled left edge, so a ring sitting two
+                      // pixels outside the box made three markers on one element
+                      // and read as a separate floating object rather than as a
+                      // highlight of the thing.
+                      className={`pn-nav-item flex min-h-11 items-center rounded-sm border-l-2 px-3 text-sm transition-colors ${
                         current
                           ? "border-accent bg-pennie-sky-soft font-semibold text-fg dark:bg-accent/15"
                           : "border-transparent font-normal text-fg-muted hover:bg-[var(--bg-alt)] hover:text-fg"

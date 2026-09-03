@@ -162,7 +162,7 @@ export default function LoginPage() {
                   setLoading(false);
                   signIn();
                 }}
-                className="font-semibold text-fg underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                className="font-semibold text-fg underline underline-offset-2 hover:no-underline"
               >
                 Try again
               </button>

@@ -253,6 +253,16 @@ describe("BusinessHoursForm", () => {
       expect(document.querySelector(`[data-weekday="${open}"]`)?.getAttribute("data-day-off")).toBe("false");
     });
 
+    it("recesses a closed day with a FILL, never by dimming its text", () => {
+      draw({ ok: false });
+      const closed = DAYS.find((d) => !d.is_open)!.weekday;
+      const row = document.querySelector(`[data-weekday="${closed}"]`) as HTMLElement;
+
+      // Dimming a row takes its text under the 4.5:1 body text needs (#1768).
+      expect(row.className).not.toMatch(/\bopacity-/);
+      expect(row.className).toContain("bg-[var(--bg-alt)]");
+    });
+
     it("requires a real time on an OPEN day and leaves a closed one alone", () => {
       draw({ ok: false });
 
