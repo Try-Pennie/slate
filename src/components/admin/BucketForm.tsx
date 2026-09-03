@@ -117,20 +117,15 @@ export function BucketForm({
           />
         </div>
         <div>
-          <label className={labelCls}>Fallback agent (when none match)</label>
-          <select
-            name="fallback_user_id"
-            aria-label="Fallback agent (when none match)"
-            defaultValue={bucket?.fallback_user_id ?? ""}
-            className={inputCls}
-          >
-            <option value="">None</option>
-            {roster.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-          </select>
+          {/* #1784: the same picker in single select mode, not a roster sized
+              <select> per bucket. This one control was 8,755 <option> elements
+              across the page, about 70% of its nodes, scaling with buckets times
+              roster exactly as the member checkboxes had before #1760. */}
+          <BucketMembersPicker
+            mode="fallback"
+            selectedIds={bucket?.fallback_user_id ? [bucket.fallback_user_id] : []}
+            rosterTotal={roster.length}
+          />
         </div>
       </div>
       <BucketCriteriaPicker catalog={catalog} current={bucket?.criteria ?? {}} />

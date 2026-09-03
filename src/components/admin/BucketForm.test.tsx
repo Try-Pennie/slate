@@ -97,6 +97,29 @@ describe("BucketForm rendered control count", () => {
     expect(b.focusable).toBe(a.focusable);
   });
 
+  // #1784: the OPTION count is the half #1760 left behind. The fallback agent
+  // control was a <select> per form listing the whole roster, so the served page
+  // still carried 8,755 <option> elements, about 70% of its nodes, scaling with
+  // buckets times roster exactly as the checkboxes had.
+  it("does not scale the OPTION count with the roster size either", () => {
+    const small = renderPage(60, 136);
+    const a = small.getByTestId("page").querySelectorAll("option").length;
+    small.unmount();
+
+    const large = renderPage(60, 272);
+    const b = large.getByTestId("page").querySelectorAll("option").length;
+    large.unmount();
+
+    expect(b).toBe(a);
+  });
+
+  it("stays far under the 8,755 options the served page measured", () => {
+    const view = renderPage(60, 136);
+    const options = view.getByTestId("page").querySelectorAll("option").length;
+    // 60 forms times a handful of real choices, not 60 times the roster.
+    expect(options).toBeLessThan(60 * 20);
+  });
+
   it("stays far under the 9,450 inputs the served page measured", () => {
     const view = renderPage(60, 136);
     const { inputs } = countControls(view.getByTestId("page"));
