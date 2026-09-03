@@ -229,63 +229,101 @@ below(sky, r("--pennie-sky-soft"), 3, "sky arc on the sidebar's current-item was
 below(sky, beige, 3, "sky arc on the beige page - the same failure on an ordinary surface");
 below(sky, sky, 3, "sky arc on a sky button - the cue would be completely invisible");
 
-// --- #1812: the tier ledger's two letter tones ------------------------------
+// --- #1830 / #1832: the tier ledger's two letter tones ---------------------
 //
-// Five letters in fixed positions, one per rung. The covered ones are the data;
-// the UNCOVERED ones are load bearing too, because they establish which position
-// is which so a reader can tell "l M H V u" from "L M H v u" without counting. So
-// the quiet tone is a functional mark, not decoration, and takes the 3:1 floor.
+// Five letters in fixed positions, one per rung, all uppercase, separated by
+// WEIGHT and TONE.
 //
-// Mercury is what DESIGN.md nominates for "the unfilled half of any meter or
-// track" and it is WRONG here at 1.19:1: fine behind a bar whose filled half
-// carries the meaning, useless as a letter somebody has to read a position off.
-// Measured rather than eyeballed, which is the Measured Pairing Rule.
+// THE 3:1 FLOOR THAT USED TO BE HERE WAS BUILT ON A PREMISE THAT IS FALSE, and
+// this block is its replacement. The claim was that the uncovered letters
+// identified their own slots, so a reader could tell one pattern from another
+// without counting, which made them functional marks owing 3:1. They do not. The
+// COVERED letters are their own labels: three dark letters reading M H V
+// say Medium, High, Very High directly, and a lone dark L says Low. Nothing is
+// ever counted. What the faint ones carry is the five slot rhythm, so rows align
+// and the cell width never varies, plus a sense of the scale's extent. That needs
+// them PERCEPTIBLE, not legible.
+//
+// So three real requirements replace the invented one.
 const ledgerOn = r("--ledger-on");
 const ledgerOff = r("--ledger-off");
 const ledgerOnDark = rDark("--ledger-on");
 const ledgerOffDark = rDark("--ledger-off");
 
-// The surfaces a roster row is actually drawn on: the card, its hover tint, and
-// the page behind it.
-for (const [name, surface] of [
+/** Every surface a roster row is drawn on. The zebra tint is the tightest. */
+const LEDGER_SURFACES_LIGHT: [string, RGB][] = [
   ["the card", r("--surface")],
-  ["a hovered row", r("--bg-alt")],
+  ["a zebra row", r("--bg-alt")],
   ["the page", r("--bg")],
-] as [string, RGB][]) {
-  atLeast(ledgerOn, surface, 4.5, `ledger covered letter on ${name} (light)`);
-  atLeast(ledgerOff, surface, 3, `ledger uncovered letter on ${name} (light)`);
-}
-for (const [name, surface] of [
+];
+const LEDGER_SURFACES_DARK: [string, RGB][] = [
   ["a dark card", rDark("--surface")],
-  ["a hovered dark row", rDark("--bg-alt")],
+  ["a zebra dark row", rDark("--bg-alt")],
   ["the dark page", rDark("--bg")],
-] as [string, RGB][]) {
+];
+
+// ONE. The covered letters carry the meaning, so they keep the text floor
+// exactly as it was.
+for (const [name, surface] of LEDGER_SURFACES_LIGHT) {
+  atLeast(ledgerOn, surface, 4.5, `ledger covered letter on ${name} (light)`);
+}
+for (const [name, surface] of LEDGER_SURFACES_DARK) {
   atLeast(ledgerOnDark, surface, 4.5, `ledger covered letter on ${name} (dark)`);
-  atLeast(ledgerOffDark, surface, 3, `ledger uncovered letter on ${name} (dark)`);
 }
 
-// The pair only works if the two are TELLABLE APART, which no per-surface floor
-// checks: both could clear 3:1 and be the same colour. Weight carries the other
-// half of the distinction, so this asks only for a visible step rather than a
-// text-grade ratio.
-atLeast(ledgerOn, ledgerOff, 2, "ledger covered vs uncovered, the tone step (light)");
-atLeast(ledgerOnDark, ledgerOffDark, 2, "ledger covered vs uncovered, the tone step (dark)");
+// TWO. The uncovered letters stay PERCEPTIBLE, so they cannot be lightened until
+// the slot rhythm disappears. THIS IS A PERCEPTIBILITY FLOOR, NOT A WCAG ONE:
+// these letters carry no meaning a reader has to extract, so 3:1 does not apply
+// and putting it back would be a correction in the wrong direction. Set against
+// the ZEBRA row, which is the tightest surface in both themes and the one an
+// eyeballed value misses, with headroom below the shipped 1.74 and 1.59.
+const PERCEPTIBLE = 1.4;
+for (const [name, surface] of LEDGER_SURFACES_LIGHT) {
+  atLeast(ledgerOff, surface, PERCEPTIBLE, `ledger uncovered letter still visible on ${name} (light)`);
+}
+for (const [name, surface] of LEDGER_SURFACES_DARK) {
+  atLeast(ledgerOffDark, surface, PERCEPTIBLE, `ledger uncovered letter still visible on ${name} (dark)`);
+}
 
-// The tripwires that shaped it. Each is a token somebody would reasonably reach
-// for, and each must STAY failing or the floors above are passing unexamined.
-below(r("--pennie-mercury"), r("--surface"), 3, "mercury as a ledger letter on a card - the 1.28:1 the mockup used");
-below(r("--pennie-line"), r("--bg"), 3, "the stroke tone as a ledger letter on the page");
+// THREE. The two states have to read as two states, which is the quantity that
+// actually matters and which no per-surface floor checks: both could clear their
+// floors and be the same colour.
+//
+// ASSERTED PER THEME, AND THE ASYMMETRY IS ASSERTED TOO. The two themes take
+// different tones on purpose: light text on a dark ground blooms, so a pale
+// letter on dark carries more presence than the same ratio does the other way
+// round, and holding both sides to one figure produces two different-looking
+// treatments. Two hand-picked values where one derived value would apparently do
+// is exactly what somebody consolidates, and doing so would silently reverse a
+// deliberate decision while reading as a tidy-up (L542). So a unified value FAILS
+// the last line here rather than passing quietly. Confirmed by looking at 12px,
+// not by arithmetic; there is precedent in --focus-ring-line, which is a
+// different HUE per theme for the same kind of reason.
+const TWO_STATES = 4.5;
+atLeast(ledgerOn, ledgerOff, TWO_STATES, "ledger: covered against uncovered (light)");
+atLeast(ledgerOnDark, ledgerOffDark, TWO_STATES, "ledger: covered against uncovered (dark)");
+{
+  const gapLight = ratio(ledgerOn, ledgerOff);
+  const gapDark = ratio(ledgerOnDark, ledgerOffDark);
+  const said = `ledger: the light gap (${gapLight.toFixed(2)}) is wider than the dark one (${gapDark.toFixed(2)})`;
+  if (gapLight > gapDark + 0.5) assert(true, `${said}, which is the deliberate asymmetry`);
+  else fail(`${said}, so the two themes have been collapsed to one figure; see the note above`);
+}
+
+// The tones that must never be used here, kept as tripwires so the reasons stay
+// measured. Mercury is what DESIGN.md nominates for the unfilled half of a meter
+// and it is far too faint even for a perceptibility floor.
+below(r("--pennie-mercury"), r("--surface"), PERCEPTIBLE, "mercury as a ledger letter on a card - the 1.28:1 the mockup used");
+below(r("--pennie-line"), r("--bg"), PERCEPTIBLE, "the stroke tone as a ledger letter on the page");
+// Body text as the uncovered tone is the OTHER direction of failure: perfectly
+// visible, and so close to the covered letters that the two stop reading as two
+// states. That is what shipped before #1832 and what the gap floor now refuses.
+below(r("--fg-muted"), ledgerOn, TWO_STATES, "body text as the uncovered tone - too close to the covered letters");
 below(
   rDark("--fg-muted"),
   rDark("--fg"),
   2,
   "the dark theme's own muted text as the quiet letter - 1.00:1 from the foreground, so no tone step at all",
-);
-below(
-  r("--pennie-muted"),
-  rDark("--bg-alt"),
-  3,
-  "the LIGHT muted tone reused on a hovered dark row - why dark needs its own value",
 );
 
 // --- #1822: which semantic colours may be a BARE MARK ----------------------

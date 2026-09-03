@@ -41,11 +41,29 @@ describe("DebtTeamLedger", () => {
     expect(covered(container)).toEqual(["M", "H", "V"]);
   });
 
-  it("keeps the uncovered rungs in place as position markers", () => {
-    // They are load bearing: they say WHICH position is which, so a reader can
-    // tell "l M H V u" from "L M H v u" without counting.
+  // #1832: all five uppercase. Case had been a third signal separating covered
+  // from uncovered, on the reasoning that colour must never be the only one.
+  // Weight already satisfies that, so case was doing nothing the second signal
+  // was not, and it cost real legibility: changing case changes the GLYPH, so a
+  // letter reads as a different letter rather than the same one turned down.
+  // Lowercase "l" was the worst, being nearly a vertical bar beside four letters
+  // that are not. Dan: "why are some lowercase?"
+  it("keeps every uncovered rung in place, in the same case as the rest", () => {
+    // What the faint letters carry is the five slot rhythm, so rows align and the
+    // cell width never varies, plus a sense of the scale's extent. They are not
+    // labels: the COVERED letters label themselves (#1830).
     const { container } = render(<DebtTeamLedger teams={["medium"]} />);
-    expect(letters(container).map((l) => l.textContent)).toEqual(["l", "M", "h", "v", "u"]);
+    expect(letters(container).map((l) => l.textContent)).toEqual(["L", "M", "H", "V", "U"]);
+  });
+
+  it("never renders a letter in lowercase, in either state", () => {
+    for (const teams of [[], ["low"], ["medium", "high"], ["low", "medium", "high", "very_high", "ultra_high"]]) {
+      const { container, unmount } = render(<DebtTeamLedger teams={teams} />);
+      for (const l of letters(container)) {
+        expect(l.textContent, JSON.stringify(teams)).toMatch(/^[A-Z]$/);
+      }
+      unmount();
+    }
   });
 
   it("distinguishes covered from uncovered by weight AND tone, not colour alone", () => {

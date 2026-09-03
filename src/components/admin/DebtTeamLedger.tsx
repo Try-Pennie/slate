@@ -36,14 +36,24 @@ import {
  * failing (#1817). V and U are the two that are not obvious, and their
  * expansion lives ONCE on the column header rather than on every row.
  *
- * THREE SIGNALS SEPARATE COVERED FROM UNCOVERED: case, weight and tone. Colour is
- * never the only one, and the two tones are measured rather than eyeballed
- * (`--ledger-on` / `--ledger-off`, asserted surface by surface in
- * scripts/test-contrast.ts). The uncovered letters are functional, not
- * decorative: they establish which position is which, so a reader can tell
- * "l M H V u" from "L M H v u" without counting, which is why they take a 3:1
- * floor rather than the pale stroke tone DESIGN.md nominates for the unfilled
- * half of a meter. That tone measures 1.19:1 and cannot be read as a position.
+ * TWO SIGNALS SEPARATE COVERED FROM UNCOVERED: weight and tone, both measured
+ * rather than eyeballed (`--ledger-on` / `--ledger-off`, asserted surface by
+ * surface in scripts/test-contrast.ts). Case USED to be a third, and it is gone
+ * (#1832): weight already satisfies the rule that colour may never be the only
+ * signal, so case was doing nothing the second signal was not, and it cost real
+ * legibility, because changing case changes the GLYPH and a letter then reads as
+ * a different letter rather than as the same one turned down. Lowercase "l" was
+ * the worst of them, being nearly a vertical bar beside four letters that are
+ * not.
+ *
+ * THE FAINT LETTERS ARE NOT LABELS, and an earlier version of this docstring said
+ * they were (#1830). The covered letters label themselves: three dark letters
+ * reading M H V say Medium, High, Very High directly, and a lone dark L says Low,
+ * so nothing is ever counted. What the faint ones carry is the five slot rhythm,
+ * so rows align and the cell width never varies, plus a sense of the scale's
+ * extent. That needs them PERCEPTIBLE rather than legible, which is a far lower
+ * bar and carries no 3:1 obligation; claiming otherwise is what put a floor on
+ * them that the design could not meet.
  *
  * Sky is deliberately absent: it is the only colour that may mean "do this", and
  * a data mark is not an action.
@@ -91,7 +101,7 @@ export function DebtTeamLedger({ teams }: { teams: string[] }) {
                   : "font-normal text-[var(--ledger-off)]"
               }`}
             >
-              {on ? letter : letter.toLowerCase()}
+              {letter}
             </span>
           );
         })}

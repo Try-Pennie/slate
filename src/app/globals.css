@@ -111,15 +111,34 @@
      which is why it is not simply the accent here. Aliased rather than copied so
      one edit moves both, and measured by name in scripts/test-contrast.ts. */
   --cue-line: var(--focus-ring-line);
-  /* The tier ledger's two letter tones (#1812). Five letters sit in fixed
-     positions, one per rung; the covered ones are the data and the uncovered
-     ones establish WHICH position is which, so a reader can tell "l M H V u"
-     from "L M H v u" without counting. That makes the quiet one a functional
-     mark rather than decoration, so it takes the 3:1 floor and is measured by
-     name in scripts/test-contrast.ts. Mercury, which DESIGN.md nominates for
-     the unfilled half of a meter, is 1.19:1 here and cannot do this job. */
+  /* The tier ledger's two letter tones (#1812, corrected by #1830 and #1832).
+     Five uppercase letters in fixed positions, one per rung, separated by weight
+     and tone.
+
+     The covered ones are the data and they LABEL THEMSELVES: three dark letters
+     reading M H V say Medium, High, Very High directly. The faint ones carry the
+     five slot rhythm, so rows align and the cell width never varies, plus a sense
+     of the scale's extent. They are not labels, so they need to be PERCEPTIBLE
+     rather than legible and owe no 3:1. An earlier version of this comment
+     claimed they identified their own slots, which was wrong and is what put a
+     3:1 floor on them that the design could not meet.
+
+     THE TWO THEMES TAKE DIFFERENT VALUES ON PURPOSE, and this is the part most
+     likely to be undone by a well meaning cleanup: two hand-picked values where
+     one derived value would apparently do is exactly what somebody consolidates,
+     and doing so would silently reverse a deliberate decision while reading as a
+     tidy-up. Light text on a dark ground BLOOMS, so a pale letter on dark carries
+     more presence than the same contrast ratio does in the other direction, and
+     one shared gap figure therefore produces two different-looking treatments.
+     Confirmed by looking at the 12px that ships rather than by arithmetic. The
+     gaps are 6.57:1 on light and 5.56:1 on dark, and scripts/test-contrast.ts
+     asserts each separately AND asserts that light stays the wider of the two, so
+     collapsing them to one value fails rather than passing quietly.
+
+     There is precedent in this same file: --focus-ring-line is a different HUE
+     per theme, brand blue on light and sky on dark, for the same kind of reason. */
   --ledger-on:  var(--fg);
-  --ledger-off: var(--fg-muted);
+  --ledger-off: rgb(188, 188, 191);
   --focus-ring-offset:  2px; /* a control may tighten this; see .pn-nav-item */
 
   /* ---------------- Radii (private names; mapped in @theme inline) ---------------- */
@@ -225,15 +244,13 @@
      card/field edges, and inputs need a 3:1 boundary for WCAG 1.4.11. */
   --border:           rgba(246, 246, 246, 0.38);
   --focus-ring-line:  var(--accent); /* S3: sky outline on navy (graphite stays light-only) */
-  /* Dark needs its OWN quiet letter. The dark theme's `--fg-muted` measures
-     1.00:1 against its own `--fg`, so reusing it would leave the tone half of
-     the distinction doing nothing, and the light theme's muted is 1.78:1 on a
-     hovered dark row so it cannot come across either. Nothing already in the
-     palette clears both bars: the only tokens that do are sky-deep and green,
-     which mean "action" and "healthy". Chosen by measurement (#1812): 6.59:1 on
-     the page, 4.29 on a card, 3.50 on a hovered row, and a 2.54:1 step down
-     from the foreground. */
-  --ledger-off: rgb(158, 155, 166);
+  /* Dark's own quiet letter, and deliberately NOT derived from the light one
+     (#1832). See the note beside --ledger-off in :root for why the two themes
+     diverge; the short version is that light text on a dark ground blooms, so
+     matching the numbers would not match the appearance. This tone gives a 5.56:1
+     gap from the covered letters and stays perceptible at 1.59:1 on the zebra
+     row, which is the tightest surface in this theme. */
+  --ledger-off: rgb(100, 98, 107);
   /* Rose lightened 45% toward white: base rose is 2.30:1 on ink-2 / 3.12:1 on navy (AA fail);
      this reads 4.96:1 on ink-2 and 6.72:1 on navy. */
   --error:            rgb(223, 148, 148);
