@@ -113,6 +113,38 @@ export function rosterEmptyText(f: RosterFilters): string {
 }
 
 /**
+ * The roster's result count, in words (#1799).
+ *
+ * It used to read "showing 1 to 5 of 5 (of 136)": three numbers, two of them the
+ * same, and a parenthetical whose meaning the reader had to work out. Two facts
+ * are worth having, so at most two numbers appear and never the same one twice.
+ *
+ * THE PAGE RANGE IS DELIBERATELY ABSENT. The pager below the table already says
+ * "Page 1 of 3", and only when there is more than one page, so putting the range
+ * here too is one fact printed twice on one screen. What is left is the only
+ * question this line can answer that nothing else does: how many matched, out of
+ * how many there are.
+ *
+ * It is read into a live region on every keystroke, which is why the empty cases
+ * are terse and do not repeat what `rosterEmptyText` says in the table itself.
+ */
+export function rosterCountText(counts: {
+  matched: number;
+  total: number;
+  filtered: boolean;
+}): string {
+  const { matched, total, filtered } = counts;
+  // An empty roster is already stated by the table directly underneath. Saying it
+  // again in a live region announces one fact twice.
+  if (total === 0) return "";
+  if (filtered && matched === 0) return "No matches";
+  const agents = (n: number) => `${n} agent${n === 1 ? "" : "s"}`;
+  // Equal counts carry one fact, so they print as one number. That covers the
+  // unfiltered case and a filter that happens to match everyone.
+  return matched === total ? agents(total) : `${matched} of ${agents(total)}`;
+}
+
+/**
  * Sort key: surname (last whitespace separated token of the display name),
  * falling back to the email when there is no name.
  */

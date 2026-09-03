@@ -7,6 +7,7 @@ import {
   rosterFiltersToQuery,
   hasAnyRosterFilter,
   rosterEmptyText,
+  rosterCountText,
   type RosterFilters,
   type RosterRow,
 } from "@/lib/admin/roster-filter";
@@ -246,6 +247,58 @@ describe("rosterEmptyText", () => {
     // A leading space is dropped by the filter, so quoting it back would show a
     // query nobody searched for.
     expect(rosterEmptyText({ ...NONE, q: "  John " })).toBe('Nothing matches "john ".');
+  });
+});
+
+// #1799: the count read "showing 1 to 5 of 5 (of 136)". Three numbers, two of
+// them the same, and a parenthetical whose meaning had to be worked out.
+describe("rosterCountText", () => {
+  it("says how many matched out of the whole roster when a filter is on", () => {
+    expect(rosterCountText({ matched: 5, total: 136, filtered: true })).toBe("5 of 136 agents");
+  });
+
+  it("never prints the same number twice", () => {
+    // A filter that happens to match everyone. "136 of 136" is the defect in
+    // miniature: two numbers carrying one fact.
+    expect(rosterCountText({ matched: 136, total: 136, filtered: true })).toBe("136 agents");
+  });
+
+  it("gives the total alone when nothing is filtered", () => {
+    expect(rosterCountText({ matched: 136, total: 136, filtered: false })).toBe("136 agents");
+  });
+
+  it("says no matches when a filter found nobody", () => {
+    // Its own sentence, and deliberately not the quoted query: the table below
+    // carries that, and this is a live region read out on every keystroke.
+    expect(rosterCountText({ matched: 0, total: 136, filtered: true })).toBe("No matches");
+  });
+
+  it("says nothing at all for an empty roster", () => {
+    // The table already says "No agents yet." directly underneath. This is a live
+    // region, so repeating it would announce the same fact twice.
+    expect(rosterCountText({ matched: 0, total: 0, filtered: false })).toBe("");
+    expect(rosterCountText({ matched: 0, total: 0, filtered: true })).toBe("");
+  });
+
+  it("counts one agent in the singular", () => {
+    expect(rosterCountText({ matched: 1, total: 1, filtered: false })).toBe("1 agent");
+    expect(rosterCountText({ matched: 1, total: 136, filtered: true })).toBe("1 of 136 agents");
+  });
+
+  it("carries at most two numbers, in every combination", () => {
+    // The rule the issue is actually about, asserted over the space rather than
+    // at the five points above, so a later edit cannot reintroduce a third.
+    for (const total of [0, 1, 5, 50, 136]) {
+      for (const matched of [0, 1, 5, 50, 136]) {
+        if (matched > total) continue;
+        for (const filtered of [true, false]) {
+          const text = rosterCountText({ matched, total, filtered });
+          const numbers = text.match(/\d+/g) ?? [];
+          expect(numbers.length, `"${text}"`).toBeLessThanOrEqual(2);
+          expect(new Set(numbers).size, `"${text}" repeats a number`).toBe(numbers.length);
+        }
+      }
+    }
   });
 });
 

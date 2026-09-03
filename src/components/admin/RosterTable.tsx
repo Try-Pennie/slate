@@ -13,6 +13,7 @@ import {
   filterRoster,
   sortRoster,
   hasAnyRosterFilter,
+  rosterCountText,
   rosterEmptyText,
   rosterFiltersToQuery,
   type RosterFilters,
@@ -212,11 +213,13 @@ export function RosterTable({
           aria-live="polite"
           className="ml-auto text-xs text-fg-muted tabular-nums"
         >
-          {matched.length === 0
-            ? `showing 0 of ${totalRoster}`
-            : `showing ${start + 1}-${start + items.length} of ${matched.length}${
-                matched.length !== totalRoster ? ` (of ${totalRoster})` : ""
-              }`}
+          {/* At most two numbers, never the same one twice, and no page range:
+              the pager below already says "Page 1 of 3" (#1799). */}
+          {rosterCountText({
+            matched: matched.length,
+            total: totalRoster,
+            filtered: hasAnyRosterFilter(filters),
+          })}
         </span>
       </form>
 
