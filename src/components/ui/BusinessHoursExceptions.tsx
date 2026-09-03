@@ -4,7 +4,7 @@ import { useActionState, useState } from "react";
 import { DateTime } from "luxon";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { labelCls, inputCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import type { BusinessHoursFormState } from "@/app/admin/actions";
 import type { BusinessHoursException } from "@/lib/booking/business-hours";
@@ -135,7 +135,7 @@ export function BusinessHoursExceptions({
             <select
               id="exception_state"
               name="state"
-              className={`${inputCls} w-40`}
+              className={`${selectCls} w-40`}
               value={open ? "open" : "closed"}
               onChange={(e) => setOpen(e.target.value === "open")}
             >

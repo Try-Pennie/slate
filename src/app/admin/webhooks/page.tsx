@@ -12,7 +12,7 @@ import { resendFeedback, type ResendResult } from "@/lib/webhooks/resend-feedbac
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Pill } from "@/components/ui/Pill";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls, selectCls } from "@/components/ui/styles";
 import type { WebhookDelivery, WebhookEndpoint } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -169,7 +169,7 @@ export default async function WebhooksPage({
                 name="format"
                 aria-label="Format"
                 defaultValue={webhook?.format ?? "regal"}
-                className={inputCls}
+                className={selectCls}
               >
                 <option value="regal">Regal</option>
                 <option value="generic">Generic (signed)</option>
@@ -232,7 +232,7 @@ export default async function WebhooksPage({
             id="replay-hours"
             name="hours"
             defaultValue="24"
-            className={`${inputCls} w-auto`}
+            className={`${selectCls} w-auto`}
           >
             <option value="2">2 hours</option>
             <option value="6">6 hours</option>

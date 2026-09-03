@@ -6,7 +6,7 @@ import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { getJson, postJson } from "@/lib/http";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 
 const POLL_MS = 3000;
@@ -207,7 +207,7 @@ export default function BulkReassignCoverage({
             </label>
             <select
               id="bulk-reason"
-              className={inputCls}
+              className={selectCls}
               value={reasonCode}
               onChange={(e) => setReasonCode(e.target.value)}
             >

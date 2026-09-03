@@ -4,7 +4,7 @@ import {
   BucketCriteriaPicker,
   BucketMembersPicker,
 } from "@/components/admin/BucketMembersPicker";
-import { btnCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
 import type { RosterEntry } from "@/lib/admin/bucket-member-picker";
 import type { Bucket, EventType } from "@/lib/db/types";
 
@@ -97,7 +97,7 @@ export function BucketForm({
             name="event_type_id"
             aria-label="Event type"
             defaultValue={bucket?.event_type_id ?? ""}
-            className={inputCls}
+            className={selectCls}
             required
           >
             {eventTypes.map((e) => (

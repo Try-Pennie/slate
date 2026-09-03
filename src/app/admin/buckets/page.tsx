@@ -13,7 +13,7 @@ import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader
 import { BucketForm } from "@/components/admin/BucketForm";
 import { RosterProvider } from "@/components/admin/BucketMembersPicker";
 import { rosterSectionFor, type RosterEntry } from "@/lib/admin/bucket-member-picker";
-import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { btnCls, cardCls, labelCls, proseCls, selectCls } from "@/components/ui/styles";
 import type { Bucket, BucketMember, EventType, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -125,7 +125,7 @@ export default async function BucketsPage({
               id="default_bucket_code"
               name="default_bucket_code"
               defaultValue={defaultBucketCode ?? ""}
-              className={`${inputCls} w-72`}
+              className={`${selectCls} w-72`}
             >
               <option value="">No default (require a bucket code)</option>
               {bucketOptions.map((b) => (

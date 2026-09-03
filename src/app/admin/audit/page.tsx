@@ -16,7 +16,7 @@ import {
 import { auditActionLabel, auditActorText, auditDetailText } from "@/lib/audit-display";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnSecondaryCls, cardCls, inputCls, proseCls } from "@/components/ui/styles";
+import { btnSecondaryCls, cardCls, inputCls, proseCls, selectCls } from "@/components/ui/styles";
 import type { AuditEntry, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -157,7 +157,7 @@ export default async function AuditLogPage({
         <form method="GET" action="/admin/audit" className="mb-3 flex flex-wrap items-end gap-2">
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             Action
-            <select name="action" defaultValue={auditFilters.actions?.[0] ?? ""} className={inputCls}>
+            <select name="action" defaultValue={auditFilters.actions?.[0] ?? ""} className={selectCls}>
               <option value="">Any</option>
               {auditActionOptions.map((a) => (
                 <option key={a} value={a}>
@@ -168,7 +168,7 @@ export default async function AuditLogPage({
           </label>
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             Person
-            <select name="actor" defaultValue={auditFilters.actorId ?? ""} className={inputCls}>
+            <select name="actor" defaultValue={auditFilters.actorId ?? ""} className={selectCls}>
               <option value="">Anyone</option>
               {auditActorChoices.map((u) => (
                 <option key={u.id} value={u.id}>

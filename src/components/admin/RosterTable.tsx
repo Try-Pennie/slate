@@ -117,8 +117,11 @@ export function RosterTable({
     setPage(1); // a new filter means a new first page, not page 7 of a shorter list
   }
 
-  const filterCtl =
-    "h-11 rounded-sm border border-border bg-surface px-2.5 text-sm text-fg";
+  // #1854: a select reserves more room on the right than the left, because the
+  // arrow lives there. These four are all selects; the search box above them is
+  // a text input and keeps its own even padding.
+  const filterSelectCls =
+    "h-11 rounded-sm border border-border bg-surface pl-2.5 pr-9 text-sm text-fg";
 
   return (
     <>
@@ -155,7 +158,7 @@ export function RosterTable({
             value={filters.team}
             onChange={(e) => set("team", e.target.value)}
             aria-label="Filter by team"
-            className={filterCtl}
+            className={filterSelectCls}
           >
             <option value="">All teams</option>
             {teamOptions.map((t) => (
@@ -171,7 +174,7 @@ export function RosterTable({
           value={filters.role}
           onChange={(e) => set("role", e.target.value)}
           aria-label="Filter by role"
-          className={filterCtl}
+          className={filterSelectCls}
         >
           <option value="">All roles</option>
           {roleOptions.map((r) => (
@@ -187,7 +190,7 @@ export function RosterTable({
             value={filters.manager}
             onChange={(e) => set("manager", e.target.value)}
             aria-label="Filter by manager"
-            className={filterCtl}
+            className={filterSelectCls}
           >
             <option value="">All managers</option>
             {managerOptions.map(([id, label]) => (
@@ -203,7 +206,7 @@ export function RosterTable({
           value={filters.bookable}
           onChange={(e) => set("bookable", e.target.value)}
           aria-label="Filter by bookable"
-          className={filterCtl}
+          className={filterSelectCls}
         >
           <option value="">Any status</option>
           <option value="yes">Bookable</option>
