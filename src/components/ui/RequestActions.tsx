@@ -13,7 +13,7 @@ import { EditRequestButton } from "@/components/ui/EditRequestButton";
  */
 
 const ghost =
-  "rounded-md px-3 py-1.5 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
+  "rounded-md px-3 py-1.5 text-sm font-semibold transition-colors";
 
 /**
  * The destructive confirm, through the ONE submit control (#1769).

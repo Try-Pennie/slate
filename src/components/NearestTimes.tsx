@@ -77,7 +77,7 @@ export function NearestTimesPanel({
                 type="button"
                 data-testid="nearest-time"
                 data-slot={iso}
-                className="inline-flex min-h-11 items-center rounded-md border border-border bg-surface px-3 text-sm tabular-nums text-fg transition-colors hover:border-fg/45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                className="inline-flex min-h-11 items-center rounded-md border border-border bg-surface px-3 text-sm tabular-nums text-fg transition-colors hover:border-fg/45"
                 onClick={() => onSelect(iso)}
               >
                 {/* One spelling for the time (#1765); the date keeps its own. */}

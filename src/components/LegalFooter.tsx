@@ -30,7 +30,7 @@ export default function LegalFooter() {
           // window.opener to can navigate this one.
           target="_blank"
           rel="noopener noreferrer"
-          className="rounded-sm underline underline-offset-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--pennie-sky)]"
+          className="rounded-sm underline underline-offset-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2"
         >
           {label}
         </a>

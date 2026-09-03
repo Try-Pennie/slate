@@ -143,6 +143,21 @@ describe("WorkingHoursForm (#1764)", () => {
     expect(document.querySelector('[data-weekday="1"]')?.getAttribute("data-day-off")).toBe("false");
   });
 
+  it("recesses an off day with a FILL, never by dimming its text", () => {
+    render(form(workingHoursDays([rule(1, 540, 1020)])));
+    const off = document.querySelector('[data-weekday="6"]') as HTMLElement;
+
+    // Dimming took the day name and its times to 3.69:1 and the "to" separator to
+    // 2.42:1 on white, both under the 4.5:1 that body text needs, measured with axe
+    // on the rendered page (#1768). A fill says the same thing and costs no
+    // contrast, so the opacity utility must not come back.
+    expect(off.className).not.toMatch(/\bopacity-/);
+    expect(off.className).toContain("bg-[var(--bg-alt)]");
+    expect((document.querySelector('[data-weekday="1"]') as HTMLElement).className).not.toMatch(
+      /\bopacity-/,
+    );
+  });
+
   it("states the week in a sentence, and restates it when a time changes", async () => {
     const user = userEvent.setup();
     render(form(workingHoursDays([1, 2, 3, 4, 5].map((d) => rule(d, 540, 1020)))));

@@ -489,7 +489,7 @@ export default async function MePage({
 
             {!oooUnreadable && past.length > 0 && (
               <details className="group">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky [&::-webkit-details-marker]:hidden">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm [&::-webkit-details-marker]:hidden">
                   <svg
                     viewBox="0 0 16 16"
                     aria-hidden="true"

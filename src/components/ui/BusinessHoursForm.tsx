@@ -164,9 +164,15 @@ export function BusinessHoursForm({
               data-day-off={d.open ? "false" : "true"}
               className={[
                 "flex flex-wrap items-start gap-x-4 gap-y-2 rounded-[var(--radius-md)] border border-border px-4 py-3",
-                // Reinforcement only: the unticked box and the sentence above both
-                // already say the day is closed.
-                d.open ? "" : "opacity-60",
+                // Reinforcement, never the only signal: the unticked checkbox and the
+                // sentence above both already say the day is closed.
+                //
+                // A recessed FILL rather than opacity (#1768). `opacity-60` dimmed the
+                // text along with everything else, which took the day name and its
+                // times to 3.69:1 and the "to" separator to 2.42:1 on white, both under
+                // the 4.5:1 body text needs. Measured with axe on the rendered page, so
+                // this was a real failure on eight elements and not a theoretical one.
+                d.open ? "" : "bg-[var(--bg-alt)]",
               ].join(" ")}
             >
               <label className="flex min-h-11 min-w-[9.5rem] cursor-pointer items-center gap-3">

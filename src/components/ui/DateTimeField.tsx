@@ -318,7 +318,7 @@ export function DateTimeField({
           e.preventDefault();
           focusFirstEmpty();
         }}
-        className={`flex h-[44px] ${hideTime ? "w-48" : "w-72"} cursor-text items-center rounded-sm border border-border bg-[var(--field)] pl-2 pr-1 text-sm text-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-pennie-sky`}>
+        className={`dt-field flex h-[44px] ${hideTime ? "w-48" : "w-72"} cursor-text items-center rounded-sm border border-border bg-[var(--field)] pl-2 pr-1 text-sm text-fg`}>
         <input ref={mmRef} inputMode="numeric" aria-label={`${ariaLabel}, month`} placeholder="MM" value={mm}
           onChange={(e) => handleSeg("mm", e.target.value, ddRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
           onBlur={(e) => normalizeDate("mm", e.currentTarget.value)}
@@ -371,7 +371,7 @@ export function DateTimeField({
         <button type="button" onClick={open ? cancel : openPopup}
           aria-label={open ? "Close calendar" : hideTime ? "Open calendar" : "Open calendar and time"}
           aria-haspopup="dialog" aria-expanded={open} aria-controls={dialogId}
-          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-pennie-sky">
+          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-fg-muted hover:text-fg">
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-4 w-4">
             <rect x="2" y="3" width="12" height="11" rx="2" />
             <path d="M2 6h12M5.5 1.5v3M10.5 1.5v3" strokeLinecap="round" />
@@ -416,11 +416,11 @@ export function DateTimeField({
 
           <div className="mt-3 flex justify-end gap-2">
             <button type="button" onClick={cancel}
-              className="rounded-sm border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-fg hover:bg-pennie-sky-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky">
+              className="rounded-sm border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-fg hover:bg-pennie-sky-soft">
               Cancel
             </button>
             <button type="button" onClick={() => setOpen(false)}
-              className="rounded-sm bg-pennie-sky px-3 py-1.5 text-sm font-semibold text-pennie-graphite hover:bg-pennie-sky/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky">
+              className="rounded-sm bg-pennie-sky px-3 py-1.5 text-sm font-semibold text-pennie-graphite hover:bg-pennie-sky/90">
               Confirm
             </button>
           </div>

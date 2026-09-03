@@ -594,7 +594,7 @@ export default function ManageBooking({
                       sitting beside the times a lead is reading. */}
                   <button
                     onClick={closeReschedule}
-                    className="mt-5 inline-flex min-h-11 items-center text-sm text-fg-muted underline underline-offset-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                    className="mt-5 inline-flex min-h-11 items-center text-sm text-fg-muted underline underline-offset-2 hover:text-fg"
                   >
                     {RESCHEDULE_COPY.keepCurrent}
                   </button>
@@ -647,7 +647,7 @@ export default function ManageBooking({
                           setPhoneDraft(formatPhoneAsTyped(e.target.value));
                           setPhoneError(null);
                         }}
-                        className="mt-2 h-[44px] w-full rounded-lg border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                        className="mt-2 h-[44px] w-full rounded-lg border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted"
                       />
                       <p id="manage-phone-hint" className="mt-1.5 text-sm text-fg-muted">
                         {PHONE_COPY.hint}
@@ -677,7 +677,7 @@ export default function ManageBooking({
                           type="button"
                           onClick={closePhoneEdit}
                           disabled={savingPhone}
-                          className="inline-flex min-h-[44px] items-center text-sm font-semibold text-fg underline underline-offset-2 hover:no-underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                          className="inline-flex min-h-[44px] items-center text-sm font-semibold text-fg underline underline-offset-2 hover:no-underline disabled:opacity-60"
                         >
                           {PHONE_COPY.cancel}
                         </button>
@@ -693,7 +693,7 @@ export default function ManageBooking({
                           setPhoneError(null);
                           setPhoneSaved(false);
                         }}
-                        className="mt-1 inline-flex min-h-[44px] items-center text-sm font-semibold text-fg underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                        className="mt-1 inline-flex min-h-[44px] items-center text-sm font-semibold text-fg underline underline-offset-2 hover:no-underline"
                       >
                         {PHONE_COPY.trigger}
                       </button>
@@ -730,7 +730,7 @@ export default function ManageBooking({
                         setConfirmingCancel(true);
                       }}
                       disabled={busy}
-                      className="inline-flex min-h-[44px] items-center text-sm font-semibold text-[var(--error)] underline underline-offset-2 hover:no-underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                      className="inline-flex min-h-[44px] items-center text-sm font-semibold text-[var(--error)] underline underline-offset-2 hover:no-underline disabled:opacity-60"
                     >
                       {LIVE_COPY.cancel}
                     </button>

@@ -55,8 +55,13 @@ for (const sel of [".pn-h1", ".pn-lead", ".pn-btn", ".pn-card"]) {
 }
 
 // The a11y-critical rules are NOT layered (they must beat utilities).
+// Matched as one PART of an unlayered selector list rather than as the whole
+// selector text (#1768). The rule is that the focus recipe is unlayered; the
+// exact spelling is not the rule, and demanding it failed the first legitimate
+// refinement, which was folding the three copies of the recipe into one list
+// (L103).
 assert(
-  outside.some((s) => s.trim() === ":focus-visible"),
+  outside.some((s) => s.split(",").some((p) => p.trim() === ":focus-visible")),
   "global :focus-visible recipe stays unlayered",
 );
 assert(

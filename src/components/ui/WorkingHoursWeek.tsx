@@ -150,9 +150,15 @@ export function WorkingHoursWeek({
               data-day-off={day.on ? "false" : "true"}
               className={[
                 "rounded-[var(--radius-md)] border border-border px-4 py-3",
-                // Reinforcement, never the only signal: the unticked checkbox and
-                // the sentence above both already say the day is off.
-                day.on ? "" : "opacity-60",
+                // Reinforcement, never the only signal: the unticked checkbox and the
+                // sentence above both already say the day is off.
+                //
+                // A recessed FILL rather than opacity (#1768). `opacity-60` dimmed the
+                // text along with everything else, which took the day name and its
+                // times to 3.69:1 and the "to" separator to 2.42:1 on white, both under
+                // the 4.5:1 body text needs. Measured with axe on the rendered page, so
+                // this was a real failure on eight elements and not a theoretical one.
+                day.on ? "" : "bg-[var(--bg-alt)]",
               ].join(" ")}
             >
               <div className="flex flex-wrap items-start gap-x-4 gap-y-2">

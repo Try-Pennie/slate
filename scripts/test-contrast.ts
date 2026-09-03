@@ -81,15 +81,22 @@ function ratio(a: RGB, b: RGB): number {
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
+// The harness takes (condition, message). Passing the message alone made every
+// passing line print "ok: undefined", so the ratios this guard exists to record
+// reached nobody, and the only readable output was a failure. The numbers are the
+// point: an issue asking for a colour to be re-measured is answered by running
+// this and reading it.
 function atLeast(fg: RGB, bg: RGB, min: number, label: string) {
   const v = ratio(fg, bg);
-  if (v + 1e-9 >= min) assert(`${label} = ${v.toFixed(2)}:1 (>= ${min})`);
-  else fail(`${label} = ${v.toFixed(2)}:1 (needs >= ${min})`);
+  const said = `${label} = ${v.toFixed(2)}:1`;
+  if (v + 1e-9 >= min) assert(true, `${said} (>= ${min})`);
+  else fail(`${said} (needs >= ${min})`);
 }
 function below(fg: RGB, bg: RGB, max: number, label: string) {
   const v = ratio(fg, bg);
-  if (v < max) assert(`${label} = ${v.toFixed(2)}:1 (correctly < ${max}, forbidden as text)`);
-  else fail(`${label} = ${v.toFixed(2)}:1 (expected < ${max} - token may have changed)`);
+  const said = `${label} = ${v.toFixed(2)}:1`;
+  if (v < max) assert(true, `${said} (correctly < ${max}, forbidden)`);
+  else fail(`${said} (expected < ${max}, the token may have changed)`);
 }
 
 // --- Tokens under test (read by name; missing names throw) ------------------
@@ -116,9 +123,69 @@ atLeast(rose, beige, 4.5, "error rose-on-beige"); // 4.77
 atLeast(blue, beige, 4.5, "blue text-on-beige (only passing blue on light)"); // 4.56
 atLeast(blue, white, 4.5, "blue text-on-white"); // 4.91
 
-// --- D17: focus indicators must PASS 3:1 (1.4.11 non-text) ------------------
-atLeast(graphite, beige, 3, "focus line graphite-on-beige (light theme)");
-atLeast(sky, navy, 3, "focus line sky-on-navy (dark theme)");
+// --- D17 / #1768: the focus ring, on EVERY surface it can be drawn on -------
+//
+// One recipe, but the ring COLOUR is chosen by the surface rather than by the
+// theme, and that is not a preference: no single token clears 3:1 everywhere.
+// Measured with this resolver, worst case per candidate:
+//
+//   candidate       light worst           dark worst
+//   sky             1.57 on beige         1.00 on a sky fill
+//   sky-deep        1.70 on a sky fill    1.70 on a sky fill
+//   blue            2.91 on a sky fill    1.85 on surface-elevated
+//   graphite        7.36 on a sky fill    1.06 on dark surface
+//
+// So: brand blue on ordinary LIGHT surfaces (it reads as brand rather than as a
+// hard black box), graphite wherever the ring lands on a SKY or accent fill (the
+// primary CTA is sky by design and is one of the most focused controls in the
+// product), and sky on DARK. Each of the three is asserted against every surface
+// it can actually meet, in the theme it meets it in.
+const blueRing = r("--focus-ring-line");
+const accentRing = r("--focus-ring-line-on-accent");
+const darkRing = rDark("--focus-ring-line");
+
+// Ordinary light surfaces.
+for (const [name, surface] of [
+  ["page beige", r("--bg")],
+  ["hover and zebra tint", r("--bg-alt")],
+  ["card surface", r("--surface")],
+  ["elevated surface", r("--surface-elevated")],
+  ["the sidebar current item's sky wash", r("--pennie-sky-soft")],
+] as [string, RGB][]) {
+  atLeast(blueRing, surface, 3, `focus line on ${name} (light)`);
+}
+
+// Surfaces that paint their own sky or accent fill, in EITHER theme, where the
+// ring flips to graphite. A ring on a focused primary button has to clear against
+// the button, not against the page behind it (L213).
+for (const [name, surface] of [
+  ["a sky fill", sky],
+  ["a sky fill on hover", skyHover],
+  ["a pressed sky fill", skyDeep],
+] as [string, RGB][]) {
+  atLeast(accentRing, surface, 3, `focus line on ${name} (either theme)`);
+}
+
+// Ordinary dark surfaces.
+for (const [name, surface] of [
+  ["the navy page", rDark("--bg")],
+  ["a dark hover tint", rDark("--bg-alt")],
+  ["a dark card", rDark("--surface")],
+  ["a dark elevated surface", rDark("--surface-elevated")],
+] as [string, RGB][]) {
+  atLeast(darkRing, surface, 3, `focus line on ${name} (dark)`);
+}
+
+// --- #1768: the three failures that shaped the recipe, held as tripwires ----
+//
+// The positive control for the block above. Every one of these is a colour
+// somebody would reasonably reach for, and each must STAY below the line, or the
+// assertions above are passing for a reason nobody has checked.
+below(sky, beige, 3, "sky as a focus line on beige - why 25 per component rings were deleted");
+below(sky, white, 3, "sky as a focus line on white - the same failure on a card");
+below(blueRing, sky, 3, "brand blue on a SKY fill - why an accent fill flips the ring to graphite");
+below(blueRing, rDark("--surface-elevated"), 3, "brand blue on a dark elevated surface - why dark keeps sky");
+below(graphite, rDark("--surface"), 3, "graphite on a dark card - why graphite is light only");
 
 // --- D17: forbidden-as-text tripwires — must STAY failing -------------------
 // (an accidental palette shift that "fixes" one of these is a regression signal)

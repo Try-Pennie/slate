@@ -139,7 +139,7 @@ export function OooForm({
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="rounded-md px-3 py-1.5 text-sm font-semibold text-error transition-colors hover:bg-error/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+            className="rounded-md px-3 py-1.5 text-sm font-semibold text-error transition-colors hover:bg-error/10"
           >
             Refresh
           </button>
@@ -205,7 +205,7 @@ export function OooForm({
             {state.conflictRequestId && (
               <a
                 href={`/me?edit=${state.conflictRequestId}#time-off`}
-                className="mt-2 inline-flex items-center gap-1 font-semibold text-error underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
+                className="mt-2 inline-flex items-center gap-1 font-semibold text-error underline underline-offset-2 hover:no-underline"
               >
                 Open that request to change it
                 <span aria-hidden="true">→</span>
@@ -379,7 +379,7 @@ export function OooForm({
           {editing && (
             <a
               href="/me#time-off"
-              className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-pennie-sky-soft hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky dark:hover:bg-accent/15"
+              className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-pennie-sky-soft hover:text-fg dark:hover:bg-accent/15"
             >
               Keep it as is
             </a>
