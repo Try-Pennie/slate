@@ -1,6 +1,7 @@
 "use client";
 
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
+import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 import { DateTime } from "luxon";
 import {
   dateFromParts,
@@ -111,22 +112,18 @@ export function DateTimeField({
     setOpen(false);
   };
 
+  // #1843: the popup is portalled now, so it is no longer inside `rootRef` and an
+  // outside-click test written against that alone would dismiss the calendar the
+  // moment somebody clicked a date. AnchoredPanel owns that test, since it is the
+  // only thing that can see both the field and the portalled popup. Escape stays
+  // here because it must run `cancel`, which restores the snapshot.
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") cancel();
     };
-    document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   // High first digit that can only be a single value: pad and move on.
@@ -379,9 +376,12 @@ export function DateTimeField({
         </button>
       </div>
 
-      {open && (
-        <div id={dialogId} role="dialog" aria-label={ariaLabel} aria-modal="true"
-          className="absolute left-0 z-20 mt-1 w-72 rounded-md border border-border bg-surface-elevated p-3 shadow-pop">
+      {/* #1843: portalled and positioned in viewport space, so nothing above this
+          field can clip the calendar. */}
+      <AnchoredPanel open={open} onClose={cancel} triggerRef={rootRef} align="start"
+        id={dialogId} role="dialog" aria-label={ariaLabel} aria-modal={true}
+        className="w-72 rounded-md border border-border bg-surface-elevated p-3 shadow-pop">
+        <>
           <CalendarMonth
             month={view}
             today={today}
@@ -424,8 +424,8 @@ export function DateTimeField({
               Confirm
             </button>
           </div>
-        </div>
-      )}
+        </>
+      </AnchoredPanel>
     </div>
   );
 }

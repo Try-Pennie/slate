@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 
@@ -118,5 +118,80 @@ describe("RowActionsMenu", () => {
   it("hides the glyph from assistive tech, since the label carries the meaning", () => {
     render(<Menu />);
     expect(trigger().querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+// #1843: the menu must not live inside anything that can clip it.
+//
+// Dan saw the roster's row menu cut off by the edge of the table card. The
+// wrapper is `overflow-x-auto`, and the trap is that a rule naming the
+// HORIZONTAL axis produced VERTICAL clipping: CSS does not let one axis scroll
+// while the other stays visible, so setting either to anything but `visible`
+// computes the other to `auto`. The menus on the last rows of a 117 agent table
+// fell past the bottom edge, and "View as" is the control that changes who you
+// are signed in as, so a half hidden item is a mis-click risk. The same clipping
+// hid the focus ring, which is WCAG 2.4.11.
+//
+// WHAT THIS TEST CAN AND CANNOT SEE. jsdom has no layout: every rect is zero, so
+// nothing here can assert that an item is on screen. What it CAN assert is the
+// structural fact the fix rests on, that the menu is not a descendant of the
+// clipping container, and that is the half a passing render would otherwise hide.
+// The arithmetic (the flip upward, the clamps) is in
+// scripts/test-anchored-position.ts, driven at sizes jsdom cannot produce.
+describe("the menu escapes a clipping ancestor (#1843)", () => {
+  it("does not render inside the scroll container the trigger sits in", async () => {
+    const user = userEvent.setup();
+    render(
+      <div data-testid="clipper" className="overflow-x-auto">
+        <RowActionsMenu label="Actions for Ada">
+          <button role="menuitem" type="button">View as Ada</button>
+          <button role="menuitem" type="button">Manage</button>
+        </RowActionsMenu>
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for Ada" }));
+
+    const menu = screen.getByRole("menu", { name: "Actions for Ada" });
+    const clipper = screen.getByTestId("clipper");
+    expect(
+      clipper.contains(menu),
+      "the menu is inside the container that clips it, which is the defect",
+    ).toBe(false);
+    // A positive control on the assertion above: the TRIGGER really is inside
+    // that container, so `contains` is working and a false from it means the
+    // menu escaped rather than that the query found nothing (L98).
+    expect(clipper.contains(screen.getByRole("button", { name: "Actions for Ada" }))).toBe(true);
+  });
+
+  it("is positioned in viewport space, so no ancestor can decide where it lands", async () => {
+    const user = userEvent.setup();
+    render(
+      <RowActionsMenu label="Actions for Ada">
+        <button role="menuitem" type="button">View as Ada</button>
+      </RowActionsMenu>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for Ada" }));
+    const menu = screen.getByRole("menu", { name: "Actions for Ada" });
+    expect(menu.style.position).toBe("fixed");
+    // `fixed` alone is escaped by an ancestor carrying a transform, so the portal
+    // is the other half; assert it really left the React tree's DOM position.
+    expect(menu.parentElement).toBe(document.body);
+  });
+
+  it("closes when the surface behind it scrolls, rather than hovering beside another row", async () => {
+    const user = userEvent.setup();
+    render(
+      <RowActionsMenu label="Actions for Ada">
+        <button role="menuitem" type="button">View as Ada</button>
+      </RowActionsMenu>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for Ada" }));
+    expect(screen.queryByRole("menu")).toBeTruthy();
+
+    fireEvent.scroll(window);
+    expect(
+      screen.queryByRole("menu"),
+      "a fixed panel does not move with its row, so it must go rather than mislead",
+    ).toBeNull();
   });
 });

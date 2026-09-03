@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
+import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 
 /**
  * One menu of actions for one row of a table (#1794).
@@ -52,7 +53,11 @@ export function RowActionsMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const items = useCallback(
-    () => Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []),
+    () =>
+      Array.from(
+        menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ??
+          [],
+      ),
     [],
   );
 
@@ -62,20 +67,27 @@ export function RowActionsMenu({
     if (refocus) triggerRef.current?.focus();
   }, []);
 
-  // Focus the first item when the menu opens, whether it was opened by click or
-  // by a key: a menu that opens with focus left on the trigger cannot be walked.
-  useEffect(() => {
-    if (open) items()[0]?.focus();
-  }, [open, items]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  /**
+   * Focus the first item, whether the menu was opened by click or by a key: a
+   * menu that opens with focus left on the trigger cannot be walked.
+   *
+   * It runs from `onPlaced` rather than from an effect on `open`, and both parts
+   * of that are load bearing since #1843, when this became a portalled panel.
+   *
+   * WHEN: an effect on `open` runs while the panel is still being measured and
+   * is therefore `visibility: hidden`, and focus does not move into a hidden
+   * subtree. The menu opened with focus on the body and could not be walked.
+   *
+   * `preventScroll`: the panel is already fully on screen, so scrolling to the
+   * item achieves nothing, and the scroll it caused fired the listener that
+   * dismisses the panel, closing the menu in the frame it opened.
+   *
+   * Neither is visible to jsdom, which has no layout, does not scroll, and does
+   * not gate focus on visibility. Both were found in a browser.
+   */
+  const focusFirstItem = useCallback(() => {
+    items()[0]?.focus({ preventScroll: true });
+  }, [items]);
 
   /** Move focus by `step`, wrapping, so the ends of the list are not dead. */
   function move(step: number) {
@@ -83,7 +95,8 @@ export function RowActionsMenu({
     if (list.length === 0) return;
     const at = list.indexOf(document.activeElement as HTMLElement);
     const next = at === -1 ? 0 : (at + step + list.length) % list.length;
-    list[next]!.focus();
+    // Same reason as the open effect above: a scrolling focus dismisses the panel.
+    list[next]!.focus({ preventScroll: true });
   }
 
   return (
@@ -103,49 +116,63 @@ export function RowActionsMenu({
         }}
         className="pn-nav-item inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg"
       >
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <svg
+          aria-hidden="true"
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+        >
           <circle cx="8" cy="3" r="1.5" />
           <circle cx="8" cy="8" r="1.5" />
           <circle cx="8" cy="13" r="1.5" />
         </svg>
       </button>
 
-      {open && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label={label}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              close(true);
-            } else if (e.key === "ArrowDown") {
-              e.preventDefault();
-              move(1);
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              move(-1);
-            } else if (e.key === "Home") {
-              e.preventDefault();
-              items()[0]?.focus();
-            } else if (e.key === "End") {
-              e.preventDefault();
-              items().at(-1)?.focus();
-            } else if (e.key === "Tab") {
-              // Tabbing out is a dismissal, but the browser is already moving
-              // focus, so this must not drag it back to the trigger.
-              close(false);
-            }
-          }}
-          // Sized to its content rather than to a guess: the roster's "View as
-          // <full name>" item is as long as the longest name on the roster, and a
-          // fixed width made it wrap inside the popup. It keeps the name because
-          // that is the identity guarantee (L237); the popup grows instead.
-          className="absolute right-0 z-20 mt-1 w-max min-w-44 rounded-md border border-border bg-surface p-1 text-left shadow-pop"
-        >
-          {children}
-        </div>
-      )}
+      <AnchoredPanel
+        open={open}
+        onClose={() => setOpen(false)}
+        triggerRef={triggerRef}
+        panelRef={menuRef}
+        onPlaced={focusFirstItem}
+        align="end"
+        role="menu"
+        aria-label={label}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            close(true);
+          } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            move(1);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            move(-1);
+          } else if (e.key === "Home") {
+            e.preventDefault();
+            items()[0]?.focus();
+          } else if (e.key === "End") {
+            e.preventDefault();
+            items().at(-1)?.focus();
+          } else if (e.key === "Tab") {
+            // Tabbing out is a dismissal, but the browser is already moving
+            // focus, so this must not drag it back to the trigger.
+            close(false);
+          }
+        }}
+        // Sized to its content rather than to a guess: the roster's "View as
+        // <full name>" item is as long as the longest name on the roster, and a
+        // fixed width made it wrap inside the popup. It keeps the name because
+        // that is the identity guarantee (L237); the popup grows instead.
+        //
+        // #1843: no `absolute`, no offset and no z-index here any more. The
+        // panel is portalled and positioned in viewport space by AnchoredPanel,
+        // so a position stated here would fight it. The z-index goes with it:
+        // in the top level body there is nothing left to stack against.
+        className="w-max min-w-44 rounded-md border border-border bg-surface p-1 text-left shadow-pop"
+      >
+        {children}
+      </AnchoredPanel>
     </div>
   );
 }

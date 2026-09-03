@@ -190,16 +190,19 @@ describe("view as, from the row (#1749)", () => {
 
   it("carries the person's email, which is what the action resolves", async () => {
     asRole("super_admin", "superme");
-    const { container } = render(await AgentRosterPage(props));
+    render(await AgentRosterPage(props));
 
     // The action looks the target up by email, so the row's form must submit the
     // row's OWN address. Only the open menu's form is in the document, so each row
     // is opened and read in turn.
+    // #1843: the menu is portalled to the body so no scroll container can clip
+    // it, so it is NOT inside the render container. The assertion is unchanged;
+    // only where the element lives has moved.
     const emailIn = async (who: string) => {
       const t = menuFor(who);
       if (!t) return [];
       await userEvent.click(t);
-      return [...container.querySelectorAll('input[name="email"][type="hidden"]')].map(
+      return [...document.body.querySelectorAll('input[name="email"][type="hidden"]')].map(
         (i) => (i as HTMLInputElement).value,
       );
     };
