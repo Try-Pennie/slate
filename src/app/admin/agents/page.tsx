@@ -10,9 +10,8 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { RosterTable } from "@/components/admin/RosterTable";
 import { teamsOf } from "@/lib/admin/agent-display";
-import { cardCls, proseCls } from "@/components/ui/styles";
+import { cardCls } from "@/components/ui/styles";
 import type { User } from "@/lib/db/types";
-import { IMPERSONATION_WARNING } from "@/lib/admin/impersonation-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -128,13 +127,6 @@ export default async function AgentRosterPage({
           <p role="alert" className="mb-3 text-sm text-error">
             {sp.imp_error}
           </p>
-        )}
-        {/* The only explanation of what "view as" does. It lived inside the free
-            text panel that is now gone, and each row's own control had no warning
-            of its own, so it sits above the table where it covers whichever
-            control the row ends up carrying (#1794 is moving that). */}
-        {isAdmin && (
-          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>{IMPERSONATION_WARNING}</p>
         )}
         <RosterTable
           rows={users}
