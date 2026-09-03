@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { signOut } from "@/app/auth-actions";
@@ -29,21 +30,19 @@ export function AccountMenu({
   const [open, setOpen] = useState(false);
   const [imgOk, setImgOk] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // #1843: the panel is portalled now, so it is no longer a descendant of `ref`,
+  // and an outside-click test written against `ref` alone would close the menu
+  // the moment somebody clicked inside it. AnchoredPanel owns that test, since it
+  // is the only thing that can see both the trigger and the portalled panel.
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   const initials = email.slice(0, 2).toUpperCase();
@@ -51,6 +50,7 @@ export function AccountMenu({
   return (
     <div ref={ref} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
@@ -100,11 +100,16 @@ export function AccountMenu({
         </svg>
       </button>
 
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 z-20 mt-2 w-64 rounded-md border border-border bg-surface p-4 shadow-pop"
-        >
+      <AnchoredPanel
+        open={open}
+        onClose={() => setOpen(false)}
+        triggerRef={triggerRef}
+        align="end"
+        gap={8}
+        role="menu"
+        className="w-64 rounded-md border border-border bg-surface p-4 shadow-pop"
+      >
+        <>
           <p className="truncate text-sm font-semibold text-fg">{email}</p>
           {role && (
             <p className="text-xs capitalize text-fg-muted">
@@ -185,8 +190,8 @@ export function AccountMenu({
               Sign out
             </SubmitButton>
           </form>
-        </div>
-      )}
+        </>
+      </AnchoredPanel>
     </div>
   );
 }

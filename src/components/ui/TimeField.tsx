@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 import {
   filterTimeOptions,
   formatTimeOfDay,
@@ -266,44 +267,55 @@ export function TimeField({
         onKeyDown={onKeyDown}
       />
 
-      {/* Always present, so `aria-controls` names a real element even while closed,
-          which is what the combobox pattern expects. */}
-      <ul
-        ref={listRef}
-        id={listId}
-        role="listbox"
-        // Not the field's own name: two elements with the identical accessible name
-        // ("Monday start time") is ambiguous to a screen reader and to anything
-        // looking a control up by its label.
-        aria-label={`${ariaLabel} options`}
-        hidden={!open}
-        className="absolute z-20 mt-1 max-h-64 w-32 overflow-y-auto rounded-[var(--radius-md)] border border-border bg-surface py-1 shadow-[var(--shadow-md)]"
+      {/* #1843: portalled and positioned in viewport space, so no scroll container
+          around this field can clip the list. `keepMounted` preserves what the
+          note below describes: always present, so `aria-controls` names a real
+          element even while closed, which is what the combobox pattern expects.
+          The `hidden` attribute is applied by the panel. The listbox stays a real
+          `ul`, because `role="option"` on an `li` outside a list is invalid. */}
+      <AnchoredPanel
+        open={open}
+        keepMounted
+        onClose={() => setOpen(false)}
+        triggerRef={inputRef}
+        align="start"
       >
-        {options.map((o, i) => (
-          <li
-            key={o.value}
-            id={`${baseId}-opt-${o.value}`}
-            role="option"
-            aria-selected={o.value === committed}
-            className={[
-              "flex min-h-11 cursor-pointer items-center px-3 text-sm tabular-nums",
-              i === highlight ? "bg-[var(--bg-alt)] font-semibold text-fg" : "text-fg",
-            ].join(" ")}
-            onMouseEnter={() => setHighlight(i)}
-            // The press must not blur the box first, or `settle` would run against
-            // the half typed text and close the list before the click landed.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => commit(o.value)}
-          >
-            {o.label}
-          </li>
-        ))}
-        {options.length === 0 && (
-          <li role="presentation" className="px-3 py-2 text-sm text-fg-muted">
-            No times match
-          </li>
-        )}
-      </ul>
+        <ul
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          // Not the field's own name: two elements with the identical accessible name
+          // ("Monday start time") is ambiguous to a screen reader and to anything
+          // looking a control up by its label.
+          aria-label={`${ariaLabel} options`}
+          className="max-h-64 w-32 overflow-y-auto rounded-[var(--radius-md)] border border-border bg-surface py-1 shadow-[var(--shadow-md)]"
+        >
+          {options.map((o, i) => (
+            <li
+              key={o.value}
+              id={`${baseId}-opt-${o.value}`}
+              role="option"
+              aria-selected={o.value === committed}
+              className={[
+                "flex min-h-11 cursor-pointer items-center px-3 text-sm tabular-nums",
+                i === highlight ? "bg-[var(--bg-alt)] font-semibold text-fg" : "text-fg",
+              ].join(" ")}
+              onMouseEnter={() => setHighlight(i)}
+              // The press must not blur the box first, or `settle` would run against
+              // the half typed text and close the list before the click landed.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => commit(o.value)}
+            >
+              {o.label}
+            </li>
+          ))}
+          {options.length === 0 && (
+            <li role="presentation" className="px-3 py-2 text-sm text-fg-muted">
+              No times match
+            </li>
+          )}
+        </ul>
+      </AnchoredPanel>
 
       {problem && (
         <p id={messageId} role="alert" className="mt-1 text-xs text-error">
