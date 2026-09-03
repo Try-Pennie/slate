@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { shortFailureReason } from "@/lib/notify/error-text";
 
 /** One persistently-failing agent calendar, shaped for admin display (#273). */
 export interface SyncHealthRow {
@@ -51,12 +52,19 @@ export function SyncHealthPanel({ agents }: { agents: SyncHealthRow[] }): ReactE
           const stamp = a.lastSuccessAt ? a.lastSuccessAt.slice(0, 10) : "never";
           const what = watch ? "failing to renew its push channel" : "failing to sync";
           const stampLabel = watch ? "last renewed" : "last ok";
+          // #1789: `error` holds whatever the calendar read threw, which for an
+          // OAuth refusal is a whole JSON body. Interpolated raw it pushed the
+          // health summary off the line. `shortFailureReason` is the one place
+          // that decision lives (#1135), so this surface asks it rather than
+          // re-deciding. It returns null only for an absent error, so the
+          // clause is omitted in exactly the cases it was before.
+          const reason = shortFailureReason(a.error);
           return (
             <li key={`${a.lane ?? "sync"}:${a.email}`} className="text-sm">
               <span className="font-semibold text-fg">{a.name ?? a.email}</span>
               {a.name ? <span className="text-fg-muted"> ({a.email})</span> : null}
               <span className="text-fg-muted tabular-nums">
-                {` ${what}, ${a.consecutiveFailures} consecutive failure${a.consecutiveFailures === 1 ? "" : "s"}, ${stampLabel} ${stamp}${a.error ? `: ${a.error}` : ""}`}
+                {` ${what}, ${a.consecutiveFailures} consecutive failure${a.consecutiveFailures === 1 ? "" : "s"}, ${stampLabel} ${stamp}${reason ? `: ${reason}` : ""}`}
               </span>
             </li>
           );
