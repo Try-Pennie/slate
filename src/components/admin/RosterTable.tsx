@@ -10,6 +10,7 @@ import { isActive } from "@/lib/active-user";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
+import { BookablePill } from "@/components/ui/BookablePill";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
   ROSTER_PAGE_SIZE,
@@ -296,11 +297,10 @@ export function RosterTable({
                   {u.manager_id ? (nameById.get(u.manager_id) ?? "-") : "-"}
                 </td>
                 <td className="px-3 py-3">
-                  {u.bookable ? (
-                    <Pill variant="status-ok" alignToColumn>Bookable</Pill>
-                  ) : (
-                    <span className="text-fg-muted">-</span>
-                  )}
+                  {/* #1823: a pill for BOTH states, each with a mark. The header
+                      already asks the question, so the value is Yes or No rather
+                      than the header's own word repeated. */}
+                  <BookablePill bookable={u.bookable} wording="short" alignToColumn />
                 </td>
                 <td className="px-4 py-3 text-right">
                   {/* #1794: one menu per row. The label spelled the agent's whole

@@ -26,6 +26,7 @@ import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import { PageShell } from "@/components/ui/PageShell";
+import { BookablePill } from "@/components/ui/BookablePill";
 
 export const dynamic = "force-dynamic";
 
@@ -352,9 +353,10 @@ export default async function MePage({
               <h1 className="pn-h3">Your availability</h1>
               <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted ${proseCls}`}>
                 <span>{me.name ?? me.email}</span>
-                <Pill variant={me.bookable ? "status-ok" : "outline"}>
-                  {me.bookable ? "Bookable" : "Not bookable yet"}
-                </Pill>
+                {/* #1823: the same component the admin screens use, so the
+                    variant is one decision. The wording stays "yet" here
+                    because the reader is the agent. */}
+                <BookablePill bookable={me.bookable} wording="self" />
               </p>
             </div>
 
