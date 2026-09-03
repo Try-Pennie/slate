@@ -137,7 +137,17 @@ describe("RosterTable", () => {
 
     await userEvent.type(screen.getByLabelText(/Search by name or email/i), "zzzz");
 
-    expect(screen.getByText(/Nobody on the roster matches those filters/i)).toBeTruthy();
+    expect(screen.getByText('Nothing matches "zzzz".')).toBeTruthy();
+  });
+
+  // #1791: a trailing space filters now, so an accidental one empties the table
+  // for a reason nobody can see. The quotes are what make the space visible.
+  it("shows the trailing space inside the quotes when a search finds nobody", async () => {
+    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+
+    await userEvent.type(screen.getByLabelText(/Search by name or email/i), "zzzz ");
+
+    expect(screen.getByText('Nothing matches "zzzz ".')).toBeTruthy();
   });
 
   it("distinguishes an empty roster from a filter that matched nothing", () => {

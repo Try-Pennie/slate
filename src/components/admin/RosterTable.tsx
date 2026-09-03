@@ -13,6 +13,7 @@ import {
   filterRoster,
   sortRoster,
   hasAnyRosterFilter,
+  rosterEmptyText,
   rosterFiltersToQuery,
   type RosterFilters,
   type RosterRow,
@@ -292,9 +293,9 @@ export function RosterTable({
             {items.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-sm text-fg-muted">
-                  {hasAnyRosterFilter(filters)
-                    ? "Nobody on the roster matches those filters."
-                    : "No agents yet."}
+                  {/* One builder, so the four empty states are decided in one
+                      place and the search one can quote the query (#1791). */}
+                  {rosterEmptyText(filters)}
                 </td>
               </tr>
             )}

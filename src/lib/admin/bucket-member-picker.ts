@@ -1,4 +1,5 @@
 import type { Role } from "@/lib/db/types";
+import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 
 /**
  * The pure half of the bucket editor's manual members picker (#1760).
@@ -73,11 +74,10 @@ export function rosterSectionFor(role: Role): string {
  * the whole roster for the first.
  */
 export function matchesRosterQuery(entry: RosterEntry, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return (
-    entry.name.toLowerCase().includes(q) || entry.email.toLowerCase().includes(q)
-  );
+  // One shared rule for every search box (#1791): a trailing space is the word
+  // boundary and is kept, a leading one is noise, and whitespace alone is the
+  // "no search yet" state the docstring above turns on.
+  return matchesSearchQuery(normalizeSearchQuery(query), entry.name, entry.email);
 }
 
 /** Sort key: the display name, falling back to the email for a nameless user. */

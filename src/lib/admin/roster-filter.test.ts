@@ -6,6 +6,7 @@ import {
   rosterFiltersFromParams,
   rosterFiltersToQuery,
   hasAnyRosterFilter,
+  rosterEmptyText,
   type RosterFilters,
   type RosterRow,
 } from "@/lib/admin/roster-filter";
@@ -126,15 +127,76 @@ describe("the URL and the filters are one round trip", () => {
     expect(rosterFiltersToQuery(NONE)).toBe("");
   });
 
-  it("lowercases and trims the search on the way in, which is what the match uses", () => {
-    // The predicate compares lowercased, so a filter carrying "  Ada " and one
-    // carrying "ada" have to be the same filter, or the URL and the table
-    // disagree about what is being shown.
-    expect(rosterFiltersFromParams(new URLSearchParams("q=%20%20Ada%20")).q).toBe("ada");
+  it("lowercases and trims only the LEADING space, keeping the trailing one", () => {
+    // #1791 reversed half of this deliberately. The old rule trimmed both ends so
+    // the URL and the table could not disagree, but a TRAILING space is the only
+    // way to say "this is the whole word" and Dan asked for it to mean that. A
+    // LEADING space is noise from a paste, so that half stands.
+    expect(rosterFiltersFromParams(new URLSearchParams("q=%20%20Ada%20")).q).toBe("ada ");
+    expect(rosterFiltersFromParams(new URLSearchParams("q=%20%20Ada")).q).toBe("ada");
+    // A query that is only whitespace is no search at all, not a search for a space.
+    expect(rosterFiltersFromParams(new URLSearchParams("q=%20%20%20")).q).toBe("");
+  });
+
+  it("carries a trailing space through the URL round trip intact", () => {
+    // The space is the filter. If it is lost on either leg, the table shows one
+    // thing and the address bar means another.
+    const q = rosterFiltersToQuery({ ...NONE, q: "john " });
+    expect(rosterFiltersFromParams(new URLSearchParams(q)).q).toBe("john ");
   });
 
   it("reads a missing param as unset rather than as a filter for the empty string", () => {
     expect(rosterFiltersFromParams(new URLSearchParams(""))).toEqual(NONE);
+  });
+});
+
+// #1791, Dan: "spaces should be counted in text matching. this should show me
+// nothing. \"John \" should show me john kite and sullivan but not anybody with
+// the last name johnson".
+describe("a space in the search means a space", () => {
+  // Its own roster: two Johns whose first name ENDS, and a Johnson whose does
+  // not, so a trailing space can tell them apart. Kept separate from ROSTER so
+  // the exact-id assertions above keep meaning what they were written to mean.
+  const JOHNS: RosterRow[] = [
+    row({ id: "jk", name: "John Kite", email: "jkite@x.com" }),
+    row({ id: "js", name: "John Sullivan", email: "jsullivan@x.com" }),
+    row({ id: "aj", name: "Andrew Johnson", email: "ajohnson@x.com" }),
+  ];
+  const ids = (q: string) => filterRoster(JOHNS, { ...NONE, q }).map((u) => u.id);
+
+  it("treats a trailing space as the end of the word", () => {
+    expect(ids("john ")).toEqual(["jk", "js"]);
+  });
+
+  it("does not match a surname that continues past the query", () => {
+    // "john" is followed by "s" in Johnson, so the space cannot match.
+    expect(ids("john ")).not.toContain("aj");
+    // The control: without the space, every John and Johnson matches, so the
+    // exclusion above is the space working and not the row being absent (L98).
+    expect(ids("john")).toEqual(["jk", "js", "aj"]);
+  });
+
+  it("matches nobody for a double space, since no record holds one", () => {
+    expect(ids("john  ")).toEqual([]);
+  });
+
+  it("never matches across the gap between a name and an email", () => {
+    // The old haystack joined the two fields with a space that exists in no
+    // record. Invisible while spaces were stripped; a false match the moment
+    // they count. Name and email are matched separately, so this cannot happen.
+    expect(ids("kite jkite")).toEqual([]);
+    // The control: each half really does match on its own field.
+    expect(ids("kite")).toEqual(["jk"]);
+    expect(ids("jkite")).toEqual(["jk"]);
+  });
+
+  it("ignores a leading space, which is a paste rather than an instruction", () => {
+    expect(ids(" john")).toEqual(["jk", "js", "aj"]);
+  });
+
+  it("reads a query of only spaces as no search at all", () => {
+    // Not "a search that found nobody": those are different screens (L10).
+    expect(ids("   ")).toEqual(filterRoster(JOHNS, NONE).map((u) => u.id));
   });
 });
 
@@ -147,6 +209,43 @@ describe("hasAnyRosterFilter", () => {
     for (const key of ["q", "role", "team", "manager", "bookable"] as const) {
       expect(hasAnyRosterFilter({ ...NONE, [key]: "x" })).toBe(true);
     }
+  });
+});
+
+// #1791: once a trailing space filters, an ACCIDENTAL one empties the table for
+// a reason nobody can see, because a space is invisible. That is the cost of the
+// feature working rather than an argument against it, so the empty state has to
+// name the query with the space inside quotes where it can be seen.
+describe("rosterEmptyText", () => {
+  it("quotes the query so an invisible trailing space becomes visible", () => {
+    expect(rosterEmptyText({ ...NONE, q: "john " })).toBe('Nothing matches "john ".');
+  });
+
+  it("says which other filters are in play when there are some", () => {
+    expect(rosterEmptyText({ ...NONE, q: "john ", role: "agent" })).toBe(
+      'Nothing matches "john " with those filters.',
+    );
+  });
+
+  it("does not quote a query when there is none, and names the filters instead", () => {
+    expect(rosterEmptyText({ ...NONE, role: "agent" })).toBe(
+      "Nobody on the roster matches those filters.",
+    );
+  });
+
+  it("says the roster is empty only when nothing is filtered at all", () => {
+    // An empty roster and a filter that found nobody are different screens (L10).
+    expect(rosterEmptyText(NONE)).toBe("No agents yet.");
+  });
+
+  it("treats a whitespace-only query as no query, so it never quotes a blank", () => {
+    expect(rosterEmptyText({ ...NONE, q: "   " })).toBe("No agents yet.");
+  });
+
+  it("normalises the query it quotes, so the sentence matches what was matched", () => {
+    // A leading space is dropped by the filter, so quoting it back would show a
+    // query nobody searched for.
+    expect(rosterEmptyText({ ...NONE, q: "  John " })).toBe('Nothing matches "john ".');
   });
 });
 
