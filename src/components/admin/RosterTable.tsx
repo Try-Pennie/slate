@@ -283,7 +283,7 @@ export function RosterTable({
                   </div>
                 </td>
                 <td className="px-3 py-3">
-                  <Pill variant={`role-${u.role}`}>{roleLabel(u.role)}</Pill>
+                  <Pill variant={`role-${u.role}`} alignToColumn>{roleLabel(u.role)}</Pill>
                 </td>
                 <td className="px-3 py-3 text-fg-muted">
                   {/* #1812: five ledger letters in fixed positions, so the cell
@@ -297,7 +297,7 @@ export function RosterTable({
                 </td>
                 <td className="px-3 py-3">
                   {u.bookable ? (
-                    <Pill variant="status-ok">Bookable</Pill>
+                    <Pill variant="status-ok" alignToColumn>Bookable</Pill>
                   ) : (
                     <span className="text-fg-muted">-</span>
                   )}

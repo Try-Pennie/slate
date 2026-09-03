@@ -121,7 +121,7 @@ export default async function StuckDrainPage() {
                   {rows.map((r) => (
                     <tr key={`${r.kind}-${r.id}`} className="border-t border-border align-top">
                       <td className="py-2 pr-3">
-                        <Pill variant="outline">{r.kind}</Pill>
+                        <Pill variant="outline" alignToColumn>{r.kind}</Pill>
                       </td>
                       <td className="py-2 pr-3">{r.action}</td>
                       <td className="py-2 pr-3 font-mono text-xs break-all">
@@ -129,7 +129,9 @@ export default async function StuckDrainPage() {
                       </td>
                       <td className="py-2 pr-3">
                         {r.gaveUp ? (
-                          <Pill variant="status-error">{r.attempts} · gave up</Pill>
+                          <Pill variant="status-error" alignToColumn>
+                            {r.attempts} · gave up
+                          </Pill>
                         ) : (
                           <span className="tabular-nums">{r.attempts}</span>
                         )}

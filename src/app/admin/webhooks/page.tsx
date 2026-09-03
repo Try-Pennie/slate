@@ -283,6 +283,7 @@ export default async function WebhooksPage({
                         <Pill
                           title={view.hint ?? d.last_response ?? ""}
                           variant={view.variant}
+                          alignToColumn
                         >
                           {view.label}
                         </Pill>

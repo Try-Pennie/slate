@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
-import { Pill } from "./Pill";
+import { Pill, PILL_TEXT_INSET_PX } from "./Pill";
 
 // #1054: a Pill on a band that paints its OWN dark fill.
 //
@@ -76,5 +76,72 @@ describe("Pill onDark", () => {
     const el = container.firstElementChild!;
     expect(el.textContent).toBe("Deactivated");
     expect(el.className).toMatch(/ml-2/);
+  });
+});
+
+// #1821: a Pill in a table cell put its label 9px right of the column header's,
+// so the header lined up with the pill's rounded edge instead of with its word.
+//
+// Dan, on the Bookable column: "the alignment is from the B in the column header
+// to the left edge of the green bubble, not to the B in the value. So the words
+// aren't align, the header and the bubble are aligned and that's awkward".
+//
+// He noticed it there because the header and the value were the same word, which
+// made the two positions directly comparable. The defect is the pill's, so it was
+// in every column that uses one.
+describe("Pill in a table cell", () => {
+  const cls = (el: HTMLElement) => el.firstElementChild!.className;
+
+  it("knows its own left inset, and it is the border plus the padding", () => {
+    // Derived rather than typed, so the cancellation below cannot drift if the
+    // padding changes. The classes are asserted too, or these numbers would be a
+    // description of something that is no longer true.
+    expect(PILL_TEXT_INSET_PX).toBe(9);
+    const { container } = render(<Pill variant="status-ok">Yes</Pill>);
+    expect(cls(container as unknown as HTMLElement)).toContain("px-2");
+    expect(cls(container as unknown as HTMLElement)).toContain("border");
+  });
+
+  it("cancels exactly that inset when told to align to the column", () => {
+    const { container } = render(
+      <Pill variant="status-ok" alignToColumn>
+        Yes
+      </Pill>,
+    );
+    expect(cls(container as unknown as HTMLElement)).toContain(`-ml-[${PILL_TEXT_INSET_PX}px]`);
+  });
+
+  it("keeps its inset everywhere else, which is correct in a sentence or a row", () => {
+    const { container } = render(<Pill variant="status-ok">Yes</Pill>);
+    expect(cls(container as unknown as HTMLElement)).not.toMatch(/-ml-/);
+  });
+
+  it("pulls only the first pill, so two in one cell still read as two", () => {
+    // The time off page puts two side by side. Only the one at the column's start
+    // is being aligned to the header; pulling the second would eat the gap.
+    const { container } = render(
+      <>
+        <Pill variant="status-ok" alignToColumn>
+          Yes
+        </Pill>
+        <Pill variant="outline">No</Pill>
+      </>,
+    );
+    const [first, second] = Array.from(container.children) as HTMLElement[];
+    expect(first!.className).toContain(`-ml-[${PILL_TEXT_INSET_PX}px]`);
+    expect(second!.className).not.toMatch(/-ml-/);
+  });
+
+  it("does not change anything else about the pill", () => {
+    const plain = render(<Pill variant="status-ok">Yes</Pill>);
+    const aligned = render(
+      <Pill variant="status-ok" alignToColumn>
+        Yes
+      </Pill>,
+    );
+    const strip = (c: string) => c.replace(`-ml-[${PILL_TEXT_INSET_PX}px]`, "").replace(/\s+/g, " ").trim();
+    expect(strip(aligned.container.firstElementChild!.className)).toBe(
+      strip(plain.container.firstElementChild!.className),
+    );
   });
 });
