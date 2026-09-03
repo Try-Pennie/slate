@@ -75,37 +75,61 @@ export type PillVariant =
 const TRANSPARENT_VARIANTS: readonly PillVariant[] = ["role-agent", "outline"];
 
 /** The pairing for a transparent pill sitting on a dark band: cream label on a cream
- *  hairline. Both halves change together, which is the entire point. */
-const ON_DARK_CLS = "border-pennie-beige/40 text-pennie-beige";
+ *  hairline. Both halves change together, which is the entire point.
+ *
+ *  It carries its own weight because it REPLACES the variant's classes outright,
+ *  so a variant's own `font-semibold` does not reach the dark path. */
+const ON_DARK_CLS = "border-pennie-beige/40 text-pennie-beige font-semibold";
 
+/**
+ * WEIGHT LIVES HERE, NOT IN THE BASE (#1844). Every variant carries its own
+ * `font-semibold` except `role-agent`, which is deliberately unweighted. Putting
+ * it in the base and overriding it here would leave the winner to be decided by
+ * the order Tailwind happens to emit the two utilities in, which is invisible at
+ * the call site (L509).
+ */
 const VARIANT_CLS: Record<PillVariant, string> = {
-  "role-agent": "border-border text-fg",
-  "role-manager": "bg-pennie-sky-soft text-pennie-navy",
+  // THE FLOOR OF THE ROLE LADDER, and the only member that draws no chrome
+  // (#1844). Agent is "no elevation", and on a 117 person roster it is nearly
+  // every row, so a bordered semibold pill gave the least informative value the
+  // heaviest treatment on the page. Muted plain text matches the Manager column
+  // beside it and makes the four elevated roles easier to pick out, not harder:
+  // this is a decision about the BASE of an ordered set, and Pill.test.tsx holds
+  // every role above it to still reading as elevated (L545).
+  "role-agent": "text-fg-muted",
+  "role-manager": "bg-pennie-sky-soft text-pennie-navy font-semibold",
   // A step above manager: navy outline (not a fill) so it reads as elevated
   // without competing with admin's solid fill or the manager's soft wash.
   "role-team_lead":
-    "border border-pennie-navy text-pennie-navy " +
+    "border border-pennie-navy text-pennie-navy font-semibold " +
     "dark:border-[var(--pennie-sky-soft)] dark:text-[var(--pennie-sky-soft)]",
   "role-admin":
-    "bg-pennie-navy text-pennie-beige " +
+    "bg-pennie-navy text-pennie-beige font-semibold " +
     "dark:bg-transparent dark:border-border dark:text-[var(--pennie-sky-soft)]",
   // Top tier: navy fill like admin but with the sky accent text, so it reads
   // as "admin, elevated" without borrowing the CTA sky fill.
   "role-super_admin":
-    "bg-pennie-navy text-[var(--pennie-sky-soft)] " +
+    "bg-pennie-navy text-[var(--pennie-sky-soft)] font-semibold " +
     "dark:bg-transparent dark:border-[var(--pennie-sky-soft)] dark:text-[var(--pennie-sky-soft)]",
   // 3.V AA fix: green-deep on green-wash is 2.44:1 at 13px (axe color-contrast
   // fail). Graphite on the wash is 11.58:1 and stays put in dark (both are raw
   // tokens); the wash + label text carry the status meaning.
   "status-ok":
-    "bg-[var(--pennie-green-wash)] text-pennie-graphite",
+    "bg-[var(--pennie-green-wash)] text-pennie-graphite font-semibold",
   // 3.V AA fix: rose on the 12% rose wash is 4.34:1 (fail). Plain rose text +
   // rose outline passes both themes (5.14:1 on white, 4.96:1 dark via the
   // lightened --error flip) — same recipe as the 2.3 form-error deviation.
-  "status-error": "border-[var(--error)] text-error",
-  "status-pending": "bg-pennie-sky-soft text-pennie-blue",
-  outline: "border-border text-fg",
+  "status-error": "border-[var(--error)] text-error font-semibold",
+  "status-pending": "bg-pennie-sky-soft text-pennie-blue font-semibold",
+  outline: "border-border text-fg font-semibold",
 };
+
+/**
+ * Every variant the pill can be, derived from the map that styles them rather
+ * than listed beside it, so a guard over "all variants" cannot go stale against
+ * a variant added later (L41, L96).
+ */
+export const ALL_VARIANTS = Object.keys(VARIANT_CLS) as PillVariant[];
 
 export function Pill({
   variant,
@@ -138,7 +162,7 @@ export function Pill({
   return (
     <span
       title={title}
-      className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] font-semibold leading-none ${
+      className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] leading-none ${
         alignToColumn ? `${ALIGN_TO_COLUMN_CLS} ` : ""
       }${variantCls}${className ? ` ${className}` : ""}`}
     >

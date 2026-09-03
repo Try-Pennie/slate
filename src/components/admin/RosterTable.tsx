@@ -149,21 +149,6 @@ export function RosterTable({
           </button>
         </noscript>
 
-        <select
-          name="role"
-          value={filters.role}
-          onChange={(e) => set("role", e.target.value)}
-          aria-label="Filter by role"
-          className={filterCtl}
-        >
-          <option value="">All roles</option>
-          {roleOptions.map((r) => (
-            <option key={r} value={r}>
-              {roleLabel(r)}
-            </option>
-          ))}
-        </select>
-
         {teamOptions.length > 0 && (
           <select
             name="team"
@@ -180,6 +165,21 @@ export function RosterTable({
             ))}
           </select>
         )}
+
+        <select
+          name="role"
+          value={filters.role}
+          onChange={(e) => set("role", e.target.value)}
+          aria-label="Filter by role"
+          className={filterCtl}
+        >
+          <option value="">All roles</option>
+          {roleOptions.map((r) => (
+            <option key={r} value={r}>
+              {roleLabel(r)}
+            </option>
+          ))}
+        </select>
 
         {managerOptions.length > 0 && (
           <select
@@ -241,7 +241,10 @@ export function RosterTable({
           <thead>
             <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
               <th className="px-4 py-2.5 font-semibold">Member</th>
-              <th className="px-3 py-2.5 font-semibold">Role</th>
+              {/* #1844: Team before Role. The team is what an operator scans a
+                  roster FOR; the role is agent on nearly every row. Moved with
+                  its cell below and with the filter row above, which orders the
+                  same two fields. */}
               {/* The legend lives here ONCE (#1812). V and U are the two letters
                   nobody guesses, and repeating the expansion on 136 rows is the
                   duplication this design exists to remove. */}
@@ -249,6 +252,7 @@ export function RosterTable({
                 Team
                 <span className="sr-only">{` (${LEDGER_LEGEND})`}</span>
               </th>
+              <th className="px-3 py-2.5 font-semibold">Role</th>
               <th className="px-3 py-2.5 font-semibold">Manager</th>
               <th className="px-3 py-2.5 font-semibold">Bookable</th>
               <th className="px-4 py-2.5" />
@@ -283,15 +287,19 @@ export function RosterTable({
                     </div>
                   </div>
                 </td>
-                <td className="px-3 py-3">
-                  <Pill variant={`role-${u.role}`} alignToColumn>{roleLabel(u.role)}</Pill>
-                </td>
                 <td className="px-3 py-3 text-fg-muted">
                   {/* #1812: five ledger letters in fixed positions, so the cell
                       is the same size for one tier or five AND the positions
                       align down every row, which is the comparison the drawn
                       version could not do. */}
                   <DebtTeamLedger teams={teamsOf(u)} />
+                </td>
+                <td className="px-3 py-3">
+                  {/* #1844: agent draws no pill chrome now, so this cell reads
+                      like the Manager column beside it on nearly every row, and
+                      the elevated roles are what stands out. The decision and
+                      the ladder it belongs to live in Pill.tsx. */}
+                  <Pill variant={`role-${u.role}`} alignToColumn>{roleLabel(u.role)}</Pill>
                 </td>
                 <td className="px-3 py-3 text-fg-muted">
                   {u.manager_id ? (nameById.get(u.manager_id) ?? "-") : "-"}
