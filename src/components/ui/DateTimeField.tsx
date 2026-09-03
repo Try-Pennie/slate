@@ -2,28 +2,23 @@
 
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { DateTime } from "luxon";
-import { dateFromParts } from "@/lib/date/parse";
+import {
+  dateFromParts,
+  padTwo as pad,
+  snapTimeOfDay,
+  timeFrom12Hour,
+  twelveHourParts,
+} from "@/lib/date/parse";
 import { CalendarMonth } from "@/components/ui/CalendarMonth";
+import { TimeField } from "@/components/ui/TimeField";
 
-const pad = (n: number) => String(n).padStart(2, "0");
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
-function to24(hour12: number, minute: number, ampm: "AM" | "PM"): string {
-  if (!hour12) return "";
-  let h = hour12 % 12;
-  if (ampm === "PM") h += 12;
-  return `${pad(h)}:${pad(minute)}`;
-}
-// Snap a minute to a quarter hour. START times round down, END times round up
-// (so rounding never shrinks the window); clamped to :45 so it never rolls into
-// the next hour.
-function snapMinute(m: number, dir: "down" | "up"): number {
-  if (dir === "up") {
-    const n = Math.ceil(m / 15) * 15;
-    return n >= 60 ? 45 : n;
-  }
-  return Math.floor(m / 15) * 15;
-}
+// The conversion, the snapping and the padding used to be written out again here,
+// beside their twins in `@/lib/date/parse` (#1765). Two spellings of one rule,
+// each tested against itself, is how they came to disagree: the local snap worked
+// on a MINUTE, so `ceil(50 / 15)` gave 60, which is not a minute, and it answered
+// 45 with the hour left alone. A typed 5:50pm END became 5:45pm.
 
 /**
  * Combined date + time picker (matches the original OOO tool). One field with
@@ -85,7 +80,7 @@ export function DateTimeField({
   // time, so the server rejects "0:MM" until a second digit is typed.
   const hour12 = hh ? Number(hh) || 12 : 0;
   const minute = mi ? Number(mi) : 0;
-  const timeHHMM = to24(hour12, minute, ap);
+  const timeHHMM = timeFrom12Hour(hour12, minute, ap);
 
   const [view, setView] = useState(() => (dateObj ?? today).startOf("month"));
   const snapshot = useRef<{
@@ -208,8 +203,12 @@ export function DateTimeField({
       return;
     }
     if (key === "mi") {
+      // Arrow keys step WITHIN the hour on purpose: the segment being nudged is
+      // the minute, and carrying into the hour from an arrow press would move a
+      // segment the person is not on. Rounding a typed value is the other
+      // question, and it is answered by `snapWholeTime` below.
       const steps = [0, 15, 30, 45];
-      const idx = (steps.indexOf(mi ? snapMinute(Number(mi), "down") : 0) + dir + 4) % 4;
+      const idx = (Math.floor((mi ? Number(mi) : 0) / 15) + dir + 4) % 4;
       setMi(pad(steps[idx]));
       return;
     }
@@ -224,6 +223,37 @@ export function DateTimeField({
       const d = dateFromParts(key === "mm" ? val : mm, key === "dd" ? val : dd, yyyy);
       if (d && inRange(d)) setView(d.startOf("month"));
     }
+  };
+
+  /** Write a 24 hour "HH:MM" back into the three segments, or clear them. */
+  const writeTime = (hhmm: string) => {
+    const parts = twelveHourParts(hhmm);
+    if (!parts) {
+      setHh("");
+      setMi("");
+      return;
+    }
+    setHh(pad(parts.hour12));
+    setMi(pad(parts.minute));
+    setAp(parts.ampm);
+  };
+
+  /**
+   * Snap what was typed into the minute segment, as a WHOLE time.
+   *
+   * The minute cannot be snapped on its own: an END time at :50 rounds up to the
+   * next hour, and answering :45 shortens a window the person asked for. So the
+   * three segments are converted out, rounded by the shared rule, and written
+   * back, which is why this can change the hour and the meridiem too.
+   */
+  const snapWholeTime = (typed: string) => {
+    if (!typed) {
+      setMi("");
+      return;
+    }
+    const minuteTyped = clamp(Number(typed) || 0, 0, 59);
+    const whole = timeFrom12Hour(hour12 || 12, minuteTyped, ap);
+    writeTime(snapTimeOfDay(whole, round));
   };
 
   const segKeyDown = (
@@ -276,8 +306,6 @@ export function DateTimeField({
   // sky-soft fill instead, like a native date input's highlighted part.
   const segCls =
     "dt-seg rounded-sm bg-transparent text-center text-sm tabular-nums text-fg outline-none placeholder:text-fg-muted focus:bg-[var(--pennie-seg-active)]";
-  const popSel =
-    "h-9 rounded-sm border border-border bg-[var(--field)] px-2 text-sm text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
 
   return (
     <div ref={rootRef} className="relative">
@@ -323,7 +351,7 @@ export function DateTimeField({
         <span className="text-fg-muted">:</span>
         <input ref={miRef} inputMode="numeric" aria-label={`${ariaLabel}, minute`} placeholder="MM" value={mi}
           onChange={(e) => handleSeg("mi", e.target.value, apRef)} onFocus={selectOnFocus} onMouseUp={selectWholeOnMouseUp}
-          onBlur={(e) => { const v = e.currentTarget.value; setMi(v ? pad(snapMinute(Number(v) || 0, round)) : ""); }}
+          onBlur={(e) => snapWholeTime(e.currentTarget.value)}
           onKeyDown={(e) => segKeyDown(e, "mi", mi, hhRef, apRef)} className={`w-[3ch] ${segCls}`} />
         <input ref={apRef} aria-label={`${ariaLabel}, AM or PM`} placeholder="--" value={hh ? ap : ""}
           onChange={() => {}}
@@ -371,31 +399,18 @@ export function DateTimeField({
           />
 
           {!hideTime && (
-          <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-3">
-            <select aria-label={`${ariaLabel} hour`} value={hh}
-              onChange={(e) => { const v = e.target.value; setHh(v); if (v && !mi) setMi("00"); }}
-              className={`${popSel} flex-1`}>
-              <option value="" disabled hidden>HH</option>
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((h) => (
-                <option key={h} value={pad(h)}>{h}</option>
-              ))}
-            </select>
-            <span aria-hidden="true" className="text-fg-muted">:</span>
-            {/* Mirror the segments: show "--" when unset, not a fake 00/AM. */}
-            <select aria-label={`${ariaLabel} minute`} value={mi ? pad(snapMinute(minute, round)) : ""}
-              onChange={(e) => setMi(e.target.value)} className={`${popSel} flex-1`}>
-              <option value="" disabled hidden>MM</option>
-              {[0, 15, 30, 45].map((m) => (
-                <option key={m} value={pad(m)}>{pad(m)}</option>
-              ))}
-            </select>
-            <select aria-label={`${ariaLabel} AM or PM`} value={hh ? ap : ""}
-              onChange={(e) => { if (e.target.value) setAp(e.target.value as "AM" | "PM"); }}
-              className={`${popSel} flex-1`}>
-              <option value="" disabled hidden>--</option>
-              <option value="AM">AM</option>
-              <option value="PM">PM</option>
-            </select>
+          <div className="mt-3 border-t border-border pt-3">
+            {/* The same control the hours screens use, rather than a third hour,
+                minute and AM or PM trio (#1765). It carries no `name`: this field
+                owns the submitted value, and two hidden inputs under one name
+                would post the time twice. Mounted only while the popup is open, so
+                it always opens on the segments' current value. */}
+            <TimeField
+              ariaLabel={`${ariaLabel} time`}
+              defaultValue={timeHHMM}
+              round={round}
+              onValueChange={writeTime}
+            />
           </div>
           )}
 

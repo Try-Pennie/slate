@@ -1,6 +1,7 @@
 "use client";
 
 import { DateTime } from "luxon";
+import { formatClockTime } from "@/lib/date/parse";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon } from "@/components/icons";
@@ -424,9 +425,9 @@ export default function Booker({
 
   function fmtTime(iso: string) {
     const dt = DateTime.fromISO(iso).setZone(zone);
-    return hour12
-      ? `${dt.toFormat("h:mm")}${dt.toFormat("a").toLowerCase()}`
-      : dt.toFormat("HH:mm");
+    // The 12 hour spelling comes from the shared formatter (#1765); the 24 hour
+    // one is the lead's own preference and has only ever had one spelling.
+    return hour12 ? (formatClockTime(dt) ?? "") : dt.toFormat("HH:mm");
   }
 
   async function submit() {

@@ -15,7 +15,9 @@ describe("slot-label", () => {
   });
 
   it("formats a slot time without a date", () => {
-    expect(formatSlotTime("2026-07-03T18:30:00.000Z", ET)).toBe("2:30 PM");
+    // One spelling across the product (#1765), the lowercase form the
+    // confirmation copy beside these buttons has always used.
+    expect(formatSlotTime("2026-07-03T18:30:00.000Z", ET)).toBe("2:30pm");
   });
 
 

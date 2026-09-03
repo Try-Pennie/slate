@@ -112,6 +112,10 @@ export function buildRegalEvent(
       location: "Phone Call",
       slateBookingDayOfWeek: start.toFormat("cccc"),
       slateBookingTimeZone: tzAbbreviation(tz),
+      // NOT display copy, so deliberately NOT the shared time formatter (#1765).
+      // This is a payload field Regal reads, its shape is pinned by
+      // scripts/test-regal.ts ("09:00 AM"), and changing it changes a contract
+      // with another system rather than a sentence somebody reads.
       slateBookingLocalTime: start.toFormat("hh:mm a"),
       slateBookingDate: start.toFormat("yyyy-MM-dd"),
       slateBookingLink: p.manage_url,

@@ -12,8 +12,13 @@
 // reachable from the keyboard rather than only from stored data.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-time-of-day.ts
+import { DateTime } from "luxon";
 import {
   QUARTER_HOUR_TIMES,
+  formatClockTime,
+  snapTimeOfDay,
+  timeFrom12Hour,
+  twelveHourParts,
   filterTimeOptions,
   formatTimeOfDay,
   isQuarterHour,
@@ -200,5 +205,70 @@ import { assert, finish } from "./lib/harness.ts";
     "filtered options carry the same labels as the full list",
   );
 }
+
+
+// --- the 12 hour parts a segmented field works in ---
+//
+// `DateTimeField` carried its own `pad`, its own identical `to24` and its own
+// `snapMinute`, and the snapping is where the two implementations disagreed. The
+// conversion lives here now so there is one of it.
+{
+  assert(timeFrom12Hour(5, 15, "PM") === "17:15", "5:15 PM is 17:15");
+  assert(timeFrom12Hour(12, 0, "AM") === "00:00", "12 AM is midnight, not noon");
+  assert(timeFrom12Hour(12, 0, "PM") === "12:00", "12 PM is noon");
+  assert(timeFrom12Hour(9, 0, "AM") === "09:00", "a morning hour pads to two digits");
+  // Hour 0 is the segmented field's "nothing typed yet", which must not become
+  // midnight: a half filled field would otherwise submit a real time.
+  assert(timeFrom12Hour(0, 30, "AM") === "", "an unset hour submits nothing at all");
+
+  const parts = twelveHourParts("17:15");
+  assert(
+    parts?.hour12 === 5 && parts?.minute === 15 && parts?.ampm === "PM",
+    "17:15 reads back as 5:15 PM",
+  );
+  assert(twelveHourParts("00:45")?.hour12 === 12, "midnight reads back as 12, never 0");
+  assert(twelveHourParts("12:00")?.ampm === "PM", "noon reads back as PM");
+  assert(twelveHourParts("banana") === null, "an unreadable time has no parts");
+
+  // The round trip is what the segmented field depends on: it converts out to
+  // snap, then back to write the segments.
+  for (const value of QUARTER_HOUR_TIMES) {
+    const p = twelveHourParts(value);
+    assert(
+      p !== null && timeFrom12Hour(p.hour12, p.minute, p.ampm) === value,
+      `${value} survives a round trip through the 12 hour parts`,
+    );
+  }
+}
+
+// --- snapping the WHOLE time, which is the fix ---
+//
+// The defect was snapping a MINUTE in isolation: ceil(50 / 15) is 60, which
+// cannot be a minute, so the local copy answered 45 and left the hour alone. A
+// time is a single quantity and has to be rounded as one.
+{
+  assert(snapTimeOfDay("17:50", "up") === "18:00", "5:50pm rounds up ACROSS the hour");
+  assert(snapTimeOfDay("17:50", "down") === "17:45", "and down within it");
+  assert(snapTimeOfDay("17:00", "up") === "17:00", "a time already on the grid does not move");
+  assert(snapTimeOfDay("23:50", "up") === "23:45", "the end of the day clamps rather than spilling");
+  assert(snapTimeOfDay("", "up") === "", "nothing typed stays nothing");
+}
+
+// --- the same spelling, from a Luxon DateTime ---
+{
+  const dt = DateTime.fromISO("2026-09-03T17:15:00", { zone: "America/New_York" });
+  assert(formatClockTime(dt) === "5:15pm", "a DateTime spells the same way an HH:MM string does");
+  assert(
+    formatClockTime(DateTime.fromISO("2026-09-03T00:00:00", { zone: "UTC" })) === "12:00am",
+    "midnight from a DateTime is 12:00am",
+  );
+  assert(
+    formatClockTime(dt) === formatTimeOfDay(dt.toFormat("HH:mm")),
+    "the two entry points cannot disagree, because one answers through the other",
+  );
+  // An invalid DateTime must not render a plausible time.
+  assert(formatClockTime(DateTime.invalid("test")) === null, "an invalid DateTime has no spelling");
+}
+
 
 finish();

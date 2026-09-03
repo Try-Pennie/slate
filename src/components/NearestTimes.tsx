@@ -1,6 +1,7 @@
 "use client";
 
 import { DateTime } from "luxon";
+import { formatClockTime } from "@/lib/date/parse";
 
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
 import { nearestSlots, NEAREST_SLOT_COUNT } from "@/lib/booking/nearest-slots";
@@ -79,7 +80,10 @@ export function NearestTimesPanel({
                 className="inline-flex min-h-11 items-center rounded-md border border-border bg-surface px-3 text-sm tabular-nums text-fg transition-colors hover:border-fg/45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky"
                 onClick={() => onSelect(iso)}
               >
-                {DateTime.fromISO(iso, { zone }).toFormat("ccc d LLL, h:mm a")}
+                {/* One spelling for the time (#1765); the date keeps its own. */}
+                {`${DateTime.fromISO(iso, { zone }).toFormat("ccc d LLL")}, ${
+                  formatClockTime(DateTime.fromISO(iso, { zone })) ?? ""
+                }`}
               </button>
             ))}
           </div>
