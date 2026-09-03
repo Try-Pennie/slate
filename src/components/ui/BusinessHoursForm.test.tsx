@@ -14,10 +14,19 @@ import { render, screen } from "@testing-library/react";
 //  * A WARNING vs AN ERROR. Closing a day that already holds appointments is allowed;
 //    the person is shown the consequence once and confirms. Rendering that as an
 //    error would say something had gone wrong when nothing had.
+// The real field's own behaviour (typing, filtering, the refused state) is pinned
+// in TimeField.test.tsx. What this suite has to prove is the WIRING: that an open
+// day's fields are the ones told they must resolve.
 vi.mock("@/components/ui/TimeField", () => ({
-  TimeField: ({ name, ariaLabel }: { name: string; ariaLabel: string }) => (
-    <input aria-label={ariaLabel} name={name} />
-  ),
+  TimeField: ({
+    name,
+    ariaLabel,
+    enforce,
+  }: {
+    name: string;
+    ariaLabel: string;
+    enforce?: boolean;
+  }) => <input aria-label={ariaLabel} name={name} data-enforce={enforce ? "true" : "false"} />,
 }));
 vi.mock("@/components/ui/SubmitButton", () => ({
   SubmitButton: ({ children }: { children: React.ReactNode }) => (
@@ -207,6 +216,56 @@ describe("BusinessHoursForm", () => {
       expect(statuses).toHaveLength(1);
       expect(statuses[0].textContent).not.toMatch(/no bookable agent rostered/);
       expect(screen.queryByText("Coverage")).toBeNull();
+    });
+  });
+
+  // #1764 part 6. The org gate is structurally single window: `windowOnDate` finds
+  // ONE rule per weekday and returns one {start_minute, end_minute}, so a second
+  // org window would be silently IGNORED rather than honoured. A `+` here would
+  // ship a control whose second row does nothing, which is the exact silent
+  // failure this repo keeps writing guards against.
+  describe("one window per day, deliberately (#1764)", () => {
+    it("offers NO control to add a second window", () => {
+      draw({ ok: false });
+
+      expect(screen.queryByRole("button", { name: /add a window/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^\+$/ })).toBeNull();
+      // And exactly one pair of fields per weekday, not a list.
+      for (const weekday of [1, 2, 3, 4, 5, 6, 7]) {
+        expect(document.querySelectorAll(`[name="bh_start_${weekday}"]`)).toHaveLength(1);
+      }
+    });
+
+    it("states the open week in a sentence", () => {
+      draw({ ok: false });
+
+      const summary = screen.getByTestId("business-hours-summary");
+      expect(summary.textContent).toMatch(/^Open /);
+      expect(summary.textContent).toMatch(/Closed/);
+    });
+
+    it("marks a closed day closed in more than colour", () => {
+      draw({ ok: false });
+
+      const closed = DAYS.find((d) => !d.is_open)!.weekday;
+      const open = DAYS.find((d) => d.is_open)!.weekday;
+      expect(document.querySelector(`[data-weekday="${closed}"]`)?.getAttribute("data-day-off")).toBe("true");
+      expect(document.querySelector(`[data-weekday="${open}"]`)?.getAttribute("data-day-off")).toBe("false");
+    });
+
+    it("requires a real time on an OPEN day and leaves a closed one alone", () => {
+      draw({ ok: false });
+
+      const open = DAYS.find((d) => d.is_open)!.weekday;
+      const closed = DAYS.find((d) => !d.is_open)!.weekday;
+      expect(
+        document.querySelector(`[name="bh_start_${open}"]`)?.getAttribute("data-enforce"),
+      ).toBe("true");
+      // A closed day keeps its times so reopening it needs no typing, and they must
+      // not refuse a save while nobody can be booked then anyway.
+      expect(
+        document.querySelector(`[name="bh_start_${closed}"]`)?.getAttribute("data-enforce"),
+      ).toBe("false");
     });
   });
 });

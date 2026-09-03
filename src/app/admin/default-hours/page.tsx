@@ -127,6 +127,7 @@ export default async function DefaultHoursPage({
                 ariaLabel="New agent start time"
                 defaultValue={minutesToTime(org.default_start_minute)}
                 className="mt-1"
+                enforce
               />
             </div>
             <div>
@@ -137,6 +138,7 @@ export default async function DefaultHoursPage({
                 round="up"
                 defaultValue={minutesToTime(org.default_end_minute)}
                 className="mt-1"
+                enforce
               />
             </div>
             <SubmitButton className={btnCls} pendingLabel="Saving…">

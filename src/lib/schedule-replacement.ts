@@ -85,16 +85,11 @@ export function planScheduleReplacement(
       error: "Pick at least one day you are available. If you are away, submit a time off request instead, and if you should not be taking bookings for longer than that, ask an admin to take you out of the booking pool.",
     };
   }
-  const seen = new Set<number>();
   for (const day of days) {
     const { weekday, start_minute: start, end_minute: end } = day;
     if (!isWholeNumber(weekday) || weekday < 1 || weekday > 7) {
       return { ok: false, error: "Those days could not be read. Please choose them again." };
     }
-    if (seen.has(weekday)) {
-      return { ok: false, error: "That request listed the same day twice. Please choose the days again." };
-    }
-    seen.add(weekday);
     const name = DAY_NAMES[weekday];
     if (!isWholeNumber(start) || !isWholeNumber(end)) {
       return { ok: false, error: `${name}'s times could not be read. Please pick a start and end time again.` };
@@ -109,9 +104,39 @@ export function planScheduleReplacement(
       return { ok: false, error: `${name}'s end time needs to be later than its start time.` };
     }
   }
+  // A weekday may hold SEVERAL windows now (#1764), so the check is whether they
+  // run into each other rather than whether the day appears twice. A repeated day
+  // used to mean a malformed request, and refusing it was right while the form
+  // could only send one window per day; the form can now express a split shift, and
+  // the engine has always honoured one (`isWithinWorkingHours` returns on the first
+  // window of the day that contains the slot).
+  //
+  // Windows that TOUCH are accepted: noon to 5pm straight after 8am to noon is a
+  // legitimate way to say the same thing, storing it as two rules is harmless to the
+  // engine, and merging them here would rewrite what the person entered.
+  for (const weekday of [...new Set(days.map((d) => d.weekday))]) {
+    const windows = days
+      .filter((d) => d.weekday === weekday)
+      .sort((a, b) => a.start_minute - b.start_minute);
+    for (let i = 1; i < windows.length; i++) {
+      if (windows[i].start_minute < windows[i - 1].end_minute) {
+        return {
+          ok: false,
+          error: `${DAY_NAMES[weekday]}'s windows overlap each other. Please give each one its own part of the day.`,
+        };
+      }
+    }
+  }
+
   return {
     ok: true,
-    rules: [...days].sort((a, b) => a.weekday - b.weekday),
+    // Weekday and THEN start time. `a.weekday - b.weikday` alone stopped being a
+    // total order the moment a weekday could hold two windows, and
+    // `workingHoursDays` renders a day's windows in the order they arrive, so an
+    // unstable sort would put an afternoon window above the morning one it follows.
+    rules: [...days].sort(
+      (a, b) => a.weekday - b.weekday || a.start_minute - b.start_minute,
+    ),
     timezone,
   };
 }

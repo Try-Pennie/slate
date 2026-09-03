@@ -234,13 +234,44 @@ async function applyOrgDefaultToUser(
  * moving somebody to midnight (L50).
  */
 const perDayFrom = (form: FormData): ScheduleRule[] =>
-  [1, 2, 3, 4, 5, 6, 7]
-    .filter((d) => form.get(`day_${d}`))
-    .map((weekday) => ({
-      weekday,
-      start_minute: toMinutes(String(form.get(`start_${weekday}`) ?? "")),
-      end_minute: toMinutes(roundUpToQuarterHour(String(form.get(`end_${weekday}`) ?? ""))),
-    }));
+  [1, 2, 3, 4, 5, 6, 7].filter((d) => form.get(`day_${d}`)).flatMap((weekday) => {
+    // Repeated field names, paired by position (#1764). A single `start_1` can no
+    // longer identify a window now that a day can hold several, and repeated names
+    // survive a middle row being removed with no index bookkeeping to get wrong.
+    const starts = form.getAll(`start_${weekday}`).map(String);
+    const ends = form.getAll(`end_${weekday}`).map(String);
+    const count = Math.max(starts.length, ends.length);
+
+    const windows: ScheduleRule[] = [];
+    let blanks = 0;
+    for (let i = 0; i < count; i++) {
+      const start = starts[i] ?? "";
+      const end = ends[i] ?? "";
+      // A window with NEITHER bound is a row somebody added and left alone, which
+      // must not refuse a save. A HALF filled one is a mistake and is passed
+      // through as NaN so the planner refuses it and names the day: dropping it
+      // would save a week quietly missing hours that had just been entered.
+      if (start.trim() === "" && end.trim() === "") {
+        blanks++;
+        continue;
+      }
+      windows.push({
+        weekday,
+        start_minute: toMinutes(start),
+        end_minute: toMinutes(roundUpToQuarterHour(end)),
+      });
+    }
+
+    // A ticked day that contributed nothing (every window blank, or no window
+    // fields at all) is NOT silently dropped. Dropping it would either shorten the
+    // week without saying so or, if it were the only day, produce the "pick at
+    // least one day" refusal for a day that was in fact picked. One unreadable
+    // window instead, so the refusal names this day (L11).
+    if (windows.length === 0 && (blanks > 0 || count === 0)) {
+      return [{ weekday, start_minute: Number.NaN, end_minute: Number.NaN }];
+    }
+    return windows;
+  });
 
 /** Agent self-service: set my own working hours. */
 export async function setMyWorkingHours(form: FormData): Promise<void> {

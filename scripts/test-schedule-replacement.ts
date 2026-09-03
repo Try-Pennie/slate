@@ -196,4 +196,120 @@ const ZONE = "America/New_York";
 }
 
 
+
+// --- two windows on ONE weekday: a split shift (#1764) ---
+//
+// The old rule kept a `seen` set of weekdays and refused the second window with
+// "That request listed the same day twice", which was correct while the form
+// could only send one window per day: a repeated day meant a malformed request.
+// The form can now send two, so the same input has to be read as what it is, and
+// the check that matters is OVERLAP rather than repetition.
+//
+// The engine already honours several windows a day (`isWithinWorkingHours` loops
+// every rule matching the day and returns on the first that contains the slot),
+// so this refusal was the only thing standing between the form and a split shift.
+{
+  const split = planScheduleReplacement(
+    [
+      { weekday: 1, start_minute: 480, end_minute: 720 },
+      { weekday: 1, start_minute: 840, end_minute: 1020 },
+    ],
+    ZONE,
+  );
+  assert(split.ok === true, "two windows on one weekday that do not overlap are accepted");
+  if (split.ok) {
+    assert(split.rules.length === 2, "both windows are kept, not collapsed into one");
+    assert(
+      split.rules.map((r) => `${r.weekday}@${r.start_minute}`).join(",") === "1@480,1@840",
+      "the two windows keep their own bounds",
+    );
+  }
+
+  // Touching is not overlapping: noon to 5pm straight after 8am to noon is a
+  // legitimate way to say the same thing, and storing it as two rules is harmless
+  // to the engine, so it is accepted rather than merged or refused.
+  const touching = planScheduleReplacement(
+    [
+      { weekday: 3, start_minute: 480, end_minute: 720 },
+      { weekday: 3, start_minute: 720, end_minute: 1020 },
+    ],
+    ZONE,
+  );
+  assert(touching.ok === true, "two windows that touch at noon are accepted, not read as an overlap");
+}
+
+// --- overlapping windows on one weekday are refused, and the refusal NAMES the day ---
+{
+  for (const [a, b, what] of [
+    [[480, 720], [600, 1020], "one starting inside the other"],
+    [[480, 1020], [600, 720], "one entirely inside the other"],
+    [[480, 720], [480, 720], "the same window twice"],
+    [[600, 1020], [480, 720], "the overlap arriving in reverse order"],
+  ] as [number[], number[], string][]) {
+    const plan = planScheduleReplacement(
+      [
+        { weekday: 5, start_minute: a[0], end_minute: a[1] },
+        { weekday: 5, start_minute: b[0], end_minute: b[1] },
+      ],
+      ZONE,
+    );
+    assert(plan.ok === false, `${what} is refused`);
+    if (!plan.ok) {
+      // A seven row form that answers "those times could not be read" tells the
+      // person nothing about which row to look at, which is why every other
+      // refusal here names its day too.
+      assert(
+        /Friday/.test(plan.error),
+        `${what} is refused by naming the day (got: ${plan.error})`,
+      );
+      assert(
+        /overlap/i.test(plan.error),
+        `${what} says the windows overlap rather than that the day was listed twice (got: ${plan.error})`,
+      );
+      assert(
+        !/twice/i.test(plan.error),
+        `${what} no longer reads as a malformed request (got: ${plan.error})`,
+      );
+    }
+  }
+
+  // Windows on DIFFERENT days can never overlap each other, so a Monday morning
+  // and a Tuesday morning at the same clock time are fine.
+  const differentDays = planScheduleReplacement(
+    [
+      { weekday: 1, start_minute: 480, end_minute: 1020 },
+      { weekday: 2, start_minute: 480, end_minute: 1020 },
+    ],
+    ZONE,
+  );
+  assert(differentDays.ok === true, "the same window on two different days is not an overlap");
+}
+
+// --- the returned rules are ordered by weekday and THEN by start time ---
+//
+// `a.weekday - b.weekday` alone is not a total order once a weekday holds two
+// windows, and `workingHoursDays` reads them back in the order they arrive and
+// renders them in that order, so an unstable sort would show a day's afternoon
+// window above its morning one, in whatever order the sort happened to leave.
+{
+  const plan = planScheduleReplacement(
+    [
+      { weekday: 2, start_minute: 480, end_minute: 720 },
+      { weekday: 1, start_minute: 840, end_minute: 1020 },
+      { weekday: 1, start_minute: 480, end_minute: 720 },
+      { weekday: 1, start_minute: 1080, end_minute: 1200 },
+    ],
+    ZONE,
+  );
+  assert(plan.ok === true, "three windows on Monday and one on Tuesday are accepted");
+  if (plan.ok) {
+    assert(
+      plan.rules.map((r) => `${r.weekday}@${r.start_minute}`).join(",") ===
+        "1@480,1@840,1@1080,2@480",
+      `ordered by weekday then start time (got ${plan.rules.map((r) => `${r.weekday}@${r.start_minute}`).join(",")})`,
+    );
+  }
+}
+
+
 finish();

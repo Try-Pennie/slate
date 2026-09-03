@@ -146,11 +146,17 @@ export function BusinessHoursExceptions({
 
           {open && (
             <div className="flex flex-wrap items-center gap-3">
-              <TimeField name="start" ariaLabel="Opening time on this date" defaultValue="08:00" />
+              <TimeField name="start" ariaLabel="Opening time on this date" defaultValue="08:00" enforce />
               <span aria-hidden="true" className="text-sm text-fg-muted">
                 to
               </span>
-              <TimeField name="end" ariaLabel="Closing time on this date" defaultValue="20:00" />
+              <TimeField
+                name="end"
+                ariaLabel="Closing time on this date"
+                defaultValue="20:00"
+                round="up"
+                enforce
+              />
               <span className="text-xs text-fg-muted">{zoneLabel}</span>
             </div>
           )}
