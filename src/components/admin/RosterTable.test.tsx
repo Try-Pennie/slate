@@ -398,3 +398,67 @@ describe("RosterTable", () => {
   });
 
 });
+
+// #1844: Team comes before Role.
+//
+// Dan, 2026-09-03: "swap the role and team columns so team comes first". Two
+// halves have to move together, the header and the cell, and the defect this
+// class produces is a header that moved without its data, so both are asserted
+// in ONE test rather than in two that could each pass over a transposed table.
+//
+// The filter row above the table is the same two fields in the same order, so it
+// is asserted here too: one fact declared in two places drifts, and the drift is
+// invisible because each place reads correctly on its own (L263).
+describe("column order (#1844)", () => {
+  const HEADERS = ["Member", "Team", "Role", "Manager", "Bookable"];
+  // `base.roleOptions` is `as const`; the prop wants a mutable array.
+  const props = { ...base, roleOptions: [...base.roleOptions] };
+
+  it("puts Team before Role in the header AND in the cells", () => {
+    render(<RosterTable {...props} teamOptions={["Auto"]} />);
+
+    const headerRow = screen.getAllByRole("row")[0]!;
+    const headings = within(headerRow)
+      .getAllByRole("columnheader")
+      .map((th) => (th.textContent ?? "").trim())
+      .filter((t) => t.length > 0)
+      // The Team header carries the ledger legend for screen readers; compare on
+      // the visible word rather than on the legend riding along with it.
+      .map((t) => (t.startsWith("Team") ? "Team" : t));
+    expect(headings).toEqual(HEADERS);
+
+    // Grace Hopper is a manager, so her Role cell is the one whose position is
+    // unambiguous: an agent's cell says "Agent" and could be confused with a
+    // team name, a manager's cannot.
+    const graceRow = screen.getByText("Grace Hopper").closest("tr")!;
+    const cells = within(graceRow).getAllByRole("cell");
+    // Case-insensitive: the label is lowercase in the DOM and capitalised by CSS,
+    // so asserting the rendered casing would be asserting the stylesheet.
+    expect(cells[2]!.textContent).toMatch(/manager/i);
+    // ...and the cell BEFORE it is the ledger, not the role. This is the half a
+    // header-only assertion cannot see.
+    expect(cells[1]!.textContent).not.toMatch(/manager/i);
+  });
+
+  it("keeps the ledger legend attached to the Team header after the move", () => {
+    render(<RosterTable {...props} teamOptions={["Auto"]} />);
+    const teamHeader = screen
+      .getAllByRole("columnheader")
+      .find((th) => (th.textContent ?? "").startsWith("Team"))!;
+    expect(teamHeader.getAttribute("title")).toBeTruthy();
+    expect(teamHeader.textContent).toMatch(/V\b|Verified|[A-Z]/);
+  });
+
+  it("orders the filter controls the same way the columns are ordered", () => {
+    const managerOptions: [string, string][] = [["b", "Grace"]];
+    render(
+      <RosterTable {...props} teamOptions={["Auto"]} managerOptions={managerOptions} />,
+    );
+    const selects = Array.from(document.querySelectorAll("select")).map((s) => s.name);
+    expect(selects.indexOf("team")).toBeLessThan(selects.indexOf("role"));
+    // A positive control on the comparison above: both are really present, so a
+    // pair of -1s cannot satisfy it (L98).
+    expect(selects).toContain("team");
+    expect(selects).toContain("role");
+  });
+});

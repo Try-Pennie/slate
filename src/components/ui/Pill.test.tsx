@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
-import { Pill, PILL_TEXT_INSET_PX } from "./Pill";
+import { Pill, PILL_TEXT_INSET_PX, ALL_VARIANTS, type PillVariant } from "./Pill";
 
 // #1054: a Pill on a band that paints its OWN dark fill.
 //
@@ -143,5 +143,74 @@ describe("Pill in a table cell", () => {
     expect(strip(aligned.container.firstElementChild!.className)).toBe(
       strip(plain.container.firstElementChild!.className),
     );
+  });
+});
+
+// #1844: the ROLE LADDER, and the fact that agent is its floor.
+//
+// Dan, 2026-09-03, on the agent roster: "agent is too bold, soften it so it reads
+// like the manager column". The roster's least informative value carried the
+// heaviest text treatment on essentially every row, because agent is the
+// overwhelming majority of a 117 person roster and the four elevated roles are
+// the ones worth spotting.
+//
+// The five role variants are an ORDERED set (agent, manager, team lead, admin,
+// super admin), each reading as more elevated than the last. Changing one member
+// of an ordered set for an unrelated reason is how the ordering breaks while
+// every member stays individually valid (L545), so this asserts the ORDERING
+// rule rather than agent's exact colour: agent is the only role that draws no
+// pill chrome, and every role above it does.
+//
+// The list is DERIVED from the variant union rather than typed out beside it, so
+// a sixth role cannot be silently exempt from the rule (L96).
+describe("the role ladder (#1844)", () => {
+  const ROLE_VARIANTS = ALL_VARIANTS.filter((v) => v.startsWith("role-"));
+
+  it("enumerates every role the type allows", () => {
+    // The positive control on the derivation above. Without it a filter that
+    // matched nothing would make every assertion below vacuously true (L98).
+    expect(ROLE_VARIANTS).toEqual([
+      "role-agent",
+      "role-manager",
+      "role-team_lead",
+      "role-admin",
+      "role-super_admin",
+    ]);
+  });
+
+  const clsOf = (v: PillVariant) =>
+    render(<Pill variant={v}>label</Pill>).container.firstElementChild!.className;
+
+  it("draws agent as plain muted text: no weight, no border, no fill", () => {
+    const cls = clsOf("role-agent");
+    expect(cls, "agent must not be bold").not.toMatch(/font-semibold/);
+    expect(cls, "agent must read like the Manager column").toMatch(/text-fg-muted/);
+    expect(cls, "agent must not draw a visible border").not.toMatch(/border-border/);
+    expect(cls, "agent must not paint a fill").not.toMatch(/\bbg-/);
+  });
+
+  it("keeps every role ABOVE agent visibly elevated", () => {
+    for (const v of ROLE_VARIANTS.filter((r) => r !== "role-agent")) {
+      const cls = clsOf(v);
+      expect(cls, `${v} sits above agent and must stay bold`).toMatch(/font-semibold/);
+      expect(cls, `${v} must draw its own chrome, a fill or a border`).toMatch(
+        /\bbg-|\bborder-(?!transparent)/,
+      );
+    }
+  });
+
+  it("still holds up on a dark band, where muting it would make it vanish", () => {
+    // The muting is a decision about DENSITY on a long table, not about the role.
+    // On a band that paints its own dark fill there is exactly one of these, and
+    // graphite-muted on navy is the invisible pill `onDark` exists to prevent
+    // (L213), so agent takes the shared on-dark pairing like any other
+    // transparent variant.
+    const cls = render(
+      <Pill variant="role-agent" onDark>
+        label
+      </Pill>,
+    ).container.firstElementChild!.className;
+    expect(cls).toMatch(/text-pennie-beige/);
+    expect(cls).not.toMatch(/text-fg-muted/);
   });
 });
