@@ -242,3 +242,115 @@ describe("BucketMembersPicker explains what the list is", () => {
     expect(screen.getByText(/whole org roster/i).textContent).toMatch(/4 people/);
   });
 });
+
+// #1784: the same picker in single select mode, standing in for the fallback
+// agent `<select>` that listed the whole roster in every bucket form. What has to
+// hold is the posted field (the server action reads `fallback_user_id` and
+// treats an empty string as "no fallback"), and that ONE person can be chosen: a
+// second `fallback_user_id` value would make the posted field ambiguous.
+describe("BucketMembersPicker in fallback mode (#1784)", () => {
+  function renderFallback(selectedIds: string[] = [], roster: RosterEntry[] = ROSTER) {
+    const view = render(
+      <RosterProvider roster={roster}>
+        <form data-testid="bucket-form">
+          <BucketMembersPicker
+            mode="fallback"
+            selectedIds={selectedIds}
+            rosterTotal={roster.length}
+          />
+        </form>
+      </RosterProvider>,
+    );
+    const form = () => view.getByTestId("bucket-form") as HTMLFormElement;
+    return {
+      ...view,
+      form,
+      /** Every value posted under the field, so a second one is visible. */
+      all: () => new FormData(form()).getAll("fallback_user_id").map(String),
+      posted: () => String(new FormData(form()).get("fallback_user_id") ?? "\u0000missing"),
+    };
+  }
+
+  const open = async (user: ReturnType<typeof userEvent.setup>) =>
+    user.click(screen.getByRole("button", { name: /choose a fallback agent/i }));
+
+  it("posts the field EMPTY rather than absent when no fallback is set", async () => {
+    const { posted, all } = renderFallback();
+    // Absent would read as "leave it alone"; the select it replaces always posted
+    // the field, and an admin clearing a fallback has to be able to clear it.
+    expect(posted()).toBe("");
+    expect(all()).toEqual([""]);
+  });
+
+  it("posts the stored fallback, and renders no roster options until it is opened", () => {
+    const { posted, container } = renderFallback(["alan"]);
+    expect(posted()).toBe("alan");
+    // The whole point of the change: no <option> per person, per bucket.
+    expect(container.querySelectorAll("option")).toHaveLength(0);
+    expect(screen.getByText("Alan Turing")).toBeTruthy();
+  });
+
+  it("REPLACES the choice rather than adding a second one", async () => {
+    const user = userEvent.setup();
+    const { posted, all } = renderFallback(["alan"]);
+
+    await open(user);
+    await user.click(screen.getByRole("option", { name: /ada lovelace/i }));
+
+    expect(posted()).toBe("ada");
+    // Two values under one field is the failure this mode exists to prevent.
+    expect(all()).toEqual(["ada"]);
+  });
+
+  it("clears the fallback when the person already set is chosen again", async () => {
+    const user = userEvent.setup();
+    const { posted } = renderFallback(["alan"]);
+
+    await open(user);
+    await user.click(screen.getByRole("option", { name: /alan turing/i }));
+
+    expect(posted()).toBe("");
+  });
+
+  it("clears the fallback from the chip, and says that is what it does", async () => {
+    const user = userEvent.setup();
+    const { posted } = renderFallback(["alan"]);
+
+    await user.click(screen.getByRole("button", { name: /clear alan turing as the fallback agent/i }));
+    expect(posted()).toBe("");
+  });
+
+  it("keeps a stored fallback the roster does not list, rather than dropping it on save", () => {
+    const { posted } = renderFallback(["departed-id"]);
+    // The #1762 trap: a fallback the page cannot show must not be removed by a
+    // save that was about something else.
+    expect(posted()).toBe("departed-id");
+    expect(screen.getByText(/not on the current roster/i)).toBeTruthy();
+  });
+
+  it("does not tell assistive tech that several can be chosen", async () => {
+    const user = userEvent.setup();
+    renderFallback();
+    await open(user);
+    expect(screen.getByRole("listbox").getAttribute("aria-multiselectable")).toBeNull();
+  });
+
+  it("says a missing fallback is a problem, in its own words", () => {
+    renderFallback();
+    expect(screen.getByText(/bookings will fail/i)).toBeTruthy();
+  });
+
+  it("tells an unreadable roster apart from an empty one", async () => {
+    const user = userEvent.setup();
+    // An unreadable roster is the ABSENCE of the provider, which is how the page
+    // expresses a read that threw rather than a read that came back empty.
+    render(
+      <form>
+        <BucketMembersPicker mode="fallback" selectedIds={[]} rosterTotal={0} />
+      </form>,
+    );
+    await open(user);
+    expect(screen.getByText(/could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/nobody is on the org roster/i)).toBeNull();
+  });
+});

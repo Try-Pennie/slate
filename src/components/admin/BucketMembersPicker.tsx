@@ -126,15 +126,72 @@ function SectionLabel({ children }: { children: ReactNode }) {
 /** How a person is named on screen, with the email standing in for a null name. */
 const labelFor = (e: RosterEntry): string => e.name || e.email;
 
+/**
+ * What differs between the two things this picker is (#1784): the words, and
+ * whether more than one person can be chosen. The control, the search predicate,
+ * the sectioning and the whole keyboard path are the same, so they are not
+ * written twice. A second control sharing only the data would not be
+ * consolidation: the change that matters next would land in one copy (L370).
+ */
+const MODES = {
+  members: {
+    multi: true,
+    field: "members",
+    label: "Manual members (optional)",
+    hint: (total: number) =>
+      `Anyone added here joins this pool even when their attributes do not match the criteria above. This list is the whole org roster (${total} people), not this bucket's eligible agents.`,
+    groupLabel: (n: number) => `In this pool (${n})`,
+    nobody: "No one is added manually. Routing uses the criteria above.",
+    openLabel: "Choose members",
+    closeLabel: "Done choosing members",
+    removeLabel: (name: string) => `Remove ${name} from this pool`,
+    searchLabel: "Search the roster by name or email",
+    keyboardHint:
+      "Use the up and down arrows to move through the list and Enter to add or remove someone. Escape closes the picker.",
+    noRoster: "The roster could not be read, so there is nobody to choose from. Reload the page.",
+    emptyRoster:
+      "Nobody is on the org roster yet, so this pool can only be filled by attribute criteria.",
+  },
+  fallback: {
+    multi: false,
+    field: "fallback_user_id",
+    label: "Fallback agent (when none match)",
+    hint: (total: number) =>
+      `Who takes a booking when nothing matches the criteria above. Any of the ${total} people on the roster can be chosen.`,
+    groupLabel: () => "Fallback agent",
+    nobody: "No fallback set, so bookings will fail when nothing matches.",
+    openLabel: "Choose a fallback agent",
+    closeLabel: "Done choosing a fallback",
+    removeLabel: (name: string) => `Clear ${name} as the fallback agent`,
+    searchLabel: "Search the roster by name or email",
+    keyboardHint:
+      "Use the up and down arrows to move through the list and Enter to choose someone. Escape closes the picker.",
+    noRoster: "The roster could not be read, so there is nobody to choose from. Reload the page.",
+    emptyRoster: "Nobody is on the org roster yet, so no fallback can be set.",
+  },
+} as const;
+
+export type BucketPickerMode = keyof typeof MODES;
+
 export function BucketMembersPicker({
   selectedIds,
   rosterTotal,
+  mode = "members",
 }: {
   /** The bucket's current manual member ids, from `bucket_members`. */
   selectedIds: string[];
   /** How many people are on the org roster, for the label copy. */
   rosterTotal: number;
+  /**
+   * `members` chooses several people and posts one `members` input each;
+   * `fallback` chooses at most ONE and posts a single `fallback_user_id`, empty
+   * when nobody is set. The fallback used to be a `<select>` listing the whole
+   * roster in every bucket form, which is why the page still carried 8,755
+   * `<option>` elements after #1760 (#1784).
+   */
+  mode?: BucketPickerMode;
 }) {
+  const cfg = MODES[mode];
   const roster = useContext(RosterContext);
   const [selected, setSelected] = useState<string[]>(() => [...selectedIds]);
   const [open, setOpen] = useState(false);
@@ -165,6 +222,13 @@ export function BucketMembersPicker({
   const selectedSet = new Set(selected);
 
   function toggle(id: string) {
+    if (!cfg.multi) {
+      // One at a time: choosing somebody replaces whoever was there, and choosing
+      // the person already set clears it, which is how "None" is expressed
+      // without a separate option in the list.
+      setSelected((cur) => (cur[0] === id ? [] : [id]));
+      return;
+    }
     setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
   }
 
@@ -218,26 +282,20 @@ export function BucketMembersPicker({
   return (
     <div>
       <span className={labelCls} id={`${domId}-label`}>
-        Manual members (optional)
+        {cfg.label}
       </span>
-      <p className="mt-1 text-xs text-fg-muted">
-        Anyone added here joins this pool even when their attributes do not match the
-        criteria above. This list is the whole org roster ({rosterTotal} people), not
-        this bucket&rsquo;s eligible agents.
-      </p>
+      <p className="mt-1 text-xs text-fg-muted">{cfg.hint(rosterTotal)}</p>
 
       {/* Current members, surfaced separately so a pool can be read without
           scanning the roster. */}
       <div
         role="group"
-        aria-label={`In this pool (${selected.length})`}
+        aria-label={cfg.groupLabel(selected.length)}
         className="mt-2 flex flex-wrap items-center gap-2"
       >
-        <SectionLabel>In this pool ({selected.length})</SectionLabel>
+        <SectionLabel>{cfg.groupLabel(selected.length)}</SectionLabel>
         {selected.length === 0 ? (
-          <span className="text-xs text-fg-muted">
-            No one is added manually. Routing uses the criteria above.
-          </span>
+          <span className="text-xs text-fg-muted">{cfg.nobody}</span>
         ) : (
           chosen.map((entry, i) => {
             const id = selected[i]!;
@@ -250,7 +308,7 @@ export function BucketMembersPicker({
                 key={id}
                 type="button"
                 onClick={() => toggle(id)}
-                aria-label={`Remove ${name} from this pool`}
+                aria-label={cfg.removeLabel(name)}
                 className={`${CHIP_CLS} min-h-11 gap-2 px-3 hover:bg-fg/10`}
               >
                 <span>{name}</span>
@@ -266,13 +324,20 @@ export function BucketMembersPicker({
         )}
       </div>
 
-      {/* One hidden input per member, so the posted `members` values are the same
-          ones the checkbox list posted. These are the only inputs the collapsed
-          panel carries, which is the whole point: the count now tracks actual
-          memberships instead of buckets times roster. */}
-      {selected.map((id) => (
-        <input key={id} type="hidden" name="members" value={id} />
-      ))}
+      {/* The posted values are exactly what the controls these replaced posted, so
+          the server action is unchanged. These are the only inputs the collapsed
+          panel carries, which is the whole point: the count tracks actual
+          memberships rather than buckets times roster.
+
+          One input per member for `members`, and for `fallback_user_id` a single
+          input that is EMPTY when nobody is set, because the select it replaces
+          always posted the field and an absent field would read as "leave it
+          alone" rather than as "clear it". */}
+      {cfg.multi ? (
+        selected.map((id) => <input key={id} type="hidden" name={cfg.field} value={id} />)
+      ) : (
+        <input type="hidden" name={cfg.field} value={selected[0] ?? ""} />
+      )}
 
       <div className="mt-2">
         <button
@@ -283,14 +348,14 @@ export function BucketMembersPicker({
           aria-controls={open ? listboxId : undefined}
           className={DISCLOSURE_CLS}
         >
-          {open ? "Done choosing members" : "Choose members"}
+          {open ? cfg.closeLabel : cfg.openLabel}
         </button>
       </div>
 
       {open && (
         <div className={PANEL_CLS}>
           <label className={labelCls} htmlFor={searchId}>
-            Search the roster by name or email
+            {cfg.searchLabel}
           </label>
           <input
             id={searchId}
@@ -311,24 +376,15 @@ export function BucketMembersPicker({
             placeholder="Start typing a name"
             className="mt-1 h-11 w-full rounded-sm border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted"
           />
-          <p className="mt-1 text-xs text-fg-muted">
-            Use the up and down arrows to move through the list and Enter to add or
-            remove someone. Escape closes the picker.
-          </p>
+          <p className="mt-1 text-xs text-fg-muted">{cfg.keyboardHint}</p>
 
           {/* Three different reasons for an empty list, each said separately: a
               roster that could not be read must never borrow the wording for a
               search that found nobody, since this panel writes what it shows. */}
           {roster === null ? (
-            <p className="mt-3 text-sm text-[var(--error)]">
-              The roster could not be read, so there is nobody to choose from.
-              Reload the page.
-            </p>
+            <p className="mt-3 text-sm text-[var(--error)]">{cfg.noRoster}</p>
           ) : entries.length === 0 ? (
-            <p className="mt-3 text-sm text-fg-muted">
-              Nobody is on the org roster yet, so this pool can only be filled by
-              attribute criteria.
-            </p>
+            <p className="mt-3 text-sm text-fg-muted">{cfg.emptyRoster}</p>
           ) : options.length === 0 ? (
             <p className="mt-3 text-sm text-fg-muted">
               No one on the roster matches &ldquo;{query.trim()}&rdquo;.
@@ -337,7 +393,7 @@ export function BucketMembersPicker({
             <ul
               id={listboxId}
               role="listbox"
-              aria-multiselectable="true"
+              aria-multiselectable={cfg.multi ? "true" : undefined}
               aria-labelledby={`${domId}-label`}
               className="mt-3 max-h-72 overflow-y-auto"
             >
