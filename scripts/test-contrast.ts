@@ -478,4 +478,63 @@ below(graphite, navy, 4.5, "graphite-on-navy is NOT a legible pill label (1.28 f
 atLeast(graphite, white, 4.5, "page header title, graphite on the card surface");
 atLeast(muted, white, 4.5, "page header description, muted on the card surface");
 
+// ============================================================================
+// A SURFACE MEASURED AGAINST THE SURFACE IT SITS ON (#1851)
+// ============================================================================
+//
+// Everything above asks whether TEXT is legible on a surface. Nothing asked
+// whether the surface is distinguishable from the one behind it, and that gap is
+// how `--bg-alt` shipped at 1.009:1 against the page under a fully green suite.
+//
+// One point of difference per channel is not low contrast, it is no colour
+// change: the hover tint tinted nothing, the zebra rows did not stripe, and the
+// table header on /admin/tiers was not a header row. The suite covered the token
+// at ten sites and passed every one, because all ten treated it as a BACKGROUND
+// and asked about the text on it, which was true and was never the question
+// (L63: assert the quantity you exist to protect, not a proxy for it).
+//
+// THE FLOOR IS NOT `PERCEPTIBLE` (1.4), AND THAT IS MEASURED RATHER THAN
+// PREFERRED. On a near-white page a tint cannot reach 1.4 and still carry body
+// copy: the value that hits it is around rgb(210, 206, 198), on which
+// `--fg-muted` falls to about 3.5:1 and breaks AA for the text these surfaces
+// exist to hold. The usable band in light mode runs from 1.00 to about 1.09,
+// where rgb(238, 234, 226) already puts muted text at 4.48 and under the line.
+// So the floor sits inside the achievable band, and the ceiling is recorded here
+// so the next person does not spend the same hour rediscovering it.
+//
+// The value was chosen by RENDERING the candidates as zebra rows and a header
+// row rather than by picking a number: at today's value the stripes are not
+// there at all, and at `--pennie-cream-3` they read immediately. Dark mode was
+// already given a real value and clears this comfortably at 1.88.
+const SURFACE_SEPARATION = 1.05;
+
+for (const [label, over, under] of [
+  ["light hover and zebra tint against the page", r("--bg-alt"), r("--bg")],
+  ["dark hover and zebra tint against the page", rDark("--bg-alt"), rDark("--bg")],
+  ["dark card against the page", rDark("--surface"), rDark("--bg")],
+] as [string, RGB, RGB][]) {
+  atLeast(over, under, SURFACE_SEPARATION, label);
+}
+
+// THE TWO EXEMPTIONS, each with the reason it is exempt rather than simply
+// missing from the list above (L233).
+//
+// A light card is white on beige at 1.08, which clears this, but it would not
+// need to: `cardCls` gives it `shadow-xs` in light and a border in dark, so its
+// edge is drawn rather than implied. It is left out because a shadow is what
+// separates it, and a rule demanding a fill difference would be asserting
+// something the design does not rely on.
+//
+// `--surface-elevated` is the same colour as `--surface` in light on purpose,
+// so any separation rule would fail it by construction. In dark the two really
+// do differ, and that IS asserted, because there the token means something.
+atLeast(rDark("--surface-elevated"), rDark("--surface"), 1.2, "dark elevated surface against a card");
+
+// The text that has to survive the tint being darker. Making a background darker
+// is the failure this change can cause, so these are the assertions that catch
+// it: they are stated here as well as above, because these are the ones that
+// bound how far the tint may go.
+atLeast(r("--fg"), r("--bg-alt"), 4.5, "body text on the light hover and zebra tint");
+atLeast(r("--fg-muted"), r("--bg-alt"), 4.5, "muted text on the light hover and zebra tint");
+
 finish();
