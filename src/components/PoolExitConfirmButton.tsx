@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { btnSecondaryCls } from "@/components/ui/styles";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 /**
  * The two controls that take an agent out of the booking pool, each with a
@@ -35,16 +36,23 @@ import { btnSecondaryCls } from "@/components/ui/styles";
  */
 export type PoolExitAction = "deactivate" | "not_bookable";
 
-const COPY: Record<PoolExitAction, { label: string; confirm: string; effect: string }> = {
+const COPY: Record<
+  PoolExitAction,
+  { label: string; confirm: string; effect: string; pending: string }
+> = {
   deactivate: {
     label: "Deactivate account",
     confirm: "Deactivate anyway",
+    // Names the action rather than saying "Saving", so a press never reads as
+    // nothing having happened while the work runs (#1769).
+    pending: "Deactivating account",
     effect:
       "Deactivating removes them from the booking pool, but it does not move those appointments",
   },
   not_bookable: {
     label: "Make not bookable",
     confirm: "Make not bookable anyway",
+    pending: "Taking out of the pool",
     effect:
       "Making them not bookable takes them out of the booking pool, but it does not move those appointments",
   },
@@ -81,7 +89,11 @@ export default function PoolExitConfirmButton({
   // Nothing at stake: one click, as before. A confirm here would be a speed bump
   // in front of nothing, which is how confirms get clicked through by reflex.
   if (upcomingBookings === 0) {
-    return <button className={btnSecondaryCls}>{copy.label}</button>;
+    return (
+      <SubmitButton className={btnSecondaryCls} pendingLabel={copy.pending}>
+        {copy.label}
+      </SubmitButton>
+    );
   }
 
   if (!confirming) {
@@ -110,9 +122,13 @@ export default function PoolExitConfirmButton({
         Reassign them in Coverage below, either before or after this.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <button ref={confirmRef} className={btnSecondaryCls}>
+        <SubmitButton
+          buttonRef={confirmRef}
+          className={btnSecondaryCls}
+          pendingLabel={copy.pending}
+        >
           {copy.confirm}
-        </button>
+        </SubmitButton>
         <button
           type="button"
           className={btnSecondaryCls}

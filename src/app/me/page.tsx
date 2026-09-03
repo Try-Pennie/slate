@@ -20,6 +20,7 @@ import { btnCls, cardCls, proseCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
@@ -368,7 +369,9 @@ export default async function MePage({
                   You have no working hours set, so you won&apos;t get bookings.
                 </span>
                 <form action={useMyDefaultHours}>
-                  <button className={btnCls}>Use default hours</button>
+                  <SubmitButton className={btnCls} pendingLabel="Applying company hours">
+                    Use default hours
+                  </SubmitButton>
                 </form>
               </div>
             )}
@@ -400,9 +403,12 @@ export default async function MePage({
                     timezoneLabel="Your timezone"
                   />
                   <form action={useMyDefaultHours} className="mt-3">
-                    <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
+                    <SubmitButton
+                      className="text-xs text-pennie-blue underline dark:text-pennie-sky"
+                      pendingLabel="Applying company hours"
+                    >
                       Reset to company default hours
-                    </button>
+                    </SubmitButton>
                   </form>
                 </>
               )}

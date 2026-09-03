@@ -1,4 +1,5 @@
 import { AccountMenu } from "@/components/AccountMenu";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { HeaderNav, type HeaderTab } from "@/components/HeaderNav";
 import { PAGE_WIDTHS } from "@/components/ui/PageShell";
 import { oooOnlyFor } from "@/lib/env";
@@ -164,9 +165,12 @@ export async function AppHeader({
           ({impersonation.target.role}). Actions you take happen as them.
         </span>
         <form action={stopImpersonation}>
-          <button className="pn-btn pn-btn--small pn-btn--primary">
+          <SubmitButton
+            className="pn-btn pn-btn--small pn-btn--primary"
+            pendingLabel="Returning to your own view"
+          >
             Stop viewing as them
-          </button>
+          </SubmitButton>
         </form>
       </div>
     )}

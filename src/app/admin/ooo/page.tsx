@@ -766,9 +766,9 @@ export default async function OooQueuePage({
                       {canRetry && r.status === "approved" && failures.length > 0 && (
                         <form action={retryOooAction}>
                           <input type="hidden" name="request_id" value={r.id} />
-                          <button className={btnSecondaryCls}>
+                          <SubmitButton className={btnSecondaryCls} pendingLabel="Retrying calendar updates">
                             Retry calendar updates
-                          </button>
+                          </SubmitButton>
                         </form>
                       )}
                     </div>

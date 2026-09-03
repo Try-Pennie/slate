@@ -443,3 +443,24 @@ describe("setWorkingHours, several windows a day (#1764)", () => {
     expect(args.p_rules.map((r) => r.weekday)).toEqual([1]);
   });
 });
+
+// #1769: both of these are submitted from a form on /admin/agents/[id] (and the
+// agent's own /me), and both revalidated only /admin. The saved week therefore did
+// not appear on the page that had just been used to change it.
+describe("the hours actions refresh the page their form is on (#1769)", () => {
+  it("setWorkingHours refreshes the agent page", async () => {
+    rpc.mockResolvedValue({ data: 5, error: null });
+    await setWorkingHours(hoursForm());
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u1");
+    // The Overview still refreshes too: this adds a route rather than moving one.
+    expect(revalidatePath).toHaveBeenCalledWith("/admin");
+  });
+
+  it("useDefaultHours refreshes the agent page", async () => {
+    rpc.mockResolvedValue({ data: 5, error: null });
+    const fd = new FormData();
+    fd.set("user_id", "u1");
+    await useDefaultHours(fd).catch(() => {});
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u1");
+  });
+});

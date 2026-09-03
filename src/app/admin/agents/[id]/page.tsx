@@ -27,6 +27,7 @@ import { log } from "@/lib/log";
 import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
@@ -66,12 +67,20 @@ export default async function AgentProfilePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  /** `job` opens the coverage panel on an existing sweep (#1239), which is how the
-   *  time off queue links to the sweep an approval enqueued. */
-  searchParams?: Promise<{ job?: string }>;
+  /**
+   * `job` opens the coverage panel on an existing sweep (#1239), which is how the
+   * time off queue links to the sweep an approval enqueued.
+   *
+   * `bookable` is what the pool toggle came back saying (#1769). A CODE rather
+   * than a sentence, so the wording lives here where the copy rules and the
+   * preview can see it, and nothing an admin types can reach the banner.
+   */
+  searchParams?: Promise<{ job?: string; bookable?: string }>;
 }) {
   const { id } = await params;
-  const openJobId = (await searchParams)?.job;
+  const query = await searchParams;
+  const openJobId = query?.job;
+  const bookableOutcome = query?.bookable;
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) {
@@ -179,6 +188,8 @@ export default async function AgentProfilePage({
           &larr; All agents
         </a>
 
+        <BookableOutcome code={bookableOutcome} />
+
         {/* Identity band */}
         <section className="flex flex-wrap items-center gap-4 rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
           {agent.avatar_url ? (
@@ -254,7 +265,7 @@ export default async function AgentProfilePage({
                     ))}
                   </select>
                 </div>
-                <button className={btnSecondaryCls}>Set role</button>
+                <SubmitButton className={btnSecondaryCls} pendingLabel="Setting role">Set role</SubmitButton>
               </form>
             )}
             {canManageThisAgent && (
@@ -277,7 +288,9 @@ export default async function AgentProfilePage({
                     upcomingBookings={heldUpcoming}
                   />
                 ) : (
-                  <button className={btnSecondaryCls}>Make bookable</button>
+                  <SubmitButton className={btnSecondaryCls} pendingLabel="Making bookable">
+                    Make bookable
+                  </SubmitButton>
                 )}
               </form>
             )}
@@ -318,7 +331,7 @@ export default async function AgentProfilePage({
                   className={`${inputCls} w-80`}
                 />
               </div>
-              <button className={btnSecondaryCls}>Save calendar</button>
+              <SubmitButton className={btnSecondaryCls} pendingLabel="Saving calendar">Save calendar</SubmitButton>
             </form>
           )}
         </section>
@@ -347,9 +360,12 @@ export default async function AgentProfilePage({
               </div>
               <form action={useDefaultHours} className="mt-3">
                 <input type="hidden" name="user_id" value={agent.id} />
-                <button className="text-xs text-pennie-blue underline dark:text-pennie-sky">
+                <SubmitButton
+                  className="text-xs text-pennie-blue underline dark:text-pennie-sky"
+                  pendingLabel="Applying company hours"
+                >
                   Apply company default hours
-                </button>
+                </SubmitButton>
               </form>
             </>
           ) : (
@@ -422,7 +438,7 @@ export default async function AgentProfilePage({
                 <option value="false">No</option>
               </select>
             </div>
-            <button className={btnCls}>Save attributes</button>
+            <SubmitButton className={btnCls} pendingLabel="Saving attributes">Save attributes</SubmitButton>
           </form>
           )}
         </section>
@@ -464,7 +480,9 @@ export default async function AgentProfilePage({
               <form action={setUserLifecycle} className="flex items-end">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <input type="hidden" name="action" value="reactivate" />
-                <button className={btnSecondaryCls}>Reactivate account</button>
+                <SubmitButton className={btnSecondaryCls} pendingLabel="Reactivating account">
+                  Reactivate account
+                </SubmitButton>
               </form>
             )}
           </div>
@@ -489,5 +507,49 @@ export default async function AgentProfilePage({
         )}
       </>
     </>
+  );
+}
+
+/**
+ * What the pool toggle came back saying (#1769).
+ *
+ * The toggle used to return void: on success the only thing that changed was one
+ * button being replaced by another in the corner of a dense row, and on a refusal
+ * it threw, which on a route with no error boundary means Next's generic error
+ * page with the message scrubbed. So the action that makes a LIVE Google call
+ * before it writes anything was also the one that said the least.
+ *
+ * The refusals keep the wording that tells somebody what to DO, because the two
+ * causes need different actions: an account gone from the Workspace is a
+ * credential repair, and a temporary Google failure is worth retrying (see "Three
+ * ways a Google calendar can fail, not two" in AGENTS.md).
+ */
+function BookableOutcome({ code }: { code?: string }) {
+  if (!code) return null;
+
+  const ok = code === "on" || code === "off";
+  const said =
+    code === "on"
+      ? "This agent is now bookable. New bookings can be routed to them."
+      : code === "off"
+        ? "This agent is no longer bookable. New bookings will not be routed to them."
+        : code === "blocked-gone"
+          ? "Not made bookable: their Google calendar is unreachable, so the account may be gone from the Workspace or the delegation may be broken. Fix the calendar, then try again."
+          : code === "blocked-transient"
+            ? "Not made bookable: their Google calendar could not be checked just now, which is usually a temporary Google issue. Try again shortly."
+            : code === "missing"
+              ? "That agent could not be found, so nothing was changed."
+              : null;
+  if (!said) return null;
+
+  return (
+    <p
+      role="status"
+      className={`rounded-[var(--radius-md)] border px-4 py-3 text-sm ${
+        ok ? "border-border bg-[var(--bg-alt)] text-fg" : "border-error text-error"
+      }`}
+    >
+      {said}
+    </p>
   );
 }

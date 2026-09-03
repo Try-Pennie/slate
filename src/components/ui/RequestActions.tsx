@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useFormStatus } from "react-dom";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { EditRequestButton } from "@/components/ui/EditRequestButton";
 
 /**
@@ -15,27 +15,22 @@ import { EditRequestButton } from "@/components/ui/EditRequestButton";
 const ghost =
   "rounded-md px-3 py-1.5 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pennie-sky";
 
+/**
+ * The destructive confirm, through the ONE submit control (#1769).
+ *
+ * It used to carry its own `useFormStatus`, its own disabled and `aria-busy`, and
+ * its own spinner: a second, weaker copy of `SubmitButton`, weaker because it
+ * stopped at "it started" and never showed that a wait was still alive or had
+ * stalled. Its rose treatment is a className, so nothing about the look is lost.
+ */
 function ConfirmButton() {
-  const { pending } = useFormStatus();
   return (
-    <button
-      type="submit"
-      disabled={pending}
-      aria-busy={pending}
+    <SubmitButton
       className={`${ghost} bg-error/10 text-error hover:bg-error/20`}
+      pendingLabel="Cancelling"
     >
-      {pending ? (
-        <span className="inline-flex items-center gap-1.5">
-          <span
-            aria-hidden="true"
-            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
-          />
-          Cancelling…
-        </span>
-      ) : (
-        "Yes, cancel"
-      )}
-    </button>
+      Yes, cancel
+    </SubmitButton>
   );
 }
 

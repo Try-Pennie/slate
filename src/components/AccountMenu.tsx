@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { signOut } from "@/app/auth-actions";
 import type { ThemePreference } from "@/lib/db/types";
 import type { CalendarMenuStatus } from "@/lib/calendar/header-status";
@@ -161,10 +162,10 @@ export function AccountMenu({
           </div>
 
           <form action={signOut} className="mt-3 border-t border-border pt-3">
-            <button
-              type="submit"
+            <SubmitButton
               role="menuitem"
               className="flex min-h-11 w-full items-center gap-2 rounded-md px-1.5 text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg"
+              pendingLabel="Signing out"
             >
               <svg
                 aria-hidden
@@ -182,7 +183,7 @@ export function AccountMenu({
                 <path d="M13.5 8H6" />
               </svg>
               Sign out
-            </button>
+            </SubmitButton>
           </form>
         </div>
       )}

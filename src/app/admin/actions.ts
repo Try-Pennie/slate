@@ -453,7 +453,11 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   // One schedule per user (enforced by the availability_schedules(user_id)
   // unique index, #532): replaceUserSchedule upserts it, then replaces its rules.
   await replaceUserSchedule(userId, planScheduleReplacement(perDayFrom(form), timezone));
+  // #1769: the form that calls this lives on the agent's own page, so that is the
+  // route that has to be refreshed. Revalidating only /admin left the page the
+  // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
+  revalidatePath(`/admin/agents/${userId}`);
 }
 
 /**
@@ -812,26 +816,55 @@ export async function useDefaultHours(form: FormData): Promise<void> {
       tz,
     ),
   );
+  // #1769: the form that calls this lives on the agent's own page, so that is the
+  // route that has to be refreshed. Revalidating only /admin left the page the
+  // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
+  revalidatePath(`/admin/agents/${userId}`);
 }
 
 export async function setBookable(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
   await requireManageAgent(userId, "agent.bookable");
+  const wantBookable = form.get("bookable") === "true";
   // Same guarded path as the bookable-toggle API (#281/#912): making an agent
   // bookable when Slate can't reach their Google calendar is refused here too,
   // so the UI can't put a calendar-less agent into the pool. Deactivation
   // (bookable=false) is never gated.
-  const result = await applyBookableByUserId(userId, form.get("bookable") === "true");
+  const result = await applyBookableByUserId(userId, wantBookable);
+
+  /**
+   * The page this form is on, and it comes back saying what happened (#1769).
+   *
+   * It used to `revalidatePath("/admin")`, which names the Overview page rather
+   * than the agent page the form is on, and return void. So the only thing that
+   * changed on screen was one button being replaced by another in the corner of a
+   * dense row, which is not a confirmation, it is a difference you would have to
+   * already be looking for. The refusal was worse: it threw, there is no error
+   * boundary on this route, and Next scrubs a server error's message in
+   * production, so the most useful sentence in this action reached nobody.
+   *
+   * A fixed CODE rather than the sentence, for two reasons: the copy stays in the
+   * page where the preview and the copy lint can see it, and nothing an admin can
+   * type reaches the banner. The agent is not named because they are the subject of
+   * the page this lands on, and a name or an email in a query string is a person's
+   * identity in browser history for no gain.
+   */
+  const back = `/admin/agents/${userId}`;
+  revalidatePath(back);
   if (result.status === "blocked") {
-    throw new Error(
-      result.reason === "google_unreachable"
-        ? "Can't make this agent bookable: their Google calendar is unreachable (account gone from the Workspace, or delegation broken). Fix the calendar and try again."
-        : "Couldn't verify this agent's Google calendar (a temporary Google issue). Please try again shortly.",
+    // Nothing was written: the gate refused before the update.
+    redirect(
+      `${back}?bookable=${result.reason === "google_unreachable" ? "blocked-gone" : "blocked-transient"}`,
     );
+    return;
   }
-  revalidatePath("/admin");
+  if (result.status === "not_found") {
+    redirect(`${back}?bookable=missing`);
+    return;
+  }
+  redirect(`${back}?bookable=${wantBookable ? "on" : "off"}`);
 }
 
 /**
@@ -979,7 +1012,11 @@ export async function setOooCalendarId(form: FormData): Promise<void> {
     targetUserId: userId,
     details: { ooo_calendar_id: calendarId || null },
   });
+  // #1769: the form that calls this lives on the agent's own page, so that is the
+  // route that has to be refreshed. Revalidating only /admin left the page the
+  // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
+  revalidatePath(`/admin/agents/${userId}`);
 }
 
 /** Admin-only: change a user's tier (agent/manager/admin). Guards last-admin. */
@@ -1041,7 +1078,11 @@ export async function setUserRole(form: FormData): Promise<void> {
     targetUserId: userId,
     details: { from: current, to: next },
   });
+  // #1769: the form that calls this lives on the agent's own page, so that is the
+  // route that has to be refreshed. Revalidating only /admin left the page the
+  // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
+  revalidatePath(`/admin/agents/${userId}`);
 }
 
 /**
@@ -1271,7 +1312,11 @@ export async function setAgentAttributes(form: FormData): Promise<void> {
     .from("users")
     .update({ attributes })
     .eq("id", userId);
+  // #1769: the form that calls this lives on the agent's own page, so that is the
+  // route that has to be refreshed. Revalidating only /admin left the page the
+  // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
+  revalidatePath(`/admin/agents/${userId}`);
 }
 
 export async function setWebhookEndpoint(form: FormData): Promise<void> {

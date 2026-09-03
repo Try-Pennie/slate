@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Access guard for the agent-profile page (#676): unauthenticated to /login, a
@@ -369,5 +369,78 @@ describe("AgentProfilePage control visibility (#550)", () => {
     render(await AgentProfilePage(props));
     expect(screen.queryByRole("button", { name: /save hours/i })).toBeNull();
     expect(screen.queryByText(/cannot change their settings/i)).toBeTruthy();
+  });
+});
+
+// #1769. "I clicked make bookable and it worked but it didn't immediately look
+// like it did anything." The action returned void and revalidated /admin, which is
+// not this page, so the only thing that changed on screen was one button being
+// replaced by another in the corner of a dense row. And the refusal THREW, on a
+// route with no error boundary, so Next scrubbed the one sentence that said what
+// to do.
+describe("AgentProfilePage says what the pool toggle did (#1769)", () => {
+  const renderWith = async (bookable?: string) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    render(
+      await AgentProfilePage({
+        params: Promise.resolve({ id: "x1" }),
+        searchParams: Promise.resolve(bookable ? { bookable } : {}),
+      }),
+    );
+  };
+
+  it("confirms what changed, rather than leaving a swapped button to be spotted", async () => {
+    await renderWith("on");
+    const said = screen.getByRole("status").textContent ?? "";
+    expect(said).toMatch(/now bookable/i);
+    expect(said).toMatch(/routed/i);
+  });
+
+  it("says which way it went", async () => {
+    await renderWith("off");
+    expect(screen.getByRole("status").textContent).toMatch(/no longer bookable/i);
+  });
+
+  // The two refusals need DIFFERENT actions from the reader, so they must not
+  // arrive as one message (L11): an account gone from the Workspace is a
+  // credential repair, and a Google wobble is worth retrying.
+  it("tells an unreachable calendar apart from a check that could not be made", async () => {
+    await renderWith("blocked-gone");
+    const gone = screen.getByRole("status").textContent ?? "";
+    expect(gone).toMatch(/unreachable/i);
+    expect(gone).toMatch(/fix the calendar/i);
+    expect(gone).not.toMatch(/try again shortly/i);
+    cleanup();
+
+    await renderWith("blocked-transient");
+    const transient = screen.getByRole("status").textContent ?? "";
+    expect(transient).toMatch(/temporary/i);
+    expect(transient).toMatch(/try again shortly/i);
+    expect(transient).not.toMatch(/fix the calendar/i);
+  });
+
+  it("stays silent on an ordinary visit, so the banner always means something", async () => {
+    await renderWith();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("stays silent on a code it does not recognise, rather than rendering a blank banner", async () => {
+    // The code arrives in the URL, so anybody can type one.
+    await renderWith("../../etc/passwd");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("puts a pending state on every submit, including the slowest one", async () => {
+    await renderWith();
+    // Make bookable makes a LIVE Google call before it writes anything, so it is
+    // the one press that must never read as nothing having happened.
+    for (const name of [/set role/i, /save attributes/i]) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    }
+    // A raw <button> has no aria-busy attribute at all; SubmitButton always
+    // renders one, which is what says a press was registered.
+    const busy = document.querySelectorAll("button[aria-busy]");
+    expect(busy.length).toBeGreaterThanOrEqual(3);
   });
 });
