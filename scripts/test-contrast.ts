@@ -364,6 +364,31 @@ for (const [name, surface] of [
 below(r("--pennie-yellow"), r("--surface"), 3, "yellow as a bare mark on a white card");
 below(r("--pennie-yellow"), r("--bg"), 3, "yellow as a bare mark on the beige page");
 
+// --- #1823: the two marks inside the Bookable pill -------------------------
+//
+// Named for THIS use rather than left to the bare-mark block above, because
+// those assertions pass whatever the pill does (L63). The two marks also differ
+// in SHAPE, a filled disc against a ring, so neither of these is carrying the
+// distinction alone.
+atLeast(
+  r("--pennie-green-mark"),
+  r("--pennie-green-wash"),
+  3,
+  "bookable Yes: the filled dot on the pill's own green wash",
+);
+for (const [name, surface] of [
+  ["a white card", r("--surface")],
+  ["a hovered row", r("--bg-alt")],
+] as [string, RGB][]) {
+  atLeast(r("--fg-muted"), surface, 3, `bookable No: the hollow ring on ${name} (light)`);
+}
+for (const [name, surface] of [
+  ["a dark card", rDark("--surface")],
+  ["a hovered dark row", rDark("--bg-alt")],
+] as [string, RGB][]) {
+  atLeast(rDark("--fg-muted"), surface, 3, `bookable No: the hollow ring on ${name} (dark)`);
+}
+
 // --- D17: forbidden-as-text tripwires — must STAY failing -------------------
 // (an accidental palette shift that "fixes" one of these is a regression signal)
 below(graphite, skyDeep, 4.5, "graphite-on-sky-deep - must NOT be a CTA text bg (4.32 fail)");

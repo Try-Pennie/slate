@@ -33,6 +33,7 @@ import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
+import { BookablePill } from "@/components/ui/BookablePill";
 
 export const dynamic = "force-dynamic";
 
@@ -221,9 +222,11 @@ export default async function AgentProfilePage({
                 Deactivated
               </Pill>
             )}
-            <Pill variant={agent.bookable ? "status-ok" : "outline"} onDark>
-              {agent.bookable ? "Bookable" : "Not bookable"}
-            </Pill>
+            {/* #1823: the same component the roster uses, so the variant and
+                the mark are one decision and the two screens cannot drift.
+                Nothing else on this page names the fact, so it carries the
+                noun rather than Yes or No. */}
+            <BookablePill bookable={agent.bookable} wording="full" onDark />
           </div>
         </section>
         {/* #1749: this page had no view-as action at all, so an admin looking at a

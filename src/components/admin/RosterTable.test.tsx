@@ -213,6 +213,31 @@ describe("RosterTable", () => {
     });
   });
 
+  // #1823: the column was headed "Bookable" and every bookable row said
+  // "Bookable", and the negative state got a hyphen rather than a mark.
+  describe("the Bookable column", () => {
+    it("says Yes and No, and says Bookable only in the header", () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const table = screen.getByRole("table");
+      expect((table.textContent!.match(/Bookable/g) ?? []).length).toBe(1);
+      expect(screen.getByRole("columnheader", { name: "Bookable" })).toBeTruthy();
+      // ROWS has two bookable and one not.
+      expect(screen.getAllByText("Yes")).toHaveLength(2);
+      expect(screen.getAllByText("No")).toHaveLength(1);
+    });
+
+    it("draws a pill for the negative state too, never a hyphen", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const marks = screen.getByRole("table").querySelectorAll("[data-bookable-mark]");
+      expect(marks).toHaveLength(3);
+      expect(Array.from(marks).map((m) => m.getAttribute("data-bookable-mark")).sort()).toEqual([
+        "filled",
+        "filled",
+        "hollow",
+      ]);
+    });
+  });
+
   // #1812: the drawn glyph is replaced by ledger letters, and the sentence that
   // sat beside it is gone from the column.
   describe("the Team column", () => {
