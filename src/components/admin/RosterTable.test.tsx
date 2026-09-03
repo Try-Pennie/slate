@@ -213,6 +213,93 @@ describe("RosterTable", () => {
     });
   });
 
+  // #1794, Dan: "let's collapse this two into a menu in each line... like a 3
+  // dot menu is fine". The controls spelled the agent's whole name into a narrow
+  // column, so "View as Kenneth Johnson" wrapped to three lines and every row was
+  // a different height.
+  describe("the per row actions menu", () => {
+    it("gives each row exactly one trigger, named for that agent", () => {
+      // A table of identical "More" buttons is a control addressed by position
+      // rather than by identity (L237), so the trigger names the row even though
+      // the glyph does not.
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const triggers = screen.getAllByRole("button", { name: /^Actions for / });
+      expect(triggers).toHaveLength(3);
+      expect(screen.getByRole("button", { name: "Actions for Ada Lovelace" })).toBeTruthy();
+    });
+
+    it("keeps the agent's name out of the visible label", () => {
+      // The row height symptom, pinned by the cause rather than by pixels: no
+      // name in the label means nothing to wrap.
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const trigger = screen.getByRole("button", { name: "Actions for Ada Lovelace" });
+      expect(trigger.textContent).not.toMatch(/Ada|Lovelace/);
+    });
+
+    it("hides both actions until the menu is opened", () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
+    });
+
+    it("offers View as and Manage inside the open menu", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      await userEvent.click(screen.getByRole("button", { name: "Actions for Ada Lovelace" }));
+      const items = screen.getAllByRole("menuitem");
+      expect(items.map((i) => i.textContent)).toEqual(["View as Ada Lovelace", "Manage"]);
+    });
+
+    it("submits View as through a form rather than navigating", async () => {
+      // It posts an action, which is what gives it the in flight feedback from
+      // #1786. An anchor would break impersonation or silently lose that.
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      await userEvent.click(screen.getByRole("button", { name: "Actions for Ada Lovelace" }));
+      const viewAs = screen.getByRole("menuitem", { name: "View as Ada Lovelace" });
+      expect(viewAs.tagName).toBe("BUTTON");
+      expect(viewAs.getAttribute("type")).toBe("submit");
+      const form = viewAs.closest("form");
+      expect(form).toBeTruthy();
+      // The form is between role=menu and its menuitem, which that role does not
+      // allow, so it is removed from the accessibility tree rather than left as a
+      // stray non-item child.
+      expect(form!.getAttribute("role")).toBe("none");
+    });
+
+    it("puts nothing but menu items in the menu, to assistive tech", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      await userEvent.click(screen.getByRole("button", { name: "Actions for Ada Lovelace" }));
+      const menu = screen.getByRole("menu");
+      for (const child of Array.from(menu.children)) {
+        const role = child.getAttribute("role");
+        expect(["menuitem", "none"], `<${child.tagName.toLowerCase()}>`).toContain(role);
+      }
+    });
+
+    it("still shows a menu on a row nobody may view as, with Manage alone in it", async () => {
+      // Impersonation carries a role ceiling and never applies to your own row,
+      // so one of the two items is often absent. The menu is rendered anyway:
+      // a control that moves depending on who you are is harder to scan than one
+      // extra click, so every row has the same shape.
+      render(
+        <RosterTable {...base} roleOptions={[...base.roleOptions]} actorId="a" />,
+      );
+      const trigger = screen.getByRole("button", { name: "Actions for Ada Lovelace" });
+      await userEvent.click(trigger);
+      const items = screen.getAllByRole("menuitem");
+      expect(items.map((i) => i.textContent)).toEqual(["Manage"]);
+      expect(screen.queryByRole("menuitem", { name: /View as/ })).toBeNull();
+    });
+
+    it("closes on Escape and hands focus back to that row's trigger", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const trigger = screen.getByRole("button", { name: "Actions for Grace Hopper" });
+      await userEvent.click(trigger);
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
+  });
+
   it("clears every filter at once", async () => {
     render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
     await userEvent.type(screen.getByLabelText(/Search by name or email/i), "ada");

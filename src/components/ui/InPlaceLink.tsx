@@ -18,11 +18,14 @@ export function InPlaceLink({
   href,
   replace = false,
   className,
+  role,
   children,
 }: {
   href: string;
   replace?: boolean;
   className?: string;
+  /** An ARIA role, for a link that is an item in something (a menu, #1794). */
+  role?: string;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -43,7 +46,7 @@ export function InPlaceLink({
   }
 
   return (
-    <a href={href} className={className} onClick={onClick}>
+    <a href={href} role={role} className={className} onClick={onClick}>
       {children}
     </a>
   );

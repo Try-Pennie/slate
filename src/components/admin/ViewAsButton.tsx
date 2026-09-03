@@ -24,25 +24,54 @@ import type { Role } from "@/lib/db/types";
  * button is for: a table of identical "View as" buttons is a control addressed by
  * position rather than by identity (L237).
  */
+/**
+ * Whether `actorRole` may view as `target` (#1794).
+ *
+ * Exported because a caller that has to decide whether the CONTROL belongs in a
+ * menu needs the same answer the control gives itself, and two copies of a
+ * permission rule is how the two quietly stop agreeing. `startImpersonation`
+ * re-checks it server side regardless; this decides only what is drawn.
+ */
+export function canViewAs(
+  actorRole: Role,
+  actorId: string,
+  target: { id: string; role: Role },
+): boolean {
+  if (target.id === actorId) return false;
+  return canImpersonate(actorRole, target.role);
+}
+
 export function ViewAsButton({
   actorRole,
   actorId,
   target,
   className,
+  role,
 }: {
   actorRole: Role;
   actorId: string;
   target: { id: string; email: string; name: string | null; role: Role };
   className?: string;
+  /** Set to "menuitem" when this is an item in a row's actions menu (#1794). */
+  role?: string;
 }) {
-  if (target.id === actorId) return null;
-  if (!canImpersonate(actorRole, target.role)) return null;
+  if (!canViewAs(actorRole, actorId, target)) return null;
 
   const who = target.name ?? target.email;
   return (
-    <form action={startImpersonation} className="inline">
+    <form
+      action={startImpersonation}
+      // Inside a menu the form sits between `role="menu"` and its `menuitem`,
+      // which is a structure the role does not allow, so it is taken out of the
+      // accessibility tree and out of the layout: `display: contents` promotes
+      // the button to the menu's own child so it fills the width, and `role`
+      // none does the same for assistive tech. Neither affects submission.
+      role={role === "menuitem" ? "none" : undefined}
+      className={role === "menuitem" ? "contents" : "inline"}
+    >
       <input type="hidden" name="email" value={target.email} />
       <SubmitButton
+        role={role}
         className={className ?? "text-sm text-pennie-blue underline dark:text-pennie-sky"}
         pendingLabel="Switching…"
       >
