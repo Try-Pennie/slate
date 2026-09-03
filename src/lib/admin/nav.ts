@@ -63,7 +63,12 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     // No heading: it is one link, and the landing page belongs at the top rather
     // than folded into a section it does not describe (#1790).
     title: null,
-    items: [{ href: "/admin", label: "Health", gate: "manager" }],
+    // #1841: "Overview", not "Health". A one word topic at the top of a list of
+    // topics reads as one that ought to have siblings; naming it for what it IS,
+    // the page you land on, stops it asking to be grouped. The PAGE keeps its own
+    // title, since it really is the health dashboard, and a terse nav label over
+    // a fuller page title is already the pattern on six other entries here.
+    items: [{ href: "/admin", label: "Overview", gate: "manager" }],
   },
   {
     title: "Agents",
