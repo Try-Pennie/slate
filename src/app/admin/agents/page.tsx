@@ -5,15 +5,15 @@ import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
 import { rosterFiltersFromParams } from "@/lib/admin/roster-filter";
-import { startImpersonation, syncSalesforceNow } from "@/app/admin/actions";
-import { SubmitButton } from "@/components/ui/SubmitButton";
+import { syncSalesforceNow } from "@/app/admin/actions";
 import { SyncButton } from "@/components/SyncButton";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { RosterTable } from "@/components/admin/RosterTable";
 import { teamsOf } from "@/lib/admin/agent-display";
-import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import type { User } from "@/lib/db/types";
+import { IMPERSONATION_WARNING } from "@/lib/admin/impersonation-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,6 @@ export default async function AgentRosterPage({
     bookable?: string;
     page?: string;
     imp_error?: string;
-    imp_email?: string;
     synced?: string;
     sync_error?: string;
   }>;
@@ -125,6 +124,21 @@ export default async function AgentRosterPage({
             </form>
           )}
         </div>
+        {/* #1795: a failed "view as" redirects here, so the message is rendered
+            here. It used to be rendered inside a panel that the redirect never
+            reached, which made every failure silent. */}
+        {sp.imp_error && (
+          <p role="alert" className="mb-3 text-sm text-error">
+            {sp.imp_error}
+          </p>
+        )}
+        {/* The only explanation of what "view as" does. It lived inside the free
+            text panel that is now gone, and each row's own control had no warning
+            of its own, so it sits above the table where it covers whichever
+            control the row ends up carrying (#1794 is moving that). */}
+        {isAdmin && (
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>{IMPERSONATION_WARNING}</p>
+        )}
         <RosterTable
           rows={users}
           initialFilters={filters}
@@ -136,41 +150,6 @@ export default async function AgentRosterPage({
           totalRoster={users.length}
         />
       </section>
-      {isAdmin && (
-      <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">View as somebody not in this list</h2>
-        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
-          Each row above carries its own <strong>View as</strong> action, so this
-          is only for somebody the roster does not hold. While viewing as them,
-          what you do happens as them, so be careful. A banner stays up the whole
-          time with a way back to yourself.
-        </p>
-        {sp.imp_error && (
-          <p role="alert" className="mb-3 text-sm text-error">
-            {sp.imp_error}
-          </p>
-        )}
-        <form action={startImpersonation} className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className={labelCls}>Their email</label>
-            <input
-              name="email"
-              type="email"
-              required
-              // #141: repopulate the typed email when a "view as" attempt failed,
-              // so the admin doesn't have to retype it.
-              defaultValue={sp.imp_email ?? ""}
-              aria-label="Email of the user to view as"
-              placeholder="agent@trypennie.com"
-              className={`${inputCls} w-72`}
-            />
-          </div>
-          <SubmitButton className={btnCls} pendingLabel="Switching…">
-            View as them
-          </SubmitButton>
-        </form>
-      </section>
-      )}
     </>
   );
 }

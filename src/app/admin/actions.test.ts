@@ -287,6 +287,40 @@ describe("startImpersonation denial branches", () => {
     expect(cookieStore.set).not.toHaveBeenCalled();
   });
 
+  // #1795: the enforcement point already refuses a departed target (auth.ts
+  // filters the impersonation lookup on deactivated_at, "never act as a departed
+  // user"), so this was never an escalation. What it WAS: a cookie got set, an
+  // `impersonate.start` audit row got written, and the next request silently
+  // reverted the admin to themselves. So the audit log recorded a session that
+  // never existed and the admin got a round trip with nothing said. Refusing here
+  // gives the cause its own message (L11) and stops the false audit row.
+  it("refuses an offboarded target by name, setting no cookie", async () => {
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    dbState.single = {
+      id: "gone1",
+      role: "agent",
+      deactivated_at: "2026-01-01T00:00:00Z",
+    };
+    await expect(
+      startImpersonation(form({ email: "gone@x.com" })),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
+    const target = redirect.mock.calls.find(([u]) => String(u).includes("imp_error"));
+    expect(target).toBeTruthy();
+    expect(decodeURIComponent(String(target![0]))).toMatch(/offboarded/i);
+    expect(cookieStore.set).not.toHaveBeenCalled();
+  });
+
+  it("still lets an active target through, so the check is not refusing everyone", async () => {
+    // The control for the case above (L1): a refusal that fires on every target
+    // would satisfy the assertion there and break the feature.
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    dbState.single = { id: "agent1", role: "agent", deactivated_at: null };
+    await expect(startImpersonation(form({ email: "agent@x.com" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/me/,
+    );
+    expect(cookieStore.set).toHaveBeenCalledTimes(1);
+  });
+
   // #653: a "view as" session must be bounded so a forgotten one auto-ends.
   it("sets a bounded, timestamped cookie on the success path", async () => {
     auth.realCurrentUser.mockResolvedValueOnce(admin);
