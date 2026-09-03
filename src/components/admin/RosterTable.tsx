@@ -6,7 +6,9 @@ import type { Role } from "@/lib/db/types";
 import { Pill } from "@/components/ui/Pill";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
-import { attrToText } from "@/lib/admin/agent-display";
+import { isActive } from "@/lib/active-user";
+import { teamsOf } from "@/lib/admin/agent-display";
+import { DebtTeamLadder } from "@/components/admin/DebtTeamLadder";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
   ROSTER_PAGE_SIZE,
@@ -52,7 +54,6 @@ export function RosterTable({
   roleOptions,
   teamOptions,
   managerOptions,
-  totalRoster,
 }: {
   /** The whole active roster. Filtering never goes back to the server. */
   rows: RosterRow[];
@@ -63,7 +64,6 @@ export function RosterTable({
   teamOptions: string[];
   managerOptions: [string, string][];
   /** How many people are on the roster in total, for the "of N" readout. */
-  totalRoster: number;
 }) {
   const [filters, setFilters] = useState<RosterFilters>(initialFilters);
   const [page, setPage] = useState(1);
@@ -78,6 +78,13 @@ export function RosterTable({
     [rows, filters],
   );
 
+  // The roster's own size, DERIVED rather than handed in (#1799 follow up). It
+  // used to be a prop, and the page passed every non test user including
+  // offboarded ones, so an UNFILTERED roster read "117 of 136 agents" and looked
+  // filtered. `filterRoster` treats an offboarded person as not on the roster at
+  // all, so this has to count the same population that predicate does, and the
+  // only way to guarantee that is to compute it from the same rows (L63).
+  const rosterSize = useMemo(() => rows.filter(isActive).length, [rows]);
   const pageCount = Math.max(1, Math.ceil(matched.length / ROSTER_PAGE_SIZE));
   const current = Math.min(page, pageCount);
   const start = (current - 1) * ROSTER_PAGE_SIZE;
@@ -217,7 +224,7 @@ export function RosterTable({
               the pager below already says "Page 1 of 3" (#1799). */}
           {rosterCountText({
             matched: matched.length,
-            total: totalRoster,
+            total: rosterSize,
             filtered: hasAnyRosterFilter(filters),
           })}
         </span>
@@ -268,7 +275,9 @@ export function RosterTable({
                   <Pill variant={`role-${u.role}`}>{roleLabel(u.role)}</Pill>
                 </td>
                 <td className="px-3 py-3 text-fg-muted">
-                  {attrToText(u.attributes?.debt_team) || "-"}
+                  {/* #1796: a five rung ladder, fixed width, so the cell is the
+                      same size whether an agent covers one tier or five. */}
+                  <DebtTeamLadder teams={teamsOf(u)} />
                 </td>
                 <td className="px-3 py-3 text-fg-muted">
                   {u.manager_id ? (nameById.get(u.manager_id) ?? "-") : "-"}

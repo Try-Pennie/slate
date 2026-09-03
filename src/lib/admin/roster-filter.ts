@@ -84,7 +84,7 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
     if (f.role && u.role !== f.role) return false;
     if (f.bookable === "yes" && !u.bookable) return false;
     if (f.bookable === "no" && u.bookable) return false;
-    if (f.team && !teamsOf(u as unknown as User).includes(f.team)) return false;
+    if (f.team && !teamsOf(u).includes(f.team)) return false;
     if (f.manager && u.manager_id !== f.manager) return false;
     // Name and email as SEPARATE fields, never joined (#1791). The old join
     // inserted a space no record holds, which a query with a space could match
