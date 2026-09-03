@@ -68,6 +68,44 @@ describe("SyncHealthPanel", () => {
     expect(item.textContent).not.toMatch(/renew/i);
   });
 
+  // #1789: the stored value is whatever the calendar read threw, and for an
+  // OAuth refusal that is a whole pretty-printed JSON body. Interpolated raw it
+  // pushes the health summary off the line, so the panel must route it through
+  // the one formatter that already exists for this (shortFailureReason). The
+  // 401 body is the headline case: an `error` / `error_description` pair.
+  const googleUnauthorizedBody = [
+    "watch failed: 401 {",
+    '  "error": "unauthorized_client",',
+    '  "error_description": "Client is unauthorized to retrieve access tokens using this method, or client not authorized for any of the scopes requested."',
+    "}",
+  ].join("\n");
+
+  it("shortens a raw Google 401 body to one readable clause", () => {
+    render(<SyncHealthPanel agents={[{ ...alice, lane: "watch", error: googleUnauthorizedBody }]} />);
+    const text = screen.getByRole("listitem").textContent ?? "";
+    // The useful half survives.
+    expect(text).toMatch(/401 unauthorized_client/);
+    // The body does not. These are the parts that flooded the line.
+    expect(text).not.toMatch(/error_description/);
+    expect(text).not.toMatch(/[{}]/);
+    expect(text).not.toMatch(/\n/);
+  });
+
+  it("keeps the row a single line for any stored error", () => {
+    render(<SyncHealthPanel agents={[{ ...alice, error: googleUnauthorizedBody }]} />);
+    const text = screen.getByRole("listitem").textContent ?? "";
+    expect(text.split("\n").length).toBe(1);
+    // A row is a sentence, not a payload. Well clear of the ~200 char body.
+    expect(text.length).toBeLessThan(200);
+  });
+
+  // L104: a filter is only trustworthy once it has been tested against the
+  // content it must PRESERVE, not only the content it must catch.
+  it("passes a short human error through untouched", () => {
+    render(<SyncHealthPanel agents={[{ ...alice, error: "404 account-gone" }]} />);
+    expect(screen.getByRole("listitem").textContent).toMatch(/404 account-gone/);
+  });
+
   it("renders one list item per failing agent", () => {
     render(
       <SyncHealthPanel
