@@ -171,6 +171,70 @@ describe("the health page's derived headline (#1767)", () => {
 });
 
 describe("the health page's status rows (#1767)", () => {
+  // #1810: the fleet line read "102 bookable of 136 agents", and the two numbers
+  // counted different populations. The numerator was filtered by isActive; the
+  // denominator was every non test row, offboarded people included. So the line
+  // mixed people who work here with people who used to, and advertised a total
+  // the roster below can never reach (L16: a count and the rows it promises come
+  // from one shared predicate).
+  describe("the fleet count", () => {
+    const fleetLine = () => screen.getByText(/bookable of \d+ agents/).textContent;
+
+    it("counts only people still on the roster, in both halves", async () => {
+      render(await AdminPage());
+      expect(fleetLine()).toBe("2 bookable of 7 agents");
+    });
+
+    it("does not move when an offboarded person is added", async () => {
+      // The assertion that would have caught this: the ONLY difference between
+      // the two rosters is one departed employee, and a departed employee is not
+      // a staffing gap, so neither number may notice them.
+      const base = healthyTables();
+      const users = [
+        ...(base.users.data as Record<string, unknown>[]),
+        {
+          id: "gone",
+          org_id: "o1",
+          name: "Departed Person",
+          email: "gone@x.com",
+          role: "agent",
+          bookable: false,
+          attributes: {},
+          deactivated_at: "2026-08-24T00:00:00Z",
+          manager_id: null,
+          is_test: false,
+        },
+      ];
+      mockDb({ users: { data: users, error: null } });
+      render(await AdminPage());
+      expect(fleetLine()).toBe("2 bookable of 7 agents");
+    });
+
+    it("does move when a real agent is added, so it is not simply frozen", async () => {
+      // The positive control for the case above (L1): a denominator hard wired to
+      // 7, or one that ignored the roster entirely, would satisfy it.
+      const base = healthyTables();
+      const users = [
+        ...(base.users.data as Record<string, unknown>[]),
+        {
+          id: "new",
+          org_id: "o1",
+          name: "New Hire",
+          email: "new@x.com",
+          role: "agent",
+          bookable: false,
+          attributes: {},
+          deactivated_at: null,
+          manager_id: null,
+          is_test: false,
+        },
+      ];
+      mockDb({ users: { data: users, error: null } });
+      render(await AdminPage());
+      expect(fleetLine()).toBe("2 bookable of 8 agents");
+    });
+  });
+
   it("states each thing it checked on a healthy fleet", async () => {
     render(await AdminPage());
     for (const label of ["Fleet", "Calendar push", "Calendar sync", "Cron lanes"]) {

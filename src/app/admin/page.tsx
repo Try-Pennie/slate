@@ -202,6 +202,13 @@ export default async function AdminHealthPage() {
     (calsRes.data ?? []) as { user_id: string; watch_expiration: string | null }[],
   );
   const bookableAgents = users.filter((u) => u.bookable && isActive(u));
+  // #1810: the fleet line's two halves have to count ONE population. The
+  // numerator was already filtered by isActive and the denominator was every non
+  // test row, so it mixed people who work here with people who used to and
+  // advertised a total the roster page can never reach (L16). Measured on live
+  // data 2026-09-03: 136 rows, 117 still on the roster, so 19 departed employees
+  // were being counted as fleet. A departed employee is not a staffing gap.
+  const rosterAgents = users.filter(isActive);
   const watchedCount =
     calendarsUnreadable || rosterUnreadable
       ? null
@@ -275,7 +282,7 @@ export default async function AdminHealthPage() {
         "The roster could not be read, so there is no count to show here yet."
       ) : (
         <span className="tabular-nums">
-          {`${bookableAgents.length} bookable of ${users.length} agents`}
+          {`${bookableAgents.length} bookable of ${rosterAgents.length} agents`}
         </span>
       ),
       inputAgeMs: rosterUnreadable ? null : 0,

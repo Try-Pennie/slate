@@ -3,7 +3,6 @@ import { currentUser } from "@/lib/auth";
 import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { isActive } from "@/lib/active-user";
 import { rosterFiltersFromParams } from "@/lib/admin/roster-filter";
 import { syncSalesforceNow } from "@/app/admin/actions";
 import { SyncButton } from "@/components/SyncButton";
@@ -52,7 +51,6 @@ export default async function AgentRosterPage({
   // so, do.
   const users = (usersRes.data ?? []) as User[];
   const rosterUnreadable = usersRes.error != null;
-  const bookableAgents = users.filter((u) => u.bookable && isActive(u));
   // The push-health pill and the sync-health panel moved to the Health page
   // (#1748), which is where anything time sensitive lives; this page is the
   // roster itself.
@@ -107,16 +105,15 @@ export default async function AgentRosterPage({
         )}
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-semibold">
-              Agents{" "}
-              {rosterUnreadable ? (
-                <span className="font-normal text-fg-muted">(count unavailable)</span>
-              ) : (
-                <span className="font-normal text-fg-muted tabular-nums">
-                  ({bookableAgents.length} bookable / {users.length})
-                </span>
-              )}
-            </h2>
+            {/* Just "Agents" (#1810). The parenthetical read as a ratio with a
+                word on only one of its numbers, and its two halves counted
+                different populations. Both questions are already answered
+                better elsewhere: the table has a Bookable column and a status
+                filter, which gives the actual rows, and the fleet figure lives
+                on the Health page where fleet health belongs. The unreadable
+                case keeps its own notice above, so removing this does not make
+                a failed read look like a healthy one. */}
+            <h2 className="text-sm font-semibold">Agents</h2>
           </div>
           {isAdmin && (
             <form action={syncSalesforceNow}>
