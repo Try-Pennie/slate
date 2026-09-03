@@ -187,6 +187,48 @@ below(blueRing, sky, 3, "brand blue on a SKY fill - why an accent fill flips the
 below(blueRing, rDark("--surface-elevated"), 3, "brand blue on a dark elevated surface - why dark keeps sky");
 below(graphite, rDark("--surface"), 3, "graphite on a dark card - why graphite is light only");
 
+// --- #1792: the internal working cue's arc, on every surface it can land on --
+//
+// A thin line drawn on a surface, so the same problem as the focus ring above and
+// the same answer. Asserted BY ITS OWN NAME rather than left to the ring's
+// assertions, because those pass whatever the spinner does: a spinner switched to
+// the sky accent would not move one of them (L63).
+const cueLine = r("--cue-line");
+const cueLineOnAccent = r("--focus-ring-line-on-accent");
+const cueLineDark = rDark("--cue-line");
+
+for (const [name, surface] of [
+  ["page beige", r("--bg")],
+  ["hover and zebra tint", r("--bg-alt")],
+  ["card surface", r("--surface")],
+  ["elevated surface", r("--surface-elevated")],
+  ["the sidebar current item's sky wash", r("--pennie-sky-soft")],
+] as [string, RGB][]) {
+  atLeast(cueLine, surface, 3, `spinner arc on ${name} (light)`);
+}
+for (const [name, surface] of [
+  ["a sky fill", sky],
+  ["a sky fill on hover", skyHover],
+  ["a pressed sky fill", skyDeep],
+] as [string, RGB][]) {
+  atLeast(cueLineOnAccent, surface, 3, `spinner arc on ${name} (either theme)`);
+}
+for (const [name, surface] of [
+  ["the navy page", rDark("--bg")],
+  ["a dark hover tint", rDark("--bg-alt")],
+  ["a dark card", rDark("--surface")],
+  ["a dark elevated surface", rDark("--surface-elevated")],
+] as [string, RGB][]) {
+  atLeast(cueLineDark, surface, 3, `spinner arc on ${name} (dark)`);
+}
+
+// The positive controls for that block. Sky is the colour anybody would reach for
+// (it is THE action colour), and it is the one that cannot be used, so each way it
+// fails is held as a tripwire or the assertions above are passing unexamined.
+below(sky, r("--pennie-sky-soft"), 3, "sky arc on the sidebar's current-item wash - why the cue is not the accent");
+below(sky, beige, 3, "sky arc on the beige page - the same failure on an ordinary surface");
+below(sky, sky, 3, "sky arc on a sky button - the cue would be completely invisible");
+
 // --- D17: forbidden-as-text tripwires — must STAY failing -------------------
 // (an accidental palette shift that "fixes" one of these is a regression signal)
 below(graphite, skyDeep, 4.5, "graphite-on-sky-deep - must NOT be a CTA text bg (4.32 fail)");

@@ -15,6 +15,23 @@
  * exact problem), and they carry the accent explicitly rather than inheriting
  * the muted colour of the line below. `pn-bob` in globals.css owns the motion
  * and the reduced-motion stop, where the line of text carries the message alone.
+ *
+ * THIS IS NOT THE SAME CUE AS `Spinner`, AND THAT IS DELIBERATE (Dan's call,
+ * 2026-09-03, while consolidating the two internal spinners in #1792). Written
+ * down because the argument in the paragraph above reads, correctly, as an
+ * argument for having exactly one working signal, and the next reader will
+ * otherwise fold these together and be right to try.
+ *
+ * The audiences are different, and so is what each cue has to survive. These dots
+ * are for a LEAD: somebody who may be half paying attention to a booking form,
+ * which is why they bob rather than pulse and why a glance landing on the dim half
+ * of a fade was a real failure. `Spinner` is for an operator inside the admin
+ * area, deliberately attached to the one control they just used, and it appears
+ * beside a top progress bar that cannot say WHICH control that was. Forcing one
+ * shape onto both would either put a 14px arc on the booker, where it is too quiet
+ * for a distracted reader, or three bobbing dots inside a nav link, where they
+ * cannot sit next to a label at that size. Two cues, one per audience, and no more
+ * than that: a third one is the thing both docstrings exist to prevent.
  */
 export function BobbingDots() {
   return (
