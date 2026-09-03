@@ -177,6 +177,7 @@ import {
   syncSalesforceNow,
   setWorkingHours,
   setAgentAttributes,
+  setOooCalendarId,
   useDefaultHours,
   useMyDefaultHours,
   setDefaultBucket,
@@ -705,35 +706,70 @@ describe("setBookable Google guard (#912)", () => {
     dbState.single = { role: "agent" };
   });
 
-  it("routes the flip through the guarded service and revalidates on success", async () => {
+  it("routes the flip through the guarded service and comes back SAYING it worked", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: true });
-    await setBookable(form({ user_id: "u2", bookable: "true" }));
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=on/,
+    );
     expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", true);
-    expect(revalidatePath).toHaveBeenCalled();
+    // #1769: it used to return void and revalidate /admin, which is not the page
+    // this form is on. So the only thing that changed on screen was one button
+    // being replaced by another in a dense row: a difference you would have to
+    // already be looking for, not a confirmation.
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u2");
   });
 
-  it("throws a clear error and does not revalidate when the calendar is unreachable", async () => {
+  it("says which way it went, so the page does not have to be read for a swapped button", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
+    await expect(setBookable(form({ user_id: "u2", bookable: "false" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=off/,
+    );
+  });
+
+  // The two refusals keep their own outcomes, because they need DIFFERENT actions
+  // from the reader: an account gone from the Workspace is a credential repair, a
+  // transient Google failure is worth retrying. They used to THROW, and there is
+  // no error boundary on this route, so Next scrubbed the message in production
+  // and the most useful sentence in this action reached nobody.
+  it("refuses an unreachable calendar with its own outcome, and writes nothing", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({
       status: "blocked",
       userId: "u2",
       reason: "google_unreachable",
     });
-    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/calendar/i);
-    expect(revalidatePath).not.toHaveBeenCalled();
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-gone/,
+    );
+    // Nothing was written: the gate refused before the update ran.
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", true);
   });
 
-  it("throws a distinct 'could not verify' error on a transient block", async () => {
+  it("tells a transient block APART from a gone one", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({
       status: "blocked",
       userId: "u2",
       reason: "google_unverified",
     });
-    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/verify/i);
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-transient/,
+    );
+    // One code answering for both would send somebody to re-authenticate an
+    // account that is fine, or to retry a repair that can never work (L11).
+    expect(redirect).not.toHaveBeenCalledWith("/admin/agents/u2?bookable=blocked-gone");
+  });
+
+  it("says so rather than silently doing nothing when the agent is not found", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "not_found" });
+    await expect(setBookable(form({ user_id: "ghost", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/ghost\?bookable=missing/,
+    );
   });
 
   it("passes bookable=false straight through (deactivation is never gated)", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
-    await setBookable(form({ user_id: "u2", bookable: "false" }));
+    await expect(setBookable(form({ user_id: "u2", bookable: "false" }))).rejects.toThrow(
+      /NEXT_REDIRECT/,
+    );
     expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", false);
   });
 });
@@ -1073,7 +1109,12 @@ describe("the reads that decide authorization or a write must refuse, not guess 
 
     it("still lets a manager edit an agent when the read works", async () => {
       dbState.rowsByTable.users = { role: "agent" };
-      await setBookable(form({ user_id: "u2", bookable: "true" }));
+      // The action reports its outcome by redirecting now (#1769), and this file's
+      // redirect mock throws the way the real one does. Reaching the redirect IS
+      // reaching the end of the action.
+      await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+        /NEXT_REDIRECT/,
+      );
       expect(bookable.applyBookableByUserId).toHaveBeenCalled();
     });
 
@@ -1290,5 +1331,44 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       expect(insert).toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
     });
+  });
+});
+
+// #1769: every one of these is submitted from a form on /admin/agents/[id], and
+// every one of them revalidated only /admin, which is the Overview page. So the
+// page the person was looking at kept showing what it showed before they pressed
+// the button, which is most of why a successful action read as nothing having
+// happened. Asserted per action rather than once, because this is a per call site
+// mistake and one of them being right says nothing about the others.
+describe("an action refreshes the page its form is on (#1769)", () => {
+  beforeEach(() => {
+    auth.requireManager.mockResolvedValue(admin);
+    auth.requireAdmin.mockResolvedValue(admin);
+    dbState.single = { role: "agent" };
+    dbState.rowsByTable.users = { role: "agent" };
+  });
+
+  it("setUserRole refreshes the agent page", async () => {
+    await setUserRole(form({ user_id: "u2", role: "manager" })).catch(() => {});
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u2");
+  });
+
+  it("setAgentAttributes refreshes the agent page", async () => {
+    await setAgentAttributes(form({ user_id: "u2" })).catch(() => {});
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u2");
+  });
+
+  it("setOooCalendarId refreshes the agent page", async () => {
+    await setOooCalendarId(form({ user_id: "u2", ooo_calendar_id: "cal@example.com" })).catch(
+      () => {},
+    );
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u2");
+  });
+
+  // And the Overview is still refreshed, because the roster there shows the same
+  // fields: this adds a route rather than moving one.
+  it("keeps refreshing the Overview as well", async () => {
+    await setUserRole(form({ user_id: "u2", role: "manager" })).catch(() => {});
+    expect(revalidatePath).toHaveBeenCalledWith("/admin");
   });
 });

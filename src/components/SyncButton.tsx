@@ -1,34 +1,28 @@
 "use client";
 
-import { useFormStatus } from "react-dom";
 import { btnSecondaryCls } from "@/components/ui/styles";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 /**
- * Submit button for the Salesforce sync form. The sync takes a few seconds, so
- * the button shows a live "Syncing…" pending state with a spinner (instead of
- * looking frozen) and disables to prevent double-submits. Pairs with the result
- * banner the action redirects back with.
+ * Submit button for the Salesforce sync form, through the ONE submit control
+ * (#1769).
+ *
+ * It used to carry its own `useFormStatus`, its own disabled and `aria-busy`, and
+ * its own spinner: a third copy of `SubmitButton`, and a weaker one, because it
+ * stopped at "it started". This sync takes several seconds and talks to
+ * Salesforce, so it is exactly where the difference between still working and
+ * stalled is worth having, and the elapsed count and the twenty second wording
+ * come for free now.
+ *
+ * Pairs with the result banner the action redirects back with.
  */
 export function SyncButton() {
-  const { pending } = useFormStatus();
   return (
-    <button
-      type="submit"
-      disabled={pending}
-      aria-busy={pending}
+    <SubmitButton
       className={`${btnSecondaryCls} min-h-11 disabled:opacity-80`}
+      pendingLabel="Syncing from Salesforce"
     >
-      {pending ? (
-        <>
-          <span
-            aria-hidden
-            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-          />
-          Syncing…
-        </>
-      ) : (
-        "Sync from Salesforce"
-      )}
-    </button>
+      Sync from Salesforce
+    </SubmitButton>
   );
 }
