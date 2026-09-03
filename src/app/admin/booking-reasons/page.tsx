@@ -12,6 +12,7 @@ import {
 } from "@/lib/booking/reason-usage";
 import { log } from "@/lib/log";
 import type { ReasonOptionRow, User } from "@/lib/db/types";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -101,17 +102,13 @@ export default async function ReasonOptionsPage({
   return (
     <>
       <>
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Admin</p>
-          <h1 className="text-2xl font-semibold text-white dark:text-fg">Reason options</h1>
-          <p className="mt-2 max-w-prose text-sm text-white/80 dark:text-fg-muted">
-            The reasons staff and customers pick when rescheduling, cancelling, or
-            reassigning a booking. Add, rename, reorder, or retire them without a
-            deploy. Retiring a reason hides it from new bookings but keeps it readable
-            in history. &ldquo;Other&rdquo; is always available.
-          </p>
-          <p className="mt-3 text-xs text-white/70 dark:text-fg-muted">{lastChanged}</p>
-        </section>
+        <AdminPageHeader title="Reason options">
+          The reasons staff and customers pick when rescheduling, cancelling, or
+          reassigning a booking. Add, rename, reorder, or retire them without a
+          deploy. Retiring a reason hides it from new bookings but keeps it readable
+          in history. &ldquo;Other&rdquo; is always available.
+          <p className="mt-3 text-xs">{lastChanged}</p>
+        </AdminPageHeader>
 
         <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
 

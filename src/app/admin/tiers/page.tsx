@@ -3,12 +3,13 @@ import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { canManageAgents } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
-import { cardCls, proseCls } from "@/components/ui/styles";
+import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -103,17 +104,13 @@ export default async function TiersPage() {
   return (
     <>
       <>
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Admin</p>
-          <h1 className="pn-h3 mt-2 text-pennie-beige">Staffing depth</h1>
-          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
+        <AdminPageHeader title="Staffing depth">
             How many currently-bookable agents can take each tier&rsquo;s bookings, and how
             many are actually available today once you set aside anyone who is out, so a
             tier resting on one person (now or this week) is visible before it runs out of
             times. An agent counts as out whether they filed time off or blocked the whole
             day on their calendar. Most at risk today first.
-          </p>
-        </section>
+        </AdminPageHeader>
 
         <section className={cardCls}>
           {rows === null ? (

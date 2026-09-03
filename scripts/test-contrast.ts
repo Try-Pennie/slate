@@ -458,12 +458,24 @@ atLeast(graphite, skySoft, 4.5, "erasure purge result graphite-on-sky-soft");
 // not a low-contrast one. This guard could not have caught it, because it checks token
 // PAIRINGS and that was a call site composing two individually correct tokens (L213).
 //
-// What it CAN do is hold the pairing the fix introduced, so `Pill`'s `onDark` treatment
-// cannot drift below the line. Both halves are raw tokens, so it does not move between
-// themes.
-atLeast(beige, navy, 4.5, "Pill onDark beige-on-navy (the #1054 fix)");
-// And the pairing that was broken must STAY broken, so nobody reintroduces it believing
-// it passes. A guard that only asserts the good pair says nothing about the bad one.
+// The `onDark` prop that fixed it is GONE (#1838): every page header is an ordinary
+// card now, so it had no call sites left, and the navy surfaces that remain (the login
+// brand panel, the impersonation banner and its dropped session notice, the time off
+// stat grid) render no Pill at all.
+//
+// These two assertions stay, and the second is the one that matters. The forbidden
+// pairing is the RECORD of the defect, and it outlives the remedy: it is what tells
+// somebody putting a pill on one of those navy surfaces that the label they are about
+// to inherit is invisible there. A guard that only asserted the good pair would have
+// been deleted with the prop and taken the knowledge with it.
+atLeast(beige, navy, 4.5, "cream on navy is the pairing a label on a navy surface needs");
 below(graphite, navy, 4.5, "graphite-on-navy is NOT a legible pill label (1.28 fail)");
+
+// #1838: the page header is a card, so its title and description are ordinary
+// foreground tokens on an ordinary surface. Held here because the whole risk in that
+// change was leaving a foreground chosen for a dark ground on a light card, which is
+// invisible rather than merely low contrast.
+atLeast(graphite, white, 4.5, "page header title, graphite on the card surface");
+atLeast(muted, white, 4.5, "page header description, muted on the card surface");
 
 finish();

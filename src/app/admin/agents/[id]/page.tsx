@@ -29,11 +29,12 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -192,43 +193,40 @@ export default async function AgentProfilePage({
         <BookableOutcome code={bookableOutcome} />
 
         {/* Identity band */}
-        <section className="flex flex-wrap items-center gap-4 rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          {agent.avatar_url ? (
-            // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
-            <img
-              src={agent.avatar_url}
-              alt=""
-              referrerPolicy="no-referrer"
-              className="h-12 w-12 rounded-full object-cover"
-            />
-          ) : (
-            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-pennie-sky text-sm font-semibold text-pennie-graphite">
-              {initials}
-            </span>
-          )}
-          <div className="min-w-0">
-            <h1 className="pn-h4 truncate text-pennie-beige">
-              {agent.name ?? agent.email}
-            </h1>
-            <p className={`truncate text-sm text-pennie-beige/75 ${proseCls}`}>{agent.email}</p>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            {/* #1054: this band paints its own navy fill, so a transparent pill needs
-                the band's foreground rather than the page theme's. Without onDark the
-                label is graphite on navy at 1.28:1, which axe found here. */}
-            <Pill variant={`role-${agent.role}`} onDark>{roleLabel(agent.role)}</Pill>
-            {!active && (
-              <Pill variant="outline" onDark>
-                Deactivated
-              </Pill>
-            )}
-            {/* #1823: the same component the roster uses, so the variant and
-                the mark are one decision and the two screens cannot drift.
-                Nothing else on this page names the fact, so it carries the
-                noun rather than Yes or No. */}
-            <BookablePill bookable={agent.bookable} wording="full" onDark />
-          </div>
-        </section>
+        <AdminPageHeader
+          title={agent.name ?? agent.email}
+          leading={
+            agent.avatar_url ? (
+              // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
+              <img
+                src={agent.avatar_url}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="h-12 w-12 rounded-full object-cover"
+              />
+            ) : (
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-pennie-sky text-sm font-semibold text-pennie-graphite">
+                {initials}
+              </span>
+            )
+          }
+          aside={
+            <>
+              {/* #1838: the band this sat in is an ordinary card now, so these
+                  pills take the page theme like every other pill. The `onDark`
+                  they used to pass would INVERT them here. */}
+              <Pill variant={`role-${agent.role}`}>{roleLabel(agent.role)}</Pill>
+              {!active && <Pill variant="outline">Deactivated</Pill>}
+              {/* #1823: the same component the roster uses, so the variant and
+                  the mark are one decision and the two screens cannot drift.
+                  Nothing else on this page names the fact, so it carries the
+                  noun rather than Yes or No. */}
+              <BookablePill bookable={agent.bookable} wording="full" />
+            </>
+          }
+        >
+          <p className="truncate text-sm">{agent.email}</p>
+        </AdminPageHeader>
         {/* #1749: this page had no view-as action at all, so an admin looking at a
             specific person still had to copy their address to a field elsewhere.
             It renders only where it could actually work, and the whole banner and

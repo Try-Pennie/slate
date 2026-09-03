@@ -11,8 +11,9 @@ import {
   type StuckRow,
 } from "@/lib/booking/stuck-drain";
 import { Pill } from "@/components/ui/Pill";
-import { cardCls, proseCls } from "@/components/ui/styles";
+import { cardCls } from "@/components/ui/styles";
 import type { BookingOutbox, BookingReservation } from "@/lib/db/types";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
@@ -69,14 +70,13 @@ export default async function StuckDrainPage() {
   return (
     <>
       <>
-        <section className="rounded-xl bg-pennie-navy px-7 py-6 dark:bg-surface">
-          <p className="pn-eyebrow text-pennie-sky">Diagnostics</p>
-          <h1 className="pn-h2 mt-2 text-pennie-beige">
-            {summary.total === 0
+        <AdminPageHeader
+          title={
+            summary.total === 0
               ? "Nothing wedged."
-              : `${summary.total} stuck ${summary.total === 1 ? "delivery" : "deliveries"}`}
-          </h1>
-          <p className={`mt-2 text-pennie-beige/75 ${proseCls}`}>
+              : `${summary.total} stuck ${summary.total === 1 ? "delivery" : "deliveries"}`
+          }
+        >
             Rows whose drain has failed at least {DRAIN_ALERT_AFTER} times and is
             backing off.
             {summary.gaveUp > 0 && (
@@ -88,8 +88,7 @@ export default async function StuckDrainPage() {
                 have hit the give-up cap and need a human.
               </>
             )}
-          </p>
-        </section>
+        </AdminPageHeader>
 
         {readError && (
           <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">

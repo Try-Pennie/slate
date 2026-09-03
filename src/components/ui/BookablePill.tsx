@@ -54,7 +54,6 @@ export function BookablePill({
   bookable,
   wording,
   alignToColumn,
-  onDark,
 }: {
   bookable: boolean;
   /**
@@ -64,8 +63,6 @@ export function BookablePill({
   wording: "short" | "full" | "self";
   /** Set when this starts a table cell, so the word lines up with the header. */
   alignToColumn?: boolean;
-  /** Set on a band that paints its own dark fill (#1054). */
-  onDark?: boolean;
 }) {
   const label = LABELS[wording][bookable ? "yes" : "no"];
 
@@ -73,7 +70,6 @@ export function BookablePill({
     <Pill
       variant={bookable ? "status-ok" : "outline"}
       alignToColumn={alignToColumn}
-      onDark={onDark}
     >
       <span
         aria-hidden="true"
