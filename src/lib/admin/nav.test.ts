@@ -18,7 +18,9 @@ import type { Role } from "@/lib/db/types";
 describe("the admin nav map", () => {
   it("gives every entry a group, a label, a route and a gate", () => {
     for (const group of ADMIN_NAV) {
-      expect(group.title).toBeTruthy();
+      // #1790: a group may deliberately carry NO title (the overview), but a
+      // title that exists has to say something.
+      if (group.title !== null) expect(group.title).toBeTruthy();
       expect(group.items.length).toBeGreaterThan(0);
       for (const item of group.items) {
         expect(item.label).toBeTruthy();
@@ -78,6 +80,53 @@ describe("visibleAdminNav", () => {
         expect(group.items.length).toBeGreaterThan(0);
       }
     }
+  });
+
+  // #1790: a heading over one item reads as a container with more inside it, so
+  // the sidebar promises a section that is not there. Counted AFTER the gate
+  // filter, because a group can hold three entries and still render one for a
+  // given role (L101): a manager saw three such headings, not just the overview,
+  // so this is the class rather than the one instance (L30).
+  it("never puts a heading over a single item, for any role", () => {
+    for (const role of ROLES) {
+      for (const group of visibleAdminNav(role)) {
+        if (group.title !== null) {
+          expect(
+            group.items.length,
+            `${role} sees heading "${group.title}" over ${group.items.length} item(s)`,
+          ).toBeGreaterThanOrEqual(2);
+        }
+      }
+    }
+  });
+
+  it("drops the heading and keeps the item, never the other way round", () => {
+    // A manager may see only Roster out of the three Agents entries. The entry
+    // has to survive; it is the heading that is wrong, not the link.
+    const manager = visibleAdminNav("manager");
+    const hrefs = manager.flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs).toContain("/admin/agents");
+    expect(hrefs).toContain("/admin/bookings");
+    const holding = manager.find((g) => g.items.some((i) => i.href === "/admin/agents"));
+    expect(holding?.title).toBeNull();
+  });
+
+  it("leaves the overview unheaded for everyone who can see it", () => {
+    for (const role of ROLES) {
+      const group = visibleAdminNav(role).find((g) =>
+        g.items.some((i) => i.href === "/admin"),
+      );
+      if (group) expect(group.title).toBeNull();
+    }
+  });
+
+  it("keeps a heading that still covers two or more items", () => {
+    // The demotion must not eat every heading: an admin's Bookings group holds
+    // four and has to keep saying so.
+    const admin = visibleAdminNav("admin");
+    const bookings = admin.find((g) => g.items.some((i) => i.href === "/admin/bookings"));
+    expect(bookings?.title).toBe("Bookings");
+    expect(admin.filter((g) => g.title !== null).length).toBeGreaterThan(3);
   });
 
   it("shows an agent nothing at all", () => {
