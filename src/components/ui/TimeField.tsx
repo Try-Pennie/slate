@@ -54,7 +54,13 @@ export function TimeField({
   enforce = false,
   onValueChange,
 }: {
-  name: string;
+  /**
+   * The field the value is submitted under. OPTIONAL: a caller that owns its own
+   * hidden input (the time off form's combined date and time field) renders this
+   * control for the PICKING and keeps the submitting, since two hidden inputs
+   * under one name would post the time twice.
+   */
+  name?: string;
   defaultValue?: string;
   ariaLabel: string;
   className?: string;
@@ -227,7 +233,9 @@ export function TimeField({
 
   return (
     <div className={`relative ${className}`}>
-      <input type="hidden" name={name} value={resolved.ok ? resolved.value : ""} />
+      {name !== undefined && (
+        <input type="hidden" name={name} value={resolved.ok ? resolved.value : ""} />
+      )}
       <input
         ref={inputRef}
         type="text"

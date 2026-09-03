@@ -67,6 +67,7 @@ import {
   phoneSaved,
 } from "@/lib/booking/manage-copy";
 import { eventDescription, eventSummary } from "@/lib/booking/core";
+import { formatSlotTime } from "@/lib/booking/slot-label";
 import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
 
 /** One line of copy, and the state that puts it on screen. */
@@ -89,7 +90,17 @@ export interface CopyScreen {
 /** Fixtures. Fixed values, never the clock, so the render is stable (see header). */
 const ZONE = "America/New_York";
 const DAY = "Monday, August 17";
-const TIME = "2:30 PM";
+/**
+ * A FIXED instant, spelled by the shared formatter rather than written out here
+ * (#1765).
+ *
+ * These builders take an already formatted time as a parameter, so a literal
+ * slipped past the guard that forbids a literal `text`. It was "2:30 PM" while
+ * every screen shipped "2:30pm", which makes the preview show copy that is not
+ * what a lead reads, and a preview that is believed and wrong is worse than none.
+ * The instant is fixed, so the render stays deterministic.
+ */
+const TIME = formatSlotTime("2026-08-17T18:30:00.000Z", ZONE);
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
 const EMAIL = "dana@example.com";

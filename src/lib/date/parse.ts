@@ -1,6 +1,13 @@
 import { DateTime } from "luxon";
 
-const pad2 = (n: number) => String(n).padStart(2, "0");
+/**
+ * Two digit padding, exported because the segmented date and time field needs the
+ * same one and used to carry its own (#1765). A second `pad` is harmless on its
+ * own; the point is that it sat beside a second `to24` and a second snapping rule,
+ * and only one of those three was wrong.
+ */
+export const padTwo = (n: number) => String(n).padStart(2, "0");
+const pad2 = padTwo;
 
 /** "HH:MM" split into whole hours and minutes, or null if it is not one. */
 function timeParts(hhmm: string): { hour: number; minute: number } | null {
@@ -28,6 +35,20 @@ export function formatTimeOfDay(hhmm: string): string | null {
   if (!parts) return null;
   const hour12 = parts.hour % 12 || 12;
   return `${hour12}:${pad2(parts.minute)}${parts.hour < 12 ? "am" : "pm"}`;
+}
+
+/**
+ * The same spelling, from a Luxon `DateTime`: `5:15pm`. Null for an invalid one,
+ * for the same reason {@link formatTimeOfDay} answers null rather than a plausible
+ * looking time for a value nobody chose.
+ *
+ * It answers THROUGH `formatTimeOfDay` rather than with its own `toFormat` call,
+ * so the two entry points cannot drift into a fourth spelling (#1765: five sites
+ * rendered this three different ways).
+ */
+export function formatClockTime(dt: DateTime): string | null {
+  if (!dt.isValid) return null;
+  return formatTimeOfDay(dt.toFormat("HH:mm"));
 }
 
 /** Every quarter hour of the day as "HH:MM", 00:00 through 23:45. */
@@ -99,6 +120,46 @@ export function filterTimeOptions(query: string): TimeOption[] {
     if (!hourMatches) return false;
     return parts.minuteDigits === "" || pad2(p.minute).startsWith(parts.minuteDigits);
   });
+}
+
+/**
+ * A 12 hour clock reading as the 24 hour "HH:MM" a form submits.
+ *
+ * `hour12` of 0 means "nothing typed yet" and answers the empty string rather
+ * than midnight: a half filled field must not submit a real time (L67).
+ */
+export function timeFrom12Hour(hour12: number, minute: number, ampm: "AM" | "PM"): string {
+  if (!hour12) return "";
+  let hour = hour12 % 12;
+  if (ampm === "PM") hour += 12;
+  return `${padTwo(hour)}:${padTwo(minute)}`;
+}
+
+/** "HH:MM" as the three segments a 12 hour field shows, or null if unreadable. */
+export function twelveHourParts(
+  hhmm: string,
+): { hour12: number; minute: number; ampm: "AM" | "PM" } | null {
+  const parts = timeParts(hhmm);
+  if (!parts) return null;
+  return {
+    hour12: parts.hour % 12 || 12,
+    minute: parts.minute,
+    ampm: parts.hour < 12 ? "AM" : "PM",
+  };
+}
+
+/**
+ * Snap a whole time to the quarter hour grid, in the given direction.
+ *
+ * THE fix for #1765, and the reason it takes a time rather than a minute. The
+ * time off form snapped the MINUTE in isolation: `ceil(50 / 15) * 15` is 60,
+ * which is not a minute, so it answered 45 and left the hour alone. A typed 5:50pm
+ * END became 5:45pm, fourteen minutes SHORTER than asked for, in the one direction
+ * its own comment said rounding must never take. A time is a single quantity and
+ * has to be rounded as one.
+ */
+export function snapTimeOfDay(hhmm: string, direction: "up" | "down"): string {
+  return direction === "up" ? roundUpToQuarterHour(hhmm) : roundDownToQuarterHour(hhmm);
 }
 
 export type TypedTime =

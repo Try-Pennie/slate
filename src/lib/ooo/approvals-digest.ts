@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { formatClockTime } from "@/lib/date/parse";
 
 /**
  * Pure core of the daily OOO-approvals report (port of the Pipedream flow that
@@ -69,7 +70,10 @@ export function formatApprovalTime(iso: string, tzLabel: string): string {
   const zone = TZ_BY_LABEL[tzLabel] ?? "America/New_York";
   const dt = DateTime.fromISO(iso, { zone });
   if (!dt.isValid) return iso;
-  return `${dt.toFormat("LLL d, yyyy, h:mm a")} ${tzLabel}`;
+  // The time is spelled by the shared formatter, so this digest cannot drift into
+  // a fourth spelling of one time (#1765). The DATE stays local to this line: it
+  // is a different fact with its own format.
+  return `${dt.toFormat("LLL d, yyyy")}, ${formatClockTime(dt) ?? ""} ${tzLabel}`;
 }
 
 export interface ApprovalRow {

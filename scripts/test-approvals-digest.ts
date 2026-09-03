@@ -50,12 +50,14 @@ assert(
 
 // formatApprovalTime — render in the request's display timezone
 assert(
-  formatApprovalTime("2026-06-08T19:00:00Z", "ET") === "Jun 8, 2026, 3:00 PM ET",
-  "ET time renders as 3:00 PM ET",
+  // One spelling for a time across the product (#1765): the lowercase form the
+  // booker and the time off form already use. Five places spelled it three ways.
+  formatApprovalTime("2026-06-08T19:00:00Z", "ET") === "Jun 8, 2026, 3:00pm ET",
+  "ET time renders as 3:00pm ET",
 );
 assert(
-  formatApprovalTime("2026-06-08T19:00:00Z", "PT") === "Jun 8, 2026, 12:00 PM PT",
-  "same instant renders as noon PT",
+  formatApprovalTime("2026-06-08T19:00:00Z", "PT") === "Jun 8, 2026, 12:00pm PT",
+  "same instant renders as noon PT, spelled 12:00pm rather than 0:00pm",
 );
 assert(formatApprovalTime("not-a-date", "ET") === "not-a-date", "invalid iso falls back to raw");
 
@@ -79,7 +81,7 @@ assert(formatApprovalTime("not-a-date", "ET") === "not-a-date", "invalid iso fal
     "header row matches the original columns",
   );
   assert(lines[1].startsWith('r1,"Smith, Jane",'), "a name with a comma is quoted");
-  assert(lines[1].includes("3:00 PM ET") && lines[1].includes("6:00 PM ET"), "times render in tz");
+  assert(lines[1].includes("3:00pm ET") && lines[1].includes("6:00pm ET"), "times render in tz");
   assert(buildApprovalsCsv([]).split("\n").length === 1, "empty rows -> header only");
 }
 

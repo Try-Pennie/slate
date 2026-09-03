@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { formatClockTime } from "@/lib/date/parse";
 // Relative value import so this module still runs under `node --experimental-
 // strip-types` in tests (roles.ts only type-imports "@/…", which is erased).
 import { atLeast, canModerateAllOoo, roleLabel } from "../auth/roles.ts";
@@ -201,7 +202,12 @@ function dayPart(dt: DateTime): string {
 }
 
 function timePart(dt: DateTime): string {
-  return `${dt.toFormat("h:mm")}${dt.toFormat("a").toLowerCase()}`;
+  // One spelling, from `@/lib/date/parse` (#1765). This expression existed
+  // character for character in the booker too, and three more places spelled the
+  // same time differently. An unreadable DateTime answers "" rather than a
+  // plausible time: `formatWhenLine` has already replaced an invalid zone above,
+  // and a gap in the sentence is visibly wrong where a real looking time is not.
+  return formatClockTime(dt) ?? "";
 }
 
 /**
