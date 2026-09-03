@@ -33,6 +33,70 @@ export function debtTeamRungLabel(rank: number): string {
   return DEBT_TIER[String(rank)]!.label;
 }
 
+/** What the ledger needs from a tier: a name, and optionally a letter for it. */
+export interface RungLetterSource {
+  label: string;
+  /**
+   * The ledger letter, when the label's own initial will not do (#1817). Absent
+   * for every tier today; it exists so a clash is resolved HERE, where the
+   * vocabulary lives, rather than by renaming a tier the XBC routing contract
+   * depends on.
+   */
+  letter?: string;
+}
+
+/**
+ * The single letter the ledger draws for a tier: an explicit one when the
+ * vocabulary gives it, otherwise the label's initial.
+ */
+export function rungLetter(tier: RungLetterSource): string {
+  return (tier.letter ?? tier.label.charAt(0)).toUpperCase();
+}
+
+/** The letter the ledger draws for `rank`. */
+export function debtTeamRungLetter(rank: number): string {
+  return rungLetter(DEBT_TIER[String(rank)]!);
+}
+
+/**
+ * What to DO when two rungs draw the same letter, carried with the refusal
+ * because a guard that only refuses is a dead end (L109).
+ */
+export const LETTER_COLLISION_REMEDY =
+  "Give one of them an explicit `letter` in DEBT_TIER (src/lib/xbc.ts) rather than renaming a tier: the labels are part of the XBC routing contract that Salesforce and the landing pages share.";
+
+/**
+ * Rungs whose ledger letters collide, grouped by the letter (#1817).
+ *
+ * The letters are DERIVED from the tier names, and `DEBT_TIER` is a routing
+ * vocabulary rather than a display table, so its labels get adjusted for reasons
+ * that have nothing to do with this column. Two sharing an initial draws two
+ * identical letters in fixed positions, which is unreadable as a position marker,
+ * and NOTHING would fail: the page renders, every test passes, and the silent
+ * branch is indistinguishable from the correct one (L113).
+ *
+ * Takes the table as an argument so the guard can drive a colliding fixture and
+ * watch this refuse, rather than only ever seeing the vocabulary that happens to
+ * be fine today.
+ */
+export function collidingRungLetters(
+  tiers: Record<string, RungLetterSource>,
+  ranks: readonly number[] = DEBT_TEAM_RUNGS,
+): { letter: string; rungs: { rank: number; label: string }[] }[] {
+  const byLetter = new Map<string, { rank: number; label: string }[]>();
+  for (const rank of ranks) {
+    const tier = tiers[String(rank)];
+    if (!tier) continue;
+    const letter = rungLetter(tier);
+    const group = byLetter.get(letter) ?? [];
+    group.push({ rank, label: tier.label });
+    byLetter.set(letter, group);
+  }
+  return [...byLetter.entries()]
+    .filter(([, rungs]) => rungs.length > 1)
+    .map(([letter, rungs]) => ({ letter, rungs }));
+}
+
 /** rank by stored key, built from DEBT_TIER rather than restated beside it. */
 const RANK_BY_KEY = new Map<string, number>(
   Object.entries(DEBT_TIER).map(([rank, tier]) => [tier.key, Number(rank)]),
