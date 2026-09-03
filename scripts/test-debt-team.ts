@@ -24,7 +24,6 @@ import {
   debtTeamCoverage,
   debtTeamLabel,
   debtTeamRungLabel,
-  debtTeamBandLabel,
 } from "@/lib/admin/debt-team";
 import { DEBT_TIER } from "@/lib/xbc";
 
@@ -97,29 +96,6 @@ import { DEBT_TIER } from "@/lib/xbc";
   // No underscore anywhere a reader can see it, EXCEPT inside a value that is
   // stored that way, where showing it verbatim is the point.
   assert(!label(["ultra_high", "very_high"]).includes("_"), "ladder labels carry no key spelling");
-}
-
-// --- the band alone, for the cell that shows the off ladder values as chips --
-//
-// The full sentence carries everything, which is right for assistive tech and for
-// the hover title. On screen the off ladder values are their own chips, so the
-// visible sentence must NOT also name them or the cell says each one twice.
-{
-  const band = (teams: string[]) => debtTeamBandLabel(debtTeamCoverage(teams));
-  eq(band(["low", "medium"]), "Covers Low to Medium", "the band, with no plus clause");
-  eq(
-    band(["low", "medium", "ultra_high_beyond"]),
-    "Covers Low to Medium",
-    "the off ladder value is left to the chip",
-  );
-  eq(band(["ultra_high_beyond"]), "", "nothing to say when every value is a chip");
-  eq(band([]), "No team set", "and nothing set still says so");
-  // The pair that must not drift: whatever the band omits, the full label keeps.
-  const c = debtTeamCoverage(["low", "credit"]);
-  assert(
-    debtTeamLabel(c).includes("credit") && !debtTeamBandLabel(c).includes("credit"),
-    "the full sentence keeps what the visible band hands to the chip",
-  );
 }
 
 // --- the invariant the column exists for ----------------------------------

@@ -149,7 +149,7 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 - **Graphite** (`rgb(52, 52, 52)`): all primary text, and the label on every sky fill. There is no black in the system.
 - **Navy** (`rgb(29, 33, 47)`): the occasional full bleed band, a page hero or a footer, carrying beige text.
 - **Muted** (`rgb(106, 106, 112)`): secondary and supporting text.
-- **Mercury** (`rgb(227, 227, 229)`): strokes, outlines, and the unfilled half of any meter or track.
+- **Mercury** (`rgb(227, 227, 229)`): strokes, outlines, and the unfilled half of a meter or track whose FILLED half carries the meaning. It measures 1.28:1 on a card, so it cannot be used for an unfilled mark a reader has to read a POSITION off: the tier ledger's uncovered letters say which rung is which, so they take `--ledger-off` at 3:1 instead (#1812).
 
 ### Tertiary
 - **Rose** (`rgb(196, 61, 61)`): errors and destructive confirmations, at 4.77:1 on beige. Muted on purpose; the design system shipped without an error colour and this one was added to be readable rather than alarming.
@@ -159,6 +159,8 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 ### Named Rules
 
 **The One Pen Rule.** Sky is the only colour that may mean "do this". Yellow, mint and peach are illustration accents and may never carry a call to action. If two things on a screen are competing to be the next action, one of them is wrong.
+
+**The Functional Mark Rule.** A mark is decoration only if removing it loses nothing a reader needs. The unfilled rungs of a meter are decoration; the unfilled letters of the tier ledger are not, because they establish which position is which. Anything in the second class takes the 3:1 floor and is measured, whatever its neighbours in the same graphic do.
 
 **The Measured Pairing Rule.** No single colour clears the 3:1 that a focus indicator needs on both a beige page and a sky button, so the focus line is chosen by the surface it lands on: brand blue on light, sky on navy, graphite on a sky fill. Every pairing is measured in `scripts/test-contrast.ts`, and the colours that do NOT clear are kept there as tripwires. Never pick an accent by eye and never assume a token that passed on one surface passes on another.
 

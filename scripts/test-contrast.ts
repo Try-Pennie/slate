@@ -229,6 +229,65 @@ below(sky, r("--pennie-sky-soft"), 3, "sky arc on the sidebar's current-item was
 below(sky, beige, 3, "sky arc on the beige page - the same failure on an ordinary surface");
 below(sky, sky, 3, "sky arc on a sky button - the cue would be completely invisible");
 
+// --- #1812: the tier ledger's two letter tones ------------------------------
+//
+// Five letters in fixed positions, one per rung. The covered ones are the data;
+// the UNCOVERED ones are load bearing too, because they establish which position
+// is which so a reader can tell "l M H V u" from "L M H v u" without counting. So
+// the quiet tone is a functional mark, not decoration, and takes the 3:1 floor.
+//
+// Mercury is what DESIGN.md nominates for "the unfilled half of any meter or
+// track" and it is WRONG here at 1.19:1: fine behind a bar whose filled half
+// carries the meaning, useless as a letter somebody has to read a position off.
+// Measured rather than eyeballed, which is the Measured Pairing Rule.
+const ledgerOn = r("--ledger-on");
+const ledgerOff = r("--ledger-off");
+const ledgerOnDark = rDark("--ledger-on");
+const ledgerOffDark = rDark("--ledger-off");
+
+// The surfaces a roster row is actually drawn on: the card, its hover tint, and
+// the page behind it.
+for (const [name, surface] of [
+  ["the card", r("--surface")],
+  ["a hovered row", r("--bg-alt")],
+  ["the page", r("--bg")],
+] as [string, RGB][]) {
+  atLeast(ledgerOn, surface, 4.5, `ledger covered letter on ${name} (light)`);
+  atLeast(ledgerOff, surface, 3, `ledger uncovered letter on ${name} (light)`);
+}
+for (const [name, surface] of [
+  ["a dark card", rDark("--surface")],
+  ["a hovered dark row", rDark("--bg-alt")],
+  ["the dark page", rDark("--bg")],
+] as [string, RGB][]) {
+  atLeast(ledgerOnDark, surface, 4.5, `ledger covered letter on ${name} (dark)`);
+  atLeast(ledgerOffDark, surface, 3, `ledger uncovered letter on ${name} (dark)`);
+}
+
+// The pair only works if the two are TELLABLE APART, which no per-surface floor
+// checks: both could clear 3:1 and be the same colour. Weight carries the other
+// half of the distinction, so this asks only for a visible step rather than a
+// text-grade ratio.
+atLeast(ledgerOn, ledgerOff, 2, "ledger covered vs uncovered, the tone step (light)");
+atLeast(ledgerOnDark, ledgerOffDark, 2, "ledger covered vs uncovered, the tone step (dark)");
+
+// The tripwires that shaped it. Each is a token somebody would reasonably reach
+// for, and each must STAY failing or the floors above are passing unexamined.
+below(r("--pennie-mercury"), r("--surface"), 3, "mercury as a ledger letter on a card - the 1.28:1 the mockup used");
+below(r("--pennie-line"), r("--bg"), 3, "the stroke tone as a ledger letter on the page");
+below(
+  rDark("--fg-muted"),
+  rDark("--fg"),
+  2,
+  "the dark theme's own muted text as the quiet letter - 1.00:1 from the foreground, so no tone step at all",
+);
+below(
+  r("--pennie-muted"),
+  rDark("--bg-alt"),
+  3,
+  "the LIGHT muted tone reused on a hovered dark row - why dark needs its own value",
+);
+
 // --- D17: forbidden-as-text tripwires — must STAY failing -------------------
 // (an accidental palette shift that "fixes" one of these is a regression signal)
 below(graphite, skyDeep, 4.5, "graphite-on-sky-deep - must NOT be a CTA text bg (4.32 fail)");

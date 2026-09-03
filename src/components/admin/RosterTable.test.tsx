@@ -213,6 +213,39 @@ describe("RosterTable", () => {
     });
   });
 
+  // #1812: the drawn glyph is replaced by ledger letters, and the sentence that
+  // sat beside it is gone from the column.
+  describe("the Team column", () => {
+    it("spends no row on the word Covers", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const table = screen.getByRole("table");
+      expect(table.textContent).not.toMatch(/Covers/);
+      // The control: the column really is drawing something, so an empty cell
+      // cannot be what satisfies the line above (L98).
+      expect(table.querySelectorAll("[data-ledger]").length).toBe(3);
+      expect(table.querySelectorAll("[data-rung]").length).toBe(15);
+    });
+
+    it("explains the letters once, on the header, not per row", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const header = screen.getByRole("columnheader", { name: /Team/ });
+      expect(header.getAttribute("title")).toMatch(/V Very High/);
+      expect(header.getAttribute("title")).toMatch(/U Ultra High/);
+      // Once, not 136 times: the expansion appears in exactly one place.
+      const table = screen.getByRole("table");
+      expect((table.textContent!.match(/Ultra High/g) ?? []).length).toBe(1);
+    });
+
+    it("still names the tiers in words for a reader who cannot see letters", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const glyphs = screen.getByRole("table").querySelectorAll("[data-ledger]");
+      for (const g of Array.from(glyphs)) {
+        expect(g.getAttribute("aria-label")).toBeTruthy();
+        expect(g.getAttribute("role")).toBe("img");
+      }
+    });
+  });
+
   // #1794, Dan: "let's collapse this two into a menu in each line... like a 3
   // dot menu is fine". The controls spelled the agent's whole name into a narrow
   // column, so "View as Kenneth Johnson" wrapped to three lines and every row was
