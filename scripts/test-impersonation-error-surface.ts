@@ -11,21 +11,28 @@
 //    DERIVING the page file from the URL the builder actually produces, so the
 //    two cannot drift apart again by editing one of them (L70).
 //
-// 2. THE WARNING HAS TO OUTLIVE THE PANEL. The only explanation in the whole app
-//    of what impersonation does lived inside the free text panel this issue
-//    deletes. It is a shared constant now, so removing it breaks a build rather
-//    than quietly leaving the most consequential action in the admin area
-//    unexplained.
+// 2. THE STANDING WARNING IS GONE, AND THE BANNER CARRIES IT (#1836). Point 2
+//    used to say the opposite: that a shared IMPERSONATION_WARNING constant had
+//    to outlive the deleted panel because the explanation lived nowhere else.
+//    That premise was wrong. It was reached by grepping for the SENTENCE and
+//    finding it nowhere, which is a different claim from the FACT living nowhere
+//    (L58 in spirit, and L103: a guard that pins a value rather than the rule can
+//    be satisfied by a comment about the thing). AppHeader's active banner
+//    already said both halves and named the person, on every page, for the whole
+//    session. So the constant, its module and the prose above the roster are all
+//    removed, and this section now asserts their absence. The preservation half
+//    lives in src/components/AppHeader.test.tsx, which mounts the header and
+//    requires the banner to name the target, explain that actions happen as them,
+//    and offer the way back.
 //
 // 3. THE FREE TEXT FIELD IS GONE. Its only unique reach was people the roster
 //    deliberately excludes, which is offboarded employees.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-impersonation-error-surface.ts
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { impersonationErrorUrl } from "../src/lib/admin/imp-error-url.ts";
-import { IMPERSONATION_WARNING } from "../src/lib/admin/impersonation-copy.ts";
 
 // --- 1. the failure lands somewhere that renders it ------------------------
 const url = impersonationErrorUrl("No user with email a@b.com.");
@@ -52,19 +59,40 @@ assert(
   "the health page still does not render it, which is why pointing there was the bug",
 );
 
-// --- 2. the warning survives, and says the three things that matter --------
+// --- 2. the standing warning and its module are gone (#1836) ---------------
 {
-  assert(IMPERSONATION_WARNING.length > 40, "the warning is a real sentence, not a stub");
-  for (const [what, re] of [
-    ["that actions happen as them", /happens as them|as them/i],
-    ["that a banner stays up", /banner/i],
-    ["that there is a way back", /back to yourself|way back/i],
-  ] as [string, RegExp][]) {
-    assert(re.test(IMPERSONATION_WARNING), `the warning still says ${what}`);
-  }
   assert(
-    readFileSync("src/app/admin/agents/page.tsx", "utf8").includes("IMPERSONATION_WARNING"),
-    "the roster page renders the shared warning rather than its own copy of it",
+    !existsSync("src/lib/admin/impersonation-copy.ts"),
+    "the impersonation-copy module is deleted, docstring and all",
+  );
+  // Not just the module: a surviving IMPORT would break the build, but a page
+  // that re-inlined the sentence would not, and that is the regression this
+  // guard exists for. So it asks the SOURCE TREE about the prose, not only about
+  // the symbol (L63: assert the quantity, not a proxy for it). Offenders are
+  // collected and named in one assertion rather than one per file, so the
+  // failure reads as one thing.
+  const srcFiles = readdirSync("src", { recursive: true, encoding: "utf8" })
+    .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\.tsx?$/.test(f))
+    .map((f) => `src/${f}`);
+  assert(srcFiles.length > 100, `the sweep really walked src (${srcFiles.length} files)`);
+
+  const PROSE = /A banner stays up the whole time/;
+  const reaches: string[] = [];
+  const inlines: string[] = [];
+  for (const f of srcFiles) {
+    const text = readFileSync(f, "utf8");
+    if (/IMPERSONATION_WARNING|impersonation-copy/.test(text)) reaches.push(f);
+    if (PROSE.test(text)) inlines.push(f);
+  }
+  eq(reaches.join(", "), "", "nothing in src reaches the removed warning module");
+  eq(inlines.join(", "), "", "nothing in src re-inlined the standing warning prose");
+
+  // A positive control on the prose sweep: the sentence it hunts for is a real
+  // string this file itself holds, so a sweep that matched nothing because it
+  // read the wrong tree cannot pass as a clean one (L98).
+  assert(
+    PROSE.test(readFileSync("scripts/test-impersonation-error-surface.ts", "utf8")),
+    "the prose sweep can still match its own subject, so an empty sweep is not a pass",
   );
 }
 

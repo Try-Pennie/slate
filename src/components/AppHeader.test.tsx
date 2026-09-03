@@ -53,14 +53,24 @@ beforeEach(() => {
 });
 
 describe("AppHeader impersonation banners (#652)", () => {
-  it("shows the active 'viewing as' banner when impersonating", async () => {
+  // #1836 made this the ONLY place in the app that explains what "view as" does.
+  // A standing warning above the roster used to say it too, in worse form: shown
+  // to every admin who was not impersonating anyone, and unable to name the
+  // person because there was nobody to name. Removing it is only safe while this
+  // banner carries all three parts, so all three are asserted here rather than
+  // just the name and the button.
+  it("shows the active 'viewing as' banner, naming the target and explaining the risk", async () => {
     view.v = {
       status: "active",
       real: { id: "admin-1" },
       target: { id: "agent-9", name: "Agent Nine", email: "a9@x.com", role: "agent" },
     };
     render(await AppHeader(props));
+    // 1. who you are acting as, by name, which the removed prose could never do
     expect(screen.getByText(/Agent Nine/)).toBeTruthy();
+    // 2. what that means, which is the half the removed prose was standing in for
+    expect(screen.getByText(/actions you take happen as them/i)).toBeTruthy();
+    // 3. the way back
     expect(screen.getByRole("button", { name: /stop viewing as them/i })).toBeTruthy();
     expect(screen.queryByText(/timed out|no longer available/i)).toBeNull();
   });
