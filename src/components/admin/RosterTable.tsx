@@ -10,6 +10,7 @@ import { isActive } from "@/lib/active-user";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
+import { SelectField } from "@/components/ui/SelectField";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
@@ -117,18 +118,18 @@ export function RosterTable({
     setPage(1); // a new filter means a new first page, not page 7 of a shorter list
   }
 
-  // #1854: a select reserves more room on the right than the left, because the
-  // arrow lives there. These four are all selects; the search box above them is
-  // a text input and keeps its own even padding.
-  const filterSelectCls =
-    "h-11 rounded-sm border border-border bg-surface pl-2.5 pr-9 text-sm text-fg";
-
   return (
     <>
-      {/* A real GET form, so the whole thing still works with no JavaScript: the
-          submit reloads the page with these params and the server render answers,
-          through the same predicate this component uses. With JavaScript the
-          submit is prevented, because the table has already updated. */}
+      {/* A real GET form, so a filtered view is a URL somebody can link to or
+          come back to: the submit reloads the page with these params and the
+          server render answers, through the same predicate this component uses.
+          With JavaScript the submit is prevented, because the table has already
+          updated.
+
+          #1849 ended the no-JavaScript guarantee this used to carry. The filters
+          are a picker of our own now rather than native selects, and the table
+          already filtered through React state, so the fallback only ever covered
+          a page whose other controls were dead anyway. */}
       <form
         method="GET"
         onSubmit={(e) => e.preventDefault()}
@@ -142,76 +143,51 @@ export function RosterTable({
           aria-label="Search by name or email"
           className={`${inputCls} w-56`}
         />
-        {/* No Search button: it filters as you type. The submit input below is
-            what a no-JavaScript browser uses, and it is hidden from everyone
-            else because pressing it there would do nothing they had not already
-            got. */}
-        <noscript>
-          <button type="submit" className={btnSecondaryCls}>
-            Search
-          </button>
-        </noscript>
+        {/* No Search button: it filters as you type. */}
 
         {teamOptions.length > 0 && (
-          <select
+<SelectField
             name="team"
             value={filters.team}
-            onChange={(e) => set("team", e.target.value)}
-            aria-label="Filter by team"
-            className={filterSelectCls}
-          >
-            <option value="">All teams</option>
-            {teamOptions.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => set("team", v)}
+            ariaLabel="Filter by team"
+            placeholder="All teams"
+            options={[{ value: "", label: "All teams" }, ...teamOptions.map((t) => ({ value: t, label: t }))]}
+            className="w-44"
+          />
         )}
 
-        <select
-          name="role"
-          value={filters.role}
-          onChange={(e) => set("role", e.target.value)}
-          aria-label="Filter by role"
-          className={filterSelectCls}
-        >
-          <option value="">All roles</option>
-          {roleOptions.map((r) => (
-            <option key={r} value={r}>
-              {roleLabel(r)}
-            </option>
-          ))}
-        </select>
+  <SelectField
+            name="role"
+            value={filters.role}
+            onChange={(v) => set("role", v)}
+            ariaLabel="Filter by role"
+            placeholder="All roles"
+            options={[{ value: "", label: "All roles" }, ...roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))]}
+            className="w-44"
+          />
 
         {managerOptions.length > 0 && (
-          <select
+<SelectField
             name="manager"
             value={filters.manager}
-            onChange={(e) => set("manager", e.target.value)}
-            aria-label="Filter by manager"
-            className={filterSelectCls}
-          >
-            <option value="">All managers</option>
-            {managerOptions.map(([id, label]) => (
-              <option key={id} value={id}>
-                {label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => set("manager", v)}
+            ariaLabel="Filter by manager"
+            placeholder="All managers"
+            options={[{ value: "", label: "All managers" }, ...managerOptions.map(([id, label]) => ({ value: id, label }))]}
+            className="w-44"
+          />
         )}
 
-        <select
-          name="bookable"
-          value={filters.bookable}
-          onChange={(e) => set("bookable", e.target.value)}
-          aria-label="Filter by bookable"
-          className={filterSelectCls}
-        >
-          <option value="">Any status</option>
-          <option value="yes">Bookable</option>
-          <option value="no">Not bookable</option>
-        </select>
+  <SelectField
+            name="bookable"
+            value={filters.bookable}
+            onChange={(v) => set("bookable", v)}
+            ariaLabel="Filter by bookable"
+            placeholder="Any status"
+            options={[{ value: "", label: "Any status" }, { value: "yes", label: "Bookable" }, { value: "no", label: "Not bookable" }]}
+            className="w-44"
+          />
 
         {hasAnyRosterFilter(filters) && (
           <button

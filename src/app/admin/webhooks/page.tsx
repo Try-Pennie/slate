@@ -12,8 +12,9 @@ import { resendFeedback, type ResendResult } from "@/lib/webhooks/resend-feedbac
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Pill } from "@/components/ui/Pill";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls, selectCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { WebhookDelivery, WebhookEndpoint } from "@/lib/db/types";
+import { SelectField } from "@/components/ui/SelectField";
 
 export const dynamic = "force-dynamic";
 
@@ -165,15 +166,16 @@ export default async function WebhooksPage({
             </div>
             <div>
               <label className={labelCls}>Format</label>
-              <select
+              <SelectField
                 name="format"
-                aria-label="Format"
+                ariaLabel="Format"
                 defaultValue={webhook?.format ?? "regal"}
-                className={selectCls}
-              >
-                <option value="regal">Regal</option>
-                <option value="generic">Generic (signed)</option>
-              </select>
+                className="w-full"
+                options={[
+                  { value: "regal", label: "Regal" },
+                  { value: "generic", label: "Generic (signed)" },
+                ]}
+              />
             </div>
           </div>
           <div>
@@ -228,18 +230,19 @@ export default async function WebhooksPage({
           <label htmlFor="replay-hours" className="text-xs text-fg-muted">
             Replay every failed delivery from the last
           </label>
-          <select
+          <SelectField
             id="replay-hours"
             name="hours"
             defaultValue="24"
-            className={`${selectCls} w-auto`}
-          >
-            <option value="2">2 hours</option>
-            <option value="6">6 hours</option>
-            <option value="24">24 hours</option>
-            <option value="72">3 days</option>
-            <option value="168">7 days</option>
-          </select>
+            className="w-40"
+            options={[
+              { value: "2", label: "2 hours" },
+              { value: "6", label: "6 hours" },
+              { value: "24", label: "24 hours" },
+              { value: "72", label: "3 days" },
+              { value: "168", label: "7 days" },
+            ]}
+          />
           <SubmitButton className={btnSecondaryCls} pendingLabel="Replaying…">
             Replay failed deliveries
           </SubmitButton>

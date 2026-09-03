@@ -29,12 +29,13 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { SelectField } from "@/components/ui/SelectField";
 
 export const dynamic = "force-dynamic";
 
@@ -253,18 +254,16 @@ export default async function AgentProfilePage({
                 <input type="hidden" name="user_id" value={agent.id} />
                 <div>
                   <label className={labelCls}>Role</label>
-                  <select
+                  <SelectField
                     name="role"
-                    aria-label="Role"
+                    ariaLabel="Role"
                     defaultValue={agent.role}
-                    className={`${selectCls} w-40`}
-                  >
-                    {roleOptions(agent.role).map((r) => (
-                      <option key={r} value={r}>
-                        {r === "super_admin" ? "super admin" : r}
-                      </option>
-                    ))}
-                  </select>
+                    className="w-40"
+                    options={roleOptions(agent.role).map((r) => ({
+                      value: r,
+                      label: r === "super_admin" ? "super admin" : r,
+                    }))}
+                  />
                 </div>
                 <SubmitButton className={btnSecondaryCls} pendingLabel="Setting role">Set role</SubmitButton>
               </form>
@@ -422,9 +421,9 @@ export default async function AgentProfilePage({
             </div>
             <div>
               <label className={labelCls}>Legal eligible</label>
-              <select
+              <SelectField
                 name="legal_eligible"
-                aria-label="Legal eligible"
+                ariaLabel="Legal eligible"
                 defaultValue={
                   agent.attributes?.legal_eligible === true
                     ? "true"
@@ -432,12 +431,13 @@ export default async function AgentProfilePage({
                       ? "false"
                       : ""
                 }
-                className={selectCls}
-              >
-                <option value="">Not set</option>
-                <option value="true">Yes</option>
-                <option value="false">No</option>
-              </select>
+                className="w-full"
+                options={[
+                  { value: "", label: "Not set" },
+                  { value: "true", label: "Yes" },
+                  { value: "false", label: "No" },
+                ]}
+              />
             </div>
             <SubmitButton className={btnCls} pendingLabel="Saving attributes">Save attributes</SubmitButton>
           </form>

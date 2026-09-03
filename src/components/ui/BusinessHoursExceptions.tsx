@@ -4,10 +4,11 @@ import { useActionState, useState } from "react";
 import { DateTime } from "luxon";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { btnCls, btnSecondaryCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, inputCls, labelCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import type { BusinessHoursFormState } from "@/app/admin/actions";
 import type { BusinessHoursException } from "@/lib/booking/business-hours";
+import { SelectField } from "@/components/ui/SelectField";
 
 /** "HH:MM" for a minute count, for the list. */
 function hhmm(minute: number): string {
@@ -132,16 +133,17 @@ export function BusinessHoursExceptions({
             <label className={labelCls} htmlFor="exception_state">
               Pennie is
             </label>
-            <select
+            <SelectField
               id="exception_state"
               name="state"
-              className={`${selectCls} w-40`}
+              className="w-44"
               value={open ? "open" : "closed"}
-              onChange={(e) => setOpen(e.target.value === "open")}
-            >
-              <option value="closed">Closed all day</option>
-              <option value="open">Open, these hours</option>
-            </select>
+              onChange={(v) => setOpen(v === "open")}
+              options={[
+                { value: "closed", label: "Closed all day" },
+                { value: "open", label: "Open, these hours" },
+              ]}
+            />
           </div>
 
           {open && (

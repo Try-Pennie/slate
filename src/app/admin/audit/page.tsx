@@ -16,8 +16,9 @@ import {
 import { auditActionLabel, auditActorText, auditDetailText } from "@/lib/audit-display";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnSecondaryCls, cardCls, inputCls, proseCls, selectCls } from "@/components/ui/styles";
+import { btnSecondaryCls, cardCls, inputCls, proseCls } from "@/components/ui/styles";
 import type { AuditEntry, User } from "@/lib/db/types";
+import { SelectField } from "@/components/ui/SelectField";
 
 export const dynamic = "force-dynamic";
 
@@ -157,25 +158,29 @@ export default async function AuditLogPage({
         <form method="GET" action="/admin/audit" className="mb-3 flex flex-wrap items-end gap-2">
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             Action
-            <select name="action" defaultValue={auditFilters.actions?.[0] ?? ""} className={selectCls}>
-              <option value="">Any</option>
-              {auditActionOptions.map((a) => (
-                <option key={a} value={a}>
-                  {auditActionLabel(a)}
-                </option>
-              ))}
-            </select>
+            <SelectField
+              name="action"
+              ariaLabel="Action"
+              defaultValue={auditFilters.actions?.[0] ?? ""}
+              className="w-56"
+              options={[
+                { value: "", label: "Any" },
+                ...auditActionOptions.map((a) => ({ value: a, label: auditActionLabel(a) })),
+              ]}
+            />
           </label>
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             Person
-            <select name="actor" defaultValue={auditFilters.actorId ?? ""} className={selectCls}>
-              <option value="">Anyone</option>
-              {auditActorChoices.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name ?? u.email}
-                </option>
-              ))}
-            </select>
+            <SelectField
+              name="actor"
+              ariaLabel="Person"
+              defaultValue={auditFilters.actorId ?? ""}
+              className="w-56"
+              options={[
+                { value: "", label: "Anyone" },
+                ...auditActorChoices.map((u) => ({ value: u.id, label: u.name ?? u.email })),
+              ]}
+            />
           </label>
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             From
