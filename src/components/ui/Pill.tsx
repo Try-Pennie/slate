@@ -20,7 +20,41 @@ import type { ReactNode } from "react";
  * halves are individually correct. `onDark` overrides the pair, so a call site has
  * the right thing to reach for instead of inventing a className, and the token
  * contrast guard covers the pairing it produces.
+ *
+ * IN A TABLE CELL, pass `alignToColumn` (#1821). The pill's label sits 9px in
+ * from its own edge (a 1px transparent border plus 8px of padding), so a pill
+ * starting a cell put its word 9px right of the column header's word: the header
+ * lined up with the pill's rounded edge rather than with its label. That is the
+ * pill's geometry, not the table's, so the cancellation lives here rather than as
+ * a negative margin every table call site has to remember (L550).
  */
+
+/**
+ * The pill's own transparent border, in px. It exists so a variant that draws a
+ * visible border does not change the pill's size, and it counts toward how far
+ * the label sits from the pill's edge.
+ */
+const BORDER_PX = 1;
+
+/** The pill's horizontal padding, in px. `px-2` in the class list below. */
+const PAD_X_PX = 8;
+
+/**
+ * How far the pill's LABEL sits from the pill's left edge (#1821).
+ *
+ * Derived rather than typed, because `alignToColumn` cancels exactly this and a
+ * hand written number would drift the moment the padding changed. The classes it
+ * describes are asserted in Pill.test.tsx, so these two constants cannot quietly
+ * stop being true of the pill they claim to measure.
+ */
+export const PILL_TEXT_INSET_PX = BORDER_PX + PAD_X_PX;
+
+/**
+ * The cancellation. Written as a literal because Tailwind scans source text for
+ * class names and cannot see a computed one; the test holds it equal to
+ * `PILL_TEXT_INSET_PX`, which is what keeps the literal honest.
+ */
+const ALIGN_TO_COLUMN_CLS = "-ml-[9px]";
 
 export type PillVariant =
   | "role-agent"
@@ -79,6 +113,7 @@ export function Pill({
   className,
   title,
   onDark,
+  alignToColumn,
 }: {
   variant: PillVariant;
   children: ReactNode;
@@ -87,13 +122,25 @@ export function Pill({
   /** Set when the pill sits on a band that paints its OWN dark fill, so a
    *  transparent variant does not keep the page theme's dark label (#1054). */
   onDark?: boolean;
+  /**
+   * Set on a pill that starts a TABLE CELL, so its label lines up with the
+   * column header's rather than 9px right of it (#1821).
+   *
+   * Only the pill at the START of a cell. A second pill beside it is not at the
+   * column's edge, and pulling it would eat the gap between the two. A pill
+   * inline in a sentence or in a flex row is correctly inset and must not set
+   * this.
+   */
+  alignToColumn?: boolean;
 }) {
   const variantCls =
     onDark && TRANSPARENT_VARIANTS.includes(variant) ? ON_DARK_CLS : VARIANT_CLS[variant];
   return (
     <span
       title={title}
-      className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] font-semibold leading-none ${variantCls}${className ? ` ${className}` : ""}`}
+      className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] font-semibold leading-none ${
+        alignToColumn ? `${ALIGN_TO_COLUMN_CLS} ` : ""
+      }${variantCls}${className ? ` ${className}` : ""}`}
     >
       {children}
     </span>

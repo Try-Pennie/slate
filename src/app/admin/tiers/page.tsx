@@ -197,7 +197,7 @@ export default async function TiersPage() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="space-y-1">
-                          <Pill variant={pill.variant} className={pill.className}>
+                          <Pill variant={pill.variant} className={pill.className} alignToColumn>
                             {pill.label}
                           </Pill>
                           {detail && <p className="text-xs text-fg-muted">{detail}</p>}
