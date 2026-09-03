@@ -67,3 +67,58 @@ describe("AdminSidebar", () => {
     expect(drawn.length).toBeGreaterThan(0);
   });
 });
+
+// #1841: a group with no heading needs something else marking it as deliberate.
+//
+// Dan, on the top of the sidebar: Health floated alone above the first heading
+// and read as stranded, an orphan sitting above the structured part of the list
+// rather than as the first thing in the map.
+//
+// The fix is NOT to give it a heading. #1790's rule stands: a heading over a
+// single item promises a section that is not there, and `visibleAdminNav`
+// applies the same rule dynamically to any group that collapses to one item for
+// the person looking. So the headingless group gets a rule beneath it instead,
+// which separates it from the grouped sections without claiming to be one.
+//
+// It is asserted for ANY headingless group, not just the first, because which
+// groups collapse differs per role and the top item is not the only one that can
+// end up without a heading.
+describe("a headingless group is marked as its own zone (#1841)", () => {
+  const groupEls = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll("nav > ul > li")) as HTMLElement[];
+
+  it("draws a rule beneath a headingless group that has sections after it", () => {
+    const { container } = render(<AdminSidebar groups={[unheaded, headed]} />);
+    const [first, second] = groupEls(container);
+    expect(first!.className, "the headingless group is separated from what follows").toMatch(
+      /border-b/,
+    );
+    expect(second!.className, "a group with a heading needs no rule; its heading is the mark")
+      .not.toMatch(/border-b/);
+  });
+
+  it("draws no rule when the headingless group is the last thing in the list", () => {
+    // A trailing rule under the final group is a line with nothing after it,
+    // which marks a boundary that does not exist.
+    const { container } = render(<AdminSidebar groups={[headed, unheaded]} />);
+    const [, last] = groupEls(container);
+    expect(last!.className).not.toMatch(/border-b/);
+  });
+
+  it("holds for a headingless group anywhere in the list, not only the first", () => {
+    // Which groups collapse to a single item is different per role, so the top
+    // item is not the only one that can lose its heading.
+    const middle: AdminNavGroup = {
+      title: null,
+      items: [{ href: "/admin/audit", label: "Audit log", gate: "admin" }],
+    };
+    const { container } = render(<AdminSidebar groups={[headed, middle, headed]} />);
+    const [, mid] = groupEls(container);
+    expect(mid!.className).toMatch(/border-b/);
+  });
+
+  it("still draws no heading for it, so #1790's rule is intact", () => {
+    render(<AdminSidebar groups={[unheaded, headed]} />);
+    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Agents"]);
+  });
+});

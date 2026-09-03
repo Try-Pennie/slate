@@ -36,12 +36,32 @@ export function AdminSidebar({ groups }: { groups: AdminNavGroup[] }) {
           of the width. The groups stay as headings either way, so the map reads
           the same on a phone as on a desktop. */}
       <ul className="flex gap-6 overflow-x-auto lg:block lg:gap-0 lg:overflow-visible">
-        {groups.map((group) => (
+        {groups.map((group, i) => (
           // Keyed on the first route rather than the title, since a group that
           // collapses to one item for this role carries no title at all (#1790).
           <li
             key={group.items[0]!.href}
-            className="min-w-max lg:mb-6 lg:min-w-0 lg:last:mb-0"
+            // #1841: a group with NO heading gets a rule beneath it instead.
+            //
+            // Dan: the landing page floated alone above the first heading and
+            // read as stranded. Giving it a heading is the one fix ruled out,
+            // because a heading over a single item promises a section that is
+            // not there (#1790), and `visibleAdminNav` applies that same rule to
+            // any group that collapses to one item for this role. So the rule
+            // marks it as its own zone without claiming to be a section.
+            //
+            // Any headingless group, not just the first: which groups collapse
+            // is different per role. Never the LAST one, since a trailing rule
+            // marks a boundary with nothing on the other side of it.
+            //
+            // `lg:` only, because below that the groups are laid out as a
+            // horizontal scroller and a bottom border would underline one column
+            // of a row rather than divide the list.
+            className={`min-w-max lg:mb-6 lg:min-w-0 lg:last:mb-0 ${
+              group.title === null && i < groups.length - 1
+                ? "lg:border-b lg:border-border lg:pb-6"
+                : ""
+            }`}
           >
             {group.title === null ? null : (
               <h2 className="pn-eyebrow mb-2 text-fg-muted">{group.title}</h2>
