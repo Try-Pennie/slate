@@ -37,7 +37,17 @@ export interface AdminNavItem {
 }
 
 export interface AdminNavGroup {
-  title: string;
+  /**
+   * The heading, or null for items that render with none (#1790).
+   *
+   * A heading over a single item reads as a container with more inside it, so
+   * the sidebar promises a section that is not there. Null is how a group says
+   * it is a bare item rather than a section, and `visibleAdminNav` sets it on
+   * any group that COLLAPSES to one item for the person looking, which is a
+   * different set per role and is why this cannot be judged from the static
+   * list alone (L101).
+   */
+  title: string | null;
   items: AdminNavItem[];
 }
 
@@ -50,7 +60,9 @@ export function passesGate(role: Role, gate: AdminGate): boolean {
 
 export const ADMIN_NAV: AdminNavGroup[] = [
   {
-    title: "Overview",
+    // No heading: it is one link, and the landing page belongs at the top rather
+    // than folded into a section it does not describe (#1790).
+    title: null,
     items: [{ href: "/admin", label: "Health", gate: "manager" }],
   },
   {
@@ -125,10 +137,18 @@ export function adminNavHrefs(): string[] {
  * empty heading promises a section that is not there.
  */
 export function visibleAdminNav(role: Role): AdminNavGroup[] {
-  return ADMIN_NAV.map((g) => ({
-    title: g.title,
-    items: g.items.filter((i) => passesGate(role, i.gate)),
-  })).filter((g) => g.items.length > 0);
+  return ADMIN_NAV.map((g) => {
+    const items = g.items.filter((i) => passesGate(role, i.gate));
+    return {
+      // A heading is demoted, never the item under it (#1790). A group can hold
+      // three entries and still leave ONE visible for a given role: a manager
+      // saw three such headings, so authoring the static list carefully cannot
+      // fix this and the rule has to be applied here, after the gate, where it
+      // is true for every role by construction rather than by review.
+      title: items.length >= 2 ? g.title : null,
+      items,
+    };
+  }).filter((g) => g.items.length > 0);
 }
 
 /**

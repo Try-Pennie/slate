@@ -37,8 +37,15 @@ export function AdminSidebar({ groups }: { groups: AdminNavGroup[] }) {
           the same on a phone as on a desktop. */}
       <ul className="flex gap-6 overflow-x-auto lg:block lg:gap-0 lg:overflow-visible">
         {groups.map((group) => (
-          <li key={group.title} className="min-w-max lg:mb-6 lg:min-w-0 lg:last:mb-0">
-            <h2 className="pn-eyebrow mb-2 text-fg-muted">{group.title}</h2>
+          // Keyed on the first route rather than the title, since a group that
+          // collapses to one item for this role carries no title at all (#1790).
+          <li
+            key={group.items[0]!.href}
+            className="min-w-max lg:mb-6 lg:min-w-0 lg:last:mb-0"
+          >
+            {group.title === null ? null : (
+              <h2 className="pn-eyebrow mb-2 text-fg-muted">{group.title}</h2>
+            )}
             <ul className="flex gap-1 lg:block lg:space-y-0.5">
               {group.items.map((item) => {
                 const current = item.href === active;
