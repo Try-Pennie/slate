@@ -159,6 +159,46 @@ describe("RosterTable", () => {
     expect(screen.queryByText(/matches those filters/i)).toBeNull();
   });
 
+  // #1799: the count read "showing 1 to 5 of 5 (of 136)".
+  describe("the result count", () => {
+    const count = () =>
+      document.querySelector('[aria-live="polite"]')!.textContent;
+
+    it("gives the total alone when nothing is filtered", () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      expect(count()).toBe("3 agents");
+    });
+
+    // This carries the intent of the test it replaced: the readout is the only
+    // thing that says a filter is hiding people, so when people ARE hidden it has
+    // to name both numbers. That test chose a query matching every row, which is
+    // the one case where nothing is hidden and naming both is wrong.
+    it("says how many matched out of the roster once a filter is on", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      await userEvent.type(screen.getByLabelText(/Search by name or email/i), "ada");
+      expect(count()).toBe("1 of 3 agents");
+    });
+
+    it("says no matches when a filter finds nobody", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      await userEvent.type(screen.getByLabelText(/Search by name or email/i), "zzzz");
+      expect(count()).toBe("No matches");
+    });
+
+    it("counts nothing at all for an empty roster", () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={[]} totalRoster={0} />);
+      expect(count()).toBe("");
+    });
+
+    it("never shows the same number twice, whatever is filtered", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      // A filter matching everybody: "3 of 3" would be one fact as two numbers.
+      await userEvent.type(screen.getByLabelText(/Search by name or email/i), "a");
+      const numbers = (count() ?? "").match(/\d+/g) ?? [];
+      expect(new Set(numbers).size).toBe(numbers.length);
+    });
+  });
+
   it("clears every filter at once", async () => {
     render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
     await userEvent.type(screen.getByLabelText(/Search by name or email/i), "ada");
@@ -198,12 +238,4 @@ describe("RosterTable", () => {
     expect(bodyRows().length).toBeGreaterThan(0);
   });
 
-  it("counts what is shown against what was matched and what exists", async () => {
-    render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
-    await userEvent.type(screen.getByLabelText(/Search by name or email/i), "a");
-
-    // The readout is the only thing that says a filter is hiding people, so it
-    // has to name both numbers.
-    expect(screen.getByText(/of 3/)).toBeTruthy();
-  });
 });
