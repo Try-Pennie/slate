@@ -13,8 +13,9 @@ import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader
 import { BucketForm } from "@/components/admin/BucketForm";
 import { RosterProvider } from "@/components/admin/BucketMembersPicker";
 import { rosterSectionFor, type RosterEntry } from "@/lib/admin/bucket-member-picker";
-import { btnCls, cardCls, labelCls, proseCls, selectCls } from "@/components/ui/styles";
+import { btnCls, cardCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { Bucket, BucketMember, EventType, User } from "@/lib/db/types";
+import { SelectField } from "@/components/ui/SelectField";
 
 export const dynamic = "force-dynamic";
 
@@ -121,19 +122,19 @@ export default async function BucketsPage({
             <label className={labelCls} htmlFor="default_bucket_code">
               Default bucket
             </label>
-            <select
+            <SelectField
               id="default_bucket_code"
               name="default_bucket_code"
               defaultValue={defaultBucketCode ?? ""}
-              className={`${selectCls} w-72`}
-            >
-              <option value="">No default (require a bucket code)</option>
-              {bucketOptions.map((b) => (
-                <option key={b.code} value={b.code}>
-                  {b.code} ({b.name})
-                </option>
-              ))}
-            </select>
+              className="w-72"
+              options={[
+                { value: "", label: "No default (require a bucket code)" },
+                ...bucketOptions.map((b) => ({
+                  value: b.code,
+                  label: `${b.code} (${b.name})`,
+                })),
+              ]}
+            />
             {bucketOptions.length === 0 && (
               <p className="mt-1 text-xs text-fg-muted">
                 No bookable buckets found to choose from.

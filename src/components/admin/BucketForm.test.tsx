@@ -270,3 +270,61 @@ describe("BucketForm explains its two counts", () => {
     expect(screen.getByText(/no fallback set, bookings will fail/i)).toBeTruthy();
   });
 });
+
+// #1849: the event type control is a picker of our own now, and two things about
+// it changed that no other test here would notice.
+//
+// The native element had `required`. A hidden input is NOT validated by the
+// browser, so that attribute is gone; it is not missed HERE because every option
+// carries a real event type id and there was no empty value it could ever have
+// refused. What replaces it is this: the control always has a real value.
+//
+// The native element also picked the first option on its own when nothing was
+// selected. A picker does not, so the fallback is written down, and these assert
+// it rather than leaving the form able to post an empty event type.
+describe("the event type picker always carries a real value (#1849)", () => {
+  const TYPES = [
+    { id: "et1", name: "Review call" },
+    { id: "et2", name: "Follow up" },
+  ] as unknown as EventType[];
+
+  function form(b: Bucket | undefined) {
+    return render(
+      <RosterProvider roster={roster(3)}>
+        <BucketForm
+          bucket={b}
+          eventTypes={TYPES}
+          roster={roster(3)}
+          memberIds={new Set()}
+          catalog={CATALOG}
+          eligibleCount={3}
+        />
+      </RosterProvider>,
+    );
+  }
+  const posted = (c: HTMLElement) =>
+    (c.querySelector('input[name="event_type_id"]') as HTMLInputElement | null)?.value;
+
+  it("posts the bucket's own event type when it has one", () => {
+    const { container } = form({ ...bucket(1), event_type_id: "et2" } as Bucket);
+    expect(posted(container)).toBe("et2");
+    expect(screen.getByRole("combobox", { name: "Event type" }).textContent).toContain("Follow up");
+  });
+
+  it("falls back to the first available type on a NEW bucket, rather than posting nothing", () => {
+    // A new bucket has no event type, and the form has no empty option to offer.
+    // Without the fallback this posted "" and the server took a bucket with no
+    // event type, which is the state `required` used to prevent.
+    const { container } = form(undefined);
+    expect(posted(container)).toBe("et1");
+    expect(screen.getByRole("combobox", { name: "Event type" }).textContent).toContain("Review call");
+  });
+
+  it("posts what was chosen after a change", async () => {
+    const user = userEvent.setup();
+    const { container } = form(undefined);
+    await user.click(screen.getByRole("combobox", { name: "Event type" }));
+    await user.click(screen.getByRole("option", { name: "Follow up" }));
+    expect(posted(container)).toBe("et2");
+  });
+});

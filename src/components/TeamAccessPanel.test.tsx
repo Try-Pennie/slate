@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { render, screen } from "@testing-library/react";
 
 // #160: the rendered Team access panel.
@@ -56,12 +57,16 @@ describe("TeamAccessPanel", () => {
     expect(document.getElementById(describedBy!)?.textContent).toMatch(/sign in to Google/i);
   });
 
-  it("offers the elevated roles and never super admin, which is not minted from a typed address", () => {
+  // #1849: the control is a picker of our own now, so its rows exist only while
+  // it is open. The assertion is unchanged: which roles are offered, and that
+  // super admin is never among them.
+  it("offers the elevated roles and never super admin, which is not minted from a typed address", async () => {
+    const user = userEvent.setup();
     render(panel());
-    const options = Array.from(
-      (screen.getByLabelText(/^access$/i) as HTMLSelectElement).options,
-    ).map((o) => o.value);
-    expect(options).toEqual(["manager", "team_lead", "admin"]);
+    await user.click(screen.getByRole("combobox", { name: /^access$/i }));
+    const labels = screen.getAllByRole("option").map((o) => o.textContent?.trim());
+    expect(labels).toEqual(["manager", "team lead", "admin"]);
+    expect(labels).not.toContain("super admin");
   });
 
   it("says the roster could not be read, and does NOT say everyone has signed in", () => {

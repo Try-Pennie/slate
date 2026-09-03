@@ -6,7 +6,8 @@ import { ROLE_RANK, roleLabel } from "@/lib/auth/roles";
 import { isRole } from "@/lib/auth/roles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls, selectCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { SelectField } from "@/components/ui/SelectField";
 
 /**
  * Team access (#160): give somebody who is not a Salesforce agent the access they
@@ -100,18 +101,13 @@ export function TeamAccessPanel({
           <label className={labelCls} htmlFor="staff-role">
             Access
           </label>
-          <select
+          <SelectField
             id="staff-role"
             name="role"
             defaultValue="manager"
-            className={`${selectCls} w-44`}
-          >
-            {GRANTABLE_STAFF_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {roleLabel(r)}
-              </option>
-            ))}
-          </select>
+            className="w-44"
+            options={GRANTABLE_STAFF_ROLES.map((r) => ({ value: r, label: roleLabel(r) }))}
+          />
         </div>
         <SubmitButton
           className={`${btnCls} min-h-[44px]`}

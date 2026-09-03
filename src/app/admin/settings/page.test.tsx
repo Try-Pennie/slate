@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // Access guard for the monitor-settings page (#676): unauthenticated to /login,
 // the OOO-only launch flag diverts non-super-admins to /admin/ooo, and once
@@ -129,6 +130,25 @@ describe("Buckets default-bucket section (#1016)", () => {
    * already resets the flag; this makes it impossible for a test to leave it set
    * in the first place, rather than relying on the reset alone.
    */
+
+  /**
+   * The value the form would POST for the default bucket picker.
+   *
+   * #1849 replaced the native select here with a picker of our own, so the value
+   * lives in the hidden input the form submits rather than on a `<select>`. That
+   * is what these assertions were about all along: which code the page would
+   * save. Reading the hidden input keeps them measuring the same thing.
+   */
+  function defaultBucketValue(): string {
+    const el = document.querySelector(
+      'input[type="hidden"][name="default_bucket_code"]',
+    ) as HTMLInputElement | null;
+    // Never coerce a missing control to "", which is also a real value here: the
+    // whole point of these tests is telling a failed read from an unset default.
+    if (!el) throw new Error("the default bucket control is not on the page at all");
+    return el.value;
+  }
+
   async function withSettingsReadsFailing(run: () => Promise<void>): Promise<void> {
     db.throwSettings = true;
     try {
@@ -150,8 +170,10 @@ describe("Buckets default-bucket section (#1016)", () => {
     expect(db.reads).toContain("buckets");
     expect(screen.queryByText(/No bookable buckets found/i)).toBeNull();
 
-    const select = screen.getByLabelText("Default bucket") as HTMLSelectElement;
-    expect(select.value).toBe("100");
+    expect(defaultBucketValue()).toBe("100");
+
+    // The rows exist only while the picker is open, so open it.
+    await userEvent.click(screen.getByRole("combobox", { name: "Default bucket" }));
     expect(screen.getByRole("option", { name: /100 \(Debt A\)/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /200 \(Debt B\)/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /No default/i })).toBeTruthy();
@@ -161,8 +183,7 @@ describe("Buckets default-bucket section (#1016)", () => {
     await withSettingsReadsFailing(async () => {
       auth.currentUser.mockResolvedValueOnce(ADMIN);
       render(await BucketsPage(props));
-      const select = screen.getByLabelText("Default bucket") as HTMLSelectElement;
-      expect(select.value).toBe("");
+      expect(defaultBucketValue()).toBe("");
       expect(screen.getByText(/No bookable buckets found/i)).toBeTruthy();
     });
   });
@@ -173,7 +194,7 @@ describe("Buckets default-bucket section (#1016)", () => {
   it("renders a different screen when the reads fail than when they succeed", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     render(await BucketsPage(props));
-    const healthy = (screen.getByLabelText("Default bucket") as HTMLSelectElement).value;
+    const healthy = defaultBucketValue();
     const healthyReads = [...db.reads];
     cleanup();
 
@@ -181,7 +202,7 @@ describe("Buckets default-bucket section (#1016)", () => {
     await withSettingsReadsFailing(async () => {
       auth.currentUser.mockResolvedValueOnce(ADMIN);
       render(await BucketsPage(props));
-      const failed = (screen.getByLabelText("Default bucket") as HTMLSelectElement).value;
+      const failed = defaultBucketValue();
       expect(failed).not.toBe(healthy);
       // Both attempted the same reads, so the difference is the read's ANSWER and
       // not a different code path being taken.

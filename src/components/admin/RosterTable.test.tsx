@@ -61,6 +61,16 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
+
+// #1849: the filters are a picker of our own now rather than native selects, so
+// they are driven by opening the list and clicking a row. The ASSERTIONS below
+// are unchanged; only how a filter is set has moved. One helper, so a later test
+// does not invent a second way of doing it.
+async function pickFilter(label: RegExp | string, option: string) {
+  await userEvent.click(screen.getByRole("combobox", { name: label }));
+  await userEvent.click(await screen.findByRole("option", { name: option }));
+}
+
 describe("RosterTable", () => {
   it("filters as you type, with no Search button to press", async () => {
     render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
@@ -79,7 +89,7 @@ describe("RosterTable", () => {
     render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
 
     await userEvent.type(screen.getByLabelText(/Search by name or email/i), "ada");
-    await userEvent.selectOptions(screen.getByLabelText(/Filter by role/i), "agent");
+    await pickFilter(/Filter by role/i, "agent");
 
     // A router call here re-renders the whole force-dynamic page and re-runs every
     // read on it, which is the cost this exists to remove.
@@ -361,7 +371,7 @@ describe("RosterTable", () => {
   it("clears every filter at once", async () => {
     render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
     await userEvent.type(screen.getByLabelText(/Search by name or email/i), "ada");
-    await userEvent.selectOptions(screen.getByLabelText(/Filter by bookable/i), "yes");
+    await pickFilter(/Filter by bookable/i, "Bookable");
     expect(bodyRows()).toHaveLength(1);
 
     await userEvent.click(screen.getByRole("button", { name: /clear/i }));
@@ -454,7 +464,9 @@ describe("column order (#1844)", () => {
     render(
       <RosterTable {...props} teamOptions={["Auto"]} managerOptions={managerOptions} />,
     );
-    const selects = Array.from(document.querySelectorAll("select")).map((s) => s.name);
+    const selects = Array.from(
+      document.querySelectorAll('input[type="hidden"]'),
+    ).map((s) => (s as HTMLInputElement).name);
     expect(selects.indexOf("team")).toBeLessThan(selects.indexOf("role"));
     // A positive control on the comparison above: both are really present, so a
     // pair of -1s cannot satisfy it (L98).

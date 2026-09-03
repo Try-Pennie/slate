@@ -6,8 +6,9 @@ import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { getJson, postJson } from "@/lib/http";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, selectCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
+import { SelectField } from "@/components/ui/SelectField";
 
 const POLL_MS = 3000;
 /** After this many consecutive poll failures, show a distinct "lost contact"
@@ -205,18 +206,13 @@ export default function BulkReassignCoverage({
             <label className={labelCls} htmlFor="bulk-reason">
               Reason
             </label>
-            <select
+            <SelectField
               id="bulk-reason"
-              className={selectCls}
+              className="w-full"
               value={reasonCode}
-              onChange={(e) => setReasonCode(e.target.value)}
-            >
-              {reassignReasons.map((r) => (
-                <option key={r.code} value={r.code}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
+              onChange={setReasonCode}
+              options={reassignReasons.map((r) => ({ value: r.code, label: r.label }))}
+            />
             {reasonCode === "other" && (
               <input
                 type="text"
