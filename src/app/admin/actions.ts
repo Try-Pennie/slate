@@ -1306,27 +1306,50 @@ export async function replayFailedWebhooks(form: FormData): Promise<void> {
   revalidatePath("/admin");
 }
 
+/**
+ * The one routing attribute Slate owns (#1874).
+ *
+ * `debt_team`, `backend_service` and `role` are Salesforce's
+ * (`SF_MANAGED_KEYS`): the hourly roster sync deletes and rewrites all three, so
+ * anything set here was undone within the hour. The panel offering them as free
+ * text was therefore a typo waiting to happen AND an override that silently
+ * reverted, and both are gone: those three are read only now, and this action
+ * writes exactly one key.
+ *
+ * `legal_eligible` stays, because routing really does match on it
+ * (`legal_eligible!` in the XBC criteria) and nothing else writes it.
+ */
 export async function setAgentAttributes(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
   await requireManageAgent(userId, "agent.attributes");
+  const db = supabaseAdmin();
 
-  const attributes: Attributes = {};
-  // debt_team is multi-valued (comma-separated -> array).
-  const debtTeam = String(form.get("debt_team") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (debtTeam.length) attributes.debt_team = debtTeam;
+  // #1874: MERGED over what is stored, never rebuilt from the form.
+  //
+  // This wrote `update({ attributes })` with an object built only from the form
+  // fields, which was correct only while the form carried every key. The moment
+  // it stopped carrying the three Salesforce ones, that same statement would have
+  // deleted an agent's debt teams on every legal eligible save, taking them out
+  // of every bucket until the next sync put them back (L510).
+  //
+  // The read throws rather than defaulting: an unreadable row here would merge
+  // over `{}`, which is the same wipe by a different route, and an empty
+  // attributes object is a legitimate value so nothing downstream could tell.
+  const existing = unwrap(
+    await db.from("users").select("attributes").eq("id", userId).maybeSingle(),
+    "agent attributes",
+  ) as { attributes: Attributes | null } | null;
 
-  const backend = String(form.get("backend_service") ?? "").trim();
-  if (backend) attributes.backend_service = backend;
-  const role = String(form.get("agent_role") ?? "").trim();
-  if (role) attributes.role = role;
+  const attributes: Attributes = { ...(existing?.attributes ?? {}) };
   const legal = String(form.get("legal_eligible") ?? "").trim();
-  if (legal) attributes.legal_eligible = legal === "true";
+  // "" is the "Not set" option, and it has to REMOVE the key rather than skip
+  // it: with a merge, skipping would make clearing the field impossible, and
+  // `legal_eligible!` treats an unset agent differently from a false one.
+  if (legal === "true" || legal === "false") attributes.legal_eligible = legal === "true";
+  else delete attributes.legal_eligible;
 
-  await supabaseAdmin()
+  await db
     .from("users")
     .update({ attributes })
     .eq("id", userId);

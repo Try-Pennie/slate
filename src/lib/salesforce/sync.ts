@@ -3,6 +3,12 @@ import { normalizeEmail } from "@/lib/auth/email";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
+import {
+  SF_BACKEND_VALUES,
+  SF_DEBT_VALUES,
+  type SfBackendValue,
+  type SfDebtValue,
+} from "@/lib/salesforce/sync-vocabulary";
 import { resolveManagerSync } from "@/lib/salesforce/manager-sync";
 import {
   exactNameMatch,
@@ -36,17 +42,26 @@ import type { Attributes, Role, User } from "@/lib/db/types";
 export const AGENTS_SYNC_STREAK_KEY = "cron_agents_failures";
 
 // SF User custom booleans -> Slate attribute values.
-const DEBT: [keyof SfUser, string][] = [
-  ["UltraHighDebt__c", "ultra_high"],
-  ["VeryHighDebt__c", "very_high"],
-  ["HighDebt__c", "high"],
-  ["MediumDebt__c", "medium"],
-  ["LowDebt__c", "low"],
-];
-const BACKEND: [keyof SfUser, string][] = [
-  ["BeyondBackendServicer__c", "beyond"],
-  ["AchieveBackendServicer__c", "achieve"],
-];
+/**
+ * Which Salesforce checkbox carries each routing value (#1874).
+ *
+ * A `Record` over the vocabulary rather than a list of pairs, so tsc requires
+ * exactly one field per value: a value routing has never heard of is rejected,
+ * and a value routing DOES match on cannot be left out. Since the admin form
+ * became read only this is the only writer of these attributes, so this is where
+ * the vocabulary is enforced.
+ */
+const DEBT_FIELD: Record<SfDebtValue, keyof SfUser> = {
+  ultra_high: "UltraHighDebt__c",
+  very_high: "VeryHighDebt__c",
+  high: "HighDebt__c",
+  medium: "MediumDebt__c",
+  low: "LowDebt__c",
+};
+const BACKEND_FIELD: Record<SfBackendValue, keyof SfUser> = {
+  beyond: "BeyondBackendServicer__c",
+  achieve: "AchieveBackendServicer__c",
+};
 
 interface SfUser {
   /**
@@ -177,8 +192,10 @@ function toManagerCandidate(u: SfUser): SfManagerCandidate {
 }
 
 function toAttributes(u: SfUser): Attributes {
-  const debt = DEBT.filter(([f]) => u[f]).map(([, v]) => v);
-  const backend = BACKEND.filter(([f]) => u[f]).map(([, v]) => v);
+  // Iterated over the VOCABULARY, so the order an agent's values land in is the
+  // vocabulary's order (highest debt first) rather than an object literal's.
+  const debt = SF_DEBT_VALUES.filter((v) => u[DEBT_FIELD[v]]);
+  const backend = SF_BACKEND_VALUES.filter((v) => u[BACKEND_FIELD[v]]);
   const attrs: Attributes = {};
   if (debt.length) attrs.debt_team = debt;
   if (backend.length) attrs.backend_service = backend;
@@ -252,11 +269,16 @@ export interface SyncResult {
  */
 export async function syncSalesforceAgents(): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
-  const debtFilter = DEBT.map(([f]) => `${f}=true`).join(" OR ");
+  // The SELECT and the WHERE are derived from the same two field maps the
+  // attributes are built from, so a field added for a new tier is queried and
+  // read by construction rather than by remembering three places.
+  const debtFields = SF_DEBT_VALUES.map((v) => DEBT_FIELD[v]);
+  const backendFields = SF_BACKEND_VALUES.map((v) => BACKEND_FIELD[v]);
+  const debtFilter = debtFields.map((f) => `${f}=true`).join(" OR ");
   const soql =
     `SELECT Id, Email, Name, Profile.Name, Agent_Manager__c, ` +
-    `${DEBT.map(([f]) => f).join(", ")}, ` +
-    `${BACKEND.map(([f]) => f).join(", ")} FROM User ` +
+    `${debtFields.join(", ")}, ` +
+    `${backendFields.join(", ")} FROM User ` +
     `WHERE IsActive = true AND (${debtFilter}) AND Email != null`;
 
   const sfUsers = await queryAll(instanceUrl, token, soql);
