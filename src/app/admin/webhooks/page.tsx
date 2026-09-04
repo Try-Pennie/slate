@@ -15,6 +15,11 @@ import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { WebhookDelivery, WebhookEndpoint } from "@/lib/db/types";
 import { SelectField } from "@/components/ui/SelectField";
+import {
+  WEBHOOK_FORMATS,
+  WEBHOOK_FORMAT_NOTE,
+  WEBHOOK_FORMAT_OPTIONS,
+} from "@/lib/webhooks/formats";
 
 export const dynamic = "force-dynamic";
 
@@ -124,11 +129,14 @@ export default async function WebhooksPage({
       )}
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Webhook endpoint</h2>
+        {/* #1952: what a format IS now lives beside the CONTROL below, derived
+            from WEBHOOK_FORMATS, rather than being described in a paragraph up
+            here that was a second hand written copy of the same two facts (L41).
+            The old copy called generic "a signed body" and never said what the
+            signature covers, which is the one thing a subscriber needs to know
+            in order to reject a replayed delivery. */}
         <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
-          Slate POSTs booking.* events here. <strong>Regal</strong> format sends
-          the Regal event shape with your API key as the Authorization header;{" "}
-          <strong>Generic</strong> sends a signed <code>{"{event,data}"}</code>{" "}
-          body (good for webhook.site).
+          Slate POSTs booking.* events here.
         </p>
         {/* #1629: `webhookRes.data` is null both when no endpoint is configured
             and when the read failed, and the form below is PREFILLED from it. On
@@ -143,16 +151,14 @@ export default async function WebhooksPage({
           </UnreadableNotice>
         ) : (
           <>
-        {webhook && (
-          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
-            Current: <code className="break-all">{webhook.url}</code> · {webhook.format} ·{" "}
-            {webhook.format === "regal"
-              ? webhook.auth_header
-                ? "API key stored"
-                : "no API key set"
-              : "signing secret stored"}
-          </p>
-        )}
+        {/* #1952: the "Current:" line is gone. It restated three facts that
+            each sit in an editable control immediately below it (the URL in the
+            URL field, the format in the dropdown, the key's state in the marker
+            beside the key field), and the form is prefilled from the saved
+            endpoint, so on load the two always agreed. Its key clause was the
+            worst of the three: it said "no API key set" in the same muted grey
+            as "API key stored", which is the exact failure this issue is about,
+            and after adding the marker there were two captions of one fact (L558). */}
         <form action={setWebhookEndpoint} className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1">
@@ -166,28 +172,72 @@ export default async function WebhooksPage({
             </div>
             <div>
               <label className={labelCls}>Format</label>
+              {/* The options are DERIVED from the same record the builders are
+                  keyed on, so a format added to the union cannot be missing from
+                  this list, and one listed here cannot be missing a builder. It
+                  used to be an array written by hand beside the union. */}
               <SelectField
                 name="format"
                 ariaLabel="Format"
                 defaultValue={webhook?.format ?? "regal"}
                 className="w-full"
-                options={[
-                  { value: "regal", label: "Regal" },
-                  { value: "generic", label: "Generic (signed)" },
-                ]}
+                options={WEBHOOK_FORMAT_OPTIONS}
               />
             </div>
           </div>
+          {/* What each one is, next to the control that picks it, and the fact
+              that the list is closed so nobody hunts for a way to add a third. */}
+          <dl className={`space-y-1.5 text-xs text-fg-muted ${proseCls}`}>
+            {WEBHOOK_FORMAT_OPTIONS.map((o) => (
+              <div key={o.value}>
+                <dt className="inline font-semibold text-fg">{o.label}: </dt>
+                <dd className="inline">{WEBHOOK_FORMATS[o.value].what}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className={`text-xs text-fg-muted ${proseCls}`}>{WEBHOOK_FORMAT_NOTE}</p>
           <div>
             {/* #1901, the fourth instance of the pattern, found by the guard
                 rather than by eye. The field IS the Regal API key; sending it as
                 the Authorization header is the mechanism, and the placeholder
                 below already says which. So the label is the name. */}
-            <label className={labelCls}>Regal API key</label>
+            {/* #1952: the key's state as a MARKER, not as two sentences that
+                differ only in wording. Both states used to be the same empty
+                password input with the same grey hint under it, so a reader
+                scanning the page saw an empty field, which reads as "not set",
+                and had to read to learn otherwise.
+
+                And the failing state was drawn like the healthy one. `buildRequest`
+                REFUSES to build a regal request with no key (#600), so "no key
+                saved" means every booking event is failing to deliver: that is an
+                error, and it now looks like one.
+
+                Deliberately NOT a masked value. Rendering dots invents a length,
+                and rendering the real length leaks something about the key; #600
+                exists because the key used to reach this page at all. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <label className={labelCls} htmlFor="webhook-auth-header">
+                Regal API key
+              </label>
+              {/* The state is judged on the SAVED format, not on the dropdown's
+                  current selection: a generic endpoint authenticates with the
+                  HMAC secret and needs no key here at all, so a red "No key
+                  saved" on one would be a false alarm about a field it does not
+                  use. And an endpoint that does not exist yet gets no marker,
+                  because "nothing is configured" is not a key that is missing. */}
+              {webhook == null ? null : webhook.format !== "regal" ? (
+                <Pill variant="outline">Not used by this format</Pill>
+              ) : webhook.auth_header ? (
+                <Pill variant="status-ok">Key saved</Pill>
+              ) : (
+                <Pill variant="status-error">No key saved</Pill>
+              )}
+            </div>
             {/* #600: never render the stored key. It used to come down as this input's
                 defaultValue, which put the live secret in the page HTML and on screen in
                 plain text. Write only: blank leaves the saved key untouched. */}
             <input
+              id="webhook-auth-header"
               name="auth_header"
               type="password"
               autoComplete="off"
@@ -197,11 +247,21 @@ export default async function WebhooksPage({
               }
               className={inputCls}
             />
-            <p className="mt-1 text-xs text-fg-muted">
-              {webhook?.auth_header
-                ? "A key is saved. Leave this blank to keep it, or type a new one to replace it."
-                : "No key saved yet. Regal deliveries will fail until one is set."}
-            </p>
+            {webhook?.auth_header ? (
+              <p className="mt-1 text-xs text-fg-muted">
+                Leave this blank to keep the saved key, or type a new one to replace it.
+              </p>
+            ) : webhook != null && webhook.format === "regal" ? (
+              <p className="mt-1 text-xs text-error">
+                Regal deliveries fail until a key is set, because Slate refuses to
+                send an unauthenticated one.
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-fg-muted">
+                Needed only by the Regal format, which sends it as the
+                Authorization header.
+              </p>
+            )}
           </div>
           <SubmitButton className={btnCls} pendingLabel="Saving…">
             Save
