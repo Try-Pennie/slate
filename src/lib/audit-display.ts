@@ -39,6 +39,10 @@ const ACTION_LABEL: Record<string, string> = {
   "impersonate.start": "started viewing as another user",
   "impersonate.stop": "stopped viewing as another user",
   "impersonate.ended": "view as another user expired",
+  // #1932: routing. Worded as what a reader of the trail needs to know happened,
+  // since "where leads get sent" is the consequence.
+  "bucket.created": "created a routing bucket",
+  "bucket.updated": "changed a routing bucket",
   "monitor.settings": "changed alert settings",
   "reason.options": "changed reason options",
   "booking.settings": "changed booking settings",

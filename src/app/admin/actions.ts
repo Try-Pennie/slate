@@ -388,16 +388,44 @@ function criteriaFromForm(form: FormData): Criteria {
   return out;
 }
 
+/**
+ * Replace a bucket's manual members, atomically (#1930).
+ *
+ * It was a delete then an insert, as two statements, binding NEITHER error. So a
+ * failed insert, or an isolate evicted between them, left the bucket with no
+ * manual members while this returned normally and the page redrew as saved. A
+ * routing pool with nobody in it turns every matching lead away.
+ *
+ * Through the migration 0114 function, which commits or rolls back as a whole,
+ * exactly as `replaceUserSchedule` does since #1293. Ordering in application code
+ * cannot close that window.
+ *
+ * Success is claimed on the COUNT the database reports, never on the absence of
+ * an error, because a replace that landed a different number of members than
+ * asked for is a silently wrong pool and this is the last place that can tell.
+ * The count is compared against the DEDUPLICATED input, since the function
+ * inserts `distinct` (the form can post one id twice when a membership is both
+ * matched from the roster and carried over as an off roster id, #1762) and
+ * comparing against the raw length would fail every such save.
+ */
 async function replaceBucketMembers(
   bucketId: string,
   memberIds: string[],
 ): Promise<void> {
-  const db = supabaseAdmin();
-  await db.from("bucket_members").delete().eq("bucket_id", bucketId);
-  if (memberIds.length) {
-    await db
-      .from("bucket_members")
-      .insert(memberIds.map((user_id) => ({ bucket_id: bucketId, user_id })));
+  const expected = new Set(memberIds).size;
+  const { data, error } = await supabaseAdmin().rpc("replace_bucket_members", {
+    p_bucket_id: bucketId,
+    p_user_ids: memberIds,
+  });
+  if (error) {
+    throw new Error(`The bucket's members could not be saved: ${error.message}`);
+  }
+  const written = typeof data === "number" ? data : Number.NaN;
+  if (written !== expected) {
+    throw new Error(
+      `The bucket's members could not be saved: expected ${expected}, the database recorded ` +
+        `${Number.isFinite(written) ? written : "an unreadable count"}.`,
+    );
   }
 }
 
@@ -419,31 +447,111 @@ export async function createBucket(form: FormData): Promise<void> {
     .select("id")
     .single();
 
-  if (!error && bucket && memberIds.length) {
-    await replaceBucketMembers((bucket as { id: string }).id, memberIds);
+  // #1930: the insert's error was bound and then ignored, so a duplicate XBC
+  // against the `(org_id, code)` unique index (the index the seeder upserts on)
+  // was indistinguishable from a successful create. It refuses by NAME now, since
+  // "that code already has a bucket" and "the database is unreachable" send a
+  // person to different places (L11).
+  if (error) {
+    throw new Error(
+      error.code === "23505"
+        ? `A bucket with code ${String(form.get("code") ?? "").trim()} already exists.`
+        : `The bucket could not be created: ${error.message}`,
+    );
   }
-  revalidatePath("/admin");
+  const created = bucket as { id: string } | null;
+  if (!created) {
+    throw new Error("The bucket could not be created: the database returned no row.");
+  }
+  if (memberIds.length) {
+    await replaceBucketMembers(created.id, memberIds);
+  }
+  // #1932: editing where leads get SENT was the one privileged action absent from
+  // the trail. Recorded AFTER the writes, so it reflects what actually happened.
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "bucket.created",
+    details: {
+      bucket_id: created.id,
+      code: String(form.get("code") ?? "").trim(),
+      name: String(form.get("name") ?? "").trim(),
+      members_added: [...new Set(memberIds)],
+    },
+  });
+  revalidatePath("/admin/buckets");
 }
 
 export async function updateBucket(form: FormData): Promise<void> {
-  await requireAdmin();
+  const admin = await requireAdmin();
   const id = String(form.get("bucket_id") ?? "");
   if (!id) return;
+  const db = supabaseAdmin();
 
-  await supabaseAdmin()
-    .from("buckets")
-    .update({
-      code: String(form.get("code") ?? "").trim(),
-      name: String(form.get("name") ?? "").trim(),
-      event_type_id: String(form.get("event_type_id") ?? ""),
-      criteria: criteriaFromForm(form),
-      routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
-      fallback_user_id: String(form.get("fallback_user_id") ?? "") || null,
-    })
-    .eq("id", id);
+  // #1932: the state BEFORE the write, so the trail can answer the question an
+  // audit exists to answer, which is what the configuration was at a given
+  // moment. An entry naming only the bucket can never answer it (L529). Read
+  // through `unwrap`, because merging over a failed read would record the change
+  // as though nothing had been there.
+  const before = unwrap(
+    await db
+      .from("buckets")
+      .select("code, name, event_type_id, criteria, routing_form_id, fallback_user_id")
+      .eq("id", id)
+      .maybeSingle(),
+    "bucket before update",
+  ) as Record<string, unknown> | null;
+  const membersBefore = (
+    unwrap(
+      await db.from("bucket_members").select("user_id").eq("bucket_id", id),
+      "bucket members before update",
+    ) ?? []
+  ).map((m) => (m as { user_id: string }).user_id);
 
-  await replaceBucketMembers(id, form.getAll("members").map(String).filter(Boolean));
-  revalidatePath("/admin");
+  const after = {
+    code: String(form.get("code") ?? "").trim(),
+    name: String(form.get("name") ?? "").trim(),
+    event_type_id: String(form.get("event_type_id") ?? ""),
+    criteria: criteriaFromForm(form),
+    routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
+    fallback_user_id: String(form.get("fallback_user_id") ?? "") || null,
+  };
+
+  // #1930: the error was discarded, so a refused update still ran the membership
+  // replace and redrew as saved. It throws now, and it throws BEFORE the members
+  // are touched, so a refused bucket edit cannot half apply.
+  const { error } = await db.from("buckets").update(after).eq("id", id);
+  if (error) {
+    throw new Error(
+      error.code === "23505"
+        ? `A bucket with code ${after.code} already exists.`
+        : `The bucket could not be saved: ${error.message}`,
+    );
+  }
+
+  const memberIds = form.getAll("members").map(String).filter(Boolean);
+  await replaceBucketMembers(id, memberIds);
+
+  const membersAfter = [...new Set(memberIds)];
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "bucket.updated",
+    details: {
+      bucket_id: id,
+      code: after.code,
+      // Only what CHANGED, with both values, so a reader is not left comparing
+      // two full objects to find the one field that moved.
+      changed: Object.fromEntries(
+        Object.entries(after).filter(([k, v]) =>
+          JSON.stringify(before?.[k] ?? null) !== JSON.stringify(v ?? null),
+        ).map(([k, v]) => [k, { from: before?.[k] ?? null, to: v }]),
+      ),
+      members_added: membersAfter.filter((m) => !membersBefore.includes(m)),
+      members_removed: membersBefore.filter((m) => !membersAfter.includes(m)),
+    },
+  });
+  revalidatePath("/admin/buckets");
 }
 
 export async function setWorkingHours(form: FormData): Promise<void> {

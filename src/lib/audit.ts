@@ -38,6 +38,12 @@ export const AUDIT_ACTIONS = [
   "impersonate.start",
   "impersonate.stop",
   "impersonate.ended",
+  // Routing (#1932). Editing where leads get SENT is the most consequential
+  // privileged action on the admin surface and it was the one action absent from
+  // the trail. The membership replace matters most: it is the change with no
+  // other trace anywhere.
+  "bucket.created",
+  "bucket.updated",
   "monitor.settings",
   "reason.options",
   "booking.settings",

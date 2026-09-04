@@ -21,7 +21,12 @@ const redirect = vi.hoisted(() =>
 );
 const revalidatePath = vi.hoisted(() => vi.fn());
 const cookieStore = vi.hoisted(() => ({ set: vi.fn(), get: vi.fn(), delete: vi.fn() }));
-const recordAudit = vi.hoisted(() => vi.fn(async () => {}));
+// Typed with its ENTRY, so a test can read back what was recorded. Untyped, the
+// mock's calls are empty tuples and `calls.at(-1)?.[0]` does not typecheck, which
+// is how "it was called" became the only assertion anybody wrote about the trail.
+const recordAudit = vi.hoisted(() =>
+  vi.fn(async (_entry: Record<string, unknown>) => {}),
+);
 
 const emit = vi.hoisted(() => ({
   // #1076: the outcome is what the admin is shown, so the mock has to be able to
@@ -94,20 +99,54 @@ const dbState = vi.hoisted(() => ({
    */
   rpcWritten: null as number | null,
   rpcError: null as { message: string } | null,
+  /** What an `insert(...).select(...).single()` returns, and its error, kept
+   *  apart from `single`/`rowsByTable` so a create's RETURNED row cannot be
+   *  confused with a read of the same table (#1930). */
+  insertReturns: null as unknown,
+  insertReturnError: null as { message: string; code?: string } | null,
 }));
 const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
 const update = vi.hoisted(() =>
   vi.fn((_patch: Record<string, unknown> = {}) => ({ eq: updateEq })),
 );
+/**
+ * An insert that is BOTH awaitable and chainable (#1930).
+ *
+ * Most callers `await db.from(t).insert(rows)` and read `{ error }`.
+ * `createBucket` does `.insert(row).select("id").single()`, which needs a
+ * builder back. A promise-only fake made that call throw "select is not a
+ * function", which is a fixture failure wearing the costume of a code defect.
+ */
 const insert = vi.hoisted(() =>
-  vi.fn(async (_rows: unknown) => ({ error: dbState.insertError })),
+  vi.fn((_rows: unknown) => {
+    const chain: Record<string, unknown> = {
+      select: () => chain,
+      single: async () =>
+        dbState.insertReturnError
+          ? { data: null, error: dbState.insertReturnError }
+          : { data: dbState.insertReturns, error: null },
+      then: (resolve: (v: { error: unknown }) => unknown) =>
+        Promise.resolve({ error: dbState.insertError }).then(resolve),
+    };
+    chain.maybeSingle = chain.single;
+    return chain;
+  }),
 );
 const upsert = vi.hoisted(() =>
   vi.fn(async (_rows: unknown, _opts?: { onConflict: string }) => ({})),
 );
 const rpc = vi.hoisted(() =>
-  vi.fn(async (_name: string, args?: { p_rules?: unknown[] }) => ({
-    data: dbState.rpcError ? null : (dbState.rpcWritten ?? args?.p_rules?.length ?? 0),
+  vi.fn(async (_name: string, args?: { p_rules?: unknown[]; p_user_ids?: unknown[] }) => ({
+    data: dbState.rpcError
+      ? null
+      : (dbState.rpcWritten ??
+        // What a working database reports back: the number of rows it landed.
+        // `replace_bucket_members` inserts DISTINCT (#1930), so the fake
+        // deduplicates too, or a test posting one id twice would see a count
+        // mismatch the real function does not produce.
+        (args?.p_user_ids ? new Set(args.p_user_ids).size : undefined) ??
+        args?.p_rules?.length ??
+        0),
     error: dbState.rpcError,
   })),
 );
@@ -199,15 +238,29 @@ import {
   useDefaultHours,
   useMyDefaultHours,
   setDefaultBucket,
+  createBucket,
+  updateBucket,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
 
 const admin = { id: "admin1", role: "admin", org_id: "o1" };
 
-function form(entries: Record<string, string>): FormData {
+/**
+ * A submitted form.
+ *
+ * An ARRAY value appends one entry per item, because that is what a repeated
+ * field posts and what `form.getAll(...)` reads back (the bucket members and the
+ * per day hours both rely on it). Joining them into one comma separated value,
+ * which `fd.set` does to an array, produces a single member id of "u1,u2" that
+ * every assertion downstream then agrees with (L52).
+ */
+function form(entries: Record<string, string | string[]>): FormData {
   const fd = new FormData();
-  for (const [k, v] of Object.entries(entries)) fd.set(k, v);
+  for (const [k, v] of Object.entries(entries)) {
+    if (Array.isArray(v)) for (const item of v) fd.append(k, item);
+    else fd.set(k, v);
+  }
   return fd;
 }
 
@@ -216,6 +269,8 @@ beforeEach(() => {
   dbState.single = null;
   dbState.singleError = null;
   dbState.insertError = null;
+  dbState.insertReturns = null;
+  dbState.insertReturnError = null;
   dbState.count = 0;
   dbState.countError = null;
   dbState.rowsByTable = {};
@@ -1461,6 +1516,171 @@ describe("setAgentAttributes merges rather than rebuilding (#1874)", () => {
     // an empty attributes object is a legitimate value, so nothing downstream
     // could tell it from an agent who genuinely has none.
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+// #1930 / #1932 / #1934. Saving a bucket was three writes binding no error, with
+// no transaction: a failed insert left the pool with NOBODY in it while the action
+// returned normally and the page redrew as saved. A routing pool with nobody in it
+// turns every matching lead away. And nothing was recorded anywhere, on the one
+// action that decides where leads get sent.
+describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+    dbState.single = {
+      code: "411",
+      name: "Old name",
+      event_type_id: "et1",
+      criteria: { debt_team: ["high"] },
+      routing_form_id: null,
+      fallback_user_id: null,
+    };
+    dbState.rowsByTable = {
+      buckets: {
+        code: "411",
+        name: "Old name",
+        event_type_id: "et1",
+        criteria: { debt_team: ["high"] },
+        routing_form_id: null,
+        fallback_user_id: null,
+      },
+      bucket_members: [{ user_id: "u1" }, { user_id: "u2" }],
+    };
+  });
+
+  const edit = (over: Record<string, string | string[]> = {}) =>
+    form({
+      bucket_id: "b1",
+      code: "411",
+      name: "Old name",
+      event_type_id: "et1",
+      crit_debt_team: "high",
+      members: ["u1", "u2"],
+      ...over,
+    });
+
+  it("replaces the members through the transaction, not a delete then an insert", async () => {
+    await updateBucket(edit());
+    expect(rpc).toHaveBeenCalledWith("replace_bucket_members", {
+      p_bucket_id: "b1",
+      p_user_ids: ["u1", "u2"],
+    });
+  });
+
+  it("refuses when the member replace fails, rather than reporting a save", async () => {
+    dbState.rpcError = { message: "deadlock detected" };
+    await expect(updateBucket(edit())).rejects.toThrow(/members could not be saved/i);
+    // Nothing may claim success, so nothing may be recorded either.
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  // The last place that can tell. A replace that landed a different number than
+  // asked for is a silently wrong pool.
+  it("refuses on a count it did not ask for, not only on an error", async () => {
+    dbState.rpcWritten = 1;
+    await expect(updateBucket(edit({ members: ["u1", "u2", "u3"] }))).rejects.toThrow(
+      /expected 3, the database recorded 1/i,
+    );
+  });
+
+  // #1762: the form can post one id twice, when a membership is both matched from
+  // the roster and carried over as an off roster id. The function inserts
+  // `distinct`, so the count is compared against the deduplicated input or every
+  // such save would refuse itself.
+  it("does not refuse a save that posted the same member twice", async () => {
+    await expect(updateBucket(edit({ members: ["u1", "u2", "u2"] }))).resolves.toBeUndefined();
+  });
+
+  // An empty set is the ORDINARY case for a bucket: it routes by criteria. That is
+  // the deliberate difference from migration 0097, which refuses one.
+  it("allows a bucket with no manual members at all", async () => {
+    await expect(updateBucket(edit({ members: [] }))).resolves.toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith("replace_bucket_members", {
+      p_bucket_id: "b1",
+      p_user_ids: [],
+    });
+  });
+
+  it("refuses a rejected bucket update BEFORE touching the members", async () => {
+    updateEq.mockResolvedValueOnce({ error: { message: "permission denied" } });
+    await expect(updateBucket(edit())).rejects.toThrow(/could not be saved/i);
+    // The half apply this ordering exists to prevent: the pool must not change
+    // when the bucket row was refused.
+    expect(rpc).not.toHaveBeenCalledWith("replace_bucket_members", expect.anything());
+  });
+
+  it("names a duplicate code apart from any other refusal", async () => {
+    updateEq.mockResolvedValueOnce({ error: { code: "23505", message: "duplicate key" } });
+    await expect(updateBucket(edit({ code: "412" }))).rejects.toThrow(
+      /bucket with code 412 already exists/i,
+    );
+  });
+
+  // #1932: the trail has to answer what the configuration WAS, so both values.
+  it("records what changed, with the old and the new value", async () => {
+    await updateBucket(edit({ name: "New name", members: ["u2", "u9"] }));
+
+    const entry = recordAudit.mock.calls.at(-1)![0] as {
+      action: string;
+      details: Record<string, unknown>;
+    };
+    expect(entry.action).toBe("bucket.updated");
+    expect(entry.details.changed).toEqual({
+      name: { from: "Old name", to: "New name" },
+    });
+    // The membership change is the one with no other trace anywhere.
+    expect(entry.details.members_added).toEqual(["u9"]);
+    expect(entry.details.members_removed).toEqual(["u1"]);
+  });
+
+  it("records nothing as changed when nothing changed", async () => {
+    await updateBucket(edit());
+    const entry = recordAudit.mock.calls.at(-1)![0] as {
+      details: Record<string, unknown>;
+    };
+    expect(entry.details.changed).toEqual({});
+    expect(entry.details.members_added).toEqual([]);
+    expect(entry.details.members_removed).toEqual([]);
+  });
+
+  it("refreshes the page the form is on, not the one it used to be on", async () => {
+    await updateBucket(edit());
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/buckets");
+  });
+
+  // Creating had the same silence: the insert's error was bound and then ignored,
+  // so a duplicate XBC against the `(org_id, code)` unique index the seeder
+  // upserts on was indistinguishable from a successful create.
+  describe("creating one", () => {
+    const create = (over: Record<string, string | string[]> = {}) =>
+      form({ code: "412", name: "New pool", event_type_id: "et1", members: ["u1"], ...over });
+
+    it("names a duplicate code apart from any other refusal", async () => {
+      dbState.insertReturnError = { message: "duplicate key value", code: "23505" };
+      await expect(createBucket(create())).rejects.toThrow(
+        /bucket with code 412 already exists/i,
+      );
+      expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("refuses any other database error in its own words", async () => {
+      dbState.insertReturnError = { message: "permission denied for table buckets" };
+      await expect(createBucket(create())).rejects.toThrow(/could not be created/i);
+      await expect(createBucket(create())).rejects.not.toThrow(/already exists/i);
+    });
+
+    it("records the creation with the code and who is in it", async () => {
+      dbState.insertReturns = { id: "b9" };
+      await createBucket(create({ members: ["u1", "u2"] }));
+
+      const entry = recordAudit.mock.calls.at(-1)![0] as {
+        action: string;
+        details: Record<string, unknown>;
+      };
+      expect(entry.action).toBe("bucket.created");
+      expect(entry.details.code).toBe("412");
+      expect(entry.details.members_added).toEqual(["u1", "u2"]);
+    });
   });
 });
 

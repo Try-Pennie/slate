@@ -256,6 +256,9 @@ const EXPECTED_PINNED = [
   // #1293: replaces a schedule's weekly rules in one transaction, so a failure
   // cannot leave an agent with no working hours (and therefore no availability).
   "replace_availability_rules",
+  // #1930: replaces a bucket's manual members in one transaction, so a failure
+  // cannot leave a routing pool with nobody in it while the save reads as done.
+  "replace_bucket_members",
 ];
 
 const pinned = new Map<string, string[]>();
