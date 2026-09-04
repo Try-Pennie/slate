@@ -24,7 +24,12 @@
  * drives every branch node-native.
  */
 import { DateTime } from "luxon";
-import { coverageForDate, type CoverageAgent, type CoverageDay } from "../booking/business-hours-coverage.ts";
+import {
+  coverageForDate,
+  memoisedCoverageClock,
+  type CoverageAgent,
+  type CoverageDay,
+} from "../booking/business-hours-coverage.ts";
 import { windowOnDate, type BusinessHoursException, type BusinessWindow } from "../booking/business-hours.ts";
 import {
   slotsWithinBusinessHours,
@@ -81,6 +86,12 @@ export function gridDayInputs(input: {
   horizonEndIso: string;
   agents: CoverageAgent[] | null;
 }): GridDayInput[] {
+  // #1864: ONE clock across all fourteen days. The shift test builds a zone-aware
+  // date per agent per hour, which on the live roster is over 17,000 of them, and
+  // there are only five distinct timezones, so almost every one is a repeat.
+  // Built here and discarded with the walk, never module level: the roster it is
+  // computed against is read per request.
+  const clock = memoisedCoverageClock();
   return input.dates.map((iso) => {
     const weekday = DateTime.fromISO(iso, { zone: input.zone }).weekday;
     const window = windowOnDate(input.hours, iso, weekday);
@@ -93,7 +104,13 @@ export function gridDayInputs(input: {
       coverage:
         input.agents === null
           ? null
-          : coverageForDate({ window, zone: input.zone, dateIso: iso, agents: input.agents }),
+          : coverageForDate({
+              window,
+              zone: input.zone,
+              dateIso: iso,
+              agents: input.agents,
+              clock,
+            }),
       closedNote: window === null && exception ? exception.note : null,
     };
   });
