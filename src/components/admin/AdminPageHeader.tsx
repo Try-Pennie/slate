@@ -34,21 +34,34 @@ export function AdminPageHeader({
   title,
   children,
   /**
-   * Optional block placed at the end of the header row (a set of pills, a
-   * control). Setting it lays the header out as a row rather than a stack; the
+   * Optional STATUS block placed just after the title in the header row (a set
+   * of pills). Setting it lays the header out as a row rather than a stack; the
    * agent detail page is what needs it, and it is here rather than as a second
    * component so the two cannot drift apart the way the ten copies did.
+   *
+   * It is deliberately NOT pinned to the right edge (#1878). `action` sits to
+   * its right and renders conditionally, and a group carrying `ml-auto` would
+   * slide across the header as soon as the control beside it disappeared, so the
+   * same page would lay out differently depending on who was looking at it.
    */
   aside,
+  /**
+   * Optional CONTROL pinned to the right of the header row (#1878). Separate
+   * from `aside` because these are different things: a pill is a label and this
+   * does something, and one group holding both makes an action read as a third
+   * status. Renders nothing when absent, and its absence moves nothing.
+   */
+  action,
   /** Optional block placed BEFORE the title in the row, e.g. an avatar. */
   leading,
 }: {
   title: string;
   children?: React.ReactNode;
   aside?: React.ReactNode;
+  action?: React.ReactNode;
   leading?: React.ReactNode;
 }) {
-  const asRow = aside !== undefined || leading !== undefined;
+  const asRow = aside !== undefined || action !== undefined || leading !== undefined;
   const text = (
     <>
       <h1 className={asRow ? "pn-h4 truncate text-fg" : "pn-h3 text-fg"}>{title}</h1>
@@ -64,7 +77,8 @@ export function AdminPageHeader({
     <section className={`flex flex-wrap items-center gap-4 ${cardCls}`}>
       {leading}
       <div className="min-w-0">{text}</div>
-      {aside && <div className="ml-auto flex items-center gap-2">{aside}</div>}
+      {aside && <div className="flex flex-wrap items-center gap-2">{aside}</div>}
+      {action && <div className="ml-auto flex items-center gap-2">{action}</div>}
     </section>
   );
 }

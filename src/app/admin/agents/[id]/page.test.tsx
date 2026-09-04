@@ -115,6 +115,7 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 
+import { btnSecondaryCls } from "@/components/ui/styles";
 import AgentProfilePage from "./page";
 
 const props = { params: Promise.resolve({ id: "x1" }) };
@@ -453,5 +454,84 @@ describe("AgentProfilePage says what the pool toggle did (#1769)", () => {
     // renders one, which is what says a press was registered.
     const busy = document.querySelectorAll("button[aria-busy]");
     expect(busy.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// #1878. Two things in the header band, one issue because either one alone forces
+// a layout decision the other would redo.
+//
+// The role was named TWICE on this page: a pill in the header and the Role
+// control under Access. The page's own recorded rule decided which goes: the
+// Bookable pill is there because "nothing else on this page names the fact", and
+// the role fails that test, so the pill is the redundant one.
+//
+// The catch is that the control naming it renders only for an admin who may
+// assign a role, so deleting the pill outright would leave a manager (and an
+// admin looking at a super admin) with the role named NOWHERE. The role is
+// therefore named exactly once in BOTH cases: as the control where it can be
+// changed, and as read only text where it cannot.
+//
+// The fixtures use team lead and super admin rather than agent on purpose. "agent"
+// appears a dozen times in this page's prose, so a count of it could never tell a
+// duplicate rendering apart from a sentence.
+describe("AgentProfilePage names the role once, and the header carries view as (#1878)", () => {
+  const header = () =>
+    screen.getByRole("heading", { level: 1 }).closest("section") as HTMLElement;
+
+  it("names the role once, in the control that changes it, for someone who may", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf("team_lead");
+    render(await AgentProfilePage(props));
+
+    expect(screen.getByRole("combobox", { name: /role/i })).toBeTruthy();
+    expect(screen.getAllByText(/team lead/i)).toHaveLength(1);
+    // And the one place naming it is the control, not a label beside it.
+    expect(header().textContent).not.toMatch(/team lead/i);
+  });
+
+  // An admin cannot assign any role to a super admin (#550), so the control is
+  // absent and the role would otherwise vanish from the page entirely.
+  it("names the role once as text for a reader who cannot change it", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf("super_admin");
+    render(await AgentProfilePage(props));
+
+    expect(screen.queryByRole("combobox", { name: /role/i })).toBeNull();
+    expect(screen.getAllByText(/super admin/i)).toHaveLength(1);
+  });
+
+  it("puts view as inside the header card rather than loose beneath it", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    render(await AgentProfilePage(props));
+
+    const button = screen.getByRole("button", { name: /view as/i });
+    expect(header().contains(button)).toBe(true);
+    // A control, not another pill: the pills are labels and this does something,
+    // so it wears the shared secondary button treatment (asserted against the
+    // constant, so it cannot drift from the other buttons on the page) and it
+    // sits in a different group from them.
+    for (const part of btnSecondaryCls.split(/\s+/)) {
+      expect(button.className, `view as must carry ${part}`).toContain(part);
+    }
+    const pill = screen.getByText("Not bookable");
+    expect(pill.closest("div")).not.toBe(button.closest("div"));
+  });
+
+  // The case a test written by somebody with permission will not naturally cover:
+  // an admin cannot view as another admin (#588), so the button is simply absent.
+  it("renders the header with the status pills unmoved when view as is absent", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("admin"), bookable: true };
+    render(await AgentProfilePage(props));
+
+    expect(screen.queryByRole("button", { name: /view as/i })).toBeNull();
+    const pill = screen.getByText("Bookable");
+    expect(header().contains(pill)).toBe(true);
+    // The quantity being protected: the pills' own group is not pinned to the
+    // right edge, so what sits after it cannot move them. A group carrying
+    // `ml-auto` shifts as soon as the button beside it disappears.
+    const group = pill.closest("div");
+    expect(group?.className ?? "").not.toMatch(/ml-auto/);
   });
 });
