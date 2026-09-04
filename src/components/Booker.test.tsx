@@ -678,41 +678,17 @@ describe("Booker availability states (#215)", () => {
 
 // #219: a lead whose device zone is wrong AND whose correct zone isn't curated
 // can still select it through the searchable full-IANA fallback.
-describe("Booker timezone fallback", () => {
-  const okFetch = () =>
-    vi.fn(async () => ({ ok: true, json: async () => availability })) as unknown as typeof fetch;
-
-  it("applies a non-curated zone picked from the 'more zones' search and collapses it", async () => {
-    global.fetch = okFetch();
-    render(<Booker {...baseProps} />);
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    expect(screen.getByRole("option", { name: /more zones/i })).toBeTruthy();
-
-    // Reveal the search, then type a real IANA zone that isn't in the curated list.
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Australia/Sydney" } });
-
-    // The zone is applied (the select now shows it) and the search collapses.
-    expect(select.value).toBe("Australia/Sydney");
-    expect(screen.queryByLabelText("Search all timezones")).toBeNull();
-  });
-
-  it("ignores an invalid zone typed into the fallback search (no bad zone applied)", async () => {
-    global.fetch = okFetch();
-    render(<Booker {...baseProps} />);
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    const before = select.value;
-
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Not/AZone" } });
-
-    // Junk is rejected: the applied zone is unchanged and the search stays open.
-    expect(select.value).toBe(before);
-    expect(screen.getByLabelText("Search all timezones")).toBeTruthy();
-  });
-});
+// #1849 DELETED the "more zones" fallback tests that were here.
+//
+// They drove a searchable full IANA combobox that let anybody reach a zone
+// outside the curated list, and asserted that a valid pick applied and an
+// invalid one did not. The list is a fixed US set now, so a way out of it is not
+// a smaller version of that decision, it is the opposite, and a test whose whole
+// content is a reversed decision becomes the guard defending it (L252).
+//
+// What replaces them is in scripts/test-timezones.ts: the list does not grow for
+// anybody, and a zone outside it resolves to a named default rather than to a
+// blank control or to whatever happens to be first.
 
 afterEach(() => vi.useRealTimers());
 
@@ -788,12 +764,25 @@ describe("Booker phone handling (#1332, #1333)", () => {
     // is not chosen until confirm, so the panel cannot honestly say anything about
     // who dials or when.
     expect(panel!.textContent).not.toMatch(/call you|we will call/i);
-    // Duration and timezone stay. The zone is the VIEWER's, so it must not be
-    // pinned to a name: CI runs in UTC and a developer's machine does not, and a
-    // test that reads the host clock is the #1039 class of flake.
+    // Duration and timezone stay.
     expect(panel!.textContent).toMatch(/30m/);
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, " ");
-    expect(panel!.textContent).toContain(zone);
+    // #1849: the zone shown is one of the fixed US zones, NOT the host's. It used
+    // to read the host and assert that back, which passed everywhere and asserted
+    // nothing about the rule; under CI's TZ=UTC it then failed, correctly, because
+    // UTC is no longer offered and resolves to Eastern.
+    //
+    // Asserted against the list rather than by re-deriving through the same
+    // function the component uses, which would only prove that function is
+    // consistent with itself (L70). Both halves are needed: that it shows a real
+    // US city, and that it does NOT echo a host zone the list cannot show.
+    const US_CITIES = ["New York", "Chicago", "Denver", "Phoenix", "Los Angeles", "Anchorage", "Honolulu"];
+    expect(
+      US_CITIES.some((city) => panel!.textContent?.includes(city)),
+      `expected one of the US zones in: ${panel!.textContent}`,
+    ).toBe(true);
+    for (const notOffered of ["UTC", "London", "Paris", "Sydney"]) {
+      expect(panel!.textContent).not.toContain(notOffered);
+    }
   });
 
   it("shows no phone row at all until there is a number to read back", async () => {

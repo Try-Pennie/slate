@@ -142,10 +142,12 @@ describe("MePage with every read healthy (the control)", () => {
     // One typeable field per bound now (#1764), spelled the way a person reads it,
     // rather than an hour, a minute and an AM or PM select.
     expect((screen.getByLabelText("Tuesday start time") as HTMLInputElement).value).toBe("8:00am");
-    // The schedule's own timezone reached the form, not the fallback.
-    expect((screen.getByLabelText("Your timezone") as HTMLInputElement).value).toBe(
-      "America/Chicago",
-    );
+    // The schedule's own timezone reached the form, not the fallback. #1849 made
+    // the control a picker, so the value the form would post lives in its hidden
+    // input; the assertion is unchanged.
+    expect(
+      (document.querySelector('input[name="timezone"]') as HTMLInputElement).value,
+    ).toBe("America/Chicago");
     // The save is offered, and the "you have no hours" banner is not raised.
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
     expect(screen.queryByText(/You have no working hours set/i)).toBeNull();

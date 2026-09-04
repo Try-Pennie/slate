@@ -1,36 +1,8 @@
 import { WorkingHoursWeek } from "@/components/ui/WorkingHoursWeek";
-import { labelCls, selectCls } from "@/components/ui/styles";
+import { labelCls } from "@/components/ui/styles";
+import { SelectField } from "@/components/ui/SelectField";
 import type { WorkingHoursDay } from "@/lib/schedule-week";
-import {
-  allTimeZones,
-  CURATED_ZONES,
-  humanizeZone,
-  type TimezoneOption,
-} from "@/lib/booking/timezones";
-
-/**
- * The zones the picker offers: the curated business zones first, then every zone
- * the runtime knows, and always the agent's CURRENT value so the select can never
- * render blank (which would submit whatever happened to be first and silently move
- * somebody's hours).
- *
- * `allTimeZones()` is guarded and answers [] on a runtime without
- * `Intl.supportedValuesOf`, in which case this degrades to the curated list plus
- * the current value rather than losing the field.
- */
-function zoneChoices(current: string): TimezoneOption[] {
-  const seen = new Set<string>();
-  const out: TimezoneOption[] = [];
-  const add = (id: string, label?: string) => {
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    out.push({ id, label: label ?? `${humanizeZone(id)} (${id})` });
-  };
-  add(current);
-  for (const z of CURATED_ZONES) add(z.id, z.label);
-  for (const id of allTimeZones().sort()) add(id);
-  return out;
-}
+import { timezoneOptions, resolveZone } from "@/lib/booking/timezones";
 
 /**
  * An agent's working hours: a week of typed times, several windows a day (#1764).
@@ -97,19 +69,25 @@ export function WorkingHoursForm({
                 enough to do that silently. A list makes the broken value
                 unrepresentable rather than merely rejected; the server refuses one
                 anyway, because a picker is not a validator. */}
-            <select
+{/* #1849: a fixed US list in a picker of our own. It used to be the
+                curated zones plus every zone the runtime knows, several hundred
+                rows, in a menu the platform drew and our CSS could not bound, so
+                it covered the whole window.
+
+                `resolveZone` is what stops the old failure mode coming back in a
+                new form: a stored zone the list cannot show resolves to a named
+                default rather than leaving the control blank or landing on
+                whatever is first, either of which moves somebody's hours without
+                telling them. The roster was migrated to the list before this
+                shipped, so today nothing resolves. */}
+            <SelectField
               id="hours_timezone"
               name="timezone"
-              aria-label={timezoneLabel}
-              defaultValue={timezone}
-              className={`${selectCls} w-64`}
-            >
-              {zoneChoices(timezone).map((z) => (
-                <option key={z.id} value={z.id}>
-                  {z.label}
-                </option>
-              ))}
-            </select>
+              ariaLabel={timezoneLabel}
+              defaultValue={resolveZone(timezone).id}
+              className="w-64"
+              options={timezoneOptions().map((z) => ({ value: z.id, label: z.label }))}
+            />
           </div>
         }
       />

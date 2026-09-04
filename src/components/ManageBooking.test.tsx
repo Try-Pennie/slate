@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { DateTime } from "luxon";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
@@ -443,12 +444,27 @@ describe("ManageBooking", () => {
   // #1338: the page is what someone opens days later from a calendar reminder,
   // so the time is the hero and the heading says how far off the call is.
   describe("the rebuilt page (#1338)", () => {
-    const inDays = (n: number) => {
-      const d = new Date();
-      d.setDate(d.getDate() + n);
-      d.setHours(14, 0, 0, 0);
-      return d.toISOString();
-    };
+    /**
+     * An instant that is `n` days from now IN THE ZONE THE PAGE DISPLAYS.
+     *
+     * #1849: the page shows a fixed US zone rather than the host's, so a fixture
+     * built at 14:00 host-local is a different calendar day to the one being
+     * asserted the moment the host is not that zone. Under CI's TZ=UTC, "today
+     * at 14:00 UTC" is tomorrow in New York for most of the day, and the
+     * countdown correctly said so.
+     *
+     * The zone is SET here rather than inherited, which is the general fix: when
+     * the ambient configuration is what separates a right answer from a wrong
+     * one, a test that reads it has made the host part of the assertion (L504).
+     */
+    const DISPLAY_ZONE = "America/New_York";
+    const inDays = (n: number) =>
+      DateTime.now()
+        .setZone(DISPLAY_ZONE)
+        .plus({ days: n })
+        .set({ hour: 14, minute: 0, second: 0, millisecond: 0 })
+        .toUTC()
+        .toISO()!;
 
     it("computes the countdown from the booking time rather than a fixed value", () => {
       mockFetch({});
@@ -598,38 +614,17 @@ describe("ManageBooking", () => {
 // #1000: the searchable full-IANA fallback #219 gave the booker must also exist
 // on the manage/reschedule screen, so a lead whose device zone is wrong AND whose
 // correct zone isn't curated can still pick it here too.
-describe("ManageBooking timezone fallback", () => {
-  it("applies a non-curated zone picked from the 'more zones' search and collapses it", async () => {
-    mockFetch({});
-    render(<ManageBooking {...baseProps} />);
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    expect(screen.getByRole("option", { name: /more zones/i })).toBeTruthy();
-
-    // Reveal the search, then type a real IANA zone that isn't in the curated list.
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Australia/Sydney" } });
-
-    // The zone is applied (the select now shows it) and the search collapses.
-    expect(select.value).toBe("Australia/Sydney");
-    expect(screen.queryByLabelText("Search all timezones")).toBeNull();
-  });
-
-  it("ignores an invalid zone typed into the fallback search (no bad zone applied)", async () => {
-    mockFetch({});
-    render(<ManageBooking {...baseProps} />);
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    const before = select.value;
-
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Not/AZone" } });
-
-    // Junk is rejected: the applied zone is unchanged and the search stays open.
-    expect(select.value).toBe(before);
-    expect(screen.getByLabelText("Search all timezones")).toBeTruthy();
-  });
-});
+// #1849 DELETED the "more zones" fallback tests that were here.
+//
+// They drove a searchable full IANA combobox that let anybody reach a zone
+// outside the curated list, and asserted that a valid pick applied and an
+// invalid one did not. The list is a fixed US set now, so a way out of it is not
+// a smaller version of that decision, it is the opposite, and a test whose whole
+// content is a reversed decision becomes the guard defending it (L252).
+//
+// What replaces them is in scripts/test-timezones.ts: the list does not grow for
+// anybody, and a zone outside it resolves to a named default rather than to a
+// blank control or to whatever happens to be first.
 
 // #1549: the manage page had the same dead end the booker lost in #1319. A lead who
 // clicks the link in their confirmation email to move their call can lose the time
