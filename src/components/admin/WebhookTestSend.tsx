@@ -62,7 +62,7 @@ export function WebhookTestSend({
                 that answers 500 or redirects has not accepted the delivery, and
                 a tick beside either would be a claim nothing measured. */}
             <Pill variant={state.sent.ok ? "status-ok" : "status-error"}>
-              {state.sent.status === 0 ? "No answer" : `HTTP ${state.sent.status}`}
+              {`HTTP ${state.sent.status}`}
             </Pill>
             <span className="text-xs text-fg-muted">
               {state.sent.format} format, sent to {state.sent.target}

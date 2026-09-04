@@ -110,11 +110,23 @@ assert(
   why("https://webhook.site/x", null) === "",
   "with no endpoint configured there is nothing to collide with",
 );
-// A malformed stored URL must not make the check throw or silently pass the
-// live host: it simply cannot be compared.
+// A malformed stored URL is accepted rather than refused, deliberately: a URL
+// `new URL()` cannot read is not a reachable destination either, since `emit`
+// builds its request from the same string, so there is nothing for the collision
+// rule to protect and refusing would leave a dead control.
 assert(
   why("https://webhook.site/x", "not a url") === "",
   "an unreadable configured URL does not break the target check",
+);
+// It must not throw, and it must still apply every OTHER rule: a fallback that
+// skipped the whole check would let a private address through on the same input.
+assert(
+  why("https://10.0.0.1/x", "not a url") !== "",
+  "an unreadable configured URL does not switch off the address rules",
+);
+assert(
+  why("http://webhook.site/x", "not a url") !== "",
+  "an unreadable configured URL does not switch off the scheme rule",
 );
 
 // --- the body carries no real data, and no real credential -------------------

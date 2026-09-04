@@ -177,6 +177,12 @@ export function testSendTargetError(target: string, configuredUrl: string | null
     } catch {
       configured = null;
     }
+    // A stored URL `new URL()` cannot read is deliberately NOT a refusal, and the
+    // reason is that it is not a reachable destination either: `emit` builds its
+    // request from the same string, so nothing is being delivered to it and there
+    // is nothing for this rule to protect. Refusing here would leave a dead
+    // control with no safety bought, which is the trade the fail closed reading
+    // would make.
     if (configured && configured.hostname.toLowerCase() === url.hostname.toLowerCase()) {
       return "That is the host your live endpoint is on. The test is for a scratch URL, so nothing reaches the real destination.";
     }
