@@ -551,4 +551,66 @@ atLeast(rose, surfaceLight, 3, "danger button border on a light card");
 atLeast(roseDark, surfaceDarkCard, 4.5, "danger button label on a dark card"); // 4.91
 atLeast(roseDark, surfaceDarkCard, 3, "danger button border on a dark card");
 
+// --- #1881: the header tab's pending count -----------------------------------
+//
+// The pair is READ OUT OF THE COMPONENT'S OWN CLASSES rather than restated here,
+// so this cannot pass while the badge renders something else (L63). That is the
+// whole point: the sky wash was already covered by four assertions in this file,
+// every one of them measuring something drawn ON TOP of it, and none asking
+// whether the wash was visible against what was behind it. It was not: 1.00:1 on
+// the beige header.
+//
+// Both halves, in both themes. The FILL is an interface component, so 3:1, and it
+// is measured against `--bg`, which is what the header paints. The LABEL is small
+// text, so 4.5:1 on the fill.
+const STYLES_FILE = join("src", "components", "ui", "styles.ts");
+const stylesSrc = readFileSync(STYLES_FILE, "utf8");
+
+/** `bg-pennie-blue` -> `--pennie-blue`, `text-white` -> `--pennie-white`. */
+function tokenForClass(cls: string): string {
+  const bare = cls.replace(/^(bg|text)-/, "");
+  return bare === "white" ? "--pennie-white" : `--${bare}`;
+}
+
+/**
+ * The one COLOUR class the badge declares for this prefix.
+ *
+ * Every `text-` class is collected and then filtered to the ones naming a real
+ * token, because `text-xs` matches the prefix just as well as
+ * `text-pennie-blue`: taking the first match read the font size as a colour and
+ * failed on a token called `--xs`. Several matches is its own refusal rather
+ * than a first-one-wins guess (L521), so a second colour added to the constant
+ * fails the build instead of being silently ignored.
+ */
+function badgeClass(prefix: "bg" | "text"): string {
+  const decl = stylesSrc.match(/export const badgeCountCls\s*=([\s\S]*?);\n/);
+  if (!decl) throw new Error(`badgeCountCls not found in ${STYLES_FILE}`);
+  const all = [...decl[1].matchAll(new RegExp(`\\b${prefix}-[\\w-]+`, "g"))].map((m) => m[0]);
+  const colours = all.filter((c) => {
+    const t = tokenForClass(c);
+    return ROOT.has(t) || DARK.has(t);
+  });
+  if (colours.length === 0) {
+    throw new Error(`badgeCountCls declares no ${prefix}- colour class (saw ${all.join(", ")})`);
+  }
+  if (colours.length > 1) {
+    throw new Error(`badgeCountCls declares several ${prefix}- colours: ${colours.join(", ")}`);
+  }
+  return colours[0];
+}
+
+const badgeFill = tokenForClass(badgeClass("bg"));
+const badgeLabel = tokenForClass(badgeClass("text"));
+
+for (const [theme, resolve] of [
+  ["light", r],
+  ["dark", rDark],
+] as const) {
+  const fill = resolve(badgeFill);
+  const label = resolve(badgeLabel);
+  const headerBg = resolve("--bg");
+  atLeast(fill, headerBg, 3, `pending badge FILL against the ${theme} header (${badgeFill})`);
+  atLeast(label, fill, 4.5, `pending badge label on its own fill, ${theme} (${badgeLabel})`);
+}
+
 finish();

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { badgeCountCls } from "@/components/ui/styles";
 import { usePathname } from "next/navigation";
 import { LinkPending } from "@/components/ui/LinkPending";
 
@@ -55,10 +56,7 @@ export function HeaderNav({ tabs }: { tabs: HeaderTab[] }) {
             {tab.label}
             {!!tab.badge && tab.badge > 0 && (
               <>
-                <span
-                  aria-hidden="true"
-                  className="inline-flex h-5 min-w-5 items-center justify-center rounded-pill bg-pennie-sky-soft px-1.5 text-xs font-semibold tabular-nums text-pennie-blue dark:bg-accent/15 dark:text-pennie-sky"
-                >
+                <span aria-hidden="true" className={badgeCountCls}>
                   {tab.badge > 99 ? "99+" : tab.badge}
                 </span>
                 <span className="sr-only">
