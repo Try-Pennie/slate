@@ -23,6 +23,30 @@
 -- the strictly forward watermark this repo warns about does not apply. Checked
 -- rather than assumed, because the failure it prevents is silent.
 --
+-- WHICH ROWS MOVED, recorded because nothing else can say.
+--
+-- After the run the nine former Boise agents are indistinguishable from the nine
+-- already on America/Denver, so the set cannot be recovered from the data. A row
+-- count alone makes this auditable but NOT reversible, and the identities would
+-- otherwise exist only in the transcript of the session that ran it.
+--
+-- User ids rather than addresses: an id is what a reversal would key on anyway,
+-- and it keeps ten employees' names out of the repository (L155).
+--
+--   America/Boise -> America/Denver, 9 users:
+--     bbc5a3a2-edf3-4c3a-a84e-7ede0b9f9c14  20824713-08ab-41ca-b145-ad0db79edbee
+--     5decaa58-af18-4992-9139-abe9d87a405e  08cc99e0-5814-4a50-810e-51026ef905bc
+--     4e18db9c-d4f0-4045-b871-855650074bf3  9cace7bb-cb89-4b43-889c-c6f723c9f6da
+--     ce6705b3-137d-46e5-b938-094a1c1e81b3  552f5b03-aa6f-4fd7-a5fd-73b4ea0c0730
+--     132434b2-ca2b-433a-89f3-e0bcbb8f690b
+--
+--   America/Indiana/Indianapolis -> America/New_York, 1 user:
+--     a5b6a375-ddbb-4bf3-bb10-12982ada6d99
+--
+-- All ten were active and bookable at the time of the run, and nobody's working
+-- hours moved: both pairs are offset identical, as checked above. To undo it,
+-- set those ids back by user_id; the schedules table keys on user_id.
+--
 -- Counts are RETURNED rather than the statements being declared done, and both
 -- run in one transaction so they land together or not at all.
 begin;
