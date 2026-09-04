@@ -1,7 +1,7 @@
 "use client";
 
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
-import { btnSecondaryCls } from "@/components/ui/styles";
+import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 
@@ -35,6 +35,21 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
  * says which of the two happened.
  */
 export type PoolExitAction = "deactivate" | "not_bookable";
+
+/**
+ * Which of the two wears the destructive treatment (#1875).
+ *
+ * Deactivating only. Making somebody not bookable is a switch that is flipped
+ * both ways in the ordinary course of a week, and a rose control on an everyday
+ * toggle is how a reader learns to ignore the colour, which costs the warning
+ * exactly where it is needed. Deactivating says a person has left, sets
+ * `bookable = false` in the same write, and reactivating does not restore it, so
+ * it is not a switch at all.
+ */
+const TREATMENT: Record<PoolExitAction, string> = {
+  deactivate: btnDangerCls,
+  not_bookable: btnSecondaryCls,
+};
 
 const COPY: Record<
   PoolExitAction,
@@ -72,12 +87,18 @@ export default function PoolExitConfirmButton({
   upcomingBookings: number | null;
 }) {
   const copy = COPY[action];
+  const treatment = TREATMENT[action];
 
   // Nothing at stake: one click, as before. A confirm here would be a speed bump
   // in front of nothing, which is how confirms get clicked through by reflex.
+  //
+  // #1875: it still wears the destructive treatment. The confirm is skipped
+  // because no APPOINTMENT is stranded, not because the press is reversible, and
+  // an empty calendar is exactly the case Dan met: one click, on a neutral
+  // button, to say somebody has left.
   if (upcomingBookings === 0) {
     return (
-      <SubmitButton className={btnSecondaryCls} pendingLabel={copy.pending}>
+      <SubmitButton className={treatment} pendingLabel={copy.pending}>
         {copy.label}
       </SubmitButton>
     );
@@ -98,7 +119,7 @@ export default function PoolExitConfirmButton({
       label={copy.label}
       confirmLabel={copy.confirm}
       pendingLabel={copy.pending}
-      className={btnSecondaryCls}
+      className={treatment}
       message={
         <>
           {held} {copy.effect}: the customers stay booked with {agentName} and will meet

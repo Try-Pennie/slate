@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { btnSecondaryCls } from "@/components/ui/styles";
 
 /**
  * A control that asks before it submits, in place rather than in a dialog (#1873).
@@ -47,7 +48,14 @@ export function ConfirmAction({
   /** What the reader has to decide on. Must say what the action replaces or
    *  destroys, rather than asking a generic "are you sure". */
   message: React.ReactNode;
-  /** Worn by the opener and the confirm, so the two read as the same control. */
+  /**
+   * Worn by the opener and the confirm, so the two read as the same control.
+   *
+   * NOT by Cancel, which is always neutral (#1875). Backing out is never the
+   * destructive choice, and a caller passing a destructive treatment would
+   * otherwise paint the safe way out in the same warning colour as the thing it
+   * is a way out of.
+   */
   className?: string;
   /** An extra way out beside Cancel (a link to the panel that fixes the cause). */
   extra?: React.ReactNode;
@@ -90,7 +98,7 @@ export function ConfirmAction({
         </SubmitButton>
         <button
           type="button"
-          className={className}
+          className={btnSecondaryCls}
           onClick={() => {
             setReturning(true);
             setConfirming(false);

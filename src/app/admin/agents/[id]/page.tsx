@@ -29,7 +29,18 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { orgDefaultWeek, workingHoursDays } from "@/lib/schedule-week";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import {
+  deactivateExplanation,
+  notBookableContrast,
+} from "@/lib/offboarding/account-status-copy";
+import {
+  btnCls,
+  btnSecondaryCls,
+  cardCls,
+  inputCls,
+  labelCls,
+  proseCls,
+} from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
@@ -483,7 +494,27 @@ export default async function AgentProfilePage({
           )}
         </section>
 
-        {/* Account status: deactivate / reactivate (#278) */}
+        {/* Move this agent's upcoming bookings to somebody else (#974). The id
+            stays `coverage` deliberately even though the panel is named for the
+            action now (#1876): it is in links people already hold, and the
+            anchor is not what anybody reads. */}
+        {canManageThisAgent && (
+          <div id="coverage">
+            <BulkReassignCoverage
+              agentId={agent.id}
+              agentName={agent.name ?? agent.email}
+              reassignReasons={(await loadReasonOptions()).reassign.active}
+              initialJobId={openJobId}
+            />
+          </div>
+        )}
+        {/* Account status: deactivate / reactivate (#278).
+
+            LAST on the page (#1875). A control that says somebody has left the
+            company was sitting above ordinary editing, so scrolling to the hours
+            or the routing attributes went past it every time. It is below the
+            panel that moves their bookings now, which is also the order the work
+            happens in: move the bookings, then close the account. */}
         <section className={cardCls}>
           <p className="pn-eyebrow text-fg-muted">Account status</p>
           <div className="mt-4 flex flex-wrap items-center gap-4">
@@ -526,27 +557,18 @@ export default async function AgentProfilePage({
               </form>
             )}
           </div>
-          <p className="mt-2 text-xs text-fg-muted">
-            Deactivating removes the agent from the booking pool and hides them
-            from pickers, but keeps their history (bookings, time off). Fully
-            reversible by reactivating.
+          {/* #1875: the copy lives in a pure builder, because the defect here
+              WAS a sentence. It said deactivating is "Fully reversible by
+              reactivating", which is the one claim on this panel that is false:
+              deactivating clears `bookable` in the same write and reactivating
+              deliberately does not restore it. A test that checked the button
+              rendered would have passed straight through that. */}
+          <p className={`mt-3 text-xs text-fg-muted ${proseCls}`}>
+            {deactivateExplanation()}
           </p>
+          <p className={`mt-2 text-xs text-fg-muted ${proseCls}`}>{notBookableContrast()}</p>
         </section>
 
-        {/* Move this agent's upcoming bookings to somebody else (#974). The id
-            stays `coverage` deliberately even though the panel is named for the
-            action now (#1876): it is in links people already hold, and the
-            anchor is not what anybody reads. */}
-        {canManageThisAgent && (
-          <div id="coverage">
-            <BulkReassignCoverage
-              agentId={agent.id}
-              agentName={agent.name ?? agent.email}
-              reassignReasons={(await loadReasonOptions()).reassign.active}
-              initialJobId={openJobId}
-            />
-          </div>
-        )}
       </>
     </>
   );
