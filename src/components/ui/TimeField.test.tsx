@@ -213,3 +213,101 @@ describe("TimeField (#1764)", () => {
     expect(container.innerHTML).not.toMatch(/outline-pennie-sky/);
   });
 });
+
+describe("editing part of a time (#1964)", () => {
+  /**
+   * A double click, as the browser really delivers it.
+   *
+   * Measured in Chromium: the SECOND mousedown reports the exact caret, and by
+   * the time `dblclick` fires the selection has already been expanded to the
+   * browser's own word, which for "5:00pm" is "00pm". jsdom does no such
+   * expansion, so the expansion is applied here too, or the test would exercise
+   * a gesture nobody performs and pass on a component that read the wrong
+   * offset (L52).
+   */
+  async function doubleClickAt(el: HTMLInputElement, caret: number, browserWord: [number, number]) {
+    el.focus();
+    el.setSelectionRange(caret, caret);
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, detail: 1 }));
+    el.setSelectionRange(caret, caret);
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, detail: 2 }));
+    // What the browser does on its own before the handler runs.
+    el.setSelectionRange(browserWord[0], browserWord[1]);
+    el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+  }
+
+  const selected = (el: HTMLInputElement) =>
+    el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0);
+
+  it("selects the minutes alone, not the minutes and the meridiem", async () => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    expect(el.value).toBe("5:00pm");
+    // The browser's own word for a click inside "00pm" is the whole of it.
+    await doubleClickAt(el, 2, [2, 6]);
+    expect(selected(el)).toBe("00");
+  });
+
+  it("selects the hour when the hour is clicked", async () => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    await doubleClickAt(el, 0, [0, 1]);
+    expect(selected(el)).toBe("5");
+  });
+
+  it("selects the meridiem when the meridiem is clicked", async () => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    await doubleClickAt(el, 5, [2, 6]);
+    expect(selected(el)).toBe("pm");
+  });
+
+  // THE WHOLE SEQUENCE DAN REPORTED, driven end to end: the value the form would
+  // submit is the afternoon one, not the morning one twelve hours away.
+  it("replacing the minutes of an afternoon time keeps the afternoon", async () => {
+    const user = userEvent.setup();
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    await doubleClickAt(el, 2, [2, 6]);
+    await user.keyboard("15");
+    expect(el.value).toBe("5:15pm");
+    await user.tab();
+    expect(submitted()).toBe("17:15");
+  });
+
+  // The same field, typed rather than partially edited: a bare time in a field
+  // standing on an afternoon value keeps the afternoon.
+  it("a bare time typed over an afternoon value stays in the afternoon", async () => {
+    const user = userEvent.setup();
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    await user.tripleClick(el);
+    await user.keyboard("6:30");
+    await user.tab();
+    expect(submitted()).toBe("18:30");
+  });
+
+  // And a morning field is not dragged into the afternoon, which is the same
+  // rule read the other way.
+  it("a bare time typed over a morning value stays in the morning", async () => {
+    const user = userEvent.setup();
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="08:00" />);
+    const el = box() as HTMLInputElement;
+    await user.tripleClick(el);
+    await user.keyboard("6:30");
+    await user.tab();
+    expect(submitted()).toBe("06:30");
+  });
+
+  it("leaves a field it cannot read to the browser", async () => {
+    const user = userEvent.setup();
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    await user.tripleClick(el);
+    await user.keyboard("banana");
+    // The browser's own selection stands rather than being replaced by an
+    // arbitrary range over text that is not a time.
+    await doubleClickAt(el, 2, [0, 6]);
+    expect(selected(el)).toBe("banana");
+  });
+});

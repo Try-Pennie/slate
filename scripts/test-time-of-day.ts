@@ -20,6 +20,7 @@ import {
   timeFrom12Hour,
   twelveHourParts,
   filterTimeOptions,
+  timeSegmentAt,
   formatTimeOfDay,
   isQuarterHour,
   quarterHourOptions,
@@ -204,6 +205,117 @@ import { assert, finish } from "./lib/harness.ts";
     filterTimeOptions("5:").every((o) => o.label === formatTimeOfDay(o.value)),
     "filtered options carry the same labels as the full list",
   );
+
+  // --- the hour stops matching by prefix once it is finished (#1965) ---------
+  //
+  // The prefix rule is right and was being applied for one keystroke too long.
+  // While the query is still just an hour, `1` might grow into 10, 11, 12 or a
+  // 24 hour 13 to 19, and offering all of them is correct. Once ANYTHING past
+  // the hour has been typed, it cannot grow, and matching by prefix offered
+  // fourteen hours for "1:00" and forty for "1p".
+  //
+  // The COUNTS are asserted beside the contents, because a filter that got
+  // narrower for the wrong reason passes a contents check on the two rows
+  // somebody thought to list. Measured against the shipped code on 2026-09-04:
+  // "1:00" returned 14, "1:" returned 56, "2:" returned 24, "1p" returned 40.
+  assert(
+    values("1:00").join(",") === "01:00,13:00",
+    `"1:00" offers exactly the two ones (got ${values("1:00").length}: ${values("1:00").join(",")})`,
+  );
+  assert(
+    values("1:").join(",") === "01:00,01:15,01:30,01:45,13:00,13:15,13:30,13:45",
+    `a typed separator finishes the hour (got ${values("1:").length}: ${values("1:").join(",")})`,
+  );
+  // "1:" and "1:0" and "1:00" all used to return the same wrong list, because
+  // `queryParts` could not tell a typed colon from no colon at all: its optional
+  // group matched the separator with zero digits. So the separator is reported
+  // on its own, and this is the case that proves it.
+  assert(values("1:0").join(",") === "01:00,13:00", `"1:0" narrows too`);
+  // A typed am or pm finishes the hour for the same reason: somebody reaching
+  // for 10pm types "10p", not "1p" and then an inserted zero.
+  assert(
+    values("1p").join(",") === "13:00,13:15,13:30,13:45",
+    `"1p" offers the one pm only (got ${values("1p").length}: ${values("1p").join(",")})`,
+  );
+  assert(
+    values("2p").join(",") === "14:00,14:15,14:30,14:45",
+    `"2p" does not offer the eights and nines (got ${values("2p").length})`,
+  );
+  // And the prefix rule SURVIVES where it belongs, or this is not a narrowing,
+  // it is a different filter. 1 and 2 are the only digits that expose it, since
+  // they are the ones other hours begin with (L147: the existing assertions are
+  // all sampled on 5, 8, 12 and 17, which is why this shipped).
+  assert(
+    filterTimeOptions("1").length === 56,
+    `a bare "1" still offers everything it might grow into (got ${filterTimeOptions("1").length})`,
+  );
+  assert(
+    filterTimeOptions("2").length === 24,
+    `a bare "2" still offers the twos, twenties and twenty ones (got ${filterTimeOptions("2").length})`,
+  );
+  assert(values("13:00").join(",") === "13:00", `"13:00" still resolves to the one option`);
+  assert(
+    values("12:").join(",") === "00:00,00:15,00:30,00:45,12:00,12:15,12:30,12:45",
+    `"12:" still offers both twelves (got ${values("12:").join(",")})`,
+  );
+}
+
+// --- a bare 12 hour time keeps the half of the day it was on (#1964) ---------
+//
+// Editing part of a time silently moved it twelve hours. Double clicking the
+// minutes of "5:00pm" selects "00pm", because the field is one text input and
+// the browser groups the meridiem with the digits, so typing 15 leaves "5:15".
+// With no meridiem that read as 05:15: the other half of the day, on the quarter
+// hour grid, and therefore VALID, so the component's refusal never fired and a
+// working hours save moved somebody's shift to the morning.
+{
+  const at = (text: string, standing: string | null) => {
+    const r = resolveTypedTime(text, standing);
+    return r.ok ? r.value : `refused:${r.reason}`;
+  };
+
+  // The exact sequence from the report.
+  assert(
+    at("5:15", "17:00") === "17:15",
+    `a bare time in a pm field stays pm (got ${at("5:15", "17:00")})`,
+  );
+  assert(
+    at("5:15", "08:00") === "05:15",
+    `a bare time in an am field stays am (got ${at("5:15", "08:00")})`,
+  );
+  // With nothing standing there is nothing to inherit, so a new empty row reads
+  // exactly as it did before.
+  assert(at("5:15", null) === "05:15", "with no standing value a bare time is read as 24 hour");
+  assert(at("5:15", "") === "05:15", "a blank standing value inherits nothing");
+  assert(at("5:15", "not a time") === "05:15", "an unreadable standing value inherits nothing");
+
+  // The 24 hour reading has to survive: it is what makes "13:00" work and what
+  // somebody reading a stored value types back.
+  assert(at("13:00", "17:00") === "13:00", "a 24 hour hour is never re-read as 12 hour");
+  assert(at("23:45", "08:00") === "23:45", "and neither is a late one in an am field");
+  assert(at("0:15", "17:00") === "00:15", "hour zero has no 12 hour spelling, so it inherits nothing");
+
+  // TWELVE IS THE ONE THAT LOOKS LIKE IT SHOULD INHERIT AND MUST NOT. As a 24
+  // hour reading "12:30" is half past noon, and noon is already pm, so
+  // inheriting could only ever change it in the AM case, where it would move
+  // half past noon to half past midnight: a fresh twelve hour shift introduced
+  // by the fix for twelve hour shifts, in the commonest hour anybody types.
+  assert(
+    at("12:30", "08:00") === "12:30",
+    `"12:30" in an am field is half past noon, not half past midnight (got ${at("12:30", "08:00")})`,
+  );
+  assert(at("12:30", "17:00") === "12:30", `"12:30" in a pm field is still noon`);
+  assert(at("12:30a", "17:00") === "00:30", "midnight is still reachable by saying so");
+
+  // An explicit meridiem always wins over what was standing.
+  assert(at("5:15am", "17:00") === "05:15", "a typed am beats a standing pm");
+  assert(at("5:15pm", "08:00") === "17:15", "a typed pm beats a standing am");
+
+  // Inheriting must not make an unreadable time readable.
+  assert(at("25:00", "17:00") === "refused:unreadable", "an impossible hour is still refused");
+  assert(at("5:7", "17:00") === "refused:unreadable", "a one digit minute is still refused");
+  assert(at("5:07", "17:00") === "refused:off-grid", "an off grid time is still off grid, not snapped");
+  assert(at("", "17:00") === "refused:blank", "a blank field is still blank");
 }
 
 
@@ -270,5 +382,60 @@ import { assert, finish } from "./lib/harness.ts";
   assert(formatClockTime(DateTime.invalid("test")) === null, "an invalid DateTime has no spelling");
 }
 
+// --- a double click selects one part of the time (#1964) ---------------------
+//
+// `TimeField` is one text input holding the whole time, so a double click gets
+// the browser's own word rules, and those group "00pm" as one word: Dan could
+// not select the minutes on their own, and replacing that selection is what
+// produced the twelve hour shift above.
+//
+// The offsets are asserted as the TEXT they select, so a boundary that moves is
+// reported as "it selected the meridiem" rather than as two numbers.
+{
+  const seg = (text: string, caret: number) => {
+    const r = timeSegmentAt(text, caret);
+    return r ? text.slice(r.start, r.end) : null;
+  };
+  /** What every caret position in the text selects, as one string. */
+  const walk = (text: string) =>
+    Array.from({ length: text.length + 1 }, (_, i) => seg(text, i)).join(" ");
+
+  // Measured in Chromium on the real field: the second mousedown of a double
+  // click reports the exact caret, 0 through 5 for these six characters, which
+  // is where the component takes the position from.
+  assert(
+    walk("5:00pm") === '"5" "5" "00" "00" "00" "pm" "pm"'.replace(/"/g, ""),
+    `every part of "5:00pm" is reachable (got ${walk("5:00pm")})`,
+  );
+  assert(seg("5:00pm", 0) === "5", "the hour");
+  assert(seg("5:00pm", 2) === "00", "the minutes");
+  assert(seg("5:00pm", 5) === "pm", "the meridiem");
+  // THE CASE THAT WAS WRONG FIRST TIME: a click on the SECOND minute digit
+  // reports the caret between it and the meridiem, which is the same offset a
+  // click on the left of the "p" reports. The tie goes to the minutes, because
+  // getting the meridiem when you clicked a DIGIT is the failure being fixed.
+  assert(
+    seg("5:00pm", 4) === "00",
+    `the minutes win the boundary they share with the meridiem (got ${seg("5:00pm", 4)})`,
+  );
+
+  assert(seg("12:15am", 1) === "12", "a two digit hour selects whole");
+  assert(seg("12:15am", 3) === "15", "the minutes after a two digit hour");
+  assert(seg("12:15am", 6) === "am", "the meridiem after a two digit hour");
+
+  // A 24 hour value has no meridiem to select, and the parts still work.
+  assert(seg("17:15", 0) === "17" && seg("17:15", 4) === "15", "a 24 hour time has two parts");
+  // A bare hour is one part, wherever the caret is.
+  assert(seg("5", 0) === "5" && seg("5", 1) === "5", "a lone hour is the only part there is");
+  assert(seg("5p", 0) === "5" && seg("5p", 2) === "p", "an hour and a meridiem, with no minutes");
+
+  // Not a time it can read: null, which leaves the browser to do whatever it
+  // would have done rather than selecting something arbitrary.
+  assert(seg("banana", 3) === null, "unreadable text selects nothing of its own");
+  assert(seg("", 0) === null, "empty text selects nothing of its own");
+  // A caret outside the text is clamped rather than throwing or returning null.
+  assert(seg("5:00pm", 99) === "pm", "a caret past the end lands on the last part");
+  assert(seg("5:00pm", -5) === "5", "a caret before the start lands on the first part");
+}
 
 finish();
