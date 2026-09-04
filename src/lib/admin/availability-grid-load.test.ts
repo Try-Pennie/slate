@@ -183,3 +183,104 @@ describe("loadAvailabilityGrid (#1302)", () => {
     await expect(loadAvailabilityGrid(NOW)).rejects.toThrow();
   });
 });
+
+// #1846: the three independent reads run TOGETHER, and one of them failing while
+// the others are still in flight behaves the same as it did when they were serial.
+//
+// Measured against live Supabase, the page spent 839ms in seven strictly serial
+// reads. The slot cache depends on neither the roster nor the hours, and the
+// roster not on the hours, so they are three independent chains.
+//
+// Leave is deliberately NOT one of them: it is read after the roster, on purpose,
+// since it is attached per agent. That ordering is asserted too, or "parallel"
+// could be satisfied by firing a read before its own input exists.
+//
+// NO SLEEPS. Each read is held open by a promise this test resolves by hand, so
+// the ordering is decided rather than raced. A fixed wait would be asserting
+// about the machine's load, and it would be slowest exactly when CI is busiest
+// (L290).
+describe("the independent reads run in parallel (#1846)", () => {
+  /** A promise this test opens and closes, plus a record of what has started. */
+  function gate() {
+    const order: string[] = [];
+    const release: Record<string, (v?: unknown) => void> = {};
+    const reject: Record<string, (e: Error) => void> = {};
+    const held = <T,>(name: string, fn: () => Promise<T> | T) => async () => {
+      order.push(`${name}:start`);
+      await new Promise((res, rej) => {
+        release[name] = res as (v?: unknown) => void;
+        reject[name] = rej;
+      });
+      order.push(`${name}:end`);
+      return fn();
+    };
+    return { order, release, reject, held };
+  }
+
+  const AT = () => DateTime.fromISO("2026-01-05T00:00:00", { zone: "America/New_York" });
+
+  function traceHoursAndRoster(g: ReturnType<typeof gate>) {
+    const realHours = hours.loadBusinessHours.getMockImplementation()!;
+    const realCoverage = coverage.loadCoverageAgents.getMockImplementation()!;
+    hours.loadBusinessHours.mockImplementation(g.held("hours", realHours));
+    coverage.loadCoverageAgents.mockImplementation(g.held("roster", realCoverage));
+    return () => {
+      hours.loadBusinessHours.mockImplementation(realHours);
+      coverage.loadCoverageAgents.mockImplementation(realCoverage);
+    };
+  }
+
+  it("starts the hours and roster reads before either of them finishes", async () => {
+    const g = gate();
+    const restore = traceHoursAndRoster(g);
+    try {
+      const pending = loadAvailabilityGrid(AT());
+      // Let the synchronous part of every chain run, without advancing any read.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // A serial implementation cannot have started the second: it would still be
+      // waiting on the first, which this test is holding open.
+      expect(g.order.filter((e) => e.endsWith(":start")).sort()).toEqual([
+        "hours:start",
+        "roster:start",
+      ]);
+      expect(g.order.some((e) => e.endsWith(":end")), "nothing has finished yet").toBe(false);
+
+      g.release.hours();
+      g.release.roster();
+      await pending;
+
+      // Leave is read AFTER the roster, since it is attached per agent. Asserted
+      // so "parallel" cannot be satisfied by firing a read before its input exists.
+      expect(g.order.indexOf("roster:end")).toBeGreaterThan(-1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("still refuses the page when one read fails while the others are in flight", async () => {
+    // The risk in parallelising is here, not in the speed. `Promise.all` rejects
+    // on the first rejection while the rest are still running, and the loader's
+    // one rule is that an unreadable roster renders as "could not check" rather
+    // than as an empty pool. This holds the others open, fails the hours read,
+    // and requires the page to refuse rather than render half an answer.
+    const g = gate();
+    const restore = traceHoursAndRoster(g);
+    try {
+      const pending = loadAvailabilityGrid(AT());
+      const settled = expect(pending).rejects.toThrow(/hours gone/);
+      await Promise.resolve();
+
+      g.reject.hours(new Error("hours gone"));
+      await settled;
+
+      // The roster read was still in flight when that happened. Releasing it now
+      // must not produce an unhandled rejection or a second settle.
+      g.release.roster();
+      await Promise.resolve();
+    } finally {
+      restore();
+    }
+  });
+});

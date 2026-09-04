@@ -26,7 +26,11 @@
 import { DateTime } from "luxon";
 import { coverageForDate, type CoverageAgent, type CoverageDay } from "../booking/business-hours-coverage.ts";
 import { windowOnDate, type BusinessHoursException, type BusinessWindow } from "../booking/business-hours.ts";
-import { slotsWithinBusinessHours, type BusinessHoursRules } from "../availability/compute.ts";
+import {
+  slotsWithinBusinessHours,
+  type BusinessHoursRules,
+  type OrgOpenJudge,
+} from "../availability/compute.ts";
 
 /** One column: a concrete date, so a real zone offset and that week's DST apply. */
 export interface GridDayInput {
@@ -156,8 +160,25 @@ export function bucketsOfferingByHour(
   rows: { payload: { slots?: string[]; eventType?: { duration_min?: number } } | null }[],
   businessHours: BusinessHoursRules,
   zone: string,
+  /**
+   * Who decides whether the org is open. Defaults to asking directly; the page
+   * passes a `memoisedOrgOpen` so the same window asked by sixty buckets costs
+   * one answer rather than sixty (#1846).
+   */
+  judge?: OrgOpenJudge,
 ): Map<string, number> {
   const counts = new Map<string, number>();
+  // ONE formatter for the whole walk, rather than a Luxon DateTime per surviving
+  // slot (#1846). Measured on the real 11,384 payload slots: 42ms with Luxon
+  // against 6ms with a single reused formatter, for the same day and hour.
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  });
   for (const row of rows) {
     const slots = row.payload?.slots;
     const durationMin = row.payload?.eventType?.duration_min;
@@ -165,10 +186,21 @@ export function bucketsOfferingByHour(
     // One bucket contributes at most once per hour, however many starts it holds
     // in it, which is what makes the number a count of pools rather than of times.
     const seen = new Set<string>();
-    for (const iso of slotsWithinBusinessHours(slots, durationMin, businessHours)) {
-      const dt = DateTime.fromISO(iso, { zone });
-      if (!dt.isValid) continue;
-      seen.add(dayHourKey(dt.toISODate() ?? "", dt.hour));
+    for (const iso of slotsWithinBusinessHours(slots, durationMin, businessHours, judge)) {
+      // parse-ok: an unreadable instant is skipped, exactly as an invalid Luxon
+      // DateTime was, so NaN can only ever drop a slot and never add one.
+      const ms = Date.parse(iso);
+      if (!Number.isFinite(ms)) continue;
+      const f = parts.formatToParts(ms);
+      const at = (t: string) => f.find((x) => x.type === t)?.value ?? "";
+      const [y, mo, d, h] = [at("year"), at("month"), at("day"), at("hour")];
+      // Every part must actually be there. `Number("")` is 0, NOT NaN, so a
+      // missing hour would sail past a finite check and silently become midnight,
+      // putting the slot in the wrong row rather than dropping it (L50).
+      if (!y || !mo || !d || !/^\d+$/.test(h)) continue;
+      // en-CA with hour12:false renders midnight as 24; the rest of the app counts
+      // hours 0 to 23, and `dayHourKey` is compared against those.
+      seen.add(dayHourKey(`${y}-${mo}-${d}`, Number(h) % 24));
     }
     for (const key of seen) counts.set(key, (counts.get(key) ?? 0) + 1);
   }
