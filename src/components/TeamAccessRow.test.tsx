@@ -5,15 +5,24 @@ import { render, screen } from "@testing-library/react";
 // #1761: on the Team access panel the Access dropdown and the Give access button
 // sat lower than the email field they share a row with.
 //
-// The cause is structural, not a stray margin. The row aligns its children on
+// The cause was structural, not a stray margin. The row aligns its children on
 // their BOTTOM edges, and the email column was a div holding a label, the input
-// AND the hint sentence, so its bottom edge was the bottom of the hint. The
-// Access column has no hint, so its bottom edge is the bottom of the select.
-// Aligning those two bottoms pushed the select and the button down by exactly the
-// hint's height.
+// AND a hint sentence, so its bottom edge was the bottom of the hint. The Access
+// column has no hint, so its bottom edge is the bottom of the select. Aligning
+// those two bottoms pushed the select and the button down by exactly the hint's
+// height.
 //
-// A unit test cannot measure alignment, so it pins the CAUSE: the hint must not
-// sit inside the aligned column. That is the thing that can silently come back.
+// #1889 REMOVED THE HINT, along with the label text and the placeholder. Two of
+// the three tests in this file were about the hint's position and its
+// `aria-describedby`, and their whole content was the thing being removed, so
+// they are deleted rather than adjusted (L252). What replaced them lives in
+// TeamAccessPanel.test.tsx: the field keeps an accessible name from a visually
+// hidden label, and there is no describedby left pointing at nothing.
+//
+// What survives is the rule the hint broke, which is still worth pinning because
+// the next thing added to that column breaks it again in exactly the same way:
+// the three controls share one row, so they align against each other rather than
+// each finding its own baseline.
 
 vi.mock("@/app/admin/actions", () => ({
   grantStaffAccess: vi.fn(),
@@ -25,18 +34,6 @@ import { TeamAccessPanel } from "@/components/TeamAccessPanel";
 const props = { outcome: null, outcomeEmail: "", outcomeRole: "", pending: [] };
 
 describe("the Team access grant row", () => {
-  it("keeps the hint out of the column the row aligns on", () => {
-    render(<TeamAccessPanel {...props} />);
-
-    const input = screen.getByLabelText(/Work email address/i);
-    const hint = screen.getByText(/The address they sign in to Google with/i);
-    const alignedColumn = input.parentElement!;
-
-    // If the hint is inside the input's own column, that column's bottom edge is
-    // the hint's bottom, and everything else on the row is pushed down to meet it.
-    expect(alignedColumn.contains(hint)).toBe(false);
-  });
-
   it("keeps the three controls on one row as siblings", () => {
     render(<TeamAccessPanel {...props} />);
 
@@ -62,16 +59,18 @@ describe("the Team access grant row", () => {
     expect(columnOf(button)).toBe(columnOf(input));
   });
 
-  it("still names the hint as the field's description", () => {
+  // The reason the rule above still matters after the hint is gone: nothing may
+  // be added under the input inside its own column, or the row tilts again.
+  it("holds nothing under the input inside the column the row aligns on", () => {
     render(<TeamAccessPanel {...props} />);
 
-    // Moving the hint out of the column must not move it out of the accessibility
-    // tree: a sighted reader still sees it under the row, and a screen reader
-    // still hears it with the field.
     const input = screen.getByLabelText(/Work email address/i);
-    const describedBy = input.getAttribute("aria-describedby");
-    expect(describedBy).toBeTruthy();
-    const hint = document.getElementById(describedBy!);
-    expect(hint?.textContent).toMatch(/sign in to Google with/i);
+    const alignedColumn = input.parentElement as HTMLElement;
+    // The visually hidden label is allowed (it draws nothing). Anything that
+    // OCCUPIES space below the input is what pushes the row.
+    const visible = [...alignedColumn.children].filter(
+      (el) => el !== input && !el.className.includes("sr-only"),
+    );
+    expect(visible).toHaveLength(0);
   });
 });
