@@ -260,6 +260,20 @@ export interface Database {
         };
         Returns: number;
       };
+      /** Replaces a bucket's manual members in ONE transaction (#1930, migration
+       *  0114), so a failure cannot leave a routing pool with nobody in it while
+       *  the save reads as done. Unlike `replace_availability_rules` it does NOT
+       *  refuse an empty set: a bucket with no manual members routes by attribute
+       *  criteria instead, which is the ordinary case. Returns how many members
+       *  landed, deduplicated, so the caller can refuse to claim success on a
+       *  count it did not ask for. */
+      replace_bucket_members: {
+        Args: {
+          p_bucket_id: string;
+          p_user_ids: string[];
+        };
+        Returns: number;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
