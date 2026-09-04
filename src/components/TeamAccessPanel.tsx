@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { grantStaffAccess } from "@/app/admin/actions";
 import { GRANTABLE_STAFF_ROLES, staffAccessMessage } from "@/lib/admin/staff-access";
 import type { StaffAccessOutcome } from "@/lib/admin/staff-access";
@@ -74,15 +75,28 @@ export function TeamAccessPanel({
         </div>
       )}
 
-      {/* #1761: the hint sits UNDER the row, not inside the email column.
-          The row aligns its children on their bottom edges, so a hint inside that
-          column made the column's bottom edge the hint's bottom, and the select
-          and the button were pushed down by exactly the hint's height to meet it.
-          It stays the field's aria-describedby wherever it sits in the DOM. */}
+      {/* #1889: three pieces of copy came off this field. The
+          "Work email address" label (we know what it is), the
+          `firstname.lastname@trypennie.com` placeholder (not our address format,
+          so it read as instruction and was wrong), and the "The address they sign
+          in to Google with." hint, which said the label again.
+
+          THE LABEL ELEMENT STAYS, visually hidden. It is what a screen reader
+          announces for this input, and deleting it leaves an unnamed edit box,
+          which fails 4.1.2 and 3.3.2. Nothing changes on screen.
+
+          The `aria-describedby` went with the hint in the same change. A
+          describedby pointing at an element that does not exist reads no
+          description and raises no error anywhere, so it looks fine.
+
+          #1761's note about the hint's position is gone with the hint. What it
+          was protecting still holds: this row aligns its children on their bottom
+          edges, so anything added inside the email column pushes the select and
+          the button down by its height to meet it. */}
       <form action={grantStaffAccess}>
         <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
-          <label className={labelCls} htmlFor="staff-email">
+          <label className="sr-only" htmlFor="staff-email">
             Work email address
           </label>
           <input
@@ -92,8 +106,6 @@ export function TeamAccessPanel({
             required
             autoComplete="off"
             spellCheck={false}
-            placeholder="firstname.lastname@trypennie.com"
-            aria-describedby="staff-email-hint"
             className={`${inputCls} w-full`}
           />
         </div>
@@ -117,18 +129,19 @@ export function TeamAccessPanel({
           Give access
         </SubmitButton>
         </div>
-        <p id="staff-email-hint" className="mt-1 text-xs text-fg-muted">
-          The address they sign in to Google with.
-        </p>
       </form>
 
       <div className="mt-6 border-t border-border pt-4">
-        <h3 className="mb-1 text-sm font-semibold">Waiting for a first sign in</h3>
-        <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
-          Access nobody has used yet. A long wait usually means the address is not
-          the one they actually sign in with, which looks exactly like nothing
-          happening at all.
-        </p>
+        {/* #1890: the paragraph that used to sit here explained the heading. Each
+            row already carries the address, the access level, how long they have
+            waited, a "Check this address" flag when the wait is long, and the
+            lookalike account when there is one, so a reader has everything it was
+            spelling out.
+
+            It was also the only thing separating the heading from the first row,
+            so the heading takes the gap it was providing. `mb-1` was written on
+            the assumption a paragraph followed. */}
+        <h3 className="mb-3 text-sm font-semibold">Waiting for a first sign in</h3>
         <PendingList pending={pending} />
       </div>
     </section>
@@ -159,27 +172,82 @@ function PendingList({ pending }: { pending: PendingAccessRow[] | null }) {
       </p>
     );
   }
+  // #1891: a real table, not a flow row.
+  //
+  // Each person was one `flex flex-wrap` row, where every item's position is set
+  // by the total width of everything before it. The addresses vary a lot in
+  // length (`geoff@trypennie.com` against `mrasmussen@trypennie.com`), so the
+  // access pill, the wait and the flag started at a different x on every row.
+  // That is not a spacing value to nudge: a flow row has no columns to align.
+  // `flex-wrap` also dropped the flag onto a second line on some rows and not
+  // others, so the rows stopped having the same SHAPE as well.
+  //
+  // Same shape as the roster table, which is the convention the rest of the
+  // admin already uses: a bounded min width inside a horizontally scrolling
+  // wrapper, so a narrow window scrolls sideways rather than reflowing.
   return (
-    <ul className="space-y-3">
-      {pending.map((row) => (
-        <li key={row.id} className="rounded-md border border-border px-4 py-3">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <span className="text-sm font-semibold text-fg">{row.email}</span>
-            <Pill variant={`role-${row.role}` as PillVariant}>{roleLabel(row.role)}</Pill>
-            <span className="text-xs tabular-nums text-fg-muted">
-              {pendingWaitText(row.waitedDays)}
-            </span>
-            {row.stale && (
-              // The word carries the meaning; the outline is only reinforcement,
-              // so the flag survives being read without colour.
-              <Pill variant="status-error">Check this address</Pill>
-            )}
-          </div>
-          {row.name && <p className="mt-1 text-xs text-fg-muted">{row.name}</p>}
-          {row.lookalike && <Lookalike row={row} lookalike={row.lookalike} />}
-        </li>
-      ))}
-    </ul>
+    <div className="overflow-x-auto rounded-md border border-border">
+      <table className="w-full min-w-[560px] text-sm">
+        <thead>
+          <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
+            <th className="px-4 py-2.5 font-semibold">Person</th>
+            <th className="px-3 py-2.5 font-semibold">Access</th>
+            {/* Right aligned in the HEADER as well as the cell. The two are one
+                decision made at two declaration sites, which is how they drift
+                (L553). */}
+            <th className="px-3 py-2.5 text-right font-semibold">Waiting</th>
+            <th className="px-3 py-2.5 font-semibold">Flag</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pending.map((row, i) => (
+            <Fragment key={row.id}>
+              {/* The separator is on the PERSON row rather than `divide-y` on the
+                  body, because a lookalike gets its own row directly beneath its
+                  person and a line between them would break the one thing that
+                  has to survive being made a table: which row the remedy belongs
+                  to. */}
+              <tr className={i > 0 ? "border-t border-border" : undefined}>
+                <td className="px-4 py-3">
+                  {/* Name over address, stacked the way the roster's Member cell
+                      does it: it reads when the name is there and leaves no gap
+                      when it is not. */}
+                  {row.name && <p className="font-semibold text-fg">{row.name}</p>}
+                  <p className={row.name ? "text-xs text-fg-muted" : "font-semibold text-fg"}>
+                    {row.email}
+                  </p>
+                </td>
+                <td className="px-3 py-3">
+                  <Pill variant={`role-${row.role}` as PillVariant} alignToColumn>
+                    {roleLabel(row.role)}
+                  </Pill>
+                </td>
+                <td className="px-3 py-3 text-right tabular-nums text-fg-muted">
+                  {pendingWaitText(row.waitedDays)}
+                </td>
+                <td className="px-3 py-3">
+                  {row.stale && (
+                    // The word carries the meaning; the outline is only
+                    // reinforcement, so the flag survives being read without
+                    // colour.
+                    <Pill variant="status-error" alignToColumn>
+                      Check this address
+                    </Pill>
+                  )}
+                </td>
+              </tr>
+              {row.lookalike && (
+                <tr>
+                  <td colSpan={4} className="px-4 pb-3">
+                    <Lookalike row={row} lookalike={row.lookalike} />
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

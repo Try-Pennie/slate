@@ -46,15 +46,36 @@ function panel(over: Partial<Parameters<typeof TeamAccessPanel>[0]> = {}) {
 }
 
 describe("TeamAccessPanel", () => {
-  it("labels the address and access controls so they are reachable by their visible text", () => {
+  // #1889 stripped three pieces of copy off the email field: the label text, the
+  // placeholder (which was not our address format, so it read as instruction and
+  // was wrong) and the hint. The label ELEMENT stays, visually hidden, because it
+  // is what a screen reader announces and an unnamed edit box fails 4.1.2.
+  //
+  // The describedby assertion that used to sit here is gone rather than adjusted:
+  // its whole content was the hint being removed (L252).
+  it("keeps an accessible name on the address field with nothing shown above it", () => {
     render(panel());
-    expect(screen.getByLabelText(/work email address/i)).toBeTruthy();
-    expect(screen.getByLabelText(/^access$/i)).toBeTruthy();
-    // The hint is associated, not merely adjacent.
     const input = screen.getByLabelText(/work email address/i) as HTMLInputElement;
-    const describedBy = input.getAttribute("aria-describedby");
-    expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy!)?.textContent).toMatch(/sign in to Google/i);
+    expect(input).toBeTruthy();
+    expect(screen.getByLabelText(/^access$/i)).toBeTruthy();
+
+    // Hidden from sight, not from assistive tech.
+    expect(document.querySelector('label[for="staff-email"]')?.className).toContain("sr-only");
+    // A describedby pointing at an element that does not exist reads no
+    // description and raises no error anywhere, so it looks fine.
+    expect(input.getAttribute("aria-describedby")).toBeNull();
+    expect(document.getElementById("staff-email-hint")).toBeNull();
+    // And the placeholder is gone with it: we know what an email looks like.
+    expect(input.getAttribute("placeholder")).toBeNull();
+  });
+
+  // #1890: the paragraph over the pending list explained its own heading, and
+  // every row already carries what it was spelling out.
+  it("does not explain what waiting for a first sign in means", () => {
+    render(panel());
+    expect(screen.getByRole("heading", { name: /waiting for a first sign in/i })).toBeTruthy();
+    expect(screen.queryByText(/Access nobody has used yet/i)).toBeNull();
+    expect(screen.queryByText(/looks exactly like nothing happening/i)).toBeNull();
   });
 
   // #1849: the control is a picker of our own now, so its rows exist only while
@@ -149,5 +170,123 @@ describe("TeamAccessPanel", () => {
     const status = screen.getByRole("status");
     expect(status.textContent).toMatch(/someone@trypennie\.com/);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// #1891. Five rows, and the access pill, the wait and the flag started at a
+// different horizontal position on every one of them.
+//
+// Each person was one `flex flex-wrap` row, where an item's position is set by
+// the total width of everything before it, so the varying address length decided
+// where the other three landed. That is not a spacing value to nudge: a flow row
+// has no columns to align. `flex-wrap` also dropped the flag onto a second line
+// on some rows and not others, so the rows stopped having the same shape too.
+describe("the waiting list is a table with columns (#1891)", () => {
+  const three = [
+    row({ id: "a", email: "geoff@trypennie.com", name: "Geoff Smith", waitedDays: 79 }),
+    row({ id: "b", email: "mrasmussen@trypennie.com", name: null, waitedDays: 83, stale: false }),
+    row({ id: "c", email: "kim@trypennie.com", name: "Kim Ito", waitedDays: 3, stale: false }),
+  ];
+
+  it("reads as a table with named column headers, so the columns exist at all", () => {
+    render(panel({ pending: three }));
+    const table = screen.getByRole("table");
+    expect(table).toBeTruthy();
+    for (const name of ["Person", "Access", "Waiting", "Flag"]) {
+      expect(screen.getByRole("columnheader", { name })).toBeTruthy();
+    }
+  });
+
+  it("puts each row's four values in the four columns, in the same order every time", () => {
+    render(panel({ pending: three }));
+    const bodyRows = screen.getAllByRole("row").filter((r) => r.querySelectorAll("td").length === 4);
+    expect(bodyRows).toHaveLength(3);
+
+    for (const r of bodyRows) {
+      const cells = [...r.querySelectorAll("td")];
+      // The comparison the flow row could not do: cell N is the same field on
+      // every row, whatever the address length in cell 1.
+      expect(cells).toHaveLength(4);
+    }
+    const first = [...bodyRows[0].querySelectorAll("td")].map((c) => c.textContent?.trim());
+    expect(first[0]).toContain("Geoff Smith");
+    expect(first[0]).toContain("geoff@trypennie.com");
+    expect(first[1]).toBe("admin");
+    expect(first[2]).toMatch(/79 days/);
+    expect(first[3]).toMatch(/Check this address/);
+    // An unflagged row leaves the column empty rather than shifting the others.
+    expect([...bodyRows[1].querySelectorAll("td")][3].textContent).toBe("");
+  });
+
+  it("aligns the wait on its digits, in the header as well as the cells", () => {
+    render(panel({ pending: three }));
+    const header = screen.getByRole("columnheader", { name: "Waiting" });
+    expect(header.className).toContain("text-right");
+    const cell = [...screen.getAllByRole("row").filter((r) => r.querySelectorAll("td").length === 4)[0]
+      .querySelectorAll("td")][2];
+    // Both, because a column's header alignment and its cells' are one fact set
+    // at two independent declaration sites (L553).
+    expect(cell.className).toContain("text-right");
+    expect(cell.className).toContain("tabular-nums");
+  });
+
+  it("renders an address with no name without leaving a gap where the name would be", () => {
+    render(panel({ pending: [three[1]] }));
+    const cell = screen.getAllByRole("cell")[0];
+    expect(cell.textContent?.trim()).toBe("mrasmussen@trypennie.com");
+  });
+
+  it("keeps a lookalike attached to the person it is about", () => {
+    render(
+      panel({
+        pending: [
+          three[2],
+          row({
+            id: "d",
+            email: "geof.smith@trypennie.com",
+            name: "Geoff Smith",
+            lookalike: { id: "u2", email: "geoff.smith@trypennie.com", role: "agent" },
+          }),
+        ],
+      }),
+    );
+    const rows = screen.getAllByRole("row");
+    const person = rows.find((r) => r.textContent?.includes("geof.smith@trypennie.com"));
+    const panelRow = rows.find((r) => r.querySelector("td")?.getAttribute("colspan") === "4");
+    expect(person).toBeTruthy();
+    expect(panelRow).toBeTruthy();
+    // Directly beneath its person, spanning every column, and with no separator
+    // between the two: which row the remedy belongs to is the one thing that has
+    // to survive being made a table.
+    expect(person!.nextElementSibling).toBe(panelRow);
+
+    // The MECHANISM, not one row's class list. `divide-y` on the body draws a
+    // line between every pair of rows, including this pair, and it does it from
+    // the body's class rather than the row's, so an assertion that only reads
+    // `panelRow.className` passes while a line is drawn straight through the
+    // thing this test is about (L63).
+    const body = panelRow!.parentElement as HTMLElement;
+    expect(body.tagName).toBe("TBODY");
+    expect(body.className).not.toContain("divide-y");
+    expect(panelRow!.className).not.toContain("border-t");
+    // And the people are still separated FROM EACH OTHER, so removing the body
+    // rule did not just delete every line on the table.
+    const people = rows.filter((r) => r.querySelectorAll("td").length === 4);
+    expect(people[0].className).not.toContain("border-t");
+    expect(people[1].className).toContain("border-t");
+  });
+
+  // The three states stay distinct, and the unreadable one is not a row inside
+  // the table: it is the panel saying it cannot answer.
+  it("shows the unreadable roster as an alert rather than as a table", () => {
+    render(panel({ pending: null }));
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toMatch(/not the same as nobody waiting/i);
+  });
+
+  it("shows the empty state as a sentence rather than an empty table", () => {
+    render(panel({ pending: [] }));
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText(/has signed in at least once/i)).toBeTruthy();
   });
 });
