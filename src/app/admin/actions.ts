@@ -49,6 +49,7 @@ import { loadBusinessHoursRows } from "@/lib/booking/business-hours-load";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
+import { EVENT_TYPE_DEFAULTS } from "@/lib/booking/event-type-defaults";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
@@ -354,20 +355,102 @@ function num(form: FormData, key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * Create an event type (#1950).
+ *
+ * The defaults come from EVENT_TYPE_DEFAULTS rather than from a fallback
+ * argument per field, so the number a blank box gets is the same number the box
+ * showed as its placeholder and the same one the column declares.
+ *
+ * It REFUSES three things it used to accept quietly:
+ *
+ * A BLANK NAME. It used to fall back to "Consult", so an empty Title created a
+ * record named after a word nobody typed. The name is what a lead reads on the
+ * invite, so there is no safe value to invent (L67).
+ *
+ * A NAME AN EVENT TYPE ALREADY HAS. There is no unique index on
+ * `(org_id, name)`, so nothing stopped a second "Senior Loan Advisor Call" with
+ * different timings, and the form used to prefill the existing record's title,
+ * which made pressing Add with nothing edited the way to produce one. The read
+ * goes through `unwrap`: an unreadable table must refuse rather than resolve to
+ * an empty list, because empty here means "no name is taken" and would let the
+ * duplicate through exactly when the database is unwell (L105).
+ *
+ * A FAILED INSERT. The insert's error was neither bound nor read, so a rejected
+ * write returned normally and the page redrew as though the event type existed.
+ */
 export async function createEventType(form: FormData): Promise<void> {
   const admin = await requireAdmin();
-  await supabaseAdmin().from("event_types").insert({
-    org_id: admin.org_id,
-    name: String(form.get("name") ?? "Consult"),
-    description: String(form.get("description") ?? "").trim() || null,
-    regal_type: String(form.get("regal_type") ?? "call").trim() || "call",
-    duration_min: num(form, "duration_min", 30),
-    buffer_before_min: num(form, "buffer_before_min", 0),
-    buffer_after_min: num(form, "buffer_after_min", 0),
-    min_notice_min: num(form, "min_notice_min", 120),
-    daily_cap: form.get("daily_cap") ? num(form, "daily_cap", 0) : null,
-    slot_interval_min: num(form, "slot_interval_min", 15),
+  const db = supabaseAdmin();
+
+  const name = String(form.get("name") ?? "").trim();
+  if (!name) {
+    throw new Error("An event type needs a title, which is the name a lead reads on the invite.");
+  }
+
+  const existing = unwrap(
+    await db.from("event_types").select("name").eq("org_id", admin.org_id),
+    "createEventType duplicate name check",
+  ) as { name: string }[] | null;
+  const taken = (existing ?? []).some(
+    (e) => e.name.trim().toLowerCase() === name.toLowerCase(),
+  );
+  if (taken) {
+    throw new Error(
+      `An event type called ${name} already exists. Edit that one, or give this a different title.`,
+    );
+  }
+
+  const { data: created, error } = await db
+    .from("event_types")
+    .insert({
+      org_id: admin.org_id,
+      name,
+      description: String(form.get("description") ?? "").trim() || null,
+      regal_type:
+        String(form.get("regal_type") ?? "").trim() || EVENT_TYPE_DEFAULTS.regal_type,
+      duration_min: num(form, "duration_min", EVENT_TYPE_DEFAULTS.duration_min),
+      buffer_before_min: num(form, "buffer_before_min", EVENT_TYPE_DEFAULTS.buffer_before_min),
+      buffer_after_min: num(form, "buffer_after_min", EVENT_TYPE_DEFAULTS.buffer_after_min),
+      min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
+      daily_cap: form.get("daily_cap") ? num(form, "daily_cap", 0) : null,
+      slot_interval_min: num(
+        form,
+        "slot_interval_min",
+        EVENT_TYPE_DEFAULTS.slot_interval_min,
+      ),
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    throw new Error(`The event type could not be created: ${error.message}`);
+  }
+  const row = created as { id: string } | null;
+  if (!row) {
+    throw new Error("The event type could not be created: the database returned no row.");
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "event_type.created",
+    details: {
+      event_type_id: row.id,
+      name,
+      duration_min: num(form, "duration_min", EVENT_TYPE_DEFAULTS.duration_min),
+      slot_interval_min: num(
+        form,
+        "slot_interval_min",
+        EVENT_TYPE_DEFAULTS.slot_interval_min,
+      ),
+      min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
+    },
   });
+
+  // The form is on /admin/event-types, so that is the page whose list has to
+  // redraw. The Overview keeps its refresh because it names event types too.
+  revalidatePath("/admin/event-types");
   revalidatePath("/admin");
 }
 

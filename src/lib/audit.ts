@@ -44,6 +44,10 @@ export const AUDIT_ACTIONS = [
   // other trace anywhere.
   "bucket.created",
   "bucket.updated",
+  // #1950: an event type sets how long every call in it runs, how far apart the
+  // offered times sit and how much notice a lead needs, so creating one changes
+  // what every bucket pointed at it offers.
+  "event_type.created",
   "monitor.settings",
   "reason.options",
   "booking.settings",

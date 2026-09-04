@@ -226,6 +226,7 @@ const eventTypeStore = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/availability/event-type-store", () => eventTypeStore);
 
+import { EVENT_TYPE_DEFAULTS } from "@/lib/booking/event-type-defaults";
 import {
   grantStaffAccess,
   setUserRole,
@@ -249,6 +250,7 @@ import {
   setEventDescription,
   createBucket,
   updateBucket,
+  createEventType,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
@@ -1812,5 +1814,96 @@ describe("an action refreshes the page its form is on (#1769)", () => {
   it("keeps refreshing the Overview as well", async () => {
     await setUserRole(form({ user_id: "u2", role: "manager" })).catch(() => {});
     expect(revalidatePath).toHaveBeenCalledWith("/admin");
+  });
+});
+
+describe("creating an event type refuses rather than inventing (#1950)", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+    // One event type already exists, which is the state the page is read in.
+    dbState.rowsByTable = { event_types: [{ name: "Senior Loan Advisor Call" }] };
+    dbState.insertReturns = { id: "et-new" };
+    dbState.insertReturnError = null;
+  });
+
+  const add = (over: Record<string, string> = {}) =>
+    form({ name: "Quick check in", duration_min: "20", ...over });
+
+  it("writes the event type when the title is new", async () => {
+    await createEventType(add());
+    const row = insert.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(row.name).toBe("Quick check in");
+    expect(row.duration_min).toBe(20);
+  });
+
+  it("applies the shared default to a field left blank, not a number of its own", async () => {
+    await createEventType(add({ duration_min: "", slot_interval_min: "" }));
+    const row = insert.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(row.duration_min).toBe(EVENT_TYPE_DEFAULTS.duration_min);
+    expect(row.slot_interval_min).toBe(EVENT_TYPE_DEFAULTS.slot_interval_min);
+    expect(row.min_notice_min).toBe(EVENT_TYPE_DEFAULTS.min_notice_min);
+    expect(row.regal_type).toBe(EVENT_TYPE_DEFAULTS.regal_type);
+  });
+
+  it("refuses a blank title instead of naming the record itself", async () => {
+    await expect(createEventType(add({ name: "" }))).rejects.toThrow(/needs a title/i);
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("refuses a title an event type already has", async () => {
+    await expect(
+      createEventType(add({ name: "Senior Loan Advisor Call" })),
+    ).rejects.toThrow(/already exists/i);
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  // The duplicate is matched on the NAME rather than on the exact bytes, since
+  // "senior loan advisor call " and the record differ by nothing a reader of the
+  // list could see.
+  it("refuses a title that differs only in case or spacing", async () => {
+    await expect(
+      createEventType(add({ name: "  senior loan advisor CALL  " })),
+    ).rejects.toThrow(/already exists/i);
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  // The refusal has to fail CLOSED. An unreadable table resolving to an empty
+  // list means "no name is taken", which would let the duplicate through exactly
+  // when the database is unwell.
+  it("refuses when it cannot read what names are taken", async () => {
+    dbState.errorByTable = { event_types: { message: "read timeout" } };
+    await expect(createEventType(add())).rejects.toThrow(/read failed/i);
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  // The message has to name the DATABASE's own reason, not merely say the create
+  // failed. The no-row guard below says "could not be created" too, so an
+  // assertion on that phrase alone is satisfied by a version that ignores the
+  // error entirely and falls through to it (L140), which is what happened when
+  // this was first written.
+  it("refuses loudly when the insert fails, rather than redrawing as saved", async () => {
+    dbState.insertReturnError = { message: "permission denied" };
+    await expect(createEventType(add())).rejects.toThrow(/permission denied/);
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the insert returns no row", async () => {
+    dbState.insertReturns = null;
+    await expect(createEventType(add())).rejects.toThrow(/no row/i);
+  });
+
+  it("records what was created, with the timings that decide every booking", async () => {
+    await createEventType(add({ slot_interval_min: "10" }));
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(entry.action).toBe("event_type.created");
+    const details = entry.details as Record<string, unknown>;
+    expect(details.event_type_id).toBe("et-new");
+    expect(details.name).toBe("Quick check in");
+    expect(details.slot_interval_min).toBe(10);
+  });
+
+  it("refreshes the page its own form is on", async () => {
+    await createEventType(add());
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/event-types");
   });
 });
