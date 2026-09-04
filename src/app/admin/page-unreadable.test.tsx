@@ -196,6 +196,23 @@ const HEALTHY: Record<string, Result> = {
  */
 const eqCalls: Record<string, [string, unknown][][]> = {};
 
+/**
+ * Every `.in(column, values)` and `.range(from, to)` per read (#1933).
+ *
+ * The members read is scoped by bucket id and paginated. The fake does neither,
+ * so the rows it returns look the same however the query was built, and the only
+ * honest assertions are on the query and on whether a SECOND page was asked for.
+ */
+const inCalls: Record<string, [string, unknown][][]> = {};
+const rangeCalls: Record<string, [number, number][]> = {};
+
+/**
+ * A table that answers one array per PAGE, so pagination can be exercised.
+ * `pagedByTable.bucket_members = [firstPage, secondPage]` makes range 0 return
+ * the first and range 1000 the second, which is what a truncating read cannot do.
+ */
+const pagedByTable: Record<string, unknown[][]> = {};
+
 /** Every eq filter applied to a table, flattened, when the read does not matter. */
 const eqAnyRead = (table: string): [string, unknown][] => (eqCalls[table] ?? []).flat();
 
@@ -209,6 +226,8 @@ const everyReadHas = (table: string, column: string, value: unknown): boolean =>
 function mockDb(overrides: Record<string, Result> = {}) {
   const byTable = { ...HEALTHY, ...overrides };
   for (const k of Object.keys(eqCalls)) delete eqCalls[k];
+  for (const k of Object.keys(inCalls)) delete inCalls[k];
+  for (const k of Object.keys(rangeCalls)) delete rangeCalls[k];
   admin.supabaseAdmin.mockReturnValue({
     from: (table: string) => {
       const result = byTable[table] ?? { data: [], error: null };
@@ -220,9 +239,27 @@ function mockDb(overrides: Record<string, Result> = {}) {
       // A fresh group per `from(table)` call, so two reads of one table stay apart.
       const thisRead: [string, unknown][] = [];
       (eqCalls[table] ??= []).push(thisRead);
+      const thisIn: [string, unknown][] = [];
+      (inCalls[table] ??= []).push(thisIn);
+      let page = -1;
       b.eq = (column: string, value: unknown) => {
         thisRead.push([column, value]);
         return b;
+      };
+      b.in = (column: string, values: unknown) => {
+        thisIn.push([column, values]);
+        return b;
+      };
+      b.range = (from: number, to: number) => {
+        (rangeCalls[table] ??= []).push([from, to]);
+        page = rangeCalls[table]!.length - 1;
+        return b;
+      };
+      /** The page this read should answer with, when the table is paged. */
+      const pageData = () => {
+        const pages = pagedByTable[table];
+        if (!pages) return undefined;
+        return pages[page] ?? [];
       };
       b.maybeSingle = () => {
         single = true;
@@ -230,6 +267,10 @@ function mockDb(overrides: Record<string, Result> = {}) {
       };
       b.single = b.maybeSingle;
       b.then = (resolve: (r: Result) => unknown) => {
+        const paged = pageData();
+        if (paged !== undefined && !result.error) {
+          return Promise.resolve({ data: paged, error: null }).then(resolve);
+        }
         if (table === "webhook_endpoints" && !single) {
           // The list read for the delivery log: an array, or the same error.
           return Promise.resolve(
@@ -361,6 +402,69 @@ describe("the buckets page reads the population it measures (#1929)", () => {
     // twice and only the picker filtered: the merged form was answered by that
     // read and passed with the editor's filter removed.
     expect(everyReadHas("buckets", "is_test", false)).toBe(true);
+  });
+});
+
+// #1933. The memberships were read as `db.from("bucket_members").select("*")`:
+// no scope, no limit, so capped at one 1000 row PostgREST page.
+//
+// Truncation here does not under-count, it DELETES. `replaceBucketMembers`
+// removes every row for a bucket and re-inserts what the form posted, and the
+// form posts what the picker was rendered with, which came from this read. A
+// membership past the cap is invisible, absent from the form, and removed by the
+// next save of that bucket (L211).
+describe("the memberships read is scoped and paged (#1933)", () => {
+  const member = (i: number) => ({ id: `m${i}`, bucket_id: "b1", user_id: `u${i}`, weight: 1, active: true });
+
+  it("scopes the read to this org's buckets, since the table has no org column", async () => {
+    mockDb();
+    render(await BucketsPage(props));
+
+    const scoped = (inCalls.bucket_members ?? []).flat();
+    expect(scoped.map(([c]) => c)).toContain("bucket_id");
+    // The CONTROL: the recorder saw the read at all, so the assertion above is
+    // about a read that happened (L98).
+    expect((rangeCalls.bucket_members ?? []).length).toBeGreaterThan(0);
+  });
+
+  // The behavioural half. A full first page is the only thing that tells a
+  // paginating read from a truncating one, and the fake answers per page so the
+  // second request has somewhere to come from.
+  it("asks for a second page when the first comes back full", async () => {
+    pagedByTable.bucket_members = [
+      Array.from({ length: 1000 }, (_, i) => member(i)),
+      [member(1000)],
+    ];
+    mockDb();
+    render(await BucketsPage(props));
+
+    const ranges = rangeCalls.bucket_members ?? [];
+    expect(ranges.length).toBe(2);
+    expect(ranges[0]).toEqual([0, 999]);
+    expect(ranges[1]).toEqual([1000, 1999]);
+    delete pagedByTable.bucket_members;
+  });
+
+  it("stops after a short page rather than paging forever", async () => {
+    pagedByTable.bucket_members = [[member(0)]];
+    mockDb();
+    render(await BucketsPage(props));
+
+    expect((rangeCalls.bucket_members ?? []).length).toBe(1);
+    delete pagedByTable.bucket_members;
+  });
+
+  // An unreadable BUCKETS read leaves no ids to scope to, so the memberships are
+  // unreadable too rather than reported as none: an empty membership list is the
+  // reassuring reading and it is the one the #1629 gate exists to refuse.
+  it("does not report no memberships when the buckets could not be read", async () => {
+    mockDb({ buckets: fails("buckets read exploded") });
+    render(await BucketsPage(props));
+
+    expect(screen.getByText(/buckets could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/New bucket/i)).toBeNull();
+    // And it never went looking with no ids.
+    expect((rangeCalls.bucket_members ?? []).length).toBe(0);
   });
 });
 
