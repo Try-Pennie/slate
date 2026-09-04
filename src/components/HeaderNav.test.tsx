@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { badgeCountCls } from "@/components/ui/styles";
+import { badgeCountCls, badgeCountInkCls } from "@/components/ui/styles";
 import { render, screen } from "@testing-library/react";
 
 const nav = vi.hoisted(() => ({ path: "/admin" }));
@@ -80,9 +80,23 @@ describe("the pending count wears the measured badge treatment (#1881)", () => {
     render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 3 }]} />);
 
     // The visible pill is aria-hidden (the sr-only sentence beside it carries the
-    // meaning), so it is found by its text rather than by a role.
-    const pill = screen.getByText("3");
-    expect(pill.className).toBe(badgeCountCls);
+    // meaning), so it is found by its text rather than by a role. The text sits in
+    // its own span since #1921, which carries the optical nudge, so the PILL is
+    // that span's parent.
+    const ink = screen.getByText("3");
+    expect(ink.className).toBe(badgeCountInkCls);
+    expect(ink.parentElement?.className).toBe(badgeCountCls);
+  });
+
+  // #1921: the nudge is on the DIGITS. On the pill it would move the whole badge,
+  // which is the thing that is already in the right place.
+  it("puts the optical nudge on the digits and not on the pill", () => {
+    nav.path = "/admin";
+    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 7 }]} />);
+
+    const ink = screen.getByText("7");
+    expect(ink.className).toMatch(/translate-y/);
+    expect(ink.parentElement?.className).not.toMatch(/translate-y/);
   });
 
   it("declares no theme override of its own, so the pair cannot drift", () => {
