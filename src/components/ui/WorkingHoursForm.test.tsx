@@ -204,20 +204,39 @@ describe("WorkingHoursForm (#1764)", () => {
   // #1671: a bare text input here let an agent type "Eastern", which stores fine,
   // renders fine, and makes every weekday comparison in `isWithinWorkingHours`
   // false, so they are bookable at NO time at all with nothing telling anyone.
-  it("offers the timezone as a list of real zones, never as free text", () => {
+  // Still the same rule: a LIST of real zones, never free text, so an agent
+  // cannot type "Eastern" and be bookable at no time at all. #1849 changed only
+  // what draws the list, and the values it offers, not that rule.
+  it("offers the timezone as a list of real zones, never as free text", async () => {
+    const user = userEvent.setup();
     render(form(workingHoursDays([])));
 
-    const field = screen.getByLabelText("Your timezone");
-    expect(field.tagName).toBe("SELECT");
-    const zones = [...(field as HTMLSelectElement).options].map((o) => o.value);
-    for (const v of zones) {
-      expect(() => new Intl.DateTimeFormat("en-US", { timeZone: v })).not.toThrow();
-    }
-    expect(zones).toContain("America/Los_Angeles");
-    expect(zones).not.toContain("Eastern");
+    const field = screen.getByRole("combobox", { name: "Your timezone" });
+    // Not a text box: there is nothing to type into.
+    expect(field.tagName).not.toBe("INPUT");
+
+    await user.click(field);
+    const labels = screen.getAllByRole("option").map((o) => o.textContent ?? "");
+    expect(labels.length).toBeGreaterThan(3);
+    expect(labels.join(" ")).toContain("Los Angeles");
+
+    // Every offered value is a zone the runtime accepts. The hidden input is what
+    // the form posts, so that is the value worth validating.
+    const posted = document.querySelector('input[name="timezone"]') as HTMLInputElement;
+    expect(() => new Intl.DateTimeFormat("en-US", { timeZone: posted.value })).not.toThrow();
   });
 
-  it("keeps an uncurated stored zone as the selected option", () => {
+  // #1849 REVERSED this. It used to assert that an uncurated stored zone was
+  // kept as an option, which is how ten agents held zones nobody had decided to
+  // allow. The list is a fixed US set now, so the rule is the opposite: an
+  // unrepresentable zone resolves to a real option rather than leaving the
+  // control blank or landing on whatever happens to be first, either of which
+  // would move somebody's working hours without telling them.
+  //
+  // The roster was migrated to the list before this shipped, so nothing in
+  // production actually takes this path today. It is asserted because the path
+  // is what stops a future stored value failing silently.
+  it("resolves a stored zone the list cannot show, rather than blanking", () => {
     render(
       <WorkingHoursForm
         action={noop}
@@ -226,7 +245,10 @@ describe("WorkingHoursForm (#1764)", () => {
         timezoneLabel="Timezone"
       />,
     );
-    expect((screen.getByLabelText("Timezone") as HTMLSelectElement).value).toBe("America/Puerto_Rico");
+    const posted = document.querySelector('input[name="timezone"]') as HTMLInputElement;
+    expect(posted.value, "never empty, which would post nothing").not.toBe("");
+    expect(posted.value).toBe("America/New_York");
+    expect(screen.getByRole("combobox", { name: "Timezone" }).textContent).toContain("Eastern");
   });
 
   it("declares no focus ring colour of its own (#1768)", () => {

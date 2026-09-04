@@ -598,38 +598,17 @@ describe("ManageBooking", () => {
 // #1000: the searchable full-IANA fallback #219 gave the booker must also exist
 // on the manage/reschedule screen, so a lead whose device zone is wrong AND whose
 // correct zone isn't curated can still pick it here too.
-describe("ManageBooking timezone fallback", () => {
-  it("applies a non-curated zone picked from the 'more zones' search and collapses it", async () => {
-    mockFetch({});
-    render(<ManageBooking {...baseProps} />);
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    expect(screen.getByRole("option", { name: /more zones/i })).toBeTruthy();
-
-    // Reveal the search, then type a real IANA zone that isn't in the curated list.
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Australia/Sydney" } });
-
-    // The zone is applied (the select now shows it) and the search collapses.
-    expect(select.value).toBe("Australia/Sydney");
-    expect(screen.queryByLabelText("Search all timezones")).toBeNull();
-  });
-
-  it("ignores an invalid zone typed into the fallback search (no bad zone applied)", async () => {
-    mockFetch({});
-    render(<ManageBooking {...baseProps} />);
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    const before = select.value;
-
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Not/AZone" } });
-
-    // Junk is rejected: the applied zone is unchanged and the search stays open.
-    expect(select.value).toBe(before);
-    expect(screen.getByLabelText("Search all timezones")).toBeTruthy();
-  });
-});
+// #1849 DELETED the "more zones" fallback tests that were here.
+//
+// They drove a searchable full IANA combobox that let anybody reach a zone
+// outside the curated list, and asserted that a valid pick applied and an
+// invalid one did not. The list is a fixed US set now, so a way out of it is not
+// a smaller version of that decision, it is the opposite, and a test whose whole
+// content is a reversed decision becomes the guard defending it (L252).
+//
+// What replaces them is in scripts/test-timezones.ts: the list does not grow for
+// anybody, and a zone outside it resolves to a named default rather than to a
+// blank control or to whatever happens to be first.
 
 // #1549: the manage page had the same dead end the booker lost in #1319. A lead who
 // clicks the link in their confirmation email to move their call can lose the time

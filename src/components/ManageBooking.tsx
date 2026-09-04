@@ -6,11 +6,9 @@ import { DateTime } from "luxon";
 import {
   deviceTimeZone,
   timezoneOptions,
-  allTimeZones,
-  ensureZonePresent,
-  isKnownTimeZone,
-  humanizeZone,
+  resolveZone,
 } from "@/lib/booking/timezones";
+import { SelectField } from "@/components/ui/SelectField";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
 import { AlertIcon } from "@/components/icons";
@@ -38,9 +36,6 @@ import {
   phoneSaved as phoneSaved_,
 } from "@/lib/booking/manage-copy";
 
-// Sentinel <option> value that reveals the searchable full-IANA fallback (#1000,
-// mirroring the Booker's #219 picker); a real zone id can never collide with it.
-const MORE_ZONES = "__more_zones__";
 
 interface ManageBookingProps {
   token: string;
@@ -138,19 +133,13 @@ export default function ManageBooking({
   theme = "light",
 }: ManageBookingProps) {
   const detectedZone = useMemo(() => deviceTimeZone(), []);
-  const [timeZone, setTimeZone] = useState(detectedZone);
-  const zoneOptions = useMemo(() => timezoneOptions(detectedZone), [detectedZone]);
-  // Curated list plus, if the lead picked a zone from the full-list fallback that
-  // isn't curated, that zone too (so the <select value> never blanks). #219/#1000.
-  const selectOptions = useMemo(
-    () => ensureZonePresent(zoneOptions, timeZone),
-    [zoneOptions, timeZone],
-  );
-  // The searchable "more zones" fallback: the full IANA set, revealed only when
-  // the lead's correct zone is neither detected nor curated. Empty on a runtime
-  // without Intl.supportedValuesOf, in which case the fallback is simply hidden.
-  const [showAllZones, setShowAllZones] = useState(false);
-  const allZones = useMemo(() => allTimeZones(), []);
+  // #1849: a fixed US list. A lead whose browser reports a non US zone is shown
+  // Eastern rather than their own, which is the trade Dan took: the booked
+  // instant is always UTC so nothing is mis-booked, but what they READ is a US
+  // clock. The "more zones" search went with it, since a way out of a fixed list
+  // is not a smaller version of fixing the list.
+  const [timeZone, setTimeZone] = useState(resolveZone(detectedZone).id);
+  const selectOptions = useMemo(() => timezoneOptions(), []);
   const [start, setStart] = useState(startsAt);
   // Pinned at mount, refreshed when a reschedule lands, so the countdown below is
   // a pure function of (start, nowMs) rather than of the wall clock mid-render.
@@ -400,61 +389,16 @@ export default function ManageBooking({
                   <label htmlFor="manage-tz" className="sr-only">
                     Timezone
                   </label>
-                  <select
+                  <SelectField
                     id="manage-tz"
+                    ariaLabel="Timezone"
                     value={timeZone}
-                    onChange={(e) => {
-                      if (e.target.value === MORE_ZONES) {
-                        setShowAllZones(true);
-                        return;
-                      }
-                      setTimeZone(e.target.value);
-                      setShowAllZones(false);
-                    }}
-                    className="-ml-1 min-h-11 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 text-sm text-fg hover:border-border"
-                  >
-                    {selectOptions.map((o) => (
-                      <option key={o.id} value={o.id}>
-                        {o.label}
-                      </option>
-                    ))}
-                    {allZones.length > 0 && <option value={MORE_ZONES}>More zones...</option>}
-                  </select>
+                    onChange={setTimeZone}
+                    className="max-w-full"
+                    options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
+                  />
                 </div>
               </div>
-              {showAllZones && allZones.length > 0 && (
-                <div className="mt-2 text-sm">
-                  <label htmlFor="manage-tz-search" className="sr-only">
-                    Search all timezones
-                  </label>
-                  {/* Native datalist: free keyboard + screen-reader support, no
-                      custom ARIA. isKnownTimeZone gates the free text so a typo
-                      can't apply a bad zone; a valid pick applies it and
-                      collapses the search (#1000). */}
-                  <input
-                    id="manage-tz-search"
-                    list="manage-all-tz"
-                    autoFocus
-                    placeholder="Type a city or region"
-                    defaultValue=""
-                    onChange={(e) => {
-                      const picked = e.target.value;
-                      if (isKnownTimeZone(picked)) {
-                        setTimeZone(picked);
-                        setShowAllZones(false);
-                      }
-                    }}
-                    className="min-h-11 w-full rounded-md border border-border bg-transparent px-2 text-sm text-fg"
-                  />
-                  <datalist id="manage-all-tz">
-                    {allZones.map((z) => (
-                      <option key={z} value={z}>
-                        {humanizeZone(z)}
-                      </option>
-                    ))}
-                  </datalist>
-                </div>
-              )}
             </div>
 
             {/* --- The advisor. Dropped entirely when unresolvable (L75): a

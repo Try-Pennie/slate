@@ -90,36 +90,13 @@ describe("OooForm", () => {
     );
   });
 
-  // #1007: an agent whose correct zone isn't in the curated list can still pick it
-  // through the searchable full-IANA fallback, matching the booker (#219) and the
-  // manage/reschedule screen (#1000).
-  it("applies a non-curated zone picked from the 'more zones' search and collapses it", async () => {
-    renderForm(vi.fn(async (): Promise<OooFormState> => ({ error: null })));
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    expect(screen.getByRole("option", { name: /more zones/i })).toBeTruthy();
-
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Australia/Sydney" } });
-
-    // The zone is applied (the timezone field now submits it) and the search collapses.
-    expect(select.value).toBe("Australia/Sydney");
-    expect(screen.queryByLabelText("Search all timezones")).toBeNull();
-  });
-
-  it("ignores an invalid zone typed into the fallback search (no bad zone applied)", async () => {
-    renderForm(vi.fn(async (): Promise<OooFormState> => ({ error: null })));
-    const select = screen.getByLabelText("Timezone") as HTMLSelectElement;
-    const before = select.value;
-
-    fireEvent.change(select, { target: { value: "__more_zones__" } });
-    const search = (await screen.findByLabelText("Search all timezones")) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "Not/AZone" } });
-
-    // Junk is rejected: the applied zone is unchanged and the search stays open.
-    expect(select.value).toBe(before);
-    expect(screen.getByLabelText("Search all timezones")).toBeTruthy();
-  });
+  // #1849 DELETED the two "more zones" tests that were here (#1007).
+  //
+  // They drove a searchable full IANA combobox that let an agent reach a zone
+  // outside the curated list. That list is a fixed US set now, so a way out of it
+  // is the opposite of the decision rather than a smaller version of it, and a
+  // test whose whole content is a reversed decision becomes the guard defending
+  // it (L252). The replacement rules live in scripts/test-timezones.ts.
 });
 
 beforeEach(() => {

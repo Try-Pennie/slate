@@ -45,11 +45,9 @@ import { labelColorFor } from "@/lib/brand-label";
 import {
   deviceTimeZone,
   timezoneOptions,
-  allTimeZones,
-  ensureZonePresent,
-  isKnownTimeZone,
-  humanizeZone,
+  resolveZone,
 } from "@/lib/booking/timezones";
+import { SelectField } from "@/components/ui/SelectField";
 import { embedParentOrigin } from "@/lib/embed/parent-origin";
 import ReasonPicker from "@/components/ReasonPicker";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
@@ -218,7 +216,6 @@ function GlobeIcon() {
 }
 
 /** Sentinel <option> value: picking it reveals the full-list search (#219). */
-const MORE_ZONES = "__more_zones__";
 
 export default function Booker({
   bucketCode,
@@ -232,19 +229,14 @@ export default function Booker({
   horizonDays,
   rescheduleReasons,
 }: BookerProps) {
-  // Options derive from the *detected* zone (fixed) so a traveling lead's own
-  // zone stays in the list even after they switch the selection to a curated one.
+  // #1849: a fixed US list. A lead whose browser reports a non US zone is shown
+  // Eastern rather than their own. Nothing is mis-booked, because the stored
+  // instant is always UTC; what changes is what they READ, and that is the trade
+  // Dan took knowingly. The "more zones" search went with it, since a way out of
+  // a fixed list is not a smaller version of fixing the list.
   const detectedZone = useMemo(() => deviceTimeZone(), []);
-  const [zone, setZone] = useState(detectedZone);
-  const zoneOptions = useMemo(() => timezoneOptions(detectedZone), [detectedZone]);
-  // Curated list plus, if the lead picked a zone from the full-list fallback that
-  // isn't curated, that zone too (so the <select value> never blanks). #219.
-  const selectOptions = useMemo(() => ensureZonePresent(zoneOptions, zone), [zoneOptions, zone]);
-  // The searchable "more zones" fallback (#219): the full IANA set, revealed only
-  // when the lead's correct zone is neither detected nor curated. Empty on a
-  // runtime without Intl.supportedValuesOf, in which case the option is hidden.
-  const [showAllZones, setShowAllZones] = useState(false);
-  const allZones = useMemo(() => allTimeZones(), []);
+  const [zone, setZone] = useState(resolveZone(detectedZone).id);
+  const selectOptions = useMemo(() => timezoneOptions(), []);
   const today = useMemo(() => DateTime.now().setZone(zone).startOf("day"), [zone]);
   const c = PALETTE[theme];
   // Brand accent overrides (inline, since the hex is dynamic). Undefined = keep
@@ -1111,61 +1103,15 @@ export default function Booker({
             <label htmlFor="booker-tz" className="sr-only">
               Timezone
             </label>
-            <select
+            <SelectField
               id="booker-tz"
+              ariaLabel="Timezone"
               value={zone}
-              onChange={(e) => {
-                if (e.target.value === MORE_ZONES) {
-                  setShowAllZones(true);
-                  return;
-                }
-                setZone(e.target.value);
-                setShowAllZones(false);
-              }}
-              className={`-ml-1 min-h-11 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 text-xs hover:border-border ${c.body}`}
-            >
-              {selectOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label}
-                </option>
-              ))}
-              {allZones.length > 0 && (
-                <option value={MORE_ZONES}>More zones...</option>
-              )}
-            </select>
+              onChange={setZone}
+              className="max-w-full"
+              options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
+            />
           </div>
-          {showAllZones && allZones.length > 0 && (
-            <div className="mb-3 flex items-center gap-1.5 text-xs">
-              <label htmlFor="booker-tz-search" className="sr-only">
-                Search all timezones
-              </label>
-              {/* Native datalist: free keyboard + screen-reader support, no custom
-                  ARIA. isKnownTimeZone gates the free text so a typo can't apply a
-                  bad zone; a valid pick applies it and collapses the search (#219). */}
-              <input
-                id="booker-tz-search"
-                list="booker-all-tz"
-                autoFocus
-                placeholder="Type a city or region"
-                defaultValue=""
-                onChange={(e) => {
-                  const picked = e.target.value;
-                  if (isKnownTimeZone(picked)) {
-                    setZone(picked);
-                    setShowAllZones(false);
-                  }
-                }}
-                className={`min-h-11 w-full rounded-md border border-border bg-transparent px-2 text-xs ${c.body}`}
-              />
-              <datalist id="booker-all-tz">
-                {allZones.map((z) => (
-                  <option key={z} value={z}>
-                    {humanizeZone(z)}
-                  </option>
-                ))}
-              </datalist>
-            </div>
-          )}
           {errorAlert && <div className="mb-3">{errorAlert}</div>}
           <div className="-mx-2 -my-1 flex-1 overflow-y-auto px-2 py-1">
             {/* The shared times panel (#1336) owns every state here, including
