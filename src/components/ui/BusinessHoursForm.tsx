@@ -85,6 +85,25 @@ export function BusinessHoursForm({
   const set = (weekday: number, change: Partial<(typeof week)[number]>) =>
     setWeek((w) => w.map((d) => (d.weekday === weekday ? { ...d, ...change } : d)));
 
+  /**
+   * Whether the week on screen differs from the week that is stored (#1923).
+   *
+   * Compared against the `days` this component was rendered with, which IS the
+   * saved week, rather than tracked by a flag each handler has to remember to
+   * set: the handler that gets forgotten reads as "nothing unsaved" precisely
+   * when something is. Same shape as the working hours form (#1873).
+   */
+  const edited =
+    JSON.stringify(
+      week.map((d) => [d.weekday, d.open, d.start, d.end]),
+    ) !==
+    JSON.stringify(
+      DAYS.map(([weekday]) => {
+        const d = days.find((x) => x.weekday === weekday);
+        return [weekday, d?.is_open ?? false, d?.start ?? "08:00", d?.end ?? "20:00"];
+      }),
+    );
+
   const summaryDays: WorkingHoursDay[] = week.map((d) => ({
     weekday: d.weekday,
     on: d.open,
@@ -211,7 +230,7 @@ export function BusinessHoursForm({
         })}
       </div>
 
-      <CoveragePanel coverage={coverage} />
+      <CoveragePanel coverage={coverage} edited={edited} />
 
       <SubmitButton className={btnCls} pendingLabel="Saving…">
         {state.confirm ? "Save anyway" : "Save business hours"}
@@ -232,12 +251,26 @@ export function BusinessHoursForm({
  * rendered as "nobody covers this" reads as a staffing problem, so someone would go
  * and fix a roster that was fine.
  *
- * It describes the hours currently SAVED, not the ones being edited, and says so.
- * Recomputing it live would mean re-querying the roster on every keystroke, and a
- * readout that silently described a mixture of saved and unsaved hours would be
- * worse than one that is clear about which it means.
+ * It describes the hours currently SAVED, not the ones being edited. Recomputing
+ * it live would mean re-querying the roster on every keystroke, and a readout that
+ * silently described a mixture of saved and unsaved hours would be worse than one
+ * that is clear about which it means.
+ *
+ * #1923: the heading no longer CARRIES that caveat. It read "Coverage in the
+ * hours currently saved", which is true on every render, so it was read every
+ * time to serve the one moment it matters and it made the heading a sentence. The
+ * caveat is now shown only when the form really has unsaved edits, which is the
+ * only moment the numbers describe a different week from the one on screen. When
+ * the form is clean, "Coverage" alone is complete.
  */
-function CoveragePanel({ coverage }: { coverage: CoverageReadout }) {
+function CoveragePanel({
+  coverage,
+  edited,
+}: {
+  coverage: CoverageReadout;
+  /** The form above has unsaved changes, so these numbers are for another week. */
+  edited: boolean;
+}) {
   if (!coverage.ok) {
     return (
       <div className="rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg-muted">
@@ -257,9 +290,16 @@ function CoveragePanel({ coverage }: { coverage: CoverageReadout }) {
 
   return (
     <div className="rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm">
-      <p className="font-semibold text-fg">
-        Coverage in the hours currently saved
-      </p>
+      <p className="font-semibold text-fg">Coverage</p>
+      {/* #1923: said only when it is TRUE that they differ. The caveat used to
+          live in the heading, where it was read on every render to serve the one
+          moment it matters. */}
+      {edited && (
+        <p className="mt-1 text-fg-muted">
+          These numbers are for the hours currently saved, not the unsaved changes
+          above.
+        </p>
+      )}
       <p className="mt-1 text-fg-muted">
         {coverage.bookableAgents === 0
           ? "No agents are in the booking pool at the moment, so no hour has anyone on. That is expected while the pool is switched off."

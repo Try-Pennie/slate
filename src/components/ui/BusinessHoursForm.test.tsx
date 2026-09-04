@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // #1297: the business-hours editor's rendered surface.
 //
@@ -139,6 +140,32 @@ describe("BusinessHoursForm", () => {
         days: [openDay(1, [{ hour: 9, agents: 2 }])],
       });
       expect(screen.getByText(/Every open hour has someone rostered/i)).toBeTruthy();
+    });
+
+    // #1923: the heading is "Coverage". The caveat about which week the numbers
+    // describe used to live IN it, where it was read on every render to serve the
+    // one moment it matters, and it made the heading a sentence.
+    it("names itself in one word, with no caveat on a clean form", () => {
+      draw({ ok: true, bookableAgents: 3, uncoveredHours: 0, days: [openDay(1, [{ hour: 9, agents: 2 }])] });
+
+      expect(screen.getByText("Coverage")).toBeTruthy();
+      expect(screen.queryByText(/in the hours currently saved/i)).toBeNull();
+      // Nothing unsaved, so nothing to warn about: the heading alone is complete.
+      expect(screen.queryByText(/not the unsaved changes/i)).toBeNull();
+    });
+
+    // The distinction the old heading was carrying is real, so it is still said,
+    // at the one moment it is TRUE that the numbers describe a different week.
+    it("says which week the numbers describe once the form has unsaved edits", async () => {
+      const user = userEvent.setup();
+      draw({ ok: true, bookableAgents: 3, uncoveredHours: 0, days: [openDay(1, [{ hour: 9, agents: 2 }])] });
+
+      expect(screen.queryByText(/not the unsaved changes/i)).toBeNull();
+      await user.click(screen.getByRole("checkbox", { name: "Sunday" }));
+
+      expect(screen.getByText(/hours currently saved, not the unsaved changes/i)).toBeTruthy();
+      // Still one word as the heading.
+      expect(screen.getByText("Coverage")).toBeTruthy();
     });
 
     it("does not list a closed day as a coverage gap", () => {

@@ -111,6 +111,36 @@ export const proseCls = "max-w-[110ch]";
  * check missed: they all ask whether text is legible ON a surface, and none asks
  * whether the surface is VISIBLE against what is behind it (#1851).
  */
+/**
+ * The optical nudge that centres the DIGITS inside `badgeCountCls` (#1921).
+ *
+ * MEASURED, not reasoned. The badge already has `items-center justify-center`,
+ * so the first instinct (add flex centring) fixes nothing. Rasterised at four
+ * times scale on the pill's own fill and compared the glyph's ink bounding box
+ * against the pill's box:
+ *
+ *              as shipped        with this nudge
+ *   1          dy -1.25px        dy  0.00px
+ *   8          dy -1.13px        dy  0.13px
+ *   12         dy -1.25px        dy  0.00px
+ *   99+        dy -1.13px        dy  0.13px
+ *
+ * Horizontally it was never wrong: dx ran -0.25px to +0.38px, all sub half
+ * pixel, so the tabular figures hypothesis is dead. `font-variant-numeric:
+ * normal` produced byte identical ink positions, which says PP Mori ships no
+ * separate tabular set for this to have chosen between.
+ *
+ * `leading-none` also changed nothing, which kills the line box hypothesis: the
+ * content area is centred in the line box whatever its height, so the glyph does
+ * not move. What remains is the FONT's own vertical metrics: PP Mori's ascent and
+ * descent are asymmetric about the content box centre, and a digit has no
+ * descender, so it rides high when the content area is centred.
+ *
+ * One constant corrects every count, because the error is the same at all four.
+ * On the INK rather than the pill, or the pill would move with it.
+ */
+export const badgeCountInkCls = "translate-y-[1.2px]";
+
 export const badgeCountCls =
   "inline-flex h-5 min-w-5 items-center justify-center rounded-pill bg-pennie-blue " +
   "px-1.5 text-xs font-semibold tabular-nums text-white";

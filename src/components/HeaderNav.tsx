@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { badgeCountCls } from "@/components/ui/styles";
+import { badgeCountCls, badgeCountInkCls } from "@/components/ui/styles";
 import { usePathname } from "next/navigation";
 import { LinkPending } from "@/components/ui/LinkPending";
 
@@ -57,7 +57,11 @@ export function HeaderNav({ tabs }: { tabs: HeaderTab[] }) {
             {!!tab.badge && tab.badge > 0 && (
               <>
                 <span aria-hidden="true" className={badgeCountCls}>
-                  {tab.badge > 99 ? "99+" : tab.badge}
+                  {/* #1921: the digits carry the optical nudge, not the pill,
+                      which would move the whole badge with it. */}
+                  <span className={badgeCountInkCls}>
+                    {tab.badge > 99 ? "99+" : tab.badge}
+                  </span>
                 </span>
                 <span className="sr-only">
                   ({tab.badge} {tab.badge === 1 ? "request" : "requests"} pending)
