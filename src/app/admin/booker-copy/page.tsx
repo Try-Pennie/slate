@@ -8,7 +8,7 @@ import { EVENT_DESCRIPTION_MAX } from "@/lib/booking/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +49,7 @@ export default async function BookerCopyPage({
       <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">What the lead reads before booking</h2>
-        <p className="mb-4 max-w-prose text-xs text-fg-muted">
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
           The description on the booking panel. Leave a blank line between
           paragraphs; they are shown apart, so a description and an ask do not run
           together. Up to {EVENT_DESCRIPTION_MAX} characters. A change reaches
@@ -76,6 +76,9 @@ export default async function BookerCopyPage({
                 rows={6}
                 maxLength={EVENT_DESCRIPTION_MAX}
                 defaultValue={e.description ?? ""}
+                // prose-width-ok: this is a text INPUT, not a line of prose.
+                // The number is sizing a control, and a 110 character wide box
+                // on this page would be wrong.
                 className={`${inputCls} max-w-prose`}
               />
               <SubmitButton className={btnCls} pendingLabel="Saving…">

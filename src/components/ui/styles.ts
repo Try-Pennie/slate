@@ -66,8 +66,25 @@ export const btnDangerCls = "pn-btn pn-btn--small pn-btn--danger";
  *
  * Put it on the descriptive paragraph under a heading, never on the container
  * holding a table or a control grid.
+ *
+ * 110 CHARACTERS, not 65 (#1888). Dan, walking the admin pages: text wrapped
+ * well before the card it sits in ran out of room, so a two sentence description
+ * took three lines it did not need and every card had a block of empty space
+ * down its right side.
+ *
+ * The cap is still right in principle. The NUMBER was chosen against a page
+ * rather than against the card the text actually sits in: 65 is the bottom of the
+ * comfortable range, and the card follows the 80rem page width, so the two
+ * numbers were far apart and the gap read as premature wrapping. 110 puts a
+ * description at roughly three quarters of a wide card and still stops it well
+ * short of the edge. On a `narrow` page the cap no longer binds at all, so prose
+ * there simply fills its card, which is the right result on a single column form.
+ *
+ * `scripts/test-prose-width.ts` holds this to one number: Tailwind's own
+ * `max-w-prose` is the identical 65ch reached by a different name, and six
+ * paragraphs used it, so raising this alone would have left half the app behind.
  */
-export const proseCls = "max-w-[65ch]";
+export const proseCls = "max-w-[110ch]";
 
 /**
  * The count on a header tab (#1881).

@@ -35,8 +35,15 @@ export default function AdminLoading() {
       {/* The page header card. */}
       <section className={cardCls}>
         <div className="pn-skeleton h-7 w-64 rounded-sm" />
-        <div className="pn-skeleton mt-3 h-4 w-full max-w-[52ch] rounded-sm" />
-        <div className="pn-skeleton mt-2 h-4 w-full max-w-[38ch] rounded-sm" />
+        {/* #1888: these stand in for the header's description, which is capped
+            at the shared reading width. They keep the proportions they had
+            against the old 65ch cap (52/65 and 38/65) against the new 110, so
+            the bars still look like two lines of that text rather than stubs the
+            real content jumps past. `scripts/test-prose-width.ts` holds the
+            relationship, since Tailwind needs a literal class here and so the
+            number cannot be derived from the constant. */}
+        <div className="pn-skeleton mt-3 h-4 w-full max-w-[88ch] rounded-sm" />
+        <div className="pn-skeleton mt-2 h-4 w-full max-w-[64ch] rounded-sm" />
       </section>
 
       {/* The first content card, in the shape most console pages use: a short
