@@ -3,7 +3,8 @@
 import { useRef, useState, type ReactNode } from "react";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { btnCls } from "@/components/ui/styles";
+import { ConfirmAction } from "@/components/ui/ConfirmAction";
+import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
   WEEKDAYS,
   workingHoursSummary,
@@ -50,12 +51,28 @@ export function WorkingHoursWeek({
   days,
   timezoneField,
   saveLabel = "Save",
+  defaultsAction,
+  companyDefaultDays,
 }: {
   days: WorkingHoursDay[];
   /** The timezone control, rendered by the server component that owns the zone
    *  list, so several hundred options do not have to cross into this bundle. */
   timezoneField: ReactNode;
   saveLabel?: string;
+  /**
+   * Replace this week with the company default (#1873). Present on the admin's
+   * copy of the form, absent on the agent's own.
+   *
+   * It lives INSIDE this form, submitted through `formAction`, for one reason:
+   * this component is the only thing that knows whether the week on screen has
+   * been edited, and the control's whole hazard is that it throws those edits
+   * away. As a separate form beside this one it could not see them, which is how
+   * it came to be a text link that silently discarded unsaved work.
+   */
+  defaultsAction?: (form: FormData) => Promise<void>;
+  /** The week `defaultsAction` would write, so the confirm can NAME what it
+   *  replaces rather than asking a generic "are you sure". */
+  companyDefaultDays?: WorkingHoursDay[];
 }) {
   const [week, setWeek] = useState<EditDay[]>(() =>
     WEEKDAYS.map(([weekday]) => {
@@ -122,6 +139,29 @@ export function WorkingHoursWeek({
     on: d.on,
     windows: d.windows.map((w) => ({ start: w.start, end: w.end })),
   }));
+
+  /**
+   * Whether the week on screen differs from the week that is stored (#1873).
+   *
+   * Compared against the `days` this component was rendered with, which IS the
+   * stored week, rather than tracked with a flag set by every handler: a flag has
+   * to be set in each of the six places that change the week, and the one that
+   * gets forgotten reads as "nothing unsaved" precisely when something is.
+   */
+  const edited =
+    JSON.stringify(
+      summaryDays.map((d) => [d.weekday, d.on, d.windows.map((w) => [w.start, w.end])]),
+    ) !==
+    JSON.stringify(
+      WEEKDAYS.map(([weekday]) => {
+        const day = days.find((d) => d.weekday === weekday);
+        return [
+          weekday,
+          day?.on ?? false,
+          (day?.windows ?? [{ start: "", end: "" }]).map((w) => [w.start, w.end]),
+        ];
+      }),
+    );
 
   return (
     <div className="space-y-4">
@@ -228,25 +268,66 @@ export function WorkingHoursWeek({
                 >
                   <span aria-hidden="true">+</span>
                 </button>
+
+                {/* #1873: in the row it operates ON. It used to sit at the foot
+                    of the form next to Save, so an editing aid that changes
+                    nothing durable was a peer of the commit, and its subject
+                    (Monday) was six rows away from it. It is the only one of the
+                    three controls here that writes nothing, and it is the only
+                    one still styled as text. */}
+                {weekday === 1 && (
+                  <button
+                    type="button"
+                    onClick={copyMonday}
+                    className="ml-auto self-center text-xs text-pennie-blue underline dark:text-pennie-sky"
+                  >
+                    Copy Monday to every working day
+                  </button>
+                )}
               </div>
             </div>
           );
         })}
       </div>
 
-      <button
-        type="button"
-        onClick={copyMonday}
-        className="text-xs text-pennie-blue underline dark:text-pennie-sky"
-      >
-        Copy Monday to every working day
-      </button>
-
+      {/* The single primary commit, on its own. Nothing else in this form shares
+          its treatment. */}
       <div>
         <SubmitButton className={btnCls} pendingLabel="Saving your hours">
           {saveLabel}
         </SubmitButton>
       </div>
+
+      {/* #1873: a reset, set apart from the action it undoes rather than sitting
+          directly under it, and dressed as what it is. It was a text link
+          identical to the copy control above, which made a control that rewrites
+          somebody's stored schedule (and throws away whatever is unsaved here)
+          read as the least significant thing on the screen. #1670 records this
+          same control half failing and leaving an agent silently unbookable, so
+          the weight is not hypothetical.
+
+          It ASKS, and the question carries information rather than friction: it
+          names the week it is about to write, and the unsaved edits only when
+          there really are some. */}
+      {defaultsAction && companyDefaultDays && (
+        <div className="border-t border-border pt-4">
+          <ConfirmAction
+            label="Apply company default hours"
+            confirmLabel="Apply company hours anyway"
+            pendingLabel="Applying company hours"
+            className={btnSecondaryCls}
+            formAction={defaultsAction}
+            message={
+              <>
+                {`This replaces this agent's stored working hours with the company default: ${workingHoursSummary(companyDefaultDays)}`}
+                {edited
+                  ? " The unsaved edits on this form are discarded, not saved."
+                  : ""}
+              </>
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }

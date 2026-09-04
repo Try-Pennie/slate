@@ -40,6 +40,8 @@ export function WorkingHoursForm({
   timezoneLabel,
   userId,
   saveLabel = "Save",
+  defaultsAction,
+  companyDefaultDays,
 }: {
   action: (form: FormData) => Promise<void>;
   days: WorkingHoursDay[];
@@ -48,6 +50,11 @@ export function WorkingHoursForm({
   /** Present on the admin screen, absent on the agent's own. */
   userId?: string;
   saveLabel?: string;
+  /** Replace this week with the company default (#1873). Admin screen only, and
+   *  it submits THIS form to a second action so it can see unsaved edits. */
+  defaultsAction?: (form: FormData) => Promise<void>;
+  /** The week that action would write, so the confirm names what it replaces. */
+  companyDefaultDays?: WorkingHoursDay[];
 }) {
   return (
     <form action={action} className="space-y-4">
@@ -56,6 +63,8 @@ export function WorkingHoursForm({
       <WorkingHoursWeek
         days={days}
         saveLabel={saveLabel}
+        defaultsAction={defaultsAction}
+        companyDefaultDays={companyDefaultDays}
         timezoneField={
           <div>
             <label className={labelCls} htmlFor="hours_timezone">

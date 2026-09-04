@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WorkingHoursForm } from "./WorkingHoursForm";
@@ -254,5 +254,126 @@ describe("WorkingHoursForm (#1764)", () => {
   it("declares no focus ring colour of its own (#1768)", () => {
     const { container } = render(form(workingHoursDays([])));
     expect(container.innerHTML).not.toMatch(/outline-pennie-sky/);
+  });
+});
+
+// #1873. Three controls under the week read as one stack, and the stack hid the
+// only thing about them that matters: what each one costs if you press it by
+// mistake.
+//
+// "Copy Monday" edits the form and saves nothing. "Save hours" is the commit.
+// "Apply company default hours" writes to the database immediately AND throws
+// away whatever is unsaved above it. The first and the last were rendered with
+// the SAME class string, so a reversible convenience and a control that rewrites
+// somebody's schedule looked identical, and the consequential one was dressed as
+// a link.
+describe("the three controls under the week are told apart (#1873)", () => {
+  const defaults = vi.fn(async () => {});
+  const companyWeek = workingHoursDays([rule(1, 540, 1020), rule(2, 540, 1020)]);
+
+  // Both spies are module level and shared, so a test asserting one was NOT
+  // called would otherwise be answered by an earlier test's click.
+  beforeEach(() => {
+    defaults.mockClear();
+    noop.mockClear();
+  });
+
+  const withDefaults = (days = workingHoursDays([rule(1, 480, 960)])) => (
+    <WorkingHoursForm
+      action={noop}
+      days={days}
+      timezone="America/New_York"
+      timezoneLabel="Your timezone"
+      userId="u1"
+      defaultsAction={defaults}
+      companyDefaultDays={companyWeek}
+    />
+  );
+
+  const copyControl = () => screen.getByRole("button", { name: /copy monday/i });
+  const applyControl = () => screen.getByRole("button", { name: /apply company default hours/i });
+  /** The confirm's own alert. Scoped by content, because a time field announces
+   *  its own refusals and "the alert" on this form is not unique. */
+  const confirmPanel = () =>
+    screen
+      .queryAllByRole("alert")
+      .find((el) => /company default/i.test(el.textContent ?? "")) as HTMLElement;
+
+  it("puts the copy control in the row it edits, not beside the commit", () => {
+    render(withDefaults());
+    const monday = document.querySelector('[data-weekday="1"]') as HTMLElement;
+    expect(monday.contains(copyControl())).toBe(true);
+    // And it is not sitting with the save button at the foot of the form.
+    const save = screen.getByRole("button", { name: /save/i });
+    expect(monday.contains(save)).toBe(false);
+  });
+
+  it("gives the two controls different treatments, since they carry different consequences", () => {
+    render(withDefaults());
+    expect(applyControl().className).not.toBe(copyControl().className);
+    // The one that writes is a button; the one that edits the form is not dressed
+    // as its peer.
+    expect(applyControl().className).toContain("pn-btn");
+    expect(copyControl().className).not.toContain("pn-btn");
+  });
+
+  it("asks before applying company defaults over unsaved edits, and says what it replaces", async () => {
+    const user = userEvent.setup();
+    render(withDefaults());
+
+    // An unsaved edit: Saturday is now ticked and the stored week says it is off.
+    // A checkbox rather than a typed time deliberately, so the assertion below is
+    // about the confirm and not about whatever a half typed time announces.
+    await user.click(screen.getByRole("checkbox", { name: /saturday/i }));
+
+    await user.click(applyControl());
+    expect(defaults).not.toHaveBeenCalled();
+
+    const asked = confirmPanel().textContent ?? "";
+    // Not a generic "are you sure": it names the week it is about to write and
+    // says the unsaved edits go with it.
+    expect(asked).toMatch(/Monday and Tuesday, 9:00am to 5:00pm\. Wednesday to Sunday off\./i);
+    expect(asked).toMatch(/unsaved/i);
+  });
+
+  it("applies them once confirmed", async () => {
+    const user = userEvent.setup();
+    render(withDefaults());
+
+    await user.click(applyControl());
+    await user.click(screen.getByRole("button", { name: /apply company hours anyway/i }));
+    expect(defaults).toHaveBeenCalledTimes(1);
+    // And it is the defaults action, never the save.
+    expect(noop).not.toHaveBeenCalled();
+  });
+
+  it("backs out without writing anything when the reader cancels", async () => {
+    const user = userEvent.setup();
+    render(withDefaults());
+
+    await user.click(applyControl());
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(defaults).not.toHaveBeenCalled();
+    expect(confirmPanel()).toBeUndefined();
+    expect(applyControl()).toBeTruthy();
+  });
+
+  it("still asks with nothing unsaved, without claiming edits it cannot see", async () => {
+    const user = userEvent.setup();
+    render(withDefaults());
+
+    await user.click(applyControl());
+    const asked = confirmPanel().textContent ?? "";
+    // Applying still overwrites stored hours, so it still asks; there is just
+    // nothing unsaved to warn about, and the copy must not say there is.
+    expect(asked).toMatch(/Monday and Tuesday, 9:00am to 5:00pm\. Wednesday to Sunday off\./i);
+    expect(asked).not.toMatch(/unsaved/i);
+  });
+
+  it("offers neither control on a form with no defaults action", () => {
+    render(form(workingHoursDays([rule(1, 480, 960)])));
+    expect(screen.queryByRole("button", { name: /apply company default hours/i })).toBeNull();
+    // The copy control belongs to the week itself, so it is still there.
+    expect(copyControl()).toBeTruthy();
   });
 });
