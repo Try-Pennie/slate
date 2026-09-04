@@ -11,6 +11,37 @@ export const inputCls =
   "h-[44px] placeholder:text-fg-muted";
 
 /**
+ * A MULTI-LINE field (#1945).
+ *
+ * NOT `inputCls`, and the reason is measured rather than aesthetic. A textarea
+ * wearing the single line style renders like this, read off the live page:
+ *
+ *   rows={6}          but  height 44px   the `rows` attribute is completely inert
+ *   padding-top       0px                the first line sits ON the top border
+ *   padding-bottom    0px                and the last on the bottom one
+ *   display           inline-block       so a sibling button lands on the SAME LINE
+ *
+ * So a 1200 character field showed about two lines of itself, its text touched
+ * the top and bottom edges, and `space-y-3` on the form could not separate it
+ * from its Save button because that is a VERTICAL utility and the two were side
+ * by side, 0px apart.
+ *
+ * Three deliberate differences from `inputCls`:
+ *
+ * NO FIXED HEIGHT, so `rows` decides how tall it is, which is what `rows` is for.
+ * REAL VERTICAL PADDING, because a single line input centres its text inside its
+ * own height and needs none, while a textarea top-aligns and needs both.
+ * `block`, so it cannot flow inline beside the control that submits it.
+ *
+ * The radius goes to `--pn-radius-lg`, matching the 12px the buttons beside it
+ * actually resolve to. `rounded-sm` is 8px here, which is not the 2px the issue
+ * assumed but is still smaller than every control it sits next to.
+ */
+export const textareaCls =
+  "mt-1 w-full block rounded-lg border border-border bg-[var(--field)] px-3 py-2.5 " +
+  "text-fg leading-relaxed placeholder:text-fg-muted";
+
+/**
  * A select's box (#1854).
  *
  * NOT `inputCls`, and that is the whole point. A select and a text input cannot

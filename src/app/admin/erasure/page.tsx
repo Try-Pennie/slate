@@ -47,9 +47,6 @@ export default async function ErasureWorklistPage() {
     <>
       <>
         <ErasureWorklist state={state} />
-        <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
-          Back to settings
-        </a>
       </>
     </>
   );

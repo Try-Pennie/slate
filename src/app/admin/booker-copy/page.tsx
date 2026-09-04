@@ -8,7 +8,7 @@ import { EVENT_DESCRIPTION_MAX } from "@/lib/booking/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { btnCls, cardCls, labelCls, proseCls, textareaCls } from "@/components/ui/styles";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +64,12 @@ export default async function BookerCopyPage({
             <form
               key={e.id}
               action={setEventDescription}
-              className="mb-4 space-y-3 last:mb-0"
+              // #1945: an explicit column with a real gap. `space-y-3` alone
+              // could not separate the field from the button, because both were
+              // inline level and sat side by side: a vertical utility has nothing
+              // to act on. The field is `block` now AND the form says how the two
+              // are laid out, rather than depending on one of them.
+              className="mb-4 flex flex-col items-start gap-3 last:mb-0"
             >
               <input type="hidden" name="event_type_id" value={e.id} />
               <label className={labelCls} htmlFor={`description-${e.id}`}>
@@ -79,7 +84,7 @@ export default async function BookerCopyPage({
                 // prose-width-ok: this is a text INPUT, not a line of prose.
                 // The number is sizing a control, and a 110 character wide box
                 // on this page would be wrong.
-                className={`${inputCls} max-w-prose`}
+                className={`${textareaCls} max-w-prose`}
               />
               <SubmitButton className={btnCls} pendingLabel="Saving…">
                 Save description

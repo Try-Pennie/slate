@@ -152,9 +152,6 @@ export default async function StuckDrainPage() {
           </section>
         )}
 
-        <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
-          Back to settings
-        </a>
       </>
     </>
   );
