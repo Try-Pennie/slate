@@ -75,7 +75,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     items: [
       { href: "/admin/agents", label: "Roster", gate: "manager" },
       { href: "/admin/team-access", label: "Team access", gate: "super_admin" },
-      { href: "/admin/default-hours", label: "Default hours", gate: "admin" },
+      // #1892: "Default hours" is gone from here. The new agent seeding template
+      // is a section of the Hours page under Availability now, with every other
+      // hours decision. `/admin/default-hours` redirects there rather than 404ing,
+      // so an old link still lands somewhere useful; it has no navigation entry
+      // because nothing should send anybody to a redirect.
     ],
   },
   {
@@ -89,7 +93,9 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   {
     title: "Availability",
     items: [
-      { href: "/admin/business-hours", label: "Business hours", gate: "admin" },
+      // #1892: "Hours", because this page holds the org's operating window, the
+      // holiday closures, the booking horizon AND the new agent template.
+      { href: "/admin/business-hours", label: "Hours", gate: "admin" },
       { href: "/admin/availability", label: "Agent availability", gate: "manager" },
       {
         href: "/admin/bucket-availability",
