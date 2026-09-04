@@ -124,6 +124,10 @@ export default async function AgentProfilePage({
   // those controls on the SAME predicate. Admin-only controls (role, OOO calendar)
   // keep their own isAdmin gates, which are already correct.
   const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
+  // #1878: whether the role is shown as a CONTROL or as read only text. ONE
+  // predicate with both branches hanging off it, so the role cannot end up named
+  // nowhere the way it would if each branch tested its own condition.
+  const canSetThisRole = isAdmin && roleOptions(agent.role).length > 0;
 
   // #1215: how many upcoming appointments this agent still holds, read ONCE and
   // shared by both pool-exit controls (deactivate and the bookable toggle). Two
@@ -215,8 +219,15 @@ export default async function AgentProfilePage({
             <>
               {/* #1838: the band this sat in is an ordinary card now, so these
                   pills take the page theme like every other pill. The `onDark`
-                  they used to pass would INVERT them here. */}
-              <Pill variant={`role-${agent.role}`}>{roleLabel(agent.role)}</Pill>
+                  they used to pass would INVERT them here.
+
+                  #1878 removed the role pill that stood here. The Bookable pill
+                  below carries its own justification: "nothing else on this page
+                  names the fact". The role failed that same test, because the
+                  Access card names it in a control that both shows it and
+                  changes it, so the pill was the redundant half. The roster still
+                  has its own role pill (#1844) and that is untouched: there the
+                  column is the only thing naming a row's role. */}
               {!active && <Pill variant="outline">Deactivated</Pill>}
               {/* #1823: the same component the roster uses, so the variant and
                   the mark are one decision and the two screens cannot drift.
@@ -225,19 +236,27 @@ export default async function AgentProfilePage({
               <BookablePill bookable={agent.bookable} wording="full" />
             </>
           }
+          action={
+            /* #1749: this page had no view-as action at all, so an admin looking
+               at a specific person still had to copy their address to a field
+               elsewhere. It renders only where it could actually work, and the
+               whole banner and two hour expiry behind it are unchanged.
+
+               #1878 moved it into the header, where the person it acts on is
+               named, rather than leaving it loose between two cards, where it
+               read as belonging to the card beneath it. It is in `action` rather
+               than beside the pills so it stays visibly a control, and so its
+               absence (an admin cannot view as another admin) moves nothing. */
+            <ViewAsButton
+              actorRole={me.role}
+              actorId={me.id}
+              target={agent}
+              className={btnSecondaryCls}
+            />
+          }
         >
           <p className="truncate text-sm">{agent.email}</p>
         </AdminPageHeader>
-        {/* #1749: this page had no view-as action at all, so an admin looking at a
-            specific person still had to copy their address to a field elsewhere.
-            It renders only where it could actually work, and the whole banner and
-            two hour expiry behind it are unchanged. */}
-        <ViewAsButton
-          actorRole={me.role}
-          actorId={me.id}
-          target={agent}
-          className={btnSecondaryCls}
-        />
 
         {/* Access: role + bookable + manager */}
         <section className={cardCls}>
@@ -249,7 +268,18 @@ export default async function AgentProfilePage({
             </p>
           )}
           <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-4">
-            {isAdmin && roleOptions(agent.role).length > 0 && (
+            {/* #1878: the role is named exactly ONCE on this page, and this is
+                where. The header pill is gone, so this control is the only thing
+                that says it, which means it has to render for a reader who cannot
+                CHANGE it too: a manager sees no assignment control at all, and an
+                admin looking at a super admin has no assignable role (#550), so
+                deleting the pill without this branch would leave the role named
+                nowhere. Read only text rather than a pill kept for everybody.
+
+                `roleLabel` for the option labels rather than a second rule about
+                underscores, so "team lead" cannot be spelled two ways on one
+                page (L41). */}
+            {canSetThisRole ? (
               <form action={setUserRole} className="flex items-end gap-2">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <div>
@@ -261,12 +291,17 @@ export default async function AgentProfilePage({
                     className="w-40"
                     options={roleOptions(agent.role).map((r) => ({
                       value: r,
-                      label: r === "super_admin" ? "super admin" : r,
+                      label: roleLabel(r),
                     }))}
                   />
                 </div>
                 <SubmitButton className={btnSecondaryCls} pendingLabel="Setting role">Set role</SubmitButton>
               </form>
+            ) : (
+              <div>
+                <span className={labelCls}>Role</span>
+                <p className="text-sm">{roleLabel(agent.role)}</p>
+              </div>
             )}
             {canManageThisAgent && (
               <form action={setBookable} className="flex items-end">

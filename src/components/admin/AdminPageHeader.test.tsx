@@ -61,3 +61,56 @@ describe("AdminPageHeader as a card (#1838)", () => {
     expect(screen.getByText(/Everyone Slate can route a lead to\./)).toBeTruthy();
   });
 });
+
+// #1878: an `action` slot, separate from `aside`.
+//
+// The two are different things and the difference is structural, not cosmetic: a
+// pill is a label and an action does something, so they must not share a group,
+// and the STATUS group must not be the one pinned to the right edge. The action
+// renders conditionally on this component's only caller (an admin cannot view as
+// another admin), and a right-pinned status group would slide across the header
+// the moment that control disappeared, so the same page would lay out differently
+// depending on who was looking at it.
+describe("AdminPageHeader action slot (#1878)", () => {
+  it("lays out as a row for an action alone, with no aside and no leading", () => {
+    // The only path where `action` is the sole reason to be a row. Without it in
+    // `asRow` the action would be dropped into a stacked header and float below
+    // the title.
+    const el = render(
+      <AdminPageHeader title="Aria Patel" action={<button type="button">View as Aria</button>} />,
+    ).container.firstElementChild as HTMLElement;
+    expect(el.className).toContain("flex");
+    expect(screen.getByRole("button", { name: "View as Aria" })).toBeTruthy();
+  });
+
+  it("pins the action right and leaves the status group where it is", () => {
+    render(
+      <AdminPageHeader
+        title="Aria Patel"
+        aside={<span>Bookable</span>}
+        action={<button type="button">View as Aria</button>}
+      />,
+    );
+    const statusGroup = screen.getByText("Bookable").closest("div");
+    const actionGroup = screen.getByRole("button", { name: "View as Aria" }).closest("div");
+
+    expect(statusGroup).not.toBe(actionGroup);
+    expect(actionGroup?.className ?? "").toContain("ml-auto");
+    expect(statusGroup?.className ?? "").not.toContain("ml-auto");
+  });
+
+  it("renders the status group in the same place when there is no action", () => {
+    const withAction = render(
+      <AdminPageHeader
+        title="Aria Patel"
+        aside={<span>Bookable</span>}
+        action={<button type="button">View as Aria</button>}
+      />,
+    );
+    const withActionCls = screen.getByText("Bookable").closest("div")?.className;
+    withAction.unmount();
+
+    render(<AdminPageHeader title="Aria Patel" aside={<span>Bookable</span>} />);
+    expect(screen.getByText("Bookable").closest("div")?.className).toBe(withActionCls);
+  });
+});
