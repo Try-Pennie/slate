@@ -3,6 +3,8 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { selectAllPages } from "@/lib/supabase/paginate";
+import { log } from "@/lib/log";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
 import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { setDefaultBucket } from "@/app/admin/actions";
@@ -48,7 +50,6 @@ export default async function BucketsPage({
     // fail)" in the error colour, on every view, for two buckets that work.
     // Measured live on 2026-09-04: five red rows, three of them real.
     db.from("buckets").select("*").eq("org_id", me.org_id).eq("is_test", false),
-    db.from("bucket_members").select("*"),
   ]);
   const read = <T,>(i: number): { data: T[] | null; error: unknown } =>
     settled[i]!.status === "fulfilled"
@@ -57,7 +58,6 @@ export default async function BucketsPage({
   const usersRes = read<User>(0);
   const eventTypesRes = read<EventType>(1);
   const bucketsRes = read<Bucket>(2);
-  const membersRes = read<BucketMember>(3);
   // #1629: each read is classified separately, because the editor WRITES what it
   // shows. An unreadable buckets or members read draws pools with nobody in them
   // and every attribute group blank, and saving that form would persist the empty
@@ -68,8 +68,53 @@ export default async function BucketsPage({
   const eventTypesUnreadable = eventTypesRes.error != null;
   const buckets = (bucketsRes.data ?? []) as Bucket[];
   const bucketsUnreadable = bucketsRes.error != null;
-  const members = (membersRes.data ?? []) as BucketMember[];
-  const membersUnreadable = membersRes.error != null;
+
+  /**
+   * The memberships, SCOPED to this org's buckets and PAGINATED (#1933).
+   *
+   * It was `db.from("bucket_members").select("*")`: no scope, no limit, and
+   * therefore capped at one 1000 row PostgREST page. `bucket_members` is on the
+   * capped read guard's `SAFE_TABLES` as "roster bounded", but it is the JOIN of
+   * two bounded tables, so its own bound is their product: 60 buckets times the
+   * 200 agent design target is 12,000. The monitor lane does not believe the
+   * justification either, and paginates the same table.
+   *
+   * Truncation here does not under-count, it DELETES. `replaceBucketMembers`
+   * deletes every row for a bucket and re-inserts what the form posted, and the
+   * form posts what the picker was rendered with, which came from this read. So a
+   * membership past the cap is invisible here, absent from the form, and removed
+   * by the next save of that bucket, with nothing failing and no log (L211: a
+   * cleanup that deletes whatever its read did not mention must refuse on a SHORT
+   * read, not only on a failed one).
+   *
+   * SCOPED BY BUCKET ID rather than by an org column, because the table has none.
+   * That bounds it by the real bucket count and confines it to this org in one
+   * move, and 60 ids is far inside the `in()` URL limit. It has to follow the
+   * buckets read to know the ids, which costs one extra round trip.
+   *
+   * An unreadable BUCKETS read makes this unreadable too, deliberately: with no
+   * ids there is nothing to scope to, and reporting "no memberships" from a read
+   * that never ran is the empty-as-healthy answer the #1629 gate exists to refuse.
+   */
+  let members: BucketMember[] = [];
+  let membersUnreadable = bucketsUnreadable;
+  if (!bucketsUnreadable) {
+    try {
+      members = await selectAllPages<BucketMember>("bucket members", (from, to) =>
+        db
+          .from("bucket_members")
+          .select("*")
+          .in(
+            "bucket_id",
+            buckets.map((b) => b.id),
+          )
+          .range(from, to),
+      );
+    } catch (err) {
+      membersUnreadable = true;
+      log.error("admin-buckets", { msg: "bucket members unreadable" }, err);
+    }
+  }
   const attrCatalog = deriveAttributeCatalog(users.map((u) => u.attributes));
   // #1760: the members picker is a client component, so only the three strings it
   // can draw cross to the browser, and they cross ONCE (RosterProvider) rather
