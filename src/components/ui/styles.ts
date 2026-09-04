@@ -68,3 +68,32 @@ export const btnDangerCls = "pn-btn pn-btn--small pn-btn--danger";
  * holding a table or a control grid.
  */
 export const proseCls = "max-w-[65ch]";
+
+/**
+ * The count on a header tab (#1881).
+ *
+ * A DEEP BLUE fill with white text, and ONE treatment in both themes rather than
+ * a dark override. That is measured, not preferred:
+ *
+ *   fill vs the header      4.56:1 light, 3.66:1 dark   (needs 3 for a shape)
+ *   white label on the fill 4.91:1 in both              (needs 4.5 for text)
+ *
+ * Sky is the brand's action colour and is the natural first reach here. It does
+ * not work: as a fill it is 1.57:1 on the beige header, so the pill still would
+ * not read as a shape. That is the same finding as "sky cannot carry a mark".
+ * A badge is a status indicator rather than a call to action, so using the deep
+ * blue does not compete with the sky CTA rule.
+ *
+ * Both halves are raw brand tokens, so the pair cannot drift between themes,
+ * which is the failure a `dark:` override invites (L213).
+ *
+ * Here rather than inline in `HeaderNav` so `scripts/test-contrast.ts` can READ
+ * the classes and assert the pair it actually renders, rather than asserting two
+ * tokens somebody hoped were the ones in use (L63). The fill is measured against
+ * the header's own background, which is the question every existing contrast
+ * check missed: they all ask whether text is legible ON a surface, and none asks
+ * whether the surface is VISIBLE against what is behind it (#1851).
+ */
+export const badgeCountCls =
+  "inline-flex h-5 min-w-5 items-center justify-center rounded-pill bg-pennie-blue " +
+  "px-1.5 text-xs font-semibold tabular-nums text-white";
