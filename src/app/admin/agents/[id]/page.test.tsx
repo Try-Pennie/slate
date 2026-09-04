@@ -337,18 +337,29 @@ describe("AgentProfilePage control visibility (#550)", () => {
     expect(screen.queryByText(/cannot change their settings/i)).toBeNull();
   });
 
-  // #1474: the manager of record is READ ONLY, and the page has to say where it
-  // comes from. Without the second half a reader sees a value with no way to change
-  // it and no reason, which is a dead end rather than a deliberate one.
-  it("shows the manager of record without offering to change it, and names Salesforce", async () => {
+  // #1474 keeps the field READ ONLY; #1877 trims what it says down to the label
+  // and the name. The label is asserted EXACTLY, because the two things removed
+  // here were both qualifiers appended to explain what the field is for, and that
+  // is precisely how a qualifier creeps back.
+  it("shows the manager of record as the label and the name, with no qualifier and no control", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
-    dbState.agent = agentOf("agent");
+    dbState.agent = { ...agentOf("agent"), manager_id: "mgr1" };
+    dbState.usersList = [
+      { id: "mgr1", name: "Rosa Vance", email: "rosa@trypennie.com", role: "manager", deactivated_at: null },
+    ];
     render(await AgentProfilePage(props));
 
     expect(screen.queryByRole("button", { name: /set manager/i })).toBeNull();
     expect(screen.queryByRole("combobox", { name: /manager/i })).toBeNull();
-    expect(screen.queryByText(/manager \(time off approvals\)/i)).toBeTruthy();
-    expect(screen.queryByText(/set in salesforce/i)).toBeTruthy();
+
+    // The name is still there, so the trim did not take the value with it.
+    expect(screen.queryByText("Rosa Vance")).toBeTruthy();
+
+    const label = screen.getByText("Manager");
+    expect(label.textContent).toBe("Manager");
+    expect(screen.queryByText(/time off approvals/i)).toBeNull();
+    expect(screen.queryByText(/set in salesforce/i)).toBeNull();
+    expect(screen.queryByText(/synced hourly/i)).toBeNull();
   });
 
   it("hides the mutate controls (and explains why) when a manager views an admin", async () => {

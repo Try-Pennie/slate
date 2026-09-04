@@ -295,22 +295,27 @@ export default async function AgentProfilePage({
               </form>
             )}
             {/* Read only on purpose (#1474). Salesforce owns this link: the hourly
-                roster sync now converges on Agent_Manager__c, clearing a link
+                roster sync converges on Agent_Manager__c, clearing a link
                 Salesforce no longer backs, so anything set here would be undone
                 within the hour. An editable control that silently reverts is worse
-                than none, so the value is shown with where to change it. */}
+                than none, so the value is shown and nothing offers to change it.
+
+                #1877 removed the two qualifiers this field used to carry: the
+                "(time off approvals)" in the label and the "Set in Salesforce
+                (Agent Manager), and synced hourly." line beneath the name. So the
+                field no longer says where to change it, deliberately: the whole
+                roster is synced from Salesforce and the panel that carries a hand
+                editable copy of Salesforce data (routing attributes) says so once
+                for itself. Do not re-add an explanation here per field. */}
             {canManageThisAgent && (
               <div>
-                <span className={labelCls}>Manager (time off approvals)</span>
+                <span className={labelCls}>Manager</span>
                 <p className="text-sm">
                   {assignedManager ? (
                     assignedManager.name ?? assignedManager.email
                   ) : (
                     <span className="text-[color:var(--pn-muted)]">No manager</span>
                   )}
-                </p>
-                <p className="mt-1 text-xs text-[color:var(--pn-muted)]">
-                  Set in Salesforce (Agent Manager), and synced hourly.
                 </p>
               </div>
             )}
