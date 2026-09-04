@@ -1,5 +1,6 @@
 "use client";
 
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { btnSecondaryCls } from "@/components/ui/styles";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -14,7 +15,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
  * pool-exit cleanup prunes their cached busy time either way, but their
  * already-booked future appointments stay assigned to them. A customer could
  * arrive to meet an advisor who was gone, and the only thing preventing it was an
- * admin remembering the coverage panel further down the same page.
+ * admin remembering the panel further down the same page that moves them.
  *
  * One component for both controls on purpose: they ask the identical question and
  * a second copy would drift. Each speaks in the language of the control that was
@@ -23,7 +24,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
  *
  * This is a CONFIRM, not a block (L54: a guard may refuse only what the system
  * genuinely cannot do). An agent really can leave mid-notice with the
- * appointments placed afterwards, and the coverage panel works on an agent who has
+ * appointments placed afterwards, and the move panel works on an agent who has
  * already left the pool, so refusing would only ever stop the admin who meant it.
  * The monitor lane is the backstop for the paths with no human present at all (the
  * Salesforce roster sync and the lifecycle API).
@@ -101,12 +102,12 @@ export default function PoolExitConfirmButton({
       message={
         <>
           {held} {copy.effect}: the customers stay booked with {agentName} and will meet
-          nobody. Reassign them in Coverage below, either before or after this.
+          nobody. Move them in the panel below, either before or after this.
         </>
       }
       extra={
         <a className="text-xs underline text-fg-muted" href={`/admin/agents/${agentId}#coverage`}>
-          Go to Coverage
+          {`Go to ${COVERAGE_PANEL_NAME}`}
         </a>
       }
     />

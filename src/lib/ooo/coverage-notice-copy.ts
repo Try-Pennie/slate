@@ -2,6 +2,7 @@
 // in tests (a "@/" value import is not erased).
 import { parseStampMs } from "../date/stamp.ts";
 import { formatWhenLine } from "./core.ts";
+import { coveragePanelWhere } from "../booking/coverage-panel-copy.ts";
 
 /**
  * What the manager's time off notice says about the customer appointments a
@@ -81,7 +82,7 @@ export function pendingCoverageLine(count: number | null): string | null {
   if (count === null) {
     return (
       `Slate could not read how many upcoming appointments fall in this time off. ` +
-      `That is not the same as none, so check their coverage panel before approving.`
+      `That is not the same as none, so check ${coveragePanelWhere("their")} before approving.`
     );
   }
   if (count <= 0) return null;
@@ -126,7 +127,7 @@ export function approvedCoverageLine(
     return (
       `Their upcoming appointments could not be queued to move (${state.reason}). ` +
       `They are still on the agent who is away. Retry the calendar updates on the ` +
-      `request, or move them by hand from that agent's coverage panel.`
+      `request, or move them by hand from ${coveragePanelWhere()}.`
     );
   }
   if (state.kind === "already") {
@@ -194,7 +195,7 @@ export function cancelledCoverageLine(state: CoverageStopState): string | null {
   if (state.kind === "failed") {
     return (
       `Slate could not confirm that their queued appointment moves were stopped, so some ` +
-      `may still move to another advisor. Check their coverage panel.`
+      `may still move to another advisor. Check ${coveragePanelWhere("their")}.`
     );
   }
   const lines: string[] = [];

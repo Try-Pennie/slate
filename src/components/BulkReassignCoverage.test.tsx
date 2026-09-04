@@ -54,12 +54,12 @@ describe("BulkReassignCoverage", () => {
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 2 } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /start coverage reassign/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     // The start POST hit the agent's endpoint.
     await waitFor(() => expect(http.postJson).toHaveBeenCalledWith("/api/admin/agents/out1/bulk-reassign", expect.anything()));
     // Progress renders with the per-status counts...
-    expect(await screen.findByText(/Reassign complete/)).toBeTruthy();
+    expect(await screen.findByText(/Move complete/)).toBeTruthy();
     // ...and the couldn't-place item links to the single-reassign override page.
     const link = await screen.findByRole("link", { name: /place by hand/i });
     expect(link.getAttribute("href")).toBe("/admin/bookings/bk-stuck");
@@ -74,7 +74,7 @@ describe("BulkReassignCoverage", () => {
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 2 } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={reasons} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /start coverage reassign/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     // The reason sent is the first option in the list, never the retired "coverage".
     await waitFor(() =>
@@ -89,11 +89,11 @@ describe("BulkReassignCoverage", () => {
     http.postJson.mockResolvedValueOnce({ ok: false, status: 500, data: { error: "Something broke" } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /start coverage reassign/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     expect(await screen.findByText(/Something broke/)).toBeTruthy();
     // No progress view: the panel stayed on the start form.
-    expect(screen.queryByText(/Reassign complete/)).toBeNull();
+    expect(screen.queryByText(/Move complete/)).toBeNull();
   });
 });
 
@@ -116,6 +116,6 @@ describe("BulkReassignCoverage opened on an existing job (#1239)", () => {
     );
     // The progress view, not the start form: the panel is reporting, not offering.
     expect((await screen.findAllByText(/Couldn't place/i)).length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: /start coverage reassign/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /move these bookings/i })).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 
@@ -154,7 +155,7 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
     `${oneBooking ? "That customer is" : "Those customers are"} booked with someone Slate no ` +
     `longer routes to, so they will meet nobody unless the ` +
     `${oneBooking ? "appointment is" : "appointments are"} moved. Reassign ` +
-    `${oneBooking ? "it" : "them"} from the agent's page in Admin, under Coverage.\n` +
+    `${oneBooking ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
     lines.join("\n") +
     more
   );

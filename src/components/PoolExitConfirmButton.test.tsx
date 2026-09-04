@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 // This is a CONFIRM, not a block (L54): an agent genuinely can leave mid-notice
 // with the appointments placed afterwards, and the coverage panel works fine on an
 // already-deactivated agent. A guard may refuse only what the system cannot do.
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import PoolExitConfirmButton, { type PoolExitAction } from "./PoolExitConfirmButton";
 
 const submitted = vi.fn();
@@ -71,10 +72,15 @@ describe("PoolExitConfirmButton, deactivate (#1215)", () => {
     expect(warning.textContent).not.toMatch(/1 upcoming appointments/i);
   });
 
-  it("points at the coverage panel that fixes it", async () => {
+  // #1876: by the panel's real NAME, taken from the constant the panel titles
+  // itself with. A message naming a section that no longer exists is a dead end
+  // wearing the clothes of an instruction (L111), and the panel was renamed out
+  // from under this sentence once already.
+  it("points at the panel that fixes it, by the name that panel carries", async () => {
     render(<Harness upcomingBookings={4} />);
     await userEvent.click(screen.getByRole("button", { name: /deactivate account/i }));
-    expect(screen.getByRole("alert").textContent).toMatch(/coverage/i);
+    expect(screen.getByRole("alert").textContent).toContain(COVERAGE_PANEL_NAME);
+    expect(screen.getByRole("link", { name: `Go to ${COVERAGE_PANEL_NAME}` })).toBeTruthy();
   });
 
   // The whole point: it warns, then lets the admin through.

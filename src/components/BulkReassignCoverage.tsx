@@ -5,8 +5,13 @@ import { useEffect, useState } from "react";
 import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
+import {
+  COVERAGE_PANEL_NAME,
+  coveragePanelDescription,
+  coveragePanelTimeOffNote,
+} from "@/lib/booking/coverage-panel-copy";
 import { getJson, postJson } from "@/lib/http";
-import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -163,15 +168,46 @@ export default function BulkReassignCoverage({
 
   return (
     <section className={cardCls}>
-      <p className="pn-eyebrow text-fg-muted">Coverage: reassign upcoming bookings</p>
-      <p className="mt-2 text-sm text-fg-muted">
-        Move {agentName}&apos;s upcoming bookings onto other available advisors while they are out.
-        Each booking keeps its exact time; the customer gets one short note that a different advisor
-        will meet them. Bookings that can&apos;t be placed stay put for you to handle by hand.
+      {/* #1876: the wording lives in a pure builder, like the time off notices,
+          because copy that can only be read by rendering the page is copy nobody
+          reviews. The name is a constant every message pointing here derives
+          from, so a rename cannot leave a Slack sentence naming a section that
+          does not exist. */}
+      <p className="pn-eyebrow text-fg-muted">{COVERAGE_PANEL_NAME}</p>
+      <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>
+        {coveragePanelDescription(agentName)}
       </p>
+      <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>{coveragePanelTimeOffNote()}</p>
 
       {!jobId ? (
         <>
+          {/* #1876: the reason LEADS. It is the situation the reader arrived
+              with ("why am I moving these"), so asking it first answers the
+              question the old copy left them forming. The range follows, since
+              it is a detail of the situation rather than the situation. */}
+          <div className="mt-4">
+            <label className={labelCls} htmlFor="bulk-reason">
+              Reason
+            </label>
+            <SelectField
+              id="bulk-reason"
+              className="w-full"
+              value={reasonCode}
+              onChange={setReasonCode}
+              options={reassignReasons.map((r) => ({ value: r.code, label: r.label }))}
+            />
+            {reasonCode === "other" && (
+              <input
+                type="text"
+                className={`${inputCls} mt-2`}
+                placeholder="Tell us a bit more"
+                value={reasonDetail}
+                maxLength={500}
+                onChange={(e) => setReasonDetail(e.target.value)}
+              />
+            )}
+          </div>
+
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
               <label className={labelCls} htmlFor="bulk-from">
@@ -202,29 +238,6 @@ export default function BulkReassignCoverage({
             </div>
           </div>
 
-          <div className="mt-4">
-            <label className={labelCls} htmlFor="bulk-reason">
-              Reason
-            </label>
-            <SelectField
-              id="bulk-reason"
-              className="w-full"
-              value={reasonCode}
-              onChange={setReasonCode}
-              options={reassignReasons.map((r) => ({ value: r.code, label: r.label }))}
-            />
-            {reasonCode === "other" && (
-              <input
-                type="text"
-                className={`${inputCls} mt-2`}
-                placeholder="Tell us a bit more"
-                value={reasonDetail}
-                maxLength={500}
-                onChange={(e) => setReasonDetail(e.target.value)}
-              />
-            )}
-          </div>
-
           <p className="mt-4 text-sm text-fg" aria-live="polite">
             {previewLoading
               ? "Counting bookings in range…"
@@ -243,7 +256,7 @@ export default function BulkReassignCoverage({
             disabled={starting || previewLoading || preview === 0 || (reasonCode === "other" && !reasonDetail.trim())}
             onClick={start}
           >
-            {starting ? "Starting…" : "Start coverage reassign"}
+            {starting ? "Starting…" : "Move these bookings"}
           </button>
         </>
       ) : (
@@ -283,7 +296,7 @@ function Progress({
     );
   }
   if (!progress) {
-    return <p className="mt-4 text-sm text-fg-muted">Starting the reassign…</p>;
+    return <p className="mt-4 text-sm text-fg-muted">Starting the move…</p>;
   }
 
   const { summary, actionable } = progress;
@@ -294,7 +307,7 @@ function Progress({
   return (
     <div className="mt-4">
       <div className="flex items-center justify-between">
-        <p className="pn-h4">{summary.done ? "Reassign complete" : "Reassigning…"}</p>
+        <p className="pn-h4">{summary.done ? "Move complete" : "Moving…"}</p>
         <Pill variant={summary.done ? "status-ok" : "outline"}>{summary.done ? "Done" : `${pct}%`}</Pill>
       </div>
 
