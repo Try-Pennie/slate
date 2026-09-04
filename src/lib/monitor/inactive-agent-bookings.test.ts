@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 
 // #1215: an agent who has left the bookable pool (deactivated, or made not
 // bookable) vanishes from availability and from every picker, but their already
@@ -111,7 +112,8 @@ describe("formatInactiveAgentBookingsAlert (#1215)", () => {
     const text = formatInactiveAgentBookingsAlert([holder({ bookingCount: 4 })]);
     expect(text).toContain("Slate");
     expect(text).toContain("4");
-    expect(text).toMatch(/coverage/i);
+    // #1876: the panel's real name, derived rather than spelled here.
+    expect(text).toContain(COVERAGE_PANEL_NAME);
     expect(text).toContain("dana@example.com");
   });
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 
 // #1242: when the coverage sweep cannot place an appointment it settles the item as
 // `unplaceable` (nobody was free and under cap) or, after exhausting its retries,
@@ -117,7 +118,10 @@ describe("strandedHoldersFromItems (#1242)", () => {
 describe("formatCoverageNeedsHumanAlert (#1242)", () => {
   it("leads with the customer consequence and says where it is fixed", () => {
     const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 4 })]);
-    expect(text).toMatch(/coverage/i);
+    // #1876: by the panel's real name, from the constant it titles itself with,
+    // so a rename cannot leave this alert sending somebody to a section that is
+    // not there (L111).
+    expect(text).toContain(COVERAGE_PANEL_NAME);
     expect(text).toContain("dana@example.com");
     expect(text).toContain("4");
   });

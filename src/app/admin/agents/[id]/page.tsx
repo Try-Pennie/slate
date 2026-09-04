@@ -533,8 +533,10 @@ export default async function AgentProfilePage({
           </p>
         </section>
 
-        {/* Coverage: bulk-reassign this agent's upcoming bookings (#974). The
-            id is the anchor the #1215 deactivate confirm links to. */}
+        {/* Move this agent's upcoming bookings to somebody else (#974). The id
+            stays `coverage` deliberately even though the panel is named for the
+            action now (#1876): it is in links people already hold, and the
+            anchor is not what anybody reads. */}
         {canManageThisAgent && (
           <div id="coverage">
             <BulkReassignCoverage

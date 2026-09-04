@@ -1,4 +1,5 @@
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { log } from "@/lib/log";
 
 /**
@@ -147,7 +148,7 @@ export function formatCoverageNeedsHumanAlert(holders: StrandedHolder[]): string
     `${oneAgent ? "an agent who will not be there" : "agents who will not be there"}. ` +
     `${one ? "That customer" : "Those customers"} will meet nobody unless someone moves ` +
     `${one ? "it" : "them"} by hand. Reassign ` +
-    `${one ? "it" : "them"} from the agent's page in Admin, under Coverage.\n` +
+    `${one ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
     lines.join("\n") +
     more
   );

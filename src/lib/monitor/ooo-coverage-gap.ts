@@ -1,4 +1,5 @@
 import { movesUnderCoverage } from "@/lib/booking/coverage-selection";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { parseStampMs } from "@/lib/date/stamp";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
@@ -249,7 +250,7 @@ export function formatOooCoverageGapAlert(holders: OooGapHolder[]): string {
     `${oneBooking ? "it" : "them"} up, so ` +
     `${oneBooking ? "that customer" : "those customers"} will meet nobody unless ` +
     `${oneBooking ? "it is" : "they are"} moved. Reassign ` +
-    `${oneBooking ? "it" : "them"} from the agent's page in Admin, under Coverage.\n` +
+    `${oneBooking ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
     lines.join("\n") +
     more
   );
@@ -284,7 +285,7 @@ export function formatOooCoverageGapWhisper(holders: OooGapHolder[]): string {
     `${oneAgent ? "holds" : "hold"} ${plural(total, "appointment", "appointments")} ` +
     `more than ${OOO_GAP_IMMINENT_HOURS} hours out, with no coverage sweep on ` +
     `${total === 1 ? "it" : "them"}. There is time to place ` +
-    `${total === 1 ? "it" : "them"} from the agent's page in Admin, under Coverage; nothing ` +
+    `${total === 1 ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}; nothing ` +
     `needs doing today.\n` +
     lines.join("\n") +
     more

@@ -13,6 +13,7 @@ import {
   pendingCoverageLine,
   type CoverageMove,
 } from "../src/lib/ooo/coverage-notice-copy.ts";
+import { COVERAGE_PANEL_NAME } from "../src/lib/booking/coverage-panel-copy.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const TZ = { tzId: "America/New_York", tzLabel: "ET" };
@@ -227,9 +228,26 @@ assert(
   "which never reads as the silence of a request that had nothing to stop",
 );
 assert(
-  /coverage panel/.test(cancelledFailed) && !/[{}]|Error|failed \[/.test(cancelledFailed),
-  "and points at where to look rather than pasting the error that caused it",
+  // #1876: the panel's NAME comes from the constant the panel titles itself
+  // with, never spelled here, so a rename cannot leave this sentence sending a
+  // manager to a section that does not exist (L41, L111).
+  cancelledFailed.includes(COVERAGE_PANEL_NAME) && !/[{}]|Error|failed \[/.test(cancelledFailed),
+  "and points at where to look, by its real name, rather than pasting the error that caused it",
 );
+
+// #1876: every sentence that sends a manager to the panel names it by the
+// constant, so all four move together with a rename. Asserted as a group,
+// because the one that gets forgotten is the one nobody re-reads.
+for (const [state, text] of [
+  ["an unreadable pending count", pendingCoverageLine(null)],
+  ["a failed sweep", approvedCoverageLine({ kind: "failed", reason: "timeout" }, { nowIso: NOW, ...TZ })],
+  ["an unconfirmed stop", cancelledFailed],
+] as const) {
+  assert(
+    (text ?? "").includes(COVERAGE_PANEL_NAME),
+    `${state} names the panel that fixes it, by the name it actually carries`,
+  );
+}
 
 const cancelledApproved = cancelledBoth;
 

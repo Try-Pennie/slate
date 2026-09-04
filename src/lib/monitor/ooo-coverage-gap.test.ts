@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 
 // #1238: an agent on APPROVED time off still holding an appointment inside that
 // window, with nothing anywhere saying so.
@@ -371,7 +372,8 @@ describe("the copy a person reads at 7am (#1238)", () => {
   it("says plainly in the whisper that it is not urgent", () => {
     const body = formatOooCoverageGapWhisper([holder({ imminent: 0, later: 2 })]);
     expect(body).toContain("2 appointments");
-    expect(body).toContain("Coverage");
+    // #1876: the panel's real name, derived rather than spelled here.
+    expect(body).toContain(COVERAGE_PANEL_NAME);
   });
 
   it("carries no dash punctuation or emoji in any state", () => {
