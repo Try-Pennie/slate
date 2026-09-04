@@ -575,6 +575,35 @@ html {
   animation-delay: 0.24s;
 }
 
+/* ---------------- Loading skeleton (#1848) ----------------
+   The shape a console page holds while it is being fetched. A tint rather than a
+   spinner: it says "this is coming" and shows WHERE, so the real content lands
+   where the placeholder was instead of jumping.
+
+   It uses the hover and zebra tint, which #1851 made actually visible; at the
+   value before that it would have been a skeleton nobody could see.
+
+   The shimmer is a background sweep, never opacity or transform: those move the
+   element, and the embed's ResizeObserver reports scrollHeight. The global
+   reduced-motion guard below stops the sweep, and the shape still reads as a
+   placeholder standing still. */
+.pn-skeleton {
+  background-color: var(--bg-alt);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--fg-muted) 8%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: pn-skeleton-sweep 1.4s ease-in-out infinite;
+}
+@keyframes pn-skeleton-sweep {
+  0% { background-position: -100% 0; }
+  100% { background-position: 200% 0; }
+}
+
 /* ---------------- Reduced-motion guard (S9) ----------------
    After the base/.pn-* styles so it wins the cascade. */
 @media (prefers-reduced-motion: reduce) {
