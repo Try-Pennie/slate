@@ -199,7 +199,7 @@ export default async function BusinessHoursPage({
         a lead can book, and what a new agent starts on. Every offered time is judged
         against the first of those, so a change there moves the whole roster.
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
+      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Hours saved." />
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Business hours</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>

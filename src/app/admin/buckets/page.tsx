@@ -164,7 +164,7 @@ export default async function BucketsPage({
         Which pool each routing code sends a lead to, who is in it, and which one a
         direct booking falls back to when it names no code.
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
+      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Bucket routing saved." />
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Direct-booking default bucket</h2>
         <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>

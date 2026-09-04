@@ -46,7 +46,7 @@ export default async function BookerCopyPage({
       <AdminPageHeader title="Booker copy">
         The words a lead reads on the booking panel before they pick a time.
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
+      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Booker copy saved." />
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">What the lead reads before booking</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>

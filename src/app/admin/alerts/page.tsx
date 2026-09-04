@@ -96,7 +96,7 @@ export default async function AlertSettingsPage({
         which Slack channel each one posts to. No deploy needed.
         <p className="mt-3 text-xs text-pennie-beige/70">{lastChanged}</p>
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
+      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Alert settings saved." />
       {!armed && (
         <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
           Heads up: the low-booking-volume alarm is currently <strong>disarmed</strong> (a
