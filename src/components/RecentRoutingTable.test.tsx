@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import {
   RecentRoutingTable,
   formatRoutingWhen,
@@ -58,21 +58,88 @@ describe("RecentRoutingTable", () => {
     expect(screen.getByText("Jane Doe")).toBeTruthy();
     expect(screen.getByText("DBT-01")).toBeTruthy();
     expect(screen.getByText("Jamie Smith")).toBeTruthy();
-    expect(screen.getByText(/2 considered · fallback used/)).toBeTruthy();
+    // #1914: each part of the routing decision is a statement rather than a
+    // middot joined fragment.
+    expect(screen.getByText("2 agents considered")).toBeTruthy();
+    expect(screen.getByText("Fallback used")).toBeTruthy();
     // Reassignment resolves both ids, and u2 falls back to its email.
-    expect(screen.getByText(/reassigned Jamie Smith → ana@x.co/)).toBeTruthy();
+    expect(screen.getByText(/Reassigned from Jamie Smith to ana@x\.co/)).toBeTruthy();
     const open = screen.getByRole("link", { name: /open/i }) as HTMLAnchorElement;
     expect(open.getAttribute("href")).toBe("/admin/bookings/bk1");
   });
 
-  it("labels an unassigned agent and shortens an unknown id", () => {
+  it("says one agent in the singular, so a count of 1 does not read as a typo", () => {
+    const one: RecentRoutingRow = {
+      ...row,
+      routing_trace: { ...row.routing_trace!, considered: ["u1"], fallback_applied: false },
+    };
+    render(<RecentRoutingTable rows={[one]} users={users} />);
+    expect(screen.getByText("1 agent considered")).toBeTruthy();
+    // And the fallback line is absent rather than saying it did not fire.
+    expect(screen.queryByText("Fallback used")).toBeNull();
+  });
+
+  // #1914. The fallback used to render `id.slice(0, 8)`, which is worse than
+  // saying nothing: the smoke agents carry patterned ids, so two DIFFERENT agents
+  // both truncated to `c0000000` and a real reassignment read as
+  // "reassigned c0000000 to c0000000", a no operation.
+  it("says an agent could not be named rather than rendering their id", () => {
     const unassigned: RecentRoutingRow = { ...row, assigned_user_id: null, routing_trace: null };
     render(<RecentRoutingTable rows={[unassigned]} users={users} />);
     expect(screen.getByText("unassigned")).toBeTruthy();
     expect(screen.getByText("no trace")).toBeTruthy();
+    cleanup();
 
     const ghost: RecentRoutingRow = { ...row, assigned_user_id: "abcdef1234567890", routing_trace: null };
-    const { container } = render(<RecentRoutingTable rows={[ghost]} users={users} />);
-    expect(within(container).getByText("abcdef12")).toBeTruthy();
+    render(<RecentRoutingTable rows={[ghost]} users={users} />);
+    expect(screen.getByText("not in the roster")).toBeTruthy();
+    // No fragment of the id anywhere: an unresolved agent is a detection that
+    // the roster is missing somebody, not a name (L67).
+    expect(document.body.textContent).not.toMatch(/abcdef/);
+  });
+
+  it("does not collapse two unnamed agents into one, which is what a truncated id did", () => {
+    const both: RecentRoutingRow = {
+      ...row,
+      routing_trace: {
+        ...row.routing_trace!,
+        reassignments: [
+          { from: "c00000001111", to: "c00000002222", at: "2026-07-02T00:00:00Z" },
+        ],
+      },
+    };
+    render(<RecentRoutingTable rows={[both]} users={users} />);
+    // Two different agents, and the line says it could not name either rather
+    // than printing one string twice and reading as a no operation.
+    expect(screen.getByText(/Reassigned from not in the roster to not in the roster/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/c0000000/);
+  });
+
+  it("gives the reassignment line no link treatment, since it is not a link", () => {
+    render(<RecentRoutingTable rows={[row]} users={users} />);
+    const line = screen.getByText(/Reassigned from/);
+    // Blue text in a table reads as a link and invites a click that does nothing,
+    // and it was colour as the only signal. The word carries the meaning.
+    expect(line.className).not.toMatch(/pennie-blue|pennie-sky|underline/);
+    expect(line.closest("a")).toBeNull();
+  });
+
+  // Dan's call: this is a scan and dig surface, and losing your place in a list
+  // of 25 to look at one booking is the complaint.
+  it("opens a booking in a new tab, and says so to a screen reader", () => {
+    render(<RecentRoutingTable rows={[row]} users={users} />);
+    const open = screen.getByRole("link", { name: /open/i }) as HTMLAnchorElement;
+    expect(open.getAttribute("target")).toBe("_blank");
+    // Without noopener the new document can reach back through window.opener.
+    expect(open.getAttribute("rel")).toBe("noopener noreferrer");
+    // A new window with no warning is a surprise to somebody with no visual cue
+    // that anything moved.
+    expect(open.textContent).toMatch(/opens in a new tab/i);
+  });
+
+  it("names the routing column for what it holds", () => {
+    render(<RecentRoutingTable rows={[row]} users={users} />);
+    expect(screen.getByRole("columnheader", { name: "How it routed" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Trace" })).toBeNull();
   });
 });

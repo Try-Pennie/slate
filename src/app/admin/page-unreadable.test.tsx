@@ -177,16 +177,32 @@ const HEALTHY: Record<string, Result> = {
  * row via maybeSingle, then id+url as a list for the delivery log), so the fake
  * answers by whether `maybeSingle` was reached rather than by table alone.
  */
+/**
+ * Every `.eq(column, value)` this fake was asked for, by table (#1914).
+ *
+ * The fake does not FILTER, deliberately: it answers each table with a fixed
+ * result so a test can fail one read at a time. That means output cannot tell a
+ * filtered read from an unfiltered one, and a test written against the rows would
+ * pass whichever way the query went (L143). So the filters are recorded and
+ * asserted directly.
+ */
+const eqCalls: Record<string, [string, unknown][]> = {};
+
 function mockDb(overrides: Record<string, Result> = {}) {
   const byTable = { ...HEALTHY, ...overrides };
+  for (const k of Object.keys(eqCalls)) delete eqCalls[k];
   admin.supabaseAdmin.mockReturnValue({
     from: (table: string) => {
       const result = byTable[table] ?? { data: [], error: null };
       let single = false;
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "not", "gte", "lte", "order", "limit", "range"]) {
+      for (const m of ["select", "in", "not", "gte", "lte", "order", "limit", "range"]) {
         b[m] = () => b;
       }
+      b.eq = (column: string, value: unknown) => {
+        (eqCalls[table] ??= []).push([column, value]);
+        return b;
+      };
       b.maybeSingle = () => {
         single = true;
         return b;
@@ -267,6 +283,37 @@ describe("every read healthy (the control)", () => {
     mockDb();
     render(await RecentRoutingPage());
     expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+});
+
+// #1914. "Routed to" rendered `c0000000` on every row, which is the first eight
+// characters of the agent's id, because the name lookup missed.
+//
+// The cause is that the two reads on that page disagreed about what counts: the
+// roster was read with `is_test = false` while the bookings beside it were not
+// filtered, and before cutover the only bookings that exist are the SMOKE ones
+// (#396), so every visible row's agent was excluded from the very map used to
+// name it.
+//
+// Asserted on the QUERY rather than on the rows, because this fake answers each
+// table with a fixed result and does not filter, so the rows look identical
+// either way (L143). The two reads have to agree, and that is what is checked.
+describe("the routing page's roster covers the bookings it shows (#1914)", () => {
+  it("does not read the roster more narrowly than the bookings beside it", async () => {
+    mockDb();
+    render(await RecentRoutingPage());
+
+    const users = eqCalls.users ?? [];
+    const bookings = eqCalls.bookings ?? [];
+    // The CONTROL: the recording works, so an empty filter list below is a real
+    // absence rather than a fake that stopped recording (L98).
+    expect(users).toContainEqual(["org_id", "o1"]);
+    expect(bookings).toContainEqual(["org_id", "o1"]);
+
+    // Neither read excludes the test agents, so an agent whose booking is shown
+    // can always be named.
+    expect(users.map(([c]) => c)).not.toContain("is_test");
+    expect(bookings.map(([c]) => c)).not.toContain("is_test");
   });
 });
 

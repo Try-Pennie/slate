@@ -21,7 +21,14 @@ export default async function RecentRoutingPage() {
 
   const db = supabaseAdmin();
   const [usersRes, recentRes] = await Promise.all([
-    db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
+    // #1914: test agents INCLUDED. This roster is a display only name map, and
+    // the bookings beside it are not filtered, so excluding the test agents from
+    // the names while showing their bookings made the two reads disagree about
+    // what counts: before cutover the only bookings that exist are the SMOKE ones
+    // (#396), so every visible row's agent was missing from the very map used to
+    // name it. The `is_test` filter belongs where a test agent must not be
+    // CHOSEN (a picker, the pool), not where one has to be named.
+    db.from("users").select("*").eq("org_id", me.org_id),
     db
       .from("bookings")
       .select(
