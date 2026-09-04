@@ -8,6 +8,7 @@ import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/componen
 import { REASON_LABEL_MAX, type ReasonOptionRow } from "@/lib/booking/reason-options";
 import type { ReasonAction } from "@/lib/booking/core";
 import { REASON_USAGE_WINDOW_DAYS, type ReasonUsageCounts } from "@/lib/booking/reason-usage";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 /** The editor's per-row working state (a superset of what it submits). */
 interface EditRow {
@@ -131,6 +132,8 @@ export default function ReasonOptionsEditor({
 
   return (
     <form action={setReasonOptions} className="space-y-6">
+      {/* #1966: typed lists, with no other copy of them. */}
+      <UnsavedGuard what="changes to these reasons" />
       <input type="hidden" name="payload" value={payload} />
 
       {ACTION_ORDER.map((action) => (

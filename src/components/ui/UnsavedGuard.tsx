@@ -1,0 +1,158 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { formSnapshot } from "./formSnapshot";
+
+/**
+ * Warn before leaving a form that has edits nobody has saved (#1966).
+ *
+ * Dan changed his working hours, refreshed, and lost them with no warning.
+ *
+ * TWO GUARDS, BECAUSE ONE COVERS THE WRONG HALF. `beforeunload` covers a
+ * refresh, a close and the browser's back button, and in an admin console the
+ * far commoner way to lose work is clicking "Buckets" in the sidebar, which is a
+ * client side navigation `beforeunload` never sees. A change that added only the
+ * browser guard, got tested by refreshing, and shipped would leave the common
+ * case exactly as broken while reading as fixed.
+ *
+ * So the in app half intercepts link clicks in the capture phase, before the
+ * router hears about them, and that is also the half where a useful message can
+ * live: the browser's own dialog text is fixed and cannot say WHAT is unsaved.
+ *
+ * Mounted INSIDE the form it guards, and it finds that form itself rather than
+ * being handed one, so a caller cannot point it at the wrong one.
+ */
+export function UnsavedGuard({ what }: { what: string }) {
+  const marker = useRef<HTMLSpanElement>(null);
+  const saved = useRef<string | null>(null);
+  const [leavingTo, setLeavingTo] = useState<string | null>(null);
+  const stayRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const form = marker.current?.closest("form");
+    if (!form) return;
+
+    /** The values as they were last SAVED, which is how they were rendered. */
+    saved.current = formSnapshot(form);
+    const dirty = () => saved.current !== null && formSnapshot(form) !== saved.current;
+
+    // A submit means these values are the saved ones from now on. Taken after a
+    // tick so the snapshot reads the form as it was submitted. If the save then
+    // FAILS the guard is quiet until the next edit, which is the mild direction:
+    // the person is still on the page looking at an error, and the alternative
+    // is warning them about work the screen is telling them was not saved.
+    const onSubmit = () => {
+      window.setTimeout(() => {
+        saved.current = formSnapshot(form);
+      }, 0);
+    };
+    form.addEventListener("submit", onSubmit);
+
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirty()) return;
+      // The only thing that makes the browser ask. Its wording is the browser's
+      // and cannot be set, which is why the in app half exists.
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+
+    const onClick = (e: MouseEvent) => {
+      if (!dirty()) return;
+      // Anything the person has told the browser to handle differently is left
+      // alone: a new tab keeps this page and its edits, and a modified click is
+      // a deliberate one.
+      if (e.defaultPrevented || e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const link = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || link.hasAttribute("download")) return;
+      // A link inside the guarded form is part of the form, not a way out of it.
+      if (form.contains(link)) return;
+
+      const href = link.getAttribute("href") ?? "";
+      // Only an in app destination: an external link leaves through
+      // `beforeunload`, and a bare fragment goes nowhere.
+      if (!href.startsWith("/") || href.startsWith("//")) return;
+
+      // Capture phase plus stopPropagation, so the router's own handler never
+      // runs. Preventing default alone would leave the client side navigation to
+      // proceed.
+      e.preventDefault();
+      e.stopPropagation();
+      setLeavingTo(href);
+    };
+    document.addEventListener("click", onClick, true);
+
+    return () => {
+      form.removeEventListener("submit", onSubmit);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, []);
+
+  // Focus lands on STAYING, never on the button that discards the work, which is
+  // the same choice the erasure confirm makes.
+  useEffect(() => {
+    if (leavingTo) stayRef.current?.focus();
+  }, [leavingTo]);
+
+  return (
+    <>
+      <span ref={marker} hidden />
+      {leavingTo && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="unsaved-guard-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.45)] p-4"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setLeavingTo(null);
+          }}
+        >
+          <div className="w-full max-w-115 rounded-[var(--radius-lg)] border border-border bg-surface px-6 py-5 shadow-[var(--shadow-lg)]">
+            <h2 id="unsaved-guard-title" className="text-base font-semibold text-fg">
+              You have unsaved {what}
+            </h2>
+            <p className="mt-1 text-sm text-fg-muted">
+              Leaving this page now discards them. Nothing has been saved yet.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                ref={stayRef}
+                type="button"
+                className={btnCls}
+                onClick={() => setLeavingTo(null)}
+              >
+                Stay on this page
+              </button>
+              <button
+                type="button"
+                className={btnSecondaryCls}
+                onClick={() => {
+                  const to = leavingTo;
+                  // Cleared BEFORE navigating, so neither half of the guard
+                  // catches its own departure: the click interceptor stands down
+                  // and `beforeunload` stays quiet on the way out.
+                  saved.current = null;
+                  setLeavingTo(null);
+                  // An ordinary navigation rather than the app router,
+                  // DELIBERATELY. `useRouter` would make every form that mounts
+                  // this guard require a mounted router, which broke six
+                  // existing test files at once and would have left "remember to
+                  // mock next/navigation" as a rule living only in a prompt
+                  // (L27). The cost is one full page load on a click whose whole
+                  // purpose is to leave and discard, which is the cheapest place
+                  // in the app to spend it.
+                  window.location.assign(to);
+                }}
+              >
+                Leave without saving
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}

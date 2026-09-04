@@ -9,6 +9,7 @@ import { Pill } from "@/components/ui/Pill";
 import type { BusinessHoursFormState } from "@/app/admin/actions";
 import type { BusinessHoursException } from "@/lib/booking/business-hours";
 import { SelectField } from "@/components/ui/SelectField";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 /** "HH:MM" for a minute count, for the list. */
 function hhmm(minute: number): string {
@@ -85,6 +86,9 @@ export function BusinessHoursExceptions({
       )}
 
       <form action={formAction} className="space-y-4">
+        {/* #1966: the ADD form. The per row remove forms below hold nothing
+            typed, so they carry no guard. */}
+        <UnsavedGuard what="changes to this date" />
         {state.error && (
           <p
             role="alert"
