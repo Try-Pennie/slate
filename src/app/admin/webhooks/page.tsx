@@ -179,9 +179,11 @@ export default async function WebhooksPage({
             </div>
           </div>
           <div>
-            <label className={labelCls}>
-              Authorization header (Regal API key)
-            </label>
+            {/* #1901, the fourth instance of the pattern, found by the guard
+                rather than by eye. The field IS the Regal API key; sending it as
+                the Authorization header is the mechanism, and the placeholder
+                below already says which. So the label is the name. */}
+            <label className={labelCls}>Regal API key</label>
             {/* #600: never render the stored key. It used to come down as this input's
                 defaultValue, which put the live secret in the page HTML and on screen in
                 plain text. Write only: blank leaves the saved key untouched. */}

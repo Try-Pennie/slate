@@ -213,6 +213,8 @@ export default async function BusinessHoursPage({
         </p>
         <form action={setBookingHorizon} className="space-y-4">
           <div>
+            {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
+                  constants the server validates against. */}
             <label className={labelCls} htmlFor="horizon_days">
               Days offered ({HORIZON_MIN} to {HORIZON_MAX})
             </label>

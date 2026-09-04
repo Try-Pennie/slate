@@ -67,6 +67,8 @@ export default async function EventTypesPage() {
             <Field name="daily_cap" label="Daily cap" defaultValue="" small />
           </div>
           <div>
+            {/* heading-gloss-ok: WHERE the value goes, which is what somebody
+                needs while typing it, not a definition of the word Description. */}
             <label className={labelCls}>Description (shown to lead + sent to Regal)</label>
             <textarea
               name="description"

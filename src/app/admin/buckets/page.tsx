@@ -147,10 +147,18 @@ export default async function BucketsPage({
         </form>
       </section>
       <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Buckets (round-robin pools)</h2>
+        {/* #1901: the heading is the NAME. It read "Buckets (round-robin
+            pools)", and a heading needing a parenthetical is a heading that has
+            not been named: the gloss was appended because the label did not
+            survive being read by somebody who had not written it. The mechanism
+            belongs in the description under it, which this section already has,
+            where it is read once rather than on every view forever. */}
+        <h2 className="mb-1 text-sm font-semibold">Buckets</h2>
         <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-          Edit routing live. Changes apply without a deploy. Routing matches
-          agents by attribute; leave all groups empty to pick members manually.
+          A bucket is one round robin pool: a lead landing on its code is offered
+          the agents in it, in turn. Edit routing live, changes apply without a
+          deploy. Routing matches agents by attribute; leave all groups empty to
+          pick members manually.
         </p>
         {/* #1629: the editor writes what it shows. An unreadable buckets or
             members read draws pools with nobody in them and every attribute group

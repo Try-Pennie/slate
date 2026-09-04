@@ -140,6 +140,7 @@ export default async function AlertSettingsPage({
       )}
       <form action={setMonitorSettings} className="space-y-8">
         <section className={cardCls}>
+          {/* heading-gloss-ok: the UNIT of the numbers in the fields below. */}
           <h2 className="mb-1 text-sm font-semibold">Alert cooldowns (minutes)</h2>
           <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
             The minimum time between repeats of the same alert.
@@ -179,6 +180,8 @@ export default async function AlertSettingsPage({
         </section>
 
         <section className={cardCls}>
+          {/* heading-gloss-ok: the UNIT again. A floor could be a rate or a count
+              and the two read identically without this. */}
           <h2 className="mb-1 text-sm font-semibold">Low-volume floors (booking counts)</h2>
           <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
             Expected minimum bookings in each window; below the floor triggers the
@@ -186,6 +189,8 @@ export default async function AlertSettingsPage({
           </p>
           <div className="flex flex-wrap gap-6">
             <div>
+              {/* heading-gloss-ok: the WINDOW this floor is counted over. Two fields differ
+                  by nothing else, so the bracket is the only thing telling them apart. */}
               <label className={labelCls} htmlFor="floor_30">
                 Floor (last 30 min)
               </label>
@@ -201,6 +206,7 @@ export default async function AlertSettingsPage({
               />
             </div>
             <div>
+              {/* heading-gloss-ok: the other window, as above. */}
               <label className={labelCls} htmlFor="floor_120">
                 Floor (last 120 min)
               </label>
@@ -295,6 +301,9 @@ export default async function AlertSettingsPage({
           </p>
           <div className="space-y-4">
             <div>
+              {/* heading-gloss-ok: which of two sibling channels this is. A reader choosing
+                  between them needs the character of each, not a definition of
+                  the word channel. */}
               <label className={labelCls} htmlFor="alerts_channel">
                 Alerts channel (urgent)
               </label>
@@ -308,6 +317,7 @@ export default async function AlertSettingsPage({
               />
             </div>
             <div>
+              {/* heading-gloss-ok: the quiet one, as above. */}
               <label className={labelCls} htmlFor="info_channel">
                 Info channel (quiet)
               </label>
