@@ -127,4 +127,44 @@ try {
 }
 assert(threwOnBlank, "regal: a whitespace-only key is treated as missing, not as a key (#600)");
 
+// --- an unrecognised format is refused, not guessed at (#1952) ---------------
+//
+// This used to be an `if (endpoint.format === "regal")` followed by the generic
+// body, so a format with no branch of its own took the GENERIC one: a third
+// destination would have been sent a shape nobody chose for it, with no error
+// anywhere, and its subscriber would have been what noticed. The union and the
+// column's check constraint both stop such a value ARRIVING, which is exactly
+// why the fall through was invisible.
+//
+// Driven rather than read off the source, because the guard beside this one
+// asserts the SHAPE of the dispatch (a Record, no single format comparison) and
+// a shape is not a behaviour: a map that resolved to a default would satisfy it.
+let refusedUnknown: string | null = null;
+try {
+  buildRequest(
+    { ...genericEndpoint, format: "zapier" } as unknown as WebhookEndpoint,
+    DELIVERY,
+    "booking.created",
+    payload,
+    TS,
+  );
+} catch (err) {
+  refusedUnknown = err instanceof Error ? err.message : String(err);
+}
+assert(
+  refusedUnknown !== null,
+  "an unknown format is refused rather than sent as a generic payload (#1952)",
+);
+// The message has to NAME the format, since "a webhook failed to build" sends
+// nobody anywhere. A bare TypeError from calling an undefined builder would
+// satisfy the assertion above while saying nothing (L140, L11).
+assert(
+  /zapier/.test(refusedUnknown ?? ""),
+  `the refusal names the format it does not know (got: ${refusedUnknown})`,
+);
+assert(
+  /format/i.test(refusedUnknown ?? "") && !/is not a function/.test(refusedUnknown ?? ""),
+  `the refusal is Slate's own, not a TypeError from calling a missing builder (got: ${refusedUnknown})`,
+);
+
 finish();
