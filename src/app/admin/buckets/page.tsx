@@ -40,7 +40,14 @@ export default async function BucketsPage({
   const settled = await Promise.allSettled([
     db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
     db.from("event_types").select("*").eq("org_id", me.org_id),
-    db.from("buckets").select("*").eq("org_id", me.org_id),
+    // #1929: `is_test = false`, matching the default bucket picker below
+    // (`page.tsx` further down) and, crucially, `bucketDepthByCode`, which
+    // excludes test buckets. The two reads disagreed about what counts, so the
+    // SMOKE buckets arrived here with no depth entry and the `?? 0` at the call
+    // site rendered them as "0 eligible agents (no fallback set, bookings will
+    // fail)" in the error colour, on every view, for two buckets that work.
+    // Measured live on 2026-09-04: five red rows, three of them real.
+    db.from("buckets").select("*").eq("org_id", me.org_id).eq("is_test", false),
     db.from("bucket_members").select("*"),
   ]);
   const read = <T,>(i: number): { data: T[] | null; error: unknown } =>
@@ -187,6 +194,12 @@ export default async function BucketsPage({
         ) : (
           <RosterProvider roster={roster}>
             <div className="space-y-4">
+              {/* #1929: `eligibleCount` is NOT `?? 0`. A code absent from a
+                  healthy depth map is not a measured zero, and zero is what this
+                  panel paints red. `undefined` reaches the form as "not
+                  measured" (L11). The comment on `depthByBucketCode` above
+                  already refuses to zero the whole MAP; a missing KEY walked
+                  straight past it. */}
               {buckets.map((b) => (
                 <BucketForm
                   key={b.id}
@@ -199,7 +212,7 @@ export default async function BucketsPage({
                     )
                   }
                   catalog={attrCatalog}
-                  eligibleCount={depthByBucketCode?.get(b.code) ?? 0}
+                  eligibleCount={depthByBucketCode?.get(b.code)}
                 />
               ))}
               {buckets.length === 0 && (

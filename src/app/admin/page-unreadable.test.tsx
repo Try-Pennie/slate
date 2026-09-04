@@ -178,15 +178,33 @@ const HEALTHY: Record<string, Result> = {
  * answers by whether `maybeSingle` was reached rather than by table alone.
  */
 /**
- * Every `.eq(column, value)` this fake was asked for, by table (#1914).
+ * Every `.eq(column, value)` this fake was asked for, grouped BY READ (#1914).
  *
  * The fake does not FILTER, deliberately: it answers each table with a fixed
  * result so a test can fail one read at a time. That means output cannot tell a
  * filtered read from an unfiltered one, and a test written against the rows would
  * pass whichever way the query went (L143). So the filters are recorded and
  * asserted directly.
+ *
+ * ONE ENTRY PER `from(table)` CALL, not one per table, and that is not tidiness.
+ * The buckets page reads `buckets` TWICE (the editor's list and the default
+ * bucket picker) and only one of them filtered `is_test`. A recorder keyed on the
+ * table alone merges them, so an assertion that `is_test` was applied is answered
+ * by the OTHER read: the #1929 filter was removed and the test still passed
+ * (L178, an assertion satisfied by a different place in the same haystack proves
+ * neither half).
  */
-const eqCalls: Record<string, [string, unknown][]> = {};
+const eqCalls: Record<string, [string, unknown][][]> = {};
+
+/** Every eq filter applied to a table, flattened, when the read does not matter. */
+const eqAnyRead = (table: string): [string, unknown][] => (eqCalls[table] ?? []).flat();
+
+/** Whether EVERY read of a table applied this filter, which is the invariant when
+ *  two reads of one table must agree about the population they cover. */
+const everyReadHas = (table: string, column: string, value: unknown): boolean => {
+  const reads = eqCalls[table] ?? [];
+  return reads.length > 0 && reads.every((r) => r.some(([c, v]) => c === column && v === value));
+};
 
 function mockDb(overrides: Record<string, Result> = {}) {
   const byTable = { ...HEALTHY, ...overrides };
@@ -199,8 +217,11 @@ function mockDb(overrides: Record<string, Result> = {}) {
       for (const m of ["select", "in", "not", "gte", "lte", "order", "limit", "range"]) {
         b[m] = () => b;
       }
+      // A fresh group per `from(table)` call, so two reads of one table stay apart.
+      const thisRead: [string, unknown][] = [];
+      (eqCalls[table] ??= []).push(thisRead);
       b.eq = (column: string, value: unknown) => {
-        (eqCalls[table] ??= []).push([column, value]);
+        thisRead.push([column, value]);
         return b;
       };
       b.maybeSingle = () => {
@@ -303,8 +324,8 @@ describe("the routing page's roster covers the bookings it shows (#1914)", () =>
     mockDb();
     render(await RecentRoutingPage());
 
-    const users = eqCalls.users ?? [];
-    const bookings = eqCalls.bookings ?? [];
+    const users = eqAnyRead("users");
+    const bookings = eqAnyRead("bookings");
     // The CONTROL: the recording works, so an empty filter list below is a real
     // absence rather than a fake that stopped recording (L98).
     expect(users).toContainEqual(["org_id", "o1"]);
@@ -314,6 +335,32 @@ describe("the routing page's roster covers the bookings it shows (#1914)", () =>
     // can always be named.
     expect(users.map(([c]) => c)).not.toContain("is_test");
     expect(bookings.map(([c]) => c)).not.toContain("is_test");
+  });
+});
+
+// #1929. Two working buckets rendered a red "bookings will fail" on every view,
+// because the bucket read did not exclude test buckets while `bucketDepthByCode`
+// does, so the SMOKE buckets arrived with no depth entry and `?? 0` turned
+// "excluded from the measurement" into "measured zero".
+//
+// Asserted on the QUERY, like #1914's twin on the routing page: this fake answers
+// each table with a fixed result and does not filter, so the rendered rows look
+// identical whichever way the read went (L143).
+describe("the buckets page reads the population it measures (#1929)", () => {
+  it("excludes test buckets, matching the depth measurement and the default picker", async () => {
+    mockDb();
+    render(await BucketsPage(props));
+
+    // The CONTROL first: the recording works, and it saw more than one read of
+    // this table, so the assertion below is about all of them (L98).
+    expect(eqAnyRead("buckets")).toContainEqual(["org_id", "o1"]);
+    expect((eqCalls.buckets ?? []).length).toBeGreaterThan(1);
+
+    // EVERY read of `buckets` excludes test buckets. Asserted across all of them
+    // rather than "somewhere in this table's filters", because the page reads it
+    // twice and only the picker filtered: the merged form was answered by that
+    // read and passed with the editor's filter removed.
+    expect(everyReadHas("buckets", "is_test", false)).toBe(true);
   });
 });
 

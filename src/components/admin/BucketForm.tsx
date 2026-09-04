@@ -26,7 +26,7 @@ export function BucketForm({
   roster,
   memberIds,
   catalog,
-  eligibleCount = 0,
+  eligibleCount,
 }: {
   bucket?: Bucket;
   eventTypes: EventType[];
@@ -38,6 +38,14 @@ export function BucketForm({
   roster: RosterEntry[];
   memberIds: Set<string>;
   catalog: Record<string, string[]>;
+  /**
+   * How many bookable agents this bucket's criteria and members reach.
+   *
+   * `undefined` means NOT MEASURED, and it has its own sentence (#1929). It used
+   * to default to 0, and zero is the state this panel paints in the error colour
+   * with "bookings will fail", so a bucket the depth measurement had simply left
+   * out was reported as broken. Two of them were, on every view, for months.
+   */
   eligibleCount?: number;
 }) {
   const editing = !!bucket;
@@ -55,21 +63,25 @@ export function BucketForm({
       {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
       {editing && (
         <>
+          {/* #1929: three states, and only ONE of them is a failure. A count
+              that was never measured cannot be a prediction that bookings will
+              fail, so it says what it is and keeps the muted treatment. */}
           <p
             className={`text-xs ${
-              eligibleCount === 0
-                ? bucket.fallback_user_id
-                  ? "text-fg-muted"
-                  : "text-[var(--error)]"
+              eligibleCount === 0 && !bucket.fallback_user_id
+                ? "text-[var(--error)]"
                 : "text-fg-muted"
             }`}
           >
-            {eligibleCount} eligible agent{eligibleCount === 1 ? "" : "s"}
-            {eligibleCount === 0
-              ? bucket.fallback_user_id
-                ? " (using fallback agent)"
-                : " (no fallback set, bookings will fail)"
-              : ""}
+            {eligibleCount === undefined
+              ? "Eligible agents not measured"
+              : `${eligibleCount} eligible agent${eligibleCount === 1 ? "" : "s"}${
+                  eligibleCount === 0
+                    ? bucket.fallback_user_id
+                      ? " (using fallback agent)"
+                      : " (no fallback set, bookings will fail)"
+                    : ""
+                }`}
           </p>
           {/* #1760: two numbers sit on this panel and neither said what it
               measured. The eligible count is this bucket's depth; the manual

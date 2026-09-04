@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // #1760. The number in the issue is the whole point: /admin/buckets served 9,450
@@ -326,5 +326,71 @@ describe("the event type picker always carries a real value (#1849)", () => {
     await user.click(screen.getByRole("combobox", { name: "Event type" }));
     await user.click(screen.getByRole("option", { name: "Follow up" }));
     expect(posted(container)).toBe("et2");
+  });
+});
+
+// #1929. Two working buckets rendered "0 eligible agents (no fallback set,
+// bookings will fail)" in the error colour on every view of /admin/buckets,
+// measured live on 2026-09-04: five red rows, three of them real.
+//
+// The cause was two reads disagreeing about what counts. `bucketDepthByCode`
+// excludes test buckets and the page's bucket read did not, so the SMOKE buckets
+// arrived with no depth entry, and `?? 0` at the call site turned "excluded from
+// the measurement" into "measured zero", which is the one state this panel paints
+// as a failure.
+describe("the eligible count has three states, and only one is a failure (#1929)", () => {
+  const draw = (eligibleCount: number | undefined, fallback: string | null = null) => {
+    const people = roster(3);
+    return render(
+      <RosterProvider roster={people}>
+        <BucketForm
+          bucket={{ ...bucket(1), fallback_user_id: fallback }}
+          eventTypes={EVENT_TYPES}
+          roster={people}
+          memberIds={new Set()}
+          catalog={CATALOG}
+          eligibleCount={eligibleCount}
+        />
+      </RosterProvider>,
+    );
+  };
+
+  it("says a count was not measured rather than calling it zero", () => {
+    draw(undefined);
+    const line = screen.getByText("Eligible agents not measured");
+    // The claim it must never make from a reading that never happened. Scoped to
+    // the count line, because the members picker's own collapsed summary says
+    // "0 selected" and would answer a document wide search for a zero.
+    expect(line.textContent).not.toMatch(/bookings will fail/i);
+    expect(line.textContent).not.toMatch(/\d+ eligible agent/);
+  });
+
+  it("does not paint an unmeasured count in the error colour", () => {
+    draw(undefined);
+    const line = screen.getByText("Eligible agents not measured");
+    // Colour is the only thing that separates this panel's three states at a
+    // glance, so an unmeasured count wearing the error colour IS the false alarm.
+    expect(line.className).not.toMatch(/error/);
+  });
+
+  it("still calls a MEASURED zero with no fallback a failure, in the error colour", () => {
+    draw(0);
+    const line = screen.getByText(/no fallback set, bookings will fail/);
+    expect(line.className).toMatch(/error/);
+  });
+
+  it("treats a measured zero with a fallback as working, not as a failure", () => {
+    draw(0, "u9");
+    const line = screen.getByText(/using fallback agent/);
+    expect(line.className).not.toMatch(/error/);
+    expect(line.textContent).not.toMatch(/bookings will fail/i);
+  });
+
+  it("reads a real count in the singular and the plural", () => {
+    draw(1);
+    expect(screen.getByText("1 eligible agent")).toBeTruthy();
+    cleanup();
+    draw(4);
+    expect(screen.getByText("4 eligible agents")).toBeTruthy();
   });
 });
