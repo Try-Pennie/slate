@@ -9,6 +9,7 @@ import type { CoverageReadout } from "@/lib/booking/business-hours-coverage";
 import { coverageGapPhrases, gapsFromCoverage } from "@/lib/monitor/roster-coverage";
 import { Pill } from "@/components/ui/Pill";
 import { businessHoursSummary, type WorkingHoursDay } from "@/lib/schedule-week";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 const DAYS: [number, string][] = [
   [1, "Monday"],
@@ -112,6 +113,8 @@ export function BusinessHoursForm({
 
   return (
     <form action={formAction} className="space-y-5">
+      {/* #1966: a week here decides when Pennie is open to every lead. */}
+      <UnsavedGuard what="changes to when Pennie is open" />
       {state.error && (
         <p
           role="alert"

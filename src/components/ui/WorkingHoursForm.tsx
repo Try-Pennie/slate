@@ -1,5 +1,6 @@
 import { WorkingHoursWeek } from "@/components/ui/WorkingHoursWeek";
 import { labelCls } from "@/components/ui/styles";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import { SelectField } from "@/components/ui/SelectField";
 import type { WorkingHoursDay } from "@/lib/schedule-week";
 import { timezoneOptions, resolveZone } from "@/lib/booking/timezones";
@@ -58,6 +59,9 @@ export function WorkingHoursForm({
 }) {
   return (
     <form action={action} className="space-y-4">
+      {/* #1966: this is the form Dan lost a week of hours from, by
+          refreshing. */}
+      <UnsavedGuard what="changes to these hours" />
       {userId && <input type="hidden" name="user_id" value={userId} />}
 
       <WorkingHoursWeek

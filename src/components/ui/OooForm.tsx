@@ -8,6 +8,7 @@ import { resolveZone } from "@/lib/booking/timezones";
 import { SelectField } from "@/components/ui/SelectField";
 import type { OooFormState } from "@/app/me/actions";
 import { NO_MANAGER_REVIEWER } from "@/lib/ooo/core";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1007,
 // mirroring the booker's #219 picker); a real zone id can never collide with it.
@@ -182,6 +183,8 @@ export function OooForm({
             : ""
         }`}
       >
+        {/* #1966: dates and a reason somebody wrote, with no other copy. */}
+        <UnsavedGuard what="changes to this request" />
         {editing && <input type="hidden" name="request_id" value={editing.id} />}
 
         {state.error && (
