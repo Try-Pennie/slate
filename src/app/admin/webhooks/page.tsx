@@ -3,7 +3,13 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { replayFailedWebhooks, resendWebhookDelivery, setWebhookEndpoint } from "@/app/admin/actions";
+import {
+  replayFailedWebhooks,
+  resendWebhookDelivery,
+  sendTestWebhook,
+  setWebhookEndpoint,
+} from "@/app/admin/actions";
+import { WebhookTestSend } from "@/components/admin/WebhookTestSend";
 import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
@@ -33,6 +39,7 @@ type DeliveryRow = Pick<
   | "last_response"
   | "created_at"
   | "suppressed"
+  | "payload"
 >;
 
 export default async function WebhooksPage({
@@ -73,8 +80,13 @@ export default async function WebhooksPage({
         deliveries = (unwrap(
           await db
             .from("webhook_deliveries")
+            // #1951: `payload` is the exact body that was sent, and the page
+            // used to omit it from this select, so real examples sat in the
+            // database unread while nobody could see what Slate sends without
+            // querying it. Better than any hand written sample: it is what
+            // actually went out, per event, with nothing to keep in sync.
             .select(
-              "id, endpoint_id, event, status, attempts, last_response, created_at, suppressed",
+              "id, endpoint_id, event, status, attempts, last_response, created_at, suppressed, payload",
             )
             .in(
               "endpoint_id",
@@ -267,6 +279,21 @@ export default async function WebhooksPage({
             Save
           </SubmitButton>
         </form>
+        {/* #1951: a real POST at a URL you paste, so the request, the headers
+            and the response can all be looked at. Dan's call over a preview
+            only panel and over firing at the configured endpoint. */}
+        <div className="mt-5 border-t border-border pt-4">
+          <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
+            Paste a scratch endpoint (webhook.site or similar) and Slate sends one
+            sample event at it, built by the same code the live path uses, in the
+            format saved above. Nothing reaches {" "}
+            {webhook ? "your live endpoint" : "a real destination"}: the live host
+            is refused, as are private addresses. The sample carries no real lead,
+            no real API key and no real signing secret, and no delivery is
+            recorded below, so it is safe to press as often as you like.
+          </p>
+          <WebhookTestSend action={sendTestWebhook} />
+        </div>
           </>
         )}
       </section>
@@ -321,6 +348,7 @@ export default async function WebhooksPage({
                   <th className="py-1 pr-3 font-semibold">Endpoint</th>
                   <th className="py-1 pr-3 font-semibold">Status</th>
                   <th className="py-1 pr-3 font-semibold">Tries</th>
+                  <th className="py-1 pr-3 font-semibold">Payload</th>
                   <th className="py-1 font-semibold" />
                 </tr>
               </thead>
@@ -354,6 +382,32 @@ export default async function WebhooksPage({
                         </Pill>
                       </td>
                       <td className="py-1.5 pr-3 text-fg-muted tabular-nums">{d.attempts}</td>
+                      <td className="py-1.5 pr-3">
+                        {d.payload == null ? (
+                          // A row with no stored body is not a row whose body
+                          // was empty, and saying nothing here would read as the
+                          // second (L10).
+                          <span className="text-fg-muted">Not stored</span>
+                        ) : (
+                          <details>
+                            <summary className="cursor-pointer font-semibold marker:text-fg-muted">
+                              Show
+                            </summary>
+                            {/* A suppressed row was RECORDED and never POSTed, so
+                                its body is what would have been sent. Left
+                                unsaid it reads as delivered, which is the one
+                                thing this panel exists to tell apart. */}
+                            {d.suppressed && (
+                              <p className="mt-1 w-105 text-fg-muted">
+                                Never sent: this is what would have gone out.
+                              </p>
+                            )}
+                            <pre className="mt-1 max-h-80 w-105 overflow-y-auto rounded-[var(--radius-md)] bg-[var(--field)] px-3 py-2 whitespace-pre-wrap break-all text-fg">
+                              {JSON.stringify(d.payload, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </td>
                       <td className="py-1.5">
                         {view.resendable ? (
                           <form action={resendWebhookDelivery}>

@@ -50,6 +50,18 @@ import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
 import { EVENT_TYPE_DEFAULTS } from "@/lib/booking/event-type-defaults";
+import { allowRequest } from "@/lib/rate-limit";
+import { WEBHOOK_TEST_SEND_RATE_RULES } from "@/lib/rate-limit-core";
+import { buildRequest } from "@/lib/webhooks/wire";
+import {
+  TEST_SEND_AUTH,
+  TEST_SEND_SECRET,
+  TEST_SEND_PAYLOAD,
+  testSendTargetError,
+  summariseTestResponse,
+} from "@/lib/webhooks/test-send";
+import { shortErrorReason } from "@/lib/notify/error-text";
+import type { WebhookFormat } from "@/lib/db/types";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
@@ -1853,4 +1865,155 @@ export async function setBusinessHours(
   }
 
   return { error: null, ok: true, warning };
+}
+
+/** What the webhook test send panel shows after a press (#1951). */
+export type WebhookTestState = {
+  error: string | null;
+  sent: {
+    target: string;
+    format: WebhookFormat;
+    requestBody: string;
+    requestHeaders: [string, string][];
+    status: number;
+    ok: boolean;
+    responseBody: string;
+    truncated: boolean;
+  } | null;
+};
+
+/**
+ * POST one sample event at a URL the admin pastes (#1951).
+ *
+ * Dan's ask was for a way to be confident in the shape of what Slate sends, and
+ * his call was a REAL request at a scratch endpoint (webhook.site or similar)
+ * rather than a preview panel or a send at the configured endpoint. So the
+ * mechanics being proved are the real ones: the body and headers come from the
+ * same `buildRequest` the live path uses, never a second builder, for the same
+ * reason `preview:alerts` and `preview:booker` call the real copy builders (a
+ * preview that shows something other than what ships is worse than none,
+ * because it is believed).
+ *
+ * Five things are settled deliberately, and each is stated on the panel too:
+ *
+ * NOTHING REACHES THE REAL DESTINATION. `testSendTargetError` refuses the
+ * configured endpoint's HOST, anything that is not public https, and the private
+ * and metadata address ranges, because a URL an operator supplies and the server
+ * fetches is a server side request whoever typed it chose the target of.
+ *
+ * NO REAL LEAD, KEY OR SECRET LEAVES. The body is the sample payload, the
+ * Authorization is a placeholder that says so in its own value, and the
+ * signature is made with a placeholder secret. See `test-send.ts` for why each.
+ *
+ * IT IS NOT RECORDED as a delivery. A test in `webhook_deliveries` would skew
+ * the delivery log, the dead letter sweep and the resend controls, so it writes
+ * no row there, and the panel says so, since a person who cannot find it
+ * otherwise assumes the send did not happen. It IS recorded in the audit trail,
+ * because an admin making the server fetch an arbitrary address is a privileged
+ * action and the trail is where that belongs.
+ *
+ * THE RESPONSE IS SHOWN, status and body. A tick proves less than a 200 with the
+ * echoed body, which is the whole point of pressing it.
+ *
+ * IT IS RATE LIMITED, keyed on the admin, because it is an outbound fetch to an
+ * arbitrary address.
+ */
+export async function sendTestWebhook(
+  _prev: WebhookTestState,
+  form: FormData,
+): Promise<WebhookTestState> {
+  const admin = await requireAdmin();
+  const target = String(form.get("target") ?? "").trim();
+
+  const allowed = await allowRequest(
+    { kind: "opaque", key: `webhook-test:${admin.id}` },
+    WEBHOOK_TEST_SEND_RATE_RULES,
+  );
+  if (!allowed) {
+    return {
+      error: "That is a lot of test sends in a short time. Wait a minute and press it again.",
+      sent: null,
+    };
+  }
+
+  // The configured endpoint, read for two things: the format to build in, and
+  // the host the test may not be aimed at. `unwrap`, because a failed read
+  // resolving to null would drop the collision check, which is the one rule
+  // standing between a test send and the live destination (L345).
+  const endpoint = unwrap(
+    await supabaseAdmin()
+      .from("webhook_endpoints")
+      .select("url, format")
+      .eq("org_id", admin.org_id)
+      .limit(1)
+      .maybeSingle(),
+    "sendTestWebhook endpoint",
+  ) as { url: string; format: WebhookFormat } | null;
+
+  const refusal = testSendTargetError(target, endpoint?.url ?? null);
+  if (refusal) return { error: refusal, sent: null };
+
+  const format: WebhookFormat = endpoint?.format ?? "regal";
+  const { body, headers } = buildRequest(
+    {
+      id: "test-send",
+      org_id: admin.org_id,
+      url: target,
+      secret: TEST_SEND_SECRET,
+      events: [],
+      format,
+      auth_header: TEST_SEND_AUTH,
+      active: true,
+      created_at: new Date().toISOString(),
+    },
+    // A delivery id shaped like a real one, so a subscriber's dedupe logic can
+    // be exercised, but not one that names a real delivery row.
+    `test-${crypto.randomUUID()}`,
+    "booking.created",
+    TEST_SEND_PAYLOAD,
+  );
+
+  let status = 0;
+  let responseText = "";
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      headers,
+      body,
+      // A scratch endpoint that never answers must not hold the request open.
+      signal: AbortSignal.timeout(10_000),
+    });
+    status = res.status;
+    responseText = await res.text();
+  } catch (err) {
+    // A failed fetch is the answer, not an exception to swallow: "it did not
+    // answer" is a result the person needs, and it is different from a 500.
+    log.warn("admin", { msg: "webhook test send failed", host: new URL(target).hostname }, err);
+    return {
+      error: `Slate could not reach that address: ${shortErrorReason(err)}`,
+      sent: null,
+    };
+  }
+
+  const summary = summariseTestResponse(status, responseText);
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "webhook.test_sent",
+    details: { host: new URL(target).hostname, format, status: summary.status },
+  });
+
+  return {
+    error: null,
+    sent: {
+      target,
+      format,
+      requestBody: body,
+      requestHeaders: Object.entries(headers),
+      status: summary.status,
+      ok: summary.ok,
+      responseBody: summary.body,
+      truncated: summary.truncated,
+    },
+  };
 }
