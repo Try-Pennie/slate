@@ -105,9 +105,12 @@ export default async function BucketsPage({
 
   return (
     <>
+      {/* #1915: the header describes the whole page, which sets the direct
+          booking fallback as well as editing the pools, at a higher altitude
+          than either card. */}
       <AdminPageHeader title="Buckets">
-        The round robin pools a lead can be routed into. Changes apply without a
-        deploy.
+        Which pool each routing code sends a lead to, who is in it, and which one a
+        direct booking falls back to when it names no code.
       </AdminPageHeader>
       <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
       <section className={cardCls}>
@@ -153,7 +156,10 @@ export default async function BucketsPage({
             survive being read by somebody who had not written it. The mechanism
             belongs in the description under it, which this section already has,
             where it is read once rather than on every view forever. */}
-        <h2 className="mb-1 text-sm font-semibold">Buckets</h2>
+        {/* #1915: "All buckets" rather than "Buckets" again. The page is called
+            Buckets, so a card of the same name reads as the page repeating
+            itself; this names the LIST, which is what the card holds. */}
+        <h2 className="mb-1 text-sm font-semibold">All buckets</h2>
         <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
           A bucket is one round robin pool: a lead landing on its code is offered
           the agents in it, in turn. Edit routing live, changes apply without a

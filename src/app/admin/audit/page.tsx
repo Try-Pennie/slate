@@ -142,7 +142,12 @@ export default async function AuditLogPage({
         The privileged actions taken in Slate: who did what, to whom, and when.
       </AdminPageHeader>
       <section className={cardCls} id="audit">
-        <h2 className="mb-1 text-sm font-semibold">Audit log</h2>
+        {/* #1915: no heading of its own. The page header above names this,
+            and a section that IS the page restating the page's title is the
+            redundancy Dan read as "this is redundant". A page shell that titles
+            itself and a section that titles itself are each correct alone; the
+            duplication exists only in the composition, which is the one place
+            nobody reads. */}
         {/* #1222: what this view is actually showing. A filtered table that reads
             like the whole trail is how somebody concludes nothing happened. */}
         <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>

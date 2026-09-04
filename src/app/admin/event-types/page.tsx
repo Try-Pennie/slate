@@ -34,7 +34,12 @@ export default async function EventTypesPage() {
         The meeting kinds a bucket can be booked for, and how long each one runs.
       </AdminPageHeader>
       <section className={cardCls}>
-        <h2 className="mb-4 text-sm font-semibold">Event types</h2>
+        {/* #1915: no heading of its own. The page header above names this,
+            and a section that IS the page restating the page's title is the
+            redundancy Dan read as "this is redundant". A page shell that titles
+            itself and a section that titles itself are each correct alone; the
+            duplication exists only in the composition, which is the one place
+            nobody reads. */}
         {/* "None yet." beside a form that creates one is an invitation, so it may
             only be shown when the read that says so actually ran (#1629). */}
         {eventTypesUnreadable ? (
