@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { CronLaneHealth, agoPhrase, summariseLanes, withinPhrase } from "./CronLaneHealth";
+import { laneNote } from "@/lib/monitor/health";
 import type { LaneHealthRow } from "@/lib/monitor/health";
 
 const row = (
@@ -101,33 +102,60 @@ describe("withinPhrase (#1767)", () => {
   });
 });
 
-describe("CronLaneHealth (#288, collapsed by #1767)", () => {
-  it("rests as one summary line with every lane behind the disclosure", () => {
+describe("CronLaneHealth (#288, collapsed by #1767, opened again by #1872)", () => {
+  // Dan's call: no open and closed state. The three assertions about the
+  // disclosure are gone rather than adjusted, because their whole content was the
+  // collapse being reversed (L252). What they asserted INSIDE the disclosure, the
+  // lanes and their ages, is what survives here.
+  it("shows the summary and every lane, with nothing to open", () => {
     render(
       <CronLaneHealth
         rows={[row("sync", "ok", 3 * 60_000), row("monitor", "ok", 60_000)]}
       />,
     );
-    const details = document.querySelector("details") as HTMLDetailsElement;
-    expect(details.open).toBe(false);
-    expect(details.querySelector("summary")?.textContent).toMatch(/All 2 lanes ran on time/);
-    // Collapsed hides detail, not lanes: each is still rendered, with its own age.
-    const list = details.querySelector("ul")?.textContent ?? "";
+    expect(document.querySelector("details")).toBeNull();
+    expect(screen.getByText(/All 2 lanes ran on time/)).toBeTruthy();
+
+    const list = document.querySelector("ul")?.textContent ?? "";
     expect(list).toMatch(/sync 3 minutes ago/);
     expect(list).toMatch(/monitor 1 minute ago/);
   });
 
-  it("labels a never-run lane distinctly from a stale one in the expanded list", () => {
+  it("labels a never-run lane distinctly from a stale one", () => {
     render(<CronLaneHealth rows={[row("watch", "never", null), row("sync", "stale", 15 * 60_000)]} />);
-    const list = document.querySelector("details ul")?.textContent ?? "";
+    const list = document.querySelector("ul")?.textContent ?? "";
     expect(list).toMatch(/watch no successful tick recorded yet/i);
     expect(list).toMatch(/sync 15 minutes ago, past its 10 minute bound/i);
   });
 
-  it("fails loud when the heartbeat read was unavailable, and offers nothing to expand", () => {
+  // #1872: the names are internal identifiers, and an age with no bound beside it
+  // says nothing about whether it is good. Both halves are asserted, and both come
+  // from `laneNote`, which lives beside the bound it quotes.
+  it("says what each lane does, how often it runs and when it counts as late", () => {
+    render(<CronLaneHealth rows={[row("sync", "ok", 60_000), row("hydrate-calendars", "ok", 14 * 60_000)]} />);
+    const list = document.querySelector("ul")?.textContent ?? "";
+
+    expect(list).toContain(laneNote("sync"));
+    expect(list).toContain(laneNote("hydrate-calendars"));
+    // The pair that made the missing bound concrete: 14 minutes is healthy for
+    // one of these and stale for the other, and the page drew both the same way.
+    expect(list).toMatch(/every minute, late after 10 minutes/i);
+    expect(list).toMatch(/every 15 minutes, late after 45 minutes/i);
+  });
+
+  it("explains a lane even when that lane is the one in trouble", () => {
+    render(<CronLaneHealth rows={[row("selfheal", "never", null)]} />);
+    const list = document.querySelector("ul")?.textContent ?? "";
+    // The reader who most needs to know what `selfheal` is, is the one looking at
+    // it having never run.
+    expect(list).toContain(laneNote("selfheal"));
+  });
+
+  it("fails loud when the heartbeat read was unavailable, and draws no lane list", () => {
     render(<CronLaneHealth rows={[]} unavailable />);
     expect(screen.getByText(/unavailable/i)).toBeTruthy();
-    // A disclosure over an empty body is a control that can only disappoint (L109).
-    expect(document.querySelector("details")).toBeNull();
+    // An empty list under the sentence would read as "no lanes" rather than as
+    // "could not tell".
+    expect(document.querySelector("ul")).toBeNull();
   });
 });

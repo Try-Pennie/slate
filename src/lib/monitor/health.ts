@@ -39,7 +39,30 @@ const MIN = 60_000;
  * own alert path. It does not stamp a heartbeat at all, so there is nothing here to
  * exempt. Acceptance for #685 scopes coverage to the 1-min and 5-min lanes only.
  */
-export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
+/**
+ * Every lane this page watches, in the order it reads them (#1872).
+ *
+ * A named tuple rather than the keys of the bounds map, so `LANE_STALE_BOUNDS_MS`
+ * and `LANE_NOTES` are both `Record<LaneName, ...>` and tsc requires an entry in
+ * each for every lane. A lane could otherwise be added with a bound and no
+ * description, and would render on the Health page as a bare identifier, which is
+ * the state #1872 exists to remove.
+ */
+export const LANE_NAMES = [
+  "sync",
+  "recompute",
+  "outbox",
+  "selfheal",
+  "complete",
+  "watch",
+  "monitor",
+  "bulk-reassign",
+  "hydrate-calendars",
+] as const;
+
+export type LaneName = (typeof LANE_NAMES)[number];
+
+export const LANE_STALE_BOUNDS_MS: Record<LaneName, number> = {
   sync: 10 * MIN,
   recompute: 10 * MIN,
   outbox: 10 * MIN,
@@ -55,6 +78,76 @@ export const LANE_STALE_BOUNDS_MS: Record<string, number> = {
   // (#1123), and a silently stopped rotation means coverage quietly expiring everywhere.
   "hydrate-calendars": 45 * MIN,
 };
+
+/**
+ * What each lane DOES, and how often it should run (#1872).
+ *
+ * Nine lane names rendered on the Health page were internal identifiers rather
+ * than words: `sync`, `selfheal`, `hydrate-calendars`. And "sync, just now" tells
+ * a reader nothing about whether "just now" is good, because the bound is the
+ * missing half: `hydrate-calendars` at 14 minutes is healthy on a 45 minute bound
+ * while `sync` at 14 minutes is stale on a 10 minute one, and the page drew both
+ * the same way.
+ *
+ * HERE, BESIDE THE BOUNDS, rather than in the component. The cadence and the
+ * bound are two halves of one fact, and a second set of descriptions written next
+ * to the page would drift from the numbers they describe (L41). The "late after"
+ * phrase is DERIVED from `LANE_STALE_BOUNDS_MS` by `laneNote` below, so it cannot
+ * disagree with the bound the watchdog actually uses.
+ */
+export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
+  sync: { does: "pulls each agent's calendar so cached busy time stays true", cadence: "every minute" },
+  recompute: { does: "rebuilds the bookable times a lead is offered", cadence: "every minute" },
+  outbox: { does: "finishes a booking's side effects: the invite, the webhook, the notice", cadence: "every minute" },
+  selfheal: { does: "finds bookings whose side effects never completed and retries them", cadence: "every minute" },
+  complete: { does: "marks past bookings finished so they stop counting as upcoming", cadence: "every 5 minutes" },
+  watch: { does: "renews the Google subscriptions that tell Slate a calendar changed", cadence: "every 5 minutes" },
+  monitor: { does: "runs the health checks that raise the Slack alerts", cadence: "every 5 minutes" },
+  "bulk-reassign": { does: "moves the bookings a coverage sweep queued onto their new advisor", cadence: "every 5 minutes" },
+  "hydrate-calendars": { does: "fills in cached busy time for agents whose window is running out", cadence: "every 15 minutes" },
+};
+
+/**
+ * One lane, as a sentence: what it does, how often, and when it counts as late.
+ *
+ * The cadence is capitalised on the way in rather than stored capitalised,
+ * because it is the start of the second sentence here and could be mid sentence
+ * in another reader. Storing it either way makes one of the two wrong.
+ */
+export function laneNote(lane: LaneName): string {
+  const note = LANE_NOTES[lane];
+  const minutes = Math.round(LANE_STALE_BOUNDS_MS[lane] / MIN);
+  // Both halves are capitalised on the way OUT rather than stored capitalised.
+  // Each is the start of a sentence here and could be mid sentence in another
+  // reader (an alert, a tooltip, a log line), and storing them either way makes
+  // one of the two wrong.
+  const sentence = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  return `${sentence(note.does)}. ${sentence(note.cadence)}, late after ${minutes} minutes.`;
+}
+
+/**
+ * What the Cron lanes row covers, and where the rest are watched (#1872).
+ *
+ * "All 9 lanes ran on time" is literally true and gives a reader no way to know a
+ * TENTH exists, so the page looks like it is watching the cron system when it is
+ * watching most of it. `worker/cron-routes.ts` also schedules the hourly roster
+ * sync, the two time off jobs and the Snowflake export, and their absence here is
+ * deliberate and documented above: an hourly cadence makes a heartbeat bound
+ * noisy, a stalled roster sync has its own alert path, and the mirror lanes feed
+ * analytics rather than the app. That is a reading gap rather than a coverage gap,
+ * and it costs one sentence to close.
+ *
+ * The count is derived, so a tenth watched lane cannot leave this sentence
+ * claiming nine.
+ */
+export function cronLanesNote(): string {
+  return (
+    `The ${LANE_NAMES.length} lanes that run every minute or every few minutes, each stamping ` +
+    `a heartbeat when a tick succeeds. The hourly roster sync, the two time off jobs and the ` +
+    `Snowflake export are not here: they run too seldom for a heartbeat to mean much, and each ` +
+    `raises its own alert instead.`
+  );
+}
 
 /**
  * Staleness bound for the external booking-smoke canary (#525), kept SEPARATE

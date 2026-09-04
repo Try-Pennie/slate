@@ -7,13 +7,13 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
 import { loadLaneHealth } from "@/lib/monitor/lane-health-view";
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
-import type { LaneHealthRow } from "@/lib/monitor/health";
+import { cronLanesNote, type LaneHealthRow } from "@/lib/monitor/health";
 import { dedupeFailingAgents, type FailingCalendarRow } from "@/lib/notify/alerts";
 import { CronLaneHealth, agoPhrase, summariseLanes } from "@/components/CronLaneHealth";
 import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthPanel";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { cardCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import type { User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +47,18 @@ type Verdict = "ok" | "attention" | "unmeasured";
 interface StatusRow {
   key: string;
   label: string;
+  /**
+   * What this row is about, in words, always visible under its label (#1872).
+   *
+   * Dan, clicking through this page: "basically all of this needs explanations,
+   * so he and others know what the terms mean." Nothing on it said what Fleet,
+   * Calendar push, Calendar sync or Cron lanes were, nor what bookable, on push
+   * or a failure streak meant.
+   *
+   * REQUIRED, not optional, so a row added later cannot ship as a bare label
+   * with a number beside it, which is the state this replaced.
+   */
+  note: string;
   /** What this row measured, in words. May expand in place on a bad day. */
   detail: ReactNode;
   verdict: Verdict;
@@ -274,6 +286,9 @@ export default async function AdminHealthPage() {
     {
       key: "fleet",
       label: "Fleet",
+      note:
+        "Everyone Slate can route a lead to. Bookable means they are in the rotation " +
+        "right now; the rest are on the roster but receiving nothing.",
       verdict: rosterUnreadable ? "unmeasured" : "ok",
       // #1629: this is the first number read on the page. An unreadable roster
       // used to report a confident "0 bookable of 0 agents", which is the fleet
@@ -290,6 +305,10 @@ export default async function AdminHealthPage() {
     {
       key: "push",
       label: "Calendar push",
+      note:
+        "Google telling Slate the moment a calendar changes, instead of Slate asking. " +
+        "On push means that subscription is live for an agent. Anyone not on it is " +
+        "still covered by the every minute sync, just a little later.",
       verdict:
         watchedCount === null
           ? "unmeasured"
@@ -317,6 +336,10 @@ export default async function AdminHealthPage() {
     {
       key: "sync",
       label: "Calendar sync",
+      note:
+        "Whether Slate can actually read each agent's calendar. A failure streak is " +
+        "how many times in a row one agent's calendar read has failed, which is what " +
+        "separates a passing Google wobble from an account that needs fixing.",
       verdict:
         calendarsUnreadable || rosterUnreadable
           ? "unmeasured"
@@ -364,6 +387,7 @@ export default async function AdminHealthPage() {
     {
       key: "lanes",
       label: "Cron lanes",
+      note: cronLanesNote(),
       verdict: lanes.verdict,
       detail: <CronLaneHealth rows={laneHealth} unavailable={laneHealthUnavailable} />,
       inputAgeMs: laneHealthUnavailable ? null : 0,
@@ -388,13 +412,35 @@ export default async function AdminHealthPage() {
               className="grid gap-x-4 gap-y-2 py-4 first:pt-0 last:pb-0 sm:grid-cols-[9rem_1fr_auto] sm:items-start"
             >
               <dt className="text-sm font-semibold text-fg">{row.label}</dt>
-              <dd className="min-w-0 text-sm text-fg-muted">{row.detail}</dd>
+              <dd className="min-w-0 text-sm text-fg-muted">
+                {row.detail}
+                {/* #1872: always visible, never a tooltip. A `title` appears on
+                    neither keyboard focus nor touch and vanishes when the pointer
+                    moves, so it meets none of WCAG 1.4.13's three requirements,
+                    and a conforming tooltip would add an interactive target per
+                    row to a page whose whole purpose is explaining state.
+
+                    In the WIDE column, under the measurement, rather than under
+                    the label: the label column is 9rem, so a paragraph there is
+                    set six lines deep in a gutter, which is the same premature
+                    wrapping #1888 was about. The measurement leads and the
+                    explanation follows it. */}
+                <p className={`mt-1.5 text-xs ${proseCls}`}>{row.note}</p>
+              </dd>
               <dd className="sm:justify-self-end">
                 <VerdictBadge verdict={row.verdict} />
               </dd>
             </div>
           ))}
         </dl>
+        {/* #1872: the three badge words, explained once for the whole card rather
+            than three times or not at all. "Not measured" is the one that matters:
+            it is not a pass, and it never means the thing is fine. */}
+        <p className={`mt-6 border-t border-border pt-4 text-xs text-fg-muted ${proseCls}`}>
+          Checked means Slate measured it and it looks right. Needs attention means it
+          measured it and something is off. Not measured means the reading itself failed,
+          which is not the same as a clean result.
+        </p>
       </section>
     </>
   );

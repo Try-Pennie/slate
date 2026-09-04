@@ -32,7 +32,12 @@ vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import AdminPage from "./page";
-import { LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import {
+  LANE_STALE_BOUNDS_MS,
+  cronLanesNote,
+  laneNote,
+  type LaneName,
+} from "@/lib/monitor/health";
 
 const SUPER_ADMIN = {
   id: "s1",
@@ -269,47 +274,90 @@ describe("the health page's status rows (#1767)", () => {
   });
 });
 
-describe("the cron lane summary (#1767)", () => {
-  it("collapses nine lanes of the same age into one summary line", async () => {
+describe("the cron lane summary (#1767, always visible since #1872)", () => {
+  // #1872 removed the disclosure on Dan's call. The assertions about `details`
+  // and `open` are gone rather than adjusted: their whole content was the
+  // collapse being reversed (L252).
+  //
+  // WHAT SURVIVES INTACT is the part of #1767 that was never about the collapse:
+  // the summary sentence names every lane that is not ok, in the lane's own third
+  // state, so a `never` lane cannot be folded into "all 9 lanes ran on time"
+  // (L98). That is asserted below in all three cases, and it is the reason the
+  // sentence stays above the list rather than being dropped as a repeat of it.
+  it("states nine agreeing lanes once, and lists every one of them", async () => {
     render(await AdminPage());
-    const details = document.querySelector("details");
-    expect(details).toBeTruthy();
-    expect((details as HTMLDetailsElement).open).toBe(false);
-    const summary = details?.querySelector("summary")?.textContent ?? "";
-    expect(summary).toMatch(/all 9 lanes ran on time/i);
-    // Nine lanes agreeing is one fact, so the summary states it once and names
-    // no lane. Every lane is still there behind the disclosure.
-    expect(summary).not.toMatch(/recompute/);
+    expect(document.querySelector("details")).toBeNull();
+
+    const text = pageText();
+    expect(text).toMatch(/all 9 lanes ran on time/i);
     for (const lane of Object.keys(LANE_STALE_BOUNDS_MS)) {
-      expect(pageText()).toContain(lane);
+      expect(text).toContain(lane);
+      // #1872: and says what it is. A bare identifier is what the page drew.
+      expect(text).toContain(laneNote(lane as LaneName));
     }
   });
 
-  it("names a stale lane in the summary without expanding it", async () => {
+  it("names a stale lane in the summary, in its own state", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue(
       lanesStampedAgo(0, { monitor: Date.now() - 90 * 60_000 }),
     );
     render(await AdminPage());
-    const details = document.querySelector("details") as HTMLDetailsElement;
-    const summary = details.querySelector("summary")?.textContent ?? "";
-    expect(summary).toMatch(/monitor/);
-    expect(summary).toMatch(/past its bound/i);
-    expect(details.open).toBe(false);
+    const text = pageText();
+    expect(text).toMatch(/monitor/);
+    expect(text).toMatch(/past its bound/i);
+    expect(text).not.toMatch(/all 9 lanes ran on time/i);
   });
 
-  it("names a lane with no successful tick yet in the summary", async () => {
+  it("names a lane with no successful tick yet, never as stale", async () => {
     // `never` is a THIRD state, distinct from stale (health.ts classifyLaneHealth):
-    // the heartbeat read succeeded and reported no stamp at all. A collapse that
+    // the heartbeat read succeeded and reported no stamp at all. A summary that
     // only counted stale lanes would swallow it into "all 9 lanes ran on time".
     heartbeat.readAllHeartbeatMs.mockResolvedValue(
       lanesStampedAgo(0, { "bulk-reassign": null }),
     );
     render(await AdminPage());
-    const details = document.querySelector("details") as HTMLDetailsElement;
-    const summary = details.querySelector("summary")?.textContent ?? "";
-    expect(summary).toMatch(/bulk-reassign/);
-    expect(summary).toMatch(/no successful tick recorded yet/i);
-    expect(summary).not.toMatch(/all 9 lanes ran on time/i);
-    expect(details.open).toBe(false);
+    const text = pageText();
+    expect(text).toMatch(/bulk-reassign/);
+    expect(text).toMatch(/no successful tick recorded yet/i);
+    expect(text).not.toMatch(/all 9 lanes ran on time/i);
+  });
+});
+
+// #1872. "Basically all of this needs explanations, so he and others know what
+// the terms meant." Nothing on the page said what Fleet, Calendar push, Calendar
+// sync or Cron lanes were, nor bookable, on push, a failure streak, or Checked.
+describe("the Health page explains its own terms (#1872)", () => {
+  it("explains every row, always, with no interaction", async () => {
+    render(await AdminPage());
+    const text = pageText();
+    // The four row labels, each with the term inside it that is not
+    // self-explanatory.
+    expect(text).toMatch(/Bookable means they are in the rotation/i);
+    expect(text).toMatch(/On push means that subscription is live/i);
+    expect(text).toMatch(/A failure streak is how many times in a row/i);
+  });
+
+  it("says what the Cron lanes row covers, and that there are jobs it does not", async () => {
+    render(await AdminPage());
+    // The reading gap: "all 9 lanes ran on time" is true and gives a reader no
+    // way to know a tenth job exists.
+    expect(pageText()).toContain(cronLanesNote());
+    expect(pageText()).toMatch(/hourly roster sync, the two time off jobs and the Snowflake export/i);
+  });
+
+  it("explains the three verdict words, including that Not measured is not a pass", async () => {
+    render(await AdminPage());
+    const text = pageText();
+    expect(text).toMatch(/Checked means Slate measured it/i);
+    expect(text).toMatch(/Not measured means the reading itself failed/i);
+    expect(text).toMatch(/not the same as a clean result/i);
+  });
+
+  it("explains a row even when that row is the one that could not be measured", async () => {
+    mockDb({ users: { data: null, error: { message: "boom" } } });
+    render(await AdminPage());
+    // The reader who most needs to know what Fleet means is the one looking at it
+    // having failed to measure.
+    expect(pageText()).toMatch(/Everyone Slate can route a lead to/i);
   });
 });

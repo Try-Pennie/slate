@@ -1,5 +1,5 @@
-import type { LaneHealthRow } from "@/lib/monitor/health";
-import { ChevronRightIcon } from "@/components/icons";
+import { laneNote, type LaneHealthRow, type LaneName } from "@/lib/monitor/health";
+import { proseCls } from "@/components/ui/styles";
 
 /**
  * The admin Overview's cron lane row (#288, rebuilt for #1767).
@@ -9,18 +9,34 @@ import { ChevronRightIcon } from "@/components/icons";
  * Presentational and read-only; the page does the heartbeat read and passes the
  * classified rows.
  *
- * #1767 collapsed it. Nine lanes agreeing is ONE fact, and printing it nine times
- * (nine dots, all saying "just now", wrapping onto a second line) is what made the
- * bottom of the page read as debug output. So the resting state is one derived
- * sentence and the nine lanes sit behind a disclosure.
+ * #1767 collapsed it, on the argument that nine lanes agreeing is ONE fact and
+ * printing it nine times made the bottom of the page read as debug output.
  *
- * The part that must not erode: **the summary names every lane that is not ok**,
- * in the lane's own third state. `stale` (past its bound) and `never` (the
- * heartbeat read fine and there is no stamp at all) are different conditions with
- * different remedies, and a collapse that only counted stale lanes would fold a
- * `never` lane into "all 9 lanes ran on time" (L98: nothing to report and could
- * not check anything must never render the same). So the offenders are named in
- * the summary, closed, and expanding is for detail rather than for the verdict.
+ * #1872 UNCOLLAPSED IT, on Dan's call: no open and closed state. The cost is
+ * accepted deliberately, since the page gains nine permanent lines and the
+ * summary sits above a list that agrees with it on a good day.
+ *
+ * The part of #1767 that must not erode is separate from the collapse and is kept
+ * whole: **the summary names every lane that is not ok**, in the lane's own third
+ * state. `stale` (past its bound) and `never` (the heartbeat read fine and there
+ * is no stamp at all) are different conditions with different remedies, and a
+ * summary that only counted stale lanes would fold a `never` lane into "all 9
+ * lanes ran on time" (L98). So the sentence stays as the row's verdict in words,
+ * above the list, rather than being dropped because the list repeats part of it.
+ *
+ * EACH LANE SAYS WHAT IT IS. The names are internal identifiers, and "sync, just
+ * now" tells a reader nothing about whether "just now" is good: the bound is the
+ * missing half, since 14 minutes is healthy for `hydrate-calendars` and stale for
+ * `sync`. The sentence comes from `laneNote`, beside the bounds it quotes, so it
+ * cannot disagree with the number the watchdog uses.
+ *
+ * IT IS TEXT, NOT A TOOLTIP, and that was a decision rather than the easy path. A
+ * native `title` does not appear on keyboard focus, does not appear on touch at
+ * all, cannot be read by somebody who needs to zoom, and vanishes when the
+ * pointer moves, so it meets none of 1.4.13's three requirements. Building a
+ * conforming tooltip would then add nine interactive targets to a page whose
+ * whole purpose is explaining the system's state, which is the wrong trade: an
+ * always visible line needs no interaction, works on touch, and cannot be missed.
  */
 
 /**
@@ -147,31 +163,34 @@ export function CronLaneHealth({
 }) {
   const { summary } = summariseLanes(rows, unavailable);
 
-  // Nothing to disclose: the sentence IS the whole answer, and a disclosure over
-  // an empty body would offer a control that can only disappoint (L109).
+  // Nothing to list: the sentence IS the whole answer. An unreadable heartbeat
+  // read has no per-lane detail to draw, and drawing an empty list under it would
+  // read as "no lanes" rather than as "could not tell".
   if (unavailable || rows.length === 0) {
     return <span>{summary}</span>;
   }
 
   return (
-    <details className="group">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-sm text-fg-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-        <span>{summary}</span>
-        <ChevronRightIcon className="size-4 shrink-0 transition-transform group-open:rotate-90" />
-      </summary>
-      <ul className="mt-2 grid gap-x-6 gap-y-1.5 sm:grid-cols-2 xl:grid-cols-3">
+    <div>
+      <p>{summary}</p>
+      {/* One column, not the three the disclosure used. Each lane carries a
+          sentence now, so a three column grid would set nine paragraphs in
+          narrow gutters. */}
+      <ul className="mt-3 space-y-2.5">
         {rows.map((row) => (
           <li key={row.lane} className="flex items-start gap-2">
             <span
               className={`mt-1.5 inline-block size-2 shrink-0 rounded-full ${DOT[row.state]}`}
             />
-            <span>
+            <span className={proseCls}>
               <span className="font-semibold text-fg">{row.lane}</span>{" "}
               <span className="tabular-nums">{laneStateText(row)}</span>
+              <br />
+              {laneNote(row.lane as LaneName)}
             </span>
           </li>
         ))}
       </ul>
-    </details>
+    </div>
   );
 }
