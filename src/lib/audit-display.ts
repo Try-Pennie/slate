@@ -43,6 +43,7 @@ const ACTION_LABEL: Record<string, string> = {
   // since "where leads get sent" is the consequence.
   "bucket.created": "created a routing bucket",
   "bucket.updated": "changed a routing bucket",
+  "event_type.created": "added an event type",
   "monitor.settings": "changed alert settings",
   "reason.options": "changed reason options",
   "booking.settings": "changed booking settings",

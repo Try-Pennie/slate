@@ -9,6 +9,10 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { Field } from "@/components/admin/Field";
 import { btnCls, cardCls, labelCls, textareaCls } from "@/components/ui/styles";
+import {
+  EVENT_TYPE_DEFAULTS,
+  EVENT_TYPE_FIELD_NOTES,
+} from "@/lib/booking/event-type-defaults";
 import type { EventType } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +35,7 @@ export default async function EventTypesPage() {
   return (
     <>
       <AdminPageHeader title="Event types">
-        The meeting kinds a bucket can be booked for, and how long each one runs.
+        What a bucket can be booked for, and how long each one runs.
       </AdminPageHeader>
       <section className={cardCls}>
         {/* #1915: no heading of its own. The page header above names this,
@@ -61,15 +65,87 @@ export default async function EventTypesPage() {
             )}
           </ul>
         )}
+        {/* #1950: the add form is COLLAPSED, and that is the last half of the
+            two numbers Dan read off one screen. The placeholders below are the
+            default a NEW event type gets, and the line above them is the live
+            record, so a 15 minute grid and a "10m grid" were sitting inches
+            apart both telling the truth about different things. Behind a
+            disclosure they are never on screen together, and the form also
+            stops reading as an edit of the record it sits under.
+
+            Native details/summary: keyboard operable, needs no client JS, and
+            the pattern this repo already uses (#740). */}
+        <details className="group">
+          <summary className="cursor-pointer text-sm font-semibold text-fg marker:text-fg-muted">
+            Add an event type
+          </summary>
+          <p className="mt-1 mb-3 text-xs text-fg-muted">
+            A box left blank takes the value shown in it. The title is yours to
+            pick and has to be new.
+          </p>
         <form action={createEventType} className="space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <Field name="name" label="Title (eventTitle)" defaultValue="Senior Loan Advisor Call" />
-            <Field name="regal_type" label="Regal type slug" defaultValue="call" small />
-            <Field name="duration_min" label="Duration (m)" defaultValue="30" small />
-            <Field name="slot_interval_min" label="Grid (m)" defaultValue="15" small />
-            <Field name="min_notice_min" label="Notice (m)" defaultValue="120" small />
-            <Field name="buffer_after_min" label="Buffer after (m)" defaultValue="0" small />
-            <Field name="daily_cap" label="Daily cap" defaultValue="" small />
+          {/* #1950: every box arrives EMPTY, and the numbers appear only as
+              placeholders. A `defaultValue` submits when untouched, so the six
+              literals that used to sit here were values nobody typed reaching
+              the database, and two of them had drifted from the record listed
+              directly above: the form offered 30 minutes on a 15 minute grid
+              against a live 20 on a 10. The placeholders quote
+              EVENT_TYPE_DEFAULTS, which the guard holds to the column's own DDL
+              default, so the number shown is the number a blank field gets.
+
+              `items-start`, not `items-end`. A row aligned on its children's
+              bottom edges aligns the CONTAINERS, so the moment one column
+              carries a hint line its input is pushed out of line with the rest
+              while every column still reads as correct on its own. */}
+          <div className="grid grid-cols-2 items-start gap-x-3 gap-y-4 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="col-span-2">
+              <Field
+                name="name"
+                label="Title (eventTitle)"
+                placeholder="Senior Loan Advisor Call"
+                required
+              />
+            </div>
+            <Field
+              name="regal_type"
+              label="Regal type slug"
+              placeholder={EVENT_TYPE_DEFAULTS.regal_type}
+              small
+            />
+            <Field
+              name="duration_min"
+              label="Duration (m)"
+              placeholder={String(EVENT_TYPE_DEFAULTS.duration_min)}
+              small
+            />
+            <Field
+              name="slot_interval_min"
+              label="Grid (m)"
+              placeholder={String(EVENT_TYPE_DEFAULTS.slot_interval_min)}
+              hint={EVENT_TYPE_FIELD_NOTES.slot_interval_min}
+              small
+            />
+            <Field
+              name="min_notice_min"
+              label="Notice (m)"
+              placeholder={String(EVENT_TYPE_DEFAULTS.min_notice_min)}
+              hint={EVENT_TYPE_FIELD_NOTES.min_notice_min}
+              small
+            />
+            <Field
+              name="buffer_after_min"
+              label="Buffer after (m)"
+              placeholder={String(EVENT_TYPE_DEFAULTS.buffer_after_min)}
+              hint={EVENT_TYPE_FIELD_NOTES.buffer_after_min}
+              small
+            />
+            <Field
+              name="daily_cap"
+              label="Daily cap"
+              placeholder="No cap"
+              hint={EVENT_TYPE_FIELD_NOTES.daily_cap}
+              small
+            />
           </div>
           <div>
             {/* heading-gloss-ok: WHERE the value goes, which is what somebody
@@ -91,6 +167,7 @@ export default async function EventTypesPage() {
             Add event type
           </SubmitButton>
         </form>
+        </details>
       </section>
     </>
   );
