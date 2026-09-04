@@ -46,14 +46,30 @@ export interface HorizonFormPayload {
 }
 
 /**
- * Parse + validate the admin settings form's horizon field. Blank clears the
- * override (explicit null → fall back to env/default). A non-blank value must be a
+ * Parse + validate the admin settings form's horizon field. A value must be a
  * whole number within range; anything else is refused with an error so the action
  * never persists a nonsense horizon. Pure so it is node/vitest-testable without a DB.
+ *
+ * BLANK IS REFUSED (#1924). Dan: "we shouldn't allow it to be blank. we should
+ * require a number and the default should still be 4. if they try to save with no
+ * number, just error and don't let them." It used to clear the override, and the
+ * field rendered empty with 4 only as a placeholder, so an admin who saved without
+ * typing wrote null while a grey 4 sat in the box looking like a value.
+ *
+ * THE READER'S FALLBACK STAYS, deliberately, and the two layers now say different
+ * things: this FORM refuses blank, and `readBookingHorizonDays` still tolerates a
+ * null row. `horizon_days` is nullable and null rows exist, so removing that
+ * fallback because "the form no longer allows null" would turn a data state that
+ * is still there into a booker offering nothing. Do not consolidate them.
  */
 export function parseHorizonForm(raw: string): HorizonFormPayload {
   const t = (raw ?? "").trim();
-  if (t === "") return { horizon_days: null, errors: [] };
+  if (t === "") {
+    return {
+      horizon_days: null,
+      errors: [`Enter how many days a lead is offered, between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
+    };
+  }
   const n = Number(t);
   if (!Number.isInteger(n) || n < HORIZON_MIN || n > HORIZON_MAX) {
     return {

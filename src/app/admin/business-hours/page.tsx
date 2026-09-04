@@ -252,8 +252,8 @@ export default async function BusinessHoursPage({
           How many days a lead is offered to choose from. Counted in days that
           actually have times, so a closed day does not use one up: with Sundays
           closed, four days can reach into the following week. Applies to every
-          bucket. Leave blank to use the default ({HORIZON_DEFAULT}). A change
-          refreshes availability across all buckets within a minute or two.
+          bucket. A change refreshes availability across all buckets within a minute
+          or two.
         </p>
         <form action={setBookingHorizon} className="space-y-4">
           <div>
@@ -262,6 +262,13 @@ export default async function BusinessHoursPage({
             <label className={labelCls} htmlFor="horizon_days">
               Days offered ({HORIZON_MIN} to {HORIZON_MAX})
             </label>
+            {/* #1924: pre-filled with the real default, not a placeholder. A
+                required field that loads EMPTY forces an admin to type a number
+                nobody chose, and the grey placeholder looked enough like a value
+                to be mistaken for one, which is how a save wrote null. The value
+                is real now, so a placeholder would say the same thing twice and
+                is gone. `required` is a courtesy that saves a round trip;
+                `parseHorizonForm` is still the control. */}
             <input
               type="number"
               inputMode="numeric"
@@ -270,8 +277,8 @@ export default async function BusinessHoursPage({
               min={HORIZON_MIN}
               max={HORIZON_MAX}
               step={1}
-              defaultValue={horizonDays ?? ""}
-              placeholder={String(HORIZON_DEFAULT)}
+              required
+              defaultValue={horizonDays ?? HORIZON_DEFAULT}
               className={`${inputCls} w-40 tabular-nums`}
             />
           </div>

@@ -116,9 +116,31 @@ describe("parseHorizonForm", () => {
     expect(parseHorizonForm("5")).toEqual({ horizon_days: 5, errors: [] });
   });
 
-  it("treats blank as clearing the override (null, no error)", () => {
-    expect(parseHorizonForm("")).toEqual({ horizon_days: null, errors: [] });
-    expect(parseHorizonForm("   ")).toEqual({ horizon_days: null, errors: [] });
+  // #1924 reversed this. It used to clear the override, and the field rendered
+  // EMPTY with 4 only as a placeholder, so an admin who saved without typing
+  // wrote null while a grey 4 sat in the box looking like a value. Dan: "if they
+  // try to save with no number, just error and don't let them."
+  //
+  // The old assertion is replaced rather than adjusted: its whole content was the
+  // decision being reversed (L252).
+  it("refuses a blank value rather than clearing the override", () => {
+    for (const raw of ["", "   ", "\t"]) {
+      const parsed = parseHorizonForm(raw);
+      expect(parsed.horizon_days).toBeNull();
+      expect(parsed.errors).toHaveLength(1);
+      // The message tells them what to do, not merely that they were wrong.
+      expect(parsed.errors[0]).toMatch(/between 1 and 7/);
+    }
+  });
+
+  // #1924: the FORM refuses blank and the READER still tolerates null, on
+  // purpose. `horizon_days` is nullable and null rows exist, so removing the
+  // reader's fallback because "the form no longer allows null" would turn a data
+  // state that is still there into a booker offering nothing. Asserted as a PAIR,
+  // because the temptation is to consolidate them.
+  it("keeps refusing blank at the form while the reader still resolves a null row", () => {
+    expect(parseHorizonForm("").errors).toHaveLength(1);
+    expect(resolveHorizonDays(null, undefined, HORIZON_DEFAULT)).toBe(HORIZON_DEFAULT);
   });
 
   it("refuses an out-of-range value (fail loud, no write)", () => {
