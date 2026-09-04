@@ -58,6 +58,9 @@ const streak = vi.hoisted(() => ({
   recordFailureStreak: vi.fn(async () => 1),
   recordConsecutiveStreak: vi.fn(async () => 1),
 }));
+const rateLimit = vi.hoisted(() => ({
+  allowRequest: vi.fn(async () => true),
+}));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "claim" as string | null),
   releaseLock: vi.fn(async () => {}),
@@ -214,6 +217,7 @@ vi.mock("@/lib/schedule", () => schedule);
 vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/locks", () => locks);
+vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/offboarding/service", () => offboarding);
 vi.mock("@/lib/bookable/service", () => bookable);
 vi.mock("@/lib/salesforce/sync", () => salesforce);
@@ -251,6 +255,7 @@ import {
   createBucket,
   updateBucket,
   createEventType,
+  sendTestWebhook,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
 import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
@@ -1905,5 +1910,121 @@ describe("creating an event type refuses rather than inventing (#1950)", () => {
   it("refreshes the page its own form is on", async () => {
     await createEventType(add());
     expect(revalidatePath).toHaveBeenCalledWith("/admin/event-types");
+  });
+});
+
+describe("the webhook test send cannot reach the real destination (#1951)", () => {
+  const LIVE = "https://events.regalvoice.com/events";
+  let fetched: { url: string; init: RequestInit }[] = [];
+
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+    rateLimit.allowRequest.mockResolvedValue(true);
+    dbState.rowsByTable = { webhook_endpoints: { url: LIVE, format: "regal" } };
+    fetched = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        fetched.push({ url, init });
+        return new Response('{"echo":"ok"}', { status: 200 });
+      }),
+    );
+  });
+
+  const send = (target: string) => sendTestWebhook({ error: null, sent: null }, form({ target }));
+
+  it("sends the sample event at the pasted URL and reports what came back", async () => {
+    const state = await send("https://webhook.site/abc");
+    expect(state.error).toBeNull();
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0].url).toBe("https://webhook.site/abc");
+    expect(fetched[0].init.method).toBe("POST");
+    expect(state.sent?.status).toBe(200);
+    expect(state.sent?.ok).toBe(true);
+    expect(state.sent?.responseBody).toBe('{"echo":"ok"}');
+  });
+
+  it("builds the body in the format the endpoint is configured with", async () => {
+    const state = await send("https://webhook.site/abc");
+    expect(state.sent?.format).toBe("regal");
+    // The real builder, so the headers are the ones that ship.
+    const headers = Object.fromEntries(state.sent?.requestHeaders ?? []);
+    expect(headers["x-slate-delivery-id"]).toMatch(/^test-/);
+    expect(headers.authorization).toBeTruthy();
+  });
+
+  // The three things that must never leave, each asserted on what was actually
+  // handed to fetch rather than on what the action meant to send.
+  it("carries no real key, no real signing secret and no real lead", async () => {
+    await send("https://webhook.site/abc");
+    const sentHeaders = fetched[0].init.headers as Record<string, string>;
+    expect(sentHeaders.authorization).toContain("not-a-real-key");
+    const body = String(fetched[0].init.body);
+    expect(body).toContain("example.invalid");
+    expect(body).not.toContain("@trypennie.com");
+  });
+
+  it("refuses the host the live endpoint is on, and sends nothing", async () => {
+    const state = await send(LIVE);
+    expect(state.error).toMatch(/live endpoint/i);
+    expect(fetched).toHaveLength(0);
+  });
+
+  it("refuses a private address", async () => {
+    const state = await send("https://169.254.169.254/latest/meta-data/");
+    expect(state.error).toMatch(/private or local/i);
+    expect(fetched).toHaveLength(0);
+  });
+
+  it("refuses anything that is not https", async () => {
+    const state = await send("http://webhook.site/abc");
+    expect(state.error).toMatch(/https/i);
+    expect(fetched).toHaveLength(0);
+  });
+
+  // The collision check is the only rule standing between a test send and the
+  // real destination, so a read that FAILED must refuse rather than resolve to
+  // "no endpoint configured" and let every target through.
+  it("refuses when it cannot read which endpoint is configured", async () => {
+    dbState.errorByTable = { webhook_endpoints: { message: "read timeout" } };
+    await expect(send("https://webhook.site/abc")).rejects.toThrow(/read failed/i);
+    expect(fetched).toHaveLength(0);
+  });
+
+  it("refuses past its rate limit, without sending", async () => {
+    rateLimit.allowRequest.mockResolvedValue(false);
+    const state = await send("https://webhook.site/abc");
+    expect(state.error).toMatch(/wait a minute/i);
+    expect(fetched).toHaveLength(0);
+  });
+
+  // A test in webhook_deliveries would skew the delivery log, the dead letter
+  // sweep and the resend controls.
+  it("writes no delivery row, and records the send in the audit trail instead", async () => {
+    await send("https://webhook.site/abc");
+    expect(insert).not.toHaveBeenCalled();
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(entry.action).toBe("webhook.test_sent");
+    const details = entry.details as Record<string, unknown>;
+    expect(details.host).toBe("webhook.site");
+    expect(details.status).toBe(200);
+    // The trail records the host, never the whole URL: a scratch URL's path is
+    // the secret that makes it private to whoever created it.
+    expect(JSON.stringify(details)).not.toContain("/abc");
+  });
+
+  it("reports a receiver that answers with a failure, rather than calling it sent", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
+    const state = await send("https://webhook.site/abc");
+    expect(state.sent?.ok).toBe(false);
+    expect(state.sent?.status).toBe(500);
+    expect(state.sent?.responseBody).toBe("nope");
+  });
+
+  it("reports an address that never answers as its own outcome", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network timeout"); }));
+    const state = await send("https://webhook.site/abc");
+    expect(state.error).toMatch(/could not reach/i);
+    expect(state.sent).toBeNull();
   });
 });

@@ -150,6 +150,25 @@ export const ROUTING_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "routing:h", windowSeconds: 3600, max: 200 },
 ];
 
+/**
+ * The admin's webhook test send (#1951), keyed on the admin who pressed it.
+ *
+ * It is an outbound fetch to an address the caller typed, so it needs a ceiling
+ * like every other outbound path. The numbers are set for a person pressing a
+ * button while reading the response: a handful in a minute is normal use, and
+ * fifty in an hour is nobody debugging a payload shape. Both windows exist
+ * because the minute alone lets a script sustain 600 an hour, and the hour alone
+ * lets all fifty go out in one second.
+ *
+ * DB rules rather than an edge limiter, because an edge limiter is a wrangler
+ * binding and a deploy config change, and this path is a few requests a week
+ * rather than a hot one.
+ */
+export const WEBHOOK_TEST_SEND_RATE_RULES: RateLimitRule[] = [
+  { prefix: "whtest:m", windowSeconds: 60, max: 6 },
+  { prefix: "whtest:h", windowSeconds: 3600, max: 50 },
+];
+
 // Availability (#56) no longer uses a DB rule: it's throttled at the edge by
 // the AVAIL_RATE_LIMITER Workers binding (wrangler.jsonc, 30/min per datacenter)
 // so the slot-cache hot path never makes a DB round-trip just to rate-limit. The

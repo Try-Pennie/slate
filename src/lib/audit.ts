@@ -48,6 +48,10 @@ export const AUDIT_ACTIONS = [
   // offered times sit and how much notice a lead needs, so creating one changes
   // what every bucket pointed at it offers.
   "event_type.created",
+  // #1951: an admin making the server POST at an address they typed. The trail
+  // is where a privileged outbound fetch belongs, and it is the only record of
+  // one, since a test send deliberately writes no webhook_deliveries row.
+  "webhook.test_sent",
   "monitor.settings",
   "reason.options",
   "booking.settings",

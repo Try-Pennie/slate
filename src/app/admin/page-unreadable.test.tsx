@@ -59,6 +59,7 @@ vi.mock("@/app/admin/actions", () => ({
   grantStaffAccess: vi.fn(),
   replayFailedWebhooks: vi.fn(),
   resendWebhookDelivery: vi.fn(),
+  sendTestWebhook: vi.fn(),
   revokeStaffAccess: vi.fn(),
   startImpersonation: vi.fn(),
   setWebhookEndpoint: vi.fn(),
