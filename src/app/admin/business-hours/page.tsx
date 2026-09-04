@@ -34,7 +34,7 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { log } from "@/lib/log";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 
 export const dynamic = "force-dynamic";
 
@@ -158,7 +158,7 @@ export default async function BusinessHoursPage({
       <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Business hours</h2>
-        <p className="mb-4 max-w-prose text-xs text-fg-muted">
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
           When Pennie is open. No lead is offered a time outside these hours, on any
           bucket, whatever an agent&apos;s own schedule says. A change applies to
           everyone straight away.
@@ -180,7 +180,7 @@ export default async function BusinessHoursPage({
       </section>
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Specific dates</h2>
-        <p className="mb-4 max-w-prose text-xs text-fg-muted">
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
           Dates that do not follow the weekly pattern above: a holiday shutdown, or
           a one off day open when Pennie normally is not. A closed date is offered
           to nobody, and the booker tells a lead we are closed and when we are back
@@ -204,7 +204,7 @@ export default async function BusinessHoursPage({
       </section>
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Days offered</h2>
-        <p className="mb-4 max-w-prose text-xs text-fg-muted">
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
           How many days a lead is offered to choose from. Counted in days that
           actually have times, so a closed day does not use one up: with Sundays
           closed, four days can reach into the following week. Applies to every

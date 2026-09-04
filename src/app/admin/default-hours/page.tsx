@@ -14,7 +14,7 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { log } from "@/lib/log";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 
 export const dynamic = "force-dynamic";
 
@@ -93,7 +93,7 @@ export default async function DefaultHoursPage({
       {org && (
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Starting hours for a new agent</h2>
-          <p className="mb-4 max-w-prose text-xs text-fg-muted">
+          <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
             Only the hours a newly added agent begins with, and what the{" "}
             <strong>Use default hours</strong>{" "}button applies on an agent&apos;s page.
             Changing this moves nobody who is already set up, and it never widens the
