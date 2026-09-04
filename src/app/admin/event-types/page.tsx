@@ -8,7 +8,7 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { Field } from "@/components/admin/Field";
-import { btnCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
+import { btnCls, cardCls, labelCls, textareaCls } from "@/components/ui/styles";
 import type { EventType } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -75,10 +75,15 @@ export default async function EventTypesPage() {
             {/* heading-gloss-ok: WHERE the value goes, which is what somebody
                 needs while typing it, not a definition of the word Description. */}
             <label className={labelCls}>Description (shown to lead + sent to Regal)</label>
+            {/* #1945: a FOURTH textarea wearing the single line style, which
+                Dan's report did not name and the guard found. Same three
+                consequences: `rows` inert against `h-[44px]`, no vertical
+                padding so the text touches both edges, and inline so the Add
+                button could flow beside it. */}
             <textarea
               name="description"
               rows={2}
-              className={inputCls}
+              className={textareaCls}
               placeholder="Twenty minutes with a senior advisor to confirm your income…"
             />
           </div>

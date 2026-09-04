@@ -127,9 +127,6 @@ export default async function BookingOutcomesPage() {
         <Window title="Last 7 days" mix={week} />
         <Window title="Last 30 days" mix={month} />
 
-        <a href="/admin/settings" className="text-xs text-pennie-blue underline dark:text-pennie-sky">
-          Back to settings
-        </a>
       </>
     </>
   );
