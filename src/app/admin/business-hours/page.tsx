@@ -9,6 +9,7 @@ import {
   setBusinessHoursException,
   removeBusinessHoursException,
   setBookingHorizon,
+  setOrgDefaultHours,
 } from "@/app/admin/actions";
 import {
   loadBusinessHoursRows,
@@ -30,6 +31,8 @@ import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/Busine
 import { BusinessHoursExceptions } from "@/components/ui/BusinessHoursExceptions";
 import { HORIZON_DEFAULT, HORIZON_MIN, HORIZON_MAX } from "@/lib/booking/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { DayToggles } from "@/components/ui/DayToggles";
+import { TimeField } from "@/components/ui/TimeField";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { log } from "@/lib/log";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
@@ -37,6 +40,14 @@ import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 
 export const dynamic = "force-dynamic";
+
+/** The org's seeding template for a newly added agent (#1892, moved here). */
+type OrgDefaults = {
+  default_timezone: string;
+  default_start_minute: number;
+  default_end_minute: number;
+  default_weekdays: number[];
+};
 
 export default async function BusinessHoursPage({
   searchParams,
@@ -78,10 +89,20 @@ export default async function BusinessHoursPage({
   }
 
   const db = supabaseAdmin();
-  // The org's DEFAULT hours for a new agent are not read here: they are a
-  // different subject on a different route (/admin/default-hours), and #1297 put
-  // them next to these only because both looked like "hours in a settings screen".
-  const [weekRead, exceptionsRead, agentsRead] = await Promise.allSettled([
+  // #1892: the org's DEFAULT hours for a new agent ARE read here now, because
+  // this page draws them. The comment that stood here said they were a different
+  // subject on a different route, which described the arrangement being replaced.
+  //
+  // It does not reverse #1748's reasoning. That cost was loading reads a page does
+  // not draw; all four of these are drawn. And it moves back toward #1297's own
+  // stated intent, which was to name them apart and place them adjacent so the
+  // difference is the first thing read.
+  //
+  // FOUR reads means four could-not-measure states, not one (L530). Each resolves
+  // to `null` on failure, never to an empty value, because an empty week, an empty
+  // exception list and an empty set of defaults are all legitimate readings and all
+  // of them are the reassuring one (#1651, #1530).
+  const [weekRead, exceptionsRead, agentsRead, orgRead] = await Promise.allSettled([
     loadBusinessHoursRows(),
     // #1363: the dates that override the weekly pattern. Read here rather than
     // inside the component so the page, not the component, owns the failure.
@@ -94,6 +115,17 @@ export default async function BusinessHoursPage({
     // rendering an unreadable roster as "nobody covers this" reads as a staffing
     // problem someone would go and fix.
     loadCoverageAgents(db),
+    // The new agent seeding template. Its own read, so an unreadable one says so
+    // in its own words rather than emptying a neighbouring panel.
+    (async () => {
+      const read = await db
+        .from("organizations")
+        .select("default_timezone, default_start_minute, default_end_minute, default_weekdays")
+        .eq("id", me.org_id)
+        .maybeSingle();
+      if (read.error) throw read.error;
+      return read.data as OrgDefaults | null;
+    })(),
   ]);
 
   let businessDays: BusinessHoursDay[] | null = null;
@@ -148,12 +180,24 @@ export default async function BusinessHoursPage({
     log.error("admin-settings", { msg: "coverage roster unreadable" }, agentsRead.reason);
   }
 
+  let orgDefaults: OrgDefaults | null = null;
+  if (orgRead.status === "fulfilled") {
+    orgDefaults = orgRead.value;
+  } else {
+    log.error("admin-settings", { msg: "org defaults unreadable" }, orgRead.reason);
+  }
+
   return (
     <>
-      <AdminPageHeader title="Business hours">
-        When Pennie is open, the holidays and closures on top of that, and how far
-        ahead a lead can book. Every offered time is judged against these first, so
-        a change here moves the whole roster.
+      {/* #1892: "Hours", not "Business hours". The page holds the org's real
+          operating window, the holiday closures, the booking horizon AND the new
+          agent template, so naming it for the last of those would be wrong, and
+          the org's own hours reading as a "default" is exactly the confusion
+          #1297 was written about. Dan chose Hours on 2026-09-04. */}
+      <AdminPageHeader title="Hours">
+        When Pennie is open, the holidays and closures on top of that, how far ahead
+        a lead can book, and what a new agent starts on. Every offered time is judged
+        against the first of those, so a change there moves the whole roster.
       </AdminPageHeader>
       <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
       <section className={cardCls}>
@@ -235,6 +279,77 @@ export default async function BusinessHoursPage({
             Save booking horizon
           </SubmitButton>
         </form>
+      </section>
+
+      {/* #1892: the new agent template, moved from its own route.
+          #1297 named the risk this creates: business hours and the seeding
+          template both look like "hours in a settings screen", and confusing them
+          silently moves the whole roster's bookability. Putting them on one page
+          reduces the separation, so the distinction is carried by STRUCTURE
+          instead: the org window is first, this is last, they are separate cards
+          with separate save buttons, and the headings cannot be misread for each
+          other. */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">New agent starting hours</h2>
+        {orgDefaults === null ? (
+          <UnreadableNotice className="mt-3">
+            The starting hours for a new agent could not be read just now, so nothing is
+            shown here. Reload in a moment. The stored defaults are unchanged, and
+            adding an agent still applies them.
+          </UnreadableNotice>
+        ) : (
+          <>
+            <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
+              What a new agent starts with. Existing agents are not changed.
+            </p>
+            <form action={setOrgDefaultHours} className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className={labelCls} htmlFor="default_timezone">
+                  Timezone
+                </label>
+                <input
+                  id="default_timezone"
+                  name="default_timezone"
+                  defaultValue={orgDefaults.default_timezone}
+                  className={`${inputCls} w-44`}
+                />
+              </div>
+              <div>
+                <span className={labelCls}>Days</span>
+                <div className="mt-1">
+                  <DayToggles
+                    namePrefix="dday_"
+                    isOn={(d) => orgDefaults.default_weekdays.includes(d)}
+                  />
+                </div>
+              </div>
+              <div>
+                <span className={labelCls}>Start</span>
+                <TimeField
+                  name="default_start"
+                  ariaLabel="New agent start time"
+                  defaultValue={minutesToTime(orgDefaults.default_start_minute)}
+                  className="mt-1"
+                  enforce
+                />
+              </div>
+              <div>
+                <span className={labelCls}>End</span>
+                <TimeField
+                  name="default_end"
+                  ariaLabel="New agent end time"
+                  round="up"
+                  defaultValue={minutesToTime(orgDefaults.default_end_minute)}
+                  className="mt-1"
+                  enforce
+                />
+              </div>
+              <SubmitButton className={btnCls} pendingLabel="Saving…">
+                Save starting hours
+              </SubmitButton>
+            </form>
+          </>
+        )}
       </section>
     </>
   );

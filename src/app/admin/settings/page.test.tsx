@@ -64,7 +64,6 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 import AlertSettingsPage from "../alerts/page";
 import BucketsPage from "../buckets/page";
 import BusinessHoursPage from "../business-hours/page";
-import DefaultHoursPage from "../default-hours/page";
 
 const props = { searchParams: Promise.resolve({}) };
 const ADMIN = {
@@ -434,16 +433,21 @@ describe("BusinessHours hours block: each read answers for itself (#1658)", () =
 // consequence here was `org = null`, and the section renders behind `{org && …}`,
 // so the whole panel vanished with nothing said. The guard checks that `error` is
 // BOUND, never that it produces a distinct screen.
-describe("DefaultHours org defaults panel (#1651)", () => {
+//
+// #1892 moved the panel onto the Hours page, so these render THAT page. They are
+// relocated rather than deleted: the defect they pin travels with the panel, and
+// a fourth read on a page with three could-not-measure states is exactly where it
+// would come back (L530).
+describe("the new agent starting hours panel (#1651, moved by #1892)", () => {
   it("says the starting hours could not be read rather than dropping the panel", async () => {
     db.results.organizations = { data: null, error: { message: "statement timeout" } };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await DefaultHoursPage(props));
+    render(await BusinessHoursPage(props));
 
     expect(screen.getByText(/starting hours for a new agent could not be read/i)).toBeTruthy();
     // The heading stays, so the panel is visibly present and unreadable rather
     // than absent, which is indistinguishable from a page that never had it.
-    expect(screen.getAllByText(/Starting hours for a new agent/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/New agent starting hours/i).length).toBeGreaterThan(0);
   });
 
   it("CONTROL: renders the editable defaults when the read succeeds", async () => {
@@ -457,9 +461,50 @@ describe("DefaultHours org defaults panel (#1651)", () => {
       error: null,
     };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await DefaultHoursPage(props));
+    render(await BusinessHoursPage(props));
 
     expect(screen.queryByText(/starting hours for a new agent could not be read/i)).toBeNull();
     expect((screen.getByLabelText("Timezone") as HTMLInputElement).value).toBe("America/New_York");
+  });
+
+  // #1892: the four reads on this page each answer for themselves. An unreadable
+  // org row must not empty the week, and an unreadable week must not empty this.
+  it("keeps the other three panels when only the org defaults are unreadable", async () => {
+    db.results.organizations = { data: null, error: { message: "statement timeout" } };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage(props));
+
+    expect(screen.getByText(/starting hours for a new agent could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/hours for the week could not be read/i)).toBeNull();
+    expect(screen.queryByText(/dates that override/i)).toBeNull();
+  });
+
+  // #1297's risk, carried by STRUCTURE now that the two live on one page: the org
+  // window and the seeding template must not read as one thing. Separate cards,
+  // separate saves, the org window first.
+  it("keeps the org window and the new agent template apart", async () => {
+    db.results.organizations = {
+      data: {
+        default_timezone: "America/New_York",
+        default_start_minute: 540,
+        default_end_minute: 1020,
+        default_weekdays: [1, 2, 3, 4, 5],
+      },
+      error: null,
+    };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage(props));
+
+    const orgHeading = screen.getByText("Business hours", { selector: "h2" });
+    const templateHeading = screen.getByText("New agent starting hours");
+    // Different cards, so neither can be read as part of the other.
+    expect(orgHeading.closest("section")).not.toBe(templateHeading.closest("section"));
+    // The org window comes first.
+    expect(
+      orgHeading.compareDocumentPosition(templateHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Its own save, so one press can never write both.
+    expect(screen.getByRole("button", { name: /save starting hours/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /save business hours/i })).toBeTruthy();
   });
 });

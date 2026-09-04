@@ -18,7 +18,10 @@ const headed: AdminNavGroup = {
   title: "Agents",
   items: [
     { href: "/admin/agents", label: "Roster", gate: "manager" },
-    { href: "/admin/default-hours", label: "Default hours", gate: "admin" },
+    // #1892: a real entry. This is sample data for the component rather than an
+    // assertion about the live nav, but naming a route that has no navigation
+    // entry any more reads as one.
+    { href: "/admin/team-access", label: "Team access", gate: "super_admin" },
   ],
 };
 
