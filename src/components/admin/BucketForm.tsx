@@ -85,8 +85,12 @@ export function BucketForm({
       )}
       <div className="flex flex-wrap items-end gap-3">
         <div>
-          <label className={labelCls}>Code (xbc)</label>
-          <input name="code" aria-label="Code (xbc)" defaultValue={bucket?.code ?? ""} className={`${inputCls} w-28`} required />
+          {/* #1901: the gloss was the real name. XBC is what the three digit
+              routing code is called, in `xbc.ts`, in the URL contract and by the
+              people who use it, so the label is the name rather than a generic
+              word with the name in brackets after it. */}
+          <label className={labelCls}>XBC</label>
+          <input name="code" aria-label="XBC" defaultValue={bucket?.code ?? ""} className={`${inputCls} w-28`} required />
         </div>
         <div>
           <label className={labelCls}>Name</label>
@@ -107,6 +111,7 @@ export function BucketForm({
           />
         </div>
         <div>
+          {/* heading-gloss-ok: optionality. */}
           <label className={labelCls}>Cal routing form id (optional)</label>
           <input
             name="routing_form_id"

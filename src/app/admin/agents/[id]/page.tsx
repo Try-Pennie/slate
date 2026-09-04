@@ -462,6 +462,7 @@ export default async function AgentProfilePage({
           </p>
           <div className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4">
             <div>
+              {/* heading-gloss-ok: a plural marker, not a gloss. An agent can hold several. */}
               <span className={labelCls}>Debt team(s)</span>
               <p className="text-sm">{attrValue(agent.attributes?.debt_team)}</p>
             </div>

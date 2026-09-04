@@ -34,6 +34,18 @@ function flagPill(flag: StaffingFlag): { variant: PillVariant; className?: strin
   }
 }
 
+/**
+ * What the Bookable agents column counts (#1901).
+ *
+ * The first number is the roster depth for that tier, and the smaller one beside
+ * it is how many of those are actually available today once anyone on approved
+ * time off or holding an all day block is set aside (#738). Written once here and
+ * read by the column header, so the definition and the numbers cannot drift.
+ */
+const DEPTH_LEGEND =
+  "on the roster for this tier, with how many are available today beside it " +
+  "once anyone out on approved time off is set aside";
+
 /** Human detail for a row: who the sole agent is, who is out today, or the
  *  fallback situation. The status column reflects the EFFECTIVE flag, so this
  *  detail explains it (roster vs available today when agents are out). */
@@ -145,7 +157,16 @@ export default async function TiersPage() {
                 <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
                   <th scope="col" className="px-4 py-2.5 font-semibold">Tier</th>
                   <th scope="col" className="px-3 py-2.5 font-semibold">Code</th>
-                  <th scope="col" className="px-3 py-2.5 font-semibold">Bookable agents (available today)</th>
+                  {/* #1901: the definition is reachable rather than in the way.
+                      It read "Bookable agents (available today)", a gloss every
+                      reader passed through on every view to serve the one who
+                      needed it once. Same treatment as the roster's Team column
+                      (#1812): a `title` for a pointer, and an `sr-only` span so
+                      it is not available by hover alone. */}
+                  <th scope="col" className="px-3 py-2.5 font-semibold" title={DEPTH_LEGEND}>
+                    Bookable agents
+                    <span className="sr-only">{` (${DEPTH_LEGEND})`}</span>
+                  </th>
                   <th scope="col" className="px-4 py-2.5 font-semibold">Status</th>
                 </tr>
               </thead>

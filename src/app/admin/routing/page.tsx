@@ -75,6 +75,8 @@ export default async function RecentRoutingPage() {
             a bearer token and a JSON body of <code>bookingId</code> and{" "}
             <code>agentEmail</code>.
           </p>
+          {/* heading-gloss-ok: the SCHEME the value is sent under, which the
+              caller has to match. A format note, not a definition. */}
           <label className={labelCls}>Authorization key (Bearer)</label>
           <code className="mt-1 block break-all rounded-sm bg-[var(--pennie-wild-sand)] px-3 py-2 text-xs dark:bg-fg/10">
             {reassignApiKey() ||

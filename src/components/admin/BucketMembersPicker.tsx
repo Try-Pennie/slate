@@ -173,6 +173,19 @@ const MODES = {
 
 export type BucketPickerMode = keyof typeof MODES;
 
+/**
+ * The matching rule, stated once (#1901).
+ *
+ * It was written out at two sites in this file, which is how two copies of one
+ * sentence start disagreeing.
+ *
+ * heading-gloss-ok: both halves state the RULE, which is AND across groups and
+ * OR within one. Neither half is a definition of the other, and dropping either
+ * makes the rule wrong rather than terser.
+ */
+const CRITERIA_RULE_LABEL =
+  "Route to agents matching every criteria group (any value within a group)";
+
 export function BucketMembersPicker({
   selectedIds,
   rosterTotal,
@@ -540,9 +553,7 @@ export function BucketCriteriaPicker({
   if (keys.length === 0) {
     return (
       <div>
-        <span className={labelCls}>
-          Route to agents matching every criteria group (any value within a group)
-        </span>
+        <span className={labelCls}>{CRITERIA_RULE_LABEL}</span>
         <p className="mt-1 text-xs text-fg-muted">
           No agent attributes synced yet. Sync from Salesforce to route by attribute.
         </p>
@@ -558,7 +569,7 @@ export function BucketCriteriaPicker({
   return (
     <div>
       <span className={labelCls} id={`${domId}-label`}>
-        Route to agents matching every criteria group (any value within a group)
+        {CRITERIA_RULE_LABEL}
       </span>
 
       <div
