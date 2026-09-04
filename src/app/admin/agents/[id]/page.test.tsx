@@ -146,7 +146,11 @@ function agentOf(role: string, id = "x1"): Record<string, unknown> {
 const MANAGE_BUTTONS = [
   /make bookable/i,
   /save hours/i,
-  /save attributes/i,
+  // #1874: the routing attributes panel writes exactly one key now. Debt team,
+  // backend and the Salesforce profile are read only, because all three are
+  // rewritten by the hourly roster sync, so an edit here was undone within the
+  // hour. This is the control that remains.
+  /save legal eligible/i,
   /deactivate account/i,
 ];
 
@@ -448,7 +452,7 @@ describe("AgentProfilePage says what the pool toggle did (#1769)", () => {
     await renderWith();
     // Make bookable makes a LIVE Google call before it writes anything, so it is
     // the one press that must never read as nothing having happened.
-    for (const name of [/set role/i, /save attributes/i]) {
+    for (const name of [/set role/i, /save legal eligible/i]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
     // A raw <button> has no aria-busy attribute at all; SubmitButton always
@@ -597,5 +601,71 @@ describe("AgentProfilePage account status sits last and looks its weight (#1875)
     expect(text).not.toMatch(/fully reversible/i);
     // The other axis, named, with where its control is.
     expect(text).toMatch(/Not bookable under Access/i);
+  });
+});
+
+// #1874. "These should be idiot proof, with no typos possible."
+//
+// They were three text boxes, and two of them (`debt_team`, `backend_service`)
+// are what routing MATCHES on: a typo produces no error, it produces an agent
+// who silently belongs to no bucket, and the only symptom is a pool one person
+// shorter than expected.
+//
+// A picker would have made a bad value unrepresentable and would still have been
+// an override that silently reverted, because all three are in `SF_MANAGED_KEYS`
+// and the hourly roster sync deletes and rewrites them. Dan chose read only for
+// all three (2026-09-04), which is the call #1474 already made for the manager
+// field: an editable control that is undone within the hour is worse than none.
+describe("AgentProfilePage routing attributes are read only (#1874)", () => {
+  const withAttrs = async (attributes: Record<string, unknown>) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), attributes };
+    render(await AgentProfilePage(props));
+  };
+
+  it("offers no way to type any of the three Salesforce owned values", async () => {
+    await withAttrs({ debt_team: ["ultra_high", "very_high"], backend_service: "achieve", role: "Sales" });
+
+    // The exact defect: a text box whose contents routing matches on.
+    for (const name of ["debt_team", "backend_service", "agent_role"]) {
+      expect(document.querySelector(`[name="${name}"]`)).toBeNull();
+    }
+    // And not as a picker either, which is the other thing that would have been
+    // reverted by the sync within the hour.
+    expect(screen.queryByRole("combobox", { name: /debt team/i })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /backend/i })).toBeNull();
+  });
+
+  it("still shows the values, since read only is not the same as hidden", async () => {
+    await withAttrs({ debt_team: ["ultra_high", "very_high"], backend_service: "achieve", role: "Sales" });
+
+    expect(screen.getByText("ultra_high, very_high")).toBeTruthy();
+    expect(screen.getByText("achieve")).toBeTruthy();
+    // Labelled for what it is: nothing routes on it, so calling it Role under a
+    // heading about routing is the misleading part.
+    expect(screen.getByText("Salesforce profile")).toBeTruthy();
+    expect(screen.getByText("Sales")).toBeTruthy();
+  });
+
+  it("names an absent value rather than drawing a blank line", async () => {
+    await withAttrs({});
+    // As inputs, empty read as an empty box. As text, a blank beside a label
+    // reads as the page having failed to load something.
+    expect(screen.getAllByText("Not set").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("says the three come from Salesforce and are rewritten by the sync", async () => {
+    await withAttrs({});
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    expect(panel.textContent).toMatch(/come from Salesforce/i);
+    expect(panel.textContent).toMatch(/hourly roster sync/i);
+  });
+
+  // The one Slate owns. Routing really does match on it (`legal_eligible!`) and
+  // nothing else writes it, so it stays a control.
+  it("keeps legal eligible editable, with its own save", async () => {
+    await withAttrs({ legal_eligible: false });
+    expect(screen.getByRole("combobox", { name: /legal eligible/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /save legal eligible/i })).toBeTruthy();
   });
 });

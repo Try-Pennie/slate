@@ -69,10 +69,17 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
   }
 }
 
-function attrToText(v: Attributes[string] | undefined): string {
-  if (Array.isArray(v)) return v.join(", ");
-  if (v == null) return "";
-  return String(v);
+/**
+ * One stored routing attribute as a reader sees it (#1874).
+ *
+ * An absent value is NAMED rather than rendered blank. These were text inputs,
+ * where empty reads as an empty box; as text, a blank line beside a label reads
+ * as the page having failed to load something.
+ */
+function attrValue(v: Attributes[string] | undefined): React.ReactNode {
+  const text = Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v);
+  if (!text) return <span className="text-[color:var(--pn-muted)]">Not set</span>;
+  return text;
 }
 
 // nav-ok: a row in the roster opens this, so no navigation entry can name it: the address contains the agent's id
@@ -428,69 +435,81 @@ export default async function AgentProfilePage({
         {/* Routing attributes */}
         <section className={cardCls}>
           <p className="pn-eyebrow text-fg-muted">Routing attributes</p>
-          <p className="mt-1 text-xs text-fg-muted">
-            What this agent can be routed for. Normally synced from Salesforce.
+          {/* #1874: three of these are READ ONLY, and that is the whole change.
+              They were free text boxes, and `debt_team` and `backend_service`
+              are what routing MATCHES on: a typo produces no error, it produces
+              an agent who silently belongs to no bucket, and the only symptom is
+              a pool one person shorter than expected.
+
+              A picker would have made the value unrepresentable, and it would
+              still have been an override that silently reverted: all three are
+              in `SF_MANAGED_KEYS`, so the hourly roster sync deletes and
+              rewrites them. An editable control that is undone within the hour
+              is worse than none, which is the call #1474 already made for the
+              manager field. Dan chose read only for all three on 2026-09-04.
+
+              `role` is here because Salesforce sends it (the Profile name,
+              "Sales" or "Sales Manager"), and NOTHING reads it: all 60 buckets
+              key on debt_team, backend_service and legal_eligible. It is
+              labelled as what it is rather than sitting unlabelled under a
+              heading about routing.
+
+              `legal_eligible` stays editable because routing does match on it
+              (`legal_eligible!`) and nothing else writes it. */}
+          <p className={`mt-1 text-xs text-fg-muted ${proseCls}`}>
+            What this agent can be routed for. The first three come from Salesforce and are
+            rewritten by the hourly roster sync, so they are shown here rather than edited.
           </p>
+          <div className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4">
+            <div>
+              <span className={labelCls}>Debt team(s)</span>
+              <p className="text-sm">{attrValue(agent.attributes?.debt_team)}</p>
+            </div>
+            <div>
+              <span className={labelCls}>Backend</span>
+              <p className="text-sm">{attrValue(agent.attributes?.backend_service)}</p>
+            </div>
+            <div>
+              <span className={labelCls}>Salesforce profile</span>
+              <p className="text-sm">{attrValue(agent.attributes?.role)}</p>
+            </div>
+          </div>
+
           {!canManageThisAgent && (
             <p className="mt-4 text-xs text-fg-muted">
-              Only someone who outranks this agent can change their attributes.
+              Only someone who outranks this agent can change their legal eligibility.
             </p>
           )}
           {canManageThisAgent && (
-          <form
-            action={setAgentAttributes}
-            className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3"
-          >
-            <input type="hidden" name="user_id" value={agent.id} />
-            <div>
-              <label className={labelCls}>Debt team(s)</label>
-              <input
-                name="debt_team"
-                defaultValue={attrToText(agent.attributes?.debt_team)}
-                placeholder="ultra_high, very_high"
-                className={`${inputCls} w-48`}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>Backend</label>
-              <input
-                name="backend_service"
-                defaultValue={attrToText(agent.attributes?.backend_service)}
-                placeholder="achieve"
-                className={`${inputCls} w-32`}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>Role</label>
-              <input
-                name="agent_role"
-                defaultValue={attrToText(agent.attributes?.role)}
-                placeholder="sales_agent"
-                className={`${inputCls} w-36`}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>Legal eligible</label>
-              <SelectField
-                name="legal_eligible"
-                ariaLabel="Legal eligible"
-                defaultValue={
-                  agent.attributes?.legal_eligible === true
-                    ? "true"
-                    : agent.attributes?.legal_eligible === false
-                      ? "false"
-                      : ""
-                }
-                className="w-full"
-                options={[
-                  { value: "", label: "Not set" },
-                  { value: "true", label: "Yes" },
-                  { value: "false", label: "No" },
-                ]}
-              />
-            </div>
-            <SubmitButton className={btnCls} pendingLabel="Saving attributes">Save attributes</SubmitButton>
-          </form>
+            <form
+              action={setAgentAttributes}
+              className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-border pt-4"
+            >
+              <input type="hidden" name="user_id" value={agent.id} />
+              <div>
+                <label className={labelCls}>Legal eligible</label>
+                <SelectField
+                  name="legal_eligible"
+                  ariaLabel="Legal eligible"
+                  defaultValue={
+                    agent.attributes?.legal_eligible === true
+                      ? "true"
+                      : agent.attributes?.legal_eligible === false
+                        ? "false"
+                        : ""
+                  }
+                  className="w-40"
+                  options={[
+                    { value: "", label: "Not set" },
+                    { value: "true", label: "Yes" },
+                    { value: "false", label: "No" },
+                  ]}
+                />
+              </div>
+              <SubmitButton className={btnCls} pendingLabel="Saving">
+                Save legal eligible
+              </SubmitButton>
+            </form>
           )}
         </section>
 
