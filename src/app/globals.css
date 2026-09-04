@@ -357,6 +357,24 @@ h1.pn-display {
 }
 .pn-btn--additional:hover { background: rgba(52,52,52,0.04); }
 
+/* A destructive control (#1875). An OUTLINE rather than a rose fill, and that is
+   measured rather than a preference: a filled rose needs white text on light
+   (5.14:1) and graphite on the LIGHTENED dark rose (5.22:1), so the foreground
+   would have to flip with the theme, which is the token pair that goes wrong
+   silently (L213). The outline uses one foreground in both: 5.14:1 on a light
+   card and 4.91:1 on a dark one, and the border clears the 3:1 an interface
+   component needs in both. Asserted in scripts/test-contrast.ts.
+
+   `--error-bg` is defined once, in :root, deliberately: it is a rose tint at 12%
+   over whatever is behind it, so it reads as a wash in both themes without a
+   second value to keep in step. */
+.pn-btn--danger {
+  background: transparent;
+  color: var(--error);
+  border: 1px solid var(--error);
+}
+.pn-btn--danger:hover { background: var(--error-bg); }
+
 .pn-btn--link {
   background: transparent; padding: 0; height: auto;
   color: var(--fg);

@@ -537,4 +537,18 @@ atLeast(rDark("--surface-elevated"), rDark("--surface"), 1.2, "dark elevated sur
 atLeast(r("--fg"), r("--bg-alt"), 4.5, "body text on the light hover and zebra tint");
 atLeast(r("--fg-muted"), r("--bg-alt"), 4.5, "muted text on the light hover and zebra tint");
 
+// --- #1875: the destructive button (.pn-btn--danger) ------------------------
+// An outline, not a rose fill, because a fill needs its foreground to FLIP with
+// the theme and a pair whose halves are maintained apart is the one that breaks
+// silently (L213). Both halves are asserted: the label as text at 4.5, and the
+// border as an interface component at 3, in each theme. The dark theme is the
+// half that would be missed, since the light rose is the value a light-only check
+// would never reach.
+const surfaceLight = r("--surface");
+const surfaceDarkCard = rDark("--surface");
+atLeast(rose, surfaceLight, 4.5, "danger button label on a light card"); // 5.14
+atLeast(rose, surfaceLight, 3, "danger button border on a light card");
+atLeast(roseDark, surfaceDarkCard, 4.5, "danger button label on a dark card"); // 4.91
+atLeast(roseDark, surfaceDarkCard, 3, "danger button border on a dark card");
+
 finish();

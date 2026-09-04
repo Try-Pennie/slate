@@ -115,7 +115,8 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 
-import { btnSecondaryCls } from "@/components/ui/styles";
+import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
+import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import AgentProfilePage from "./page";
 
 const props = { params: Promise.resolve({ id: "x1" }) };
@@ -533,5 +534,68 @@ describe("AgentProfilePage names the role once, and the header carries view as (
     // `ml-auto` shifts as soon as the button beside it disappears.
     const group = pill.closest("div");
     expect(group?.className ?? "").not.toMatch(/ml-auto/);
+  });
+});
+
+// #1875. Three asks, and the third is the one that mattered: "I am not clear how
+// deactivating differs from making somebody unbookable." The screen was never
+// going to tell him, and what it did say was wrong.
+//
+// The copy claims are asserted in scripts/test-account-status-copy.ts, where the
+// sentences live. These are the PAGE facts: where the section sits, and that the
+// two opposite decisions in it no longer look identical.
+describe("AgentProfilePage account status sits last and looks its weight (#1875)", () => {
+  const renderAs = async (agent: Record<string, unknown>) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agent;
+    render(await AgentProfilePage(props));
+  };
+
+  it("puts account status after the panel that moves the bookings", async () => {
+    await renderAs(agentOf("agent"));
+
+    const status = screen.getByText("Account status");
+    const mover = screen.getByText(COVERAGE_PANEL_NAME);
+    // Node order, so this asserts what a reader scrolls past rather than a
+    // margin. Moving the bookings comes first because that is the order the work
+    // happens in: move them, then close the account.
+    expect(mover.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("dresses deactivate as destructive and reactivate as ordinary", async () => {
+    await renderAs(agentOf("agent"));
+    const deactivate = screen.getByRole("button", { name: /deactivate account/i });
+    expect(deactivate.className).toBe(btnDangerCls);
+    cleanup();
+
+    // The same control in the other direction is a plain secondary: bringing an
+    // account back is not the dangerous half.
+    await renderAs({ ...agentOf("agent"), deactivated_at: "2026-08-01T00:00:00Z" });
+    const reactivate = screen.getByRole("button", { name: /reactivate account/i });
+    expect(reactivate.className).toBe(btnSecondaryCls);
+    expect(reactivate.className).not.toBe(btnDangerCls);
+  });
+
+  // The case Dan was reacting to: an agent with an empty calendar is one click
+  // from being offboarded, because the #1215 confirm is deliberately skipped when
+  // no APPOINTMENT is stranded. The press is still not reversible, so the
+  // treatment stays.
+  it("keeps the destructive treatment on the one click path", async () => {
+    previewBulkReassign.mockResolvedValueOnce(0);
+    await renderAs(agentOf("agent"));
+
+    const deactivate = screen.getByRole("button", { name: /deactivate account/i });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(deactivate.className).toBe(btnDangerCls);
+  });
+
+  it("tells the two axes apart on the screen where they have to be chosen between", async () => {
+    await renderAs(agentOf("agent"));
+    const panel = screen.getByText("Account status").closest("section") as HTMLElement;
+    const text = panel.textContent ?? "";
+
+    expect(text).not.toMatch(/fully reversible/i);
+    // The other axis, named, with where its control is.
+    expect(text).toMatch(/Not bookable under Access/i);
   });
 });

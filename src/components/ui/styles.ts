@@ -46,6 +46,19 @@ export const btnCls = "pn-btn pn-btn--small pn-btn--primary";
 export const btnSecondaryCls = "pn-btn pn-btn--small pn-btn--additional";
 
 /**
+ * A control whose press cannot simply be undone (#1875).
+ *
+ * Deactivating an agent wore `btnSecondaryCls`, the identical neutral treatment
+ * as Reactivate beside it, so the two opposite decisions looked the same. This is
+ * the rose outline defined in globals.css; its contrast in both themes is
+ * asserted in `scripts/test-contrast.ts` rather than assumed.
+ *
+ * Reach for it only where the press is genuinely hard to reverse. A destructive
+ * treatment on an ordinary control is how a reader learns to ignore the colour.
+ */
+export const btnDangerCls = "pn-btn pn-btn--small pn-btn--danger";
+
+/**
  * Reading width for a block of prose (#1745). The page container is wide so
  * tables and multi-column content can use the window; a sentence set across the
  * whole of it is unreadable, so the constraint lives on the prose rather than on

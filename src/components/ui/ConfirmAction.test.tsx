@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConfirmAction } from "./ConfirmAction";
+import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 
 // #1873. The open, confirm, cancel and focus handling behind an in place confirm,
 // extracted from the pool exit controls (#1215) so applying company default hours
@@ -104,5 +105,29 @@ describe("ConfirmAction (#1873)", () => {
 
     await user.click(opener());
     expect(screen.getByRole("link", { name: "Go to Coverage" })).toBeTruthy();
+  });
+});
+
+// #1875: the destructive treatment reaches the opener and the confirm, and never
+// Cancel. Backing out is not the destructive choice, and painting the safe way
+// out in the warning colour is how a reader stops reading the colour at all.
+describe("ConfirmAction keeps Cancel neutral (#1875)", () => {
+  it("dresses the opener and the confirm in the caller's treatment", async () => {
+    const user = userEvent.setup();
+    render(subject({ className: btnDangerCls }));
+
+    expect(opener().className).toBe(btnDangerCls);
+    await user.click(opener());
+    expect(confirm().className).toBe(btnDangerCls);
+  });
+
+  it("leaves Cancel in the neutral treatment, whatever the caller passed", async () => {
+    const user = userEvent.setup();
+    render(subject({ className: btnDangerCls }));
+
+    await user.click(opener());
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel.className).toBe(btnSecondaryCls);
+    expect(cancel.className).not.toContain("danger");
   });
 });
